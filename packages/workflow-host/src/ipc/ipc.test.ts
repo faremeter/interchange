@@ -1442,6 +1442,84 @@ describe("substrate.write.request payload validation", () => {
   });
 });
 
+describe("sources-updated payload validation", () => {
+  const source = {
+    id: "primary",
+    provider: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    apiKey: "sk-x",
+    model: "claude-3-5",
+  };
+
+  test("accepts a well-formed sources-updated frame", () => {
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [source], defaultSource: "primary" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects an empty sources list", () => {
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [], defaultSource: "primary" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a missing sources list", () => {
+    const payload = {
+      type: "sources-updated",
+      data: { defaultSource: "primary" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a missing defaultSource", () => {
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [source] },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an empty-string defaultSource", () => {
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [source], defaultSource: "" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("accepts a defaultSource that is not a member of sources", () => {
+    // Constraint ownership: the wire boundary does not enforce
+    // `defaultSource in sources`. The consumer (the agent's source
+    // registry, via indexOfDefault) owns that invariant and throws when
+    // it does not hold, so re-checking it here would duplicate the rule.
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [source], defaultSource: "not-in-list" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a source element missing a required field", () => {
+    const { apiKey: _apiKey, ...sourceWithoutApiKey } = source;
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [sourceWithoutApiKey], defaultSource: "primary" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+});
+
 describe("substrate.merge.request payload validation", () => {
   test("accepts a well-formed substrate.merge.request", () => {
     const payload = {

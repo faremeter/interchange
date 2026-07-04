@@ -37,7 +37,7 @@
 import { type } from "arktype";
 
 import { hexDecode, hexEncode } from "@intx/types";
-import { InterchangeType } from "@intx/types/runtime";
+import { InferenceSource, InterchangeType } from "@intx/types/runtime";
 
 import {
   decodeEnvelope,
@@ -177,7 +177,18 @@ export const ControlPayload = type(
   .or({
     type: "'sources-updated'",
     data: {
-      "sourceHashes?": "Record<string, string>",
+      /**
+       * The full ordered inference-source failover chain plus the default
+       * source id. Carried inline like grants-updated's snapshot: a
+       * single-producer, single-consumer supervisor->child push, so a
+       * substrate round-trip would only add latency. Constrained non-empty
+       * because a rotation always has at least one source; an empty list
+       * is a malformed frame rejected at the wire boundary. No per-source
+       * hash rides along -- sources are a flat list with no per-item pin
+       * for a receiver to cross-check, unlike the per-step grants snapshot.
+       */
+      sources: InferenceSource.array().atLeastLength(1),
+      defaultSource: "string > 0",
     },
   })
   .or({

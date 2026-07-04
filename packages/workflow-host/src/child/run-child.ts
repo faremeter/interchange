@@ -831,7 +831,9 @@ async function handleControlPayload(
       return true;
     }
     case "sources-updated": {
-      logger.info`workflow-child sources-updated: ${JSON.stringify(payload.data)}`;
+      // Each source carries an apiKey, so log only the shape, never the
+      // payload contents.
+      logger.info`workflow-child sources-updated: ${String(payload.data.sources.length)} sources, default ${payload.data.defaultSource}`;
       return false;
     }
     case "ready": {
