@@ -922,7 +922,7 @@ function serializeWalk(walk: CapabilityWalkResult): unknown {
  * projection would let the gate admit every deploy regardless of what
  * `HarnessConfig.tools` named, weakening the approval gate.
  */
-export function wrapHarnessAsTrivialAgent(args: {
+export function wrapHarnessAsSingleStepWorkflow(args: {
   config: HarnessConfig;
   deployContent: DeployContent;
 }): AgentDefinition<BaseEnv> {
@@ -955,8 +955,8 @@ export function wrapHarnessAsTrivialAgent(args: {
  * `validateNamespacedId` (the constructor `defineTool` runs) is
  * deliberately skipped: `HarnessConfig.tools[i].name` is the existing
  * wire shape downstream consumers gate against, and re-validating it
- * here would diverge the trivial-wrap's surface from what the harness
- * actually loads. The walk and the gate only consult `.id`, so a bare
+ * here would diverge the single-step wrap's surface from what the
+ * harness actually loads. The walk and the gate only consult `.id`, so a bare
  * name still produces a stable grant string.
  */
 function synthesizeWalkToolFactory(
@@ -964,7 +964,7 @@ function synthesizeWalkToolFactory(
 ): AnnotatedToolFactory<BaseEnv> {
   const factory = (_env: BaseEnv): never => {
     throw new Error(
-      `wrapHarnessAsTrivialAgent synthesized tool factory for ${JSON.stringify(tool.name)} is walk-only; do not instantiate the trivial-wrap agent`,
+      `wrapHarnessAsSingleStepWorkflow synthesized tool factory for ${JSON.stringify(tool.name)} is walk-only; do not instantiate the single-step wrap agent`,
     );
   };
   return Object.assign(factory, {

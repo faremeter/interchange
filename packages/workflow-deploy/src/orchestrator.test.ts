@@ -29,7 +29,7 @@ import {
   MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
   WorkflowDefinitionInvalidError,
-  wrapHarnessAsTrivialAgent,
+  wrapHarnessAsSingleStepWorkflow,
   type DeployContent,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -64,7 +64,7 @@ function makeAgent(
   });
 }
 
-function makeTrivialWorkflow(
+function makeSingleStepWorkflow(
   agent: AgentDefinition<BaseEnv>,
 ): WorkflowDefinition {
   return defineWorkflow({
@@ -562,7 +562,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
     test("single-step workflow deploys once at the head", async () => {
       const agent = makeAgent("only");
-      const workflow = makeTrivialWorkflow(agent);
+      const workflow = makeSingleStepWorkflow(agent);
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
@@ -673,7 +673,7 @@ describe("createWorkflowDeployOrchestrator", () => {
   describe("approval failures", () => {
     test("unapproved grant throws CapabilityApprovalDeniedError naming the step", async () => {
       const agent = makeAgent("legacy-agent");
-      const workflow = makeTrivialWorkflow(agent);
+      const workflow = makeSingleStepWorkflow(agent);
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
@@ -713,7 +713,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
     test("zero approved sources throws with the offending step and missing source", async () => {
       const agent = makeAgent("legacy-agent");
-      const workflow = makeTrivialWorkflow(agent);
+      const workflow = makeSingleStepWorkflow(agent);
       const directorRegistry = createDefaultDirectorRegistry();
       const workflowRepo = createRecordingWorkflowRepoWriter();
       const launch = createRecordingLaunch();
@@ -831,9 +831,9 @@ describe("createWorkflowDeployOrchestrator", () => {
   });
 });
 
-describe("wrapHarnessAsTrivialAgent", () => {
+describe("wrapHarnessAsSingleStepWorkflow", () => {
   test("derives id from config.agentId", () => {
-    const agent = wrapHarnessAsTrivialAgent({
+    const agent = wrapHarnessAsSingleStepWorkflow({
       config: HARNESS_CONFIG_BASE,
       deployContent: DEPLOY_CONTENT_BASE,
     });
@@ -844,7 +844,7 @@ describe("wrapHarnessAsTrivialAgent", () => {
     const customContent: DeployContent = {
       systemPrompt: "you are the trivial agent",
     };
-    const agent = wrapHarnessAsTrivialAgent({
+    const agent = wrapHarnessAsSingleStepWorkflow({
       config: HARNESS_CONFIG_BASE,
       deployContent: customContent,
     });
@@ -871,7 +871,7 @@ describe("wrapHarnessAsTrivialAgent", () => {
         },
       ],
     };
-    const agent = wrapHarnessAsTrivialAgent({
+    const agent = wrapHarnessAsSingleStepWorkflow({
       config,
       deployContent: DEPLOY_CONTENT_BASE,
     });
@@ -882,7 +882,7 @@ describe("wrapHarnessAsTrivialAgent", () => {
   });
 
   test("empty toolFactories and capabilities (deploy tree is the source of truth)", () => {
-    const agent = wrapHarnessAsTrivialAgent({
+    const agent = wrapHarnessAsSingleStepWorkflow({
       config: HARNESS_CONFIG_BASE,
       deployContent: DEPLOY_CONTENT_BASE,
     });
@@ -891,7 +891,7 @@ describe("wrapHarnessAsTrivialAgent", () => {
   });
 
   test("no director ref (caller carries no director state in the trivial shape)", () => {
-    const agent = wrapHarnessAsTrivialAgent({
+    const agent = wrapHarnessAsSingleStepWorkflow({
       config: HARNESS_CONFIG_BASE,
       deployContent: DEPLOY_CONTENT_BASE,
     });

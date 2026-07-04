@@ -50,7 +50,7 @@ import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   walkCapabilities,
-  wrapHarnessAsTrivialAgent,
+  wrapHarnessAsSingleStepWorkflow,
   type ApprovalSet,
   type DeployContent as OrchestratorDeployContent,
   type DeployWorkflowArgs,
@@ -1013,10 +1013,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }): Promise<{ publicKey: string }> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
 
-    const trivialAgent = wrapHarnessAsTrivialAgent({ config, deployContent });
+    const singleStepAgent = wrapHarnessAsSingleStepWorkflow({
+      config,
+      deployContent,
+    });
     const workflow = defineWorkflow({
       id: `wf_${agentId}`,
-      agent: trivialAgent,
+      agent: singleStepAgent,
       trigger: { type: "mail", to: agentAddress },
     });
 

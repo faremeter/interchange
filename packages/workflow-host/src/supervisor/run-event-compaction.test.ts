@@ -17,7 +17,7 @@ import type {
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions";
 
-import { compactRunEvents } from "./run-event-signing";
+import { compactRunEvents } from "./run-event-compaction";
 
 const REF = "refs/heads/main";
 const allowAll: AuthorizeFn = () => ({ allowed: true });

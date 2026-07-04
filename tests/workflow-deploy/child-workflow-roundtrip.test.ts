@@ -37,7 +37,7 @@ import {
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
 import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
 
@@ -287,7 +287,7 @@ describe("parent -> child workflow round-trip", () => {
 
     const parentWorkflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(parentMailAddress),
+      id: deriveDeploymentId(parentMailAddress),
     };
     env.registerDeployment({
       deploymentId: PARENT_DEPLOYMENT_ID,
@@ -687,7 +687,7 @@ describe("parent -> child workflow round-trip", () => {
 
     const parentWorkflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(parentMailAddress),
+      id: deriveDeploymentId(parentMailAddress),
     };
     env.registerDeployment({
       deploymentId: NESTED_PARENT_DEPLOYMENT_ID,
@@ -1033,7 +1033,7 @@ describe("parent -> child workflow round-trip", () => {
 
     const parentWorkflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(parentMailAddress),
+      id: deriveDeploymentId(parentMailAddress),
     };
     env.registerDeployment({
       deploymentId: SIBLINGS_PARENT_DEPLOYMENT_ID,

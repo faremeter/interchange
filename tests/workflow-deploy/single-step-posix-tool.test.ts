@@ -37,7 +37,7 @@ import {
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import { sanitizeAddress } from "@intx/hub-agent";
 import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
 import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
@@ -239,7 +239,7 @@ describe("single-step posix-tool in-child execution", () => {
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(deploymentMailAddress),
+      id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
       deploymentId: DEPLOYMENT_ID,

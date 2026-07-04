@@ -41,7 +41,7 @@ function makeTrivialAgent(): AgentDefinition<BaseEnv> {
   });
 }
 
-function makeTrivialWorkflow(
+function makeSingleStepWorkflow(
   agent: AgentDefinition<BaseEnv>,
 ): WorkflowDefinition {
   return defineWorkflow({
@@ -84,7 +84,7 @@ describe("walkCapabilities", () => {
   test("trivial workflow grants match the implicit agent-deploy grants", () => {
     const registry = createDefaultDirectorRegistry();
     const agent = makeTrivialAgent();
-    const workflow = makeTrivialWorkflow(agent);
+    const workflow = makeSingleStepWorkflow(agent);
 
     const walk = walkCapabilities(workflow, registry);
 

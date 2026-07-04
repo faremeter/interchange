@@ -22,7 +22,7 @@ import {
   computeWireDefinitionHash,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
-  deriveTrivialDeploymentId,
+  deriveDeploymentId,
   STEP_INFERENCE_SOURCES_ENV_KEY,
   validateWorkflowProjection,
 } from "./workflow-host-wiring";
@@ -896,7 +896,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const recordFile = path.join(
       dataDir,
       "workflow-runs",
-      deriveTrivialDeploymentId(agentAddress),
+      deriveDeploymentId(agentAddress),
       "deployment.json",
     );
     expect(
@@ -1579,15 +1579,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, badHead)).toBe(false);
     // The failed record is KEPT on disk -- never deleted, unlike a
     // soft-failed deploy -- so a later boot can retry it.
-    expect(
-      await recordExists(dataDir, deriveTrivialDeploymentId(badHead)),
-    ).toBe(true);
+    expect(await recordExists(dataDir, deriveDeploymentId(badHead))).toBe(true);
   });
 
   test("restore applies validateWorkflowProjection: a stepOrder entry with no matching steps is skipped", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
     const head = "ins_validator@example.com";
-    const deploymentId = deriveTrivialDeploymentId(head);
+    const deploymentId = deriveDeploymentId(head);
 
     // Hand-write a record plus a workflow.json whose `stepOrder` names a step
     // `steps` does not define. This clears the wire arktype
@@ -1664,7 +1662,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a second deploy for a live address is rejected without orphaning its restore record", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-dup-data-");
     const head = "ins_dup@example.com";
-    const deploymentId = deriveTrivialDeploymentId(head);
+    const deploymentId = deriveDeploymentId(head);
 
     const spawner = makeReadyDrivingSpawner(9700);
     const { router, transport } = await buildMultistepFixture({
@@ -1727,7 +1725,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       "sidecar-restore-unbuildable-data-",
     );
     const head = "ins_unbuildable_restore@example.com";
-    const deploymentId = deriveTrivialDeploymentId(head);
+    const deploymentId = deriveDeploymentId(head);
 
     // First process: a permissive gate lets the deploy through, persisting
     // the record and its workflow.json.
@@ -1768,7 +1766,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a deploy whose child never signals ready times out and rejects", async () => {
     const dataDir = await createTempBaseDir("sidecar-ready-timeout-data-");
     const head = "ins_readytimeout@example.com";
-    const deploymentId = deriveTrivialDeploymentId(head);
+    const deploymentId = deriveDeploymentId(head);
 
     // A spawner whose child is created but never driven through the `ready`
     // handshake. With a small threaded readyTimeoutMs the supervisor times
@@ -1823,8 +1821,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
   });
 
-  test("two addresses whose deriveTrivialDeploymentId slugs collide are rejected at the second deploy", async () => {
-    // deriveTrivialDeploymentId substitutes every disallowed character with
+  test("two addresses whose deriveDeploymentId slugs collide are rejected at the second deploy", async () => {
+    // deriveDeploymentId substitutes every disallowed character with
     // `-`, so two distinct addresses can collapse to the same slug. The slug
     // IS the workflow-run repoId, so a silent collision would let the second
     // deploy overwrite the first deploy's repo state. claimSlug rejects the
@@ -1847,7 +1845,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await expect(
       router.deploy(singleStepFrame("ins_col-a@example.com", "wf-collide")),
-    ).rejects.toThrow(/deriveTrivialDeploymentId collision/);
+    ).rejects.toThrow(/deriveDeploymentId collision/);
     expect(spawner.spawnCount()).toBe(1);
   });
 });

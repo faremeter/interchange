@@ -58,7 +58,7 @@ import {
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import { generateKeyPair } from "@intx/crypto";
 import {
   assembleCredentialsSnapshot,
@@ -295,7 +295,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(deploymentMailAddress),
+      id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
       deploymentId: DEPLOYMENT_ID,
@@ -340,7 +340,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
       repoStore: readbackRepoStore,
       principal: { kind: "hub" },
       stepOrder: [STEP_ID],
-      deploymentId: deriveTrivialDeploymentId(deploymentMailAddress),
+      deploymentId: deriveDeploymentId(deploymentMailAddress),
       deriveStepAddress: () => deploymentMailAddress,
       deriveStepRepoId: () => legacyAgentStateRepoId,
     });

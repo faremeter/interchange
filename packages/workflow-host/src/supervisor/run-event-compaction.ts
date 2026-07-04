@@ -52,7 +52,7 @@ export type CompactRunEventsOpts = {
  * or one whose latest event is not terminal is left untouched, so the call
  * is safe to repeat. The live caller fires it once per run, right after the
  * run terminates; a bounded recovery sweep that would re-fire it to seal a
- * run whose fold a crash interrupted is tracked separately (INTR-229).
+ * run whose fold a crash interrupted is not yet implemented.
  *
  * The combined file is the verbatim byte concatenation of the per-event
  * blobs in seq order (`encodeCombinedEventLog`), the exact shape the
@@ -124,7 +124,7 @@ export async function compactRunEvents(
           const match = EVENT_FILENAME_RE.exec(name);
           if (match === null || match[1] === undefined) {
             throw new Error(
-              `supervisor run-event-signing: unexpected non-event file ${filepath} under run ${opts.runId}; refusing to compact`,
+              `supervisor run-event-compaction: unexpected non-event file ${filepath} under run ${opts.runId}; refusing to compact`,
             );
           }
           entries.push({ seq: Number.parseInt(match[1], 10), bytes });

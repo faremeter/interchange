@@ -83,7 +83,7 @@ import {
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createDurableConversationRegistry,
   reconstructDurableConversation,
@@ -334,7 +334,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(deploymentMailAddress),
+      id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
       deploymentId: DEPLOYMENT_ID,

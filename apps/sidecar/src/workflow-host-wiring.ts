@@ -84,7 +84,7 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
  * the sidecar's call sites readable while the rationale and the
  * substrate `SAFE_REPO_ID` contract live with the shared function.
  */
-export function deriveTrivialDeploymentId(agentAddress: string): string {
+export function deriveDeploymentId(agentAddress: string): string {
   return deriveWorkflowRunRepoId(agentAddress);
 }
 
@@ -907,7 +907,7 @@ export function createSidecarDeployRouter(deps: {
   // with the deployment.
   const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
 
-  // Slug-collision tracking. `deriveTrivialDeploymentId` substitutes
+  // Slug-collision tracking. `deriveDeploymentId` substitutes
   // disallowed characters with `-`, which is deterministic but lossy:
   // two distinct agent addresses can collapse to the same slug, and
   // a collision would let the second deploy silently overwrite the
@@ -921,7 +921,7 @@ export function createSidecarDeployRouter(deps: {
     const existing = slugClaims.get(deploymentId);
     if (existing !== undefined && existing !== agentAddress) {
       throw new Error(
-        `deriveTrivialDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to deploymentId ${JSON.stringify(deploymentId)}`,
+        `deriveDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to deploymentId ${JSON.stringify(deploymentId)}`,
       );
     }
     // A same-address re-claim is a defensive no-op: the `activeSupervisors`
@@ -1068,7 +1068,7 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
       );
     }
-    const deploymentId = deriveTrivialDeploymentId(spec.agentAddress);
+    const deploymentId = deriveDeploymentId(spec.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy. A
     // one-step deployment keeps the deployment's own (legacy) mail address
@@ -1381,7 +1381,7 @@ export function createSidecarDeployRouter(deps: {
       );
     }
 
-    const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+    const deploymentId = deriveDeploymentId(frame.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy.
     //
@@ -1514,7 +1514,7 @@ export function createSidecarDeployRouter(deps: {
       // boundary rather than dispatched into a supervisor that is in
       // the middle of tearing its child down. The pattern is: drop
       // racing frames first, then unwind the underlying resource.
-      const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
+      const deploymentId = deriveDeploymentId(frame.agentAddress);
       deps.multistepMailRouter?.unregister(frame.agentAddress);
       deps.multistepSignalRouter?.unregister(frame.agentAddress);
       deps.multistepDrainRouter?.unregister(frame.agentAddress);
@@ -1588,7 +1588,7 @@ export function createSidecarDeployRouter(deps: {
           // Integrity: the stored address must re-derive to its own directory
           // name. A mismatch means a corrupt or misplaced record; skip it
           // rather than restore a deployment under the wrong slug.
-          const derived = deriveTrivialDeploymentId(record.agentAddress);
+          const derived = deriveDeploymentId(record.agentAddress);
           if (derived !== deploymentId) {
             logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${deploymentId}`;
             continue;

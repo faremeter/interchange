@@ -2,11 +2,11 @@
 //
 // The proof that a single-agent INSTANCE deploy, routed through
 // `SessionService.deployInstanceAtHead` (which wraps the harness as a
-// one-step workflow via `wrapHarnessAsTrivialAgent` and deploys it at the
+// one-step workflow via `wrapHarnessAsSingleStepWorkflow` and deploys it at the
 // head), runs a REAL agent in the spawned workflow-process child -- against
 // the real hub + real sidecar subprocess + mock inference fixture. This
 // closes the gap that unit tests (mock spawner) leave open: that the
-// walk-only trivial-wrap agent instantiates and runs in a real child.
+// walk-only single-step wrap agent instantiates and runs in a real child.
 //
 // The child never invokes the wrap's walk-only tool factories: it
 // materializes tools from the deploy tree and calls the real `createAgent`
@@ -20,9 +20,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig } from "@intx/types/runtime";
-import { wrapHarnessAsTrivialAgent } from "@intx/workflow-deploy";
+import { wrapHarnessAsSingleStepWorkflow } from "@intx/workflow-deploy";
 import { defineWorkflow, type WorkflowDefinition } from "@intx/workflow";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
@@ -91,7 +91,7 @@ describe("instance-reroute real-agent round-trip", () => {
     // the run-observation handle. Same deterministic inputs -> same wrap.
     const workflow: WorkflowDefinition = defineWorkflow({
       id: `wf_${AGENT_ID}`,
-      agent: wrapHarnessAsTrivialAgent({ config, deployContent }),
+      agent: wrapHarnessAsSingleStepWorkflow({ config, deployContent }),
       trigger: { type: "mail", to: agentAddress },
     });
 
@@ -107,7 +107,7 @@ describe("instance-reroute real-agent round-trip", () => {
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(agentAddress),
+      id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
       deploymentId: INSTANCE_ID,
@@ -146,7 +146,7 @@ describe("instance-reroute real-agent round-trip", () => {
     }
 
     // The proof: the step output is the REAL agent reply from `agent.send`
-    // (the mock provider's deterministic output) -- the wrapped trivial agent
+    // (the mock provider's deterministic output) -- the wrapped single-step agent
     // instantiated and ran in the child rather than throwing on its walk-only
     // tool factories.
     const reply = readStepReply(stepCompleted.body);

@@ -1013,7 +1013,7 @@ Every surviving "trivial"-named symbol is renamed to reflect that the
 single-step identity path is the canonical single-agent deploy, not a "trivial"
 special case — or deleted where the in-process branch it served is gone:
 
-- `wrapHarnessAsTrivialAgent` -> `wrapHarnessAsSingleStepAgent`
+- `wrapHarnessAsSingleStepWorkflow` -> `wrapHarnessAsSingleStepAgent`
   (`packages/workflow-deploy/src/orchestrator.ts`), still used to build the
   one-step definition.
 - `buildTrivialApprovalSet` -> `buildSingleStepApprovalSet`
@@ -1021,7 +1021,7 @@ special case — or deleted where the in-process branch it served is gone:
 - `isTrivialDeploy` / `trivialBindings` / the trivial orchestrator branch:
   **deleted** if single-step routes through the multi-step branch (likely);
   otherwise renamed `isSingleStepDeploy`. Confirm during build.
-- `deriveTrivialDeploymentId` (`apps/sidecar/src/workflow-host-wiring.ts`):
+- `deriveDeploymentId` (`apps/sidecar/src/workflow-host-wiring.ts`):
   deleted; call `deriveWorkflowRunRepoId` directly at the call sites (it is a
   thin delegator).
 - `TrivialLaunch` / `trivialLaunch` / `trivialClaimedSlugSucceeded`: deleted
@@ -1495,7 +1495,7 @@ are explicitly **not** a go-live gate for INTR-209.
   `runWorkflowChildFromProcessEnv`).
 - Deploy router / wiring: `apps/sidecar/src/workflow-host-wiring.ts`
   (`createSidecarDeployRouter`, `deployMultiStep`, `activeSupervisors`,
-  `deriveTrivialDeploymentId`, `driveTrivialRunChain`, `TrivialRunCell`,
+  `deriveDeploymentId`, `driveTrivialRunChain`, `TrivialRunCell`,
   `publishWorkflowInferenceEvent`).
 - Child-launch / sandbox-boundary seam (Decision 1):
   `apps/sidecar/src/workflow-host-wiring.ts` (`SubprocessSpawner`,
@@ -1521,7 +1521,7 @@ are explicitly **not** a go-live gate for INTR-209.
   `WorkflowRunWorkflowProcessPrincipal`.
 - Identity: `packages/workflow-deploy/src/orchestrator.ts`
   (`deriveWorkflowRunRepoId`, `isWorkflowDerivedAddress`,
-  `wrapHarnessAsTrivialAgent`); `packages/types/src/agent-address.ts`
+  `wrapHarnessAsSingleStepWorkflow`); `packages/types/src/agent-address.ts`
   (`formatAgentAddress`, `parseAgentAddress`);
   `packages/hub-sessions/src/hub-session-orchestrator.ts` (deploy-ack listener);
   `packages/hub-sessions/src/hub-session-lookups.ts` (`findInstance`,

@@ -84,7 +84,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
-import { compactRunEvents } from "./run-event-signing";
+import { compactRunEvents } from "./run-event-compaction";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,

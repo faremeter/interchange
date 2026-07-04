@@ -807,7 +807,7 @@ The workflow-run repo's substrate `repoId.id` is constrained to
 agent-address shape (`ins_<id>@<domain>`) does not satisfy. The
 sidecar wiring derives the trivial branch's deployment id by
 substituting disallowed characters with `-`; see
-`deriveTrivialDeploymentId` in
+`deriveDeploymentId` in
 `apps/sidecar/src/workflow-host-wiring.ts`. The supervisor
 principal's `deploymentId` and the workflow-run `repoId.id` are kept
 equal so the workflow-run kind handler's principal-vs-repo authz

@@ -33,7 +33,7 @@ import { type } from "arktype";
 
 import {
   createSidecarDeployRouter,
-  deriveTrivialDeploymentId,
+  deriveDeploymentId,
 } from "./workflow-host-wiring";
 import { WorkflowDeploymentRecord } from "./workflow-deployment-record";
 import {
@@ -326,7 +326,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     // (b') The deploy persisted a schema-valid restore record for the
     // deployment, carrying the head address so a boot-time restore can
     // re-establish it.
-    const deploymentId = deriveTrivialDeploymentId(AGENT_ADDRESS);
+    const deploymentId = deriveDeploymentId(AGENT_ADDRESS);
     const recordFile = path.join(
       dataDir,
       "workflow-runs",

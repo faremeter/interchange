@@ -24,9 +24,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig } from "@intx/types/runtime";
-import { wrapHarnessAsTrivialAgent } from "@intx/workflow-deploy";
+import { wrapHarnessAsSingleStepWorkflow } from "@intx/workflow-deploy";
 import { defineWorkflow, type WorkflowDefinition } from "@intx/workflow";
-import { deriveTrivialDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
@@ -119,7 +119,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
     // the run-observation handle. Same deterministic inputs -> same wrap.
     const workflow: WorkflowDefinition = defineWorkflow({
       id: `wf_${AGENT_ID}`,
-      agent: wrapHarnessAsTrivialAgent({ config, deployContent }),
+      agent: wrapHarnessAsSingleStepWorkflow({ config, deployContent }),
       trigger: { type: "mail", to: agentAddress },
     });
 
@@ -134,7 +134,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(agentAddress),
+      id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
       deploymentId: INSTANCE_ID,
@@ -220,7 +220,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
 
     const workflow: WorkflowDefinition = defineWorkflow({
       id: `wf_${soleDeadAgentId}`,
-      agent: wrapHarnessAsTrivialAgent({ config, deployContent }),
+      agent: wrapHarnessAsSingleStepWorkflow({ config, deployContent }),
       trigger: { type: "mail", to: agentAddress },
     });
 
@@ -234,7 +234,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveTrivialDeploymentId(agentAddress),
+      id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
       deploymentId: soleDeadInstanceId,
