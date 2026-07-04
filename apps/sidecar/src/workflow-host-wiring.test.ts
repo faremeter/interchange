@@ -588,6 +588,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           keyPair: opts.headKeyPair ?? (await generateKeyPair()),
           isNew: false,
         }),
+        // A single-step spawn failure unwinds the recorded hub key via
+        // forgetAgent; the fixture exercises that unwind, so the stub must
+        // honor the call.
+        forgetAgent: () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],

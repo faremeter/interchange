@@ -1107,6 +1107,7 @@ export function createSidecarDeployRouter(deps: {
     let supervisorRegistered = false;
     let routersRegistered = false;
     let agentTransportRegistered = false;
+    let hubKeyRecorded = false;
     try {
       const definitionHash = await computeWireDefinitionHash(spec.definition);
 
@@ -1214,6 +1215,7 @@ export function createSidecarDeployRouter(deps: {
           );
         }
         deps.keyStore.recordHubKey(spec.agentAddress, spec.hubPublicKey);
+        hubKeyRecorded = true;
       }
 
       const stepOrder = [...spec.definition.stepOrder];
@@ -1319,6 +1321,21 @@ export function createSidecarDeployRouter(deps: {
           // Drop the agent's transport registration so a failed deploy does
           // not leave the address live with a dangling `CryptoProvider`.
           deps.transport.unregister(spec.agentAddress);
+        }
+        if (hubKeyRecorded) {
+          // Reverse the single-step head's `recordHubKey` so a failed deploy
+          // leaves no in-memory hub key behind. `forgetAgent` also drops the
+          // agent keypair cache `loadOrGenerateKey` populated, which is safe:
+          // the transport registration is already unwound above, nothing reads
+          // that cache after unwind, and a redeploy reloads the keypair from
+          // disk. The on-disk deploy-tree repo `initRepo` created is
+          // deliberately NOT reversed. It is idempotent and the hub re-pushes
+          // the deploy pack on every redeploy, so it is benign residue; and
+          // decisively, the durable Ed25519 identity keypair lives inside that
+          // same directory (`keys/` nests under the agent repo dir), so
+          // removing the repo would destroy an identity a rerouted head must
+          // keep across a failed redeploy.
+          deps.keyStore.forgetAgent(spec.agentAddress);
         }
       }
     }

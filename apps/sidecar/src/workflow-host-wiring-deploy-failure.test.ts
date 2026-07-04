@@ -249,4 +249,150 @@ describe("deploy-failure registry leak", () => {
     const slug = "ins_mstep-x-example";
     expect(registry.resolve(slug)).toBeNull();
   });
+
+  test("single-step spawn failure reverses the recorded hub key but preserves the head repo", async () => {
+    const { registry, mailRouter, signalRouter, drainRouter, transport } =
+      makeRouterDeps();
+
+    const initedRepos: string[] = [];
+    const removedRepos: string[] = [];
+    const recordedHubKeys: string[] = [];
+    const forgottenAgents: string[] = [];
+
+    // A sessions stub whose `initRepo` succeeds (so the single-step head
+    // proceeds to record the hub key and then fail at spawn) and whose
+    // `deleteAgentDir` is spied: the unwind must NOT call it, because the
+    // head repo directory also holds the durable identity keypair.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only initRepo runs on the happy path; deleteAgentDir is spied to prove it is NOT called
+    const sessions = {
+      initRepo: async (address: string) => {
+        initedRepos.push(address);
+      },
+      deleteAgentDir: async (address: string) => {
+        removedRepos.push(address);
+      },
+    } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["sessions"];
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
+    const keyStore = {
+      async loadOrGenerateKey() {
+        return { keyPair: await generateKeyPair(), isNew: false };
+      },
+      signChallenge() {
+        return null;
+      },
+      recordHubKey(address: string) {
+        recordedHubKeys.push(address);
+      },
+      verifyDeployCommit() {
+        return true;
+      },
+      forgetAgent(address: string) {
+        forgottenAgents.push(address);
+      },
+    } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"];
+
+    const failingSpawner: SubprocessSpawner = () => {
+      throw new Error("spawner forced failure");
+    };
+
+    const tmpDir = mkdtempSync(pathJoin(tmpdir(), "single-step-unwind-"));
+
+    const repoStoreStub: Partial<RepoStore> = {
+      getRepoDir(repoId: RepoId): string {
+        return pathJoin(tmpDir, repoId.kind, repoId.id);
+      },
+      writeTree(_p, repoId, _ref, content) {
+        const dir = pathJoin(tmpDir, repoId.kind, repoId.id);
+        for (const [relPath, contents] of Object.entries(content.files)) {
+          const full = pathJoin(dir, relPath);
+          mkdirSync(dirname(full), { recursive: true });
+          writeFileSync(full, contents);
+        }
+        return Promise.resolve({
+          commitSha: "stub-sha",
+          newlyTerminalRuns: [],
+        });
+      },
+    };
+
+    const router = createSidecarDeployRouter({
+      sessions,
+      keyStore,
+      transport,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
+      repoStore: repoStoreStub as RepoStore,
+      signingKeySeed: new Uint8Array(32),
+      createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
+      registerDeployment: ({ deploymentId, agentAddress }) => {
+        registry.record(deploymentId, agentAddress);
+      },
+      unregisterDeployment: ({ deploymentId }) => {
+        registry.unregister(deploymentId);
+      },
+      multistepMailRouter: mailRouter,
+      multistepSignalRouter: signalRouter,
+      multistepDrainRouter: drainRouter,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: tmpDir,
+        SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
+        SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
+        HUB_WS_URL: "ws://test",
+        SIDECAR_ID: "sc",
+        SIDECAR_TOKEN: "tok",
+        PATH: "/usr/bin",
+      },
+      multistepSubprocessSpawner: failingSpawner,
+    });
+
+    const frame: AgentDeployFrame = {
+      type: "agent.deploy",
+      agentAddress: "ins_single@x.example",
+      agentId: "single",
+      hubPublicKey: "00".repeat(32),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- single-step branch does not consult config before failing at spawn
+      config: {
+        agentAddress: "ins_single@x.example",
+        agentId: "single",
+        sessionId: "s",
+        sources: [],
+        defaultSource: "primary",
+        grants: [],
+      } as unknown as AgentDeployFrame["config"],
+      workflow: {
+        definition: {
+          id: "wf-single",
+          triggers: [{ type: "manual" }],
+          stepOrder: ["s1"],
+          steps: { s1: { kind: "step" } },
+        },
+        sources: {
+          s1: [
+            {
+              id: "primary",
+              provider: "anthropic",
+              baseURL: "https://api.anthropic.com",
+              apiKey: "sk-x",
+              model: "claude-3-5",
+            },
+          ],
+        },
+      },
+    };
+
+    await expect(router.deploy(frame)).rejects.toThrow();
+
+    // The single-step head initialized its repo and recorded the hub key
+    // before the spawn failed.
+    expect(initedRepos).toEqual(["ins_single@x.example"]);
+    expect(recordedHubKeys).toEqual(["ins_single@x.example"]);
+    // The unwind reversed the in-memory hub key...
+    expect(forgottenAgents).toEqual(["ins_single@x.example"]);
+    // ...but did NOT remove the head repo directory (it holds the durable
+    // identity keypair a rerouted head must keep across a failed redeploy).
+    expect(removedRepos).toEqual([]);
+    // Registry untouched.
+    expect(registry.resolve("ins_single-x-example")).toBeNull();
+  });
 });
