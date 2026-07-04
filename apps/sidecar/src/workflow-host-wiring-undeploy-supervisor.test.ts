@@ -258,9 +258,6 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      onAgentEvent: () => () => {
-        /* unused */
-      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,

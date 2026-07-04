@@ -247,7 +247,6 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      onAgentEvent: () => () => undefined,
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,

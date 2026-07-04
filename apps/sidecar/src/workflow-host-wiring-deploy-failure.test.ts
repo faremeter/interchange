@@ -1,19 +1,16 @@
 // Pins H-A1: a deploy-router rejection must not leave the
-// `DeploymentAddressRegistry` populated. The deploy router used to
-// call `registerDeployment` BEFORE every step that can throw (the
-// trivial branch's `provisionAgent`, the multi-step branch's asset
-// materialization and `supervisor.spawn`). The link's
-// `handleAgentDeploy` catches the rejection and sends `agent.error`
-// without invoking `deployRouter.undeploy(frame)`, so the registry
-// retained the `(deploymentId -> agentAddress)` mapping for a
-// deployment that does not exist. The fix defers registration until
-// every throwy step has succeeded; both branches must leave the
-// registry clean on deploy failure.
+// `DeploymentAddressRegistry` populated. The multi-step branch defers
+// `registerDeployment` until every step that can throw (asset
+// materialization, `supervisor.spawn`) has succeeded. The link's
+// `handleAgentDeploy` catches a rejection and sends `agent.error`
+// without invoking `deployRouter.undeploy(frame)`, so a premature
+// registration would retain a `(deploymentId -> agentAddress)` mapping
+// for a deployment that does not exist. The multi-step test drives that
+// failure through a subprocess spawner that throws synchronously.
 //
-// Both branches drive their failure path through this test:
-//   - trivial: `sessions.provisionAgent` throws.
-//   - multi-step: the subprocess spawner throws synchronously so
-//     `supervisor.spawn` rejects.
+// The first test pins the router's frame-shape guard: a frame carrying
+// neither `provisionStep` nor a workflow definition is rejected before
+// any deploy work, so a malformed frame cannot leak registry state.
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -86,19 +83,19 @@ function makeRouterDeps() {
 }
 
 describe("deploy-failure registry leak", () => {
-  test("trivial deploy: provisionAgent throws and registry stays clean", async () => {
+  test("a frame carrying neither provisionStep nor a workflow is rejected before any deploy work", async () => {
     const { registry, mailRouter, signalRouter, drainRouter, transport } =
       makeRouterDeps();
 
-    const sessions = stubFailingSessions();
-    const keyStore = stubKeyStore();
-
+    let spawnerInvoked = false;
     const router = createSidecarDeployRouter({
-      sessions,
-      keyStore,
-      onAgentEvent: () => () => undefined,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before sessions is touched
+      sessions: {} as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      keyStore: stubKeyStore(),
       transport,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- trivial branch reaches provisionAgent before any repoStore usage
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before any repoStore usage
       repoStore: {} as Parameters<
         typeof createSidecarDeployRouter
       >[0]["repoStore"],
@@ -114,35 +111,31 @@ describe("deploy-failure registry leak", () => {
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
       multistepDrainRouter: drainRouter,
+      multistepSubprocessSpawner: () => {
+        spawnerInvoked = true;
+        throw new Error("spawner must not run for an unsupported frame");
+      },
     });
 
+    // Neither `provisionStep` nor a workflow definition: the router has
+    // no path to stage this frame through the substrate, so it rejects on
+    // shape before reaching any deploy work.
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
-      agentAddress: "agent-fail@x.example",
-      agentId: "agent-fail",
+      agentAddress: "agent-unsupported@x.example",
+      agentId: "agent-unsupported",
       hubPublicKey: "00".repeat(32),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- trivialLaunch surfaces config to the failing provisionAgent stub
-      config: {
-        agentAddress: "agent-fail@x.example",
-        agentId: "agent-fail",
-        sessionId: "session-fail",
-        sources: [],
-        defaultSource: "primary",
-        grants: [],
-      } as unknown as AgentDeployFrame["config"],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- config is irrelevant; the frame is rejected on shape before config is read
+      config: {} as unknown as AgentDeployFrame["config"],
     };
 
-    let threw = false;
-    try {
-      await router.deploy(frame);
-    } catch {
-      threw = true;
-    }
-    expect(threw).toBe(true);
-
-    // `deriveTrivialDeploymentId` replaces every char outside
-    // `[a-zA-Z0-9_-]` with `-`, so `@` and `.` both become `-`.
-    const slug = "agent-fail-x-example";
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /unsupported deploy frame/,
+    );
+    // The throw fires before any deploy work: no spawn, and the registry
+    // is never touched.
+    expect(spawnerInvoked).toBe(false);
+    const slug = "agent-unsupported-x-example";
     expect(registry.resolve(slug)).toBeNull();
   });
 
@@ -183,7 +176,6 @@ describe("deploy-failure registry leak", () => {
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
-      onAgentEvent: () => () => undefined,
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,

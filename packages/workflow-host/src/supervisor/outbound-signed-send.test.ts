@@ -273,9 +273,6 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       // getRepoDir resolves the dir; no grants file is needed because the
       // outbound path never reads grants.
       deriveStepRepoId: () => ({ kind: "agent-state", id: "outbound-dep" }),
-      trivialLaunch: () => {
-        throw new Error("trivialLaunch not used in this test");
-      },
       inboxPrimitives: createNoopInboxPrimitives(),
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     });

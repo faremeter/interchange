@@ -476,9 +476,6 @@ async function buildBindings(opts: {
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>
       `${deploymentId}-${stepId}@example.com`,
-    trivialLaunch: () => {
-      throw new Error("trivialLaunch must not run in recycle tests");
-    },
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
     ...(opts.recyclePolicy !== undefined

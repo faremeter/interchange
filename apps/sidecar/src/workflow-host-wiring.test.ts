@@ -9,16 +9,13 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createControlChannelSender,
-  type CommitRunEventResult,
   type EventPayload,
   type FrameReader,
   type NdjsonReader,
   type NdjsonWriter,
   type SubprocessHandle,
   type SubprocessSpawner,
-  type SupervisorRunEvent,
 } from "@intx/workflow-host";
-import type { InferenceEvent } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 
 import {
@@ -26,10 +23,8 @@ import {
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
   deriveTrivialDeploymentId,
-  driveTrivialRunChain,
   STEP_INFERENCE_SOURCES_ENV_KEY,
   validateWorkflowProjection,
-  type TrivialRunCell,
 } from "./workflow-host-wiring";
 import {
   createMultistepMailRouter,
@@ -90,7 +85,6 @@ describe("createSidecarWorkflowSupervisor", () => {
         `${deploymentId}-${stepId}@example.com`,
       substrateEnv: { DATA_DIR: "/tmp/wire" },
       subprocessSpawner: spawner,
-      trivialLaunch: () => Promise.resolve(),
     });
 
     expect(typeof wired.supervisor.spawn).toBe("function");
@@ -128,7 +122,6 @@ describe("createSidecarWorkflowSupervisor", () => {
       subprocessSpawner: () => {
         throw new Error("spawner not invoked in this test");
       },
-      trivialLaunch: () => Promise.resolve(),
     });
     // Without a subscriber, routeInbound is a no-op rather than a
     // throw -- the wiring's mail bus map is a per-address Set that
@@ -139,310 +132,6 @@ describe("createSidecarWorkflowSupervisor", () => {
   });
 });
 
-describe("driveTrivialRunChain projects reactor events onto the workflow-run chain", () => {
-  function makeRecorder(): {
-    calls: SupervisorRunEvent[];
-    record: (e: SupervisorRunEvent) => Promise<CommitRunEventResult>;
-  } {
-    const calls: SupervisorRunEvent[] = [];
-    return {
-      calls,
-      record: async (e) => {
-        calls.push(e);
-        return {
-          commitSha: "stub",
-          seq: calls.length - 1,
-          signature: { sig: new Uint8Array(64), principalKind: "supervisor" },
-        };
-      },
-    };
-  }
-
-  test("completed run drives RunStarted, StepStarted, StepCompleted, RunCompleted", async () => {
-    const cell: TrivialRunCell = { runId: null, stepStarted: false };
-    const { calls, record } = makeRecorder();
-
-    const started: InferenceEvent = {
-      type: "message.run.started",
-      seq: 0,
-      data: { messageId: "m-1", messageRunId: "r-1", receivedAt: 1 },
-    };
-    const inferStart: InferenceEvent = {
-      type: "inference.start",
-      seq: 1,
-      data: { model: "test" },
-    };
-    const ended: InferenceEvent = {
-      type: "message.run.ended",
-      seq: 2,
-      data: { messageRunId: "r-1", messageId: "m-1", status: "completed" },
-    };
-
-    await driveTrivialRunChain(started, record, cell);
-    await driveTrivialRunChain(inferStart, record, cell);
-    // A second inference.start within the same bracket does NOT mint a
-    // duplicate StepStarted.
-    await driveTrivialRunChain(inferStart, record, cell);
-    await driveTrivialRunChain(ended, record, cell);
-
-    const kinds = calls.map((c) => c.kind);
-    expect(kinds).toEqual([
-      "RunStarted",
-      "StepStarted",
-      "StepCompleted",
-      "RunCompleted",
-    ]);
-    for (const call of calls) {
-      expect(call.runId).toBe("r-1");
-    }
-    const runStarted = calls[0];
-    if (runStarted?.kind !== "RunStarted") {
-      throw new Error("unreachable");
-    }
-    expect(runStarted.consumedMessageId).toBe("m-1");
-    expect(cell.runId).toBeNull();
-    expect(cell.stepStarted).toBe(false);
-  });
-
-  test("failed run emits StepCompleted but not RunCompleted", async () => {
-    const cell: TrivialRunCell = { runId: null, stepStarted: false };
-    const { calls, record } = makeRecorder();
-
-    await driveTrivialRunChain(
-      {
-        type: "message.run.started",
-        seq: 0,
-        data: { messageId: "m-2", messageRunId: "r-2", receivedAt: 1 },
-      },
-      record,
-      cell,
-    );
-    await driveTrivialRunChain(
-      { type: "inference.start", seq: 1, data: { model: "test" } },
-      record,
-      cell,
-    );
-    await driveTrivialRunChain(
-      {
-        type: "message.run.ended",
-        seq: 2,
-        data: {
-          messageRunId: "r-2",
-          messageId: "m-2",
-          status: "failed",
-          error: { message: "boom" },
-        },
-      },
-      record,
-      cell,
-    );
-
-    expect(calls.map((c) => c.kind)).toEqual([
-      "RunStarted",
-      "StepStarted",
-      "StepCompleted",
-    ]);
-  });
-
-  test("inference.start without a live bracket is ignored", async () => {
-    const cell: TrivialRunCell = { runId: null, stepStarted: false };
-    const { calls, record } = makeRecorder();
-
-    await driveTrivialRunChain(
-      { type: "inference.start", seq: 0, data: { model: "test" } },
-      record,
-      cell,
-    );
-
-    expect(calls).toEqual([]);
-    expect(cell.runId).toBeNull();
-  });
-});
-
-describe("createSidecarDeployRouter wires the InferenceEvent subscription to recordRunEvent", () => {
-  test("the trivial-launch closure brackets a real mail trigger via onAgentEvent", async () => {
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-
-    // Capture every `merge` payload the supervisor commits through the
-    // substrate. Each successful `recordRunEvent` call drives one
-    // writeTreePreservingPrefix invocation that runs `merge` against
-    // an empty existing-tree map; we read the files the merge wrote
-    // back out and snapshot their `type` discriminator.
-    const writtenEvents: string[] = [];
-    const repoStore: RepoStore = ((): RepoStore => {
-      // Mirror the real store's per-repo serialization (withRepoLock) so
-      // concurrent recordRunEvent writes land in invocation order even
-      // though the per-event signature is async.
-      let writeTail: Promise<void> = Promise.resolve();
-      const stub: Partial<RepoStore> = {
-        getRepoDir(_repoId: RepoId): string {
-          return "/tmp/unused";
-        },
-        writeTreePreservingPrefix(_p, _id, _ref, args) {
-          const previous = writeTail;
-          let release: () => void = () => undefined;
-          writeTail = new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          return (async () => {
-            await previous;
-            try {
-              const files = await args.merge(new Map());
-              for (const value of Object.values(files)) {
-                const text =
-                  value instanceof Uint8Array
-                    ? new TextDecoder().decode(value)
-                    : value;
-                const parsed: unknown = JSON.parse(text);
-                if (
-                  typeof parsed === "object" &&
-                  parsed !== null &&
-                  "type" in parsed &&
-                  typeof parsed.type === "string"
-                ) {
-                  writtenEvents.push(parsed.type);
-                }
-              }
-              return {
-                commitSha: `c-${String(writtenEvents.length)}`,
-                newlyTerminalRuns: [],
-              };
-            } finally {
-              release();
-            }
-          })();
-        },
-      };
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- in-test stub; the unused RepoStore methods are guarded by the Proxy below
-      return new Proxy(stub as RepoStore, {
-        get(target, prop, receiver) {
-          const value = Reflect.get(target, prop, receiver);
-          if (value !== undefined) return value;
-          return () => {
-            throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
-          };
-        },
-      });
-    })();
-
-    // Capture the per-agent InferenceEvent listener the trivial-launch
-    // closure registers so the test can fire events at it directly.
-    type CapturedListener = {
-      address: string;
-      listener: (e: InferenceEvent) => void;
-    };
-    const captured: CapturedListener[] = [];
-    const onAgentEvent = (
-      address: string,
-      listener: (e: InferenceEvent) => void,
-    ): (() => void) => {
-      captured.push({ address, listener });
-      return () => {
-        const idx = captured.findIndex((c) => c.listener === listener);
-        if (idx >= 0) captured.splice(idx, 1);
-      };
-    };
-
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch exercises initRepo; provisionAgent/persistHubPublicKey remain stubbed for the trivial-branch cases in this file
-      sessions: {
-        provisionAgent: async (_config: unknown) => ({
-          publicKey: "pk-trivial",
-          keyPair: {
-            publicKey: new Uint8Array(32),
-            privateKey: new Uint8Array(32),
-          },
-        }),
-        persistHubPublicKey: async (_a: string, _h: string) => {
-          /* no-op */
-        },
-        initRepo: async (_a: string) => {
-          /* no-op */
-        },
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the deploy-router test exercises only recordHubKey
-      keyStore: {
-        recordHubKey: (_a: string, _h: string) => {
-          /* no-op */
-        },
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      onAgentEvent,
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => {
-        /* the in-test repoStore is a stub; the pack-push facade is exercised separately */
-      },
-      unregisterDeployment: () => {
-        /* no-op for parity with registerDeployment in this stub */
-      },
-    });
-
-    const result = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "trivial@example.com",
-      agentId: "trivial-agent",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the trivial-launch closure passes config to the SessionManager mock above without inspecting it
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    expect(result.publicKey).toBe("pk-trivial");
-
-    if (captured.length !== 1) {
-      throw new Error(
-        `expected exactly one onAgentEvent registration, got ${String(captured.length)}`,
-      );
-    }
-    const entry = captured[0];
-    if (entry === undefined) throw new Error("unreachable");
-    // The slug derivation strips the `@example.com` suffix; the
-    // listener is registered against the original frame address.
-    expect(entry.address).toBe("trivial@example.com");
-
-    entry.listener({
-      type: "message.run.started",
-      seq: 0,
-      data: { messageId: "m-1", messageRunId: "r-1", receivedAt: 1 },
-    });
-    entry.listener({
-      type: "inference.start",
-      seq: 1,
-      data: { model: "test" },
-    });
-    entry.listener({
-      type: "message.run.ended",
-      seq: 2,
-      data: { messageRunId: "r-1", messageId: "m-1", status: "completed" },
-    });
-
-    // recordRunEvent fires are sequenced through Promises and the
-    // per-event signature is async; poll until all four events land.
-    for (let i = 0; i < 200 && writtenEvents.length < 4; i++) {
-      await new Promise<void>((r) => setTimeout(r, 1));
-    }
-
-    expect(writtenEvents).toEqual([
-      "RunStarted",
-      "StepStarted",
-      "StepCompleted",
-      "RunCompleted",
-    ]);
-  });
-});
-
 describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
   test("a provisionStep frame inits the repo and records the hub key without spawning", async () => {
     const transport = createInMemoryTransport();
@@ -450,9 +139,6 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
 
     const initRepoCalls: string[] = [];
     const recordHubKeyCalls: { address: string; hubKey: string }[] = [];
-    // A spawn registers one per-agent InferenceEvent listener; a no-spawn
-    // provision registers none.
-    const agentEventRegistrations: string[] = [];
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep touches no RepoStore method; the Proxy throws if it ever does
     const repoStore = new Proxy({} as RepoStore, {
@@ -480,10 +166,6 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      onAgentEvent: (address: string) => {
-        agentEventRegistrations.push(address);
-        return () => undefined;
-      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
@@ -519,10 +201,8 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
     // workflow-derived per-step address).
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
 
-    // Nothing spawned: no supervisor, so no active address and no per-agent
-    // event listener registered.
+    // Nothing spawned: no supervisor, so no active address.
     expect(router.activeAddresses()).toEqual([]);
-    expect(agentEventRegistrations).toEqual([]);
   });
 });
 
@@ -828,418 +508,6 @@ describe("computeWireDefinitionHash", () => {
   });
 });
 
-describe("createSidecarDeployRouter trivial-frame regression", () => {
-  test("a frame without `workflow` still drives the trivial provisioning path", async () => {
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-    const repoStore = createMinimalStubRepoStore();
-
-    let provisionAgentCalled = false;
-    let spawnerInvoked = false;
-
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; trivial branch exercises only provisionAgent + persistHubPublicKey
-      sessions: {
-        provisionAgent: async (_config: unknown) => {
-          provisionAgentCalled = true;
-          return {
-            publicKey: "pk-trivial-regression",
-            keyPair: {
-              publicKey: new Uint8Array(32),
-              privateKey: new Uint8Array(32),
-            },
-          };
-        },
-        persistHubPublicKey: async (_a: string, _h: string) => {
-          /* no-op */
-        },
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      keyStore: {
-        recordHubKey: (_a: string, _h: string) => {
-          /* no-op */
-        },
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      onAgentEvent: () => () => {
-        /* unused in this test */
-      },
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => {
-        /* no-op */
-      },
-      unregisterDeployment: () => {
-        /* no-op */
-      },
-      multistepSubprocessSpawner: () => {
-        spawnerInvoked = true;
-        throw new Error("the trivial branch must not invoke the spawner");
-      },
-    });
-
-    const result = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "trivial-regression@example.com",
-      agentId: "trivial-agent",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the trivial-launch closure passes config to the SessionManager mock above without inspecting it
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-
-    expect(provisionAgentCalled).toBe(true);
-    expect(spawnerInvoked).toBe(false);
-    expect(result.publicKey).toBe("pk-trivial-regression");
-  });
-
-  test("two distinct agent addresses whose deriveTrivialDeploymentId slugs collide are rejected at the second deploy", async () => {
-    // `deriveTrivialDeploymentId` substitutes every disallowed
-    // character with `-`, so two agent addresses that differ only in
-    // disallowed characters collapse to the same slug. The slug IS
-    // the workflow-run repoId, so a silent collision would let the
-    // second deploy overwrite the first deploy's repo state. The
-    // slug-claims map rejects the second deploy at the router edge.
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-    const repoStore = createMinimalStubRepoStore();
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; trivial branch exercises only provisionAgent + persistHubPublicKey
-      sessions: {
-        provisionAgent: async (_config: unknown) => ({
-          publicKey: "pk-slug-collision",
-          keyPair: {
-            publicKey: new Uint8Array(32),
-            privateKey: new Uint8Array(32),
-          },
-        }),
-        persistHubPublicKey: async (_a: string, _h: string) => {
-          /* no-op */
-        },
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      keyStore: {
-        recordHubKey: (_a: string, _h: string) => {
-          /* no-op */
-        },
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      onAgentEvent: () => () => {
-        /* unused in this test */
-      },
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => {
-        /* no-op */
-      },
-      unregisterDeployment: () => {
-        /* no-op */
-      },
-      multistepSubprocessSpawner: () => {
-        throw new Error("the trivial branch must not invoke the spawner");
-      },
-    });
-
-    // `agent@a.b.com` and `agent!a!b!com` both project to
-    // `agent-a-b-com` under the slug derivation.
-    const first = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "agent@a.b.com",
-      agentId: "agent-id-1",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the trivial-launch closure forwards config opaquely
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    expect(first.publicKey).toBe("pk-slug-collision");
-
-    let caught: unknown;
-    try {
-      await router.deploy({
-        type: "agent.deploy",
-        agentAddress: "agent!a!b!com",
-        agentId: "agent-id-2",
-        hubPublicKey: "hub-pk",
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-        config: {} as unknown as Parameters<
-          ReturnType<typeof createSidecarDeployRouter>["deploy"]
-        >[0]["config"],
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect(caught instanceof Error && caught.message).toMatch(
-      /deriveTrivialDeploymentId collision/,
-    );
-    expect(caught instanceof Error && caught.message).toMatch(/agent-a-b-com/);
-  });
-
-  test("re-deploying the same address is a no-op claim and succeeds", async () => {
-    // The slug-claims map records the FIRST claimer's agent
-    // address; a second claim from the SAME address must not
-    // throw. Otherwise idempotent re-deploys would be rejected as
-    // self-collisions.
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-    const repoStore = createMinimalStubRepoStore();
-    let provisionCount = 0;
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      sessions: {
-        provisionAgent: async (_config: unknown) => {
-          provisionCount += 1;
-          return {
-            publicKey: `pk-redeploy-${String(provisionCount)}`,
-            keyPair: {
-              publicKey: new Uint8Array(32),
-              privateKey: new Uint8Array(32),
-            },
-          };
-        },
-        persistHubPublicKey: async (_a: string, _h: string) => undefined,
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      keyStore: {
-        recordHubKey: (_a: string, _h: string) => undefined,
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      onAgentEvent: () => () => undefined,
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => undefined,
-      unregisterDeployment: () => undefined,
-      multistepSubprocessSpawner: () => {
-        throw new Error("trivial branch must not invoke the spawner");
-      },
-    });
-
-    const first = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "redeploy@example.com",
-      agentId: "redeploy-1",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    const second = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "redeploy@example.com",
-      agentId: "redeploy-2",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    expect(first.publicKey).toBe("pk-redeploy-1");
-    expect(second.publicKey).toBe("pk-redeploy-2");
-  });
-
-  test("a failed deploy releases the slug so a subsequent deploy on the same address succeeds", async () => {
-    // Without the release-on-failure guard, the first deploy's
-    // `claimSlug` would leak after `provisionAgent` throws, and
-    // every subsequent retry on the same address would be rejected
-    // as a phantom collision.
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-    const repoStore = createMinimalStubRepoStore();
-    let provisionCount = 0;
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      sessions: {
-        provisionAgent: async (_config: unknown) => {
-          provisionCount += 1;
-          if (provisionCount === 1) {
-            throw new Error("provision failed (synthetic)");
-          }
-          return {
-            publicKey: "pk-after-retry",
-            keyPair: {
-              publicKey: new Uint8Array(32),
-              privateKey: new Uint8Array(32),
-            },
-          };
-        },
-        persistHubPublicKey: async (_a: string, _h: string) => undefined,
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      keyStore: {
-        recordHubKey: (_a: string, _h: string) => undefined,
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      onAgentEvent: () => () => undefined,
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => undefined,
-      unregisterDeployment: () => undefined,
-      multistepSubprocessSpawner: () => {
-        throw new Error("trivial branch must not invoke the spawner");
-      },
-    });
-
-    let firstCaught: unknown;
-    try {
-      await router.deploy({
-        type: "agent.deploy",
-        agentAddress: "retry@example.com",
-        agentId: "retry-1",
-        hubPublicKey: "hub-pk",
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-        config: {} as unknown as Parameters<
-          ReturnType<typeof createSidecarDeployRouter>["deploy"]
-        >[0]["config"],
-      });
-    } catch (err) {
-      firstCaught = err;
-    }
-    expect(firstCaught).toBeInstanceOf(Error);
-    expect(firstCaught instanceof Error && firstCaught.message).toMatch(
-      /provision failed \(synthetic\)/,
-    );
-
-    // Retry on the SAME address must succeed -- if the slug were
-    // leaked, this would throw `deriveTrivialDeploymentId collision`.
-    const retry = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "retry@example.com",
-      agentId: "retry-2",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    expect(retry.publicKey).toBe("pk-after-retry");
-  });
-
-  test("undeploy releases the slug so a different-address deploy on the same slug succeeds", async () => {
-    // After deploy -> undeploy on `release@a.b.com` (slug
-    // `release-a-b-com`), a fresh deploy on `release!a!b!com`
-    // (same slug) must be accepted. Without `releaseSlug` running
-    // on undeploy, the slug would stay claimed and the second
-    // deploy would surface a phantom collision.
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-    const repoStore = createMinimalStubRepoStore();
-    let provisionCount = 0;
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      sessions: {
-        provisionAgent: async (_config: unknown) => {
-          provisionCount += 1;
-          return {
-            publicKey: `pk-release-${String(provisionCount)}`,
-            keyPair: {
-              publicKey: new Uint8Array(32),
-              privateKey: new Uint8Array(32),
-            },
-          };
-        },
-        persistHubPublicKey: async (_a: string, _h: string) => undefined,
-        destroySession: async (_a: string, _r: string) => undefined,
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-      keyStore: {
-        recordHubKey: (_a: string, _h: string) => undefined,
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      onAgentEvent: () => () => undefined,
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => undefined,
-      unregisterDeployment: () => undefined,
-      multistepSubprocessSpawner: () => {
-        throw new Error("trivial branch must not invoke the spawner");
-      },
-    });
-
-    await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "release@a.b.com",
-      agentId: "release-1",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    if (router.undeploy === undefined) {
-      throw new Error("router.undeploy is required for this test");
-    }
-    await router.undeploy({
-      type: "agent.undeploy",
-      agentAddress: "release@a.b.com",
-      reason: "test",
-    });
-    const reclaimed = await router.deploy({
-      type: "agent.deploy",
-      agentAddress: "release!a!b!com",
-      agentId: "release-2",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- forwarded opaquely
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-    expect(reclaimed.publicKey).toBe("pk-release-2");
-  });
-});
-
 describe("createSidecarDeployRouter multi-step branch", () => {
   async function buildMultistepFixture(opts: {
     spawner: SubprocessSpawner;
@@ -1323,9 +591,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      onAgentEvent: () => () => {
-        /* unused in multi-step branch */
-      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
@@ -2556,5 +1821,33 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(result.publicKey).not.toBe(
       Buffer.from(fixtureKeyPair.publicKey).toString("hex"),
     );
+  });
+
+  test("two addresses whose deriveTrivialDeploymentId slugs collide are rejected at the second deploy", async () => {
+    // deriveTrivialDeploymentId substitutes every disallowed character with
+    // `-`, so two distinct addresses can collapse to the same slug. The slug
+    // IS the workflow-run repoId, so a silent collision would let the second
+    // deploy overwrite the first deploy's repo state. claimSlug rejects the
+    // second deploy at the router edge, before any spawn or repo write.
+    const spawner = makeReadyDrivingSpawner(10400);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-collision-data-"),
+      },
+    });
+
+    // `ins_col.a@example.com` and `ins_col-a@example.com` both project to
+    // `ins_col-a-example-com` under the slug derivation.
+    const deployPromise = router.deploy(
+      singleStepFrame("ins_col.a@example.com", "wf-collide"),
+    );
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    await expect(
+      router.deploy(singleStepFrame("ins_col-a@example.com", "wf-collide")),
+    ).rejects.toThrow(/deriveTrivialDeploymentId collision/);
+    expect(spawner.spawnCount()).toBe(1);
   });
 });

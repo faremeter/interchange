@@ -387,13 +387,11 @@ const orchestrator = createSidecarOrchestrator({
   createDeployRouter: ({
     sessions,
     keyStore,
-    onAgentEvent,
     publishWorkflowInferenceEvent,
   }) => {
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
-      onAgentEvent,
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,

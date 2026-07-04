@@ -450,9 +450,6 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       readPrincipal: { kind: "supervisor" },
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
-      trivialLaunch: () => {
-        throw new Error("not used");
-      },
       ipcKeyPairFactory: () => Promise.resolve(ipcKp),
       inboxPrimitives: wrappedInbox,
     };

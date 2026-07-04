@@ -553,9 +553,6 @@ async function boot(opts: { prefix: string }): Promise<
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>
       `${deploymentId}-${stepId}@example.com`,
-    trivialLaunch: () => {
-      throw new Error("trivialLaunch must not run in this test");
-    },
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives: gatedInbox.primitives,
   };

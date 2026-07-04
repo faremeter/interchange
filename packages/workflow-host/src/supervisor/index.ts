@@ -32,13 +32,6 @@ export {
 } from "./cancel-signing";
 
 export {
-  commitRunEvent,
-  type CommitRunEventOpts,
-  type CommitRunEventResult,
-  type SupervisorRunEvent,
-} from "./run-event-signing";
-
-export {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
   type DrainTimeoutAccumulator,
@@ -72,15 +65,11 @@ export type {
   MailAuditRef,
   MailBusBindings,
   PrincipalSigner,
-  RecordRunEvent,
   SignedPayload,
   SubprocessHandle,
   SubprocessSpawner,
-  SupervisorDeployFrame,
   TerminalEventSource,
   TerminalRunEvent,
-  TrivialLaunch,
-  TrivialLaunchBindings,
   WorkflowSupervisorBindings,
   WorkflowSupervisorPrincipalKind,
 } from "./types";

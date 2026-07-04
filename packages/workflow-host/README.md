@@ -99,46 +99,30 @@ The constructor argument shape:
   `deriveStepAddress`, `deriveStepRepoId?`, `ipcKeyPairFactory?` —
   per-deployment configuration the supervisor needs in its closure
   state.
-- `trivialLaunch: (bindings) => Promise<void>` — host-injected
-  callback the supervisor invokes on the trivial branch of
-  `deploy(frame)`. See "Deploy routing" below for the trivial-
-  branch invariants the callback runs under.
 
 ### Deploy routing
 
-`deploy(frame)` is the single ingress for inbound `agent.deploy`
-frames. The supervisor decides between two branches and the host
-does not re-decide:
+The sidecar's deploy router is the single ingress for inbound
+`agent.deploy` frames; its production wiring lives at
+`apps/sidecar/src/workflow-host-wiring.ts` in
+`createSidecarDeployRouter`. Every deploy stages through the
+workflow-run substrate, and the router decides between two frame
+shapes:
 
-- **Trivial branch (1-step workflows).** The supervisor calls
-  `bindings.trivialLaunch(frame)` directly. No IPC channel opens.
-  No workflow-process child spawns. No mail-bus subscription
-  registers. No workflow-run event is emitted; `signAsPrincipal`
-  is not invoked. `getCredentialsSnapshot()` continues to return
-  `null`. The trivial branch is a true passthrough -- the host
-  callback owns the entire deploy, and the supervisor's other
-  bindings stay inert.
-- **Multi-step branch (`steps.length >= 2`).** The supervisor
-  routes through the same lifecycle `spawn(opts)` runs: per-step
-  `agent-state` repo provisioning, key minting, child spawn via
-  `subprocessSpawner`, mail-bus registration, IPC handshake, and
-  `credentialsSnapshot` assembly. The multi-step branch's body
-  lands as `agent.deploy` frames are extended to carry a
-  `WorkflowDefinition`; the routing seam exists today.
+- **Provision-step frame (`provisionStep: true`).** The router
+  primes the frame's per-step `agent-state` repo and records the
+  hub key, without constructing a supervisor or spawning a child.
+  The follow-up full-closure deploy pack then applies into the
+  primed repo and verifies against the recorded key.
+- **Workflow frame (carries a `WorkflowDefinition`).** The router
+  constructs a fresh per-deployment supervisor and drives its
+  `spawn(opts)` lifecycle: per-step `agent-state` repo
+  provisioning, key minting, child spawn via `subprocessSpawner`,
+  mail-bus registration, IPC handshake, and `credentialsSnapshot`
+  assembly.
 
-The `agent.deploy` wire frame currently carries only a
-`HarnessConfig` (no workflow definition), so every frame today is
-trivial. The supervisor codifies the seam now so the frame-format
-extension lands as a pure data-shape change.
-
-The sidecar's production wiring lives at
-`apps/sidecar/src/workflow-host-wiring.ts`:
-`createSidecarDeployRouter` constructs a fresh per-deployment
-supervisor on every inbound frame whose `trivialLaunch` closes
-over `SessionManager.provisionAgent` plus the hub-pairing-key
-recording the legacy handler performed inline. The bytes flowing
-through the deploy-flow integration test path stay bit-identical
-to the pre-supervisor surface.
+A frame carrying neither shape is rejected -- there is no
+in-process deploy path.
 
 ### Lifecycle
 

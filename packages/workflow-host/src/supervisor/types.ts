@@ -19,19 +19,10 @@ import type {
   RepoStore as SubstrateRepoStore,
   ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions/substrate";
-import type {
-  InferenceSource,
-  OutboundMessage,
-  SendReceipt,
-} from "@intx/types/runtime";
+import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
-import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
-import type {
-  CommitRunEventResult,
-  SupervisorRunEvent,
-} from "./run-event-signing";
 
 /**
  * Terminal workflow-run event the supervisor's drain accumulators
@@ -194,108 +185,6 @@ export type SubprocessSpawner = (args: {
 }) => SubprocessHandle;
 
 /**
- * Frame the supervisor receives at its deploy ingress. The shape is
- * a structural projection of the sidecar's `agent.deploy` frame --
- * the supervisor does not depend on `@intx/types` for the wire
- * type. `config` is opaque to the supervisor; the host owns its
- * interpretation and passes it through to the trivial-launch
- * callback (multi-step routing carries it into spawn-time env in
- * later commits).
- *
- * `workflow` is the multi-step projection. Absent on every trivial-
- * launch frame; presence is the discriminator the deploy router uses
- * to branch into `supervisor.spawn()` instead of `trivialLaunch`. The
- * field carries the workflow definition (so the supervisor can
- * construct the per-step substrate env without round-tripping the
- * hub) and each step's ordered inference-source failover chain keyed by
- * `definition.stepOrder` step ids.
- */
-export interface SupervisorDeployFrame {
-  agentAddress: string;
-  agentId: string;
-  config: unknown;
-  hubPublicKey: string;
-  workflow?: {
-    definition: WorkflowDefinition;
-    sources: Record<string, InferenceSource[]>;
-  };
-}
-
-/**
- * Callback the supervisor hands to the host so the host's per-message
- * reactor / harness lifecycle can drive the canonical run-event chain
- * (`RunStarted` -> `StepStarted` -> `StepCompleted` -> `RunCompleted`)
- * for the trivial deploy. The supervisor's closure resolves the
- * workflow-run repo identity, mints the `signAsPrincipal` signature
- * for each event, and commits the on-disk blob; the host calls this
- * with the event payload at the appropriate reactor moment.
- *
- * The on-disk envelope is identical to the one the multi-step branch
- * commits via its workflow-process child, which makes a trivial
- * deployment's audit trail indistinguishable from a multi-step one
- * from a downstream consumer's perspective. The split between the
- * two branches is process topology (in-process commit vs IPC-forwarded
- * commit), not observability.
- */
-export type RecordRunEvent = (
-  event: SupervisorRunEvent,
-) => Promise<CommitRunEventResult>;
-
-/**
- * Arguments handed to `trivialLaunch`. Mirrors the deploy frame
- * unchanged today (the trivial branch is a true passthrough); kept
- * as its own type so future trivial-only context (e.g. a
- * supervisor-derived deployment id) can attach without widening
- * the deploy frame itself.
- *
- * `recordRunEvent` is the seam the host wires into its existing
- * per-message reactor moments (`message.run.started` /
- * `message.run.ended`) to drive the canonical workflow-run event
- * chain inline from the supervisor's address space. Hosts that have
- * not yet wired the reactor seam supply a `trivialLaunch` body that
- * does not invoke the callback; the supervisor commits no events in
- * that case but the capability is available without further wiring
- * surgery.
- */
-export interface TrivialLaunchBindings {
-  agentAddress: string;
-  agentId: string;
-  config: unknown;
-  hubPublicKey: string;
-  recordRunEvent: RecordRunEvent;
-}
-
-/**
- * Host-injected callback the supervisor invokes on the trivial
- * branch. The supervisor's deploy() routes here for every single-
- * step deployment; the callback owns the entire trivial deploy.
- *
- * Invariants preserved by the trivial branch:
- *
- *   - The supervisor does not open an IPC channel.
- *   - The supervisor does not spawn a workflow-process child.
- *   - `credentialsSnapshot` is multi-step-only; the trivial branch
- *     leaves `getCredentialsSnapshot()` returning `null`.
- *
- * The supervisor DOES emit the canonical workflow-run event chain
- * (`RunStarted` / `StepStarted` / `StepCompleted` / `RunCompleted`)
- * for the trivial deploy inline from the supervisor process via
- * `signAsPrincipal` against the workflow-run repo. The chain fires
- * per inbound mail trigger (one run per fire) and is driven by the
- * host calling `bindings.recordRunEvent(...)` from its reactor /
- * harness lifecycle moments. The trivial-branch observability is
- * therefore identical to the multi-step branch's; the two branches
- * differ in process topology, not event surface.
- *
- * The host wires `trivialLaunch` against the legacy single-agent
- * provisioning surface so the on-wire bytes and on-disk surfaces
- * stay bit-identical to the pre-supervisor path; the `recordRunEvent`
- * hook is additive (the host's reactor calls it from existing
- * lifecycle brackets without changing the deploy-tree contents).
- */
-export type TrivialLaunch = (bindings: TrivialLaunchBindings) => Promise<void>;
-
-/**
  * Logical pointer to the raw mail bytes the inbox claim-check
  * envelope stamps. The substrate stores this as the `mailAuditRef`
  * on every inbox/processing/consumed envelope; the substrate itself
@@ -448,13 +337,6 @@ export interface WorkflowSupervisorBindings {
     privateKey: Uint8Array;
     publicKey: Uint8Array;
   }>;
-  /**
-   * Host-injected callback the supervisor invokes on the trivial
-   * branch of `deploy(frame)`. Required for hosts that route deploy
-   * frames through `supervisor.deploy`; the multi-step branch does
-   * not consult it. See `TrivialLaunch` for the invariants.
-   */
-  trivialLaunch: TrivialLaunch;
   /**
    * Operator-overridable per-deployment `drainTimeout` in
    * milliseconds. The supervisor's `drain()` path threads this value

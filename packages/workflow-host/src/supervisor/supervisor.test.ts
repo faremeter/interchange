@@ -19,7 +19,6 @@ import {
   type SubprocessSpawner,
   type SubprocessHandle,
   type SignedPayload,
-  type SupervisorRunEvent,
   type WorkflowSupervisorBindings,
 } from "./index";
 import {
@@ -82,27 +81,6 @@ function readCancelRequestedBlob(
   const validated = CancelRequestedBlob(parsed);
   if (validated instanceof type.errors) {
     throw new Error(`unexpected blob shape: ${validated.summary}`);
-  }
-  return validated;
-}
-
-const RunEventBlob = type({
-  type: "string",
-  seq: "number",
-  runId: "string",
-  at: "string",
-  signature: {
-    principalKind: "string",
-    sig: "string",
-  },
-  "+": "ignore",
-});
-
-function readRunEventBlob(raw: string): typeof RunEventBlob.infer {
-  const parsed: unknown = JSON.parse(raw);
-  const validated = RunEventBlob(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(`unexpected run-event blob shape: ${validated.summary}`);
   }
   return validated;
 }
@@ -484,7 +462,6 @@ async function buildBindings(opts: {
   spawner: SubprocessSpawner;
   signSpy: (kind: string, payload: Uint8Array) => SignedPayload;
   mailBus: MailBusBindings;
-  trivialLaunch?: WorkflowSupervisorBindings["trivialLaunch"];
   onWrite?: (args: {
     principal: { kind: string };
     repoId: RepoId;
@@ -514,11 +491,6 @@ async function buildBindings(opts: {
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>
       `${deploymentId}-${stepId}@example.com`,
-    trivialLaunch:
-      opts.trivialLaunch ??
-      (() => {
-        throw new Error("trivialLaunch not provided to this test binding");
-      }),
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
   };
 }
@@ -551,7 +523,6 @@ describe("createWorkflowSupervisor", () => {
       mailBus: createMockMailBus(),
     });
     const supervisor = createWorkflowSupervisor(bindings);
-    expect(typeof supervisor.deploy).toBe("function");
     expect(typeof supervisor.spawn).toBe("function");
     expect(typeof supervisor.requestCancel).toBe("function");
     expect(typeof supervisor.shutdown).toBe("function");
@@ -1362,231 +1333,6 @@ describe("createWorkflowSupervisor", () => {
     expect(onDisk.signature.sig).toMatch(/^01[0-9a-f]+$/);
   });
 
-  test("deploy routes the trivial branch through the host-injected trivialLaunch callback", async () => {
-    const baseDir = await makeTempDir("supervisor-deploy-trivial-");
-    const trivialCalls: {
-      agentAddress: string;
-      agentId: string;
-      hubPublicKey: string;
-      config: unknown;
-    }[] = [];
-    const signSpyCalls: { kind: string }[] = [];
-    const bindings = await buildBindings({
-      baseDir,
-      spawner: () => {
-        throw new Error(
-          "subprocessSpawner must not be invoked on the trivial branch",
-        );
-      },
-      signSpy: (kind) => {
-        signSpyCalls.push({ kind });
-        return { sig: new Uint8Array(64), principalKind: "supervisor" };
-      },
-      mailBus: createMockMailBus(),
-      trivialLaunch: async (b) => {
-        trivialCalls.push({
-          agentAddress: b.agentAddress,
-          agentId: b.agentId,
-          hubPublicKey: b.hubPublicKey,
-          config: b.config,
-        });
-      },
-    });
-    const supervisor = createWorkflowSupervisor(bindings);
-    const frame = {
-      agentAddress: "agent-1@example.com",
-      agentId: "agent-1",
-      config: { sentinel: "config-bytes" },
-      hubPublicKey: "deadbeef",
-    };
-    await supervisor.deploy(frame);
-    expect(trivialCalls).toHaveLength(1);
-    expect(trivialCalls[0]).toEqual({
-      agentAddress: "agent-1@example.com",
-      agentId: "agent-1",
-      hubPublicKey: "deadbeef",
-      config: { sentinel: "config-bytes" },
-    });
-    // No signAsPrincipal calls on the trivial branch -- the
-    // workflow-process-cancel path never engages.
-    expect(signSpyCalls).toEqual([]);
-    // credentialsSnapshot is multi-step-only; the trivial deploy
-    // does not assemble one.
-    expect(supervisor.getCredentialsSnapshot()).toBeNull();
-  });
-
-  test("deploy does not register a mailbox or open IPC on the trivial branch", async () => {
-    const baseDir = await makeTempDir("supervisor-deploy-no-mailbus-");
-    const mailBus = createMockMailBus();
-    const bindings = await buildBindings({
-      baseDir,
-      spawner: () => {
-        throw new Error("spawner must not be invoked on the trivial branch");
-      },
-      signSpy: () => ({
-        sig: new Uint8Array(64),
-        principalKind: "supervisor",
-      }),
-      mailBus,
-      trivialLaunch: () => Promise.resolve(),
-    });
-    const supervisor = createWorkflowSupervisor(bindings);
-    await supervisor.deploy({
-      agentAddress: "agent-2@example.com",
-      agentId: "agent-2",
-      config: {},
-      hubPublicKey: "cafef00d",
-    });
-    // The mail bus is the multi-step branch's seam; the trivial
-    // branch must not touch it.
-    expect(mailBus.registered()).not.toContain("deployment-x@example.com");
-  });
-
-  test("deploy hands recordRunEvent into trivialLaunch and commits the canonical four-event chain", async () => {
-    const baseDir = await makeTempDir("supervisor-deploy-run-events-");
-    const signSpyCalls: { kind: string; payload: Uint8Array }[] = [];
-    const observedWrites: {
-      principal: { kind: string };
-      repoId: RepoId;
-      ref: string;
-      files: Record<string, string | Uint8Array>;
-    }[] = [];
-    const bindings = await buildBindings({
-      baseDir,
-      spawner: () => {
-        throw new Error("spawner must not be invoked on the trivial branch");
-      },
-      signSpy: (kind, payload) => {
-        signSpyCalls.push({ kind, payload });
-        const sig = new Uint8Array(64);
-        sig[0] = signSpyCalls.length;
-        return { sig, principalKind: "supervisor" };
-      },
-      mailBus: createMockMailBus(),
-      onWrite: (args) => observedWrites.push(args),
-      statefulWrites: true,
-      trivialLaunch: async (b) => {
-        const runId = "run-trivial-1";
-        const messageId = "msg-1";
-        const stepId = "step-1";
-        const chain: readonly SupervisorRunEvent[] = [
-          {
-            kind: "RunStarted",
-            runId,
-            at: "2026-01-01T00:00:00.000Z",
-            definitionHash: "def-hash-trivial",
-            trigger: { type: "mail", payload: { to: b.agentAddress } },
-            consumedMessageId: messageId,
-          },
-          {
-            kind: "StepStarted",
-            runId,
-            at: "2026-01-01T00:00:00.001Z",
-            stepId,
-            attempt: 1,
-            input: { ref: "refs/heads/main" },
-          },
-          {
-            kind: "StepCompleted",
-            runId,
-            at: "2026-01-01T00:00:00.002Z",
-            stepId,
-            attempt: 1,
-            output: { ref: "refs/heads/main" },
-          },
-          {
-            kind: "RunCompleted",
-            runId,
-            at: "2026-01-01T00:00:00.003Z",
-          },
-        ];
-        for (const event of chain) {
-          await b.recordRunEvent(event);
-        }
-      },
-    });
-    const supervisor = createWorkflowSupervisor(bindings);
-    await supervisor.deploy({
-      agentAddress: "agent-4@example.com",
-      agentId: "agent-4",
-      config: {},
-      hubPublicKey: "abc",
-    });
-
-    // Every event in the chain flowed through signAsPrincipal with
-    // kind `"supervisor"` and against payload bytes containing the
-    // expected discriminator.
-    expect(signSpyCalls.map((c) => c.kind)).toEqual([
-      "supervisor",
-      "supervisor",
-      "supervisor",
-      "supervisor",
-    ]);
-    const decodedPayloads = signSpyCalls.map((c) =>
-      new TextDecoder().decode(c.payload),
-    );
-    expect(decodedPayloads[0]).toContain("RunStarted");
-    expect(decodedPayloads[0]).toContain("def-hash-trivial");
-    expect(decodedPayloads[0]).toContain("msg-1");
-    expect(decodedPayloads[1]).toContain("StepStarted");
-    expect(decodedPayloads[2]).toContain("StepCompleted");
-    expect(decodedPayloads[3]).toContain("RunCompleted");
-
-    // Every commit went through the supervisor principal against the
-    // deployment's workflow-run repo.
-    expect(observedWrites.length).toBe(4);
-    for (const write of observedWrites) {
-      expect(write.principal.kind).toBe("supervisor");
-      expect(write.repoId).toEqual({
-        kind: "workflow-run",
-        id: "deployment-x",
-      });
-      expect(write.ref).toBe("refs/heads/main");
-    }
-
-    // The on-disk envelopes are filed under runs/<runId>/events/<seq>.json
-    // with monotonically increasing seq from 0.
-    const expectedTypes = [
-      "RunStarted",
-      "StepStarted",
-      "StepCompleted",
-      "RunCompleted",
-    ];
-    for (const [index, write] of observedWrites.entries()) {
-      const expectedSeq = index;
-      const expectedPath = `runs/run-trivial-1/events/${String(expectedSeq)}.json`;
-      const bytes = write.files[expectedPath];
-      if (bytes === undefined) {
-        throw new Error(
-          `commit ${String(index)} did not contain the expected event blob at ${expectedPath}`,
-        );
-      }
-      const expectedType = expectedTypes[index];
-      if (expectedType === undefined) {
-        throw new Error(
-          `unreachable: expectedTypes[${String(index)}] is undefined`,
-        );
-      }
-      // Every prior commit's blob is also carried through the prefix-
-      // preserving merge so the substrate's append-only invariant
-      // holds; assert the count here so a regression that drops a
-      // prior blob surfaces at the test seam.
-      expect(Object.keys(write.files)).toHaveLength(expectedSeq + 1);
-      const blobJson =
-        typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
-      const blob = readRunEventBlob(blobJson);
-      expect(blob.type).toBe(expectedType);
-      expect(blob.seq).toBe(expectedSeq);
-      expect(blob.runId).toBe("run-trivial-1");
-      expect(blob.signature.principalKind).toBe("supervisor");
-      expect(blob.signature.sig.length).toBe(128);
-    }
-    // The trivial branch does not assemble a credentials snapshot
-    // even though the event chain landed; observability and
-    // process topology are independent surfaces.
-    expect(supervisor.getCredentialsSnapshot()).toBeNull();
-  });
-
   test("drain() threads the per-cohort terminal broadcaster into each accumulator's opts", async () => {
     const baseDir = await makeTempDir("supervisor-drain-terminal-source-");
     await seedStepGrants(
@@ -1892,32 +1638,6 @@ describe("createWorkflowSupervisor", () => {
     expect(stub.__opts.terminalEventSource).toBeDefined();
 
     await supervisor.shutdown();
-  });
-
-  test("deploy surfaces a trivialLaunch failure to the caller", async () => {
-    const baseDir = await makeTempDir("supervisor-deploy-error-");
-    const bindings = await buildBindings({
-      baseDir,
-      spawner: () => {
-        throw new Error("spawner must not be invoked on the trivial branch");
-      },
-      signSpy: () => ({
-        sig: new Uint8Array(64),
-        principalKind: "supervisor",
-      }),
-      mailBus: createMockMailBus(),
-      trivialLaunch: () =>
-        Promise.reject(new Error("provisionAgent failed in test")),
-    });
-    const supervisor = createWorkflowSupervisor(bindings);
-    await expect(
-      supervisor.deploy({
-        agentAddress: "agent-3@example.com",
-        agentId: "agent-3",
-        config: {},
-        hubPublicKey: "abc",
-      }),
-    ).rejects.toThrow(/provisionAgent failed in test/);
   });
 
   test("drain() is a no-op when the supervisor is idle (no spawn has run)", async () => {

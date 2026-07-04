@@ -351,9 +351,6 @@ async function buildBindings(opts: {
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>
       `${deploymentId}-${stepId}@example.com`,
-    trivialLaunch: () => {
-      throw new Error("trivialLaunch must not run in lifecycle-races tests");
-    },
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: createMemoryInboxPrimitives(),
   };

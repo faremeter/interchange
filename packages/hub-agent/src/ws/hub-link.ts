@@ -186,11 +186,10 @@ export type HubLinkConfig = {
   keyStore: AgentKeyStore;
   /**
    * Routes every inbound `agent.deploy` frame. Production wiring
-   * supplies a router that calls `supervisor.deploy(frame)` on a
-   * freshly-constructed workflow-host supervisor whose
-   * `trivialLaunch` closes over `SessionManager.provisionAgent`.
-   * The supervisor owns the trivial vs multi-step decision; the
-   * link does not re-decide.
+   * supplies a router that stages each deploy through the workflow-run
+   * substrate: a provision-step frame primes a per-step repo, and a
+   * workflow frame spawns the supervised workflow-process child. The
+   * router owns the routing decision; the link does not re-decide.
    */
   deployRouter: DeployRouter;
   /**

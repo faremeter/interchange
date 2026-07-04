@@ -1,10 +1,8 @@
 // Thin wiring module that constructs `createWorkflowSupervisor` with
 // this sidecar's host-specific bindings: the existing mail-bus
 // instance, the sidecar's Ed25519 signing keypair, the substrate
-// RepoStore handle, `Bun.spawn` as the subprocess spawner, and a
-// host-injected `trivialLaunch` callback that drives the legacy
-// single-agent provisioning surface for trivial (1-step) deploys.
-// Any logic that would benefit a future alternative-sidecar
+// RepoStore handle, and `Bun.spawn` as the subprocess spawner. Any
+// logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -42,12 +40,9 @@ import {
   type HubTransportMailBusAdapter,
   type NdjsonReader,
   type NdjsonWriter,
-  type RecordRunEvent,
   type SpawnOpts,
   type SubprocessHandle,
   type SubprocessSpawner,
-  type SupervisorRunEvent,
-  type TrivialLaunch,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
 import { hexEncode } from "@intx/types";
@@ -435,13 +430,6 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /** Substrate-config keys propagated to the child via spawn-time env. */
   substrateEnv: Record<string, string>;
   /**
-   * Host-injected callback the supervisor's trivial branch invokes.
-   * For the production sidecar this closes over the
-   * `SessionManager.provisionAgent` flow plus the hub-pairing-key
-   * recording the legacy `agent.deploy` handler performed inline.
-   */
-  trivialLaunch: TrivialLaunch;
-  /**
    * Override the subprocess spawner. Tests inject a deterministic
    * mock; production defaults to the `Bun.spawn`-backed
    * `defaultSubprocessSpawner`.
@@ -487,33 +475,6 @@ export type SidecarWorkflowSupervisor = {
   /** Snapshot accessor that proxies the supervisor's credentials view. */
   getCredentialsSnapshot(): CredentialsSnapshot | null;
 };
-
-/**
- * Construct the sidecar's `DeployRouter`. The router holds the
- * `sessions` + `keyStore` closures the workflow-host supervisor's
- * `trivialLaunch` needs and constructs a fresh per-deployment
- * supervisor on every inbound `agent.deploy` frame. The trivial
- * branch then calls back into `sessions.provisionAgent` plus the
- * pre-existing hub-pairing-key recording so the bytes flowing
- * through the deploy-flow gate test path stay bit-identical to the
- * pre-supervisor path.
- *
- * Multi-step deploys (frames carrying a workflow definition with
- * `steps.length >= 2`) route through `supervisor.deploy`'s
- * multi-step branch -- the IPC channel, child spawn, and
- * `credentialsSnapshot` assembly. The routing seam exists here so
- * the frame-format extension that carries the workflow definition is
- * a pure data-shape change.
- */
-/**
- * Stable step identifier the trivial workflow uses for its single
- * step. The on-disk `StepStarted` / `StepCompleted` envelopes carry
- * this value verbatim; it is opaque to the supervisor and the
- * substrate, but downstream audit-log consumers join run events on
- * it. The trivial workflow has exactly one step per run, so the id
- * is a constant rather than a per-deploy mint.
- */
-const TRIVIAL_STEP_ID = "trivial";
 
 /**
  * Env key the multi-step branch uses to carry each step's ordered
@@ -715,7 +676,6 @@ export interface SidecarDeployRouter extends DeployRouter {
 export function createSidecarDeployRouter(deps: {
   sessions: SessionManager;
   keyStore: AgentKeyStore;
-  onAgentEvent: SessionManager["onAgentEvent"];
   transport: HubTransport;
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
@@ -752,9 +712,9 @@ export function createSidecarDeployRouter(deps: {
    * Record a `(deploymentId -> agentAddress)` mapping the boot edge's
    * workflow-run pack push facade consults when it must address an
    * outbound pack frame. Fires once per inbound `agent.deploy` frame
-   * before the supervisor's `deploy()` call so the first `recordRunEvent`
-   * commit (which triggers the push hook) sees the mapping. Tests that
-   * do not exercise the pack push path may pass a no-op.
+   * before the deployment's supervisor spawns, so the first pack push
+   * the child triggers sees the mapping. Tests that do not exercise
+   * the pack push path may pass a no-op.
    */
   registerDeployment: (entry: {
     deploymentId: string;
@@ -779,16 +739,14 @@ export function createSidecarDeployRouter(deps: {
    * the workflow-process child's spawn-time env (see
    * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `workflow-substrate-factory.ts`).
    * The router merges `STEP_INFERENCE_SOURCES` on top per multi-step
-   * frame. Defaults to an empty record so trivial-only deployments do
-   * not require the boot edge to thread substrate config through the
-   * router.
+   * frame. Defaults to an empty record so a router built without
+   * substrate config (e.g. a test) needs no boot-edge threading.
    */
   multistepSubstrateEnv?: Record<string, string>;
   /**
    * Subprocess spawner the multi-step branch hands to the supervisor.
    * Defaults to the production `Bun.spawn`-backed
    * `defaultSubprocessSpawner`; tests inject a deterministic mock.
-   * The trivial branch never invokes the spawner.
    */
   multistepSubprocessSpawner?: SubprocessSpawner;
   /**
@@ -830,13 +788,12 @@ export function createSidecarDeployRouter(deps: {
    * `wired.routeInbound` against the deployment's mail address once
    * `supervisor.spawn` succeeds so inbound mail aimed at the
    * deployment address flows into the supervisor's mail-bus
-   * subscription. The trivial branch never touches this registry --
-   * its mail path is the legacy session surface.
+   * subscription.
    *
-   * Optional so tests that exercise the trivial branch (or the
-   * multi-step branch without an end-to-end mail loop) can omit the
-   * binding; an absent registry simply means multi-step inbound mail
-   * cannot route through the hub-link until the wiring is plumbed.
+   * Optional so tests that exercise the multi-step branch without an
+   * end-to-end mail loop can omit the binding; an absent registry
+   * simply means multi-step inbound mail cannot route through the
+   * hub-link until the wiring is plumbed.
    */
   multistepMailRouter?: MultistepMailRouter;
   /**
@@ -850,10 +807,10 @@ export function createSidecarDeployRouter(deps: {
    * preserving the workflow-run repo's single-writer invariant on the
    * sidecar side.
    *
-   * Optional so tests that exercise the trivial branch (or the
-   * multi-step branch without an end-to-end signal loop) can omit the
-   * binding; an absent registry means hub-side signals cannot route
-   * through the hub-link until the wiring is plumbed.
+   * Optional so tests that exercise the multi-step branch without an
+   * end-to-end signal loop can omit the binding; an absent registry
+   * means hub-side signals cannot route through the hub-link until the
+   * wiring is plumbed.
    */
   multistepSignalRouter?: MultistepSignalRouter;
   /**
@@ -868,10 +825,10 @@ export function createSidecarDeployRouter(deps: {
    * signed `CancelRequested{origin: "supervisor-drain"}` against the
    * workflow-run repo when the deadline expires.
    *
-   * Optional so tests that exercise the trivial branch (or the
-   * multi-step branch without an end-to-end drain loop) can omit the
-   * binding; an absent registry means hub-side drain frames cannot
-   * route through the hub-link until the wiring is plumbed.
+   * Optional so tests that exercise the multi-step branch without an
+   * end-to-end drain loop can omit the binding; an absent registry
+   * means hub-side drain frames cannot route through the hub-link until
+   * the wiring is plumbed.
    */
   multistepDrainRouter?: MultistepDrainRouter;
   /**
@@ -932,9 +889,9 @@ export function createSidecarDeployRouter(deps: {
   // (`<dataDir>/workflow-step-state/<deploymentId>/...`). Resolved once
   // from the boot-edge substrate env so the undeploy hook can reclaim
   // the whole subtree. Absent only when the router is wired without
-  // substrate config (trivial-only paths / tests that never spawn a
-  // child), in which case no child ever rooted scratch and the
-  // undeploy reclaim is correctly skipped.
+  // substrate config (a test that never spawns a child), in which case
+  // no child ever rooted scratch and the undeploy reclaim is correctly
+  // skipped.
   const stepStateDataDir = multistepSubstrateEnv.SIDECAR_DATA_DIR;
   const multistepSpawner =
     deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
@@ -947,10 +904,7 @@ export function createSidecarDeployRouter(deps: {
   // frame; the supervisor owns the workflow-process child, its IPC
   // pipes, and its event-channel fd. The undeploy hook consults this
   // map to call `supervisor.shutdown()` so the child's lifetime ends
-  // with the deployment. The trivial branch never spawns a child --
-  // its supervisor is constructed and immediately dropped after the
-  // deploy callback runs -- so no entry is recorded for trivial
-  // deploys and the undeploy hook's lookup is a no-op for them.
+  // with the deployment.
   const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
 
   // Slug-collision tracking. `deriveTrivialDeploymentId` substitutes
@@ -970,6 +924,10 @@ export function createSidecarDeployRouter(deps: {
         `deriveTrivialDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to deploymentId ${JSON.stringify(deploymentId)}`,
       );
     }
+    // A same-address re-claim is a defensive no-op: the `activeSupervisors`
+    // guard rejects a live re-deploy before claimSlug is re-invoked, and a
+    // failed or undeployed deploy releases the slug first, so in practice
+    // `existing` is only ever undefined or a different address here.
     slugClaims.set(deploymentId, agentAddress);
   }
 
@@ -1173,14 +1131,6 @@ export function createSidecarDeployRouter(deps: {
         ...(deps.multistepBinaryPath !== undefined
           ? { binaryPath: deps.multistepBinaryPath }
           : {}),
-        // The multi-step branch never invokes trivialLaunch, but the
-        // supervisor's constructor requires the binding. Wire a sentinel
-        // that throws so a stray invocation surfaces loudly.
-        trivialLaunch: () => {
-          throw new Error(
-            "sidecar deploy router: trivialLaunch invoked on the multi-step branch; this is a programming bug",
-          );
-        },
         ...(deps.onDispatchTiming !== undefined
           ? { onDispatchTiming: deps.onDispatchTiming }
           : {}),
@@ -1424,10 +1374,7 @@ export function createSidecarDeployRouter(deps: {
     // deployment's record (and the catch below would then delete it). A
     // re-deploy after `undeploy` passes: `undeploy` drops the
     // `activeSupervisors` entry; a failed deploy that unwound is not in the
-    // map either. Known boundary: the trivial branch (`frame.workflow`
-    // undefined) never enters `activeSupervisors`, so a trivial re-deploy
-    // against a live multi-step address is not caught here; that path is
-    // slated for removal, taking the boundary with it.
+    // map either.
     if (activeSupervisors.has(frame.agentAddress)) {
       throw new Error(
         `sidecar deploy router: ${frame.agentAddress} is already deployed; undeploy it before redeploying`,
@@ -1546,121 +1493,13 @@ export function createSidecarDeployRouter(deps: {
       if (frame.workflow !== undefined) {
         return await deployMultiStep(frame, frame.workflow);
       }
-      let publicKey: string | undefined;
-      const deploymentId = deriveTrivialDeploymentId(frame.agentAddress);
-      claimSlug(deploymentId, frame.agentAddress);
-      // Same slug-release discipline as deployMultiStep's claim/try/catch:
-      // without it, any failure between `claimSlug` and the
-      // `registerDeployment` call below leaves the slug claimed forever
-      // (the undeploy hook never fires for failed deploys).
-      let trivialClaimedSlugSucceeded = false;
-      try {
-        const wired = createSidecarWorkflowSupervisor({
-          transport: deps.transport,
-          repoStore: deps.repoStore,
-          signingKeySeed: deps.signingKeySeed,
-          workflowRunRepoId: {
-            kind: "workflow-run",
-            id: deploymentId,
-          },
-          workflowRunRef: "refs/heads/main",
-          deploymentId,
-          // A trivial deploy is a single agent: one step, so the child's
-          // deploy-tree read collapses onto the head.
-          stepCount: 1,
-          deploymentMailAddress: frame.agentAddress,
-          deriveStepAddress: ({ deploymentId: dep, stepId }) =>
-            `${dep}-${stepId}`,
-          substrateEnv: {},
-          trivialLaunch: async (bindings) => {
-            const result = await deps.sessions.provisionAgent(
-              // The trivialLaunch contract treats `config` as opaque
-              // bytes the host minted; for the sidecar wiring the
-              // bytes are a `HarnessConfig` the frame carried
-              // verbatim, and `SessionManager.provisionAgent`
-              // expects exactly that.
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- frame.config is the validated HarnessConfig the link surfaced
-              bindings.config as Parameters<
-                SessionManager["provisionAgent"]
-              >[0],
-            );
-            deps.keyStore.recordHubKey(
-              bindings.agentAddress,
-              bindings.hubPublicKey,
-            );
-            await deps.sessions.persistHubPublicKey(
-              bindings.agentAddress,
-              bindings.hubPublicKey,
-            );
-            publicKey = result.publicKey;
-            // Subscribe to per-agent InferenceEvents and project the
-            // reactor's run-bracket vocabulary onto the workflow-run
-            // event chain. The seam is a no-op until the harness
-            // dispatches the first `message.run.started`; the
-            // disposer is not held here because the trivial branch
-            // shares the agent's lifetime with the deployment and
-            // SessionManager prunes the listener set on
-            // destroySession through the closure's natural unbind.
-            // The reactor brackets one workflow-run per inbound
-            // mail; each `message.run.started` mints a fresh runId
-            // and brackets the chain.
-            const cell: TrivialRunCell = {
-              runId: null,
-              stepStarted: false,
-            };
-            deps.onAgentEvent(bindings.agentAddress, (event) => {
-              driveTrivialRunChain(event, bindings.recordRunEvent, cell).catch(
-                (err: unknown) => {
-                  // Capture rejections inside the listener so a substrate
-                  // failure (e.g. the hub rejecting the workflow-run pack
-                  // push) does not surface as an unhandled rejection on
-                  // the host process. The trivial branch's audit chain
-                  // is best-effort against the deploy path; persistent
-                  // substrate or transport misconfigurations log loudly
-                  // here without killing the agent's reactor.
-                  const msg = err instanceof Error ? err.message : String(err);
-                  logger.warn`trivial run-event recording failed for ${bindings.agentAddress}: ${msg}`;
-                },
-              );
-            });
-          },
-          ...(deps.consumedRetentionMs !== undefined
-            ? { consumedRetentionMs: deps.consumedRetentionMs }
-            : {}),
-          ...(deps.readyTimeoutMs !== undefined
-            ? { readyTimeoutMs: deps.readyTimeoutMs }
-            : {}),
-        });
-        await wired.supervisor.deploy({
-          agentAddress: frame.agentAddress,
-          agentId: frame.agentId,
-          config: frame.config,
-          hubPublicKey: frame.hubPublicKey,
-        });
-        if (publicKey === undefined) {
-          throw new Error(
-            "sidecar deploy router: trivialLaunch did not surface a public key",
-          );
-        }
-        // Register the deployment-address mapping last so a failure in
-        // `supervisor.deploy` (e.g. the host-supplied `trivialLaunch`
-        // callback's `provisionAgent` throwing) leaves the boot-edge
-        // `DeploymentAddressRegistry` untouched. The link's
-        // `handleAgentDeploy` catches a rejection here and surfaces
-        // `agent.error` without invoking the undeploy hook; a partial
-        // registration would persist a `(deploymentId -> agentAddress)`
-        // entry for a deployment that never finished standing up.
-        deps.registerDeployment({
-          deploymentId,
-          agentAddress: frame.agentAddress,
-        });
-        trivialClaimedSlugSucceeded = true;
-        return { publicKey };
-      } finally {
-        if (!trivialClaimedSlugSucceeded) {
-          releaseSlug(deploymentId, frame.agentAddress);
-        }
-      }
+      // Every deploy stages through the workflow-run substrate: a
+      // provision-step frame primes the per-step repo, and a workflow
+      // frame spawns the supervised child. A frame carrying neither is
+      // an unsupported shape -- there is no in-process fall-through.
+      throw new Error(
+        `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry provisionStep or a workflow definition`,
+      );
     },
     async undeploy(frame): Promise<void> {
       // Symmetric teardown for `deploy`: release the per-deployment
@@ -1668,9 +1507,7 @@ export function createSidecarDeployRouter(deps: {
       // / `drain.deliver` / `mail.inbound` aimed at the dead deployment
       // address is rejected by the router rather than dispatched into
       // an orphan supervisor handler. The unregister calls are
-      // idempotent and safe to invoke for both branches even though
-      // the trivial branch never registers against the multi-step
-      // routers; those calls are no-ops when no handler is registered.
+      // idempotent -- they are no-ops when no handler is registered.
       //
       // Routers come down BEFORE the supervisor's `shutdown()` so any
       // hub-side frame racing the undeploy is dropped at the router
@@ -1688,8 +1525,6 @@ export function createSidecarDeployRouter(deps: {
       // kill + `exited` await internally. The map entry is removed
       // before the await so a subsequent re-deploy on the same address
       // cannot observe a stale handle even if `shutdown()` rejects.
-      // Trivial deploys never enter the map, so this lookup is a no-op
-      // for the trivial branch.
       const wired = activeSupervisors.get(frame.agentAddress);
       if (wired !== undefined) {
         activeSupervisors.delete(frame.agentAddress);
@@ -1735,9 +1570,9 @@ export function createSidecarDeployRouter(deps: {
     async restoreWorkflowDeployments(): Promise<void> {
       const dataDir = stepStateDataDir;
       if (dataDir === undefined) {
-        // No substrate config was wired (a trivial-only or test router that
-        // never spawns a child): nothing was ever persisted under this data
-        // dir, so there is nothing to restore.
+        // No substrate config was wired (a test router that never spawns a
+        // child): nothing was ever persisted under this data dir, so there
+        // is nothing to restore.
         return;
       }
 
@@ -1845,122 +1680,13 @@ export function createSidecarDeployRouter(deps: {
 }
 
 /**
- * Per-deployment cell tracking the active workflow-run bracket. The
- * trivial branch holds one cell per agent: each `message.run.started`
- * mints a fresh `runId`, the first `inference.start` after that flips
- * `stepStarted` true, and the matching `message.run.ended` reads both
- * back out before clearing the cell. Two outstanding brackets at once
- * are not possible for the trivial path because the reactor
- * serializes inbound messages.
- */
-export interface TrivialRunCell {
-  runId: string | null;
-  stepStarted: boolean;
-}
-
-/**
- * Placeholder definition hash baked into the trivial workflow's
- * `RunStarted` envelopes. The trivial workflow's content-addressed
- * definition lands with the trivial-deploy capability walk; until
- * then the on-disk envelope carries a stable sentinel so audit-log
- * consumers see a consistent value across deployments.
- */
-const TRIVIAL_DEFINITION_HASH = "trivial:v1";
-
-/**
- * Map one InferenceEvent into `recordRunEvent` calls when the
- * reactor's run-bracket vocabulary lines up with a workflow-run
- * lifecycle moment. The mapping is:
- *
- *   - `message.run.started` -> RunStarted (mints a new workflow runId)
- *   - first `inference.start` after RunStarted -> StepStarted (attempt 1)
- *   - `message.run.ended` status=completed -> StepCompleted + RunCompleted
- *   - `message.run.ended` status=failed -> StepCompleted
- *
- * The runId is the `messageRunId` the reactor minted. `StepStarted`
- * is suppressed if a second `inference.start` arrives within the
- * same bracket (the trivial workflow's single step does not retry
- * inside one run; the next attempt would be a separate workflow-run
- * instance).
- *
- * The supervisor's `SupervisorRunEvent` union covers `RunCompleted`
- * but not `RunFailed`; the trivial branch surfaces a failed run by
- * recording `StepCompleted` against the step that failed (so the
- * per-step audit trail closes) and letting the absence of a
- * subsequent `RunCompleted` mark the run as unsuccessful for
- * downstream consumers. Widening the supervisor's
- * `SupervisorRunEvent` union to carry `RunFailed` lands when the
- * substrate kind handler grows the matching signature-verification
- * path.
- */
-export async function driveTrivialRunChain(
-  event: InferenceEvent,
-  recordRunEvent: RecordRunEvent,
-  cell: TrivialRunCell,
-): Promise<void> {
-  if (event.type === "message.run.started") {
-    cell.runId = event.data.messageRunId;
-    cell.stepStarted = false;
-    const runStarted: SupervisorRunEvent = {
-      kind: "RunStarted",
-      runId: event.data.messageRunId,
-      at: new Date().toISOString(),
-      definitionHash: TRIVIAL_DEFINITION_HASH,
-      trigger: {
-        type: "mail",
-        payload: { messageId: event.data.messageId },
-      },
-      consumedMessageId: event.data.messageId,
-    };
-    await recordRunEvent(runStarted);
-    return;
-  }
-  if (event.type === "inference.start") {
-    if (cell.runId === null) return;
-    if (cell.stepStarted) return;
-    cell.stepStarted = true;
-    await recordRunEvent({
-      kind: "StepStarted",
-      runId: cell.runId,
-      at: new Date().toISOString(),
-      stepId: TRIVIAL_STEP_ID,
-      attempt: 1,
-      input: { ref: "refs/heads/main" },
-    });
-    return;
-  }
-  if (event.type === "message.run.ended") {
-    const runId = cell.runId;
-    if (runId === null) return;
-    cell.runId = null;
-    cell.stepStarted = false;
-    const at = new Date().toISOString();
-    await recordRunEvent({
-      kind: "StepCompleted",
-      runId,
-      at,
-      stepId: TRIVIAL_STEP_ID,
-      attempt: 1,
-      output: { ref: "refs/heads/main" },
-    });
-    if (event.data.status === "completed") {
-      await recordRunEvent({
-        kind: "RunCompleted",
-        runId,
-        at,
-      });
-    }
-  }
-}
-
-/**
  * Logical mail-audit reference the supervisor stamps onto every
  * inbox/processing/consumed envelope for sidecar-hosted deployments.
  * The substrate does not dereference the value; it is a host-side
- * pointer the audit consumer joins on. The trivial-branch single-agent
- * mail audit is keyed by the deployment id plus the parsed messageId,
- * which is unique per inbound message and stable across the FIFO
- * pipeline's enqueue/dequeue/markConsumed transitions.
+ * pointer the audit consumer joins on. The mail audit is keyed by the
+ * deployment id plus the parsed messageId, which is unique per inbound
+ * message and stable across the FIFO pipeline's
+ * enqueue/dequeue/markConsumed transitions.
  */
 export function deriveSidecarMailAuditRef(deploymentId: string): (
   messageId: string,
@@ -1977,10 +1703,9 @@ export function deriveSidecarMailAuditRef(deploymentId: string): (
 
 /**
  * Construct a per-deployment supervisor with the sidecar's bindings
- * pre-wired. The host calls this once per `agent.deploy` frame; the
- * supervisor's trivial branch routes the deploy through the
- * host-supplied `trivialLaunch` callback so the on-wire and
- * on-disk surfaces stay bit-identical to the pre-supervisor path.
+ * pre-wired. The router calls this once per multi-step `agent.deploy`
+ * frame to stand up the workflow-process child that hosts the
+ * deployment.
  */
 export function createSidecarWorkflowSupervisor(
   opts: CreateSidecarWorkflowSupervisorOpts,
@@ -2012,7 +1737,6 @@ export function createSidecarWorkflowSupervisor(
     ...(opts.deriveStepRepoId !== undefined
       ? { deriveStepRepoId: opts.deriveStepRepoId }
       : {}),
-    trivialLaunch: opts.trivialLaunch,
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
     ...(opts.onDispatchTiming !== undefined
       ? { onDispatchTiming: opts.onDispatchTiming }

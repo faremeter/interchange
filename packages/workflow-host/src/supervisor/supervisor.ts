@@ -84,7 +84,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
-import { commitRunEvent, compactRunEvents } from "./run-event-signing";
+import { compactRunEvents } from "./run-event-signing";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
@@ -104,9 +104,7 @@ import type {
   DispatchSubstrateLeg,
   InboxPrimitives,
   MailAuditRef,
-  RecordRunEvent,
   SubprocessHandle,
-  SupervisorDeployFrame,
   TerminalEventSource,
   TerminalRunEvent,
   WorkflowSupervisorBindings,
@@ -159,37 +157,6 @@ export const DEFAULT_TERMINAL_WRITE_WATCHDOG_MS = 30_000;
  * supervisor's internal state is encapsulated.
  */
 export interface WorkflowSupervisor {
-  /**
-   * Single ingress for `agent.deploy` frames. The supervisor owns
-   * the routing decision between trivial (1-step) and multi-step
-   * workflows -- the host hands the frame off and never re-decides.
-   *
-   * Trivial branch (Option Z, locked):
-   *   - Calls `bindings.trivialLaunch(frame)` directly.
-   *   - Does NOT open an IPC channel.
-   *   - Does NOT spawn a workflow-process child.
-   *   - Does NOT emit any workflow-run event. `signAsPrincipal`
-   *     is not invoked; for a trivial deploy there is no
-   *     workflow-process child to cancel, so cancellation stays
-   *     session-destroy at the host's layer.
-   *   - Does NOT assemble a `credentialsSnapshot`; the trivial
-   *     branch leaves `getCredentialsSnapshot()` returning `null`.
-   *
-   * Multi-step branch (`steps.length >= 2`):
-   *   - Provisions per-step `agent-state` repos, mints keys,
-   *     spawns the workflow-process child via `subprocessSpawner`,
-   *     registers the deployment's mail address, waits for the
-   *     child's `ready` frame, and assembles the
-   *     `credentialsSnapshot`. This is the body of `spawn(opts)`,
-   *     which is the multi-step branch's worker today.
-   *
-   * The `agent.deploy` wire frame today carries only a
-   * `HarnessConfig` (no workflow definition); every frame is
-   * therefore trivial. The supervisor codifies the seam so a frame-
-   * format extension that carries a `WorkflowDefinition` is a pure
-   * data-shape change.
-   */
-  deploy(frame: SupervisorDeployFrame): Promise<void>;
   /**
    * Spawn the workflow-process child, complete the IPC handshake,
    * assemble the credentialsSnapshot, register the deployment's mail
@@ -616,43 +583,6 @@ export function createWorkflowSupervisor(
   let spawnContext: SpawnContext | null = null;
   let recyclePolicy: RecyclePolicy | null = null;
   let recycleInProgress = false;
-
-  async function deploy(frame: SupervisorDeployFrame): Promise<void> {
-    // The `agent.deploy` wire frame currently carries only a
-    // `HarnessConfig`, which is the trivial-workflow shape (a single
-    // step derived from the agent's harness). The branching seam
-    // exists for the multi-step extension; for every frame today
-    // the supervisor calls trivialLaunch unchanged.
-    //
-    // Trivial-branch invariants:
-    //   - No IPC opens, no child spawn, no mail-bus registration.
-    //   - credentialsSnapshot is not assembled; the multi-step
-    //     branch owns it. `getCredentialsSnapshot()` continues to
-    //     return null on the trivial path.
-    //   - Run-lifecycle events are committed inline from the
-    //     supervisor process via `signAsPrincipal`. The supervisor
-    //     hands `recordRunEvent` to the host's `trivialLaunch`; the
-    //     host calls it from its per-message reactor / harness
-    //     lifecycle moments (`message.run.started` /
-    //     `message.run.ended`) so the on-disk event chain matches
-    //     the multi-step branch byte-for-byte.
-    const recordRunEvent: RecordRunEvent = (event) =>
-      commitRunEvent({
-        substrate: bindings.repoStore,
-        repoId: bindings.workflowRunRepoId,
-        ref: bindings.workflowRunRef,
-        deploymentId: bindings.deploymentId,
-        event,
-        signAsPrincipal: bindings.signAsPrincipal,
-      });
-    await bindings.trivialLaunch({
-      agentAddress: frame.agentAddress,
-      agentId: frame.agentId,
-      config: frame.config,
-      hubPublicKey: frame.hubPublicKey,
-      recordRunEvent,
-    });
-  }
 
   function onChildCrash(reason: string): void {
     logger.error`workflow-process control channel crash: {reason}`;
@@ -2450,7 +2380,6 @@ export function createWorkflowSupervisor(
   }
 
   return {
-    deploy,
     spawn,
     requestCancel,
     shutdown,
