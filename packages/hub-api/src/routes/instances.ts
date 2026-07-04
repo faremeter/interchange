@@ -72,11 +72,6 @@ const GrantRequirements = GrantRequirement.array();
 // rejected here before the JSON parser allocates a giant string.
 const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
-const AbortBody = type({
-  "reason?":
-    "'user_disconnect' | 'wallet_exhaustion' | 'admin_kill' | 'session_timeout' | 'credential_revocation'",
-});
-
 function formatInstance(
   row: typeof agentInstance.$inferSelect,
   agentName: string,
@@ -1229,93 +1224,6 @@ export function createInstanceRoutes({
         // Keep the stream open until the client disconnects.
         await new Promise<void>(noop);
       });
-    },
-  );
-
-  app.post(
-    "/:instanceId/abort",
-    requireGrant(idResource("instance", "instanceId"), "manage"),
-    describeRoute({
-      tags: ["Instances"],
-      summary: "Abort current operation",
-      description: "Aborts the agent's current inference or tool execution.",
-      responses: {
-        204: {
-          description: "Abort signal sent",
-        },
-        404: {
-          description: "Instance not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Instance not running",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        502: {
-          description: "Sidecar unavailable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-      },
-    }),
-    validator("json", AbortBody),
-    async (c) => {
-      const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
-      const body = c.req.valid("json");
-
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenantCtx.id),
-        ),
-      });
-
-      if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      if (row.status !== "running") {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: `Instance is not running (status: ${row.status})`,
-            },
-          },
-          409,
-        );
-      }
-
-      try {
-        await sidecarRouter.sendSessionAbort(
-          row.address,
-          body.reason ?? "user_disconnect",
-        );
-      } catch (err) {
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to reach sidecar for abort",
-            },
-          },
-          502,
-        );
-      }
-
-      return c.body(null, 204);
     },
   );
 

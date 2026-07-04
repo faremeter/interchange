@@ -51,7 +51,6 @@
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/health | Get instance health |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/offerings | List instance offerings |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/events | SSE event stream |
-| POST | /api/tenants/:tenantId/agents/instances/:instanceId/abort | Abort current operation |
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/mail | List mail for an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/turns | List inference turns for an instance |
@@ -602,18 +601,6 @@ Server-Sent Events stream for agent events. Use POST .../messages for client-to-
 200: SSE stream -- SSE event stream
 404: ErrorResponse -- Instance not found
 410: ErrorResponse -- Instance stopped
-
-### POST /api/tenants/:tenantId/agents/instances/:instanceId/abort
-Abort current operation
-
-Aborts the agent's current inference or tool execution.
-
-Body: unknown
-
-204: (no content) -- Abort signal sent
-404: ErrorResponse -- Instance not found
-409: ErrorResponse -- Instance not running
-502: ErrorResponse -- Sidecar unavailable
 
 ### POST /api/tenants/:tenantId/agents/instances/:instanceId/mail
 Send mail to the agent
