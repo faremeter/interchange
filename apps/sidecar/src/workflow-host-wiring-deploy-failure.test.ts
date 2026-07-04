@@ -44,9 +44,6 @@ function stubKeyStore(): Parameters<
       // exercises.
       return { keyPair: await generateKeyPair(), isNew: false };
     },
-    async scanKeys() {
-      return [];
-    },
     signChallenge() {
       return null;
     },

@@ -138,8 +138,8 @@ async function topLevelNames(dir: string, oid: string): Promise<Set<string>> {
  *
  * Derives the set of deploy-managed top-level entries from the union of the
  * old and new commit trees, removes those entries, then writes the new tree.
- * Paths that never appear in any commit tree (e.g. .git, agent.json, state,
- * keys) are never touched.
+ * Paths that never appear in any commit tree (e.g. .git, state, keys) are
+ * never touched.
  *
  * NOTE: The rm-then-write sequence is not atomic. If writeTree fails after rm
  * succeeds (e.g. disk full), the working tree will be missing the cleared

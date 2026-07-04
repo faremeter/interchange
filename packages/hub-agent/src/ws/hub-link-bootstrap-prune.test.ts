@@ -53,12 +53,6 @@ function createTestKeyStore(): AgentKeyStore & {
       if (existing !== undefined) return { keyPair: existing, isNew: false };
       throw new Error(`No key registered for ${address} in test store`);
     },
-    async scanKeys() {
-      return [...agentKeys.entries()].map(([address, keyPair]) => ({
-        address,
-        keyPair,
-      }));
-    },
     async signChallenge(address, payload) {
       const kp = agentKeys.get(address);
       if (kp === undefined) return null;

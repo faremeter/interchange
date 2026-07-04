@@ -1,18 +1,14 @@
 // Per-agent on-disk repository layout.
 //
-// Owns the isogit repo wrapper, the deploy-pack apply / state-pack
-// produce flow, and the persistence of the per-agent `agent.json`
-// metadata blob. Key custody lives in AgentKeyStore alongside this
+// Owns the isogit repo wrapper and the deploy-pack apply / state-pack
+// produce flow. Key custody lives in AgentKeyStore alongside this
 // store; both share the directory-layout helpers in agent-paths.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
 import git from "isomorphic-git";
-import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { hasCode } from "@intx/types";
-import { HarnessConfig } from "@intx/types/runtime";
 import {
   initAgentRepo,
   applyPack,
@@ -21,29 +17,9 @@ import {
   type CommitVerifier,
 } from "@intx/storage-isogit";
 
-import { META_FILE, agentDir, metaPath } from "./agent-paths";
+import { agentDir } from "./agent-paths";
 
 const logger = getLogger(["interchange", "hub-agent", "repo-store"]);
-
-const AgentMeta = type({
-  version: "1",
-  address: "string",
-  config: HarnessConfig,
-  "hubPublicKey?": "string",
-});
-type AgentMeta = typeof AgentMeta.infer;
-
-/**
- * A per-agent metadata record as it appears on disk. `hubPublicKey`
- * — the hub identity this agent has been paired with — is set once
- * by `persistPairing` and is otherwise preserved across `persistConfig`
- * updates.
- */
-export type AgentConfigEntry = {
-  address: string;
-  config: HarnessConfig;
-  hubPublicKey?: string;
-};
 
 export type ApplyDeployPackArgs = {
   address: string;
@@ -68,25 +44,6 @@ export type AgentRepoStore = {
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   getDeployRef(address: string): Promise<string | null>;
   remove(address: string): Promise<void>;
-  /**
-   * Write the agent's HarnessConfig to disk. Preserves the existing
-   * `hubPublicKey` field if one was previously recorded by
-   * `persistPairing`. To update the pairing key, call `persistPairing`
-   * separately.
-   */
-  persistConfig(address: string, config: HarnessConfig): Promise<void>;
-  /**
-   * Record the hub public key this agent has been paired with. Set-once
-   * in normal operation; rewriting an existing value is permitted but
-   * indicates the agent has been re-paired with a different hub.
-   */
-  persistPairing(address: string, hubPublicKey: string): Promise<void>;
-  /**
-   * Scan the data directory for agent.json files and return the
-   * persisted config + pairing key for each. Files that fail to
-   * parse are skipped with a warning.
-   */
-  scanConfigs(): Promise<AgentConfigEntry[]>;
 };
 
 export function createAgentRepoStore(config: {
@@ -142,94 +99,6 @@ export function createAgentRepoStore(config: {
     logger.info`Deleted agent directory for ${address}`;
   }
 
-  async function readMeta(address: string): Promise<AgentMeta | null> {
-    try {
-      const raw = await fsp.readFile(metaPath(dataDir, address), "utf-8");
-      const parsed: unknown = JSON.parse(raw);
-      const validated = AgentMeta(parsed);
-      if (validated instanceof type.errors) {
-        logger.warn`agent.json invalid for ${address}: ${validated.summary}`;
-        return null;
-      }
-      return validated;
-    } catch (err: unknown) {
-      if (hasCode(err) && err.code === "ENOENT") {
-        return null;
-      }
-      throw err;
-    }
-  }
-
-  async function writeMeta(meta: AgentMeta): Promise<void> {
-    await fsp.writeFile(metaPath(dataDir, meta.address), JSON.stringify(meta));
-  }
-
-  async function persistConfig(
-    address: string,
-    config: HarnessConfig,
-  ): Promise<void> {
-    const existing = await readMeta(address);
-    const meta: AgentMeta = { version: 1, address, config };
-    if (existing?.hubPublicKey !== undefined) {
-      meta.hubPublicKey = existing.hubPublicKey;
-    }
-    await writeMeta(meta);
-  }
-
-  async function persistPairing(
-    address: string,
-    hubPublicKey: string,
-  ): Promise<void> {
-    const existing = await readMeta(address);
-    if (existing === null) {
-      throw new Error(
-        `Cannot persist hub pairing for "${address}": no existing agent.json`,
-      );
-    }
-    await writeMeta({ ...existing, hubPublicKey });
-  }
-
-  async function scanConfigs(): Promise<AgentConfigEntry[]> {
-    let entries: fs.Dirent[];
-    try {
-      entries = await fsp.readdir(dataDir, { withFileTypes: true });
-    } catch (err: unknown) {
-      if (hasCode(err) && err.code === "ENOENT") return [];
-      throw err;
-    }
-
-    const results: AgentConfigEntry[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      // Read agent.json directly by directory name — we cannot reverse
-      // sanitizeAddress, so the address comes from the file's `address`
-      // field, not the directory name.
-      const metaFile = path.join(dataDir, entry.name, META_FILE);
-      let raw: string;
-      try {
-        raw = await fsp.readFile(metaFile, "utf-8");
-      } catch (err: unknown) {
-        if (hasCode(err) && err.code === "ENOENT") continue;
-        throw err;
-      }
-      const parsed: unknown = JSON.parse(raw);
-      const validated = AgentMeta(parsed);
-      if (validated instanceof type.errors) {
-        logger.warn`Skipping ${entry.name}: invalid agent.json: ${validated.summary}`;
-        continue;
-      }
-      const result: AgentConfigEntry = {
-        address: validated.address,
-        config: validated.config,
-      };
-      if (validated.hubPublicKey !== undefined) {
-        result.hubPublicKey = validated.hubPublicKey;
-      }
-      results.push(result);
-    }
-    return results;
-  }
-
   return {
     getAgentDir,
     initRepo,
@@ -237,8 +106,5 @@ export function createAgentRepoStore(config: {
     createStatePack,
     getDeployRef,
     remove,
-    persistConfig,
-    persistPairing,
-    scanConfigs,
   };
 }

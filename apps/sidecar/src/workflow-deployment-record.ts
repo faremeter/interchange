@@ -76,8 +76,7 @@ export async function writeWorkflowDeploymentRecord(
   await mkdir(dirname(path), { recursive: true });
   // Owner-only (0o600): the record embeds each source's `apiKey`, so it must
   // not be world-readable on a shared host. This matches the private-key
-  // writes elsewhere on the sidecar and is stricter than the legacy
-  // `agent.json`, which persists the same credentials at the default mode.
+  // writes elsewhere on the sidecar.
   await writeFile(path, JSON.stringify(record, null, 2), {
     encoding: "utf8",
     mode: 0o600,

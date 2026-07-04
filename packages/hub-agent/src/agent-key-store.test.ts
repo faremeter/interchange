@@ -108,36 +108,3 @@ describe("AgentKeyStore — load-or-generate", () => {
     );
   });
 });
-
-describe("AgentKeyStore — scanKeys", () => {
-  test("returns key entries whose directory has both files plus agent.json", async () => {
-    const dataDir = await tempDir();
-    const store = createAgentKeyStore({
-      dataDir,
-      generateKeyPair: async () => makeKeyPair(3),
-      ...stubCrypto,
-    });
-    await store.loadOrGenerateKey("agent@local");
-    await fs.writeFile(
-      path.join(dataDir, "agent_at_local", "agent.json"),
-      JSON.stringify({ version: 1, address: "agent@local" }),
-    );
-
-    const entries = await store.scanKeys();
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.address).toBe("agent@local");
-  });
-
-  test("skips an agent directory with no agent.json", async () => {
-    const dataDir = await tempDir();
-    const store = createAgentKeyStore({
-      dataDir,
-      generateKeyPair: async () => makeKeyPair(5),
-      ...stubCrypto,
-    });
-    await store.loadOrGenerateKey("agent@local");
-
-    const entries = await store.scanKeys();
-    expect(entries).toEqual([]);
-  });
-});

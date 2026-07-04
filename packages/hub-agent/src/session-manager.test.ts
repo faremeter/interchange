@@ -38,9 +38,6 @@ function makeStubRepoStore(opts: {
     createStatePack: opts.createStatePack,
     getDeployRef: unused("getDeployRef"),
     remove: opts.remove,
-    persistConfig: unused("persistConfig"),
-    persistPairing: unused("persistPairing"),
-    scanConfigs: unused("scanConfigs"),
   };
 }
 
