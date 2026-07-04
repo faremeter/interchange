@@ -127,12 +127,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   const { dataDir, signingKey, handlers, authorize, signingCallback, gc } =
     config;
 
-  // Per-repo-directory isomorphic-git memoization cache. Every git.*
-  // call the store makes against a `dir` threads that dir's cache, so
-  // isomorphic-git reuses the parsed on-disk index across the repo's
-  // serialized write sequence instead of re-reading and re-parsing it
-  // on every git.add / remove / updateIndex / commit / listFiles, and
-  // reuses parsed packfile indexes across object reads. The store is
+  // Per-repo-directory isomorphic-git memoization cache. The store
+  // threads that dir's cache through every index-touching and
+  // object-reading git.* call, so isomorphic-git reuses the parsed
+  // on-disk index across the repo's serialized write sequence instead
+  // of re-reading and re-parsing it on every git.add / remove /
+  // updateIndex / commit / listFiles, and reuses parsed packfile
+  // indexes across object reads. The index-free tree assembly
+  // (git.writeTree / git.writeBlob) uses no index and threads no cache.
+  // The store is
   // the single writer under withRepoLock, so a long-lived per-repo
   // cache never races a concurrent mutator.
   //

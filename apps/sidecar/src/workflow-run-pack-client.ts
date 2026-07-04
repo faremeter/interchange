@@ -118,11 +118,9 @@ export type MultistepMailHandler = (message: Uint8Array) => void;
 
 /**
  * Per-deployment-address mail handler registry the sidecar hub-link
- * consults before falling back to `transport.deliver` /
- * `sessions.commitInboundMail`. The trivial deploy path never registers
- * a handler -- its mail flows through the legacy session path. The
- * multi-step deploy router registers a handler against the deployment's
- * mail address after `wired.supervisor.spawn` succeeds, so an inbound
+ * consults before falling back to `transport.deliver`. The multi-step
+ * deploy router registers a handler against the deployment's mail
+ * address after `wired.supervisor.spawn` succeeds, so an inbound
  * `mail.inbound` frame for that address dispatches into the
  * supervisor's mail-bus subscription rather than the
  * never-provisioned-for-this-address transport mailbox.

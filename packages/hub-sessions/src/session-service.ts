@@ -240,11 +240,11 @@ export type SessionServiceDeps = {
   sidecarRouter: SidecarRouter;
   agentRepoStore: AgentRepoStore;
   /**
-   * Optional asset attachment integration. When set, `launchSession`
+   * Optional asset attachment integration. When set, the deploy flow
    * fans out per-attachment packs after the deploy pack lands and
    * inserts a `session_asset` row per attachment. When unset, only
-   * the deploy pack is sent — the legacy single-pack path is
-   * preserved bit-for-bit.
+   * the deploy pack is sent — the single-pack path is preserved
+   * bit-for-bit.
    */
   assetService?: AssetService;
   /** DB handle used for `session_asset` manifest inserts. Required
