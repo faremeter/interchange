@@ -249,19 +249,17 @@ The sidecar WebSocket protocol includes frames for agent deployment, reconnectio
 
 **Agent deployment:**
 
-| Direction     | Frame                | Purpose                                                |
-| ------------- | -------------------- | ------------------------------------------------------ |
-| Hub → Sidecar | `agent.deploy`       | Provision an agent (keys, directory, ephemeral config) |
-| Sidecar → Hub | `agent.deploy.ack`   | Confirm provisioning, provide agent public key         |
-| Hub → Sidecar | `session.start`      | Start the inference harness for a provisioned agent    |
-| Sidecar → Hub | `session.start.ack`  | Confirm the harness is running                         |
-| Hub → Sidecar | `agent.undeploy`     | Remove an agent from the sidecar                       |
-| Sidecar → Hub | `agent.undeploy.ack` | Confirm teardown (includes state push status)          |
-| Sidecar → Hub | `agent.error`        | Report a failure at any stage                          |
+| Direction     | Frame                | Purpose                                           |
+| ------------- | -------------------- | ------------------------------------------------- |
+| Hub → Sidecar | `agent.deploy`       | Stage a deploy through the workflow-run substrate |
+| Sidecar → Hub | `agent.deploy.ack`   | Confirm the deploy staged, provide the public key |
+| Hub → Sidecar | `agent.undeploy`     | Remove an agent from the sidecar                  |
+| Sidecar → Hub | `agent.undeploy.ack` | Confirm teardown (includes state push status)     |
+| Sidecar → Hub | `agent.error`        | Report a failure at any stage                     |
 
-Agent deployment is a three-phase operation: provision, pack delivery, session start. The hub sends `agent.deploy` to provision the agent (generate keys, create directory, persist config). After receiving `agent.deploy.ack` with the agent's public key, the hub streams the deploy tree via pack frames. After `pack.ack`, the hub sends `session.start` to start the inference harness. This ordering ensures the deploy tree (prompt, skills) is on disk before the harness reads it.
+Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router primes the per-step repo (for a provision-step frame) or spawns the supervised workflow-process child (for a workflow frame), then acks with `agent.deploy.ack` carrying the public key. The deploy tree (prompt, skills) rides in on the follow-up deploy pack, which the child reads from the substrate. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
 
-Undeploy is an acknowledged operation. The sidecar stops the harness, pushes state to the hub (best-effort), deletes the agent directory, and responds with `agent.undeploy.ack`. The `statePushed` field indicates whether the state push was attempted. The hub defers routing table cleanup until the ack arrives.
+Undeploy is an acknowledged operation. The sidecar shuts the deployment's supervisor down, pushes state to the hub (best-effort), deletes the agent directory, and responds with `agent.undeploy.ack`. The `statePushed` field indicates whether the state push was attempted. The hub defers routing table cleanup until the ack arrives.
 
 **Reconnection:**
 
@@ -738,88 +736,59 @@ live `subscribeKind` tail, but a resume-rehydrated queued signal
 needs the runtime body's `RunState` reader plumbing, which lands
 when the per-run state-machine reader is wired into the child.
 
-### Deploy Routing (Option Z)
+### Deploy Routing
 
-The supervisor is the single ingress for inbound `agent.deploy`
-frames. The host-side handler calls `supervisor.deploy(frame)` and
-the supervisor decides between the trivial (1-step) passthrough
-and the multi-step IPC-backed spawn. Routing lives on the
-supervisor side of the seam; the host does not re-decide. The
-sidecar's hub-link surface lives at
-`packages/hub-agent/src/ws/hub-link.ts`; it consumes a
-`DeployRouter` binding whose production implementation is the
-workflow-host supervisor.
+The sidecar's deploy router is the single ingress for inbound
+`agent.deploy` frames. The hub-link surface at
+`packages/hub-agent/src/ws/hub-link.ts` consumes a `DeployRouter`
+binding whose production implementation is `createSidecarDeployRouter`
+in `apps/sidecar/src/workflow-host-wiring.ts`. Routing lives on the
+router side of the seam; the hub-link hands the frame off and folds the
+returned public key into the outbound `agent.deploy.ack`.
 
-Four invariants on the routing model are locked:
+Every deploy stages through the workflow-run substrate. The router
+branches on the frame shape:
 
-1. **Supervisor owns `agent.deploy` framing.** The hub-side handler
-   in `packages/hub-agent/src/ws/hub-link.ts` calls
-   `deployRouter.deploy(frame)`; the production router is the
-   workflow-host supervisor's `supervisor.deploy(frame)`. No routing
-   logic leaks back into `hub-agent` or `hub-sessions`.
-2. **Trivial branch is a process-topology passthrough.** The
-   supervisor invokes the host-injected `trivialLaunch` callback
-   directly. No IPC channel opens. No workflow-process child is
-   spawned. No mail-bus subscription registers. The bytes flowing
-   through the deploy-flow gate path are bit-identical to the
-   pre-supervisor surface.
-3. **Trivial deploys emit the canonical workflow-run event chain.**
-   The supervisor commits `RunStarted` / `StepStarted` /
-   `StepCompleted` / `RunCompleted` to the workflow-run repo from
-   the supervisor process itself, signed via the host's
-   `signAsPrincipal("supervisor", ...)` callback. The chain fires
-   per inbound mail trigger (one run per fire) and is driven by
-   the host calling `bindings.recordRunEvent(...)` from the
-   trivialLaunch callback's reactor / harness lifecycle moments
-   (`message.run.started` / `message.run.ended` brackets). The
-   on-disk envelope is byte-identical to the one a multi-step
-   deployment's workflow-process child produces. Trivial and
-   multi-step deployments differ in process topology, not in
-   observability. The supervisor's signing key never leaves the
-   supervisor's address space; `signAsPrincipal` returns the raw
-   signature bytes for the canonical payload only after the
-   supervisor has serialized them.
-4. **`credentialsSnapshot` is multi-step-only.** The trivial branch
-   does not assemble a snapshot; `getCredentialsSnapshot()`
-   continues to return `null` after a trivial deploy. The
-   multi-step branch (`steps.length >= 2`) provisions per-step
-   `agent-state` repos, mints keys, spawns the workflow-process
-   child via `subprocessSpawner`, registers the deployment's mail
-   address, waits for `ready`, and assembles the
-   `credentialsSnapshot` -- this is the body of `spawn(opts)`,
-   which the multi-step branch is the worker for. The
-   `agent.deploy` wire frame today carries only a `HarnessConfig`
-   (no workflow definition); every frame is therefore trivial. The
-   seam exists now so the frame-format extension that carries a
-   `WorkflowDefinition` lands as a pure data-shape change.
+1. **Provision-step frame (`provisionStep: true`).** The router primes
+   the frame's per-step `agent-state` repo and records the hub key,
+   without constructing a supervisor or spawning a child. The follow-up
+   full-closure deploy pack then applies into the primed repo and
+   verifies against the recorded key.
+2. **Workflow frame (carries a `WorkflowDefinition`).** The router
+   constructs a fresh per-deployment workflow-host supervisor and drives
+   its `spawn(opts)` lifecycle: per-step `agent-state` repo
+   provisioning, key minting, workflow-process child spawn via
+   `subprocessSpawner`, mail-bus registration, the IPC ready handshake,
+   and `credentialsSnapshot` assembly.
 
-The supervisor's per-event commit primitive lives in
-`packages/workflow-host/src/supervisor/run-event-signing.ts`
-alongside the analogous `commitCancelRequested` path. The trivial
-branch's `recordRunEvent` is a thin closure over that primitive that
-the supervisor hands into the trivialLaunch bindings; the multi-step
-branch composes the same primitive from inside its in-supervisor
-event-channel receiver.
+A frame carrying neither shape is rejected -- there is no in-process
+deploy path. A single agent deploys as a single-step workflow: the
+instance-deploy path wraps its `HarnessConfig` with
+`wrapHarnessAsSingleStepWorkflow`
+(`packages/workflow-deploy/src/orchestrator.ts`) and deploys it at the
+workflow's head, so single- and multi-step deployments run the same
+supervised-child topology and differ only in step count.
+
+Run-lifecycle events (`RunStarted` / `StepStarted` / `StepCompleted` /
+`RunCompleted`) are committed by the workflow-process child from its own
+address space against the workflow-run repo; the supervisor does not
+commit them in-process. The supervisor's surviving run-event work is
+compaction: once a run terminates it folds that run's per-event blobs
+into one combined log
+(`packages/workflow-host/src/supervisor/run-event-compaction.ts`).
 
 The workflow-run repo's substrate `repoId.id` is constrained to
 `/^[a-zA-Z0-9_-]+$/` (`SAFE_REPO_ID` in
 `packages/hub-sessions/src/repo-store/types.ts`), which the
-agent-address shape (`ins_<id>@<domain>`) does not satisfy. The
-sidecar wiring derives the trivial branch's deployment id by
-substituting disallowed characters with `-`; see
-`deriveDeploymentId` in
-`apps/sidecar/src/workflow-host-wiring.ts`. The supervisor
-principal's `deploymentId` and the workflow-run `repoId.id` are kept
-equal so the workflow-run kind handler's principal-vs-repo authz
-check holds for every supervisor-authored event commit.
+agent-address shape (`ins_<id>@<domain>`) does not satisfy. The sidecar
+wiring derives the deployment id by substituting disallowed characters
+with `-`; see `deriveDeploymentId` in
+`apps/sidecar/src/workflow-host-wiring.ts`. The supervisor principal's
+`deploymentId` and the workflow-run `repoId.id` are kept equal so the
+workflow-run kind handler's principal-vs-repo authz check holds for
+every supervisor-authored event commit.
 
-The sidecar production wiring lives in
-`apps/sidecar/src/workflow-host-wiring.ts`:
-`createSidecarDeployRouter` constructs a fresh per-deployment
-supervisor on every inbound frame whose `trivialLaunch` closes
-over `SessionManager.provisionAgent` plus the hub-pairing-key
-recording the legacy handler performed inline. The `HubTransport`
-mail-bus adapter the supervisor consumes lives in the
+The `HubTransport` mail-bus adapter the supervisor consumes lives in the
 `@intx/workflow-host` package proper
 (`packages/workflow-host/src/mail-bus/`) so an alternative-sidecar
 implementation can reuse it without forking the wiring.
@@ -844,8 +813,8 @@ snapshot. The implementation lives in
   returns a `CredentialsSnapshot` with per-step `address`, `grants`,
   and `contentHash`. The hash is stable across processes so the
   child can detect a stale snapshot pushed after a fresher one.
-- A missing grants file is treated as an empty grant array (so the
-  trivial path with no operator-supplied grants does not crash); a
+- A missing grants file is treated as an empty grant array (so a
+  single-step deploy with no operator-supplied grants does not crash); a
   malformed file fails loudly at the boundary.
 
 ### Signed CancelRequested Authority
@@ -1104,14 +1073,13 @@ Health can also be reported via periodic heartbeat messages to the control plane
 
 ### Deployment Procedure
 
-1. **Provision** - Hub sends `agent.deploy` with ephemeral config; sidecar creates directory, keys, and returns the public key
+1. **Stage** - Hub sends `agent.deploy`; the sidecar's deploy router stages the deploy through the workflow-run substrate (priming the per-step repo or spawning the supervised workflow-process child) and returns the public key
 2. **Assembly** - Hub resolves skill dependencies and assembles the deploy tree
-3. **Pack transfer** - Hub streams the packfile to the sidecar (see Agent Deployment)
-4. **Session start** - Hub sends `session.start`; sidecar reads deploy tree and starts the harness
-5. **Health gate** - New version must pass health checks before receiving traffic
-6. **Traffic shift** - Registry updates discovery to point to new version
-7. **Drain** - Old version stops accepting new work, completes in-flight operations
-8. **Retirement** - Old version shuts down; deploy tag remains for rollback
+3. **Pack transfer** - Hub streams the packfile to the sidecar; the workflow-process child reads the deploy tree from the substrate and begins inference (see Agent Deployment)
+4. **Health gate** - New version must pass health checks before receiving traffic
+5. **Traffic shift** - Registry updates discovery to point to new version
+6. **Drain** - Old version stops accepting new work, completes in-flight operations
+7. **Retirement** - Old version shuts down; deploy tag remains for rollback
 
 ### Rollback
 
@@ -1222,16 +1190,14 @@ Pack transfers share the WebSocket with live session traffic. To prevent interfe
 
 ### Deploy Flow
 
-Deployment is a three-phase operation: provision, pack delivery, session start.
+Deployment is a two-phase operation: stage and pack delivery. There is no separate session-start phase -- the workflow-process child begins inference once it is spawned and its deploy tree has landed.
 
-**Phase 1: Provision**
+**Phase 1: Stage**
 
-1. Hub sends `agent.deploy` with ephemeral config (credentials, materialized grants, providers, session ID)
-2. Sidecar creates the agent directory, generates an Ed25519 key pair, and persists the config
-3. Sidecar responds with `agent.deploy.ack` containing the agent's public key (hex-encoded)
-4. Hub stores the public key for future challenge/response verification
-
-The sidecar is now provisioned but not running. It can receive pack data.
+1. Hub sends `agent.deploy` with the deploy config (credentials, materialized grants, providers, session ID) and, for a multi-step deploy, a workflow definition
+2. The sidecar's deploy router stages the deploy through the workflow-run substrate: a provision-step frame primes the per-step `agent-state` repo and records the hub key; a workflow frame spawns the supervised workflow-process child
+3. Sidecar responds with `agent.deploy.ack` containing the public key (hex-encoded)
+4. Hub stores the public key for future deploy-commit verification
 
 **Phase 2: Pack delivery**
 
@@ -1239,19 +1205,12 @@ The sidecar is now provisioned but not running. It can receive pack data.
 6. Hub sends `pack.push` frames (chunked, interleaved with other traffic)
 7. Hub sends `pack.done` with target ref (`refs/heads/deploy`) and commit SHA
 8. Sidecar validates the packfile integrity
-9. Sidecar verifies the deploy commit signature against the hub's public key
+9. Sidecar verifies the deploy commit signature against the recorded hub public key
 10. Sidecar unpacks objects into the git object store
 11. Sidecar updates `refs/heads/deploy` to the new commit
-12. Sidecar merges `deploy` into its agent branch (trivial merge)
+12. Sidecar merges `deploy` into its agent branch (fast-forward)
 13. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
-14. Sidecar responds with `pack.ack`
-
-**Phase 3: Session start**
-
-15. Hub sends `session.start`
-16. Sidecar reads the deploy tree from disk (prompt, skills/tools)
-17. Sidecar creates the inference harness with the deploy tree and ephemeral config
-18. Sidecar starts the harness and responds with `session.start.ack`
+14. Sidecar responds with `pack.ack`; the workflow-process child reads the deploy tree from the substrate and runs
 
 The agent is now running and can receive messages.
 
@@ -1260,13 +1219,13 @@ On first deploy a full packfile is sent. On subsequent deploys, if the sidecar a
 ### Undeploy Flow
 
 1. Hub sends `agent.undeploy` with a reason string
-2. Sidecar stops the inference harness (or removes the agent from the provisioned set if session has not started)
+2. Sidecar shuts the deployment's supervisor down, releasing the workflow-process child and its per-deployment routing state (a no-op if no supervisor is live for the address)
 3. Sidecar pushes state to the hub via `pack.push`/`pack.done` (best-effort — the `statePushed` field in the ack indicates whether this was attempted, not whether the hub confirmed receipt)
 4. Sidecar deletes the agent directory
 5. Sidecar responds with `agent.undeploy.ack`
 6. Hub removes the agent from the routing table
 
-If the sidecar disconnects before sending the ack, the hub removes the agent from the routing table on disconnect. If `startSession` fails, the agent remains provisioned and can be retried or undeployed.
+If the sidecar disconnects before sending the ack, the hub removes the agent from the routing table on disconnect.
 
 ### State Push Flow
 
@@ -1284,18 +1243,13 @@ If the WebSocket disconnects mid-transfer, no git state is corrupted: the sideca
 
 ### Reconnect Sequencing
 
-Pack transfers are sequenced after identity verification:
+On reconnect the sidecar restores its workflow deployments from local disk (see the deployment restore path) and re-announces them so the hub restores their routes:
 
-1. Sidecar sends `reconnect` with `agentAddresses` and `deployRefs`
-2. Hub sends `challenge` per address
-3. Sidecar sends `challenge.response` per address
-4. Hub verifies signatures — only verified agents proceed
-5. Hub sends `grants.update` per verified agent (sidecar must have current grants before processing messages)
-6. For agents whose deploy ref is behind: hub initiates pack transfer, waits for `pack.ack`
-7. Hub sends `session.start` per agent
-8. After `session.start.ack`: hub flushes queued messages
+1. Sidecar sends a single `register` frame carrying its live workflow-deployment addresses (`workflowAddresses`)
+2. Hub re-registers those addresses for routing. Workflow-deployment addresses are hub-minted and keyless, so they re-register without the challenge/response flow a per-agent key would require
+3. For a deployment whose deploy ref the hub tracks as behind, the hub initiates a pack transfer and waits for `pack.ack`
 
-Pack content is never sent to a sidecar that has not proved ownership of the agent's key.
+The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
 
 On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). The hub sends `agent.deploy` to provision the agent, and the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token and the authenticated WebSocket channel bound the trust for first-deploy; challenge/response protects all subsequent interactions.
 
