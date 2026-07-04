@@ -226,7 +226,6 @@ function createMockSessionService(
     throw new Error(`mock: sessionService.${name} not implemented`);
   }
   return {
-    launchSession: () => notImpl("launchSession"),
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
     deployInstanceAtHead: () => notImpl("deployInstanceAtHead"),
     deployWorkflowDefinition: (params) => {

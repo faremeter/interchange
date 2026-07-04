@@ -42,12 +42,11 @@
 // end) or a pre-spawn seeding hook on `deployWorkflow`. Adding either
 // is a separate landing.
 //
-// The orchestrator's multi-step branch is composed in-test because
-// the pre-landed `deploy-flow-env` fixture wires only the trivial
-// `launchSession` callback against `env.hub.sessionService.launchSession`;
-// the multi-step `sendMultiStepDeploy` hand-off is supplied here
-// against `env.hub.router.sendAgentDeploy` so the sidecar's deploy
-// router takes the workflow-process spawn path. This mirrors the
+// The orchestrator's multi-step branch is composed in-test: the per-step
+// launch callback drives `env.hub.sessionService.stageWorkflowStep` (the
+// stage-only path, no warm harness) and the `sendMultiStepDeploy` hand-off
+// is supplied against `env.hub.router.sendAgentDeploy` so the sidecar's
+// deploy router takes the workflow-process spawn path. This mirrors the
 // multistep-signal and drain-roundtrip tests' shape so a regression
 // in any of the seven hops surfaces uniformly across the three.
 //

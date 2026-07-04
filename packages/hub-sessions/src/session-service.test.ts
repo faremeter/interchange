@@ -332,34 +332,6 @@ describe("SessionService", () => {
     repoStore = createMockRepoStore();
   });
 
-  test("launchSession calls steps in order", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    await service.launchSession({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
-      config: MOCK_CONFIG,
-      deployContent: MOCK_CONTENT,
-    });
-
-    const methods = [
-      ...repoStore.calls.map((c) => c.method),
-      ...router.calls.map((c) => c.method),
-    ];
-
-    expect(methods).toEqual([
-      "writeDeployTree",
-      "createDeployPack",
-      "sendAgentDeploy",
-      "sendPack",
-      "sendSessionStart",
-    ]);
-  });
-
   test("stageWorkflowStep stages without a warm harness", async () => {
     const service = createSessionService({
       sidecarRouter: router,
@@ -419,92 +391,6 @@ describe("SessionService", () => {
     // tear down, so it never undeploys.
     expect(routerMethods).toContain("unbindStepRoute");
     expect(routerMethods).not.toContain("sendAgentUndeploy");
-  });
-
-  test("launchSession cleans up on pack failure", async () => {
-    router.sendPack = () => Promise.reject(new Error("pack failed"));
-
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    const err = await service
-      .launchSession({
-        agentAddress: AGENT_ADDRESS,
-        agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
-        config: MOCK_CONFIG,
-        deployContent: MOCK_CONTENT,
-      })
-      .catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(SessionLaunchError);
-    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
-    expect(err.phase).toBe("pack");
-    expect(err.leakedAgent).toBe(false);
-
-    const routerMethods = router.calls.map((c) => c.method);
-    expect(routerMethods).toContain("sendAgentUndeploy");
-  });
-
-  test("launchSession cleans up on session start failure", async () => {
-    router.sendSessionStart = () => Promise.reject(new Error("start failed"));
-
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    const err = await service
-      .launchSession({
-        agentAddress: AGENT_ADDRESS,
-        agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
-        config: MOCK_CONFIG,
-        deployContent: MOCK_CONTENT,
-      })
-      .catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(SessionLaunchError);
-    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
-    expect(err.phase).toBe("start");
-    expect(err.leakedAgent).toBe(false);
-
-    const routerMethods = router.calls.map((c) => c.method);
-    expect(routerMethods).toContain("sendAgentUndeploy");
-  });
-
-  test("launchSession reports leaked agent when cleanup fails", async () => {
-    router.sendPack = () => Promise.reject(new Error("pack failed"));
-    router.sendAgentUndeploy = () =>
-      Promise.reject(new Error("cleanup failed"));
-
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    const err = await service
-      .launchSession({
-        agentAddress: AGENT_ADDRESS,
-        agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
-        config: MOCK_CONFIG,
-        deployContent: MOCK_CONTENT,
-      })
-      .catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(SessionLaunchError);
-    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
-    expect(err.leakedAgent).toBe(true);
-    expect(err.phase).toBe("pack");
-
-    // The original error (pack failure) must be preserved as the cause,
-    // not the cleanup failure.
-    expect(err.cause).toBeInstanceOf(Error);
-    if (!(err.cause instanceof Error)) throw new Error("unreachable");
-    expect(err.cause.message).toBe("pack failed");
   });
 
   test("launchSession does not provision on write failure", async () => {
@@ -1035,38 +921,6 @@ describe("SessionService", () => {
     }
     expect(content.systemPrompt).toBe("Only the base prompt");
     expect(content.systemPrompt).not.toContain("<available_skills>");
-  });
-
-  test("launchSession without assetService leaves the deploy-only flow unchanged", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    await service.launchSession({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
-      config: MOCK_CONFIG,
-      deployContent: MOCK_CONTENT,
-    });
-
-    const methods = [
-      ...repoStore.calls.map((c) => c.method),
-      ...router.calls.map((c) => c.method),
-    ];
-    expect(methods).toEqual([
-      "writeDeployTree",
-      "createDeployPack",
-      "sendAgentDeploy",
-      "sendPack",
-      "sendSessionStart",
-    ]);
-
-    // No mountPath options on the single sendPack call.
-    const packCall = router.calls.find((c) => c.method === "sendPack");
-    if (packCall === undefined) throw new Error("sendPack not called");
-    expect(packCall.args[4]).toBeUndefined();
   });
 
   test("launchSession writes a resolved-source session_asset row for resolver-derived packs", async () => {

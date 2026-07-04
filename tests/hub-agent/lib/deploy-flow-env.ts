@@ -1009,10 +1009,9 @@ const DEFAULT_WORKFLOW_RUN_REF = "refs/heads/main";
 
 /**
  * Options accepted by `deployWorkflow`. The helper composes the
- * workflow-deploy orchestrator against the env's hub substrate and
- * routes per-step launches through `env.hub.sessionService.launchSession`
- * so the trivial-branch round-trip and the multi-step branch both
- * exercise the production code paths.
+ * workflow-deploy orchestrator against the env's hub substrate and routes
+ * per-step launches through `env.hub.sessionService.stageWorkflowStep`, the
+ * stage-only path production's multi-step branch runs.
  */
 export type DeployWorkflowOpts = {
   /**

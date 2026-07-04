@@ -32,10 +32,9 @@
 // at this test.
 //
 // The orchestrator's multi-step branch is composed in-test (matching
-// the multi-step signal round-trip) because the pre-landed
-// `deploy-flow-env` fixture wires only the trivial `launchSession`
-// callback against `env.hub.sessionService.launchSession`; the
-// multi-step `sendMultiStepDeploy` hand-off is supplied here against
+// the multi-step signal round-trip): the per-step launch callback drives
+// `env.hub.sessionService.stageWorkflowStep` (the stage-only path, no warm
+// harness) and the `sendMultiStepDeploy` hand-off is supplied against
 // `env.hub.router.sendAgentDeploy` so the sidecar's deploy router
 // takes the workflow-process spawn path.
 

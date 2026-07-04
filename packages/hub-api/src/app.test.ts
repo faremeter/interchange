@@ -20,9 +20,6 @@ const OpenAPISpec = type({
 const mockDb = {} as unknown as DB["db"];
 const sidecarRouter = createSidecarRouter({});
 const sessionService: SessionService = {
-  launchSession(_params) {
-    throw new Error("mock: sessionService.launchSession not implemented");
-  },
   stageWorkflowStep(_params) {
     throw new Error("mock: sessionService.stageWorkflowStep not implemented");
   },

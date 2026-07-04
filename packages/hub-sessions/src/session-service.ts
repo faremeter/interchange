@@ -96,39 +96,6 @@ export class SessionLaunchError extends Error {
 
 export type SessionService = {
   /**
-   * Orchestrate the full deploy lifecycle:
-   *   1. Write deploy tree to hub repo and produce packfile
-   *   2. Provision agent on sidecar (sendAgentDeploy)
-   *   3. Deliver deploy packfile (sendPack)
-   *   4. Fan-out attached asset packs: for each row returned by
-   *      `assetService.listAgentAssets(agentId)`, resolve the
-   *      mountPath, resolve the ref to a source commit SHA, build a
-   *      pack, insert a `session_asset` row, and send the pack to the
-   *      sidecar with `mountPath` set on the `repo.pack.done` frame.
-   *      The manifest insert MUST precede the pack send.
-   *   5. Start session (sendSessionStart)
-   *
-   * On partial failure after provision, attempts cleanup via
-   * sendAgentUndeploy before re-throwing.
-   */
-  launchSession(params: {
-    agentAddress: string;
-    agentId: string;
-    instanceId: string;
-    config: HarnessConfig;
-    deployContent: DeployContent;
-    /**
-     * The agent definition's pinned tool packages. When non-empty, the
-     * service uses its injected `toolPackageResolver` to compute the
-     * full pinned closure and ships the resulting manifest as part of
-     * the deploy tree. An empty array (or absent value) means no
-     * tool-package manifest is materialized; the sidecar's loader is
-     * a no-op for this deploy.
-     */
-    toolPackagePins?: readonly ToolPackagePin[];
-  }): Promise<void>;
-
-  /**
    * Stage one step of a multi-step workflow deploy: bind a transient route
    * for the step address, fire a no-spawn provision frame (init the step's
    * agent-state repo and record the hub key), deliver the deploy + asset
@@ -819,7 +786,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         } else if (stageOnly) {
           await sidecarRouter.sendProvisionStep(agentAddress, config);
         } else {
-          await sidecarRouter.sendAgentDeploy(agentAddress, config);
+          // Every caller supplies `workflowFrame` (single-step head) or
+          // `stageOnly` (multi-step per-step). A deploy with neither has no
+          // provisioning shape -- the legacy warm-harness path is gone -- so
+          // fail loud rather than ship a deploy pack the sidecar never
+          // provisioned a repo for.
+          throw new Error(
+            "executeLaunchPhases: a deploy requires either workflowFrame or stageOnly",
+          );
         }
       } catch (err) {
         throw new SessionLaunchError("provision", err, false);
@@ -894,24 +868,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (stageOnly) {
         sidecarRouter.unbindStepRoute(agentAddress);
       }
-    }
-  }
-
-  /**
-   * Start the warm hub-agent harness for a staged deploy. The legacy
-   * agent-deploy path calls this after `executeLaunchPhases` stages the
-   * deploy tree and packs; a single-step workflow deploy skips it entirely,
-   * because the supervised workflow-process child drives the agent per
-   * message through the supervisor and there is no warm harness to start.
-   * A failed start tears the sidecar deployment down so no zombie agent is
-   * left behind.
-   */
-  async function startWarmSession(agentAddress: string): Promise<void> {
-    try {
-      await sidecarRouter.sendSessionStart(agentAddress);
-    } catch (err) {
-      await attemptCleanup(agentAddress, "start", err);
-      throw new SessionLaunchError("start", err, false);
     }
   }
 
@@ -999,36 +955,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     });
 
     return orchestrator.deployWorkflow(args.deployArgs);
-  }
-
-  /**
-   * Provision one agent at its address: stage the deploy tree + packs
-   * (`executeLaunchPhases` with no workflow frame) and then start its warm
-   * harness. This is the legacy warm-harness deploy with no production
-   * caller: a multi-step step stages without a harness (`stageWorkflowStep`),
-   * a single-agent instance uses `deployInstanceAtHead`, and a single-step
-   * workflow uses the head hand-off. The method carries no workflow
-   * projection of its own.
-   */
-  async function launchSession(params: {
-    agentAddress: string;
-    agentId: string;
-    instanceId: string;
-    config: HarnessConfig;
-    deployContent: DeployContent;
-    toolPackagePins?: readonly ToolPackagePin[];
-  }): Promise<void> {
-    await executeLaunchPhases({
-      agentAddress: params.agentAddress,
-      agentId: params.agentId,
-      instanceId: params.instanceId,
-      config: params.config,
-      deployContent: params.deployContent,
-      ...(params.toolPackagePins !== undefined
-        ? { toolPackagePins: params.toolPackagePins }
-        : {}),
-    });
-    await startWarmSession(params.agentAddress);
   }
 
   /**
@@ -1613,7 +1539,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   return {
-    launchSession,
     stageWorkflowStep,
     deployInstanceAtHead,
     deploySingleStepAtHead,
