@@ -28,6 +28,7 @@ import {
   isWorkflowDerivedAddress,
   MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
+  SingleStepDeployHandoffMissingError,
   WorkflowDefinitionInvalidError,
   wrapHarnessAsSingleStepWorkflow,
   type DeployContent,
@@ -495,6 +496,32 @@ describe("createWorkflowDeployOrchestrator", () => {
           operatorApprovals: approvals,
         }),
       ).rejects.toBeInstanceOf(MultiStepDeployHandoffMissingError);
+    });
+
+    test("throws when deploySingleStepAtHead dep is unwired", async () => {
+      const agent = makeAgent("only");
+      const workflow = makeSingleStepWorkflow(agent);
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+      });
+      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+
+      await expect(
+        orchestrator.deployWorkflow({
+          workflow,
+          deploymentId: "dep_xyz",
+          deploymentDomain: "workflow.interchange",
+          config: HARNESS_CONFIG_BASE,
+          deployContent: DEPLOY_CONTENT_BASE,
+          hubPublicKey: "00".repeat(32),
+          operatorApprovals: approvals,
+        }),
+      ).rejects.toBeInstanceOf(SingleStepDeployHandoffMissingError);
     });
 
     test("throws when deploymentId is missing", async () => {
