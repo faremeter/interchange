@@ -742,6 +742,120 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     void supervisorIpcKeyPair;
   });
 
+  test("a second same-address deploy is rejected mid-spawn and never deletes the live deployment record", async () => {
+    // Pins the synchronous single-flight reservation guard. The first
+    // deploy runs its durable writes and then suspends inside
+    // supervisor.spawn awaiting the child's `ready` handshake -- the window
+    // in which its reservation is held but `activeSupervisors` is not yet
+    // populated. A second same-address frame arriving in that window must be
+    // rejected at the reservation guard (its own message, distinct from the
+    // spawn-core backstop) before it touches durable state, so it cannot
+    // delete the first deploy's live record via the soft-fail catch.
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let spawnCount = 0;
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      spawnCount += 1;
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 4242,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const multiDataDir = await createTempBaseDir("sidecar-concurrent-deploy-");
+    const registered: string[] = [];
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: multiDataDir },
+      registerDeployment: ({ agentAddress }) => {
+        registered.push(agentAddress);
+      },
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-concurrent",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+    const deploymentId = deriveDeploymentId(frame.agentAddress);
+    const recordFile = path.join(
+      multiDataDir,
+      "workflow-runs",
+      deploymentId,
+      "deployment.json",
+    );
+
+    const firstDeploy = router.deploy(frame);
+    // Wait until the first deploy has spawned: its record is on disk and it
+    // is now suspended in the ready handshake with the reservation held.
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const recordBefore = await fs.readFile(recordFile, "utf8");
+    expect(recordBefore.length).toBeGreaterThan(0);
+
+    // The loser is rejected at the reservation guard, not the spawn-core
+    // backstop -- the guard's message is the one asserted here.
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /is already deployed; undeploy it before redeploying/,
+    );
+    // It never reached the spawner and never deleted the live record.
+    expect(spawnCount).toBe(1);
+    const recordAfter = await fs.readFile(recordFile, "utf8");
+    expect(recordAfter).toBe(recordBefore);
+
+    // Drive the first deploy's ready handshake so it completes, then confirm
+    // the winner is the live, registered deployment.
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 4242,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+
+    const result = await firstDeploy;
+    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(registered).toEqual([frame.agentAddress]);
+    expect(router.activeAddresses()).toEqual([frame.agentAddress]);
+
+    void supervisorToChild;
+  });
+
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
     // Drives the spawn handshake the same way the first multi-step
     // test does, but injects a `multistepMailRouter` and asserts the

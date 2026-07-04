@@ -907,6 +907,19 @@ export function createSidecarDeployRouter(deps: {
   // with the deployment.
   const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
 
+  // Synchronous single-flight guard for the deploy path. The real supervisor
+  // does not exist until inside `spawnWorkflowDeployment`, so `deployMultiStep`
+  // cannot reserve its `activeSupervisors` slot up front; instead it records
+  // the address here synchronously, before its first await, and clears it in a
+  // finally once the deploy settles. `activeSupervisors` is populated only
+  // after `spawn` succeeds, so the has-check alone leaves a window in which two
+  // same-address frames both pass and the loser's unwind deletes the winner's
+  // live deployment record. This set closes that window: a second frame that
+  // arrives while the first is mid-deploy is rejected before it touches any
+  // durable state. Only the live deploy path reserves; the boot restore path
+  // is serial and relies on the `activeSupervisors` backstop instead.
+  const reservingDeployAddresses = new Set<string>();
+
   // Slug-collision tracking. `deriveDeploymentId` substitutes
   // disallowed characters with `-`, which is deterministic but lossy:
   // two distinct agent addresses can collapse to the same slug, and
@@ -1364,19 +1377,23 @@ export function createSidecarDeployRouter(deps: {
       }
     }
 
-    // Reject a re-deploy of an address already live in this process BEFORE
-    // touching any durable state. The durable writes below (the restore
-    // record, workflow.json, step grants) are destructive overwrites of state
-    // owned by whatever deployment currently holds the address; overwriting is
-    // only legal when this deploy owns the address. `spawnWorkflowDeployment`
-    // carries the same guard as its single-owner backstop, but it throws only
-    // after this method has already overwritten -- so the guard must also sit
-    // ahead of the writes, or a duplicate frame would clobber a live
-    // deployment's record (and the catch below would then delete it). A
+    // Reject a re-deploy of an address already live OR mid-deploy in this
+    // process BEFORE touching any durable state. The durable writes below (the
+    // restore record, workflow.json, step grants) are destructive overwrites of
+    // state owned by whatever deployment currently holds the address;
+    // overwriting is only legal when this deploy owns the address.
+    // `activeSupervisors` catches an address whose deploy has completed;
+    // `reservingDeployAddresses` catches one whose deploy is still in flight.
+    // The map is populated only after `spawn` succeeds, so the has-check alone
+    // leaves a window in which two frames both pass and the loser's catch below
+    // deletes the winner's live record; the reservation set closes it. A
     // re-deploy after `undeploy` passes: `undeploy` drops the
-    // `activeSupervisors` entry; a failed deploy that unwound is not in the
-    // map either.
-    if (activeSupervisors.has(frame.agentAddress)) {
+    // `activeSupervisors` entry, and a failed or completed deploy has already
+    // cleared its reservation.
+    if (
+      activeSupervisors.has(frame.agentAddress) ||
+      reservingDeployAddresses.has(frame.agentAddress)
+    ) {
       throw new Error(
         `sidecar deploy router: ${frame.agentAddress} is already deployed; undeploy it before redeploying`,
       );
@@ -1447,6 +1464,13 @@ export function createSidecarDeployRouter(deps: {
     };
 
     claimSlug(deploymentId, frame.agentAddress);
+    // Hold the single-flight reservation across the async body below and clear
+    // it in the finally. Everything above is synchronous and throws before any
+    // durable write, so the reservation is only needed from the first await
+    // here onward; the top-of-method guard already consults this set for a
+    // concurrent frame, and claimSlug/deploymentId derivation above cannot
+    // yield control before this point.
+    reservingDeployAddresses.add(frame.agentAddress);
     try {
       // Persist the deployment record BEFORE the spawn so a crash mid-spawn
       // leaves a record the boot scan re-drives (an idempotent re-spawn; the
@@ -1483,6 +1507,11 @@ export function createSidecarDeployRouter(deps: {
       await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
       releaseSlug(deploymentId, frame.agentAddress);
       throw cause;
+    } finally {
+      // Release the single-flight reservation whether the deploy succeeded or
+      // threw. On success the address is now in `activeSupervisors`, which the
+      // guard also consults, so a later re-deploy is still rejected.
+      reservingDeployAddresses.delete(frame.agentAddress);
     }
   }
 
