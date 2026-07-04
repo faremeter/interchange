@@ -308,7 +308,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       operatorApprovals: approvals,
     });
 
-    expect(result.kind).toBe("multi-step");
+    expect(result.publicKey).toBeTruthy();
     expect(deps.sources).toHaveLength(1);
     const sources = deps.sources[0];
     if (sources === undefined) throw new Error("missing sources");

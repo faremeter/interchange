@@ -425,10 +425,8 @@ async function runUnified(opts: {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    if (result.kind !== "multi-step") {
-      throw new Error(
-        `unified bench: expected multi-step deploy, got ${result.kind}`,
-      );
+    if (!result.publicKey) {
+      throw new Error("unified bench: deploy did not return a public key");
     }
 
     const workflowRunRepoId: RepoId = {

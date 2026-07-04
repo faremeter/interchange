@@ -153,7 +153,6 @@ export interface MultiStepDeployResult {
  * it alongside the deployment record.
  */
 export type DeployWorkflowResult = {
-  readonly kind: "multi-step";
   readonly publicKey: string;
 };
 
@@ -401,7 +400,7 @@ export function createWorkflowDeployOrchestrator(
           args,
           deploySingleStepAtHead,
         });
-        return { kind: "multi-step", publicKey: result.publicKey };
+        return { publicKey: result.publicKey };
       }
 
       const result = await runMultiStepBranch({
@@ -409,7 +408,7 @@ export function createWorkflowDeployOrchestrator(
         launchSession,
         sendMultiStepDeploy,
       });
-      return { kind: "multi-step", publicKey: result.publicKey };
+      return { publicKey: result.publicKey };
     },
   };
 }

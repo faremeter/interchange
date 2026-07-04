@@ -471,9 +471,7 @@ async function deployEdgeWorkflow(
     deploymentDomain: DEPLOYMENT_DOMAIN,
     hubPublicKey: "00".repeat(32),
   });
-  if (result.kind !== "multi-step") {
-    throw new Error(`expected multi-step deploy; got ${result.kind}`);
-  }
+  expect(result.publicKey).toBeTruthy();
 
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",

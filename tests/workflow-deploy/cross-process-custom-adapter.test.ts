@@ -224,7 +224,7 @@ async function deployCustomProviderWorkflow(
     deploymentDomain: DEPLOYMENT_DOMAIN,
     hubPublicKey: "00".repeat(32),
   });
-  expect(result.kind).toBe("multi-step");
+  expect(result.publicKey).toBeTruthy();
 
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",

@@ -244,7 +244,7 @@ describe("multi-step signed outbound send", () => {
         { cause },
       );
     }
-    expect(result.kind).toBe("multi-step");
+    expect(result.publicKey).toBeTruthy();
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",

@@ -266,7 +266,7 @@ describe("parent -> child workflow round-trip", () => {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    expect(childResult.kind).toBe("multi-step");
+    expect(childResult.publicKey).toBeTruthy();
 
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
@@ -283,7 +283,7 @@ describe("parent -> child workflow round-trip", () => {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    expect(parentResult.kind).toBe("multi-step");
+    expect(parentResult.publicKey).toBeTruthy();
 
     const parentWorkflowRunRepoId: RepoId = {
       kind: "workflow-run",
@@ -649,7 +649,7 @@ describe("parent -> child workflow round-trip", () => {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    expect(grandchildResult.kind).toBe("multi-step");
+    expect(grandchildResult.publicKey).toBeTruthy();
 
     const childResult = await orchestrator.deployWorkflow({
       workflow: childWorkflowDefinition,
@@ -666,7 +666,7 @@ describe("parent -> child workflow round-trip", () => {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    expect(childResult.kind).toBe("multi-step");
+    expect(childResult.publicKey).toBeTruthy();
 
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
@@ -683,7 +683,7 @@ describe("parent -> child workflow round-trip", () => {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    expect(parentResult.kind).toBe("multi-step");
+    expect(parentResult.publicKey).toBeTruthy();
 
     const parentWorkflowRunRepoId: RepoId = {
       kind: "workflow-run",
@@ -1011,7 +1011,7 @@ describe("parent -> child workflow round-trip", () => {
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
       });
-      expect(r.kind).toBe("multi-step");
+      expect(r.publicKey).toBeTruthy();
     }
 
     const parentResult = await orchestrator.deployWorkflow({
@@ -1029,7 +1029,7 @@ describe("parent -> child workflow round-trip", () => {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    expect(parentResult.kind).toBe("multi-step");
+    expect(parentResult.publicKey).toBeTruthy();
 
     const parentWorkflowRunRepoId: RepoId = {
       kind: "workflow-run",

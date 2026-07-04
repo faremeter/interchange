@@ -277,7 +277,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
         { cause },
       );
     }
-    expect(result.kind).toBe("multi-step");
+    expect(result.publicKey).toBeTruthy();
 
     // (a) identity: the deploy-ack fired for the legacy `ins_<hex>`
     // address and persisted a public key. The ack listener keys on the

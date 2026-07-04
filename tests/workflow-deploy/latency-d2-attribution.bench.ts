@@ -462,10 +462,8 @@ async function runUnifiedD2(opts: {
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
-    if (result.kind !== "multi-step") {
-      throw new Error(
-        `d2 bench: expected multi-step deploy, got ${result.kind}`,
-      );
+    if (!result.publicKey) {
+      throw new Error("d2 bench: deploy did not return a public key");
     }
 
     const workflowRunRepoId: RepoId = {

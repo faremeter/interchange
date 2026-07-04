@@ -320,7 +320,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
         { cause },
       );
     }
-    expect(result.kind).toBe("multi-step");
+    expect(result.publicKey).toBeTruthy();
 
     // 4.1 identity preserved: the deploy-ack fired for the legacy
     // `ins_<hex>` address and persisted a public key.

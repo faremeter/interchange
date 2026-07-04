@@ -241,7 +241,7 @@ describe("multi-step workflow round-trip with signal-await", () => {
         { cause },
       );
     }
-    expect(result.kind).toBe("multi-step");
+    expect(result.publicKey).toBeTruthy();
 
     // The sidecar's deploy router slugs the deployment mail address
     // into the workflow-run repo id via `deriveDeploymentId`;

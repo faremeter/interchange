@@ -379,7 +379,6 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(handoff.sources.plan).toEqual([baseSource]);
       expect(handoff.sources.execute).toEqual([baseSource]);
       expect(result).toEqual({
-        kind: "multi-step",
         publicKey: "ff".repeat(32),
       });
     });
@@ -603,7 +602,7 @@ describe("createWorkflowDeployOrchestrator", () => {
         throw new Error("missing step id");
       }
       expect(call.sources[expectedStepId]).toBeDefined();
-      expect(result.kind).toBe("multi-step");
+      expect(result.publicKey).toBeTruthy();
     });
 
     test("source-pin failure carries workflow.id and names the offending provider+model", async () => {

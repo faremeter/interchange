@@ -272,7 +272,7 @@ describe("FIFO mail-trigger serialization under load", () => {
         { cause },
       );
     }
-    expect(result.kind).toBe("multi-step");
+    expect(result.publicKey).toBeTruthy();
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
