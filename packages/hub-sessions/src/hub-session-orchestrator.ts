@@ -2,9 +2,9 @@
 //
 // Subscribes to the sidecar router's events and runs the host-side
 // reactions: dispatching inference events to the event collector,
-// refreshing grants and credentials on reconnect, ingesting state
-// packs, re-deploying stale agents, persisting mail, and forwarding
-// mail.delivered notifications back to subscribers.
+// restoring the event collector on reconnect, re-deploying stale
+// agents, and forwarding mail.delivered notifications back to
+// subscribers.
 //
 // The orchestrator depends on a narrow `HubSessionRouterFacade` rather
 // than the full SidecarRouter, so tests can drive subscriber behavior
@@ -14,11 +14,8 @@ import { eq } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
 import { agentInstance } from "@intx/db/schema";
-import { pushInstanceSourceUpdate } from "./credential-push";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
-import type { GrantRule, GrantStore } from "@intx/types/authz";
-import type { InferenceSource } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 
@@ -37,12 +34,6 @@ const log = getLogger(["hub", "orchestrator"]);
  * narrow surface keeps tests honest and decouples the orchestrator
  * from the rest of the router API. */
 export type HubSessionRouterFacade = {
-  sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
-  sendSourcesUpdate(
-    agentAddress: string,
-    sources: InferenceSource[],
-    defaultSource: string,
-  ): Promise<void>;
   sendPack(
     agentAddress: string,
     pack: Uint8Array,
@@ -57,7 +48,6 @@ export type HubSessionOrchestratorDeps = {
   router: HubSessionRouterFacade;
   db: DB["db"];
   eventCollectors: EventCollectorRegistry;
-  grantStore: GrantStore;
   agentRepoStore: AgentRepoStore;
 };
 
@@ -71,8 +61,7 @@ export type HubSessionOrchestrator = {
 export function createHubSessionOrchestrator(
   deps: HubSessionOrchestratorDeps,
 ): HubSessionOrchestrator {
-  const { events, router, db, eventCollectors, grantStore, agentRepoStore } =
-    deps;
+  const { events, router, db, eventCollectors, agentRepoStore } = deps;
 
   const unsubscribers: (() => void)[] = [];
 
@@ -148,27 +137,12 @@ export function createHubSessionOrchestrator(
       }
       const sessionId = instance.sessionId;
 
-      // Refresh grants before creating any local state. If this
-      // fails, the address is rejected and nothing needs cleanup.
-      const grants = await grantStore.collectGrants(
-        instance.principalId,
-        instance.tenantId,
-      );
-      await router.sendGrantsUpdate(agentAddress, grants);
-
-      // Re-resolve and push sources so the agent picks up any catalog or
-      // credential changes that happened while the sidecar was
-      // disconnected. Fail-open: a stale source causes runtime 401s, not a
-      // security escalation, so we log rather than reject the reconnect.
-      try {
-        await pushInstanceSourceUpdate(db, router, instance);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn(
-          "Failed to push sources on reconnect for {agentAddress}: {msg}",
-          { agentAddress, msg },
-        );
-      }
+      // A supervised deployment carries its grants and sources in the
+      // deploy pack and refreshes them over the supervisor's IPC
+      // credentials snapshot at spawn and recycle, so reconnect does not
+      // push them over the wire. The legacy grants.update / sources.update
+      // frames are no longer handled sidecar-side; pushing them here would
+      // hang on the sidecar's dropped frame and reject the reconnect.
 
       const now = new Date();
       if (instance.status !== "running") {

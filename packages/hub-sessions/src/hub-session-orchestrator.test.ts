@@ -1,8 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
 import type { DB } from "@intx/db";
-import type { GrantRule, GrantStore } from "@intx/types/authz";
-import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { RepoStore } from "./repo-store";
@@ -119,13 +118,6 @@ function createMockDB(opts: MockDBOpts) {
 }
 
 type RouterCall =
-  | { kind: "sendGrantsUpdate"; addr: string; grants: GrantRule[] }
-  | {
-      kind: "sendSourcesUpdate";
-      addr: string;
-      sources: InferenceSource[];
-      defaultSource: string;
-    }
   | {
       kind: "sendPack";
       addr: string;
@@ -143,12 +135,6 @@ function createRouterFacade(): {
   return {
     calls,
     facade: {
-      async sendGrantsUpdate(addr, grants) {
-        calls.push({ kind: "sendGrantsUpdate", addr, grants });
-      },
-      async sendSourcesUpdate(addr, sources, defaultSource) {
-        calls.push({ kind: "sendSourcesUpdate", addr, sources, defaultSource });
-      },
       async sendPack(addr, pack, ref, sha) {
         calls.push({ kind: "sendPack", addr, pack, ref, sha });
       },
@@ -194,12 +180,6 @@ function createCollectorRegistry(
       getCurrentTurnId: () => undefined,
       getLastTurnId: () => undefined,
     },
-  };
-}
-
-function createGrantStoreStub(grants: GrantRule[] = []): GrantStore {
-  return {
-    collectGrants: async () => grants,
   };
 }
 
@@ -275,21 +255,19 @@ type Harness = {
   dispose: () => void;
 };
 
-function setup(opts: MockDBOpts & { grants?: GrantRule[] } = {}): Harness {
+function setup(opts: MockDBOpts = {}): Harness {
   const updates: UpdateCall[] = [];
   const db = createMockDB({ ...opts, recordUpdates: updates });
   const events = createSidecarEmitter();
   const router = createRouterFacade();
   const collectors = createCollectorRegistry();
   const repo = createRepoStoreStub();
-  const grantStore = createGrantStoreStub(opts.grants);
 
   const orchestrator = createHubSessionOrchestrator({
     events,
     router: router.facade,
     db,
     eventCollectors: collectors.registry,
-    grantStore,
     agentRepoStore: repo.store,
   });
 
@@ -386,33 +364,17 @@ describe("createHubSessionOrchestrator", () => {
   });
 
   describe("agent.reconnected", () => {
-    test("refreshes grants and skips status update when already running", async () => {
-      const grant: GrantRule = {
-        id: "grant-1",
-        resource: "x:y",
-        action: "read",
-        effect: "allow",
-        origin: "system",
-        conditions: null,
-        expiresAt: null,
-        roleId: null,
-        principalId: PRINCIPAL_ID,
-      };
-      harness = setup({ instance: makeInstance(), grants: [grant] });
+    test("skips the status update when already running", async () => {
+      harness = setup({ instance: makeInstance() });
 
       await harness.events.emitAndAwait("agent.reconnected", {
         agentAddress: AGENT_ADDRESS,
       });
 
-      const grantsCall = harness.router.calls.find(
-        (c) => c.kind === "sendGrantsUpdate",
-      );
-      expect(grantsCall).toBeDefined();
-      if (grantsCall?.kind === "sendGrantsUpdate") {
-        expect(grantsCall.grants).toEqual([grant]);
-      }
-
-      // status was already "running", no update should fire
+      // A supervised deployment refreshes grants/sources over the
+      // supervisor IPC snapshot, not a reconnect wire push, so no router
+      // call fires here. status was already "running", so no update fires.
+      expect(harness.router.calls).toHaveLength(0);
       expect(harness.updates).toHaveLength(0);
     });
 

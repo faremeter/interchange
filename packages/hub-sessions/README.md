@@ -16,7 +16,7 @@ feed agent events back to the HTTP layer for observability.
 `assetService` paired with a `db` handle for the asset manifest
 inserts. `createHubSessionOrchestrator` takes a
 `HubSessionOrchestratorDeps` of `events`, `router`, `db`,
-`eventCollectors`, `grantStore`, and `agentRepoStore`. See the
+`eventCollectors`, and `agentRepoStore`. See the
 exported types in `src/session-service.ts` and
 `src/hub-session-orchestrator.ts` for the authoritative shapes;
 `@intx/hub-api` is the in-tree consumer that wires these
@@ -37,8 +37,8 @@ for the authoritative type shapes.
   provisions and tears down agent sessions on the connected sidecar.
 - `createHubSessionOrchestrator` / `HubSessionOrchestrator`,
   `HubSessionOrchestratorDeps`, `HubSessionRouterFacade` — the
-  higher-level orchestrator that wires the router, event collectors,
-  and grant store together.
+  higher-level orchestrator that wires the router and event
+  collectors together.
 - `createHubSessionLookups` / `HubSessionLookupsDeps` — builds the
   lookup callbacks the sidecar router needs to resolve sessions.
 

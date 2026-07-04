@@ -1,4 +1,4 @@
-import { createDB, createGrantStore } from "@intx/db";
+import { createDB } from "@intx/db";
 import { createApp, createAuth } from "@intx/hub-api";
 import {
   createAgentRepoStore,
@@ -35,7 +35,6 @@ const { db } = createDB({
 });
 
 const auth = createAuth(db);
-const grantStore = createGrantStore(db);
 
 const hubDataDir = process.env["HUB_DATA_DIR"];
 if (!hubDataDir) {
@@ -141,7 +140,6 @@ createHubSessionOrchestrator({
   router: sidecarRouter,
   db,
   eventCollectors,
-  grantStore,
   agentRepoStore,
 });
 
