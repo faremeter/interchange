@@ -9,7 +9,6 @@
 // re-reading env, so the boundary stays at the boot edge.
 
 import { AdapterManifest } from "@intx/inference";
-import type { GCPolicy, RetentionPolicy } from "@intx/storage-isogit";
 
 const DEFAULT_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024;
 
@@ -68,56 +67,4 @@ export function readAdapterManifest(): AdapterManifest {
     throw new Error("SIDECAR_ADAPTER_MANIFEST is not valid JSON", { cause });
   }
   return AdapterManifest.assert(parsed);
-}
-
-// Write-path GC for the sidecar's deployed-agent repos. The reactor
-// commits loose objects every cycle, so these repos accumulate loose
-// objects far faster than packs; the loose threshold is the dominant
-// trigger here. Retention defaults to tip-only: the sidecar treats the
-// repo as the agent's current state, not a long-term archive, so dropping
-// commit history keeps the repo small for reactor read/commit latency. An
-// operator that needs the history preserved sets
-// SIDECAR_AGENT_GC_RETENTION=keep-history.
-const DEFAULT_SIDECAR_AGENT_GC_PACK_THRESHOLD = 16;
-const DEFAULT_SIDECAR_AGENT_GC_LOOSE_THRESHOLD = 512;
-const DEFAULT_SIDECAR_AGENT_GC_WARN_BYTES = 128 * 1024 * 1024;
-
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`${name} must be a positive integer; got ${raw}`);
-  }
-  return n;
-}
-
-function readRetentionEnv(
-  name: string,
-  fallback: RetentionPolicy,
-): RetentionPolicy {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return fallback;
-  if (raw === "tip-only" || raw === "keep-history") return raw;
-  throw new Error(
-    `${name} must be "tip-only" or "keep-history"; got ${JSON.stringify(raw)}`,
-  );
-}
-
-export function readAgentGCPolicy(): GCPolicy {
-  return {
-    packThreshold: readPositiveIntEnv(
-      "SIDECAR_AGENT_GC_PACK_THRESHOLD",
-      DEFAULT_SIDECAR_AGENT_GC_PACK_THRESHOLD,
-    ),
-    looseThreshold: readPositiveIntEnv(
-      "SIDECAR_AGENT_GC_LOOSE_THRESHOLD",
-      DEFAULT_SIDECAR_AGENT_GC_LOOSE_THRESHOLD,
-    ),
-    warnBytes: readPositiveIntEnv(
-      "SIDECAR_AGENT_GC_WARN_BYTES",
-      DEFAULT_SIDECAR_AGENT_GC_WARN_BYTES,
-    ),
-    retention: readRetentionEnv("SIDECAR_AGENT_GC_RETENTION", "tip-only"),
-  };
 }

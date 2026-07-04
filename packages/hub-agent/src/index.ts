@@ -10,23 +10,11 @@ export {
   type AgentKeyStoreDeps,
   type AgentKeyEntry,
 } from "./agent-key-store";
-export type {
-  HarnessBuilder,
-  HarnessBundle,
-  BuildHarnessArgs,
-  DeployApplyErrorEmitter,
-} from "./harness-builder";
+export type { HarnessBuilder } from "./harness-builder";
 export {
   createSessionManager,
   type SessionManager,
   type SessionManagerConfig,
-  type SessionEventSink,
-  type ConnectorStateSink,
-  type AgentSession,
-  type AgentEventListener,
-  type ProvisionResult,
-  type RestoreResult,
-  type RestoredAgent,
 } from "./session-manager";
 export {
   createHubLink,

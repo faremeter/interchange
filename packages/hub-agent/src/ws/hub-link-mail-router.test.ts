@@ -25,16 +25,14 @@ import { base64Encode } from "@intx/types";
 import type {
   HarnessConfig,
   InboundMessage,
-  InferenceSource,
   KeyPair,
 } from "@intx/types/runtime";
-import type { GrantRule } from "@intx/types/authz";
 import { signEd25519, verifySSHSignature } from "@intx/crypto";
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import type { AgentKeyStore } from "../agent-key-store";
-import type { AgentEventListener, SessionManager } from "../session-manager";
+import type { SessionManager } from "../session-manager";
 
 function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
@@ -80,31 +78,23 @@ function createTestKeyStore(): AgentKeyStore & {
   };
 }
 
-function createTestDeployRouter(
-  sessions: SessionManager,
-  keyStore: AgentKeyStore,
-): DeployRouter {
+function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
   return {
     async deploy(frame) {
-      const result = await sessions.provisionAgent(frame.config);
       keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
-      await sessions.persistHubPublicKey(
-        frame.agentAddress,
-        frame.hubPublicKey,
-      );
-      return { publicKey: result.publicKey };
+      return { publicKey: "aa".repeat(32) };
     },
   };
 }
 
-function withTestDeployBindings(sessions: SessionManager): {
+function withTestDeployBindings(): {
   keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
 } {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
-    deployRouter: createTestDeployRouter(sessions, keyStore),
+    deployRouter: createTestDeployRouter(keyStore),
   };
 }
 
@@ -143,65 +133,9 @@ function createMockSessionManager(): SessionManager & {
     provisionedAddresses: [] as string[],
     shouldThrow: null as string | null,
 
-    async provisionAgent(config: HarnessConfig) {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-      mock.provisioned.push(config);
-      mock.provisionedAddresses.push(config.agentAddress);
-      return {
-        publicKey: "deadbeef",
-        keyPair: {
-          publicKey: new Uint8Array(32),
-          privateKey: new Uint8Array(32),
-        },
-      };
-    },
     initRepo: (_address: string) => Promise.resolve(),
-    async startSession(agentAddress: string): Promise<void> {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-      mock.started.push(agentAddress);
-      mock.provisionedAddresses = mock.provisionedAddresses.filter(
-        (a) => a !== agentAddress,
-      );
-      mock.addresses.push(agentAddress);
-    },
-    async destroySession(agentAddress: string): Promise<void> {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-      mock.destroyed.push(agentAddress);
-      mock.addresses = mock.addresses.filter((a) => a !== agentAddress);
-    },
-    async abortSession(agentAddress: string, reason: string): Promise<void> {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-      mock.aborted.push({ address: agentAddress, reason });
-      mock.addresses = mock.addresses.filter((a) => a !== agentAddress);
-    },
-    deliverMessage(agentAddress: string, message: InboundMessage): void {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-      mock.delivered.push({ agentAddress, message });
-    },
-    async updateGrants(
-      _agentAddress: string,
-      _grants: GrantRule[],
-    ): Promise<void> {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-    },
-    async updateSources(
-      _agentAddress: string,
-      _sources: InferenceSource[],
-      _defaultSource: string,
-    ): Promise<void> {
-      if (mock.shouldThrow !== null) throw new Error(mock.shouldThrow);
-    },
-    hasSession(agentAddress: string): boolean {
-      return mock.addresses.includes(agentAddress);
-    },
-    isProvisioned(agentAddress: string): boolean {
-      return mock.provisionedAddresses.includes(agentAddress);
-    },
     getAddresses(): string[] {
       return [...mock.addresses];
-    },
-    async restoreSessions() {
-      return { restored: [], failed: [] };
     },
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
@@ -213,15 +147,7 @@ function createMockSessionManager(): SessionManager & {
       }),
     deleteAgentDir: () => Promise.resolve(),
     getDeployRef: (_agentAddress: string) => Promise.resolve(null),
-    persistHubPublicKey: (_agentAddress: string, _hubPublicKey: string) =>
-      Promise.resolve(),
-    commitInboundMail: (_agentAddress: string, _rawMessage: Uint8Array) =>
-      Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
-    onAgentEvent:
-      (_agentAddress: string, _listener: AgentEventListener) => () => {
-        /* no-op disposer: this test does not exercise per-agent events */
-      },
   };
   return mock;
 }
@@ -320,7 +246,7 @@ describe("hub-link mail.inbound throwing router", () => {
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(sessions),
+      ...withTestDeployBindings(),
       mailInboundRouter,
     });
 

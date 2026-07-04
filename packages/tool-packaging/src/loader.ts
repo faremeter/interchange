@@ -140,8 +140,8 @@ export interface LoaderConfig {
   /**
    * Deadline in milliseconds for a single HTTP-registry tarball fetch,
    * spanning the request and the streamed body read. A stalled registry
-   * cannot block the fetch -- and the restoring `startSession` awaiting
-   * it -- past this bound. Defaults to
+   * cannot block the fetch -- and the deploy's tool materialization
+   * awaiting it -- past this bound. Defaults to
    * `DEFAULT_REGISTRY_FETCH_TIMEOUT_MS`. Asset-sourced tarballs read from
    * the local filesystem and are not subject to it.
    */
@@ -175,8 +175,8 @@ export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
  * both the request and the streamed body read. `readResponseWithLimit`
  * consumes the body through a manual reader loop, so the byte cap bounds
  * size but nothing bounds time: a registry that accepts the connection
- * and then stalls mid-stream would block the fetch -- and the
- * `startSession` awaiting it during a sidecar restore -- indefinitely.
+ * and then stalls mid-stream would block the fetch -- and the deploy's
+ * tool materialization awaiting it -- indefinitely.
  * The deadline is generous so a legitimately large tarball on a slow
  * link still completes within it. Callers that need a different bound
  * pass `registryFetchTimeoutMs` to `createToolLoader`.
@@ -726,7 +726,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
         entry.tarballUrl ??
         defaultTarballUrl(registry.url, entry.name, entry.version);
       // Bound the whole fetch -- request and streamed body read -- so a
-      // stalled registry cannot block the awaiting startSession forever.
+      // stalled registry cannot block the awaiting deploy forever.
       // npm-registry-fetch honors the signal for the request phase;
       // readResponseWithLimit honors it for the manual body read. The
       // timer spans both phases and is cleared only once the read settles.

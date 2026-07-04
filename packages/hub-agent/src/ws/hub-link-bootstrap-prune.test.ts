@@ -31,15 +31,13 @@ import { signEd25519, verifySSHSignature } from "@intx/crypto";
 import type {
   HarnessConfig,
   InboundMessage,
-  InferenceSource,
   KeyPair,
 } from "@intx/types/runtime";
-import type { GrantRule } from "@intx/types/authz";
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import type { AgentKeyStore } from "../agent-key-store";
-import type { AgentEventListener, SessionManager } from "../session-manager";
+import type { SessionManager } from "../session-manager";
 
 function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
@@ -85,19 +83,11 @@ function createTestKeyStore(): AgentKeyStore & {
   };
 }
 
-function createTestDeployRouter(
-  sessions: SessionManager,
-  keyStore: AgentKeyStore,
-): DeployRouter {
+function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
   return {
     async deploy(frame) {
-      const result = await sessions.provisionAgent(frame.config);
       keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
-      await sessions.persistHubPublicKey(
-        frame.agentAddress,
-        frame.hubPublicKey,
-      );
-      return { publicKey: result.publicKey };
+      return { publicKey: "aa".repeat(32) };
     },
   };
 }
@@ -112,54 +102,9 @@ function createMockSessionManager(): SessionManager & {
     provisioned: [] as HarnessConfig[],
     addresses: [] as string[],
 
-    async provisionAgent(config: HarnessConfig) {
-      mock.provisioned.push(config);
-      mock.addresses.push(config.agentAddress);
-      return {
-        publicKey: "deadbeef",
-        keyPair: {
-          publicKey: new Uint8Array(32),
-          privateKey: new Uint8Array(32),
-        },
-      };
-    },
     initRepo: (_address: string) => Promise.resolve(),
-    async startSession(_agentAddress: string): Promise<void> {
-      /* unused */
-    },
-    async destroySession(agentAddress: string): Promise<void> {
-      mock.addresses = mock.addresses.filter((a) => a !== agentAddress);
-    },
-    async abortSession(_agentAddress: string, _reason: string): Promise<void> {
-      /* unused */
-    },
-    deliverMessage(_agentAddress: string, _message: InboundMessage): void {
-      /* unused */
-    },
-    async updateGrants(
-      _agentAddress: string,
-      _grants: GrantRule[],
-    ): Promise<void> {
-      /* unused */
-    },
-    async updateSources(
-      _agentAddress: string,
-      _sources: InferenceSource[],
-      _defaultSource: string,
-    ): Promise<void> {
-      /* unused */
-    },
-    hasSession(agentAddress: string): boolean {
-      return mock.addresses.includes(agentAddress);
-    },
-    isProvisioned(agentAddress: string): boolean {
-      return mock.addresses.includes(agentAddress);
-    },
     getAddresses(): string[] {
       return [...mock.addresses];
-    },
-    async restoreSessions() {
-      return { restored: [], failed: [] };
     },
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
@@ -171,15 +116,7 @@ function createMockSessionManager(): SessionManager & {
       }),
     deleteAgentDir: () => Promise.resolve(),
     getDeployRef: (_agentAddress: string) => Promise.resolve(null),
-    persistHubPublicKey: (_agentAddress: string, _hubPublicKey: string) =>
-      Promise.resolve(),
-    commitInboundMail: (_agentAddress: string, _rawMessage: Uint8Array) =>
-      Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
-    onAgentEvent:
-      (_agentAddress: string, _listener: AgentEventListener) => () => {
-        /* unused */
-      },
   } satisfies SessionManager & {
     provisioned: HarnessConfig[];
     addresses: string[];
@@ -313,7 +250,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       transport,
       sessions,
       keyStore,
-      deployRouter: createTestDeployRouter(sessions, keyStore),
+      deployRouter: createTestDeployRouter(keyStore),
     });
 
     client.connect();

@@ -17,7 +17,6 @@ import { loadAdapterRegistry } from "@intx/inference/providers";
 
 import {
   readAdapterManifest,
-  readAgentGCPolicy,
   readCacheMaxBytes,
   readRegistryMaxTarballBytes,
 } from "./config";
@@ -26,9 +25,8 @@ import { createDefaultHarnessBuilder } from "./default-harness";
 // graph so the supervisor surface is reachable from this binary.
 // `createSidecarDeployRouter` is the production routing the
 // orchestrator hands to the link's `agent.deploy` handler; every
-// inbound frame flows through a freshly-constructed workflow-host
-// supervisor whose trivial branch calls back into the sidecar's
-// existing single-agent provisioning surface.
+// inbound frame stages through the workflow-run substrate, spawning a
+// supervised workflow-process child for a workflow deploy.
 import type { DispatchTimingMark } from "@intx/workflow-host";
 
 import {
@@ -58,9 +56,9 @@ function requireEnv(name: string): string {
 
 const dataDir = requireEnv("SIDECAR_DATA_DIR");
 
-// Resolve cache configuration at the boot edge so the per-apply loader
-// inside the harness builder receives a concrete path and cap rather
-// than re-reading env at non-boundary call sites.
+// Resolve cache configuration at the boot edge so the workflow-child's
+// per-apply loader receives a concrete path and cap through its spawn
+// env rather than re-reading env at non-boundary call sites.
 const sidecarCacheDir = process.env["SIDECAR_CACHE_DIR"];
 const cacheRoot =
   sidecarCacheDir !== undefined && sidecarCacheDir.trim() !== ""
@@ -68,15 +66,14 @@ const cacheRoot =
     : path.join(dataDir, "cache", "tarballs");
 const cacheMaxBytes = readCacheMaxBytes();
 const registryMaxTarballBytes = readRegistryMaxTarballBytes();
-const agentGCPolicy = readAgentGCPolicy();
 
 // Operator-configured custom inference adapters, resolved once at the
 // boot edge. `loadAdapterRegistry` merges the statically-linked
 // built-ins with any custom adapters the manifest names, importing each
 // custom module eagerly here so a bad specifier fails the sidecar at
-// boot rather than at first inference. The SAME registry is threaded
-// into the in-process single-agent harness builder below; the workflow
-// child cannot receive this object across the fork, so the validated
+// boot rather than at first inference. The SAME registry backs the
+// deploy router's source-admission check below; the workflow child
+// cannot receive this object across the fork, so the validated
 // manifest is serialized into the child's spawn env (see
 // `multistepSubstrateEnv`) and the child rebuilds an equivalent
 // registry from it. Specifiers are operator-config-only — the agent
@@ -220,15 +217,13 @@ const agentRepoStore = createAgentRepoStore({
 // agentAddress for hub-side routing.
 const deploymentAddressRegistry = createDeploymentAddressRegistry();
 
-// Per-deployment-address mail handler registry the hub-link consults
-// before falling back to the legacy `transport.deliver` /
-// `sessions.commitInboundMail` path. The deploy router's multi-step
+// Per-deployment-address mail handler registry the hub-link consults on
+// every inbound `mail.inbound` frame. The deploy router's multi-step
 // branch registers `wired.routeInbound` against the deployment's mail
 // address once its supervisor spawns; the hub-link's `mail.inbound`
-// handler calls `tryRoute` first so an inbound deployment-address
-// message lands on the supervisor's mail-bus subscription instead of
-// the legacy session path (which has no `transport` registration and
-// no `sessions` entry for the deployment address).
+// handler calls `tryRoute` so an inbound deployment-address message
+// lands on the supervisor's mail-bus subscription. Mail for an address
+// with no registered handler has no receiver and is logged-and-dropped.
 const multistepMailRouter = createMultistepMailRouter();
 
 // Per-deployment-address signal handler registry the hub-link consults
@@ -314,9 +309,9 @@ const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_TOKEN: sidecarToken,
   PATH: requireEnv("PATH"),
   // Tool-loader caps the child's per-step tool materialization uses.
-  // Resolved once at the boot edge (same values the in-process harness
-  // builder receives) and threaded into the child through the substrate
-  // config so the child does not re-read env at a non-boundary site.
+  // Resolved once at the boot edge and threaded into the child through
+  // the substrate config so the child does not re-read env at a
+  // non-boundary site.
   SIDECAR_CACHE_MAX_BYTES: String(cacheMaxBytes),
   SIDECAR_REGISTRY_MAX_TARBALL_BYTES: String(registryMaxTarballBytes),
   // Serialize the parent's ALREADY-VALIDATED manifest (the object
@@ -338,16 +333,10 @@ if (hostTmpdir !== undefined) {
   multistepSubstrateEnv["TMPDIR"] = hostTmpdir;
 }
 
-// Hoisted so the deploy router's source-admission gate reuses the exact
-// same `canBuildSource` predicate the harness builder enforces, against
-// the one adapter registry, rather than a second copy of the check.
-const buildHarness = createDefaultHarnessBuilder({
-  cacheRoot,
-  cacheMaxBytes,
-  registryMaxTarballBytes,
-  adapters,
-  gcPolicy: agentGCPolicy,
-});
+// The deploy router's source-admission gate reuses this exact
+// `canBuildSource` predicate, against the one adapter registry, rather
+// than a second copy of the check.
+const buildHarness = createDefaultHarnessBuilder({ adapters });
 
 // Set by the `createDeployRouter` callback below (invoked synchronously
 // during construction) so the boot edge can drive the router's restore pass
@@ -360,8 +349,6 @@ const orchestrator = createSidecarOrchestrator({
   token: sidecarToken,
   dataDir,
   transport,
-  buildHarness,
-  createAgentCrypto: createEd25519Crypto,
   cryptoOps: {
     generateKeyPair,
     signEd25519,

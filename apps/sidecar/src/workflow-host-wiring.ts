@@ -688,9 +688,9 @@ export function createSidecarDeployRouter(deps: {
    * mail path (`MailBusBindings.sendOutbound`) signs the agent's replies
    * with the AGENT's identity -- the OUTBOUND half of mailbox ownership
    * (§3a). Without this registration the spawned agent's address has no
-   * `CryptoProvider` on the transport (no `startSession` runs for it),
-   * and an outbound send would throw "address is not registered" rather
-   * than emit unsigned mail.
+   * `CryptoProvider` on the transport (nothing else registers one for
+   * it), and an outbound send would throw "address is not registered"
+   * rather than emit unsigned mail.
    */
   createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   /**

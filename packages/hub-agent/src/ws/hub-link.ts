@@ -1,8 +1,8 @@
 // HubLink: the sidecar-side WebSocket protocol.
 //
-// Connects to the hub, sends the register or reconnect frame, forwards
-// outbound mail and inference events, and handles inbound agent
-// lifecycle commands. Per-agent key material lives on AgentKeyStore;
+// Connects to the hub, sends the register frame, forwards outbound
+// mail and inference events, and handles inbound agent lifecycle
+// commands. Per-agent key material lives on AgentKeyStore;
 // the link calls into the store for challenge signing, deploy-commit
 // verification, and hub-key bookkeeping. The wire layer itself never
 // touches raw key bytes.
@@ -17,9 +17,6 @@ import {
   type AgentUndeployFrame,
   type ChallengeFrame,
   type ChallengeFailedFrame,
-  type SessionAbortFrame,
-  type GrantsUpdateFrame,
-  type SourcesUpdateFrame,
   type PackPushFrame,
   type PackDoneFrame,
   type PackAckFrame,
@@ -28,17 +25,23 @@ import {
   type SignalDeliverFrame,
   type DrainDeliverFrame,
   type SyncRequestFrame,
-  type DeployApplyErrorFrame,
 } from "@intx/types/sidecar";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
+import type { InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentKeyStore } from "../agent-key-store";
-import type {
-  ConnectorStateSink,
-  SessionEventSink,
-  SessionManager,
-} from "../session-manager";
+import type { SessionManager } from "../session-manager";
+
+/**
+ * Sink the link exposes for forwarding a spawned child's verified
+ * InferenceEvents to the hub timeline, keyed by the deploy's session id.
+ */
+export type SessionEventSink = (
+  agentAddress: string,
+  sessionId: string,
+  event: InferenceEvent,
+) => void;
 
 const logger = getLogger(["interchange", "hub-agent", "ws"]);
 
@@ -64,10 +67,10 @@ const defaultScheduleReconnect: ReconnectScheduler = (callback, delayMs) => {
 };
 
 /**
- * Result the deploy router returns to the link after the trivial
- * branch completes. Carries the values the link folds into the
- * outbound `agent.deploy.ack` frame; the link itself stays out of
- * the provisioning details.
+ * Result the deploy router returns to the link once a deploy has
+ * staged. Carries the values the link folds into the outbound
+ * `agent.deploy.ack` frame; the link itself stays out of the deploy
+ * details.
  */
 export type DeployRouterResult = {
   /** Hex-encoded agent public key the hub records for verification. */
@@ -76,11 +79,11 @@ export type DeployRouterResult = {
 
 /**
  * Single-ingress deploy contract the link routes every `agent.deploy`
- * frame through. The workflow-host supervisor is the production
- * implementation -- the supervisor decides between the trivial
- * (1-step) passthrough and the multi-step IPC-backed branch. The
- * shape lives on hub-agent so the package boundary stays one-way
- * (`@intx/hub-agent` does not import `@intx/workflow-host`).
+ * frame through. The sidecar's workflow-run deploy router is the
+ * production implementation -- it stages every deploy through the
+ * workflow-run substrate. The shape lives on hub-agent so the package
+ * boundary stays one-way (`@intx/hub-agent` does not import
+ * `@intx/workflow-host`).
  */
 export interface DeployRouter {
   deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
@@ -90,30 +93,26 @@ export interface DeployRouter {
    * per-deployment registrations the deploy path installed
    * (`MultistepMailRouter`, `MultistepSignalRouter`,
    * `MultistepDrainRouter`, `DeploymentAddressRegistry`). Optional
-   * so test routers and the inline trivial test fixture can omit
-   * the implementation.
+   * so test routers can omit the implementation.
    */
   undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
 }
 
 /**
  * Per-address mail handler registry the link consults on every
- * `mail.inbound` frame before falling back to `transport.deliver` /
- * `sessions.commitInboundMail`. Production wires this against the
- * sidecar's `createMultistepMailRouter` so a multi-step deployment's
- * supervisor receives the bytes through its mail-bus subscription.
- * Trivial deploys never register a handler; their mail flows through
- * the legacy session path unchanged. The shape lives on hub-agent so
- * the link does not import the sidecar host's wiring module, and so
- * tests can substitute a stub.
+ * `mail.inbound` frame. Production wires this against the sidecar's
+ * `createMultistepMailRouter` so a supervised deployment's supervisor
+ * receives the bytes through its mail-bus subscription. Mail for an
+ * address with no registered handler has no receiver and is dropped.
+ * The shape lives on hub-agent so the link does not import the sidecar
+ * host's wiring module, and so tests can substitute a stub.
  */
 export interface MailInboundRouter {
   /**
    * Attempt to dispatch `message` to a handler registered against
    * `agentAddress`. Returns `true` if a handler claimed the message;
-   * `false` if no handler is registered. A `true` return causes the
-   * link to skip the legacy `transport.deliver` /
-   * `sessions.commitInboundMail` fallback entirely.
+   * `false` if no handler is registered, in which case the link logs
+   * and drops the mail.
    */
   tryRoute(agentAddress: string, message: Uint8Array): boolean;
 }
@@ -123,10 +122,10 @@ export interface MailInboundRouter {
  * every inbound `signal.deliver` frame. Production wires this against
  * the sidecar's multi-step deploy registry so the frame flows into the
  * deployment's supervisor (which forwards `signal.deliver` over the
- * control IPC to the workflow-process child). Trivial deployments do
- * not register a handler; the link logs and drops a frame whose
- * `agentAddress` is unknown so the wire surface fails loudly rather
- * than silently absorbing a misrouted delivery.
+ * control IPC to the workflow-process child). The link logs and drops
+ * a frame whose `agentAddress` matches no registered handler so the
+ * wire surface fails loudly rather than silently absorbing a misrouted
+ * delivery.
  *
  * The shape lives on hub-agent so the link does not import the sidecar
  * host's wiring module, and so tests can substitute a stub.
@@ -150,10 +149,9 @@ export interface SignalInboundRouter {
  * the sidecar's multi-step deploy registry so the frame flows into the
  * deployment's supervisor (which forwards a `drain` control IPC frame
  * to the workflow-process child and arms one drainTimeout accumulator
- * per in-flight run). Trivial deployments do not register a handler;
- * the link logs and drops a frame whose `agentAddress` is unknown so
- * the wire surface fails loudly rather than silently absorbing a
- * misrouted delivery.
+ * per in-flight run). The link logs and drops a frame whose
+ * `agentAddress` matches no registered handler so the wire surface
+ * fails loudly rather than silently absorbing a misrouted delivery.
  *
  * The shape lives on hub-agent so the link does not import the sidecar
  * host's wiring module, and so tests can substitute a stub.
@@ -193,37 +191,32 @@ export type HubLinkConfig = {
    */
   deployRouter: DeployRouter;
   /**
-   * Optional pre-fallback mail dispatcher. When present, the link
-   * consults this router on every inbound `mail.inbound` frame; a
-   * `true` return takes the bytes off the legacy
-   * `transport.deliver` + `sessions.commitInboundMail` path entirely.
-   * Production wires this against the sidecar's multi-step deploy
-   * registry so a deployment-address inbound flows into the
-   * supervisor's mail-bus subscription. Trivial deployments (and
-   * tests that exercise the legacy path) omit it; an absent router
-   * is treated as "no handler ever claims" so behaviour is unchanged.
+   * Optional inbound mail dispatcher. When present, the link consults
+   * this router on every inbound `mail.inbound` frame. Production wires
+   * this against the sidecar's multi-step deploy registry so a
+   * deployment-address inbound flows into the supervisor's mail-bus
+   * subscription. Absent (or a `false` return) means no handler claims
+   * the mail, so the link logs and drops it.
    */
   mailInboundRouter?: MailInboundRouter;
   /**
-   * Optional pre-fallback signal dispatcher. When present, the link
-   * routes every inbound `signal.deliver` frame through this router.
-   * Production wires this against the sidecar's multi-step deploy
-   * registry so a deployment-address signal flows into the
-   * supervisor's `deliverSignal`. Trivial deployments (and tests that
-   * do not exercise the signal-delivery surface) omit it; an absent
-   * router causes inbound signal frames to be logged-and-dropped so a
-   * misrouted delivery is observable rather than silent.
+   * Optional inbound signal dispatcher. When present, the link routes
+   * every inbound `signal.deliver` frame through this router. Production
+   * wires this against the sidecar's multi-step deploy registry so a
+   * deployment-address signal flows into the supervisor's
+   * `deliverSignal`. Absent (or a `false` return) causes inbound signal
+   * frames to be logged-and-dropped so a misrouted delivery is
+   * observable rather than silent.
    */
   signalInboundRouter?: SignalInboundRouter;
   /**
-   * Optional pre-fallback drain dispatcher. When present, the link
-   * routes every inbound `drain.deliver` frame through this router.
-   * Production wires this against the sidecar's multi-step deploy
-   * registry so a deployment-address drain flows into the supervisor's
-   * `drain`. Trivial deployments (and tests that do not exercise the
-   * drain surface) omit it; an absent router causes inbound drain
-   * frames to be logged-and-dropped so a misrouted delivery is
-   * observable rather than silent.
+   * Optional inbound drain dispatcher. When present, the link routes
+   * every inbound `drain.deliver` frame through this router. Production
+   * wires this against the sidecar's multi-step deploy registry so a
+   * deployment-address drain flows into the supervisor's `drain`. Absent
+   * (or a `false` return) causes inbound drain frames to be
+   * logged-and-dropped so a misrouted delivery is observable rather than
+   * silent.
    */
   drainInboundRouter?: DrainInboundRouter;
   /**
@@ -249,16 +242,6 @@ export type HubLink = {
   connect(): void;
   close(): void;
   sendEvent: SessionEventSink;
-  sendConnectorState: ConnectorStateSink;
-  /**
-   * Ship a deploy.apply.error frame to the hub. Caller supplies the
-   * agentAddress separately so the frame's other fields stay close to
-   * the loader's failure-site description.
-   */
-  sendDeployApplyError: (
-    agentAddress: string,
-    payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
-  ) => void;
   /**
    * Ship a workflow-run pack to the hub. Streams the supplied pack as
    * `repo.pack.push` chunks followed by a `repo.pack.done`, then
@@ -373,18 +356,18 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
     try {
-      // The deploy router (production: workflow-host supervisor)
-      // owns the agent.deploy framing decision -- trivial vs
-      // multi-step -- and returns the deploy public key the link
-      // folds into the outbound ack. The link itself does not
-      // re-decide; routing lives on the supervisor side of the seam.
+      // The deploy router (production: the sidecar's workflow-run deploy
+      // router) stages the deploy through the substrate and returns the
+      // deploy public key the link folds into the outbound ack. The link
+      // itself does not re-decide; routing lives on the router side of
+      // the seam.
       const result = await deployRouter.deploy(frame);
       send({
         type: "agent.deploy.ack",
         agentAddress: frame.agentAddress,
         publicKey: result.publicKey,
       });
-      logger.info`Provisioned agent ${frame.agentAddress}`;
+      logger.info`Deployed agent ${frame.agentAddress}`;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       send({
@@ -404,9 +387,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     // the registrations released, any in-flight `signal.deliver` /
     // `drain.deliver` / `mail.inbound` frame that lands during teardown
     // is rejected by the router rather than dispatched into a
-    // soon-to-be-orphaned supervisor handler. Trivial-deploy routers
-    // (and test stubs) omit the hook; an absent hook means there was
-    // nothing to release.
+    // soon-to-be-orphaned supervisor handler. Test stubs omit the hook;
+    // an absent hook means there was nothing to release.
     if (deployRouter.undeploy !== undefined) {
       try {
         await deployRouter.undeploy(frame);
@@ -432,14 +414,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         workflowRunPackBootstrapped.delete(key);
       }
       workflowRunPackBootstrappedByAddress.delete(frame.agentAddress);
-    }
-
-    // Stop the harness first.
-    try {
-      await sessions.destroySession(frame.agentAddress);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`Failed to stop session for ${frame.agentAddress}: ${msg}`;
     }
 
     // Best-effort state push to the hub before deleting the directory.
@@ -523,69 +497,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   async function handleChallengeFailed(
     frame: ChallengeFailedFrame,
   ): Promise<void> {
-    // The hub rejected this agent during reconnect — tear it down so
-    // the address is freed for future deploys. The agent may not have
-    // an active session (provisioned but never started, or already
-    // destroyed by a concurrent path), so any error from destroySession
-    // is logged but does not abort the wire layer. Destroy first so any
-    // disposer or mail-commit code still has the agent's crypto handle;
-    // forget the key material only once the session lifecycle methods
-    // have returned.
-    try {
-      await sessions.destroySession(frame.address);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`destroySession during challenge.failed for ${frame.address}: ${msg}`;
-    }
+    // The hub rejected this agent during reconnect -- forget its key
+    // material so the address is freed for future deploys.
     keyStore.forgetAgent(frame.address);
 
     logger.warn`Challenge failed for ${frame.address}, agent torn down: ${frame.reason}`;
-  }
-
-  async function handleSessionAbort(frame: SessionAbortFrame): Promise<void> {
-    try {
-      await sessions.abortSession(frame.agentAddress, frame.reason);
-      send({ type: "session.ack", requestId: frame.requestId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      send({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: message,
-      });
-    }
-  }
-
-  async function handleGrantsUpdate(frame: GrantsUpdateFrame): Promise<void> {
-    try {
-      await sessions.updateGrants(frame.agentAddress, frame.grants);
-      send({ type: "session.ack", requestId: frame.requestId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      send({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: message,
-      });
-    }
-  }
-
-  async function handleSourcesUpdate(frame: SourcesUpdateFrame): Promise<void> {
-    try {
-      await sessions.updateSources(
-        frame.agentAddress,
-        frame.sources,
-        frame.defaultSource,
-      );
-      send({ type: "session.ack", requestId: frame.requestId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      send({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: message,
-      });
-    }
   }
 
   function handlePackPush(frame: PackPushFrame): void {
@@ -882,17 +798,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     switch (frame.type) {
       case "mail.inbound": {
         const rawBytes = base64Decode(frame.rawMessage);
-        // Multi-step deployments register the deployment-level mail
-        // address on `mailInboundRouter` once their supervisor spawns.
-        // For those addresses the legacy session path is not the right
-        // receiver -- the transport mailbox is never registered for the
-        // deployment address (no `startSession` ever runs against it),
-        // and there is no `sessions` entry to satisfy
-        // `commitInboundMail`. Routing through the registered handler
-        // delivers the bytes to the supervisor's mail-bus subscription,
-        // which is what the workflow-host's `awaitSignal` listens on.
-        // Trivial deployments do not register a handler; the fallback
-        // path is the legacy single-agent provisioning surface.
+        // Supervised deployments register the deployment-level mail
+        // address on `mailInboundRouter` once their supervisor spawns;
+        // that handler delivers the bytes to the supervisor's mail-bus
+        // subscription, which is what the workflow-host's `awaitSignal`
+        // listens on. Mail for an address with no registered handler has
+        // no receiver -- the in-process session runtime that once backed
+        // it is retired -- so it is logged and dropped.
         //
         // Guard the router call with try/catch so a throwing handler
         // does not reject this `handleMessage` promise and wedge the
@@ -909,11 +821,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
             logger.warn`mail.inbound router threw for ${frame.agentAddress}: ${msg}`;
           }
         }
-        if (routed) {
-          break;
+        if (!routed) {
+          logger.warn`Dropping mail.inbound for ${frame.agentAddress}: no registered handler`;
         }
-        deliverLocalMail(frame.agentAddress, rawBytes);
-        void sessions.commitInboundMail(frame.agentAddress, rawBytes);
         break;
       }
       case "agent.deploy":
@@ -930,15 +840,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "challenge.failed":
         await handleChallengeFailed(frame);
-        break;
-      case "session.abort":
-        await handleSessionAbort(frame);
-        break;
-      case "grants.update":
-        await handleGrantsUpdate(frame);
-        break;
-      case "sources.update":
-        await handleSourcesUpdate(frame);
         break;
       case "repo.pack.push":
         handlePackPush(frame);
@@ -963,15 +864,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       default:
         logger.warn`Unknown frame type from hub: ${(frame as { type: string }).type}`;
-    }
-  }
-
-  function deliverLocalMail(agentAddress: string, message: Uint8Array): void {
-    try {
-      transport.deliver(agentAddress, message);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`Failed to deliver inbound mail to ${agentAddress}: ${msg}`;
     }
   }
 
@@ -1005,93 +897,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       packReceiver.reset();
       packSender.cancelAll("Connection lost");
 
-      // Register the connection for routing before the restore loop runs. The
-      // hub learns of a sidecar only from a register/reconnect frame, and
-      // connections is the map sendAgentDeploy consults to route a new
-      // provision. An empty-address register here populates that map
-      // immediately, so a provision arriving during restore routes instead of
-      // hitting an empty map and failing with "No sidecar available". The
-      // address list must stay empty: carrying addresses through register
-      // writes addressIndex with no challenge and discards disconnect queues,
-      // so restored sessions enter addressIndex through the challenged
-      // reconnect frame below instead.
+      // Announce this sidecar to the hub for routing. The hub learns of a
+      // sidecar only from a register frame, and `connections` is the map
+      // `sendAgentDeploy` consults to route a deploy. Session addresses are
+      // always empty -- the in-process session runtime is retired -- but the
+      // frame still establishes the sidecar in that map. Workflow deployments
+      // restored at boot (before this connect) re-register here WITHOUT a
+      // challenge: they are hub-minted and keyless, so the hub would otherwise
+      // drop their route on a WS reconnect.
+      const workflowAddresses = getWorkflowAddresses();
       send({
         type: "register",
         sidecarId,
         token,
-        agentAddresses: [],
+        agentAddresses: sessions.getAddresses(),
+        ...(workflowAddresses.length > 0 ? { workflowAddresses } : {}),
       });
-
-      void (async () => {
-        try {
-          const { restored, failed } = await sessions.restoreSessions();
-
-          // The live workflow-substrate deployment addresses this sidecar
-          // hosts, re-read AFTER restore so any deploy that arrived during the
-          // restore window is included. These are hub-minted (no per-address
-          // key) and re-register for routing WITHOUT a challenge -- the hub
-          // otherwise drops their route on a WS reconnect. Carried on whichever
-          // terminal frame fires below; the frame carries the complete current
-          // set, so a plain register does not wipe them.
-          const workflowAddresses = getWorkflowAddresses();
-
-          if (restored.length > 0) {
-            const deployRefs: Record<string, string> = {};
-            for (const entry of restored) {
-              // SessionManager.restoreSessions populated AgentKeyStore's
-              // in-memory keypair cache via scanKeys. Replay the
-              // hub-side pairing record here so verifyDeployCommit can
-              // accept incoming packs without re-running an agent.deploy.
-              if (entry.hubPublicKey !== undefined) {
-                keyStore.recordHubKey(entry.address, entry.hubPublicKey);
-              }
-              const ref = await sessions.getDeployRef(entry.address);
-              if (ref !== null) {
-                deployRefs[entry.address] = ref;
-              }
-            }
-            send({
-              type: "reconnect",
-              sidecarId,
-              token,
-              agentAddresses: restored.map((e) => e.address),
-              ...(workflowAddresses.length > 0 ? { workflowAddresses } : {}),
-              deployRefs,
-            });
-            if (failed.length > 0) {
-              logger.warn`Reconnected ${String(restored.length)} agent(s), ${String(failed.length)} failed to restore`;
-            } else {
-              logger.info`Sent reconnect with ${String(restored.length)} agent(s)`;
-            }
-          } else {
-            // Nothing was restored from disk. The empty register on open
-            // already established routability for session addresses. Send a
-            // register when there are session addresses to re-announce OR
-            // workflow deployments to (re-)register -- a workflow-only sidecar
-            // restores nothing here yet must still announce its deployments.
-            // Session addresses present here belong to agents provisioned
-            // during the restore window (already in addressIndex from their
-            // deploy); disk-restored sessions take the challenged reconnect
-            // branch above.
-            const addresses = sessions.getAddresses();
-            if (addresses.length > 0 || workflowAddresses.length > 0) {
-              send({
-                type: "register",
-                sidecarId,
-                token,
-                agentAddresses: addresses,
-                ...(workflowAddresses.length > 0 ? { workflowAddresses } : {}),
-              });
-            }
-          }
-
-          flush();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.error`Session restore failed, closing connection: ${msg}`;
-          ws?.close();
-        }
-      })();
+      flush();
     });
 
     ws.addEventListener("message", (event) => {
@@ -1166,34 +988,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
   };
 
-  const sendConnectorState: ConnectorStateSink = (
-    agentAddress,
-    connectorState,
-  ) => {
-    send({
-      type: "connector.state.changed",
-      agentAddress,
-      connectorState,
-    });
-  };
-
-  const sendDeployApplyError: HubLink["sendDeployApplyError"] = (
-    agentAddress,
-    payload,
-  ) => {
-    send({
-      type: "deploy.apply.error",
-      agentAddress,
-      ...payload,
-    });
-  };
-
   return {
     connect,
     close,
     sendEvent,
-    sendConnectorState,
-    sendDeployApplyError,
     pushWorkflowRunPack,
   };
 }

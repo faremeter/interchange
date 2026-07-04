@@ -10,9 +10,9 @@
 // adapter fans the bytes out to every subscribed handler. The
 // transport itself is treated as a sink the host already owns -- the
 // adapter does not register addresses on the transport on the
-// supervisor's behalf (production sidecars already register via
-// their own `provisionAgent` flow) and does not double-deliver
-// messages the transport itself routes.
+// supervisor's behalf (production sidecars register the head's address
+// through the deploy router before the supervisor spawns) and does not
+// double-deliver messages the transport itself routes.
 
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
@@ -44,10 +44,9 @@ export interface HubTransportMailBusAdapter extends MailBusBindings {
  * Wrap an existing `HubTransport` instance as the supervisor-facing
  * `MailBusBindings` shape. The `transport` argument is held only as
  * a sink-side reference the adapter does not actively reach into
- * today -- production wiring uses the existing `provisionAgent`
- * flow to register agent addresses on the transport, and the
- * adapter delivers inbound bytes through `routeInbound` directly
- * into the per-address subscriber map below.
+ * today -- the sidecar's deploy router registers the head's address
+ * on the transport, and the adapter delivers inbound bytes through
+ * `routeInbound` directly into the per-address subscriber map below.
  */
 export function wrapHubTransportAsMailBus(
   transport: HubTransport,
@@ -55,11 +54,10 @@ export function wrapHubTransportAsMailBus(
   const subscribers = new Map<string, Set<(rawMessage: Uint8Array) => void>>();
   return {
     registerAddress(address: string) {
-      // The supervisor's address registration is the seam for the
-      // multi-step branch where the workflow-process child owns
-      // its own mailbox; production sidecars register the trivial
-      // address through `SessionManager.provisionAgent` before any
-      // workflow-host hook runs, so this method is intentionally
+      // The supervisor's address registration is the seam where the
+      // workflow-process child owns its own mailbox; production
+      // sidecars register the head's address through the deploy router
+      // before the supervisor spawns, so this method is intentionally
       // inert. The `transport` reference is retained so a future
       // routing change that wants the bus to own registration has
       // the handle in scope.

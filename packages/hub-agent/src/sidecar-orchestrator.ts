@@ -2,31 +2,22 @@
 // of the sidecar runtime — stores, SessionManager, HubLink — and
 // returns a single start/close handle the host driver uses.
 //
-// The host supplies policy (the data directory, the harness builder
-// implementation, the per-agent crypto factory, the low-level crypto
-// primitives, the hub credentials); the orchestrator does the
-// composition. SessionManager and HubLink reference each other through
-// SessionEventSink / ConnectorStateSink callbacks, but SessionManager
-// is constructed first so the sinks initially point at no-op closures
-// the orchestrator owns. After HubLink is constructed those closures
-// are rewired to hubLink.sendEvent and hubLink.sendConnectorState, so
-// the cross-reference is contained inside this module rather than
+// The host supplies policy (the data directory, the low-level crypto
+// primitives, the hub credentials, the deploy-router factory); the
+// orchestrator does the composition. The multi-step deploy path
+// forwards a spawned child's verified InferenceEvents to the hub
+// through a sink the orchestrator owns: it points at a no-op closure
+// until HubLink is constructed, then is rewired to hubLink.sendEvent,
+// so the cross-reference is contained inside this module rather than
 // leaking up to the host entry point.
 
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
-import type { DeployApplyErrorFrame } from "@intx/types/sidecar";
-import type {
-  ConnectorThreadState,
-  CryptoProvider,
-  InferenceEvent,
-  KeyPair,
-} from "@intx/types/runtime";
+import type { InferenceEvent, KeyPair } from "@intx/types/runtime";
 
 import { createAgentKeyStore, type AgentKeyStore } from "./agent-key-store";
 import { createAgentRepoStore, type AgentRepoStore } from "./agent-repo-store";
 import { createSessionManager, type SessionManager } from "./session-manager";
-import type { HarnessBuilder } from "./harness-builder";
 import {
   createHubLink,
   type DeployRouter,
@@ -53,22 +44,13 @@ export type SidecarCryptoOps = {
  * Factory the orchestrator invokes once `sessions` and `keyStore`
  * are constructed. The host returns the `DeployRouter` the link
  * routes every inbound `agent.deploy` through; production wires
- * this against a workflow-host supervisor whose `trivialLaunch`
- * closes over `sessions.provisionAgent`. The host is responsible
- * for closing over any other state the router needs (transport,
- * substrate handle, signing keys) at the call site.
- *
- * `onAgentEvent` is the per-agent InferenceEvent subscription seam
- * the trivial-launch closure uses to bracket the workflow-run event
- * chain against the existing reactor moments
- * (`message.run.started` / `inference.start` / `message.run.ended`).
- * The orchestrator hands it through unchanged so the supervisor's
- * `recordRunEvent` callback fires for the right address.
+ * this against the sidecar's workflow-run deploy router. The host is
+ * responsible for closing over any other state the router needs
+ * (transport, substrate handle, signing keys) at the call site.
  */
 export type CreateDeployRouter = (deps: {
   sessions: SessionManager;
   keyStore: AgentKeyStore;
-  onAgentEvent: SessionManager["onAgentEvent"];
   /**
    * Per-event sink the multi-step branch routes a spawned child's
    * verified `InferenceEvent`s through, keyed by the deployment's agent
@@ -92,8 +74,6 @@ export type SidecarOrchestratorConfig = {
   token: string;
   dataDir: string;
   transport: HubTransport;
-  buildHarness: HarnessBuilder;
-  createAgentCrypto: (keyPair: KeyPair) => CryptoProvider;
   cryptoOps: SidecarCryptoOps;
   /**
    * Host-injected `DeployRouter` factory. The orchestrator calls it
@@ -161,8 +141,6 @@ export function createSidecarOrchestrator(
     token,
     dataDir,
     transport,
-    buildHarness,
-    createAgentCrypto,
     cryptoOps,
     createDeployRouter,
     mailInboundRouter,
@@ -182,10 +160,10 @@ export function createSidecarOrchestrator(
     verifySSHSig: cryptoOps.verifySSHSig,
   });
 
-  // Pre-declare the sinks. SessionManager dispatches events into them
-  // synchronously; the closures point at no-ops until HubLink is
-  // constructed below, at which point they are swapped to the link's
-  // sendEvent / sendConnectorState methods.
+  // Sink the multi-step deploy path routes a spawned child's verified
+  // InferenceEvents through. It points at a no-op until HubLink is
+  // constructed below, at which point it is swapped to the link's
+  // sendEvent method.
   let dispatchEvent: (
     agentAddress: string,
     sessionId: string,
@@ -193,40 +171,12 @@ export function createSidecarOrchestrator(
   ) => void = () => {
     /* replaced after HubLink construction */
   };
-  let dispatchConnectorState: (
-    agentAddress: string,
-    state: ConnectorThreadState | null,
-  ) => void = () => {
-    /* replaced after HubLink construction */
-  };
-  let dispatchDeployApplyError: (
-    agentAddress: string,
-    payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
-  ) => void = () => {
-    /* replaced after HubLink construction */
-  };
 
-  const sessions = createSessionManager({
-    transport,
-    repoStore,
-    keyStore,
-    buildHarness,
-    createAgentCrypto,
-    onEvent(agentAddress, sessionId, event) {
-      dispatchEvent(agentAddress, sessionId, event);
-    },
-    onConnectorStateChanged(agentAddress, state) {
-      dispatchConnectorState(agentAddress, state);
-    },
-    onDeployApplyError(agentAddress, payload) {
-      dispatchDeployApplyError(agentAddress, payload);
-    },
-  });
+  const sessions = createSessionManager({ repoStore });
 
   const deployRouter = createDeployRouter({
     sessions,
     keyStore,
-    onAgentEvent: sessions.onAgentEvent,
     // Route a spawned child's verified InferenceEvents up the same
     // hub-link `agent.event` sink the in-process path uses, so step
     // agent events reach the hub timeline keyed to the deploy's
@@ -265,8 +215,6 @@ export function createSidecarOrchestrator(
   });
 
   dispatchEvent = hubLink.sendEvent;
-  dispatchConnectorState = hubLink.sendConnectorState;
-  dispatchDeployApplyError = hubLink.sendDeployApplyError;
 
   function start(): void {
     hubLink.connect();
