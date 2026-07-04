@@ -467,4 +467,92 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       reconstructDurableConversation(h.agentStateDir, AGENT_KEY),
     ).rejects.toThrow(/seq gap/);
   });
+
+  test("a turn appended during the WAL write is not skipped by the next mirror", async () => {
+    // Regression guard: mirrorToSubstrate slices its new-turn delta from the
+    // reactor's live array BEFORE the appendWalEntry await, then advances the
+    // mirrored turn count AFTER it. peekTurns returns that array by reference,
+    // so a turn the reactor appends DURING the await must be counted as the
+    // count actually persisted -- not the post-await live length -- or the
+    // next mirror slices past it and drops it from the WAL permanently.
+    const liveTurns: ConversationTurn[] = [userTurn("a")];
+    let injected = false;
+
+    // Wrap the substrate so the first WAL append (boundary 0) appends a turn
+    // to the reactor's live array mid-write, reproducing the concurrent
+    // append in the between-slice-and-count window.
+    const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] = (
+      principal,
+      repoId,
+      ref,
+      args,
+    ) => {
+      if (!injected && args.preservePrefix.includes("/wal/")) {
+        injected = true;
+        liveTurns.push(userTurn("b"));
+      }
+      return h.substrate.writeTreePreservingPrefix(
+        principal,
+        repoId,
+        ref,
+        args,
+      );
+    };
+    const wrappedSubstrate = new Proxy(h.substrate, {
+      get(target, prop, receiver): unknown {
+        if (prop === "writeTreePreservingPrefix") {
+          return writeTreePreservingPrefix;
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const store = await createDurableConversationStore({
+      localStoreDir: localDir,
+      signer: h.signer,
+      substrate: wrappedSubstrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      agentKey: AGENT_KEY,
+    });
+
+    // Boundary 0: the local store holds [a]; during its WAL append the
+    // wrapper appends b to the reactor's live array.
+    await store.storage.writeTurns(liveTurns);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(0),
+    });
+    await store.storage.commit({ message: "turn-a" });
+    await store.mirrorToSubstrate();
+    expect(injected).toBe(true);
+
+    // Boundary 1: the reactor has since persisted [a, b] locally. The mirror
+    // must pick up b. The pre-fix code counted b as already mirrored at
+    // boundary 0 (reading the live array length after the await) and sliced
+    // past it here, so boundary 1's WAL entry was an empty delta and b was
+    // lost from the durable log.
+    await store.storage.writeTurns(liveTurns);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(1),
+    });
+    await store.storage.commit({ message: "turn-b" });
+    await store.mirrorToSubstrate();
+
+    const entry = WalEntryShape(readWalEntry(h.agentStateDir, 1));
+    if (entry instanceof type.errors) {
+      throw new Error(`WAL entry 1 failed validation: ${entry.summary}`);
+    }
+    expect(entry.turns.length).toBe(1);
+
+    // Reconstruction yields both turns; under the bug it would yield only [a].
+    const reconstructed = await reconstructDurableConversation(
+      h.agentStateDir,
+      AGENT_KEY,
+    );
+    if (reconstructed === null) throw new Error("expected a reconstruction");
+    expect(reconstructed.turns).toEqual([userTurn("a"), userTurn("b")]);
+  });
 });

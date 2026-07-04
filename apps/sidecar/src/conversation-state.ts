@@ -543,7 +543,12 @@ export async function createDurableConversationStore(
     const boundarySeq = mirroredBoundaryCount;
     await appendWalEntry(boundarySeq, newTurns, metadata);
     mirroredBoundaryCount = boundarySeq + 1;
-    mirroredTurnCount = turns.length;
+    // Advance by the count actually persisted -- newTurns is a pre-await
+    // snapshot -- not by turns.length. `turns` is the reactor's live array
+    // by reference; reading its length after the await would count any turn
+    // appended during appendWalEntry as mirrored, so the next mirror would
+    // slice past it and drop it from the WAL permanently.
+    mirroredTurnCount = mirroredTurnCount + newTurns.length;
 
     // Compact once the live WAL reaches the interval (measured in mirror
     // boundaries = WAL entries, which bounds both the bucket fan-out and the

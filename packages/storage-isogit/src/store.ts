@@ -506,11 +506,14 @@ export class IsogitStore
     turns: ConversationTurn[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    this.lastTurns = turns;
     await fs.promises.writeFile(
       path.join(this.dir, TURNS_FILE),
       encodeJsonlLines(turns),
     );
+    // Advance the in-memory marker only after the durable write succeeds.
+    // peekTurns must never surface an array that failed to persist -- a
+    // write failure leaves it pointing at the last array that did.
+    this.lastTurns = turns;
   }
 
   peekTurns(): ConversationTurn[] {
