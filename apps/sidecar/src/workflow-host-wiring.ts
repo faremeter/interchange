@@ -1262,24 +1262,25 @@ export function createSidecarDeployRouter(deps: {
       });
       routersRegistered = true;
 
+      // Resolve the ack public key BEFORE registering the deployment
+      // address so an (unreachable, deterministic) derivation failure
+      // unwinds the spawn without having touched the boot-edge
+      // `DeploymentAddressRegistry`. A single-step head acks its agent key
+      // (captured above); a multi-step deployment acks the supervisor
+      // principal key its workflow-run events are signed with.
+      const publicKey =
+        headAgentPublicKey ??
+        (await derivePrincipalPublicKeyHex(deps.signingKeySeed));
+
       // Register the deployment-address mapping last so a failure in any
       // earlier step leaves the boot-edge `DeploymentAddressRegistry`
-      // untouched.
+      // untouched. Nothing fallible runs after it, so the finally unwind
+      // has no registry entry to reverse.
       deps.registerDeployment({
         deploymentId,
         agentAddress: spec.agentAddress,
       });
 
-      // Resolve the ack public key BEFORE marking the spawn succeeded so an
-      // (unreachable, deterministic) derivation failure unwinds the spawn
-      // rather than leaving a live-but-unacked deployment whose slug the
-      // caller then frees. Once `succeeded` is set the finally is a no-op
-      // and the deployment is retained. A single-step head acks its agent
-      // key (captured above); a multi-step deployment acks the supervisor
-      // principal key its workflow-run events are signed with.
-      const publicKey =
-        headAgentPublicKey ??
-        (await derivePrincipalPublicKeyHex(deps.signingKeySeed));
       succeeded = true;
       return { publicKey };
     } finally {
