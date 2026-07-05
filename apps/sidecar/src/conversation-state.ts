@@ -347,6 +347,40 @@ export async function createDurableConversationStore(
   // checkpointBoundarySeq) and when to compact.
   let checkpointBoundarySeq = 0;
 
+  // Serialize the shared-counter critical section. Both `mirrorToSubstrate`
+  // and `restoreFromSubstrate` read and advance the three counts above, and
+  // either can re-enter the other: `connectorRouter.restore()` can fire
+  // `onStateChanged` synchronously, which enqueues a mirror. A single
+  // per-instance tail runs every such op one-at-a-time regardless of entry
+  // point, so two overlapping runs cannot read the same boundary seq and
+  // emit two WAL entries at it. Modeled on `runRepoOp` in the hub-agent
+  // session manager: the stored tail swallows rejections so one failed op
+  // does not poison the chain, while each caller still observes its own op's
+  // result (or rejection) through the returned promise.
+  //
+  // This serializes mirror-vs-mirror and mirror-vs-restore only. It does NOT
+  // address the reactor-vs-mirror peek-snapshot window documented on
+  // `runMirror` below (nothing must append to the reactor's turn array
+  // between its last writeTurns and the mirror's peekTurns) -- that is a
+  // different concurrency axis and is out of scope here.
+  let stateOpTail: Promise<unknown> = Promise.resolve();
+  function serializeStateOp<T>(op: () => Promise<T>): Promise<T> {
+    const result = stateOpTail.then(op, op);
+    stateOpTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  function restoreFromSubstrate(): Promise<boolean> {
+    return serializeStateOp(runRestore);
+  }
+
+  function mirrorToSubstrate(): Promise<void> {
+    return serializeStateOp(runMirror);
+  }
+
   function substrateAgentStateFsDir(): string {
     const repoDir = opts.substrate.getRepoDir(opts.workflowRunRepoId);
     return path.join(
@@ -376,7 +410,7 @@ export async function createDurableConversationStore(
     return `${agentStatePrefix}${CHECKPOINT_META_FILE}`;
   }
 
-  async function restoreFromSubstrate(): Promise<boolean> {
+  async function runRestore(): Promise<boolean> {
     const reconstructed = await reconstructDurableConversation(
       substrateAgentStateFsDir(),
       opts.agentKey,
@@ -397,6 +431,17 @@ export async function createDurableConversationStore(
     // so a future change-driven mirror carries the right base.
     await baseStorage.writeTurns(reconstructed.turns);
     baseStorage.setConnectorState(reconstructed.connectorState);
+    // Establish the committed counts BEFORE restoring the connector state.
+    // `connectorRouter.restore()` can fire `onStateChanged` synchronously
+    // (when the restored state differs from current), which enqueues a
+    // mirror. Serialization already chains that mirror behind this restore,
+    // but setting the counts first keeps them correct even if that ordering
+    // guarantee is ever weakened. The counts reflect the substrate state
+    // `reconstructed` was read from, which is durable independent of the
+    // local-store commit below.
+    mirroredBoundaryCount = reconstructed.boundaryCount;
+    mirroredTurnCount = reconstructed.totalTurns;
+    checkpointBoundarySeq = reconstructed.checkpointBoundarySeq;
     connectorRouter.restore(reconstructed.connectorState);
     await baseStorage.writeMetadata({
       pendingOperations: reconstructed.pendingOperations,
@@ -405,9 +450,6 @@ export async function createDurableConversationStore(
     await baseStorage.commit({
       message: `restore conversation for ${opts.agentKey} from substrate`,
     });
-    mirroredBoundaryCount = reconstructed.boundaryCount;
-    mirroredTurnCount = reconstructed.totalTurns;
-    checkpointBoundarySeq = reconstructed.checkpointBoundarySeq;
     return true;
   }
 
@@ -501,7 +543,7 @@ export async function createDurableConversationStore(
     );
   }
 
-  async function mirrorToSubstrate(): Promise<void> {
+  async function runMirror(): Promise<void> {
     // Slice the new turns from the reactor's in-memory array (retained
     // by the local single-writer store at the last writeTurns) instead
     // of re-reading and re-parsing the whole turns.jsonl every
@@ -510,9 +552,10 @@ export async function createDurableConversationStore(
     // mutates the reactor's turn array between its last writeTurns and
     // this read. The mirror runs at onRunBoundary after send() settles,
     // and the reactor only appends inside a cycle (each ending in
-    // writeTurns), so peekTurns() equals the on-disk state here. A
-    // second, concurrent mirror trigger would have to preserve that
-    // ordering or slice from a snapshot.
+    // writeTurns), so peekTurns() equals the on-disk state here.
+    // Serializing the mirror entry points keeps two mirrors from
+    // overlapping this read, but the reactor must still not append
+    // between its writeTurns and this peek -- that axis is not serialized.
     const turns = baseStorage.peekTurns();
     const metadata = await baseStorage.loadMetadata();
 

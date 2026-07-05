@@ -26,6 +26,7 @@ import { generateKeyPair } from "@intx/crypto";
 import { createSSHSignature } from "@intx/crypto";
 import type {
   KeyPair,
+  ConnectorThreadState,
   ConversationTurn,
   PendingOperation,
   TokenUsage,
@@ -554,5 +555,224 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual([userTurn("a"), userTurn("b")]);
+  });
+
+  test("overlapping mirror runs serialize onto distinct boundaries and lose no turns", async () => {
+    // The dormant race this guards against: the awaited onRunBoundary mirror
+    // and the fire-and-forget onStateChanged mirror share the mirrored-count
+    // state with no serialization. Two overlapping runs both read the same
+    // boundary seq AND the same mirroredTurnCount, so they collide on one
+    // boundary and double-advance the turn count -- and a following mirror
+    // then slices past a genuinely new turn and drops it from the log.
+    //
+    // The barrier makes the interleave deterministic: the first WAL append is
+    // held until a would-be-concurrent second mirror has had time to reach
+    // its own append. Without serialization the second append runs on the
+    // stale counts; with it the second mirror does not start until the first
+    // advances them.
+    let releaseFirstAppend!: () => void;
+    const firstAppendHeld = new Promise<void>((resolve) => {
+      releaseFirstAppend = resolve;
+    });
+    let heldOnce = false;
+    const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] =
+      async (principal, repoId, ref, args) => {
+        if (!heldOnce && args.preservePrefix.includes("/wal/")) {
+          heldOnce = true;
+          await firstAppendHeld;
+        }
+        return h.substrate.writeTreePreservingPrefix(
+          principal,
+          repoId,
+          ref,
+          args,
+        );
+      };
+    const wrappedSubstrate = new Proxy(h.substrate, {
+      get(target, prop, receiver): unknown {
+        if (prop === "writeTreePreservingPrefix") {
+          return writeTreePreservingPrefix;
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const store = await createDurableConversationStore({
+      localStoreDir: localDir,
+      signer: h.signer,
+      substrate: wrappedSubstrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      agentKey: AGENT_KEY,
+    });
+
+    // The local store holds [a, b]; fire two overlapping mirrors of it.
+    const ab = [userTurn("a"), userTurn("b")];
+    await store.storage.writeTurns(ab);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(0),
+    });
+    await store.storage.commit({ message: "ab" });
+
+    const both = Promise.all([
+      store.mirrorToSubstrate(),
+      store.mirrorToSubstrate(),
+    ]);
+    // Let a would-be-concurrent second mirror reach its append before the
+    // first is released. Under serialization the second has not started, so
+    // only the first append is held here.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    releaseFirstAppend();
+    await both;
+
+    // A following mirror carries a genuinely new turn. If the overlapping
+    // pair over-counted the mirrored turn count, this mirror slices past `c`
+    // and drops it from the durable log.
+    const abc = [...ab, userTurn("c")];
+    await store.storage.writeTurns(abc);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(1),
+    });
+    await store.storage.commit({ message: "abc" });
+    await store.mirrorToSubstrate();
+
+    const reconstructed = await reconstructDurableConversation(
+      h.agentStateDir,
+      AGENT_KEY,
+    );
+    if (reconstructed === null) throw new Error("expected a reconstruction");
+    expect(reconstructed.turns).toEqual(abc);
+  });
+
+  test("a mirror re-entered by restore's connector-state change cannot clobber a concurrent boundary", async () => {
+    // Restore-reentrancy guard. restoreFromSubstrate calls
+    // connectorRouter.restore(), which fires onStateChanged synchronously when
+    // the restored connector state differs from the router's initial null --
+    // and onStateChanged enqueues a (turnless) mirror. That reentrant mirror
+    // shares the mirrored-count state with restore and with the next real
+    // mirror. Unless restore runs on the same serialization tail (and
+    // establishes the counts before the connector restore), the reentrant
+    // append and a following real mirror can land on the SAME boundary seq,
+    // and the turnless one can overwrite the real turn.
+    //
+    // Seed two durable boundaries, the second carrying a non-null connector
+    // state -- exactly the future condition (a non-null connector state) under
+    // which this otherwise-dormant path activates.
+    const seed = await makeStore(h, localDir);
+    await seed.storage.writeTurns([userTurn("a")]);
+    await seed.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(0),
+    });
+    await seed.storage.commit({ message: "a" });
+    await seed.mirrorToSubstrate();
+
+    const connectorState: ConnectorThreadState = {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<last@example.com>",
+      replyTo: "user@example.com",
+      cc: [],
+    };
+    seed.storage.setConnectorState(connectorState);
+    await seed.storage.writeTurns([userTurn("a"), userTurn("b")]);
+    await seed.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(1),
+    });
+    await seed.storage.commit({ message: "b" });
+    await seed.mirrorToSubstrate();
+
+    // A fresh store restores those two boundaries; a barrier holds the first
+    // WAL append (the reentrant turnless mirror) until a real `c` mirror is
+    // enqueued behind it. Every boundary seq the substrate writes is recorded
+    // (parsed from the append's commit message) so a same-seq clobber fails
+    // loud even if a future change masks the turn-loss symptom.
+    const seqsWritten: number[] = [];
+    let releaseFirstAppend!: () => void;
+    const firstAppendHeld = new Promise<void>((resolve) => {
+      releaseFirstAppend = resolve;
+    });
+    let heldOnce = false;
+    const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] =
+      async (principal, repoId, ref, args) => {
+        const matched = /WAL boundary (\d+)/.exec(args.message);
+        if (matched !== null) seqsWritten.push(Number(matched[1]));
+        if (!heldOnce && args.preservePrefix.includes("/wal/")) {
+          heldOnce = true;
+          await firstAppendHeld;
+        }
+        return h.substrate.writeTreePreservingPrefix(
+          principal,
+          repoId,
+          ref,
+          args,
+        );
+      };
+    const wrappedSubstrate = new Proxy(h.substrate, {
+      get(target, prop, receiver): unknown {
+        if (prop === "writeTreePreservingPrefix") {
+          return writeTreePreservingPrefix;
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const freshLocalDir = path.join(h.baseDir, "reentry-local");
+    const store = await createDurableConversationStore({
+      localStoreDir: freshLocalDir,
+      signer: h.signer,
+      substrate: wrappedSubstrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      agentKey: AGENT_KEY,
+    });
+
+    const restored = await store.restoreFromSubstrate();
+    expect(restored).toBe(true);
+    // Wait until the reentrant mirror's append is parked, so it is
+    // unambiguously the first (held) WAL append.
+    for (let i = 0; i < 200 && !heldOnce; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(heldOnce).toBe(true);
+
+    // A real mirror carrying a genuinely new turn `c`, enqueued behind the
+    // parked reentrant mirror.
+    await store.storage.writeTurns([
+      userTurn("a"),
+      userTurn("b"),
+      userTurn("c"),
+    ]);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(2),
+    });
+    await store.storage.commit({ message: "c" });
+    const cMirror = store.mirrorToSubstrate();
+
+    // Let a would-be-concurrent `c` mirror reach and pass its own append
+    // before the reentrant one is released.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    releaseFirstAppend();
+    await cMirror;
+    // The reentrant mirror is fire-and-forget; let it settle after release.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const reconstructed = await reconstructDurableConversation(
+      h.agentStateDir,
+      AGENT_KEY,
+    );
+    if (reconstructed === null) throw new Error("expected a reconstruction");
+    expect(reconstructed.turns).toEqual([
+      userTurn("a"),
+      userTurn("b"),
+      userTurn("c"),
+    ]);
+    // No two WAL appends targeted the same boundary seq.
+    expect(new Set(seqsWritten).size).toBe(seqsWritten.length);
   });
 });
