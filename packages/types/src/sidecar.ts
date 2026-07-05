@@ -395,10 +395,11 @@ export const GrantsUpdateFrame = type({
 export type GrantsUpdateFrame = typeof GrantsUpdateFrame.infer;
 
 /**
- * Push updated inference sources to a running agent. The sidecar hot-swaps
- * the active source on the harness (selected by id from `defaultSource`)
- * and re-persists the agent config. Responds with session.ack or
- * session.error.
+ * Push an updated inference-source list to a running single-step
+ * deployment. The sidecar routes it to the deployment's supervisor, which
+ * delivers it to the warm agent and swaps its sources in place; element 0
+ * of `sources` is the active source and must equal `defaultSource`.
+ * Responds with session.ack or session.error.
  */
 export const SourcesUpdateFrame = type({
   type: "'sources.update'",

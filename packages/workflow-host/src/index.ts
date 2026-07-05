@@ -94,6 +94,7 @@ export {
   EventPayload,
   FrameEnvelope,
   IPC_CRYPTO,
+  SourcesUpdatedData,
   MacedEnvelope,
   OutboundAttachmentPayload,
   OutboundMessagePayload,

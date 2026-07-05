@@ -501,6 +501,50 @@ describe("createMultistepSourcesRouter", () => {
     router.unregister("dep@integration.interchange");
     expect(await router.tryRoute(frame)).toBe(false);
   });
+
+  test("rejects a rotation with duplicate ids for a registered address without dispatching", async () => {
+    const router = createMultistepSourcesRouter();
+    let called = false;
+    router.register("dep@integration.interchange", async () => {
+      called = true;
+    });
+    // Duplicate ids would crash the child's control-channel receiver on
+    // its narrow, so the router rejects before dispatch.
+    await expect(
+      router.tryRoute({ ...frame, sources: [source, { ...source }] }),
+    ).rejects.toThrow(/unique ids/);
+    expect(called).toBe(false);
+  });
+
+  test("rejects a rotation whose default is not the head source", async () => {
+    const router = createMultistepSourcesRouter();
+    let called = false;
+    router.register("dep@integration.interchange", async () => {
+      called = true;
+    });
+    const second = { ...source, id: "secondary" };
+    await expect(
+      router.tryRoute({
+        ...frame,
+        sources: [source, second],
+        defaultSource: "secondary",
+      }),
+    ).rejects.toThrow(/first element is the default/);
+    expect(called).toBe(false);
+  });
+
+  test("an invalid rotation for an unregistered address is unrouted, not rejected", async () => {
+    const router = createMultistepSourcesRouter();
+    // Registration is checked before validation: an unregistered address
+    // reports `false` and its (here invalid) payload is never inspected.
+    expect(
+      await router.tryRoute({
+        ...frame,
+        agentAddress: "unregistered@integration.interchange",
+        sources: [source, { ...source }],
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("createMultistepDrainRouter", () => {

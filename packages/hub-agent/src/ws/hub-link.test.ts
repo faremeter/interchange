@@ -1014,6 +1014,184 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
+  const ROTATION_SOURCE = {
+    id: "primary",
+    provider: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    apiKey: "sk-rotation",
+    model: "claude-rotation",
+  };
+
+  test("sourcesInboundRouter acks an inbound sources.update round-trip", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deploymentAddress = "dep_sources-ack@integration.interchange";
+
+    const routed: { agentAddress: string }[] = [];
+    const sourcesInboundRouter = {
+      async tryRoute(frame: { agentAddress: string }): Promise<boolean> {
+        routed.push({ agentAddress: frame.agentAddress });
+        return true;
+      },
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-sources-ack",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      sourcesInboundRouter,
+      getWorkflowAddresses: () => [deploymentAddress],
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+      // Resolves on the sidecar's session.ack. Without a reply this would
+      // await the full request timeout, so a prompt resolution is the proof
+      // the round-trip no longer hangs.
+      await env.router.sendSourcesUpdate(
+        deploymentAddress,
+        [ROTATION_SOURCE],
+        "primary",
+      );
+      expect(routed).toHaveLength(1);
+      expect(routed[0]?.agentAddress).toBe(deploymentAddress);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-sources-ack"),
+      );
+    }
+  });
+
+  test("an unrouted sources.update is answered with session.error", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deploymentAddress = "dep_sources-unrouted@integration.interchange";
+
+    const sourcesInboundRouter = {
+      async tryRoute(): Promise<boolean> {
+        return false;
+      },
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-sources-unrouted",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      sourcesInboundRouter,
+      getWorkflowAddresses: () => [deploymentAddress],
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+      await expect(
+        env.router.sendSourcesUpdate(
+          deploymentAddress,
+          [ROTATION_SOURCE],
+          "primary",
+        ),
+      ).rejects.toThrow(/no deployment registered/);
+    } finally {
+      client.close();
+      await waitFor(
+        () =>
+          !env.router.getConnectedSidecars().includes("sc-sources-unrouted"),
+      );
+    }
+  });
+
+  test("a rejected sources.update surfaces the reason as session.error", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deploymentAddress = "dep_sources-reject@integration.interchange";
+
+    const sourcesInboundRouter = {
+      async tryRoute(): Promise<boolean> {
+        throw new Error("supervisor is recycling");
+      },
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-sources-reject",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      sourcesInboundRouter,
+      getWorkflowAddresses: () => [deploymentAddress],
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+      await expect(
+        env.router.sendSourcesUpdate(
+          deploymentAddress,
+          [ROTATION_SOURCE],
+          "primary",
+        ),
+      ).rejects.toThrow(/supervisor is recycling/);
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes("sc-sources-reject"),
+      );
+    }
+  });
+
+  test("a sources.update with no router wired is answered with session.error", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deploymentAddress = "dep_sources-norouter@integration.interchange";
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-sources-norouter",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      // No sourcesInboundRouter: a request/ack frame must still be answered
+      // or the hub hangs on its request timeout.
+      getWorkflowAddresses: () => [deploymentAddress],
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+      await expect(
+        env.router.sendSourcesUpdate(
+          deploymentAddress,
+          [ROTATION_SOURCE],
+          "primary",
+        ),
+      ).rejects.toThrow(/no sourcesInboundRouter/);
+    } finally {
+      client.close();
+      await waitFor(
+        () =>
+          !env.router.getConnectedSidecars().includes("sc-sources-norouter"),
+      );
+    }
+  });
+
   // The hub-link's `pushWorkflowRunPack` retries the FIRST push to a
   // never-bootstrapped `(repoId, ref)` once on failure, absorbing the
   // hub-side `initRepo` CAS race. The retry guard is a Set keyed by

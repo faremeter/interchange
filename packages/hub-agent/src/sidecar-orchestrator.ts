@@ -25,6 +25,7 @@ import {
   type MailInboundRouter,
   type SignalInboundRouter,
   type DrainInboundRouter,
+  type SourcesInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 
@@ -108,6 +109,15 @@ export type SidecarOrchestratorConfig = {
    */
   drainInboundRouter?: DrainInboundRouter;
   /**
+   * Optional inbound sources-rotation dispatcher the link consults on
+   * every inbound `sources.update` frame. Production wires this against
+   * the sidecar's single-step deployment sources handler registry so a
+   * deployment-address rotation flows into the supervisor's
+   * `deliverSources`. The orchestrator forwards the binding unchanged to
+   * `createHubLink`.
+   */
+  sourcesInboundRouter?: SourcesInboundRouter;
+  /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts. Forwarded to the hub link, which announces them on
    * every (re)connect so the hub re-registers them for routing without a
@@ -146,6 +156,7 @@ export function createSidecarOrchestrator(
     mailInboundRouter,
     signalInboundRouter,
     drainInboundRouter,
+    sourcesInboundRouter,
     getWorkflowAddresses,
     pingIntervalMs,
     reconnectDelayMs,
@@ -208,6 +219,7 @@ export function createSidecarOrchestrator(
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
     ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
     ...(drainInboundRouter !== undefined ? { drainInboundRouter } : {}),
+    ...(sourcesInboundRouter !== undefined ? { sourcesInboundRouter } : {}),
     ...(getWorkflowAddresses !== undefined ? { getWorkflowAddresses } : {}),
     ...(pingIntervalMs !== undefined ? { pingIntervalMs } : {}),
     ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),

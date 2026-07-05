@@ -140,9 +140,7 @@ export function createHubSessionOrchestrator(
       // A supervised deployment carries its grants and sources in the
       // deploy pack and refreshes them over the supervisor's IPC
       // credentials snapshot at spawn and recycle, so reconnect does not
-      // push them over the wire. The legacy grants.update / sources.update
-      // frames are no longer handled sidecar-side; pushing them here would
-      // hang on the sidecar's dropped frame and reject the reconnect.
+      // re-push them over the wire.
 
       const now = new Date();
       if (instance.status !== "running") {

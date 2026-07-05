@@ -367,6 +367,7 @@ const orchestrator = createSidecarOrchestrator({
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,
+  sourcesInboundRouter: multistepSourcesRouter,
   // The hub link calls this on every (re)connect to announce the workflow
   // deployments this sidecar hosts so the hub re-registers their routes.
   // `createDeployRouter` runs synchronously during construction (below), so

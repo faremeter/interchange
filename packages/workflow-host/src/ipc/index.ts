@@ -142,6 +142,7 @@ export {
   ControlPayload,
   OutboundAttachmentPayload,
   OutboundMessagePayload,
+  SourcesUpdatedData,
   createControlChannelSender,
   receiveControlChannel,
   type ControlChannelSender,

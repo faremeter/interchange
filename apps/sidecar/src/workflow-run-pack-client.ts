@@ -13,7 +13,10 @@
 // shape the supervisor uses for `writeTreePreservingPrefix`; the
 // transferId is minted inside `HubLink.pushWorkflowRunPack`.
 
+import { type } from "arktype";
+
 import { getLogger } from "@intx/log";
+import { SourcesUpdatedData } from "@intx/workflow-host";
 import type { InferenceSource } from "@intx/types/runtime";
 import type {
   RepoId,
@@ -332,7 +335,26 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
     },
     async tryRoute(frame) {
       const handler = handlers.get(frame.agentAddress);
+      // Registration check first: an unregistered (multi-step or torn-down)
+      // address is unrouted -- reported as `false`, its payload never
+      // inspected, because it would not be acted on regardless.
       if (handler === undefined) return false;
+      // Validate the rotation BEFORE dispatch. This is the only inbound
+      // router that validates its frame, and deliberately so: a bad list
+      // (duplicate ids, or a default that is not the head element) would
+      // reach the child's control-channel receiver and crash it on
+      // `SourcesUpdatedData`'s narrow -- the sources-updated frame is the
+      // only inbound frame carrying a crash-on-invalid narrow downstream,
+      // and the only one that is request/ack. Rejecting here throws, and
+      // the hub-link turns the throw into a truthful `session.error`
+      // instead of acking and detonating the child.
+      const validated = SourcesUpdatedData({
+        sources: frame.sources,
+        defaultSource: frame.defaultSource,
+      });
+      if (validated instanceof type.errors) {
+        throw new Error(validated.summary);
+      }
       await handler({
         sources: frame.sources,
         defaultSource: frame.defaultSource,

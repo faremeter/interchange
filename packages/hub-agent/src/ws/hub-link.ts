@@ -24,6 +24,7 @@ import {
   type RepoId,
   type SignalDeliverFrame,
   type DrainDeliverFrame,
+  type SourcesUpdateFrame,
   type SyncRequestFrame,
 } from "@intx/types/sidecar";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
@@ -169,6 +170,28 @@ export interface DrainInboundRouter {
   tryRoute(frame: DrainDeliverFrame): Promise<boolean>;
 }
 
+/**
+ * Per-deployment-address sources-rotation registry the link consults on
+ * every inbound `sources.update` frame. Unlike signal/drain, `sources.update`
+ * is a REQUEST/ACK frame, so the link answers `session.ack` / `session.error`
+ * rather than logging and dropping -- a missing answer hangs the hub's
+ * request for its full timeout.
+ *
+ * The shape lives on hub-agent so the link does not import the sidecar
+ * host's wiring module, and so tests can substitute a stub.
+ */
+export interface SourcesInboundRouter {
+  /**
+   * Attempt to dispatch `frame` to the supervisor registered against
+   * `frame.agentAddress`. Resolves `true` when a handler accepted the
+   * rotation, `false` when no handler is registered (an unrouted address).
+   * Rejects when the handler is registered but the rotation is invalid or
+   * the supervisor's `deliverSources` throws; the link turns a rejection
+   * into a `session.error` carrying the reason.
+   */
+  tryRoute(frame: SourcesUpdateFrame): Promise<boolean>;
+}
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -219,6 +242,16 @@ export type HubLinkConfig = {
    * silent.
    */
   drainInboundRouter?: DrainInboundRouter;
+  /**
+   * Optional inbound sources-rotation dispatcher. When present, the link
+   * routes every inbound `sources.update` frame through this router and
+   * answers the request/ack frame: `session.ack` when the router accepted
+   * the rotation, `session.error` when no deployment is registered, when
+   * the rotation is invalid, or when delivery throws. Absent means the
+   * link answers `session.error` for every rotation -- required because a
+   * request/ack frame with no reply hangs the hub's request.
+   */
+  sourcesInboundRouter?: SourcesInboundRouter;
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts a live supervisor for. Called on every (re)connect to
@@ -271,6 +304,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     mailInboundRouter,
     signalInboundRouter,
     drainInboundRouter,
+    sourcesInboundRouter,
     getWorkflowAddresses = () => [],
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
@@ -707,6 +741,44 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleSourcesUpdate(frame: SourcesUpdateFrame): Promise<void> {
+    // `sources.update` is request/ack (the hub awaits a reply within its
+    // request timeout), so every path answers `session.ack` or
+    // `session.error` -- unlike the fire-and-forget signal/drain frames
+    // that log and drop. A missing router still answers, or the hub hangs.
+    if (sourcesInboundRouter === undefined) {
+      send({
+        type: "session.error",
+        requestId: frame.requestId,
+        error: "no sourcesInboundRouter is wired",
+      });
+      return;
+    }
+    try {
+      const routed = await sourcesInboundRouter.tryRoute(frame);
+      if (routed) {
+        send({ type: "session.ack", requestId: frame.requestId });
+      } else {
+        send({
+          type: "session.error",
+          requestId: frame.requestId,
+          error: `no deployment registered for ${frame.agentAddress}`,
+        });
+      }
+    } catch (err) {
+      // A registered address whose rotation was rejected: an invalid list
+      // (the router validates before dispatch) or the supervisor's
+      // `deliverSources` throwing (e.g. a recycling phase). The reason
+      // rides back verbatim so the hub sees why the rotation failed.
+      const msg = err instanceof Error ? err.message : String(err);
+      send({
+        type: "session.error",
+        requestId: frame.requestId,
+        error: msg,
+      });
+    }
+  }
+
   async function pushWorkflowRunPack(opts: {
     agentAddress: string;
     repoId: RepoId;
@@ -855,6 +927,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "drain.deliver":
         await handleDrainDeliver(frame);
+        break;
+      case "sources.update":
+        await handleSourcesUpdate(frame);
         break;
       case "repo.pack.ack":
         handlePackAck(frame);
