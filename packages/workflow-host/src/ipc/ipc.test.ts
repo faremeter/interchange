@@ -1496,17 +1496,27 @@ describe("sources-updated payload validation", () => {
     expect(validated instanceof type.errors).toBe(true);
   });
 
-  test("accepts a defaultSource that is not a member of sources", () => {
-    // Constraint ownership: the wire boundary does not enforce
-    // `defaultSource in sources`. The consumer (the agent's source
-    // registry, via indexOfDefault) owns that invariant and throws when
-    // it does not hold, so re-checking it here would duplicate the rule.
+  test("rejects a defaultSource that is not the head source", () => {
+    // The wire boundary owns the head-is-default invariant: the first
+    // element must be the default source, so the warm-swap and cold-build
+    // rotation paths agree on the active source. A default that is present
+    // but not first is still rejected here.
+    const second = { ...source, id: "secondary" };
     const payload = {
       type: "sources-updated",
-      data: { sources: [source], defaultSource: "not-in-list" },
+      data: { sources: [source, second], defaultSource: "secondary" },
     };
     const validated = ControlPayload(payload);
-    expect(validated instanceof type.errors).toBe(false);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects duplicate source ids", () => {
+    const payload = {
+      type: "sources-updated",
+      data: { sources: [source, { ...source }], defaultSource: "primary" },
+    };
+    const validated = ControlPayload(payload);
+    expect(validated instanceof type.errors).toBe(true);
   });
 
   test("rejects a source element missing a required field", () => {

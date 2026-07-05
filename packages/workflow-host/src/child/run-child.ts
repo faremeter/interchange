@@ -862,9 +862,46 @@ async function handleControlPayload(
       return true;
     }
     case "sources-updated": {
-      // Each source carries an apiKey, so log only the shape, never the
-      // payload contents.
-      logger.info`workflow-child sources-updated: ${String(payload.data.sources.length)} sources, default ${payload.data.defaultSource}`;
+      // Live inference-source rotation for the warm single-step agent. The
+      // wire boundary (`SourcesUpdatedData`) already guaranteed the list is
+      // non-empty, its ids are unique, and its head is the default, so this
+      // trusts the frame and does not re-validate it.
+      //
+      // Only a single-step deployment rotates sources: its sole step's id
+      // is the sole key in the sources table, so the whole table is
+      // replaced. A multi-step deployment has no single per-agent source
+      // identity to swap and is never routed a sources-updated frame;
+      // assert it so a mis-route fails loudly rather than corrupting the
+      // table.
+      if (ctx.definition.stepOrder.length !== 1) {
+        throw new Error(
+          `workflow-child sources-updated: only a single-step deployment can rotate sources; got ${String(ctx.definition.stepOrder.length)} steps`,
+        );
+      }
+      const stepId = ctx.definition.stepOrder[0];
+      if (stepId === undefined) {
+        throw new Error(
+          "workflow-child sources-updated: single-step deployment has no step id",
+        );
+      }
+      // A sources-updated only reaches a warm single-step deployment, which
+      // always builds a warm cache. An absent cache is a routing bug, not a
+      // silent no-op.
+      if (ctx.warmCache === undefined) {
+        throw new Error(
+          "workflow-child sources-updated: no warm cache; a sources rotation must target a warm single-step deployment",
+        );
+      }
+      // Swap the built warm agent first (a no-op when none is built yet),
+      // then update the table the next cold build reads. Applying to the
+      // agent first means a rotation racing eviction -- a closed-agent
+      // `setSources` throw -- leaves the table untouched rather than ahead
+      // of a half-applied swap.
+      ctx.warmCache.applySources(
+        payload.data.sources,
+        payload.data.defaultSource,
+      );
+      ctx.sourcesRef.current = { [stepId]: payload.data.sources };
       return false;
     }
     case "ready": {

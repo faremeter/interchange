@@ -185,6 +185,10 @@ function createStubRepoStore(baseDir: string): RepoStore {
 async function seedWorkflowDefinition(
   baseDir: string,
   repoId: RepoId,
+  workflow: { steps: Record<string, unknown>; stepOrder: string[] } = {
+    steps: {},
+    stepOrder: [],
+  },
 ): Promise<void> {
   const dir = path.join(baseDir, repoId.kind, repoId.id);
   await fs.mkdir(dir, { recursive: true });
@@ -193,8 +197,8 @@ async function seedWorkflowDefinition(
     JSON.stringify({
       id: "test-workflow",
       triggers: [],
-      steps: {},
-      stepOrder: [],
+      steps: workflow.steps,
+      stepOrder: workflow.stepOrder,
     }),
   );
 }
@@ -906,6 +910,128 @@ describe("runWorkflowChild", () => {
     ]);
   });
 
+  test("sources-updated on a multi-step deployment is rejected", async () => {
+    const baseDir = await makeTempDir("child-sources-multistep-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    await seedWorkflowDefinition(
+      baseDir,
+      { kind: "workflow", id: "workflow-asset" },
+      {
+        steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+        stepOrder: ["step-1", "step-2"],
+      },
+    );
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+      }),
+    );
+    const bindings = buildBindings({ baseDir, childKeyPair });
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    await supervisorSender.send({
+      type: "sources-updated",
+      data: {
+        sources: [
+          {
+            id: "primary",
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-x",
+            model: "claude-test",
+          },
+        ],
+        defaultSource: "primary",
+      },
+    });
+
+    await expect(runPromise).rejects.toThrow(/single-step deployment/);
+    supervisorToChild.close();
+  });
+
+  test("sources-updated with no warm cache is rejected as a routing bug", async () => {
+    // A single-step definition with WARM_KEEP off leaves the child with no
+    // warm cache. A sources-updated must never silently no-op there; it is
+    // a routing bug, so the handler throws.
+    const baseDir = await makeTempDir("child-sources-nowarm-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    await seedWorkflowDefinition(
+      baseDir,
+      { kind: "workflow", id: "workflow-asset" },
+      { steps: { "step-1": { kind: "step" } }, stepOrder: ["step-1"] },
+    );
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+      }),
+    );
+    const bindings = buildBindings({ baseDir, childKeyPair });
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    await supervisorSender.send({
+      type: "sources-updated",
+      data: {
+        sources: [
+          {
+            id: "primary",
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-x",
+            model: "claude-test",
+          },
+        ],
+        defaultSource: "primary",
+      },
+    });
+
+    await expect(runPromise).rejects.toThrow(/no warm cache/);
+    supervisorToChild.close();
+  });
+
   test("child ready frame is signed by the child's own keypair and bootstraps the supervisor's verification key", async () => {
     const baseDir = await makeTempDir("child-ready-");
     const supervisorKeyPair = await generateKeyPair();
@@ -1108,6 +1234,10 @@ interface WarmAgentSpy {
   closeCount: number;
   readonly conversation: string[];
   readonly replies: string[];
+  readonly sourceRotations: {
+    sources: InferenceSource[];
+    defaultSource: string;
+  }[];
 }
 
 /**
@@ -1125,6 +1255,7 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
     closeCount: 0,
     conversation: [],
     replies: [],
+    sourceRotations: [],
   };
   let endStream: () => void = () => undefined;
   const streamEnded = new Promise<void>((resolve) => {
@@ -1167,8 +1298,11 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
     setSource(_source: InferenceSource) {
       throw new Error("stub setSource() not used");
     },
-    setSources(_sources: InferenceSource[], _defaultSource: string) {
-      throw new Error("stub setSources() not used");
+    setSources(sources: InferenceSource[], defaultSource: string) {
+      // Live source rotation lands here on the warm agent. Record it so the
+      // sources-updated round-trip can assert the swap reached the agent
+      // in place rather than rebuilding it.
+      spy.sourceRotations.push({ sources, defaultSource });
     },
     async history() {
       return [];
@@ -1505,6 +1639,176 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     expect(result.triggeredRunIds).toEqual(["run-1", "run-2"]);
     expect(spy.closeCount).toBe(1);
     expect(spy.lspAlive).toBe(false);
+  });
+
+  test("a sources-updated frame swaps the built warm agent's sources in place", async () => {
+    const baseDir = await makeTempDir("warm-sources-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const stepId = "step-1";
+    const deploymentId = "deployment-x";
+    const workflowRunRepoId: RepoId = {
+      kind: "workflow-run",
+      id: deploymentId,
+    };
+    const workflowDefinitionRepoId: RepoId = {
+      kind: "workflow-run",
+      id: "workflow-asset",
+    };
+
+    const signingKey: KeyPair = await generateKeyPair();
+    const allowAll: AuthorizeFn = () => ({ allowed: true });
+    const substrate = createRepoStore({
+      dataDir: baseDir,
+      signingKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: allowAll,
+    });
+    const principalShape = { kind: "workflow-process", deploymentId };
+    const principal: Principal = principalShape;
+
+    await substrate.writeTree(
+      { kind: "hub" },
+      workflowRunRepoId,
+      "refs/heads/main",
+      { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
+    );
+    const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
+    await seedProcessingEntryInDir(runRepoDir, {
+      address: "deployment-x@example.com",
+      messageId: "msg-1",
+      receivedAt: 1,
+      text: "alpha body",
+    });
+    await substrate.writeTree(
+      { kind: "hub" },
+      workflowDefinitionRepoId,
+      "refs/heads/main",
+      { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
+    );
+    await seedOneStepWorkflowDir(
+      substrate.getRepoDir(workflowDefinitionRepoId),
+      stepId,
+    );
+
+    const { agent, spy } = buildWarmAgentSpy();
+    let factoryCalls = 0;
+    const invokeStep: ChildStepInvoker = async (
+      req,
+      onEvent,
+      authorize,
+      warmCache,
+    ) =>
+      createWorkflowStepInvoker({
+        workflowAuthorize: authorize,
+        buildEnv: async () => stubStepEnv(),
+        agentFactory: async () => {
+          factoryCalls += 1;
+          return agent;
+        },
+        onEvent: (event) => onEvent(event),
+        ...(warmCache !== undefined ? { warmCache } : {}),
+      })(req);
+
+    const bindings: RunWorkflowChildBindings = {
+      substrate,
+      workflowRunRepoId,
+      workflowRunRef: "refs/heads/main",
+      principal,
+      workflowDefinitionRepoId,
+      workflowDefinitionRef: "refs/heads/main",
+      invokeStep,
+      spawnChild: async () => ({ terminalStatus: "completed" }),
+      scheduler: { scheduleIn: () => () => undefined },
+      evaluateGrants: async () => ({
+        effect: "allow" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
+      initialCredentialsSnapshot: {
+        steps: [
+          {
+            stepId,
+            address: "deployment-x@example.com",
+            grants: [],
+            contentHash: "deadbeef",
+          },
+        ],
+      },
+    };
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv({
+      ...makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+      }),
+      WARM_KEEP: "true",
+    });
+
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    await waitForTriggeredRun(childToSupervisor, (lines) => lines.length > 0);
+
+    // Build the warm agent with one message so the cache holds an entry.
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+    });
+    await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 1);
+    expect(factoryCalls).toBe(1);
+
+    // Rotate the sources on the live warm agent.
+    const rotated: InferenceSource[] = [
+      {
+        id: "rotated",
+        provider: "openai",
+        baseURL: "https://api.openai.com",
+        apiKey: "sk-rotated",
+        model: "gpt-rotated",
+      },
+    ];
+    await supervisorSender.send({
+      type: "sources-updated",
+      data: { sources: rotated, defaultSource: "rotated" },
+    });
+    for (let i = 0; i < 400; i += 1) {
+      if (spy.sourceRotations.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // The swap reached the built agent in place, carrying the frame's list
+    // and default, and did NOT rebuild the agent.
+    expect(spy.sourceRotations).toHaveLength(1);
+    expect(spy.sourceRotations[0]?.sources).toEqual(rotated);
+    expect(spy.sourceRotations[0]?.defaultSource).toBe("rotated");
+    expect(factoryCalls).toBe(1);
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "undeploy" },
+    });
+    supervisorToChild.close();
+    await runPromise;
   });
 });
 

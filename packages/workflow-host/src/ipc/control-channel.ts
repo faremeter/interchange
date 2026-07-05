@@ -69,6 +69,44 @@ export const CredentialsSnapshotPayload = type({
 });
 
 /**
+ * Wire shape of a `sources-updated` frame's `data`: the full ordered
+ * inference-source failover chain plus the default source id. Carried
+ * inline like the grants snapshot -- a single-producer, single-consumer
+ * supervisor->child push, so a substrate round-trip would only add
+ * latency. No per-source hash rides along; a source list is flat, with no
+ * per-item pin for a receiver to cross-check.
+ *
+ * The `narrow` pins two frame-structural invariants at this boundary so
+ * every consumer can trust them without re-checking: source ids are
+ * unique, and the first element is the default source. The head-is-default
+ * rule is what keeps the two rotation paths in agreement -- a warm agent's
+ * `setSources` activates the matched default index, while a cold rebuild
+ * pins element 0 -- so they pick the same active source only when the
+ * default is the head.
+ */
+export const SourcesUpdatedData = type({
+  sources: InferenceSource.array().atLeastLength(1),
+  defaultSource: "string > 0",
+}).narrow((data, ctx) => {
+  const seen = new Set<string>();
+  for (const source of data.sources) {
+    if (seen.has(source.id)) {
+      return ctx.mustBe(
+        `a source list with unique ids; "${source.id}" appears more than once`,
+      );
+    }
+    seen.add(source.id);
+  }
+  const head = data.sources[0];
+  if (head === undefined || head.id !== data.defaultSource) {
+    return ctx.mustBe(
+      "a source list whose first element is the default source",
+    );
+  }
+  return true;
+});
+
+/**
  * Wire projection of an attachment on an outbound mail message. The
  * runtime `MessageAttachment.data` is raw bytes; the NDJSON control
  * channel is text, so the bytes ride base64-encoded under `dataBase64`.
@@ -176,20 +214,7 @@ export const ControlPayload = type(
   })
   .or({
     type: "'sources-updated'",
-    data: {
-      /**
-       * The full ordered inference-source failover chain plus the default
-       * source id. Carried inline like grants-updated's snapshot: a
-       * single-producer, single-consumer supervisor->child push, so a
-       * substrate round-trip would only add latency. Constrained non-empty
-       * because a rotation always has at least one source; an empty list
-       * is a malformed frame rejected at the wire boundary. No per-source
-       * hash rides along -- sources are a flat list with no per-item pin
-       * for a receiver to cross-check, unlike the per-step grants snapshot.
-       */
-      sources: InferenceSource.array().atLeastLength(1),
-      defaultSource: "string > 0",
-    },
+    data: SourcesUpdatedData,
   })
   .or({
     type: "'ready'",

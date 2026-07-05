@@ -35,7 +35,7 @@
 
 import { getLogger } from "@intx/log";
 import type { Agent } from "@intx/agent";
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 const logger = getLogger(["workflow-host", "child", "warm-agent-cache"]);
 
@@ -103,6 +103,19 @@ export interface WarmAgentCache {
    */
   clearEventSink(key: string): void;
   /**
+   * Apply a rotated inference-source list to every retained warm agent in
+   * place, via `Agent.setSources`. A single-step warm cache holds 0 or 1
+   * entry, so this rotates the one built agent -- or is a no-op when none
+   * is built yet (the pre-first-build window). The swap mutates the
+   * agent's shared active-source object in place and takes effect on the
+   * reactor's next inference call; the single-threaded control loop means
+   * there is no torn read against a concurrent send. `setSources` validates
+   * the list and throws on an invalid source (or a closed agent, if a
+   * rotation races eviction), so a bad rotation surfaces rather than being
+   * swallowed.
+   */
+  applySources(sources: InferenceSource[], defaultSource: string): void;
+  /**
    * Tear down every cached warm agent: run the wrapped `agent.close()`
    * (disposing plugins and killing the LSP subprocess) and drain the
    * stream forwarder. Idempotent -- a second call after the cache is
@@ -160,6 +173,15 @@ export function createWarmAgentCache(): WarmAgentCache {
     entry.eventSinkRef.current = null;
   }
 
+  function applySources(
+    sources: InferenceSource[],
+    defaultSource: string,
+  ): void {
+    for (const entry of entries.values()) {
+      entry.agent.setSources(sources, defaultSource);
+    }
+  }
+
   async function evictAll(reason: string): Promise<void> {
     if (entries.size === 0) return;
     const toEvict = [...entries.values()];
@@ -195,6 +217,7 @@ export function createWarmAgentCache(): WarmAgentCache {
     store,
     setEventSink,
     clearEventSink,
+    applySources,
     evictAll,
   };
 }
