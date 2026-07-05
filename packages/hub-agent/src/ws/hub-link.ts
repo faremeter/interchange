@@ -23,7 +23,7 @@ import {
   type PackDoneFrame,
   type PackAckFrame,
   type PackRejectFrame,
-  type RepoId,
+  RepoId,
   type SignalDeliverFrame,
   type DrainDeliverFrame,
   type SourcesUpdateFrame,
@@ -59,6 +59,12 @@ const MalformedRequestEnvelope = type({
   "type?": "string",
   "requestId?": "string",
   "agentAddress?": "string",
+  "transferId?": "string",
+  // `repoId` is carried as `unknown` and validated only inside the pack
+  // branch below. Validating it here would fail the whole envelope for a
+  // non-pack frame that happens to carry a malformed `repoId`-shaped field,
+  // sinking its recovery through its own correlation key.
+  "repoId?": "unknown",
 });
 
 /**
@@ -86,6 +92,17 @@ const AGENT_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Inbound chunked-pack request frames the hub correlates by `transferId`
+ * and whose failure reply is a `repo.pack.reject`. The hub tracks these in
+ * its per-transfer pending map with the longest timeout of any request
+ * frame.
+ */
+const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  "repo.pack.push",
+  "repo.pack.done",
+]);
+
+/**
  * Answer a malformed inbound request/ack control frame with an error reply
  * so the hub's request does not hang to its timeout. Two control-frame
  * families answer through their correlation key: the `requestId`-correlated
@@ -95,12 +112,13 @@ const AGENT_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
  * (mail/signal/drain/...) have no requester waiting on a reply, so a
  * malformed one is correctly left to be logged and dropped by the caller.
  *
- * The chunked `repo.pack` streaming transfers are also request/ack (keyed
- * by `transferId`, rejected by `repo.pack.reject`) but are deliberately
- * NOT handled here: a valid `repo.pack.reject` carries a structured
- * `repoId` and a constrained reason that cannot be reliably synthesized
- * from a frame malformed in those very fields, so recovering that path is
- * separate work.
+ * The chunked `repo.pack` streaming transfers (repo.pack.push,
+ * repo.pack.done) are the third family: correlated by `transferId`,
+ * rejected by `repo.pack.reject`. A valid reject also carries the frame's
+ * `agentAddress` and structured `repoId`, so it is answerable only when
+ * all three survive the malformation; when `repoId` (or the transferId) is
+ * itself unrecoverable the frame is left to be logged and dropped, because
+ * a valid `repo.pack.reject` cannot be constructed without them.
  *
  * Returns `true` when it answered; `false` when no correlation key is
  * recoverable (an unknown/absent type, a fire-and-forget frame, or a
@@ -110,7 +128,7 @@ const AGENT_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
 export function answerMalformedRequestFrame(
   raw: unknown,
   summary: string,
-  send: (frame: SessionErrorFrame | AgentErrorFrame) => void,
+  send: (frame: SessionErrorFrame | AgentErrorFrame | PackRejectFrame) => void,
 ): boolean {
   const envelope = MalformedRequestEnvelope(raw);
   if (envelope instanceof type.errors) return false;
@@ -137,6 +155,30 @@ export function answerMalformedRequestFrame(
       type: "agent.error",
       agentAddress: envelope.agentAddress,
       error: `malformed ${frameType} frame: ${summary}`,
+    });
+    return true;
+  }
+  if (
+    PACK_REJECT_REQUEST_TYPES.has(frameType) &&
+    envelope.transferId !== undefined &&
+    envelope.transferId.length > 0 &&
+    envelope.agentAddress !== undefined &&
+    envelope.agentAddress.length > 0
+  ) {
+    // A valid repo.pack.reject carries the frame's structured repoId, so
+    // recover it here (kept out of the shared envelope to protect the other
+    // families). When the repoId is itself malformed there is no valid
+    // reject to build, so the frame is left to be dropped. The hub
+    // correlates the reject by transferId alone; "corrupt" is the reason
+    // for a frame that failed to parse.
+    const repoId = RepoId(envelope.repoId);
+    if (repoId instanceof type.errors) return false;
+    send({
+      type: "repo.pack.reject",
+      agentAddress: envelope.agentAddress,
+      repoId,
+      transferId: envelope.transferId,
+      reason: "corrupt",
     });
     return true;
   }

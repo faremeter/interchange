@@ -18,7 +18,11 @@ import {
   type DeployRouter,
   type ReconnectScheduler,
 } from "./hub-link";
-import type { AgentErrorFrame, SessionErrorFrame } from "@intx/types/sidecar";
+import type {
+  AgentErrorFrame,
+  PackRejectFrame,
+  SessionErrorFrame,
+} from "@intx/types/sidecar";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
@@ -1429,7 +1433,7 @@ describe("register frame on connect", () => {
 
 describe("answerMalformedRequestFrame", () => {
   test("answers a malformed sources.update with session.error carrying the requestId", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     // A structurally-invalid sources list (empty source object) that failed
     // the top-level parse but kept its type + requestId.
     const answered = answerMalformedRequestFrame(
@@ -1448,12 +1452,12 @@ describe("answerMalformedRequestFrame", () => {
     expect(sent[0]).toMatchObject({
       type: "session.error",
       requestId: "req-1",
+      error: expect.stringMatching(/malformed sources.update frame/),
     });
-    expect(sent[0]?.error).toMatch(/malformed sources.update frame/);
   });
 
   test("answers a malformed agent.deploy with agent.error carrying the agentAddress", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
       {
         type: "agent.deploy",
@@ -1468,8 +1472,8 @@ describe("answerMalformedRequestFrame", () => {
     expect(sent[0]).toMatchObject({
       type: "agent.error",
       agentAddress: "ins_deploy@example.com",
+      error: expect.stringMatching(/malformed agent.deploy frame/),
     });
-    expect(sent[0]?.error).toMatch(/malformed agent.deploy frame/);
   });
 
   test("drops the retired requestId-correlated frames the sidecar no longer dispatches", () => {
@@ -1478,7 +1482,8 @@ describe("answerMalformedRequestFrame", () => {
     // one is dropped just like a well-formed one -- the answerable set
     // covers only frames the sidecar actually handles.
     for (const frameType of ["grants.update", "session.abort"]) {
-      const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+      const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] =
+        [];
       const answered = answerMalformedRequestFrame(
         {
           type: frameType,
@@ -1494,7 +1499,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("answers a malformed agent.undeploy with agent.error", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
       { type: "agent.undeploy", agentAddress: "ins_undeploy@example.com" },
       "reason must be a string",
@@ -1504,12 +1509,89 @@ describe("answerMalformedRequestFrame", () => {
     expect(sent[0]).toMatchObject({
       type: "agent.error",
       agentAddress: "ins_undeploy@example.com",
+      error: expect.stringMatching(/malformed agent.undeploy frame/),
     });
-    expect(sent[0]?.error).toMatch(/malformed agent.undeploy frame/);
+  });
+
+  test("answers a malformed repo.pack frame with repo.pack.reject on its transferId", () => {
+    for (const frameType of ["repo.pack.push", "repo.pack.done"]) {
+      const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] =
+        [];
+      const answered = answerMalformedRequestFrame(
+        {
+          type: frameType,
+          agentAddress: "ins_pack@example.com",
+          repoId: { kind: "workflow-run", id: "dep-1" },
+          transferId: "xfer-1",
+          seq: "not-a-number",
+        },
+        "a nested field is malformed",
+        (frame) => sent.push(frame),
+      );
+      expect(answered).toBe(true);
+      expect(sent[0]).toMatchObject({
+        type: "repo.pack.reject",
+        transferId: "xfer-1",
+        reason: "corrupt",
+      });
+    }
+  });
+
+  test("does not answer a repo.pack frame with no recoverable transferId", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "repo.pack.push",
+        agentAddress: "ins_pack@example.com",
+        repoId: { kind: "workflow-run", id: "dep-1" },
+      },
+      "bad",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(false);
+    expect(sent).toHaveLength(0);
+  });
+
+  test("does not answer a repo.pack frame whose repoId is itself malformed", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "repo.pack.push",
+        agentAddress: "ins_pack@example.com",
+        transferId: "xfer-3",
+        repoId: { kind: "not-a-real-kind" },
+      },
+      "bad",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(false);
+    expect(sent).toHaveLength(0);
+  });
+
+  test("recovers a non-pack frame that carries a malformed repoId-shaped field", () => {
+    // repoId is validated only inside the pack branch, so a requestId- or
+    // agentAddress-correlated frame that happens to carry a garbage
+    // repoId still recovers through its own correlation key.
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "sources.update",
+        requestId: "req-9",
+        repoId: { kind: "not-a-real-kind" },
+        sources: [{}],
+      },
+      "sources invalid",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(true);
+    expect(sent[0]).toMatchObject({
+      type: "session.error",
+      requestId: "req-9",
+    });
   });
 
   test("does not answer a sources.update with no recoverable requestId", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
       { type: "sources.update", sources: [{}] },
       "bad",
@@ -1520,7 +1602,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a fire-and-forget frame even with a requestId present", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
       { type: "signal.deliver", agentAddress: "x", requestId: "r" },
       "bad",
@@ -1531,7 +1613,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a frame with no recognizable type", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
       { garbage: true },
       "bad",
