@@ -14,6 +14,8 @@ import {
   HubFrame,
   type SidecarFrame,
   type AgentDeployFrame,
+  type AgentErrorFrame,
+  type SessionErrorFrame,
   type AgentUndeployFrame,
   type ChallengeFrame,
   type ChallengeFailedFrame,
@@ -45,6 +47,101 @@ export type SessionEventSink = (
 ) => void;
 
 const logger = getLogger(["interchange", "hub-agent", "ws"]);
+
+/**
+ * Permissive envelope over a raw inbound frame that failed `HubFrame`
+ * validation. A malformed request/ack frame usually still carries an
+ * intact discriminator and correlation key -- the malformation is in a
+ * nested field -- so these top-level fields can be recovered to answer the
+ * requester.
+ */
+const MalformedRequestEnvelope = type({
+  "type?": "string",
+  "requestId?": "string",
+  "agentAddress?": "string",
+});
+
+/**
+ * Inbound request/ack frames the sidecar dispatches that the hub
+ * correlates by `requestId`, whose failure reply is a `session.error`.
+ * Only `sources.update` qualifies. The hub also has `grants.update` /
+ * `session.abort` senders, but the sidecar has no dispatch handler for
+ * them (retired) and no production caller sends them, so a malformed one
+ * has no more of a requester to answer than a well-formed one -- both are
+ * dropped, keeping the answerable set aligned with what the sidecar
+ * actually handles.
+ */
+const SESSION_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  "sources.update",
+]);
+
+/**
+ * Inbound request/ack frames the hub correlates by `agentAddress` and
+ * whose failure reply is an `agent.error` -- the frames the hub tracks in
+ * its per-address pending-deploy / pending-undeploy maps.
+ */
+const AGENT_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  "agent.deploy",
+  "agent.undeploy",
+]);
+
+/**
+ * Answer a malformed inbound request/ack control frame with an error reply
+ * so the hub's request does not hang to its timeout. Two control-frame
+ * families answer through their correlation key: the `requestId`-correlated
+ * frame (sources.update) replies `session.error`; the
+ * `agentAddress`-correlated frames (agent.deploy, agent.undeploy) reply
+ * `agent.error`. The fire-and-forget frames
+ * (mail/signal/drain/...) have no requester waiting on a reply, so a
+ * malformed one is correctly left to be logged and dropped by the caller.
+ *
+ * The chunked `repo.pack` streaming transfers are also request/ack (keyed
+ * by `transferId`, rejected by `repo.pack.reject`) but are deliberately
+ * NOT handled here: a valid `repo.pack.reject` carries a structured
+ * `repoId` and a constrained reason that cannot be reliably synthesized
+ * from a frame malformed in those very fields, so recovering that path is
+ * separate work.
+ *
+ * Returns `true` when it answered; `false` when no correlation key is
+ * recoverable (an unknown/absent type, a fire-and-forget frame, or a
+ * request/ack frame whose key is itself missing) -- the caller then logs
+ * and drops, because there is nothing to answer.
+ */
+export function answerMalformedRequestFrame(
+  raw: unknown,
+  summary: string,
+  send: (frame: SessionErrorFrame | AgentErrorFrame) => void,
+): boolean {
+  const envelope = MalformedRequestEnvelope(raw);
+  if (envelope instanceof type.errors) return false;
+  const frameType = envelope.type;
+  if (frameType === undefined) return false;
+  if (
+    SESSION_ERROR_REQUEST_TYPES.has(frameType) &&
+    envelope.requestId !== undefined &&
+    envelope.requestId.length > 0
+  ) {
+    send({
+      type: "session.error",
+      requestId: envelope.requestId,
+      error: `malformed ${frameType} frame: ${summary}`,
+    });
+    return true;
+  }
+  if (
+    AGENT_ERROR_REQUEST_TYPES.has(frameType) &&
+    envelope.agentAddress !== undefined &&
+    envelope.agentAddress.length > 0
+  ) {
+    send({
+      type: "agent.error",
+      agentAddress: envelope.agentAddress,
+      error: `malformed ${frameType} frame: ${summary}`,
+    });
+    return true;
+  }
+  return false;
+}
 
 const DEFAULT_PING_INTERVAL_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 3_000;
@@ -862,6 +959,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
     const validated = HubFrame(raw);
     if (validated instanceof type.errors) {
+      // A malformed request/ack frame must still be answered, or the hub's
+      // request hangs to its timeout. `sources.update` and `agent.deploy`
+      // usually keep an intact correlation key even when a nested field is
+      // malformed, so reply with the matching error frame; a fire-and-forget
+      // frame (or one with no recoverable key) is only logged and dropped.
+      answerMalformedRequestFrame(raw, validated.summary, send);
       logger.warn`Invalid hub frame: ${validated.summary}`;
       return;
     }

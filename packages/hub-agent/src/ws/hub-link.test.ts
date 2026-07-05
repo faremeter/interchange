@@ -13,10 +13,12 @@ import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 
 import {
+  answerMalformedRequestFrame,
   createHubLink,
   type DeployRouter,
   type ReconnectScheduler,
 } from "./hub-link";
+import type { AgentErrorFrame, SessionErrorFrame } from "@intx/types/sidecar";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
@@ -1422,5 +1424,120 @@ describe("register frame on connect", () => {
       client.close();
       await server.stop(true);
     }
+  });
+});
+
+describe("answerMalformedRequestFrame", () => {
+  test("answers a malformed sources.update with session.error carrying the requestId", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    // A structurally-invalid sources list (empty source object) that failed
+    // the top-level parse but kept its type + requestId.
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "sources.update",
+        requestId: "req-1",
+        agentAddress: "ins_x@example.com",
+        sources: [{}],
+        defaultSource: "x",
+      },
+      "sources[0].id must be a string",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "session.error",
+      requestId: "req-1",
+    });
+    expect(sent[0]?.error).toMatch(/malformed sources.update frame/);
+  });
+
+  test("answers a malformed agent.deploy with agent.error carrying the agentAddress", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "agent.deploy",
+        agentAddress: "ins_deploy@example.com",
+        agentId: "x",
+      },
+      "config must be an object",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "agent.error",
+      agentAddress: "ins_deploy@example.com",
+    });
+    expect(sent[0]?.error).toMatch(/malformed agent.deploy frame/);
+  });
+
+  test("drops the retired requestId-correlated frames the sidecar no longer dispatches", () => {
+    // grants.update / session.abort have hub senders but no sidecar
+    // dispatch handler (retired) and no production caller, so a malformed
+    // one is dropped just like a well-formed one -- the answerable set
+    // covers only frames the sidecar actually handles.
+    for (const frameType of ["grants.update", "session.abort"]) {
+      const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+      const answered = answerMalformedRequestFrame(
+        {
+          type: frameType,
+          requestId: "req-2",
+          agentAddress: "ins_x@example.com",
+        },
+        "payload must be valid",
+        (frame) => sent.push(frame),
+      );
+      expect(answered).toBe(false);
+      expect(sent).toHaveLength(0);
+    }
+  });
+
+  test("answers a malformed agent.undeploy with agent.error", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      { type: "agent.undeploy", agentAddress: "ins_undeploy@example.com" },
+      "reason must be a string",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(true);
+    expect(sent[0]).toMatchObject({
+      type: "agent.error",
+      agentAddress: "ins_undeploy@example.com",
+    });
+    expect(sent[0]?.error).toMatch(/malformed agent.undeploy frame/);
+  });
+
+  test("does not answer a sources.update with no recoverable requestId", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      { type: "sources.update", sources: [{}] },
+      "bad",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(false);
+    expect(sent).toHaveLength(0);
+  });
+
+  test("does not answer a fire-and-forget frame even with a requestId present", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      { type: "signal.deliver", agentAddress: "x", requestId: "r" },
+      "bad",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(false);
+    expect(sent).toHaveLength(0);
+  });
+
+  test("does not answer a frame with no recognizable type", () => {
+    const sent: (SessionErrorFrame | AgentErrorFrame)[] = [];
+    const answered = answerMalformedRequestFrame(
+      { garbage: true },
+      "bad",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(false);
+    expect(sent).toHaveLength(0);
   });
 });
