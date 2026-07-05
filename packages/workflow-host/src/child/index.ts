@@ -9,6 +9,7 @@ export {
   type RunWorkflowChildBindings,
   type RunWorkflowChildOpts,
   type RunWorkflowChildResult,
+  type SourcesSnapshotRef,
   type SubstrateWriteResponseSink,
 } from "./run-child";
 

@@ -66,6 +66,7 @@ import {
   type GrantEvaluator,
   type RunChildWorkflow,
   type RunWorkflowChildBindings,
+  type SourcesSnapshotRef,
   type StepEnvBase,
   type SubstrateFactory,
   type SubstrateFactoryEnv,
@@ -183,8 +184,9 @@ function parseByteCap(raw: string, name: string): number {
  * `STEP_INFERENCE_SOURCES` env entry. The deploy router serializes
  * `frame.workflow.sources` (a `Record<stepId, InferenceSource[]>`) as
  * JSON and threads it through the supervisor's `substrateEnv`; the
- * factory parses and validates the table once at construction time
- * and pins it for `buildEnv` lookups. Each value is the step's ordered
+ * factory parses and validates the table once at construction time and
+ * seeds it into the run loop's mutable sources reference, which each
+ * `buildEnv` reads. Each value is the step's ordered
  * failover chain -- element 0 is the active source, the tail are the
  * reactor's forward-only failover targets -- so the list is non-empty.
  */
@@ -262,8 +264,8 @@ export function parseAdapterManifest(raw: string): AdapterManifest {
 }
 
 /**
- * Resolve the per-step inference-source failover chain pinned at
- * factory construction. The supervisor's multi-step branch only invokes
+ * Resolve the per-step inference-source failover chain from the table a
+ * build reads. The supervisor's multi-step branch only invokes
  * a step whose `stepId` appears in `frame.workflow.sources`; a lookup
  * miss here is a programmer error in the supervisor, not a wire-side
  * failure, and the resolver surfaces it with the missing `stepId`
@@ -431,7 +433,6 @@ function warmStepStorageRoot(args: {
 }
 
 export interface SidecarStepBuildEnvDeps {
-  table: StepInferenceSourceTable;
   dataDir: string;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
@@ -498,9 +499,10 @@ export interface SidecarStepBuildEnvDeps {
  * the per-step env construction is observable without standing up the
  * full substrate.
  *
- * The closure pins the parsed per-step source table, derives the
- * `stepId` / `runId` / `attempt` from the runtime's `AuthorizeContext`,
- * resolves the per-step `InferenceSource` from the table, and stands up
+ * The closure reads the per-step source table from the mutable
+ * reference passed per build, derives the `stepId` / `runId` / `attempt`
+ * from the runtime's `AuthorizeContext`, resolves the per-step
+ * `InferenceSource` from that table, and stands up
  * a per-step isogit `ContextStore` (also serving as the audit store)
  * plus a per-step workspace directory rooted under the run. A
  * construction failure (mkdir, isogit init) surfaces here rather than
@@ -509,11 +511,22 @@ export interface SidecarStepBuildEnvDeps {
  */
 export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
-): (req: StepInvokeRequest) => Promise<StepEnvBase> {
-  const resolveStepInferenceSource = createStepInferenceSourceResolver(
-    deps.table,
-  );
-  return async (req: StepInvokeRequest): Promise<StepEnvBase> => {
+): (
+  req: StepInvokeRequest,
+  sourcesRef: SourcesSnapshotRef,
+) => Promise<StepEnvBase> {
+  return async (
+    req: StepInvokeRequest,
+    sourcesRef: SourcesSnapshotRef,
+  ): Promise<StepEnvBase> => {
+    // Resolve against the live table each build so a source rotation that
+    // wrote `sourcesRef.current` before this build is reflected in the
+    // agent this build constructs. A warm agent that is already built does
+    // not pass through here again, so a rotation does not reach it through
+    // this path -- this ref covers only a build that has not happened yet.
+    const resolveStepInferenceSource = createStepInferenceSourceResolver(
+      sourcesRef.current,
+    );
     const { stepId, runId, attempt } = req.authzContext;
     if (stepId === undefined) {
       throw new Error(
@@ -1039,7 +1052,6 @@ export function createSidecarSubstrateFactory(
       : undefined;
 
     const buildStepEnv = createSidecarStepBuildEnv({
-      table: stepInferenceSources,
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
       signer: conversationSigner,
@@ -1127,10 +1139,11 @@ export function createSidecarSubstrateFactory(
       onEvent,
       authorize,
       warmCache,
+      sourcesRef,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
-        buildEnv: buildStepEnv,
+        buildEnv: (buildReq) => buildStepEnv(buildReq, sourcesRef),
         agentFactory: stepAgentFactory,
         onEvent,
         ...(warmCache !== undefined ? { warmCache } : {}),
@@ -1211,6 +1224,7 @@ export function createSidecarSubstrateFactory(
       workflowDefinitionRepoId,
       workflowDefinitionRef: validated.WORKFLOW_DEFINITION_REF,
       invokeStep,
+      initialSources: stepInferenceSources,
       spawnChild,
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,

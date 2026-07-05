@@ -148,6 +148,7 @@ export {
   type RunWorkflowChildFromProcessEnvOpts,
   type RunWorkflowChildOpts,
   type RunWorkflowChildResult,
+  type SourcesSnapshotRef,
   type SpawnTimeEnv,
   type SubstrateFactory,
   type SubstrateFactoryEnv,

@@ -91,6 +91,8 @@ import {
   type WorkflowHostDrainController,
 } from "../drain-controller";
 
+import type { InferenceSource } from "@intx/types/runtime";
+
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import {
@@ -133,6 +135,19 @@ const WORKFLOW_JSON_PATH = "workflow.json";
  */
 export type CredentialsSnapshotRef = {
   current: CredentialsSnapshot | null;
+};
+
+/**
+ * Per-step inference-source table the build path reads through a mutable
+ * reference, keyed by stepId. Each value is the step's ordered failover
+ * chain (element 0 is the active source). The single-step build resolves
+ * its sources from `current` at build time, so a rotation that writes
+ * `current` before the first build is reflected in the built agent. A
+ * warm agent that is already built does not re-read this ref, so rotating
+ * its live sources is out of this ref's scope.
+ */
+export type SourcesSnapshotRef = {
+  current: Record<string, InferenceSource[]>;
 };
 
 /**
@@ -228,6 +243,7 @@ export type ChildStepInvoker = (
   onEvent: (event: EventPayload) => void,
   authorize: WorkflowAuthorizeFn,
   warmCache: WarmAgentCache | undefined,
+  sourcesRef: SourcesSnapshotRef,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -302,6 +318,14 @@ export interface RunWorkflowChildBindings {
    * value defers to the first `grants-updated` control frame.
    */
   initialCredentialsSnapshot?: CredentialsSnapshot;
+  /**
+   * Bootstrap per-step inference-source table (keyed by stepId), parsed
+   * from the spawn env by the host's substrate factory. Seeds the
+   * mutable `sourcesRef` the build path reads. Absent value defers to an
+   * empty table, so a step with no pinned source fails loudly at build
+   * rather than resolving a default.
+   */
+  initialSources?: Record<string, InferenceSource[]>;
   /**
    * Optional override for the child's Ed25519 keypair factory. The
    * child mints a fresh keypair at startup, holds the private half
@@ -424,6 +448,9 @@ export async function runWorkflowChild(
   const credentialsRef: CredentialsSnapshotRef = {
     current: opts.bindings.initialCredentialsSnapshot ?? null,
   };
+  const sourcesRef: SourcesSnapshotRef = {
+    current: opts.bindings.initialSources ?? {},
+  };
   const directors = opts.bindings.directors ?? createDefaultDirectorRegistry();
   const clock = opts.bindings.clock ?? defaultClock;
   const newId = opts.bindings.newId ?? defaultNewId;
@@ -508,6 +535,7 @@ export async function runWorkflowChild(
       newId,
       drainController,
       warmCache,
+      sourcesRef,
       onEvent: (event) => {
         void eventSender.send(event).catch((cause) => {
           logger.error`event-channel send failed during resume run ${run.runId}: ${String(cause)}`;
@@ -590,6 +618,7 @@ export async function runWorkflowChild(
           drainController,
           triggeredRunIds,
           warmCache,
+          sourcesRef,
           ...(opts.substrateWriteBridge !== undefined
             ? { substrateWriteBridge: opts.substrateWriteBridge }
             : {}),
@@ -662,6 +691,7 @@ async function handleControlPayload(
     drainController: DrainController;
     triggeredRunIds: string[];
     warmCache: WarmAgentCache | undefined;
+    sourcesRef: SourcesSnapshotRef;
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
   },
@@ -695,6 +725,7 @@ async function handleControlPayload(
         newId: ctx.newId,
         drainController: ctx.drainController,
         warmCache: ctx.warmCache,
+        sourcesRef: ctx.sourcesRef,
         onEvent: (event) => {
           void ctx.eventSender.send(event).catch((cause) => {
             logger.error`event-channel send failed during run ${payload.data.runId}: ${String(cause)}`;
@@ -942,6 +973,7 @@ function buildRuntimeEnv(args: {
   newId: (prefix: string) => string;
   drainController: DrainController;
   warmCache: WarmAgentCache | undefined;
+  sourcesRef: SourcesSnapshotRef;
   onEvent: (event: EventPayload) => void;
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
@@ -974,6 +1006,7 @@ function buildRuntimeEnv(args: {
       args.onEvent,
       args.authorize,
       args.warmCache,
+      args.sourcesRef,
     );
   };
   return {

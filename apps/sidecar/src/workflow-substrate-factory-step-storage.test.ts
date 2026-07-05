@@ -31,7 +31,11 @@ import type {
 } from "@intx/types/runtime";
 import type { RepoId } from "@intx/hub-sessions";
 import { createBuiltinRegistry } from "@intx/inference/providers";
-import type { ChildOutboundMailBridge, StepEnvBase } from "@intx/workflow-host";
+import type {
+  ChildOutboundMailBridge,
+  SourcesSnapshotRef,
+  StepEnvBase,
+} from "@intx/workflow-host";
 import type { StepInvokeRequest } from "@intx/workflow";
 
 import {
@@ -86,10 +90,8 @@ function stubDurableConversationRegistry(): DurableConversationRegistry {
 function buildDeps(opts: {
   dataDir: string;
   durableConversation?: DurableConversationRegistry;
-  sourceChain?: InferenceSource[];
 }): SidecarStepBuildEnvDeps {
   return {
-    table: { [STEP_ID]: opts.sourceChain ?? [SOURCE] },
     dataDir: opts.dataDir,
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
     signer: (payload: string) => Promise.resolve(`sig:${payload.length}`),
@@ -102,6 +104,12 @@ function buildDeps(opts: {
       ? { durableConversation: opts.durableConversation }
       : {}),
   };
+}
+
+function sourcesRefFor(
+  chain: InferenceSource[] = [SOURCE],
+): SourcesSnapshotRef {
+  return { current: { [STEP_ID]: chain } };
 }
 
 function requestForRun(runId: string): StepInvokeRequest {
@@ -128,12 +136,19 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       }),
     );
 
-    const env1: StepEnvBase = await buildEnv(requestForRun("run-1"));
+    const sourcesRef = sourcesRefFor();
+    const env1: StepEnvBase = await buildEnv(
+      requestForRun("run-1"),
+      sourcesRef,
+    );
     // A file the agent would write during run-1's turn.
     const marker = path.join(env1.workdir, "turn-1.txt");
     await fs.writeFile(marker, "carried");
 
-    const env2: StepEnvBase = await buildEnv(requestForRun("run-2"));
+    const env2: StepEnvBase = await buildEnv(
+      requestForRun("run-2"),
+      sourcesRef,
+    );
 
     // Stable keying: a different runId resolves to the SAME workdir, so
     // the warm case is bounded to one dir per agent (not one-per-message)
@@ -154,9 +169,16 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
   test("cold path keys a distinct per-run workdir under that run's subtree", async () => {
     const dataDir = await makeTempDir();
     const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const sourcesRef = sourcesRefFor();
 
-    const env1: StepEnvBase = await buildEnv(requestForRun("run-1"));
-    const env2: StepEnvBase = await buildEnv(requestForRun("run-2"));
+    const env1: StepEnvBase = await buildEnv(
+      requestForRun("run-1"),
+      sourcesRef,
+    );
+    const env2: StepEnvBase = await buildEnv(
+      requestForRun("run-2"),
+      sourcesRef,
+    );
 
     // Per-run keying: each run gets its own workdir, rooted under that
     // run's `runs/<runId>/` subtree -- exactly what the run-completion
@@ -188,15 +210,48 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     };
     const chain = [SOURCE, failoverSource];
     const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(
-      buildDeps({ dataDir, sourceChain: chain }),
-    );
+    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
 
-    const env: StepEnvBase = await buildEnv(requestForRun("run-1"));
+    const env: StepEnvBase = await buildEnv(
+      requestForRun("run-1"),
+      sourcesRefFor(chain),
+    );
 
     // The whole chain reaches the reactor, ordered, with element 0 as the
     // initial source.
     expect(env.sources).toEqual(chain);
     expect(env.defaultSource).toBe(SOURCE.id);
+  });
+
+  test("resolves sources from the mutable ref at build time", async () => {
+    // The build reads the source table through the ref, so a rotation that
+    // writes the ref before a build is reflected in the agent that build
+    // constructs (the cold-window path; a warm already-built agent swaps
+    // sources through the warm cache, not here).
+    const dataDir = await makeTempDir();
+    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const sourcesRef = sourcesRefFor();
+
+    const before: StepEnvBase = await buildEnv(
+      requestForRun("run-1"),
+      sourcesRef,
+    );
+    expect(before.sources).toEqual([SOURCE]);
+
+    const rotated: InferenceSource = {
+      id: "rotated",
+      provider: "openai",
+      baseURL: "https://api.openai.com",
+      apiKey: "sk-rotated",
+      model: "gpt-rotated",
+    };
+    sourcesRef.current = { [STEP_ID]: [rotated] };
+
+    const after: StepEnvBase = await buildEnv(
+      requestForRun("run-2"),
+      sourcesRef,
+    );
+    expect(after.sources).toEqual([rotated]);
+    expect(after.defaultSource).toBe(rotated.id);
   });
 });
