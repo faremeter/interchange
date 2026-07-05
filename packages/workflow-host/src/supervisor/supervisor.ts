@@ -1070,7 +1070,7 @@ export function createWorkflowSupervisor(
       // per-event form, which readers handle. There is no later trigger for
       // a run whose fold is interrupted here (e.g. by a crash before the
       // fold commits): the terminal signal fires once. A bounded recovery
-      // sweep is tracked as INTR-229; until then such a run stays
+      // sweep is not yet implemented; until then such a run stays
       // per-event. The fold commit carries no newly-added terminal event,
       // so it does not re-fire this terminal-write coupling.
       for (const { runId } of newlyTerminalRuns) {
