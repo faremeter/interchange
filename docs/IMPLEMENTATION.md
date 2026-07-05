@@ -237,9 +237,10 @@ The IMAP inbox is the source of truth for conversation history. Session channels
 **Prototype (hub-mediated sidecar transport):**
 
 1. Sidecar reconnects to the hub and proves ownership of agent addresses via signed challenge (see HARNESS_DESIGN.md)
-2. Hub refreshes grants via `grants.update` frame — the sidecar must have current grants before processing any messages
-3. Hub flushes queued undelivered messages as `message.send` frames for verified agents
-4. Sidecar loads agent context from isogit and resumes operation
+2. Hub flushes queued undelivered messages as `message.send` frames for verified agents
+3. Sidecar loads agent context from isogit and resumes operation
+
+A supervised deployment carries its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle, so reconnect does not refresh grants over the wire.
 
 In the prototype, the hub's database serves as the delivery queue for messages sent while the sidecar is disconnected. The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given agent address. See HARNESS_DESIGN.md for the reconnection wire protocol.
 
@@ -272,11 +273,9 @@ Undeploy is an acknowledged operation. The sidecar shuts the deployment's superv
 
 **Grant management:**
 
-| Direction     | Frame           | Purpose                                              |
-| ------------- | --------------- | ---------------------------------------------------- |
-| Hub → Sidecar | `grants.update` | Push updated grants to a running agent (request/ack) |
+The live `grants.update` wire path has been retired. A supervised deployment receives its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle; there is no wire frame that pushes a grant change to an already-running deployment. Propagating a mid-run grant change (for example, a revocation) to a running deployment is not currently implemented.
 
-On first connection (no existing agents), the sidecar sends a `register` frame. On reconnection (agents in data directory), it sends `reconnect`. After successful challenge verification, verified addresses are provisionally added to the routing table so the `grants.update` round-trip can reach the sidecar. If grant refresh fails, the address is rolled back from the routing table and its queued messages are preserved for the next reconnect attempt.
+On first connection (no existing agents), the sidecar sends a `register` frame. On reconnection (agents in data directory), it sends `reconnect`. After successful challenge verification, verified addresses are provisionally added to the routing table so the hub's `agent.reconnected` reaction can run for each; an address whose reaction is rejected by governance is rolled back from the routing table and its queued messages are preserved for the next reconnect attempt.
 
 ### Debug and Telemetry Streams
 
@@ -1173,7 +1172,7 @@ Pack transfers share the WebSocket with live session traffic. To prevent interfe
 
 - Pack chunks are interleaved with other frames at the WebSocket message level (messages are atomic; the receiver processes each independently)
 - The sender limits unacknowledged pack data to a configurable window before pausing
-- Session-critical frames (`mail.inbound`, `message.send`, `session.abort`) are never delayed by pack transfers
+- Session-critical frames (`mail.inbound`, `message.send`) are never delayed by pack transfers
 - The receiver buffers incoming chunks in memory (or a temp file for large transfers) and only unpacks atomically on `pack.done`
 
 ### Rejection Reasons

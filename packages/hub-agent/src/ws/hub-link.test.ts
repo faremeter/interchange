@@ -1476,12 +1476,11 @@ describe("answerMalformedRequestFrame", () => {
     });
   });
 
-  test("drops the retired requestId-correlated frames the sidecar no longer dispatches", () => {
-    // grants.update / session.abort have hub senders but no sidecar
-    // dispatch handler (retired) and no production caller, so a malformed
-    // one is dropped just like a well-formed one -- the answerable set
-    // covers only frames the sidecar actually handles.
-    for (const frameType of ["grants.update", "session.abort"]) {
+  test("drops an unhandled request-shaped frame instead of answering it", () => {
+    // A request-shaped frame whose type is in none of the answerable sets
+    // (SESSION_ERROR / AGENT_ERROR / PACK_REJECT) has no requester to
+    // answer, so a malformed one is dropped rather than answered.
+    for (const frameType of ["some.unhandled.request", "another.unknown"]) {
       const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] =
         [];
       const answered = answerMalformedRequestFrame(

@@ -203,11 +203,11 @@ Conditions are evaluated at runtime by the authorization engine. A grant with un
 
 Grant revocation is policy-driven with a default of fail-secure.
 
-**Creator grant revocation**: If the creator's authority is revoked after agents have been launched with creator-sourced grants, running agents lose the affected grants. The control plane pushes a `grants.update` frame to the harness, which replaces its live materialized grant set. The harness authorizes each tool call against this set before the call executes, so a revoked capability is blocked at the next authorization check; a tool call already in flight is not interrupted. Tenants can configure grace periods or notification-only behavior for specific grant types.
+**Creator grant revocation**: If the creator's authority is revoked after agents have been launched with creator-sourced grants, running agents must lose the affected grants. The harness authorizes each tool call against its live materialized grant set before the call executes, so a revoked capability is blocked once that set no longer contains it; a tool call already in flight is not interrupted. Propagating a revocation to an already-running deployment is not currently implemented — the earlier `grants.update` wire mechanism has been retired, and its supervised replacement is designed separately. Until then, the change takes effect when the deployment next loads its grants (the deploy pack at spawn and the supervisor's IPC credentials snapshot at recycle). Tenants can configure grace periods or notification-only behavior for specific grant types.
 
 **Invoker grant revocation**: Invoker-granted capabilities expire when the agent stops unless explicitly persisted. They are session-scoped by default.
 
-**Tenant policy changes**: When tenant policies change (role modifications, system role updates), the control plane re-evaluates affected agents and pushes grant updates to their harnesses.
+**Tenant policy changes**: When tenant policies change (role modifications, system role updates), the control plane re-evaluates affected agents. Propagating the resulting grant changes to already-running deployments shares the retired-mechanism gap described above; a change takes effect when each deployment next loads its grants.
 
 This parallels the credential revocation model described in CREDENTIALS.md — both follow the same fail-secure default with configurable tenant policies.
 

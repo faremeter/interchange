@@ -70,12 +70,11 @@ const MalformedRequestEnvelope = type({
 /**
  * Inbound request/ack frames the sidecar dispatches that the hub
  * correlates by `requestId`, whose failure reply is a `session.error`.
- * Only `sources.update` qualifies. The hub also has `grants.update` /
- * `session.abort` senders, but the sidecar has no dispatch handler for
- * them (retired) and no production caller sends them, so a malformed one
- * has no more of a requester to answer than a well-formed one -- both are
- * dropped, keeping the answerable set aligned with what the sidecar
- * actually handles.
+ * Only `sources.update` qualifies -- it is the sole frame answered with a
+ * `session.error`. Frames answered through the other correlation keys live
+ * in `AGENT_ERROR_REQUEST_TYPES` and `PACK_REJECT_REQUEST_TYPES`; a
+ * request-shaped frame in none of the three sets has no requester to
+ * answer and is dropped.
  */
 const SESSION_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
   "sources.update",

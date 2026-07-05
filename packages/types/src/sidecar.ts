@@ -9,13 +9,11 @@
 
 import { type } from "arktype";
 import {
-  AbortReason,
   ConnectorThreadState,
   HarnessConfig,
   InferenceEvent,
   InferenceSource,
 } from "./runtime";
-import { WireGrantRule } from "./grant-wire";
 
 // ---------------------------------------------------------------------------
 // Sidecar → Hub
@@ -151,7 +149,7 @@ export const PingFrame = type({ type: "'ping'" });
 export type PingFrame = typeof PingFrame.infer;
 
 /**
- * Acknowledges a request from the hub (session.abort, grants.update).
+ * Acknowledges a request from the hub (sources.update).
  */
 export const SessionAckFrame = type({
   type: "'session.ack'",
@@ -363,36 +361,11 @@ export const ChallengeFailedFrame = type({
 export type ChallengeFailedFrame = typeof ChallengeFailedFrame.infer;
 
 /**
- * Kill switch. Aborts a running agent immediately with the given reason.
- * Responds with session.ack or session.error.
- */
-export const SessionAbortFrame = type({
-  type: "'session.abort'",
-  requestId: "string",
-  agentAddress: "string",
-  reason: AbortReason,
-});
-export type SessionAbortFrame = typeof SessionAbortFrame.infer;
-
-/**
  * Keepalive pong sent by the hub in response to a ping frame.
  * If the sidecar stops receiving pongs, it considers the hub dead.
  */
 export const PongFrame = type({ type: "'pong'" });
 export type PongFrame = typeof PongFrame.infer;
-
-/**
- * Push updated grants to a running agent. The sidecar replaces the agent's
- * grant snapshot and re-persists the config. Responds with session.ack or
- * session.error.
- */
-export const GrantsUpdateFrame = type({
-  type: "'grants.update'",
-  requestId: "string",
-  agentAddress: "string",
-  grants: WireGrantRule.array(),
-});
-export type GrantsUpdateFrame = typeof GrantsUpdateFrame.infer;
 
 /**
  * Push an updated inference-source list to a running single-step
@@ -732,8 +705,6 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(ChallengeFrame)
   .or(ChallengeFailedFrame)
   .or(PongFrame)
-  .or(SessionAbortFrame)
-  .or(GrantsUpdateFrame)
   .or(SourcesUpdateFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)

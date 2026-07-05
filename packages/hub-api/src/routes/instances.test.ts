@@ -240,12 +240,6 @@ function createMockSidecarRouter(
     sendAgentUndeploy(_addr, _reason) {
       return notImpl("sendAgentUndeploy");
     },
-    sendSessionAbort(_addr, _reason) {
-      return notImpl("sendSessionAbort");
-    },
-    sendGrantsUpdate(_addr, _grants) {
-      return notImpl("sendGrantsUpdate");
-    },
     sendSourcesUpdate(_addr, _sources, _defaultSource) {
       return notImpl("sendSourcesUpdate");
     },

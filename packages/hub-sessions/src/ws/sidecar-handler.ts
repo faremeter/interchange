@@ -18,12 +18,10 @@ import {
   type RepoId,
 } from "@intx/types/sidecar";
 import type {
-  AbortReason,
   ConnectorThreadState,
   HarnessConfig,
   InferenceSource,
 } from "@intx/types/runtime";
-import type { GrantRule } from "@intx/types/authz";
 import {
   createSidecarEmitter,
   type SidecarEventEmitter,
@@ -126,8 +124,6 @@ export type SidecarRouter = {
     workflow?: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }>;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
-  sendSessionAbort(agentAddress: string, reason: AbortReason): Promise<void>;
-  sendGrantsUpdate(agentAddress: string, grants: GrantRule[]): Promise<void>;
   sendSourcesUpdate(
     agentAddress: string,
     sources: InferenceSource[],
@@ -846,7 +842,7 @@ export function createSidecarRouter(
 
     // Add verified addresses to the routing table immediately so that
     // `agent.reconnected` subscribers can use sendRequest-based methods
-    // (e.g. sendGrantsUpdate). Addresses that fail governance are
+    // (e.g. sendSourcesUpdate). Addresses that fail governance are
     // rolled back from the routing table afterward.
     for (const addr of verified) {
       // If a different ws still owns this address (live takeover via
@@ -1771,18 +1767,6 @@ export function createSidecarRouter(
     });
   }
 
-  async function sendSessionAbort(
-    agentAddress: string,
-    reason: AbortReason,
-  ): Promise<void> {
-    await sendRequest(agentAddress, (requestId) => ({
-      type: "session.abort",
-      requestId,
-      agentAddress,
-      reason,
-    }));
-  }
-
   function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
     addressIndex.delete(agentAddress);
     const conn = connections.get(ws);
@@ -1835,18 +1819,6 @@ export function createSidecarRouter(
     agentAddress: string,
   ): ConnectorThreadState | null {
     return connectorStates.get(agentAddress) ?? null;
-  }
-
-  async function sendGrantsUpdate(
-    agentAddress: string,
-    grants: GrantRule[],
-  ): Promise<void> {
-    await sendRequest(agentAddress, (requestId) => ({
-      type: "grants.update",
-      requestId,
-      agentAddress,
-      grants,
-    }));
   }
 
   async function sendSourcesUpdate(
@@ -1937,8 +1909,6 @@ export function createSidecarRouter(
     routeMail,
     sendAgentDeploy,
     sendAgentUndeploy,
-    sendSessionAbort,
-    sendGrantsUpdate,
     sendSourcesUpdate,
     sendPack,
     bindStepRoute,

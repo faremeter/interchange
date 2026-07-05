@@ -70,12 +70,6 @@ function createMockRouter(): SidecarRouter & {
     sendAgentUndeploy: track(
       "sendAgentUndeploy",
     ) as SidecarRouter["sendAgentUndeploy"],
-    sendSessionAbort: track(
-      "sendSessionAbort",
-    ) as SidecarRouter["sendSessionAbort"],
-    sendGrantsUpdate: track(
-      "sendGrantsUpdate",
-    ) as SidecarRouter["sendGrantsUpdate"],
     sendSourcesUpdate: track(
       "sendSourcesUpdate",
     ) as SidecarRouter["sendSourcesUpdate"],

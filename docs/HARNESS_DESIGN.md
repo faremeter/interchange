@@ -166,12 +166,13 @@ After self-restoration, the sidecar connects to the hub and proves ownership of 
 2. Hub generates a 32-byte random nonce per address and sends a `challenge` frame
 3. Sidecar signs `nonce || agent_address` (concatenated bytes) with each agent's private key and sends a `challenge.response` frame
 4. Hub verifies each signature against the stored public key for that address
-5. Verified addresses are provisionally added to the routing table (required so the `grants.update` request/ack round-trip can reach the sidecar)
-6. Hub sends `grants.update` with current grants for each verified address
-7. Hub compares each agent's advertised deploy ref against its own. For agents whose ref is stale or absent, the hub creates and sends a fresh deploy pack (fire-and-forget, does not block reconnect completion)
-8. On grant refresh success, the address remains in the routing table and queued messages are flushed
-9. On failure (grant refresh rejected or timed out), the address is rolled back from the routing table — its queue is preserved for the next reconnect attempt and the sidecar receives `challenge.failed`
-10. For addresses that fail cryptographic verification, hub sends `challenge.failed` with the address and reason
+5. Verified addresses are provisionally added to the routing table so the hub's `agent.reconnected` reaction can run for each
+6. Hub compares each agent's advertised deploy ref against its own. For agents whose ref is stale or absent, the hub creates and sends a fresh deploy pack (fire-and-forget, does not block reconnect completion)
+7. On a successful reaction, the address remains in the routing table and queued messages are flushed
+8. On failure (the reconnect reaction rejected by governance), the address is rolled back from the routing table — its queue is preserved for the next reconnect attempt and the sidecar receives `challenge.failed`
+9. For addresses that fail cryptographic verification, hub sends `challenge.failed` with the address and reason
+
+A supervised deployment carries its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle, so reconnect no longer performs a grant-refresh round-trip over the wire.
 
 ### Reconnection Frames
 

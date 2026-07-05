@@ -43,6 +43,20 @@ describe("SidecarRouter", () => {
 
   const TEST_HUB_KEY = "a".repeat(64);
 
+  // A minimal valid source list for exercising the requestId-correlated
+  // sendRequest path (sendSourcesUpdate). The routing/reconnect invariants
+  // under test are independent of the source content.
+  const TEST_SOURCES = [
+    {
+      id: "anthropic:claude-sonnet-4-20250514",
+      provider: "anthropic",
+      baseURL: "https://api.anthropic.com",
+      apiKey: "sk-test",
+      model: "claude-sonnet-4-20250514",
+    },
+  ];
+  const TEST_DEFAULT_SOURCE = "anthropic:claude-sonnet-4-20250514";
+
   beforeEach(() => {
     router = createSidecarRouter({
       requestTimeoutMs: 500,
@@ -1016,7 +1030,7 @@ describe("SidecarRouter", () => {
       await expect(promise).rejects.toThrow(/disconnected/);
     });
 
-    test("abort preserves routing when address re-registered during await", async () => {
+    test("preserves routing when address re-registered during a request await", async () => {
       const ws1 = createMockWs();
       router.handleOpen(ws1);
       router.handleMessage(
@@ -1029,7 +1043,11 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      const promise = router.sendSessionAbort("agent@local", "user_disconnect");
+      const promise = router.sendSourcesUpdate(
+        "agent@local",
+        TEST_SOURCES,
+        TEST_DEFAULT_SOURCE,
+      );
       const frame = lastSent(ws1);
 
       const ws2 = createMockWs();
@@ -1053,7 +1071,7 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).toContain("agent@local");
     });
 
-    test("closing stale sidecar after reconnect-during-abort does not evict address", async () => {
+    test("closing stale sidecar after reconnect-during-request does not evict address", async () => {
       const ws1 = createMockWs();
       router.handleOpen(ws1);
       router.handleMessage(
@@ -1066,7 +1084,11 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      const promise = router.sendSessionAbort("agent@local", "user_disconnect");
+      const promise = router.sendSourcesUpdate(
+        "agent@local",
+        TEST_SOURCES,
+        TEST_DEFAULT_SOURCE,
+      );
       const frame = lastSent(ws1);
 
       const ws2 = createMockWs();
@@ -2343,7 +2365,7 @@ describe("SidecarRouter", () => {
       expect(flushed[1].rawMessage).toBe("msg-2");
     });
 
-    test("sendSessionAbort rejects when agent is disconnected", async () => {
+    test("sendSourcesUpdate rejects when agent is disconnected", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -2358,7 +2380,11 @@ describe("SidecarRouter", () => {
       router.handleClose(ws);
 
       await expect(
-        router.sendSessionAbort("agent@local", "user_disconnect"),
+        router.sendSourcesUpdate(
+          "agent@local",
+          TEST_SOURCES,
+          TEST_DEFAULT_SOURCE,
+        ),
       ).rejects.toThrow("No sidecar connected");
     });
   });
