@@ -28,7 +28,9 @@ import {
 } from "./workflow-host-wiring";
 import {
   createMultistepMailRouter,
+  createMultistepSourcesRouter,
   type MultistepMailRouter,
+  type MultistepSourcesRouter,
 } from "./workflow-run-pack-client";
 import {
   writeWorkflowDeploymentRecord,
@@ -519,6 +521,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     multistepBinaryPath?: string;
     multistepSubstrateEnv?: Record<string, string>;
     multistepMailRouter?: MultistepMailRouter;
+    multistepSourcesRouter?: MultistepSourcesRouter;
     registerDeployment?: (args: {
       deploymentId: string;
       agentAddress: string;
@@ -616,6 +619,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         : {}),
       ...(opts.multistepMailRouter !== undefined
         ? { multistepMailRouter: opts.multistepMailRouter }
+        : {}),
+      ...(opts.multistepSourcesRouter !== undefined
+        ? { multistepSourcesRouter: opts.multistepSourcesRouter }
         : {}),
       ...(opts.readyTimeoutMs !== undefined
         ? { readyTimeoutMs: opts.readyTimeoutMs }
@@ -1937,6 +1943,74 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(result.publicKey).not.toBe(
       Buffer.from(fixtureKeyPair.publicKey).toString("hex"),
     );
+  });
+
+  test("registers a sources-rotation handler for a single-step deployment", async () => {
+    const sourcesRouter = createMultistepSourcesRouter();
+    const spawner = makeReadyDrivingSpawner(10600);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-sources-single-"),
+      },
+    });
+
+    const deployPromise = router.deploy(
+      singleStepFrame("ins_srcsingle@example.com", "wf-srcsingle"),
+    );
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    // The single-step deploy registered a rotation handler, so an inbound
+    // sources.update for its address routes.
+    expect(
+      await sourcesRouter.tryRoute({
+        type: "sources.update",
+        agentAddress: "ins_srcsingle@example.com",
+        sources: [makeInferenceSource("primary")],
+        defaultSource: "primary",
+      }),
+    ).toBe(true);
+  });
+
+  test("does not register a sources-rotation handler for a multi-step deployment", async () => {
+    const sourcesRouter = createMultistepSourcesRouter();
+    const spawner = makeReadyDrivingSpawner(10700);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-sources-multi-"),
+      },
+    });
+
+    const frame = makeMultistepFrame({
+      definition: {
+        id: "wf-srcmulti",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1", "step-2"],
+        steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+      },
+      sources: {
+        "step-1": [makeInferenceSource("step-1")],
+        "step-2": [makeInferenceSource("step-2")],
+      },
+    });
+    const deployPromise = router.deploy(frame);
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    // A multi-step deployment has no single warm agent to rotate, so no
+    // handler is registered and the inbound rotation is unrouted.
+    expect(
+      await sourcesRouter.tryRoute({
+        type: "sources.update",
+        agentAddress: frame.agentAddress,
+        sources: [makeInferenceSource("primary")],
+        defaultSource: "primary",
+      }),
+    ).toBe(false);
   });
 
   test("two addresses whose deriveDeploymentId slugs collide are rejected at the second deploy", async () => {

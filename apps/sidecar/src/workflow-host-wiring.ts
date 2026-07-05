@@ -64,6 +64,7 @@ import type {
   MultistepDrainRouter,
   MultistepMailRouter,
   MultistepSignalRouter,
+  MultistepSourcesRouter,
 } from "./workflow-run-pack-client";
 import {
   deleteWorkflowDeploymentRecord,
@@ -832,6 +833,20 @@ export function createSidecarDeployRouter(deps: {
    */
   multistepDrainRouter?: MultistepDrainRouter;
   /**
+   * Per-deployment-address sources-rotation handler registry. Only a
+   * single-step warm deployment registers a handler (against the
+   * deployment's mail address once `supervisor.spawn` succeeds) so a
+   * rotation resolved for its address flows into
+   * `wired.supervisor.deliverSources` and on to the child's warm agent. A
+   * multi-step deployment registers none -- it has no single warm agent to
+   * rotate -- so `tryRoute` reports its address as unrouted.
+   *
+   * Optional so tests that exercise deploys without a rotation loop can
+   * omit the binding; an absent registry means no rotation handler is
+   * installed for any deployment.
+   */
+  multistepSourcesRouter?: MultistepSourcesRouter;
+  /**
    * Optional per-message dispatch-timing observer the multi-step branch
    * forwards to each supervisor it constructs. Resolved at the sidecar
    * boot edge from the Phase 4.7 latency-gate env gate; absent in
@@ -1275,6 +1290,22 @@ export function createSidecarDeployRouter(deps: {
       deps.multistepDrainRouter?.register(spec.agentAddress, async (args) => {
         await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
       });
+      // Register the sources-rotation handler ONLY for a single-step warm
+      // deployment: it has one long-lived agent whose sources can be
+      // swapped in place. A multi-step deployment has no single warm agent,
+      // so it registers no handler and `tryRoute` reports its address as
+      // unrouted.
+      if (warmKeep) {
+        deps.multistepSourcesRouter?.register(
+          spec.agentAddress,
+          async (args) => {
+            await wired.supervisor.deliverSources({
+              sources: args.sources,
+              defaultSource: args.defaultSource,
+            });
+          },
+        );
+      }
       routersRegistered = true;
 
       // Resolve the ack public key BEFORE registering the deployment
@@ -1306,6 +1337,11 @@ export function createSidecarDeployRouter(deps: {
           deps.multistepMailRouter?.unregister(spec.agentAddress);
           deps.multistepSignalRouter?.unregister(spec.agentAddress);
           deps.multistepDrainRouter?.unregister(spec.agentAddress);
+          // Unregister unconditionally: the sources handler was registered
+          // only for a single-step deploy, but `unregister` is a no-op for
+          // an address that never registered one, so a multi-step unwind
+          // safely calls it too.
+          deps.multistepSourcesRouter?.unregister(spec.agentAddress);
         }
         if (supervisorRegistered) {
           activeSupervisors.delete(spec.agentAddress);
@@ -1565,6 +1601,9 @@ export function createSidecarDeployRouter(deps: {
       deps.multistepMailRouter?.unregister(frame.agentAddress);
       deps.multistepSignalRouter?.unregister(frame.agentAddress);
       deps.multistepDrainRouter?.unregister(frame.agentAddress);
+      // Unregister unconditionally (a no-op for a multi-step address that
+      // registered no sources handler), matching the sibling routers.
+      deps.multistepSourcesRouter?.unregister(frame.agentAddress);
       // Shut the per-deployment supervisor down so the workflow-process
       // child, its IPC pipes, and its event-channel fd are released.
       // The supervisor's `shutdown()` is idempotent (returns early when

@@ -39,6 +39,7 @@ import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
+  createMultistepSourcesRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -248,6 +249,15 @@ const multistepSignalRouter = createMultistepSignalRouter();
 // workflow-run repo when the deadline expires.
 const multistepDrainRouter = createMultistepDrainRouter();
 
+// Per-deployment-address sources-rotation handler registry. Only a
+// single-step warm deployment registers a handler once its supervisor
+// spawns; the handler forwards the rotated list into the supervisor's
+// `deliverSources`, which sends a `sources-updated` control IPC frame to
+// the child, where the warm agent's live sources are swapped in place. A
+// multi-step deployment registers none, so a rotation resolved against
+// its address is unrouted.
+const multistepSourcesRouter = createMultistepSourcesRouter();
+
 const transport = createInMemoryTransport();
 
 // The pack-push client closes over the substrate (for `createPack`)
@@ -393,6 +403,7 @@ const orchestrator = createSidecarOrchestrator({
       multistepMailRouter,
       multistepSignalRouter,
       multistepDrainRouter,
+      multistepSourcesRouter,
       multistepSubstrateEnv,
       publishWorkflowInferenceEvent,
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),

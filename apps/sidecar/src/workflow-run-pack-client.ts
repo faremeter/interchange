@@ -14,6 +14,7 @@
 // transferId is minted inside `HubLink.pushWorkflowRunPack`.
 
 import { getLogger } from "@intx/log";
+import type { InferenceSource } from "@intx/types/runtime";
 import type {
   RepoId,
   RepoStore,
@@ -276,6 +277,66 @@ export function createMultistepDrainRouter(): MultistepDrainRouter {
       const handler = handlers.get(frame.agentAddress);
       if (handler === undefined) return false;
       await handler({ deadlineMs: frame.deadlineMs });
+      return true;
+    },
+  };
+}
+
+/**
+ * Per-deployment sources-rotation handler the deploy router installs
+ * against the `MultistepSourcesRouter` after a supervisor's `spawn`
+ * succeeds -- but ONLY for a single-step (warm launched-agent)
+ * deployment. The handler hands the rotated list off to the supervisor's
+ * `deliverSources`, which sends a `sources-updated` control IPC frame to
+ * the workflow-process child, where the warm agent's live sources are
+ * swapped in place. A multi-step deployment has no single warm agent to
+ * rotate, so the router registers no handler for it and an inbound
+ * `sources.update` for a multi-step address is unrouted.
+ */
+export type MultistepSourcesHandler = (args: {
+  sources: InferenceSource[];
+  defaultSource: string;
+}) => Promise<void>;
+
+/**
+ * Per-deployment-address sources-rotation handler registry. Only a
+ * single-step warm deployment registers a handler (after
+ * `wired.supervisor.spawn` succeeds); the trivial and multi-step paths
+ * never do, so `tryRoute` resolves a rotation only for a registered
+ * single-step address and returns `false` for any other.
+ *
+ * The registry lives at the sidecar's host layer for the same boundary
+ * reason as the mail/signal/drain routers: the routing decision is a
+ * concrete sidecar host concern, and the workflow-host package stays
+ * agnostic to which transport surface its supervisor handle rides on.
+ */
+export type MultistepSourcesRouter = {
+  register(address: string, handler: MultistepSourcesHandler): void;
+  unregister(address: string): void;
+  tryRoute(frame: {
+    type: "sources.update";
+    agentAddress: string;
+    sources: InferenceSource[];
+    defaultSource: string;
+  }): Promise<boolean>;
+};
+
+export function createMultistepSourcesRouter(): MultistepSourcesRouter {
+  const handlers = new Map<string, MultistepSourcesHandler>();
+  return {
+    register(address, handler) {
+      handlers.set(address, handler);
+    },
+    unregister(address) {
+      handlers.delete(address);
+    },
+    async tryRoute(frame) {
+      const handler = handlers.get(frame.agentAddress);
+      if (handler === undefined) return false;
+      await handler({
+        sources: frame.sources,
+        defaultSource: frame.defaultSource,
+      });
       return true;
     },
   };

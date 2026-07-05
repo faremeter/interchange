@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
+import type { InferenceSource } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -7,6 +8,7 @@ import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
+  createMultistepSourcesRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -446,6 +448,58 @@ describe("createMultistepMailRouter", () => {
     router.tryRoute("dep@integration.interchange", new Uint8Array([7]));
     expect(first).toHaveLength(0);
     expect(second).toHaveLength(1);
+  });
+});
+
+describe("createMultistepSourcesRouter", () => {
+  const source: InferenceSource = {
+    id: "primary",
+    provider: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    apiKey: "sk-x",
+    model: "claude-test",
+  };
+  const frame = {
+    type: "sources.update" as const,
+    agentAddress: "dep@integration.interchange",
+    sources: [source],
+    defaultSource: "primary",
+  };
+
+  test("tryRoute returns false when no handler is registered", async () => {
+    const router = createMultistepSourcesRouter();
+    expect(await router.tryRoute(frame)).toBe(false);
+  });
+
+  test("a registered handler receives the rotation and tryRoute returns true", async () => {
+    const router = createMultistepSourcesRouter();
+    const received: { sources: InferenceSource[]; defaultSource: string }[] =
+      [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push(args);
+    });
+    expect(await router.tryRoute(frame)).toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.sources).toEqual([source]);
+    expect(received[0]?.defaultSource).toBe("primary");
+  });
+
+  test("registration is per-address; an unrelated address falls through", async () => {
+    const router = createMultistepSourcesRouter();
+    router.register("dep-a@integration.interchange", async () => undefined);
+    expect(
+      await router.tryRoute({
+        ...frame,
+        agentAddress: "dep-b@integration.interchange",
+      }),
+    ).toBe(false);
+  });
+
+  test("unregister removes the handler", async () => {
+    const router = createMultistepSourcesRouter();
+    router.register("dep@integration.interchange", async () => undefined);
+    router.unregister("dep@integration.interchange");
+    expect(await router.tryRoute(frame)).toBe(false);
   });
 });
 
