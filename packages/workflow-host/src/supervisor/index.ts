@@ -4,6 +4,7 @@ export {
   type CancelCommitInfo,
   type CancelRequestOpts,
   type DeliverSignalOpts,
+  type DeliverSourcesOpts,
   type DrainOpts,
   type RecycleOpts,
   type SpawnOpts,

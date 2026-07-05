@@ -7,6 +7,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexDecode, hexEncode } from "@intx/types";
+import type { InferenceSource } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -60,6 +61,26 @@ function parseTriggerFireRunIds(lines: readonly string[]): string[] {
     ids.push(payload.data.runId);
   }
   return ids;
+}
+
+function parseSourcesUpdatedFrames(
+  lines: readonly string[],
+): { sources: InferenceSource[]; defaultSource: string }[] {
+  const out: { sources: InferenceSource[]; defaultSource: string }[] = [];
+  for (const line of lines) {
+    if (!line.includes("sources-updated")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "sources-updated") continue;
+    out.push({
+      sources: payload.data.sources,
+      defaultSource: payload.data.defaultSource,
+    });
+  }
+  return out;
 }
 
 const CancelRequestedBlob = type({
@@ -1725,6 +1746,138 @@ describe("createWorkflowSupervisor", () => {
         payload: null,
       }),
     ).rejects.toThrow(/deliverSignal called in phase idle/);
+  });
+
+  test("deliverSources() rejects when the supervisor is idle (no spawn has run)", async () => {
+    // Same phase-guard contract as deliverSignal: a sources rotation
+    // landing against a supervisor that is not starting/running throws so
+    // the sidecar router's rejection surfaces to the hub-link rather than
+    // writing into a dead child's pipe.
+    const baseDir = await makeTempDir("supervisor-deliver-sources-idle-");
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: () => {
+        throw new Error("spawner must not be invoked on the idle sources path");
+      },
+      signSpy: () => ({
+        sig: new Uint8Array(64),
+        principalKind: "supervisor",
+      }),
+      mailBus: createMockMailBus(),
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    await expect(
+      supervisor.deliverSources({
+        sources: [
+          {
+            id: "primary",
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-x",
+            model: "claude-test",
+          },
+        ],
+        defaultSource: "primary",
+      }),
+    ).rejects.toThrow(/deliverSources called in phase idle/);
+  });
+
+  test("deliverSources() sends a sources-updated frame when running", async () => {
+    const baseDir = await makeTempDir("supervisor-deliver-sources-running-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 4321,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus: createMockMailBus(),
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: true,
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 4321,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+
+    const sources: InferenceSource[] = [
+      {
+        id: "primary",
+        provider: "anthropic",
+        baseURL: "https://api.anthropic.com",
+        apiKey: "sk-primary",
+        model: "claude-test",
+      },
+    ];
+    await supervisor.deliverSources({ sources, defaultSource: "primary" });
+
+    const frames = parseSourcesUpdatedFrames(supervisorToChild.flushed());
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.sources).toEqual(sources);
+    expect(frames[0]?.defaultSource).toBe("primary");
+
+    await supervisor.shutdown();
   });
 });
 

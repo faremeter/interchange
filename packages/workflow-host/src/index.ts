@@ -42,6 +42,7 @@ export {
   type CredentialsSnapshot,
   type CredentialsSnapshotStep,
   type DeliverSignalOpts,
+  type DeliverSourcesOpts,
   type DeriveMailAuditRef,
   type DeriveStepAddress,
   type DeriveStepRepoId,

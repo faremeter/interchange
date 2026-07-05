@@ -64,7 +64,7 @@ import {
 } from "@intx/hub-sessions/substrate";
 import { base64Decode, base64Encode, hexEncode } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
-import type { OutboundMessage } from "@intx/types/runtime";
+import type { InferenceSource, OutboundMessage } from "@intx/types/runtime";
 import type { CancelOrigin } from "@intx/workflow";
 
 import {
@@ -214,6 +214,14 @@ export interface WorkflowSupervisor {
    */
   deliverSignal(opts: DeliverSignalOpts): Promise<void>;
   /**
+   * Push a rotated inference-source list to the child's warm single-step
+   * agent. Mirrors `deliverSignal`: the supervisor is the single producer
+   * of `sources-updated` control frames, and delivery is phase-guarded to
+   * starting/running so a frame is never written into a recycling child's
+   * closing pipe. Throws otherwise.
+   */
+  deliverSources(opts: DeliverSourcesOpts): Promise<void>;
+  /**
    * Current snapshot of the credentials pushed to the child. Surfaced
    * so the host can audit the per-step contentHash without
    * round-tripping the substrate. Returns `null` before spawn.
@@ -291,6 +299,17 @@ export type DeliverSignalOpts = {
   signalId: string;
   /** Opaque signal payload the awaiter resolves with. */
   payload: unknown;
+};
+
+export type DeliverSourcesOpts = {
+  /**
+   * The rotated ordered inference-source failover chain; element 0 is the
+   * active source. The wire boundary enforces a non-empty list with unique
+   * ids whose head is the default.
+   */
+  sources: InferenceSource[];
+  /** The default source id; the wire boundary requires it to equal `sources[0].id`. */
+  defaultSource: string;
 };
 
 export type RecycleOpts = {
@@ -2372,6 +2391,27 @@ export function createWorkflowSupervisor(
     });
   }
 
+  async function deliverSources(opts: DeliverSourcesOpts): Promise<void> {
+    // The supervisor is the single producer of `sources-updated` control
+    // frames. `recycling` is rejected for the same reason as
+    // `deliverSignal`: `state.controlSender` still points at the dying
+    // child, so a frame would either buffer behind the SIGTERM or write
+    // into a closed pipe and be lost. Rejecting surfaces the race so the
+    // caller can retry once the recycle completes.
+    if (state.phase !== "running" && state.phase !== "starting") {
+      throw new Error(
+        `supervisor: deliverSources called in phase ${state.phase}; expected starting/running`,
+      );
+    }
+    await state.controlSender.send({
+      type: "sources-updated",
+      data: {
+        sources: opts.sources,
+        defaultSource: opts.defaultSource,
+      },
+    });
+  }
+
   function getCredentialsSnapshot(): CredentialsSnapshot | null {
     if (state.phase === "starting" || state.phase === "running") {
       return state.credentialsSnapshot;
@@ -2386,6 +2426,7 @@ export function createWorkflowSupervisor(
     drain,
     recycle,
     deliverSignal,
+    deliverSources,
     getCredentialsSnapshot,
   };
 }
