@@ -2103,6 +2103,117 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).toEqual({ "step-1": [rotated] });
   });
 
+  test("a source rotation survives a full sidecar restart", async () => {
+    // Restart-durability: a rotation is persisted into the deployment record,
+    // so a fresh sidecar process (a restore over the same data dir) respawns
+    // the deployment on the ROTATED sources, not the deploy-time ones.
+    const dataDir = await createTempBaseDir("sidecar-rot-restart-");
+    const addr = "ins_rotrestart@example.com";
+
+    // First process: deploy a single-step deployment and rotate its sources.
+    const sourcesRouter = createMultistepSourcesRouter();
+    const first = makeReadyDrivingSpawner(10900);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(
+      singleStepFrame(addr, "wf-rotrestart"),
+    );
+    await first.driveReadyFor(0);
+    await deployPromise;
+
+    const rotated = makeInferenceSource("rotated");
+    expect(
+      await sourcesRouter.tryRoute({
+        type: "sources.update",
+        agentAddress: addr,
+        sources: [rotated],
+        defaultSource: "rotated",
+      }),
+    ).toBe(true);
+
+    // Second process (simulated restart): a fresh router over the SAME data
+    // dir restores the deployment from its durable record.
+    const second = makeReadyDrivingSpawner(11000);
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: createInMemoryTransport(),
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const restorePromise = routerB.restoreWorkflowDeployments();
+    await second.driveReadyFor(0);
+    await restorePromise;
+
+    // The restored spawn carries the ROTATED sources, read back from the
+    // durable record -- not the deploy-time list.
+    const restoredEnv = second.envFor(0);
+    if (restoredEnv === undefined) {
+      throw new Error("restored spawn env missing");
+    }
+    expect(
+      JSON.parse(restoredEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [rotated] });
+  });
+
+  test("a rotation whose persist fails leaves no partial effect", async () => {
+    // Atomicity: if the durable write rejects, the rotation takes NO effect.
+    // currentSources stays on the deploy-time table (so a recycle respawn is
+    // unrotated) and deliverSources is never reached. The write is ordered
+    // before the in-memory commit precisely so a failure cannot leave the
+    // three views (record, currentSources, live child) divergent.
+    const dataDir = await createTempBaseDir("sidecar-rot-failatomic-");
+    const addr = "ins_rotfailatomic@example.com";
+    const sourcesRouter = createMultistepSourcesRouter();
+    const spawner = makeReadyDrivingSpawner(11100);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const deployPromise = router.deploy(singleStepFrame(addr, "wf-rotfail"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    // Replace the deployment record file with a directory so the rotation's
+    // writeWorkflowDeploymentRecord rejects (EISDIR) -- a deterministic,
+    // root-immune write fault (a chmod guard would be bypassed under root).
+    const recordFile = path.join(
+      dataDir,
+      "workflow-runs",
+      deriveDeploymentId(addr),
+      "deployment.json",
+    );
+    await fs.rm(recordFile);
+    await fs.mkdir(recordFile);
+
+    // The persist rejects, so the route rejects and nothing after the write
+    // runs.
+    await expect(
+      sourcesRouter.tryRoute({
+        type: "sources.update",
+        agentAddress: addr,
+        sources: [makeInferenceSource("rotated")],
+        defaultSource: "rotated",
+      }),
+    ).rejects.toThrow();
+
+    // currentSources is untouched: a recycle respawn carries the DEPLOY-TIME
+    // sources, proving the failed rotation left no partial in-memory effect.
+    await spawner.recycleRequestFor(0);
+    while (spawner.spawnCount() < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await spawner.driveReadyFor(1);
+    const respawnEnv = spawner.envFor(1);
+    if (respawnEnv === undefined) throw new Error("respawn env missing");
+    expect(
+      JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [makeInferenceSource("step-1")] });
+  });
+
   test("two addresses whose deriveDeploymentId slugs collide are rejected at the second deploy", async () => {
     // deriveDeploymentId substitutes every disallowed character with
     // `-`, so two distinct addresses can collapse to the same slug. The slug

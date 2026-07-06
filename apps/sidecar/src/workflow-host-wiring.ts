@@ -1075,6 +1075,29 @@ export function createSidecarDeployRouter(deps: {
   }
 
   /**
+   * Build the durable deployment record from a spec and a source table. The
+   * table is a parameter (not `spec.sources`) so the deploy path writes the
+   * deploy-time sources while the rotation handler writes the live-rotated
+   * ones -- both through one shape, so a rotation persists the same record a
+   * boot-time restore reseeds from.
+   */
+  function buildDeploymentRecord(
+    spec: WorkflowDeploySpec,
+    sources: WorkflowDeploymentRecord["sources"],
+  ): WorkflowDeploymentRecord {
+    return {
+      version: 1,
+      agentAddress: spec.agentAddress,
+      definitionId: spec.definition.id,
+      sources,
+      ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
+      ...(spec.hubPublicKey !== undefined
+        ? { hubPublicKey: spec.hubPublicKey }
+        : {}),
+    };
+  }
+
+  /**
    * The single owner of the workflow-deployment spawn sequence: construct
    * the supervisor, register the single-step agent's outbound key + head
    * repo + hub key, spawn the workflow-process child, then register the
@@ -1326,11 +1349,30 @@ export function createSidecarDeployRouter(deps: {
         deps.multistepSourcesRouter?.register(
           spec.agentAddress,
           async (args) => {
-            // Persist BEFORE the live-swap: a recycle mid-flight rejects
-            // `deliverSources`, but the respawn must still pick up the
+            // Persist the rotation durably BEFORE committing it in memory or
+            // pushing it live, so a failed write leaves no partial effect:
+            // currentSources, the record, and the child all stay on the
+            // prior sources and the throw is truthful. Persistence lets the
+            // rotation survive a full sidecar restart, not just a recycle --
+            // the boot scan reseeds spec.sources from record.sources.
+            // Overwrites the deploy-time record in place. Skipped when no
+            // data dir was wired (a test router that never persists),
+            // matching the restore guard.
+            const rotated = { [rotationStepId]: args.sources };
+            if (stepStateDataDir !== undefined) {
+              await writeWorkflowDeploymentRecord(
+                stepStateDataDir,
+                deploymentId,
+                buildDeploymentRecord(spec, rotated),
+              );
+            }
+            // Commit in memory BEFORE the live-swap, and synchronously so no
+            // recycle can interleave before deliverSources: a recycle
+            // mid-flight rejects `deliverSources`, but the respawn re-pulls
+            // currentSources through dynamicSpawnEnv and must see the
             // rotation. The wire boundary guarantees `args.sources[0]` is the
             // default, which the recycle env form pins as the active source.
-            currentSources = { [rotationStepId]: args.sources };
+            currentSources = rotated;
             await wired.supervisor.deliverSources({
               sources: args.sources,
               defaultSource: args.defaultSource,
@@ -1537,16 +1579,7 @@ export function createSidecarDeployRouter(deps: {
           ? frame.hubPublicKey
           : undefined,
     };
-    const record: WorkflowDeploymentRecord = {
-      version: 1,
-      agentAddress: spec.agentAddress,
-      definitionId: spec.definition.id,
-      sources: spec.sources,
-      ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
-      ...(spec.hubPublicKey !== undefined
-        ? { hubPublicKey: spec.hubPublicKey }
-        : {}),
-    };
+    const record = buildDeploymentRecord(spec, spec.sources);
 
     claimSlug(deploymentId, frame.agentAddress);
     // Hold the single-flight reservation across the async body below and clear
