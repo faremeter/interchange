@@ -651,7 +651,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
   }
 
-  test("validates the projection, constructs SpawnOpts from the frame, drives spawn, and surfaces the supervisor's principal pubkey", async () => {
+  test("validates the projection, constructs SpawnOpts from the frame, drives spawn, and acks the deployment address's public key", async () => {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
     const supervisorToChild = createMemoryNdjsonStream();
@@ -682,8 +682,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
 
     const multiDataDir = await createTempBaseDir("sidecar-multi-data-");
-    const { router, keyPair } = await buildMultistepFixture({
+    // The deployment address's own key -- what `loadOrGenerateKey` mints and
+    // `signChallenge` signs reconnect challenges with. Pin it so the ack
+    // assertion below is deterministic.
+    const deploymentKeyPair = await generateKeyPair();
+    const { router } = await buildMultistepFixture({
       spawner,
+      headKeyPair: deploymentKeyPair,
       multistepBinaryPath: "/fake/bin/multistep-workflow-child",
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: multiDataDir,
@@ -752,14 +757,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const result = await deployPromise;
-    // The publicKey is the sidecar's principal public key (hex). The
-    // router derives it from the signing seed; the resulting hex is a
-    // 64-character lowercase string.
+    // Every deployment -- single- or multi-step -- acks the deployment
+    // address's own public key, the one `signChallenge` signs reconnect
+    // challenges with, so the hub can verify ownership on reconnect. A
+    // multi-step deployment previously acked the supervisor principal key,
+    // which the hub discarded. The hex is a 64-character lowercase string.
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
-
-    // Sanity check: re-deriving the public key from the keypair lines
-    // up with the router's returned value.
-    expect(result.publicKey).toBe(hexEncode(keyPair.publicKey));
+    expect(result.publicKey).toBe(hexEncode(deploymentKeyPair.publicKey));
 
     // Teardown: kill the child so the spawn-time pumps unwind.
     // Use unused supervisorToChild to silence the linter.

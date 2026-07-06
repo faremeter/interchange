@@ -1242,25 +1242,20 @@ export function createSidecarDeployRouter(deps: {
       );
       agentTransportRegistered = true;
 
-      // The public key the deploy ack surfaces to the hub. For a single-step
-      // head it is the AGENT key, set inside the block below; a genuine
-      // multi-step deployment has no head agent identity and falls back to the
-      // supervisor principal key at the return. (The registered deployment
-      // keypair above is used purely for outbound signing; a multi-step
-      // deployment address is workflow-derived, incurs no reconnect challenge,
-      // and so records no `agent_instance.publicKey` -- carrying it on the ack
-      // would be data written nowhere and read nowhere.)
-      let headAgentPublicKey: string | undefined;
+      // The public key the deploy ack surfaces to the hub is the deployment
+      // address's own Ed25519 key -- the one `loadOrGenerateKey` minted above,
+      // which `AgentKeyStore.signChallenge(spec.agentAddress)` also signs
+      // reconnect challenges with. EVERY deployment acks it, single- and
+      // multi-step alike, so the hub can verify the reconnect ownership
+      // challenge for both: a single-step head records it into
+      // `agent_instance.publicKey`; a workflow-derived deployment records it on
+      // its `workflow_deployment` row. A multi-step deployment previously acked
+      // the supervisor principal key -- which the hub discarded and which does
+      // NOT match what `signChallenge` signs with -- so its address could be
+      // re-claimed on reconnect without proof; carrying the deployment key
+      // closes that.
+      const deploymentPublicKey = hexEncode(keyPair.publicKey);
       if (spec.definition.stepOrder.length === 1) {
-        // A single-step head IS an agent identity: it signs its own outbound
-        // mail AND its reconnect challenges with this agent key (via the key
-        // store's signChallenge). The hub records the ack's key into
-        // `agent_instance.publicKey` (for a rerouted instance head, which has
-        // an instance row and is not workflow-derived) and verifies the
-        // reconnect challenge against it, so the ack MUST carry the agent key,
-        // not the supervisor principal key -- otherwise verification fails.
-        headAgentPublicKey = hexEncode(keyPair.publicKey);
-
         // A single-step workflow stages its deploy tree at the head (the
         // lone step IS the head). Initialize the head's on-disk deploy-tree
         // repo (idempotent) so the hub's deploy-pack push has a repo to
@@ -1413,16 +1408,6 @@ export function createSidecarDeployRouter(deps: {
       }
       routersRegistered = true;
 
-      // Resolve the ack public key BEFORE registering the deployment
-      // address so an (unreachable, deterministic) derivation failure
-      // unwinds the spawn without having touched the boot-edge
-      // `DeploymentAddressRegistry`. A single-step head acks its agent key
-      // (captured above); a multi-step deployment acks the supervisor
-      // principal key its workflow-run events are signed with.
-      const publicKey =
-        headAgentPublicKey ??
-        (await derivePrincipalPublicKeyHex(deps.signingKeySeed));
-
       // Register the deployment-address mapping last so a failure in any
       // earlier step leaves the boot-edge `DeploymentAddressRegistry`
       // untouched. Nothing fallible runs after it, so the finally unwind
@@ -1433,7 +1418,7 @@ export function createSidecarDeployRouter(deps: {
       });
 
       succeeded = true;
-      return { publicKey };
+      return { publicKey: deploymentPublicKey };
     } finally {
       if (!succeeded) {
         // Unwind in reverse registration order so each step undoes state

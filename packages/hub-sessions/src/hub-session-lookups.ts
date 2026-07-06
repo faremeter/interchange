@@ -8,9 +8,14 @@
 
 import { eq, and, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
-import { agentInstance, sessionMail } from "@intx/db/schema";
+import {
+  agentInstance,
+  sessionMail,
+  workflowDeployment,
+} from "@intx/db/schema";
 import { getLogger } from "@intx/log";
 import { parseAgentAddress } from "@intx/types";
+import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
@@ -30,6 +35,33 @@ export function createHubSessionLookups(
 
   return {
     async lookupPublicKey(agentAddress) {
+      // Route by address space, not a blind two-table fallback: a
+      // workflow-derived address's key lives on its workflow_deployment
+      // row, a launched agent's on its agent_instance row, and the two
+      // spaces are disjoint. Routing (rather than falling back) means a
+      // launched agent that is missing its instance row returns null and
+      // fails its challenge visibly, instead of silently resolving against
+      // the wrong table.
+      if (isWorkflowDerivedAddress(agentAddress)) {
+        // Filter to a live ("deployed") deployment so a torn-down
+        // deployment's key can no longer satisfy a challenge. A null
+        // publicKey (deployed but not yet acked, or pre-migration) or an
+        // absent row returns null -- the challenge fails closed and the
+        // address stays unrouted rather than routing without ownership
+        // proof.
+        const row = await db
+          .select({ publicKey: workflowDeployment.publicKey })
+          .from(workflowDeployment)
+          .where(
+            and(
+              eq(workflowDeployment.address, agentAddress),
+              eq(workflowDeployment.status, "deployed"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0]);
+        return row?.publicKey ?? null;
+      }
       const row = await db
         .select({ publicKey: agentInstance.publicKey })
         .from(agentInstance)
@@ -41,10 +73,7 @@ export function createHubSessionLookups(
         )
         .limit(1)
         .then((rows) => rows[0]);
-      if (!row) {
-        return null;
-      }
-      return row.publicKey;
+      return row?.publicKey ?? null;
     },
 
     async lookupDeployRef(agentAddress) {

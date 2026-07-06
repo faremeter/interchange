@@ -343,13 +343,18 @@ describe("createHubSessionOrchestrator", () => {
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
     });
 
-    test("no-ops for a derived workflow-step address with no instance row", async () => {
+    test("persists the public key for a workflow-derived deployment address", async () => {
       harness = setup({ instance: undefined });
       await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "ins_dep_abc-step1@workflow.interchange",
+        agentAddress: "ins_dep_abc@workflow.interchange",
         publicKey: "deadbeef",
       });
-      expect(harness.updates).toHaveLength(0);
+      // A workflow-derived deployment address has no agent_instance row; its
+      // key is persisted on the workflow_deployment projection row (keyed by
+      // address) so the reconnect challenge can verify it. Previously this
+      // no-oped, which is what left these addresses un-verifiable.
+      expect(harness.updates).toHaveLength(1);
+      expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
     });
 
     test("throws when a launched-agent instance address has no row", async () => {

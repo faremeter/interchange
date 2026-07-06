@@ -13,7 +13,7 @@
 import { eq } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
-import { agentInstance } from "@intx/db/schema";
+import { agentInstance, workflowDeployment } from "@intx/db/schema";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
@@ -100,21 +100,26 @@ export function createHubSessionOrchestrator(
 
   unsubscribers.push(
     events.on("agent.deploy.ack", async ({ agentAddress, publicKey }) => {
+      // Workflow-derived addresses (the deployment-level
+      // `ins_<deploymentId>@<domain>` and the per-step
+      // `ins_<deploymentId>-<stepId>@<domain>`) have no agent_instance row;
+      // their public key lives on the workflow_deployment projection row,
+      // keyed by address. Persist it there so the reconnect ownership
+      // challenge can verify the deployment address. Only the
+      // deployment-level address has a row, so a stray per-step ack updates
+      // nothing. (This was previously a no-op, which is what left
+      // workflow-deployment addresses un-verifiable on reconnect.)
+      if (isWorkflowDerivedAddress(agentAddress)) {
+        await db
+          .update(workflowDeployment)
+          .set({ publicKey })
+          .where(eq(workflowDeployment.address, agentAddress));
+        return;
+      }
+      // A launched agent has an agent_instance row; a missing one is a bug
+      // to surface, not to drop silently.
       const instance = await findInstance(db, agentAddress);
       if (instance === undefined) {
-        // Workflow agents are provisioned at derived addresses — the
-        // deployment-level `ins_<deploymentId>@<domain>` and the per-step
-        // `ins_<deploymentId>-<stepId>@<domain>` — with no agent_instance
-        // row, and nothing reads back their public key. The only reader
-        // of `agentInstance.publicKey` is the instance-keyed reconnect
-        // challenge, which workflow-derived addresses never take. So a
-        // missing row for a workflow-derived address is a correct no-op.
-        // A missing row for any other address is a launched agent whose
-        // instance should exist; surface that rather than silently
-        // dropping it.
-        if (isWorkflowDerivedAddress(agentAddress)) {
-          return;
-        }
         throw new Error(
           `No active instance found for deploy ack on address "${agentAddress}"`,
         );
