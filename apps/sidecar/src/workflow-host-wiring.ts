@@ -1588,8 +1588,19 @@ export function createSidecarDeployRouter(deps: {
     } catch (cause) {
       // Soft failure (this process survived, the deploy threw): drop the
       // record and release the slug so the failed deploy is neither restored
-      // nor leaks its slug.
-      await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
+      // nor leaks its slug. The record delete must not mask the real deploy
+      // error or skip releasing the slug: a rejecting delete is logged (the
+      // orphaned record is a durable-state leak the next boot scan re-drives)
+      // but `cause` is still what propagates and the slug is still released.
+      try {
+        await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
+      } catch (cleanupError) {
+        const message =
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+        logger.error`deploy cleanup: deleteWorkflowDeploymentRecord failed for ${deploymentId}: ${message}`;
+      }
       releaseSlug(deploymentId, frame.agentAddress);
       throw cause;
     } finally {
