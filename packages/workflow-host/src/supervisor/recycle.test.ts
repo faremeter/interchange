@@ -473,6 +473,7 @@ async function buildBindings(opts: {
     subprocessSpawner: opts.spawner,
     binaryPath: "/fake/bin/workflow-child",
     substrateEnv: { DATA_DIR: opts.baseDir },
+    dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     deploymentId: "deployment-x",
@@ -579,6 +580,65 @@ describe("supervisor spawn: failure cleanup", () => {
     expect(mailBus.registrationHistory()).toContain(
       "unregister:deployment-x@example.com",
     );
+  });
+});
+
+describe("supervisor spawn: dynamic env", () => {
+  test("a recycle respawn re-pulls dynamicSpawnEnv so a host revision survives", async () => {
+    // Mechanism behind a source rotation surviving a recycle: the spawn-env
+    // builder pulls dynamicSpawnEnv() on every spawn AND respawn, so a value
+    // the host revised between the two reaches the respawned child instead
+    // of reverting to the frozen substrateEnv value.
+    const baseDir = await makeTempDir("recycle-dynenv-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    let hostRevised = "before-rotation";
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      dynamicSpawnEnv: () => ({ DYNAMIC_MARKER: hostRevised }),
+    });
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const firstChild = tracker.children[0];
+    if (firstChild === undefined) throw new Error("first child missing");
+    await driveReady(firstChild, ipcKeypair);
+    await spawnPromise;
+    expect(tracker.spawnEnvs[0]?.DYNAMIC_MARKER).toBe("before-rotation");
+
+    // The host revises the dynamic value (models a live source rotation),
+    // then a recycle respawns the child.
+    hostRevised = "after-rotation";
+    const recyclePromise = supervisor.recycle({ reason: "dynenv" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const secondChild = tracker.children[1];
+    if (secondChild === undefined) throw new Error("second child missing");
+    await driveReady(secondChild, ipcKeypair);
+    await recyclePromise;
+
+    // The respawn env carries the REVISED value -- the rotation survived.
+    expect(tracker.spawnEnvs[1]?.DYNAMIC_MARKER).toBe("after-rotation");
   });
 });
 

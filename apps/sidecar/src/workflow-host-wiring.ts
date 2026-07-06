@@ -431,6 +431,12 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /** Substrate-config keys propagated to the child via spawn-time env. */
   substrateEnv: Record<string, string>;
   /**
+   * Dynamic spawn-env fragment the supervisor recomputes on every spawn and
+   * recycle respawn (e.g. a live-rotated inference-source list). Its keys
+   * layer over `substrateEnv`. See the `dynamicSpawnEnv` supervisor binding.
+   */
+  dynamicSpawnEnv: () => Record<string, string>;
+  /**
    * Override the subprocess spawner. Tests inject a deterministic
    * mock; production defaults to the `Bun.spawn`-backed
    * `defaultSubprocessSpawner`.
@@ -1129,17 +1135,21 @@ export function createSidecarDeployRouter(deps: {
       // Per-deployment substrate-config keys the workflow-substrate-factory
       // validator requires. The boot edge's `multistepSubstrateEnv` carries
       // the boot-edge constants; the four workflow-definition / workflow-run
-      // identity keys are derived per-deploy here. `STEP_INFERENCE_SOURCES`
-      // threads each step's ordered inference-source failover chain into the
-      // child.
+      // identity keys are derived per-deploy here.
       const substrateEnv: Record<string, string> = {
         ...multistepSubstrateEnv,
         WORKFLOW_DEFINITION_REPO_ID: spec.definition.id,
         WORKFLOW_DEFINITION_REF: "refs/heads/main",
         WORKFLOW_RUN_REPO_ID: deploymentId,
         WORKFLOW_RUN_REF: "refs/heads/main",
-        [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(spec.sources),
       };
+      // Live-rotatable per-step inference sources. Seeded from the deploy
+      // spec, then revised in place by the single-step sources-rotation
+      // handler below. `STEP_INFERENCE_SOURCES` is NOT in the frozen
+      // `substrateEnv`: it is recomputed on every spawn and recycle respawn
+      // via `dynamicSpawnEnv`, so a rotation survives a recycle instead of
+      // reverting to the deploy-time list.
+      let currentSources = spec.sources;
 
       const wired = createSidecarWorkflowSupervisor({
         transport: deps.transport,
@@ -1156,6 +1166,13 @@ export function createSidecarDeployRouter(deps: {
         deriveStepAddress: stepStrategy.deriveStepAddress,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
         substrateEnv,
+        // Recomputed on every spawn AND recycle respawn. The rotation
+        // handler below revises `currentSources` in place, so a respawn
+        // re-serializes the current (possibly rotated) list rather than the
+        // frozen deploy-time value.
+        dynamicSpawnEnv: () => ({
+          [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(currentSources),
+        }),
         subprocessSpawner: multistepSpawner,
         ...(deps.multistepBinaryPath !== undefined
           ? { binaryPath: deps.multistepBinaryPath }
@@ -1296,9 +1313,24 @@ export function createSidecarDeployRouter(deps: {
       // so it registers no handler and `tryRoute` reports its address as
       // unrouted.
       if (warmKeep) {
+        // A single-step deployment's source table has exactly one entry,
+        // keyed by the head step. Derive that key once here (the layer that
+        // owns the single-key invariant); `deliverSources` stays flat and
+        // stepId-agnostic.
+        const rotationStepId = spec.definition.stepOrder[0];
+        if (rotationStepId === undefined) {
+          throw new Error(
+            "single-step deploy has no step id for sources rotation",
+          );
+        }
         deps.multistepSourcesRouter?.register(
           spec.agentAddress,
           async (args) => {
+            // Persist BEFORE the live-swap: a recycle mid-flight rejects
+            // `deliverSources`, but the respawn must still pick up the
+            // rotation. The wire boundary guarantees `args.sources[0]` is the
+            // default, which the recycle env form pins as the active source.
+            currentSources = { [rotationStepId]: args.sources };
             await wired.supervisor.deliverSources({
               sources: args.sources,
               defaultSource: args.defaultSource,
@@ -1813,6 +1845,7 @@ export function createSidecarWorkflowSupervisor(
     subprocessSpawner: opts.subprocessSpawner ?? defaultSubprocessSpawner,
     binaryPath: opts.binaryPath ?? SIDECAR_WORKFLOW_CHILD_BINARY,
     substrateEnv: opts.substrateEnv,
+    dynamicSpawnEnv: opts.dynamicSpawnEnv,
     workflowRunRepoId: opts.workflowRunRepoId,
     workflowRunRef: opts.workflowRunRef,
     deploymentId: opts.deploymentId,

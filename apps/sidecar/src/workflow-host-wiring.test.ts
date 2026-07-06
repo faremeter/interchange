@@ -86,6 +86,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
       substrateEnv: { DATA_DIR: "/tmp/wire" },
+      dynamicSpawnEnv: () => ({}),
       subprocessSpawner: spawner,
     });
 
@@ -121,6 +122,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
       substrateEnv: {},
+      dynamicSpawnEnv: () => ({}),
       subprocessSpawner: () => {
         throw new Error("spawner not invoked in this test");
       },
@@ -1521,6 +1523,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       env: Record<string, string>;
       childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
       eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+      childSender?: ReturnType<typeof createControlChannelSender>;
     };
     const spawns: Spawn[] = [];
     const spawner: SubprocessSpawner = ({ env }) => {
@@ -1546,7 +1549,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       };
       return handle;
     };
-    async function driveReadyFor(index: number): Promise<void> {
+    async function driveReadyFor(
+      index: number,
+      opts?: { sendRecycleRequest?: boolean },
+    ): Promise<void> {
       while (spawns.length <= index) {
         await new Promise((r) => setTimeout(r, 1));
       }
@@ -1569,6 +1575,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           },
         },
       });
+      // Retain the sender so a later recycle.request (recycleRequestFor)
+      // signs with the SAME keypair the supervisor pinned from this ready.
+      spawn.childSender = childSender;
       await childSender.send({
         type: "ready",
         data: {
@@ -1578,8 +1587,34 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           ),
         },
       });
+      if (opts?.sendRecycleRequest === true) {
+        // Model the child asking to recycle; the supervisor's upstream pump
+        // consumes it and respawns.
+        await childSender.send({
+          type: "recycle.request",
+          data: { reason: "sources-rotation-recycle" },
+        });
+      }
     }
-    return { spawner, driveReadyFor, spawnCount: () => spawns.length };
+    return {
+      spawner,
+      driveReadyFor,
+      spawnCount: () => spawns.length,
+      envFor: (index: number): Record<string, string> | undefined =>
+        spawns[index]?.env,
+      async recycleRequestFor(index: number): Promise<void> {
+        const sender = spawns[index]?.childSender;
+        if (sender === undefined) {
+          throw new Error(
+            `spawn ${String(index)} has no sender; drive its ready first`,
+          );
+        }
+        await sender.send({
+          type: "recycle.request",
+          data: { reason: "sources-rotation-recycle" },
+        });
+      },
+    };
   }
 
   function isRegistered(
@@ -2011,6 +2046,61 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         defaultSource: "primary",
       }),
     ).toBe(false);
+  });
+
+  test("a source rotation survives a recycle respawn", async () => {
+    // End-to-end guard for the rotation-survives-recycle fix: the single-step
+    // rotation handler mutates `currentSources`, `dynamicSpawnEnv`
+    // re-serializes it, and the recycle respawn's STEP_INFERENCE_SOURCES
+    // carries the ROTATED table -- not the frozen deploy-time one.
+    const sourcesRouter = createMultistepSourcesRouter();
+    const spawner = makeReadyDrivingSpawner(10800);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-rot-survive-"),
+      },
+    });
+
+    const addr = "ins_rotsurvive@example.com";
+    const deployPromise = router.deploy(singleStepFrame(addr, "wf-rotsurvive"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    // The initial spawn carries the deploy-time source table.
+    const initialEnv = spawner.envFor(0);
+    if (initialEnv === undefined) throw new Error("initial spawn env missing");
+    expect(
+      JSON.parse(initialEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [makeInferenceSource("step-1")] });
+
+    // Rotate the single-step deployment's sources in place.
+    const rotated = makeInferenceSource("rotated");
+    expect(
+      await sourcesRouter.tryRoute({
+        type: "sources.update",
+        agentAddress: addr,
+        sources: [rotated],
+        defaultSource: "rotated",
+      }),
+    ).toBe(true);
+
+    // The child asks to recycle; the supervisor respawns.
+    await spawner.recycleRequestFor(0);
+    while (spawner.spawnCount() < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await spawner.driveReadyFor(1);
+
+    // The recycle respawn's sources are the ROTATED table, proving the
+    // rotation survived the recycle (before the fix it reverted to the
+    // deploy-time list frozen in substrateEnv).
+    const respawnEnv = spawner.envFor(1);
+    if (respawnEnv === undefined) throw new Error("respawn env missing");
+    expect(
+      JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [rotated] });
   });
 
   test("two addresses whose deriveDeploymentId slugs collide are rejected at the second deploy", async () => {

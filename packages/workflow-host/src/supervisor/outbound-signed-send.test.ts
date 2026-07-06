@@ -261,6 +261,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       },
       binaryPath: "/fake/bin/workflow-child",
       substrateEnv: {},
+      dynamicSpawnEnv: () => ({}),
       workflowRunRepoId: { kind: "workflow-run", id: "outbound-dep" },
       workflowRunRef: "refs/heads/main",
       deploymentId: "outbound-dep",

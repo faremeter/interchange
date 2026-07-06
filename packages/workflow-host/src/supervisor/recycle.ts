@@ -316,6 +316,7 @@ export async function triggerRecycle(
   )();
   const env = buildChildSpawnEnv({
     substrateEnv: ctx.bindings.substrateEnv,
+    dynamicSpawnEnv: ctx.bindings.dynamicSpawnEnv,
     channelId,
     hmacKey,
     hostPublicKey: ipcKeypair.publicKey,

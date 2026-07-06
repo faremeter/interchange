@@ -282,6 +282,17 @@ export interface WorkflowSupervisorBindings {
    */
   substrateEnv: Record<string, string>;
   /**
+   * Per-spawn dynamic substrate-env entries the host recomputes for every
+   * spawn AND every recycle respawn. Distinct from `substrateEnv`, which is
+   * frozen for the deployment's lifetime: this callback lets a value the
+   * host revised between spawns (a live inference-source rotation) reach the
+   * respawned child. Invoked by the spawn-env builder on each spawn/respawn;
+   * its keys layer over `substrateEnv` and under the IPC anchors. Like
+   * `substrateEnv`, the supervisor does not inspect the returned keys -- the
+   * host owns their shape. A host with no dynamic entries returns `{}`.
+   */
+  dynamicSpawnEnv: () => Record<string, string>;
+  /**
    * Workflow-run repo identity for the deployment. The supervisor
    * commits its own CancelRequested / drain events here.
    */

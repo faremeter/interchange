@@ -1329,6 +1329,7 @@ export function createWorkflowSupervisor(
     const ipcKeypair = await (bindings.ipcKeyPairFactory ?? generateKeyPair)();
     const env = buildChildSpawnEnv({
       substrateEnv: bindings.substrateEnv,
+      dynamicSpawnEnv: bindings.dynamicSpawnEnv,
       channelId,
       hmacKey,
       hostPublicKey: ipcKeypair.publicKey,

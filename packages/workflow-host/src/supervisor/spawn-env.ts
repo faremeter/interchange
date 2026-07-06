@@ -14,11 +14,18 @@ import type { RequiredSpawnEnvKey } from "../child/env-bootstrap";
 export interface ChildSpawnEnvParts {
   /**
    * The deployment's stable substrate env (DATA_DIR, the adapter manifest,
-   * the step inference sources, and so on). Layered UNDER the per-spawn
-   * anchors below so a required key can never be shadowed by a substrate
-   * value.
+   * and so on), frozen for the deployment's lifetime. Layered UNDER the
+   * dynamic env fragment (so a host revision wins) and the per-spawn anchors
+   * (so a required key is never shadowed).
    */
   substrateEnv: Record<string, string>;
+  /**
+   * Host-supplied dynamic env fragment, recomputed for every spawn and
+   * respawn. Its keys layer OVER `substrateEnv` (so a value the host revised
+   * between spawns wins) and UNDER the required anchors. Returns `{}` when
+   * the host has no dynamic entries.
+   */
+  dynamicSpawnEnv: () => Record<string, string>;
   /** Supervisor-minted IPC channel id for this spawn. */
   channelId: string;
   /** Shared HMAC key for the event channel, minted for this spawn. */
@@ -59,6 +66,9 @@ export function buildChildSpawnEnv(
   };
   return {
     ...parts.substrateEnv,
+    // Host-revised entries win over the frozen substrate env; the required
+    // anchors below still win over everything.
+    ...parts.dynamicSpawnEnv(),
     ...required,
     WARM_KEEP: parts.warmKeep ? "true" : "false",
   };
