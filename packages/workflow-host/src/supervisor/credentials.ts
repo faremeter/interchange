@@ -126,10 +126,11 @@ export type AssembleCredentialsSnapshotOpts = {
 
 /**
  * Default mapping from `(deploymentId, stepId)` to the agent-state
- * repo's identity. Multi-step deployments use `<deploymentId>-
- * <stepId>` to keep each step's grants isolated to its own repo;
- * trivial deployments collapse to the same convention with the
- * sole step's id appended.
+ * repo id: `<deploymentId>-<stepId>`, isolating each step's grants in
+ * its own repo. Applied to a one-step `stepOrder` it yields a single
+ * such repo. The single-step launched-agent deploy overrides this
+ * default (see `DeriveStepRepoId`) to reuse the legacy agent-state
+ * repo.
  */
 export function defaultStepRepoId(args: {
   deploymentId: string;
@@ -150,8 +151,8 @@ export function defaultStepRepoId(args: {
  * through the git object database.
  *
  * A missing grants file is treated as "no grants" (empty array) so
- * the trivial path with no operator-supplied grants does not crash;
- * a malformed file does crash, because the file's presence implies
+ * a step whose repo carries no grants file does not crash; a
+ * malformed file does crash, because the file's presence implies
  * the deploy orchestrator intended a snapshot and a structural
  * failure is a programming bug at the boundary.
  */

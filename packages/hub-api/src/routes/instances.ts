@@ -513,9 +513,9 @@ export function createInstanceRoutes({
 
       try {
         // Deploy the instance as a single-step workflow at the head: it runs
-        // as a supervised workflow-process child, not the legacy trivial
-        // in-process path. The real `agentId` (row.id) is passed so the child
-        // resolves the instance's skills and pinned tool packages. The
+        // as a supervised workflow-process child. The real `agentId` (row.id)
+        // is passed so the child resolves the instance's skills and pinned
+        // tool packages. The
         // returned head public key is surfaced separately via the sidecar's
         // `agent.deploy.ack`, so the route discards it here.
         await sessionService.deployInstanceAtHead({

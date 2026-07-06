@@ -1507,7 +1507,7 @@ describe("deployWorkflowDefinition", () => {
     // Multi-step branch: each step is provisioned via a per-step
     // sendAgentDeploy without a workflow field, then a single
     // deployment-level agent.deploy frame carries the workflow
-    // projection. The trivial branch never emits a workflow field at all.
+    // projection.
     const workflowFrames = sentWorkflows.filter(
       (w): w is NonNullable<typeof w> => w !== undefined,
     );

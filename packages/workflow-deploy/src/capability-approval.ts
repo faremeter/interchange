@@ -12,11 +12,6 @@
 //   - A non-empty `unresolvedDirectors` field on the walk result is
 //     itself a deploy-time failure; the gate surfaces it through
 //     `ApprovalDecision` and the orchestrator aborts.
-//   - The trivial-workflow uniformity bridge: operators populating the
-//     approval set from the legacy per-agent grant store carry through
-//     the previously-approved grants so the operator does not see a
-//     fresh approval prompt for grants that were already approved on the
-//     legacy agent-deploy path.
 
 import type { CapabilityWalkResult } from "./capability-walk";
 

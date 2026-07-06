@@ -249,11 +249,10 @@ export const DrainDeliverFrame = type({
 export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
 
 /**
- * Workflow projection carried on an `agent.deploy` frame for the
- * multi-step branch. Presence of the field at the deploy router is the
- * discriminator between the trivial-launch path (single-step,
- * `config`-driven) and the multi-step path (workflow-process spawn,
- * per-step source pins).
+ * Workflow projection carried on an `agent.deploy` frame. Its presence
+ * at the deploy router routes the frame to the workflow deploy path --
+ * single- or multi-step, both of which spawn the workflow-process child
+ * -- as opposed to a per-step provision frame.
  *
  * `definition` is the wire projection of `WorkflowDefinition` from
  * `@intx/workflow`. The arktype validator enforces the structural
@@ -301,10 +300,10 @@ export const AgentDeployWorkflow = type({
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
 
 /**
- * Deploy an agent to this sidecar. The sidecar initializes a harness from
- * the config.
+ * Deploy an agent to this sidecar. The sidecar spawns a supervised
+ * workflow-process child to host the deployment.
  *
- * The deploy router discriminates three shapes by field presence without
+ * The deploy router discriminates two shapes by field presence without
  * consulting `config`:
  *   - `workflow` set: a workflow deployment (single-step head or multi-step)
  *     that spawns the supervised workflow-process child.
@@ -313,8 +312,8 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  *     records the hub key so the follow-up deploy pack applies and verifies,
  *     but spawns nothing. The deployment-level `workflow` frame (sent once
  *     after every step is provisioned) spawns the child.
- *   - neither: the legacy trivial in-process harness deploy.
- * `workflow` and `provisionStep` are mutually exclusive.
+ * A frame carrying neither is rejected -- there is no in-process
+ * fall-through. `workflow` and `provisionStep` are mutually exclusive.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",

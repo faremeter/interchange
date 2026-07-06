@@ -398,11 +398,12 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     agentAddress: args.agentAddress ?? "multi@example.com",
     agentId: "multi-agent",
     hubPublicKey: "hub-pk",
-    // The wire-side HarnessConfig has many required fields. The router
-    // never inspects `config` on the multi-step branch (only the
-    // trivial branch hands it to provisionAgent), so an opaque
-    // placeholder satisfies the surface contract for these tests.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
+    // The wire-side HarnessConfig has many required fields. On the
+    // workflow deploy path the router reads only `config.sessionId`
+    // and `config.grants`, both of which tolerate the empty
+    // placeholder (they resolve to `undefined`), so an opaque `{}`
+    // satisfies the surface contract for these tests.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
     config: {} as AgentDeployFrame["config"],
     workflow: {
       definition: args.definition,

@@ -202,11 +202,11 @@ const SIDECAR_SIGNING_DIR = path.join(dataDir, ".sidecar-signing");
 const sidecarSigningKey = await loadOrMintSidecarKeypair(SIDECAR_SIGNING_DIR);
 
 // Construct the substrate-backed RepoStore at the boot edge. The
-// supervisor consumes this through the deploy router; the trivial
-// branch's `recordRunEvent` reaches `writeTreePreservingPrefix` on
-// this store. The boot-edge facade below wraps the store so a
-// successful workflow-run write fires the pack push hook before its
-// Promise resolves.
+// supervisor consumes this through the deploy router; the supervisor's
+// conversation-state writes reach `writeTreePreservingPrefix` on this
+// store. The boot-edge facade below wraps the store so a successful
+// workflow-run write fires the pack push hook before its Promise
+// resolves.
 const agentRepoStore = createAgentRepoStore({
   dataDir,
   signingKey: sidecarSigningKey,

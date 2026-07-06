@@ -85,7 +85,7 @@ export function createWorkflowRunPackClient(
 
 /**
  * Mapping registry the boot-edge substrate facade consults to resolve
- * `repoId.id` (the workflow-run deploymentId, which the trivial branch
+ * `repoId.id` (the workflow-run deploymentId, which the deploy router
  * derives by slugging the agent's mail address) back into the
  * agentAddress carried on every outbound pack frame. Populated by the
  * deploy router as each `agent.deploy` frame lands.
@@ -179,11 +179,11 @@ export type MultistepSignalHandler = (args: {
 
 /**
  * Per-deployment-address signal handler registry the sidecar hub-link
- * consults on every inbound `signal.deliver` frame. The trivial deploy
- * path never registers a handler. The multi-step deploy router
+ * consults on every inbound `signal.deliver` frame. The deploy router
  * registers a handler against the deployment's mail address after
- * `wired.supervisor.spawn` succeeds; the handler dispatches the signal
- * into the supervisor's `deliverSignal`.
+ * `wired.supervisor.spawn` succeeds, for single-step and multi-step
+ * deployments alike; the handler dispatches the signal into the
+ * supervisor's `deliverSignal`.
  *
  * The registry lives at the sidecar's host layer (not inside the
  * workflow-host library) for the same boundary reason as
@@ -244,11 +244,11 @@ export type MultistepDrainHandler = (args: {
 
 /**
  * Per-deployment-address drain handler registry the sidecar hub-link
- * consults on every inbound `drain.deliver` frame. The trivial deploy
- * path never registers a handler. The multi-step deploy router
+ * consults on every inbound `drain.deliver` frame. The deploy router
  * registers a handler against the deployment's mail address after
- * `wired.supervisor.spawn` succeeds; the handler dispatches into the
- * supervisor's `drain`.
+ * `wired.supervisor.spawn` succeeds, for single-step and multi-step
+ * deployments alike; the handler dispatches into the supervisor's
+ * `drain`.
  *
  * The registry lives at the sidecar's host layer (not inside the
  * workflow-host library) for the same boundary reason as
@@ -304,8 +304,8 @@ export type MultistepSourcesHandler = (args: {
 /**
  * Per-deployment-address sources-rotation handler registry. Only a
  * single-step warm deployment registers a handler (after
- * `wired.supervisor.spawn` succeeds); the trivial and multi-step paths
- * never do, so `tryRoute` resolves a rotation only for a registered
+ * `wired.supervisor.spawn` succeeds); a multi-step deployment never
+ * does, so `tryRoute` resolves a rotation only for a registered
  * single-step address and returns `false` for any other.
  *
  * The registry lives at the sidecar's host layer for the same boundary

@@ -109,9 +109,9 @@ export type SidecarRouter = {
    * Send an `agent.deploy` frame to the sidecar. When `workflow` is
    * supplied, the frame carries the multi-step deploy projection
    * (workflow definition plus per-step source pins); the sidecar's
-   * deploy router uses the field's presence to discriminate the
-   * multi-step branch from the trivial branch. Absent on every legacy
-   * agent-deploy.
+   * deploy router routes it to the workflow deploy path. The sole
+   * caller supplies `workflow` on every deploy; per-step provisioning
+   * uses `sendProvisionStep`.
    *
    * The returned promise resolves with the supervisor's principal
    * public key (hex-encoded Ed25519) carried on `agent.deploy.ack`.
