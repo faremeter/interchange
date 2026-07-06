@@ -1467,11 +1467,22 @@ export function createWorkflowSupervisor(
         clearTimer: readyClearTimer,
         logger,
       });
+      // Release the mail subscription + address registration installed
+      // before the handshake. shutdownInternal owns the "starting"-phase
+      // teardown; its own kill against the already-killed handle is
+      // idempotent. Without this the failed spawn leaves a live
+      // subscription with no dispatch loop to service it.
+      await shutdownInternal({
+        reason: `child did not emit ready within ${readyTimeoutMs}ms`,
+      });
       throw new Error(
         `workflow-host supervisor: child did not emit ready within ${readyTimeoutMs}ms; killed`,
       );
     }
     if (readyRace.kind === "failed") {
+      // The child exited during the handshake; release the subscription
+      // and registration the same way the timeout path does.
+      await shutdownInternal({ reason: "child exited before emitting ready" });
       throw readyRace.err;
     }
     const readyInfo = readyRace.info;
@@ -1485,19 +1496,26 @@ export function createWorkflowSupervisor(
     // same control channel `trigger.fire` uses, so the ordering
     // guarantee (`grants-updated` lands before `trigger.fire`) holds
     // for buffered and post-ready inbound mail alike.
-    await wired.wiring.controlSender.send({
-      type: "grants-updated",
-      data: {
-        snapshot: {
-          steps: credentialsSnapshot.steps.map((s) => ({
-            stepId: s.stepId,
-            address: s.address,
-            grants: [...s.grants],
-            contentHash: s.contentHash,
-          })),
+    try {
+      await wired.wiring.controlSender.send({
+        type: "grants-updated",
+        data: {
+          snapshot: {
+            steps: credentialsSnapshot.steps.map((s) => ({
+              stepId: s.stepId,
+              address: s.address,
+              grants: [...s.grants],
+              contentHash: s.contentHash,
+            })),
+          },
         },
-      },
-    });
+      });
+    } catch (cause) {
+      // The child readied but died before or during the credentials push.
+      // Release the subscription and registration before failing the spawn.
+      await shutdownInternal({ reason: "grants-updated push to child failed" });
+      throw cause;
+    }
 
     // Transition to running. The dispatch loop (started below)
     // picks up any pre-ready buffered mail through the FIFO inbox

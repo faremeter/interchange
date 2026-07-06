@@ -531,6 +531,57 @@ async function spawnSupervisor(opts: {
   return { supervisor, spawnResult: result, firstSender };
 }
 
+describe("supervisor spawn: failure cleanup", () => {
+  test("a spawn that times out releases the mail subscription and address", async () => {
+    // Regression: spawn registers + subscribes the deployment mail address
+    // before the ready handshake. A handshake that times out (or the child
+    // exiting mid-handshake) must release that subscription and unregister
+    // the address; otherwise a live subscription lingers with no dispatch
+    // loop to service it and a redeploy adds a second one.
+    const baseDir = await makeTempDir("spawn-timeout-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    // sigtermExits so the timeout path's kill settles the fake child.
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      readyTimeoutMs: 20,
+    });
+
+    // Spawn but never drive the child's `ready` frame, so the handshake
+    // times out.
+    await expect(
+      supervisor.spawn({
+        stepOrder: ["step-1"],
+        definitionHash: "def-hash-abc",
+        warmKeep: false,
+        onInferenceEvent: () => undefined,
+      }),
+    ).rejects.toThrow(/did not emit ready/);
+
+    // The address must not remain registered, and the history must carry
+    // both the register and its matching unregister.
+    expect(mailBus.registered()).not.toContain("deployment-x@example.com");
+    expect(mailBus.registrationHistory()).toContain(
+      "register:deployment-x@example.com",
+    );
+    expect(mailBus.registrationHistory()).toContain(
+      "unregister:deployment-x@example.com",
+    );
+  });
+});
+
 describe("supervisor recycle: operator-initiated", () => {
   test("the recycle respawn env satisfies the child spawn-time env contract", async () => {
     // Regression: the recycle respawn env must carry every required
