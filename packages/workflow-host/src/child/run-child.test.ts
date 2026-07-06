@@ -159,12 +159,58 @@ function createMemoryFrameStream() {
   };
 }
 
+// Read every file directly under the `runs/<id>/events/` prefix into the
+// full-path-keyed map the merge callback expects (`appendBatchEvents`
+// slices the prefix off each key to recover the seq).
+async function readPrefixEntries(
+  repoDir: string,
+  prefix: string,
+): Promise<Map<string, Uint8Array>> {
+  const entries = new Map<string, Uint8Array>();
+  const prefixDir = path.join(repoDir, prefix);
+  let names: string[];
+  try {
+    names = await fs.readdir(prefixDir);
+  } catch (cause) {
+    // No prior entries under the prefix yet: the first append starts the
+    // subtree.
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
+      return entries;
+    }
+    throw cause;
+  }
+  for (const name of names) {
+    const full = path.join(prefixDir, name);
+    if (!(await fs.stat(full)).isFile()) continue;
+    entries.set(`${prefix}${name}`, await fs.readFile(full));
+  }
+  return entries;
+}
+
 function createStubRepoStore(baseDir: string): RepoStore {
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
       return path.join(baseDir, repoId.kind, repoId.id);
     },
-    async writeTreePreservingPrefix(_principal, _repoId, _ref, _args) {
+    async writeTreePreservingPrefix(_principal, repoId, _ref, args) {
+      // Persist the run event log the way the real substrate does so the
+      // `createWorkflowRunRepoStore` adapter's disk read round-trips: run
+      // the merge callback against the prior entries under the preserved
+      // prefix, then replace that subtree with the merged result (files
+      // outside the prefix are untouched). Discarding the write here would
+      // make a completed run's `result.events` read back empty.
+      const repoDir = path.join(baseDir, repoId.kind, repoId.id);
+      const existing = await readPrefixEntries(repoDir, args.preservePrefix);
+      const merged = await args.merge(existing);
+      await fs.rm(path.join(repoDir, args.preservePrefix), {
+        recursive: true,
+        force: true,
+      });
+      for (const [relPath, content] of Object.entries(merged)) {
+        const full = path.join(repoDir, relPath);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, content);
+      }
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
   };
@@ -719,14 +765,19 @@ describe("runWorkflowChild", () => {
       data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
     });
 
-    let sawTerminal = false;
+    let terminalSeq: number | null = null;
     for await (const payload of recvIter) {
       if (payload.type === "terminal.event" && payload.data.runId === "run-1") {
-        sawTerminal = true;
+        terminalSeq = payload.data.seq;
         break;
       }
     }
-    expect(sawTerminal).toBe(true);
+    // The frame's seq is sourced from the run's committed terminal event, so
+    // a real (non-zero) seq proves the child test substrate faithfully
+    // persisted and read back the run's event log rather than round-tripping
+    // an empty one.
+    expect(terminalSeq).not.toBeNull();
+    expect(terminalSeq).toBeGreaterThan(0);
     // The run reached terminal AND the completion continuation ran (it
     // emitted the terminal.event we just observed). On the cold path the
     // same continuation would have called cleanupRunStorage by now; the
