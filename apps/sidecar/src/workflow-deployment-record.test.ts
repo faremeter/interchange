@@ -114,6 +114,25 @@ describe("workflow deployment record store", () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
+  test("overwriting a record leaves the new one and no temp orphan", async () => {
+    const dataDir = await makeDataDir();
+    const deploymentId = "rotated-1";
+
+    // A source rotation overwrites the existing record in place. The
+    // atomic write must replace it cleanly, leaving only the record and
+    // no `.tmp` staging file behind.
+    await writeWorkflowDeploymentRecord(dataDir, deploymentId, SINGLE_STEP);
+    await writeWorkflowDeploymentRecord(dataDir, deploymentId, MULTI_STEP);
+
+    const dir = path.join(dataDir, "workflow-runs", deploymentId);
+    expect(await fs.readdir(dir)).toEqual(["deployment.json"]);
+
+    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    expect(scanned.map((s) => s.record)).toEqual([MULTI_STEP]);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
   test("delete removes the record and is a no-op when absent", async () => {
     const dataDir = await makeDataDir();
     const deploymentId = "gone-1";

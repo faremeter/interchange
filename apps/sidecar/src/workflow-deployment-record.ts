@@ -15,13 +15,15 @@
 // `definitionId`, and each step's grants live in its agent-state repo, so
 // neither is duplicated here.
 
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { InferenceSource } from "@intx/types/runtime";
+
+import { writeFileAtomicDurable } from "./atomic-write";
 
 const logger = getLogger([
   "interchange",
@@ -74,11 +76,14 @@ export async function writeWorkflowDeploymentRecord(
 ): Promise<void> {
   const path = recordPath(dataDir, deploymentId);
   await mkdir(dirname(path), { recursive: true });
-  // Owner-only (0o600): the record embeds each source's `apiKey`, so it must
-  // not be world-readable on a shared host. This matches the private-key
-  // writes elsewhere on the sidecar.
-  await writeFile(path, JSON.stringify(record, null, 2), {
-    encoding: "utf8",
+  // Atomic + durable: this is the sole restore source for the
+  // deployment's `sources`/`hubPublicKey`, and a rotation overwrites the
+  // existing record in place, so an interrupted write must never expose a
+  // torn record the boot scan would then skip. Owner-only (0o600): the
+  // record embeds each source's `apiKey`, so it must not be world-readable
+  // on a shared host, matching the private-key writes elsewhere on the
+  // sidecar.
+  await writeFileAtomicDurable(path, JSON.stringify(record, null, 2), {
     mode: 0o600,
   });
 }
