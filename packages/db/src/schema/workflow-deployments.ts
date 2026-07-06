@@ -1,4 +1,10 @@
-import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  index,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 import { asset } from "./assets";
 import { tenant } from "./tenants";
@@ -25,11 +31,26 @@ export const workflowDeployment = pgTable(
     definitionAssetId: text("definition_asset_id")
       .notNull()
       .references(() => asset.id, { onDelete: "cascade" }),
+    // The deployment's routable address (`ins_<id>@<domain>`), stored rather
+    // than re-derived at read time so the reconnect ownership challenge can
+    // look up the deployment's public key by address, symmetrically with the
+    // `agent_instance` path. Unique so a double-insert fails loud.
+    address: text("address").notNull(),
+    // The Ed25519 public key the sidecar minted for this deployment address,
+    // persisted at deploy-ack. Nullable by design: the row is written at
+    // deploy-start and the key arrives at ack, so a not-yet-acked (or
+    // pre-migration) deployment reads `null` and its reconnect challenge
+    // fails closed -- the address stays unrouted rather than routing without
+    // ownership proof.
+    publicKey: text("public_key"),
     status: text("status")
       .$type<WorkflowDeploymentStatus>()
       .notNull()
       .default("deployed"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("workflow_deployment_tenant_idx").on(t.tenantId, t.createdAt)],
+  (t) => [
+    index("workflow_deployment_tenant_idx").on(t.tenantId, t.createdAt),
+    uniqueIndex("workflow_deployment_address_idx").on(t.address),
+  ],
 );

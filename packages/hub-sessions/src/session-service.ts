@@ -1122,6 +1122,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         id: deploymentId,
         tenantId,
         definitionAssetId,
+        address: deriveDeploymentAddress({ deploymentId, deploymentDomain }),
+        // publicKey is left null here; the sidecar's deploy-ack persists the
+        // deployment's minted key once the child has spawned.
         status: "deployed",
         createdAt: now,
       });

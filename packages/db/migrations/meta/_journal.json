@@ -246,6 +246,13 @@
       "when": 1782164862412,
       "tag": "0034_sleepy_songbird",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1783373028980,
+      "tag": "0035_violet_giant_man",
+      "breakpoints": true
     }
   ]
 }
