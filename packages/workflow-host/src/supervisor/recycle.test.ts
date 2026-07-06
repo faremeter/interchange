@@ -31,6 +31,7 @@ import {
   type WorkflowSupervisorBindings,
 } from "./index";
 import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
+import { parseSpawnTimeEnv } from "../child/env-bootstrap";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import {
   createControlChannelSender,
@@ -257,12 +258,15 @@ type FakeChild = {
 type SpawnTracker = {
   spawner: SubprocessSpawner;
   children: FakeChild[];
+  spawnEnvs: Record<string, string>[];
   totalSpawns: number;
 };
 
 function createSpawnTracker(opts: { sigtermExits?: boolean }): SpawnTracker {
   const children: FakeChild[] = [];
+  const spawnEnvs: Record<string, string>[] = [];
   const spawner: SubprocessSpawner = ({ env }) => {
+    spawnEnvs.push(env);
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
     const eventChildToSupervisor = createMemoryFrameStream();
@@ -303,6 +307,7 @@ function createSpawnTracker(opts: { sigtermExits?: boolean }): SpawnTracker {
   return {
     spawner,
     children,
+    spawnEnvs,
     get totalSpawns() {
       return children.length;
     },
@@ -527,6 +532,47 @@ async function spawnSupervisor(opts: {
 }
 
 describe("supervisor recycle: operator-initiated", () => {
+  test("the recycle respawn env satisfies the child spawn-time env contract", async () => {
+    // Regression: the recycle respawn env must carry every required
+    // spawn-time key. A recycle env that omitted a required key (STEP_COUNT)
+    // made the respawned child abort in parseSpawnTimeEnv before opening
+    // IPC, so every recycle tore the deployment down. The fake spawner does
+    // not run parseSpawnTimeEnv, so this asserts the captured env against it
+    // directly -- the check the real child binary performs at boot.
+    const baseDir = await makeTempDir("recycle-env-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+    });
+
+    const recyclePromise = supervisor.recycle({ reason: "env-contract" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const secondChild = tracker.children[1];
+    if (secondChild === undefined) {
+      throw new Error("second child missing after recycle spawn");
+    }
+    await driveReady(secondChild, ipcKeypair);
+    await recyclePromise;
+
+    expect(tracker.spawnEnvs).toHaveLength(2);
+    const spawnEnv = tracker.spawnEnvs[0];
+    const respawnEnv = tracker.spawnEnvs[1];
+    if (spawnEnv === undefined || respawnEnv === undefined) {
+      throw new Error("expected two captured spawn envs");
+    }
+    // Both the initial spawn and the recycle respawn must satisfy the
+    // child's spawn-time env contract, with the same step count.
+    expect(parseSpawnTimeEnv(spawnEnv).stepCount).toBe(1);
+    expect(parseSpawnTimeEnv(respawnEnv).stepCount).toBe(1);
+  });
+
   test("drain mail sends, child is killed, fresh child spawns with a new channelId", async () => {
     const baseDir = await makeTempDir("recycle-op-");
     const ipcKeypair = await generateKeyPair();

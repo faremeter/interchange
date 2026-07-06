@@ -83,7 +83,6 @@
 import { getLogger } from "@intx/log";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
 
 import {
   createControlChannelSender,
@@ -101,6 +100,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import type { SubprocessHandle, WorkflowSupervisorBindings } from "./types";
+import { buildChildSpawnEnv } from "./spawn-env";
 import { DEFAULT_KILL_TIMEOUT_MS, killChildHandle } from "./child-termination";
 
 const logger = getLogger(["workflow-host", "supervisor", "recycle"]);
@@ -314,16 +314,17 @@ export async function triggerRecycle(
   const ipcKeypair = await (
     ctx.bindings.ipcKeyPairFactory ?? generateKeyPair
   )();
-  const env: Record<string, string> = {
-    ...ctx.bindings.substrateEnv,
-    IPC_CHANNEL_ID: channelId,
-    IPC_HMAC_KEY: hexEncode(hmacKey),
-    HOST_PUBKEY: hexEncode(ipcKeypair.publicKey),
-    DEPLOYMENT_ID: ctx.bindings.deploymentId,
-    DEFINITION_HASH: ctx.definitionHash,
-    MAILBOX_ADDRESS: ctx.bindings.deploymentMailAddress,
-    WARM_KEEP: ctx.warmKeep ? "true" : "false",
-  };
+  const env = buildChildSpawnEnv({
+    substrateEnv: ctx.bindings.substrateEnv,
+    channelId,
+    hmacKey,
+    hostPublicKey: ipcKeypair.publicKey,
+    deploymentId: ctx.bindings.deploymentId,
+    deploymentMailAddress: ctx.bindings.deploymentMailAddress,
+    stepCount: ctx.bindings.stepCount,
+    definitionHash: ctx.definitionHash,
+    warmKeep: ctx.warmKeep,
+  });
 
   const handle = ctx.bindings.subprocessSpawner({
     binaryPath: ctx.bindings.binaryPath,

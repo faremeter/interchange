@@ -19,6 +19,29 @@ import { hexDecode } from "@intx/types";
 import { IPC_CRYPTO } from "../ipc/index";
 
 /**
+ * The required spawn-time env keys, named once so the supervisor-side
+ * producer (`buildChildSpawnEnv`) and this child-side parser share a
+ * single required-key contract. `WARM_KEEP` is optional and lives only in
+ * the shape below. The producer types its output against this list
+ * (`Record<RequiredSpawnEnvKey, string>`), so omitting a listed key is a
+ * compile error. That this list stays in step with the validator shape
+ * below -- a hand-maintained arktype object -- is covered by the recycle
+ * env-contract regression test, which drives the real producer through
+ * this parser. This is the contract whose drift once omitted `STEP_COUNT`
+ * from the recycle env and broke every recycle.
+ */
+export const REQUIRED_SPAWN_ENV_KEYS = [
+  "IPC_CHANNEL_ID",
+  "IPC_HMAC_KEY",
+  "HOST_PUBKEY",
+  "DEPLOYMENT_ID",
+  "DEFINITION_HASH",
+  "MAILBOX_ADDRESS",
+  "STEP_COUNT",
+] as const;
+export type RequiredSpawnEnvKey = (typeof REQUIRED_SPAWN_ENV_KEYS)[number];
+
+/**
  * Required env keys carried by the supervisor at spawn time. The
  * validator surface is intentionally narrow: every key documented at
  * the supervisor's `spawn(opts)` method is represented here, and

@@ -84,6 +84,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
+import { buildChildSpawnEnv } from "./spawn-env";
 import { compactRunEvents } from "./run-event-compaction";
 import {
   createDrainTimeoutAccumulator,
@@ -1326,17 +1327,17 @@ export function createWorkflowSupervisor(
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
     const ipcKeypair = await (bindings.ipcKeyPairFactory ?? generateKeyPair)();
-    const env: Record<string, string> = {
-      ...bindings.substrateEnv,
-      IPC_CHANNEL_ID: channelId,
-      IPC_HMAC_KEY: hexEncode(hmacKey),
-      HOST_PUBKEY: hexEncode(ipcKeypair.publicKey),
-      DEPLOYMENT_ID: bindings.deploymentId,
-      DEFINITION_HASH: opts.definitionHash,
-      MAILBOX_ADDRESS: bindings.deploymentMailAddress,
-      STEP_COUNT: String(bindings.stepCount),
-      WARM_KEEP: opts.warmKeep ? "true" : "false",
-    };
+    const env = buildChildSpawnEnv({
+      substrateEnv: bindings.substrateEnv,
+      channelId,
+      hmacKey,
+      hostPublicKey: ipcKeypair.publicKey,
+      deploymentId: bindings.deploymentId,
+      deploymentMailAddress: bindings.deploymentMailAddress,
+      stepCount: bindings.stepCount,
+      definitionHash: opts.definitionHash,
+      warmKeep: opts.warmKeep,
+    });
 
     const handle = bindings.subprocessSpawner({
       binaryPath: bindings.binaryPath,
