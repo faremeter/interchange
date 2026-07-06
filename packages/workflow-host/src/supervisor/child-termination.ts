@@ -21,6 +21,16 @@ import type { SubprocessHandle } from "./types";
 export const DEFAULT_KILL_TIMEOUT_MS = 5_000;
 
 /**
+ * Default deadline for a child's `ready` handshake -- the window a freshly
+ * spawned child has to emit `ready` before the supervisor kills it and
+ * treats the spawn (or recycle respawn) as failed. Used when a caller
+ * supplies no override. Shared here, alongside the kill default, so both
+ * the spawn path and the recycle path bound the handshake identically
+ * without either re-declaring the constant.
+ */
+export const DEFAULT_READY_TIMEOUT_MS = 30_000;
+
+/**
  * Injected dependencies for `killChildHandle`. `setTimer`/`clearTimer`
  * default to the real `setTimeout`/`clearTimeout` when omitted so tests
  * can substitute a deterministic timer. `logger` is supplied by the

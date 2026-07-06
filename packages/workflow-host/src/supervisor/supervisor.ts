@@ -116,6 +116,7 @@ import {
 } from "./terminal-broadcaster";
 import {
   DEFAULT_KILL_TIMEOUT_MS,
+  DEFAULT_READY_TIMEOUT_MS,
   defaultClearTimer,
   defaultSetTimer,
   killChildHandle,
@@ -123,18 +124,6 @@ import {
 } from "./child-termination";
 
 const logger = getLogger(["workflow-host", "supervisor"]);
-
-/**
- * Default bound on the child's spawn-time `ready` handshake. A spawned
- * child that neither emits `ready` nor exits would otherwise block
- * `spawn` forever; on expiry the supervisor kills the child and rejects
- * the spawn. Generous enough for a real child to boot, open its IPC
- * channels, and sign `ready` under load; short enough that a wedged child
- * does not stall the spawn (and, on the sidecar, boot-time restore)
- * indefinitely. Operator-overridable via `WorkflowSupervisorBindings.
- * readyTimeoutMs`.
- */
-const DEFAULT_READY_TIMEOUT_MS = 30_000;
 
 /**
  * Default watchdog timeout for the supervisor's
@@ -2369,6 +2358,9 @@ export function createWorkflowSupervisor(
             wakeDispatch();
           },
           onCrash: onChildCrash,
+          // Edge-resolved once at the supervisor factory; recycle bounds
+          // the respawn handshake with the same value the spawn path uses.
+          readyTimeoutMs,
           ...(bindings.recyclePolicySetTimer !== undefined
             ? { setTimer: bindings.recyclePolicySetTimer }
             : {}),

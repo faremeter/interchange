@@ -793,6 +793,136 @@ describe("supervisor recycle: failure after the cohort handoff", () => {
   });
 });
 
+describe("supervisor recycle: respawn handshake bound", () => {
+  test("a respawn that never emits ready times out, reaps the new child, and reaches a clean stopped state", async () => {
+    const baseDir = await makeTempDir("recycle-ready-timeout-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    // sigtermExits:false so the reap escalates SIGTERM -> SIGKILL: a wedged
+    // respawn is exactly the child that ignores SIGTERM, and the reap must
+    // still guarantee it dies.
+    const tracker = createSpawnTracker({ sigtermExits: false });
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      // Collapse the recycle path's ready deadline and kill-escalation
+      // deadline to the next macrotask so the wedged-respawn path resolves
+      // without real-time waits. The child never emits ready, so timeout
+      // always wins the handshake race. The spawn path keeps the default
+      // real timer, so the first child readies normally.
+      recyclePolicySetTimer: (cb) => setTimeout(cb, 0),
+      recyclePolicyClearTimer: () => undefined,
+    });
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    // Recycle spawns a second child but never drives its ready frame, so
+    // the bounded handshake times out.
+    let caught: unknown;
+    try {
+      await supervisor.recycle({ reason: "ready-timeout-test" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught instanceof Error && caught.message).toMatch(
+      /did not emit ready/,
+    );
+
+    // The wedged respawn was reaped through the full SIGTERM -> SIGKILL
+    // ladder rather than left running as an orphan.
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    expect(second.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+
+    // The recycle failure routed through shutdownInternal to `stopped`, so
+    // a follow-up shutdown is a no-op.
+    await supervisor.shutdown();
+  });
+
+  test("a respawn whose control channel ends before ready rejects and reaps the new child", async () => {
+    const baseDir = await makeTempDir("recycle-ready-failed-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    // sigtermExits:true so the reap's SIGTERM settles the fake child; this
+    // path proves the child is killed even though the control channel end
+    // does not itself terminate the process.
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    // Default (real, 30s) ready timer: the deadline must NOT fire, so the
+    // control-channel-end failure wins the handshake race deterministically.
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    while (tracker.children.length === 0) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    const recyclePromise = supervisor.recycle({ reason: "ready-failed-test" });
+    while (tracker.children.length < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    // End the new child's control channel before it emits ready: the
+    // handshake fails rather than hangs.
+    second.childToSupervisor.close();
+
+    let caught: unknown;
+    try {
+      await recyclePromise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught instanceof Error && caught.message).toMatch(
+      /control channel ended before child emitted ready/,
+    );
+    expect(second.killSignals).toContain("SIGTERM");
+
+    await supervisor.shutdown();
+  });
+});
+
 describe("supervisor recycle: deliverSignal phase guard", () => {
   test("deliverSignal during the recycling window rejects rather than writing to the dying cohort's controlSender", async () => {
     // M2: during `recycling`, the supervisor's `state.controlSender`
