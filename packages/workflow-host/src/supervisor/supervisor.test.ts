@@ -857,6 +857,110 @@ describe("createWorkflowSupervisor", () => {
     expect(readyDeadline.cancelled).toBe(true);
   });
 
+  // A spawn that throws AFTER the OS child is running but BEFORE the
+  // supervisor reaches the ready handshake must not orphan the child or
+  // leave the mail address registered. `shutdownInternal` owns that
+  // teardown once the state record enters "starting"; the spawn body
+  // routes every post-seam throw through it.
+  async function makePreRegistrationFailureHarness(opts: {
+    failSubscribe?: boolean;
+    failDeriveStepAddress?: boolean;
+  }) {
+    const baseDir = await makeTempDir("supervisor-spawn-leak-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    const killSignals: string[] = [];
+    const spawner: SubprocessSpawner = () => ({
+      pid: 4321,
+      controlWriter: supervisorToChild.writer,
+      controlReader: childToSupervisor.reader,
+      eventReader: eventChildToSupervisor.reader,
+      kill: (signal) => {
+        killSignals.push(
+          typeof signal === "string" ? signal : String(signal ?? ""),
+        );
+        childToSupervisor.close();
+        eventChildToSupervisor.close();
+        resolveExit?.(0);
+      },
+      exited,
+    });
+    const mailBus = createMockMailBus();
+    const bindingsMailBus: MailBusBindings = {
+      ...mailBus,
+      subscribeMailForAddress:
+        opts.failSubscribe === true
+          ? () => {
+              throw new Error("injected subscribe failure");
+            }
+          : mailBus.subscribeMailForAddress,
+    };
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus: bindingsMailBus,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      ...(opts.failDeriveStepAddress === true
+        ? {
+            deriveStepAddress: () => {
+              throw new Error("injected deriveStepAddress failure");
+            },
+          }
+        : {}),
+    };
+    return {
+      supervisor: createWorkflowSupervisor(bindings),
+      killSignals,
+      registered: mailBus.registered,
+    };
+  }
+
+  const preRegistrationSpawnOpts = {
+    stepOrder: ["step-1"],
+    definitionHash: "def-hash-abc",
+    warmKeep: false,
+    onInferenceEvent: () => {
+      /* unused in the pre-registration failure tests */
+    },
+  };
+
+  test("a spawn whose mail subscription throws kills the child and releases the address", async () => {
+    const h = await makePreRegistrationFailureHarness({ failSubscribe: true });
+    await expect(h.supervisor.spawn(preRegistrationSpawnOpts)).rejects.toThrow(
+      "injected subscribe failure",
+    );
+    // The address was registered just before subscribe threw; the
+    // teardown must unregister it so no orphaned registration survives.
+    expect(h.registered()).toHaveLength(0);
+    expect(h.killSignals.length).toBeGreaterThan(0);
+  });
+
+  test("a spawn whose credentials assembly throws kills the child", async () => {
+    const h = await makePreRegistrationFailureHarness({
+      failDeriveStepAddress: true,
+    });
+    await expect(h.supervisor.spawn(preRegistrationSpawnOpts)).rejects.toThrow(
+      "injected deriveStepAddress failure",
+    );
+    expect(h.registered()).toHaveLength(0);
+    expect(h.killSignals.length).toBeGreaterThan(0);
+  });
+
   test("drain() forwards the `drain` control frame and arms a drainTimeout accumulator per in-flight run", async () => {
     const baseDir = await makeTempDir("supervisor-drain-arm-");
     await seedStepGrants(
