@@ -60,7 +60,7 @@ import {
   type BaseEnv,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
@@ -152,6 +152,16 @@ export interface WorkflowStepInvokerOpts {
    * agent is never warm-kept.
    */
   warmCache?: WarmAgentCache;
+  /**
+   * Live per-step inference-source table the run-loop mutates in place on a
+   * rotation. Supplied only on the warm path: after building and storing the
+   * warm agent, the adapter re-applies the current table so a rotation that
+   * landed during the (async) first build -- which the empty-cache
+   * `applySources` no-op could not reach, and which the in-flight build had
+   * already captured the prior sources for -- is not lost for the warm
+   * agent's life.
+   */
+  sourcesRef?: { current: Record<string, InferenceSource[]> };
   /**
    * Run-boundary hook for the warm path (design §3c durability). When
    * supplied, the adapter awaits it in the warm path's `finally` -- once
@@ -301,6 +311,17 @@ async function invokeWarmStep(
       if (sink !== null) sink(event);
     });
     warmCache.store(key, agent, eventSinkRef, eventForward);
+    // Re-apply the live source table to the just-built agent. A rotation
+    // that arrived during the (async) build hit the still-empty cache as a
+    // no-op `applySources` while the build had already captured the prior
+    // sources; now that the entry exists, this applies any such rotation so
+    // it is not lost for the warm agent's life. No-op when the table is
+    // unchanged. The wire boundary guarantees element 0 is the default.
+    const live = opts.sourcesRef?.current[key];
+    const head = live?.[0];
+    if (live !== undefined && head !== undefined) {
+      warmCache.applySources(live, head.id);
+    }
   }
 
   if (opts.onEvent !== undefined) {

@@ -255,6 +255,72 @@ function buildRequest(opts: {
   };
 }
 
+describe("workflow-host StepInvoker adapter - warm source rotation", () => {
+  test("a rotation during the first warm build reaches the built agent", async () => {
+    // Finding: a sources rotation that lands during the (async) first warm
+    // build hits the still-empty cache as a no-op applySources, while the
+    // in-flight build already captured the prior sources. After the built
+    // agent is stored, the adapter re-applies the live table so the rotation
+    // is not lost for the warm agent's life.
+    const stub = buildStreamingStubAgent([]);
+    const setSourcesCalls: {
+      sources: InferenceSource[];
+      defaultSource: string;
+    }[] = [];
+    stub.agent.setSources = (sources, defaultSource) => {
+      setSourcesCalls.push({ sources, defaultSource });
+    };
+    const workflowAuthorize: WorkflowAuthorizeFn = async () => ({
+      effect: "allow",
+      matchingGrants: [],
+      resolvedBy: null,
+    });
+    const warmCache = createWarmAgentCache();
+    const rotated: InferenceSource = { ...STUB_SOURCE, id: "rotated" };
+    const sourcesRef = {
+      current: { "step-1": [STUB_SOURCE] } as Record<string, InferenceSource[]>,
+    };
+
+    let releaseBuild!: () => void;
+    const buildGate = new Promise<void>((resolve) => {
+      releaseBuild = resolve;
+    });
+    let buildStarted = false;
+
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => {
+        buildStarted = true;
+        await buildGate;
+        return stub.agent;
+      },
+      warmCache,
+      sourcesRef,
+    });
+
+    const invokePromise = invoker(buildRequest({ input: { goal: "ping" } }));
+    while (!buildStarted) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    // A rotation lands DURING the build: the run-loop updates the ref and
+    // calls applySources -- a no-op here because the cache is still empty.
+    sourcesRef.current = { "step-1": [rotated] };
+    warmCache.applySources([rotated], "rotated");
+    expect(setSourcesCalls).toHaveLength(0);
+
+    releaseBuild();
+    await invokePromise;
+
+    // The re-apply after store applied the ROTATED table to the built agent.
+    expect(setSourcesCalls).toEqual([
+      { sources: [rotated], defaultSource: "rotated" },
+    ]);
+
+    await warmCache.evictAll("test cleanup");
+  });
+});
+
 describe("workflow-host StepInvoker adapter - happy path", () => {
   test("delivers synthesized message, captures reply, returns output shape", async () => {
     const stub = buildStubAgent();

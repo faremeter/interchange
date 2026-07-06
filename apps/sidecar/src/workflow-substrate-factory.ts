@@ -1146,6 +1146,7 @@ export function createSidecarSubstrateFactory(
         buildEnv: (buildReq) => buildStepEnv(buildReq, sourcesRef),
         agentFactory: stepAgentFactory,
         onEvent,
+        sourcesRef,
         ...(warmCache !== undefined ? { warmCache } : {}),
         ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
       })(req);
