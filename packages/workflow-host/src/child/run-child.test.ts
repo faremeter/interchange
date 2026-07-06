@@ -43,12 +43,16 @@ import {
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
 } from "./index";
+import { emitTerminalEvent } from "./run-child";
+import type { RunResult } from "@intx/workflow";
 import {
   createControlChannelSender,
   generateChannelId,
   generateHmacKey,
   receiveControlChannel,
   receiveEventChannel,
+  type ControlChannelSender,
+  type ControlPayload,
   type FrameReader,
   type FrameWriter,
   type NdjsonReader,
@@ -1902,5 +1906,114 @@ describe("event channel writer wiring", () => {
     }
     expect(firstType).toBe("message.run.started");
     expect(crashes).toHaveLength(0);
+  });
+});
+
+describe("emitTerminalEvent", () => {
+  function capturingSender(): {
+    sender: ControlChannelSender;
+    sent: ControlPayload[];
+  } {
+    const sent: ControlPayload[] = [];
+    const sender: ControlChannelSender = {
+      seq: 0,
+      send: (payload) => {
+        sent.push(payload);
+        return Promise.resolve();
+      },
+    };
+    return { sender, sent };
+  }
+
+  test("mirrors a RunCompleted terminal event, sourcing seq and at from it", async () => {
+    const { sender, sent } = capturingSender();
+    const result: RunResult = {
+      runId: "run-ok",
+      terminalStatus: "completed",
+      outputs: {},
+      events: [{ kind: "RunCompleted", seq: 5, at: "2026-01-01T00:00:05Z" }],
+    };
+    await emitTerminalEvent(sender, result);
+    expect(sent).toEqual([
+      {
+        type: "terminal.event",
+        data: {
+          runId: "run-ok",
+          seq: 5,
+          kind: "RunCompleted",
+          at: "2026-01-01T00:00:05Z",
+        },
+      },
+    ]);
+  });
+
+  test("mirrors a RunFailed terminal event, sourcing the error message from it", async () => {
+    const { sender, sent } = capturingSender();
+    const result: RunResult = {
+      runId: "run-boom",
+      terminalStatus: "failed",
+      outputs: {},
+      events: [
+        {
+          kind: "RunFailed",
+          seq: 7,
+          at: "2026-01-01T00:00:07Z",
+          error: { message: "step blew up" },
+        },
+      ],
+    };
+    await emitTerminalEvent(sender, result);
+    expect(sent).toEqual([
+      {
+        type: "terminal.event",
+        data: {
+          runId: "run-boom",
+          seq: 7,
+          kind: "RunFailed",
+          at: "2026-01-01T00:00:07Z",
+          error: { message: "step blew up" },
+        },
+      },
+    ]);
+  });
+
+  test("throws when the committed log carries no terminal event", () => {
+    const { sender, sent } = capturingSender();
+    const result: RunResult = {
+      runId: "run-nolog",
+      terminalStatus: "completed",
+      outputs: {},
+      events: [],
+    };
+    // The runtime commits the terminal event last, so its absence is a
+    // producer bug. Throw rather than emit a seq-0 frame that would desync
+    // the supervisor from the durable log.
+    expect(() => emitTerminalEvent(sender, result)).toThrow(
+      /carries no terminal event/,
+    );
+    expect(sent).toEqual([]);
+  });
+
+  test("throws when the terminal event kind disagrees with the terminal status", () => {
+    const { sender, sent } = capturingSender();
+    const result: RunResult = {
+      runId: "run-mismatch",
+      terminalStatus: "completed",
+      outputs: {},
+      events: [
+        {
+          kind: "RunFailed",
+          seq: 9,
+          at: "2026-01-01T00:00:09Z",
+          error: { message: "actually failed" },
+        },
+      ],
+    };
+    // Emitting a RunCompleted frame carrying the RunFailed's seq would claim
+    // completion while pointing at a failure's audit entry.
+    expect(() => emitTerminalEvent(sender, result)).toThrow(
+      /committed terminal event is RunFailed/,
+    );
+    expect(sent).toEqual([]);
   });
 });

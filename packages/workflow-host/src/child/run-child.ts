@@ -1069,29 +1069,34 @@ function buildRuntimeEnv(args: {
  * loop and any armed drainTimeout accumulator subscribed for the
  * runId.
  *
- * The mapping is total: every `terminalStatus` the runtime body
- * surfaces corresponds to exactly one `kind` in the wire union. The
- * `error.message` on `RunFailed` is taken from the last
- * `RunFailed`/`StepFailed` event the runtime emitted; when the log
- * does not carry one the supervisor's downstream consumers see an
- * empty message rather than a thrown error (the wire shape requires
- * the field).
+ * The frame mirrors the run's committed terminal event: every field --
+ * `kind`, `seq`, `at`, and (for `RunFailed`) `error.message` -- is
+ * sourced from that event, which is why the frame's `seq` matches the
+ * on-disk audit-log entry. `terminalStatus` is only the cross-check: the
+ * found event's `kind` must agree with it. A missing terminal event, or
+ * one whose kind disagrees, is a runtime producer bug (the runtime
+ * commits the terminal event last), and emitting a frame anyway would
+ * desync the supervisor from the durable log that `discoverInFlightRuns`
+ * reads on resume -- the supervisor would settle a run the on-disk log
+ * still shows in-flight. So this throws instead: no frame keeps the
+ * supervisor and the durable log agreeing that the run is unsettled, and
+ * the next recycle/restart resumes it. The throw propagates to the
+ * caller's `complete` continuation, which logs it.
  *
- * Errors flowing out of `upstreamSender.send` are logged but not
- * rethrown -- the supervisor's dispatch loop is the authoritative
- * settler for the dispatch entry through its cohort abort signal, so a
- * lost terminal frame surfaces structurally as a wedged dispatch
- * rather than a silent lifecycle failure.
+ * Errors flowing out of `upstreamSender.send` are a different case --
+ * a transport send failure, logged but not rethrown. The supervisor's
+ * dispatch loop is the authoritative settler through its cohort abort
+ * signal, so a lost frame surfaces structurally as a wedged dispatch
+ * rather than a silent lifecycle failure. The invariant throws above run
+ * before the send so that catch never swallows them.
  */
-function emitTerminalEvent(
+export function emitTerminalEvent(
   upstreamSender: ControlChannelSender,
   result: RunResult,
 ): Promise<void> {
-  const at = new Date().toISOString();
-  // Recover the terminal event blob from the committed event log so
-  // the wire frame's seq matches the on-disk audit-log entry. The
-  // runtime body commits the terminal event last; walking from the
-  // end finds it in one step without rebuilding the state machine.
+  // Recover the terminal event from the committed event log. The runtime
+  // body commits the terminal event last; walking from the end finds it in
+  // one step without rebuilding the state machine.
   let terminalEvent: (typeof result.events)[number] | null = null;
   for (let i = result.events.length - 1; i >= 0; i -= 1) {
     const candidate = result.events[i];
@@ -1105,34 +1110,49 @@ function emitTerminalEvent(
       break;
     }
   }
-  const seq = terminalEvent?.seq ?? 0;
-  const eventAt = terminalEvent?.at ?? at;
+  if (terminalEvent === null) {
+    throw new Error(
+      `emitTerminalEvent: run ${result.runId} terminated as ${result.terminalStatus} but its committed event log carries no terminal event (the runtime commits it last; this is a producer bug)`,
+    );
+  }
+  const expectedKind =
+    result.terminalStatus === "completed"
+      ? "RunCompleted"
+      : result.terminalStatus === "cancelled"
+        ? "RunCancelled"
+        : "RunFailed";
+  if (terminalEvent.kind !== expectedKind) {
+    throw new Error(
+      `emitTerminalEvent: run ${result.runId} terminated as ${result.terminalStatus} but its committed terminal event is ${terminalEvent.kind}`,
+    );
+  }
+  // The RunFailed-missing-error.message case the supervisor's
+  // `synthesizeTerminalEvent` guards is unreachable here: `result.events`
+  // is typed `WorkflowEvent[]`, and `RunFailed.error.message` is a
+  // non-optional `string`, so a RunFailed reached here always carries one.
+  // The supervisor needs that guard because it parses untrusted JSON.
   let payload: Extract<ControlPayload, { type: "terminal.event" }>["data"];
-  if (result.terminalStatus === "completed") {
+  if (terminalEvent.kind === "RunCompleted") {
     payload = {
       runId: result.runId,
-      seq,
+      seq: terminalEvent.seq,
       kind: "RunCompleted",
-      at: eventAt,
+      at: terminalEvent.at,
     };
-  } else if (result.terminalStatus === "cancelled") {
+  } else if (terminalEvent.kind === "RunCancelled") {
     payload = {
       runId: result.runId,
-      seq,
+      seq: terminalEvent.seq,
       kind: "RunCancelled",
-      at: eventAt,
+      at: terminalEvent.at,
     };
   } else {
-    const message =
-      terminalEvent !== null && terminalEvent.kind === "RunFailed"
-        ? terminalEvent.error.message
-        : "";
     payload = {
       runId: result.runId,
-      seq,
+      seq: terminalEvent.seq,
       kind: "RunFailed",
-      at: eventAt,
-      error: { message },
+      at: terminalEvent.at,
+      error: { message: terminalEvent.error.message },
     };
   }
   return upstreamSender
