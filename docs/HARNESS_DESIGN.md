@@ -79,11 +79,11 @@ All communication between hub and sidecar is over a single persistent WebSocket 
 | `agent.deploy.ack` | `agentAddress`, `publicKey` | Agent deployed, here is its public key |
 | `agent.error`      | `agentAddress`, `error`     | Deployment failed                      |
 
-When the hub sends `agent.deploy`, the sidecar generates a key pair (if new) or loads the existing one, persists the `HarnessConfig` to `agent.json`, initializes the harness, and responds with `agent.deploy.ack` including the agent's hex-encoded public key. The hub stores this public key for reconnect verification.
+When the hub sends `agent.deploy`, the sidecar spawns a supervised **workflow-process child** to host the deployment and responds with `agent.deploy.ack`. For a single-step (launched-agent) deployment the sidecar generates the agent's key pair (if new) or loads the existing one, records the hub's public key for later deploy-pack verification, initializes the head's on-disk deploy-tree repository (the narrow `initRepo`, not the retired `provisionAgent`), and acks the agent's hex-encoded public key — the hub stores it in `agent_instance.publicKey` for reconnect verification. A multi-step deployment has no head agent identity: its per-step addresses are workflow-derived, so the ack instead carries the sidecar's supervisor principal key, which the hub discards. Before the child is spawned, the inputs a restart cannot otherwise recover — the per-step inference sources, the session id, and (single-step only) the hub public key — are written to a per-deployment `deployment.json` record.
 
-When the hub sends `agent.undeploy`, the sidecar stops the harness, unregisters the agent from the transport, and clears the persisted config.
+When the hub sends `agent.undeploy`, the sidecar shuts the deployment's supervisor down (killing the workflow-process child and releasing its IPC pipes and event-channel handle), unregisters the deployment address from the transport and from the mail/signal/drain routers, reclaims the deployment's per-step scratch, and deletes the `deployment.json` record so a later boot does not re-spawn a torn-down deployment. The agent's key pair and its durable agent-state / conversation repositories are left in place so a redeploy on the same address resumes them.
 
-Credentials travel in the `agent.deploy` frame's `config.providers` array. There is no separate credential push endpoint.
+Credentials travel in the `agent.deploy` frame's inference **sources** — `config.sources`, and the per-step `workflow.sources` failover chains — where each `InferenceSource` carries its own API key. There is no separate credential push endpoint.
 
 ## Per-Agent Key Pairs
 
@@ -95,21 +95,28 @@ Directory layout under `SIDECAR_DATA_DIR`:
 
 ```
 SIDECAR_DATA_DIR/
-  agent-name_at_tenant_interchange_network/
-    .git/              # isogit repository (context, audit records)
-    agent.json         # persisted HarnessConfig for session restore
+  <sanitized-agent-address>/     # per-agent key custody + head deploy-tree repo
+    .git/                        # isogit repository (deploy tree, context, audit records)
     keys/
-      id_ed25519       # agent private key (raw 32 bytes)
-      id_ed25519.pub   # agent public key (raw 32 bytes)
+      id_ed25519                 # agent private key (raw 32 bytes, mode 0600)
+      id_ed25519.pub             # agent public key (raw 32 bytes)
+  workflow-runs/
+    <deploymentId>/              # workflow-run substrate for one deployment
+      deployment.json            # per-deployment restore record (mode 0600); see below
+  workflow-step-state/
+    <deploymentId>/              # ephemeral per-step scratch, reclaimed on undeploy
+  agent-conversation-state/      # durable per-agent conversation, survives undeploy
 ```
 
-The `agent.json` file stores the full harness configuration (system prompt, model, providers, session ID) so that the sidecar can restore agent sessions on restart without re-receiving the config from the hub.
+The per-agent key directory is keyed by the sanitized agent address; the workflow subtrees are keyed by the derived deployment id.
+
+The `deployment.json` record stores only what a restart cannot otherwise recover: the deployment's `agentAddress`, the `definitionId` naming its workflow definition on disk, each step's ordered inference-**sources** failover chain (`sources`), the optional inference `sessionId`, and — for a single-step deployment — the `hubPublicKey`. A `version` field guards the schema so a stale record can be rejected rather than parsed blindly. The record deliberately does **not** duplicate the workflow definition (kept on disk under its `definitionId` and re-read at restore) or the step grants (kept in each step's agent-state repo). Because each source embeds its API key, the record is written owner-only (mode 0600).
 
 The directory name is the agent address with `@` replaced by `_at_` and non-alphanumeric characters (except `-` and `_`) replaced by `_`.
 
 ## Agent Deployment vs User Sessions
 
-The sidecar manages agents, not user sessions. When the hub deploys an agent to a sidecar, the sidecar starts a harness for that agent. The harness runs continuously, receiving messages from any source — other agents, users, system signals. User sessions are a hub-side concept: the hub tracks which users are interacting with which agents and routes user messages to the agent's address accordingly, but the sidecar does not know or care about individual user sessions.
+The sidecar manages agents, not user sessions. When the hub deploys an agent to a sidecar, the sidecar spawns a supervised **workflow-process child** for that deployment. The child runs continuously, receiving messages from any source — other agents, users, system signals — and builds the agent harness inside its own process. User sessions are a hub-side concept: the hub tracks which users are interacting with which agents and routes user messages to the agent's address accordingly, but the sidecar does not know or care about individual user sessions.
 
 The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given agent address. When a sidecar disconnects, the hub knows which agents are affected and queues messages for them until the sidecar reconnects.
 
@@ -156,7 +163,7 @@ On reconnection (agents successfully restored from `SIDECAR_DATA_DIR`), the side
 
 ### Self-Restoration
 
-When the WebSocket connection to the hub opens, the sidecar scans `SIDECAR_DATA_DIR` for agent directories containing both a key pair and an `agent.json` config. For each valid directory, the sidecar restores the harness from the persisted config. The `register` or `reconnect` frame is held until restoration completes. This restoration happens entirely on the sidecar side — the hub is not involved in session restoration.
+At boot, **before** opening the WebSocket connection to the hub, the sidecar scans `SIDECAR_DATA_DIR/workflow-runs/` for `deployment.json` records (`scanWorkflowDeploymentRecords`). Each record is validated at the trust boundary, its stored `agentAddress` is cross-checked against its directory name, its workflow definition is re-read and re-validated off disk with the same gates a fresh deploy applies, and its pinned inference sources are re-admitted against the providers this sidecar can build; a record that fails any check is logged and skipped so one bad deployment cannot strand the rest. Each surviving record is restored through the **same** spawn path a live deploy uses — a supervised workflow-process child, with the single-step head's key pair and recorded hub key re-established. Restoration completes before the `register` or `reconnect` frame is sent, and happens entirely on the sidecar side; the hub is not involved in restoration.
 
 ### Challenge/Response Verification
 
@@ -210,7 +217,7 @@ The sidecar's isogit repository is the source of truth for agent inference conte
 
 ## Security Model
 
-Credentials travel in the `agent.deploy` frame's `config.providers` array and are held in memory by the harness. They are never persisted to disk (the `agent.json` file contains the full config including provider entries with API keys — this is a known limitation of the prototype that should be addressed before production use).
+Credentials travel in the `agent.deploy` frame's inference `sources` (each `InferenceSource` carries its own API key) and are held in memory by the running deployment. They are also persisted to disk in the deployment's `deployment.json` record — the `sources` field embeds those API keys — so the sidecar can restore a deployment on restart without re-receiving them from the hub. The record is written owner-only (mode 0600), but storing provider API keys on the sidecar's disk at all is a known limitation of the prototype that should be addressed before production use.
 
 ## Key Rotation
 
