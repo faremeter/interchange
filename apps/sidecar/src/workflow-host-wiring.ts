@@ -885,6 +885,14 @@ export function createSidecarDeployRouter(deps: {
    * the deploy or boot-time restore.
    */
   readyTimeoutMs?: number;
+  /**
+   * Deployment-record writer, injectable so a test can block or fail the
+   * persist at a controlled point -- the natural seam for exercising a
+   * recycle that interleaves the source-rotation persist window. Defaults
+   * to the real `writeWorkflowDeploymentRecord`; production never overrides
+   * it.
+   */
+  writeWorkflowDeploymentRecord?: typeof writeWorkflowDeploymentRecord;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -914,6 +922,8 @@ export function createSidecarDeployRouter(deps: {
   // no child ever rooted scratch and the undeploy reclaim is correctly
   // skipped.
   const stepStateDataDir = multistepSubstrateEnv.SIDECAR_DATA_DIR;
+  const persistDeploymentRecord =
+    deps.writeWorkflowDeploymentRecord ?? writeWorkflowDeploymentRecord;
   const multistepSpawner =
     deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
   const multistepDeriveStepAddress: DeriveStepAddress =
@@ -1349,30 +1359,51 @@ export function createSidecarDeployRouter(deps: {
         deps.multistepSourcesRouter?.register(
           spec.agentAddress,
           async (args) => {
-            // Persist the rotation durably BEFORE committing it in memory or
-            // pushing it live, so a failed write leaves no partial effect:
-            // currentSources, the record, and the child all stay on the
-            // prior sources and the throw is truthful. Persistence lets the
-            // rotation survive a full sidecar restart, not just a recycle --
-            // the boot scan reseeds spec.sources from record.sources.
-            // Overwrites the deploy-time record in place. Skipped when no
-            // data dir was wired (a test router that never persists),
-            // matching the restore guard.
             const rotated = { [rotationStepId]: args.sources };
-            if (stepStateDataDir !== undefined) {
-              await writeWorkflowDeploymentRecord(
-                stepStateDataDir,
-                deploymentId,
-                buildDeploymentRecord(spec, rotated),
-              );
-            }
-            // Commit in memory BEFORE the live-swap, and synchronously so no
-            // recycle can interleave before deliverSources: a recycle
-            // mid-flight rejects `deliverSources`, but the respawn re-pulls
-            // currentSources through dynamicSpawnEnv and must see the
-            // rotation. The wire boundary guarantees `args.sources[0]` is the
-            // default, which the recycle env form pins as the active source.
+            // Swap `currentSources` synchronously BEFORE the durable persist.
+            // `currentSources` is the process-local respawn hint the
+            // supervisor reads synchronously through `dynamicSpawnEnv`, so a
+            // recycle that interleaves the persist `await` must respawn the
+            // child on the SAME sources being persisted, not the stale prior
+            // table. The obvious inverse -- persist first, then swap -- is
+            // rejected: it leaves the child on the OLD sources during the
+            // persist window while the record has already moved to NEW, so a
+            // recycle there respawns stale and a restart would "correct" it,
+            // i.e. the running child contradicts durable intent. Swapping
+            // first makes the only residual disagreement child-ahead-of-
+            // durable on a failed persist, which the next recycle heals down
+            // to the rolled-back durable truth -- the benign direction. The
+            // wire boundary guarantees `args.sources[0]` is the default,
+            // which the recycle env form pins as the active source.
+            const prevSources = currentSources;
             currentSources = rotated;
+            // The durable write still precedes the LIVE swap
+            // (`deliverSources`), preserving persist-before-externally-visible
+            // for state that outlives the process; only the process-local
+            // respawn hint moves ahead. On a failed persist, roll the hint
+            // back so `currentSources` and the record stay in agreement in the
+            // common (no interleaved recycle) failure case -- the invariant
+            // restart consistency depends on. Persistence lets the rotation
+            // survive a full sidecar restart, not just a recycle: the boot
+            // scan reseeds spec.sources from record.sources. Overwrites the
+            // deploy-time record in place. Skipped when no data dir was wired
+            // (a test router that never persists), matching the restore guard.
+            if (stepStateDataDir !== undefined) {
+              try {
+                await persistDeploymentRecord(
+                  stepStateDataDir,
+                  deploymentId,
+                  buildDeploymentRecord(spec, rotated),
+                );
+              } catch (cause) {
+                // Restoring unconditionally is safe because rotations are
+                // single-flight per deployment: the hub awaits each
+                // sources.update ack before sending the next, so prevSources
+                // cannot clobber a concurrently-committed later rotation.
+                currentSources = prevSources;
+                throw cause;
+              }
+            }
             await wired.supervisor.deliverSources({
               sources: args.sources,
               defaultSource: args.defaultSource,
@@ -1594,7 +1625,7 @@ export function createSidecarDeployRouter(deps: {
       // leaves a record the boot scan re-drives (an idempotent re-spawn; the
       // child's in-flight-run discovery resumes any run). A soft-failed deploy
       // deletes it below, so only a crash-interrupted deploy leaves one.
-      await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
+      await persistDeploymentRecord(dataDir, deploymentId, record);
 
       // Materialize the deploy-only durable state the spawned child and the
       // supervisor read from disk: the workflow definition (`workflow.json`)

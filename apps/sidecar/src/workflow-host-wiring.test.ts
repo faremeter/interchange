@@ -33,6 +33,7 @@ import {
   type MultistepSourcesRouter,
 } from "./workflow-run-pack-client";
 import {
+  scanWorkflowDeploymentRecords,
   writeWorkflowDeploymentRecord,
   type WorkflowDeploymentRecord,
 } from "./workflow-deployment-record";
@@ -553,6 +554,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * omitted a fresh keypair is minted per call as before.
      */
     headKeyPair?: Awaited<ReturnType<typeof generateKeyPair>>;
+    /**
+     * Injectable deployment-record writer. The rotation-interleave tests
+     * pass a blockable/failing stub so a recycle can be driven into the
+     * rotation's persist window; omitted, the router uses the real writer.
+     */
+    writeWorkflowDeploymentRecord?: typeof writeWorkflowDeploymentRecord;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -628,6 +635,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         : {}),
       ...(opts.readyTimeoutMs !== undefined
         ? { readyTimeoutMs: opts.readyTimeoutMs }
+        : {}),
+      ...(opts.writeWorkflowDeploymentRecord !== undefined
+        ? {
+            writeWorkflowDeploymentRecord: opts.writeWorkflowDeploymentRecord,
+          }
         : {}),
     });
     return {
@@ -2159,11 +2171,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a rotation whose persist fails leaves no partial effect", async () => {
-    // Atomicity: if the durable write rejects, the rotation takes NO effect.
-    // currentSources stays on the deploy-time table (so a recycle respawn is
-    // unrotated) and deliverSources is never reached. The write is ordered
-    // before the in-memory commit precisely so a failure cannot leave the
-    // three views (record, currentSources, live child) divergent.
+    // Atomicity: if the durable write rejects, the rotation takes NO net
+    // effect. The handler swaps currentSources synchronously, then rolls it
+    // back on a failed persist, so once the handler throws currentSources is
+    // on the deploy-time table (a recycle respawn AFTER the failure is
+    // unrotated) and deliverSources is never reached. Rolling the in-memory
+    // hint back keeps currentSources and the record in agreement in this
+    // no-interleaved-recycle failure case.
     const dataDir = await createTempBaseDir("sidecar-rot-failatomic-");
     const addr = "ins_rotfailatomic@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
@@ -2201,8 +2215,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       }),
     ).rejects.toThrow();
 
-    // currentSources is untouched: a recycle respawn carries the DEPLOY-TIME
-    // sources, proving the failed rotation left no partial in-memory effect.
+    // currentSources was rolled back: a recycle respawn AFTER the failed
+    // rotation carries the DEPLOY-TIME sources, proving the failed rotation
+    // left no net in-memory effect.
     await spawner.recycleRequestFor(0);
     while (spawner.spawnCount() < 2) {
       await new Promise((r) => setTimeout(r, 1));
@@ -2212,6 +2227,165 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     if (respawnEnv === undefined) throw new Error("respawn env missing");
     expect(
       JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [makeInferenceSource("step-1")] });
+  });
+
+  test("a recycle interleaving the rotation persist respawns on the rotated sources", async () => {
+    // Interleave guard: the rotation swaps currentSources synchronously
+    // BEFORE the durable persist, so a recycle that lands inside the persist
+    // window respawns the child on the ROTATED sources -- consistent with
+    // what is being persisted -- rather than the stale deploy-time table.
+    const dataDir = await createTempBaseDir("sidecar-rot-interleave-ok-");
+    const addr = "ins_rotinterok@example.com";
+    const sourcesRouter = createMultistepSourcesRouter();
+    const spawner = makeReadyDrivingSpawner(11200);
+
+    // A persist that blocks on a test-controlled gate once armed, so a recycle
+    // can be driven into the rotation's persist window. The deploy's own
+    // persist (before the gate is armed) passes straight through to the real
+    // writer.
+    let gate: Promise<void> | null = null;
+    let release: () => void = () => undefined;
+    const persist: typeof writeWorkflowDeploymentRecord = async (
+      d,
+      id,
+      rec,
+    ) => {
+      if (gate !== null) await gate;
+      await writeWorkflowDeploymentRecord(d, id, rec);
+    };
+
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      writeWorkflowDeploymentRecord: persist,
+    });
+
+    const deployPromise = router.deploy(singleStepFrame(addr, "wf-rotinterok"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    // Arm the gate so the rotation's persist blocks mid-window.
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    // Start the rotation but do not await it: the handler swaps currentSources
+    // synchronously, then parks on the blocked persist before deliverSources.
+    const rotated = makeInferenceSource("rotated");
+    const rotatePromise = sourcesRouter.tryRoute({
+      type: "sources.update",
+      agentAddress: addr,
+      sources: [rotated],
+      defaultSource: "rotated",
+    });
+
+    // Drive a recycle while the persist is blocked. The respawn env must carry
+    // the ROTATED sources, because the synchronous swap already ran.
+    await spawner.recycleRequestFor(0);
+    while (spawner.spawnCount() < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await spawner.driveReadyFor(1);
+    const respawnEnv = spawner.envFor(1);
+    if (respawnEnv === undefined) throw new Error("respawn env missing");
+    expect(
+      JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [rotated] });
+
+    // Release the persist; the rotation completes without throwing and the
+    // durable record converges on the rotated sources.
+    release();
+    await rotatePromise;
+    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    const record = scanned.find(
+      (s) => s.deploymentId === deriveDeploymentId(addr),
+    );
+    expect(record?.record.sources).toEqual({ "step-1": [rotated] });
+  });
+
+  test("a recycle interleaving a failed rotation persist respawns on new sources then rolls back", async () => {
+    // The benign residual, pinned: a persist that fails WHILE a recycle
+    // interleaves leaves the just-respawned child transiently ahead on the
+    // rotated sources (the intended, self-healing direction), while
+    // currentSources rolls back to the deploy-time table so the NEXT recycle
+    // reverts the child to durable truth.
+    const dataDir = await createTempBaseDir("sidecar-rot-interleave-fail-");
+    const addr = "ins_rotinterfail@example.com";
+    const sourcesRouter = createMultistepSourcesRouter();
+    const spawner = makeReadyDrivingSpawner(11300);
+
+    let gate: Promise<void> | null = null;
+    let release: () => void = () => undefined;
+    const persist: typeof writeWorkflowDeploymentRecord = async (
+      d,
+      id,
+      rec,
+    ) => {
+      if (gate !== null) {
+        await gate;
+        throw new Error("rotation persist boom");
+      }
+      await writeWorkflowDeploymentRecord(d, id, rec);
+    };
+
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSourcesRouter: sourcesRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      writeWorkflowDeploymentRecord: persist,
+    });
+
+    const deployPromise = router.deploy(
+      singleStepFrame(addr, "wf-rotinterfail"),
+    );
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const rotated = makeInferenceSource("rotated");
+    const rotatePromise = sourcesRouter.tryRoute({
+      type: "sources.update",
+      agentAddress: addr,
+      sources: [rotated],
+      defaultSource: "rotated",
+    });
+
+    // A recycle interleaves the about-to-fail persist: the respawn still
+    // carries the ROTATED sources, because the swap already ran.
+    await spawner.recycleRequestFor(0);
+    while (spawner.spawnCount() < 2) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await spawner.driveReadyFor(1);
+    const respawnEnv = spawner.envFor(1);
+    if (respawnEnv === undefined) throw new Error("respawn env missing");
+    expect(
+      JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
+    ).toEqual({ "step-1": [rotated] });
+
+    // Release the persist so it rejects; the rotation rolls currentSources
+    // back and rethrows.
+    release();
+    await expect(rotatePromise).rejects.toThrow(/rotation persist boom/);
+
+    // A SECOND recycle now respawns on the ROLLED-BACK deploy-time sources,
+    // healing the transient down to durable truth.
+    await spawner.recycleRequestFor(1);
+    while (spawner.spawnCount() < 3) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await spawner.driveReadyFor(2);
+    const secondRespawnEnv = spawner.envFor(2);
+    if (secondRespawnEnv === undefined) {
+      throw new Error("second respawn env missing");
+    }
+    expect(
+      JSON.parse(secondRespawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
     ).toEqual({ "step-1": [makeInferenceSource("step-1")] });
   });
 
