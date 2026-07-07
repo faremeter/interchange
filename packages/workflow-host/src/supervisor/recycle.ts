@@ -378,21 +378,48 @@ export async function triggerRecycle(
   });
   const eventPump = pumpEvents(eventIter, ctx.onInferenceEvent);
 
+  // The child handshake below is deadline-bounded and needs these timer
+  // bindings; the pre-handshake credentials-read reap needs them too, so
+  // derive them before that read.
+  const setTimer = ctx.setTimer ?? defaultSetTimer;
+  const clearTimer = ctx.clearTimer ?? defaultClearTimer;
+
   // Re-read per-step credentials. A grants update that landed during
   // the previous child's lifetime is picked up here -- the recycle
   // doubles as the supervisor's grant-refresh path. The deploy tree
   // is not consulted; this read is against the `agent-state` repos
   // alone, whose contents are independent of `workflow.json`.
-  const credentialsSnapshot = await assembleCredentialsSnapshot({
-    repoStore: ctx.bindings.repoStore,
-    principal: ctx.bindings.readPrincipal,
-    stepOrder: ctx.stepOrder,
-    deploymentId: ctx.bindings.deploymentId,
-    deriveStepAddress: ctx.bindings.deriveStepAddress,
-    ...(ctx.bindings.deriveStepRepoId !== undefined
-      ? { deriveStepRepoId: ctx.bindings.deriveStepRepoId }
-      : {}),
-  });
+  //
+  // This is a substrate read that can reject -- a grants file that
+  // became malformed is precisely the recycle's grant-refresh path. The
+  // new child is already spawned and wired but not yet installed on
+  // `state`, so the supervisor's recycle-failure teardown (which reaps
+  // the PRIOR cohort) cannot see it; reap it here on failure or it
+  // leaks. The spawn path routes this same throw through its teardown
+  // owner. The try wraps only the awaited read: the handle and pumps it
+  // reaps are all constructed above, so the reap always has live
+  // handles.
+  let credentialsSnapshot: CredentialsSnapshot;
+  try {
+    credentialsSnapshot = await assembleCredentialsSnapshot({
+      repoStore: ctx.bindings.repoStore,
+      principal: ctx.bindings.readPrincipal,
+      stepOrder: ctx.stepOrder,
+      deploymentId: ctx.bindings.deploymentId,
+      deriveStepAddress: ctx.bindings.deriveStepAddress,
+      ...(ctx.bindings.deriveStepRepoId !== undefined
+        ? { deriveStepRepoId: ctx.bindings.deriveStepRepoId }
+        : {}),
+    });
+  } catch (cause) {
+    await reapUnreadyChild(handle, eventPump, controlIncoming, {
+      killTimeoutMs,
+      setTimer,
+      clearTimer,
+      phase: "credentials read failure",
+    });
+    throw cause;
+  }
 
   // Steps 4 + 5: self-discover + resume. These run inside the child
   // before it emits `ready`; the supervisor waits, but bounded -- a child
@@ -407,8 +434,6 @@ export async function triggerRecycle(
   // timer. The respawn is deadline-bounded on the child handshake, not on
   // that read.
   const readyTimeoutMs = ctx.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-  const setTimer = ctx.setTimer ?? defaultSetTimer;
-  const clearTimer = ctx.clearTimer ?? defaultClearTimer;
   const readyOutcome = readyPromise.then(
     (info) => ({ kind: "ready" as const, info }),
     (err: unknown) => ({ kind: "failed" as const, err }),
@@ -422,26 +447,15 @@ export async function triggerRecycle(
   if (readyRace.kind !== "ready") {
     // The new child was never installed on `state`, so the supervisor's
     // recycle-failure teardown (which reaps the PRIOR cohort) would leak
-    // it. Reap it here. Kill FIRST, then finalize the pumps: process
-    // death drives EOF on both channels, which unparks `waitForReady`'s
-    // in-flight `iter.next()` (letting `controlIncoming.return` complete)
-    // and ends `pumpEvents`. Awaiting either finalizer before the kill
-    // would hang behind the still-open channels. `killChildHandle` on an
-    // already-dead handle is a cheap no-op, so the `failed` path (a
-    // control-channel end does not guarantee the process died, since the
-    // event channel is separate) is reaped too, not just the timeout.
-    await killChildHandle(handle, killTimeoutMs, {
-      logger,
+    // it. Reap it here. `killChildHandle` on an already-dead handle is a
+    // cheap no-op, so the `failed` path (a control-channel end does not
+    // guarantee the process died, since the event channel is separate)
+    // is reaped too, not just the timeout.
+    await reapUnreadyChild(handle, eventPump, controlIncoming, {
+      killTimeoutMs,
       setTimer,
       clearTimer,
-    });
-    void eventPump.catch((cause: unknown) => {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`recycle: reaped child eventPump failed after handshake failure: ${message}`;
-    });
-    void controlIncoming.return(undefined).catch((cause: unknown) => {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`recycle: reaped child controlIncoming.return failed after handshake failure: ${message}`;
+      phase: "handshake failure",
     });
     if (readyRace.kind === "timeout") {
       throw new Error(
@@ -478,6 +492,48 @@ export async function triggerRecycle(
     newChannelId: channelId,
     previousChannelId,
   };
+}
+
+/**
+ * Reap a respawned child that was spawned and wired but never installed
+ * on `state`. Such a child is invisible to the supervisor's
+ * recycle-failure teardown -- that path reaps the PRIOR cohort
+ * (`state.handle` during `recycling`) -- so a respawn that fails after
+ * the spawn must reap the new child here or it leaks its OS process and
+ * both IPC channels.
+ *
+ * Kill FIRST, then finalize the pumps: process death drives EOF on both
+ * channels, which unparks `waitForReady`'s in-flight `iter.next()`
+ * (letting `controlIncoming.return` complete) and ends `pumpEvents`.
+ * Awaiting either finalizer before the kill would hang behind the
+ * still-open channels. `killChildHandle` on an already-dead handle is a
+ * cheap no-op, so a child that died on its own -- not just one killed on
+ * timeout -- is reaped safely too.
+ */
+async function reapUnreadyChild(
+  handle: SubprocessHandle,
+  eventPump: Promise<void>,
+  controlIncoming: AsyncGenerator<ControlPayload, void, void>,
+  deps: {
+    killTimeoutMs: number;
+    setTimer: (cb: () => void, ms: number) => unknown;
+    clearTimer: (handle: unknown) => void;
+    phase: string;
+  },
+): Promise<void> {
+  await killChildHandle(handle, deps.killTimeoutMs, {
+    logger,
+    setTimer: deps.setTimer,
+    clearTimer: deps.clearTimer,
+  });
+  void eventPump.catch((cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`recycle: reaped child eventPump failed after ${deps.phase}: ${message}`;
+  });
+  void controlIncoming.return(undefined).catch((cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`recycle: reaped child controlIncoming.return failed after ${deps.phase}: ${message}`;
+  });
 }
 
 /**

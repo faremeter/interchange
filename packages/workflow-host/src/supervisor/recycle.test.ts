@@ -244,6 +244,14 @@ async function seedStepGrants(
   );
 }
 
+async function corruptStepGrants(
+  baseDir: string,
+  repoId: RepoId,
+): Promise<void> {
+  const dir = path.join(baseDir, repoId.kind, repoId.id);
+  await fs.writeFile(path.join(dir, STEP_GRANTS_PATH), "{ this is not json");
+}
+
 type FakeChild = {
   pid: number;
   channelId: string | undefined;
@@ -1570,5 +1578,52 @@ describe("supervisor recycle: external drain phase guard", () => {
     await driveReady(second, ipcKeypair);
     await recyclePromise;
     await supervisor.shutdown();
+  });
+});
+
+describe("supervisor recycle: respawn credentials-read failure", () => {
+  test("a respawn whose credentials re-read throws reaps the freshly-spawned child", async () => {
+    const baseDir = await makeTempDir("recycle-credleak-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    // sigtermExits so the reap's SIGTERM settles the fake child.
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+    });
+    expect(tracker.totalSpawns).toBe(1);
+
+    // Corrupt the step grants so the recycle's pre-handshake
+    // assembleCredentialsSnapshot re-read throws -- the recycle doubles
+    // as the grant-refresh path, so a malformed grants file is exactly
+    // the read that fails here.
+    await corruptStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+    );
+
+    let caught: unknown;
+    try {
+      await supervisor.recycle({ reason: "credentials-leak-regression" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught instanceof Error && caught.message).toMatch(/not valid JSON/);
+
+    // The respawn spawned the new child before the credentials read
+    // threw. Its catch must reap that child rather than leak it: the
+    // supervisor's recycle-failure teardown reaps only the PRIOR cohort
+    // (state.handle during `recycling`), so a child that failed before
+    // installation is invisible to it.
+    expect(tracker.totalSpawns).toBe(2);
+    const newChild = tracker.children[1];
+    if (newChild === undefined) {
+      throw new Error("tracker.children[1] missing");
+    }
+    expect(newChild.killSignals.length).toBeGreaterThan(0);
   });
 });
