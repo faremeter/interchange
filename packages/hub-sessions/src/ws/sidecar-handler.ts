@@ -304,6 +304,16 @@ export function createSidecarRouter(
   // ws handle → liveness timer (reset on each ping from the sidecar)
   const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
 
+  // Per-ws serialization chain for QUEUE-class frames (see `frameBypassesQueue`
+  // for the split and the invariant behind it). A frame that establishes or
+  // reads routing waits for earlier queued frames on the same ws to complete,
+  // so it observes their finished effects -- most importantly an async
+  // register's routing write, which would otherwise land after a following
+  // connector.state.changed / mail / pack frame and silently drop it. It holds
+  // a single in-flight promise per ws (replaced each queued frame), cleared on
+  // close.
+  const messageChains = new Map<WsHandle, Promise<void>>();
+
   // transferId → pending pack transfer (resolved by repo.pack.ack, rejected by repo.pack.reject)
   type PendingPack = {
     transferId: string;
@@ -411,58 +421,131 @@ export function createSidecarRouter(
     }
     const frame = validated;
 
+    // Bypass frames (liveness + terminal responses to outbound requests)
+    // dispatch immediately: they resolve the very promises a queued handler
+    // may be blocked on, so queuing them would deadlock the round-trip.
+    if (frameBypassesQueue(frame)) {
+      // Guard so a bypass handler's failure -- a synchronous throw or an async
+      // ack handler's rejection -- is logged rather than floating out of the
+      // immediate dispatch. The async wrapper turns a synchronous throw into a
+      // rejection too, matching the queue path's .then/.catch coverage.
+      void (async () => dispatchFrame(ws, frame))().catch((err: unknown) => {
+        logger.warn`Frame handler failed for ${frame.type}: ${err instanceof Error ? err.message : String(err)}`;
+      });
+      return;
+    }
+    // Everything else serializes per ws so a frame that establishes or reads
+    // routing observes earlier queued frames' completed effects.
+    const prev = messageChains.get(ws) ?? Promise.resolve();
+    const next = prev
+      .then(() => dispatchFrame(ws, frame))
+      .catch((err: unknown) => {
+        logger.warn`Frame handler failed for ${frame.type}: ${err instanceof Error ? err.message : String(err)}`;
+      });
+    messageChains.set(ws, next);
+  }
+
+  function assertNever(x: never): never {
+    throw new Error(`Unclassified sidecar frame type: ${JSON.stringify(x)}`);
+  }
+
+  // Whether `frame` bypasses the per-ws serialization chain. Invariant: a frame
+  // bypasses IFF it is liveness (ping) OR a terminal response to an
+  // already-issued outbound request -- correlated purely by
+  // requestId/transferId/agentAddress in the pending maps, touching no routing
+  // state. Such a frame has no ordering obligation against new inbound frames
+  // (a response cannot resolve "too early" for a request that already went
+  // out), and it is exactly what in-flight queued handlers block on, so it MUST
+  // run out of band or the challenge round-trip deadlocks (challenge.response
+  // -> agent.reconnected reaction -> sendSourcesUpdate awaits a later
+  // session.ack). Every other frame establishes or reads routing, or carries an
+  // inbound payload whose order matters, so it queues. The exhaustive switch +
+  // assertNever makes adding a SidecarFrame variant without classifying it a
+  // compile error, not a latent deadlock or a silent bypass hole.
+  function frameBypassesQueue(frame: SidecarFrame): boolean {
+    switch (frame.type) {
+      case "ping":
+      case "session.ack":
+      case "session.error":
+      case "agent.deploy.ack":
+      case "agent.error":
+      case "agent.undeploy.ack":
+      case "repo.pack.ack":
+      case "repo.pack.reject":
+        return true;
+      case "register":
+      case "reconnect":
+      case "challenge.response":
+      case "mail.outbound":
+      case "agent.event":
+      case "connector.state.changed":
+      case "repo.pack.push":
+      case "repo.pack.done":
+      case "deploy.apply.error":
+        return false;
+      default:
+        return assertNever(frame);
+    }
+  }
+
+  // Runs one frame's handler. Returns the handler's promise for async handlers
+  // so the per-ws chain can await bounded completion; sync handlers return
+  // void. Never awaits a promise that resolves on a LATER same-ws frame -- the
+  // only such await (the challenge round-trip's session.ack) is reached via a
+  // bypass frame, which does not queue.
+  function dispatchFrame(
+    ws: WsHandle,
+    frame: SidecarFrame,
+  ): void | Promise<void> {
     switch (frame.type) {
       case "register":
-        void handleRegister(
+        return handleRegister(
           ws,
           frame.sidecarId,
           frame.token,
           frame.agentAddresses,
         );
-        break;
       case "reconnect":
-        void handleReconnect(
+        return handleReconnect(
           ws,
           frame.sidecarId,
           frame.token,
           frame.agentAddresses,
           frame.deployRefs ?? {},
         );
-        break;
       case "challenge.response":
-        void handleChallengeResponse(ws, frame.responses);
-        break;
+        return handleChallengeResponse(ws, frame.responses);
       case "agent.deploy.ack":
-        void handleDeployAck(frame.agentAddress, frame.publicKey);
-        break;
+        return handleDeployAck(frame.agentAddress, frame.publicKey);
       case "agent.error":
         rejectDeployPending(frame.agentAddress, frame.error);
         rejectUndeployPending(frame.agentAddress, frame.error);
-        break;
+        return;
       case "agent.undeploy.ack":
         resolveUndeployPending(frame.agentAddress);
-        break;
+        return;
       case "ping":
         handlePing(ws);
-        break;
+        return;
       case "mail.outbound":
         if (frame.delivered !== true) {
           handleMailOutbound(frame.rawMessage, frame.recipients);
-        } else if (lookups.persistMail && frame.senderAddress) {
-          void handleMailPersist(
+          return;
+        }
+        if (lookups.persistMail && frame.senderAddress) {
+          return handleMailPersist(
             lookups.persistMail,
             frame.rawMessage,
             frame.senderAddress,
             frame.recipients,
           );
-        } else if (frame.delivered === true) {
-          if (!frame.senderAddress) {
-            logger.warn`Dropping delivered mail.outbound frame with no senderAddress`;
-          } else {
-            logger.warn`Dropping delivered mail.outbound frame: no persistMail lookup configured`;
-          }
         }
-        break;
+        if (!frame.senderAddress) {
+          logger.warn`Dropping delivered mail.outbound frame with no senderAddress`;
+        } else {
+          logger.warn`Dropping delivered mail.outbound frame: no persistMail lookup configured`;
+        }
+        return;
       case "agent.event":
         events.emit("agent.event", {
           agentAddress: frame.agentAddress,
@@ -470,39 +553,38 @@ export function createSidecarRouter(
           event: frame.event,
         });
         dispatchToSubscribers(frame.agentAddress, frame.event);
-        break;
+        return;
       case "connector.state.changed":
         // Gate the cache write on the sending sidecar actually owning
         // the named agent. A misbehaving sidecar that knows another
         // agent's address could otherwise poison the cached state.
         if (addressIndex.get(frame.agentAddress) !== ws) {
           logger.warn`Dropping connector.state.changed for ${frame.agentAddress}: not registered to this sidecar`;
-          break;
+          return;
         }
         connectorStates.set(frame.agentAddress, frame.connectorState);
         events.emit("connector.state.changed", {
           agentAddress: frame.agentAddress,
           connectorState: frame.connectorState,
         });
-        break;
+        return;
       case "session.ack":
         resolvePending(frame.requestId);
-        break;
+        return;
       case "session.error":
         rejectPending(frame.requestId, frame.error);
-        break;
+        return;
       case "repo.pack.ack":
         resolvePackPending(frame.transferId);
-        break;
+        return;
       case "repo.pack.reject":
         rejectPackPending(frame.transferId, frame.reason);
-        break;
+        return;
       case "repo.pack.push":
         handlePackPush(ws, frame);
-        break;
+        return;
       case "repo.pack.done":
-        void handlePackDone(ws, frame);
-        break;
+        return handlePackDone(ws, frame);
       case "deploy.apply.error":
         // Gate the failure emit on the sending sidecar actually
         // owning the named agent. A misbehaving sidecar that knows
@@ -512,7 +594,7 @@ export function createSidecarRouter(
         // and any failure-driven rollback logic the hub runs.
         if (addressIndex.get(frame.agentAddress) !== ws) {
           logger.warn`Dropping deploy.apply.error for ${frame.agentAddress}: not registered to this sidecar`;
-          break;
+          return;
         }
         events.emit("deploy.apply.error", {
           agentAddress: frame.agentAddress,
@@ -523,9 +605,9 @@ export function createSidecarRouter(
           ...(frame.package !== undefined ? { package: frame.package } : {}),
           occurredAt: frame.occurredAt,
         });
-        break;
+        return;
       default:
-        logger.warn`Unknown frame type from sidecar: ${(frame as { type: string }).type}`;
+        return assertNever(frame);
     }
   }
 
@@ -1132,6 +1214,9 @@ export function createSidecarRouter(
       clearTimeout(livenessTimer);
       livenessTimers.delete(ws);
     }
+
+    // Drop the per-ws serialization chain; no more frames will queue on it.
+    messageChains.delete(ws);
 
     // Cancel any pending challenge for this connection.
     const challengeReq = pendingChallenges.get(ws);

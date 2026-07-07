@@ -153,7 +153,7 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).toEqual([]);
     });
 
-    test("invalid token closes connection", () => {
+    test("invalid token closes connection", async () => {
       const router = createSidecarRouter({
         validateToken: () => false,
       });
@@ -168,6 +168,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       expect(ws.closed).toBe(true);
       expect(router.getConnectedSidecars()).toEqual([]);
@@ -472,6 +473,191 @@ describe("SidecarRouter", () => {
           resetSync();
         }
       }
+    });
+  });
+
+  describe("frame dispatch serialization (F1)", () => {
+    const STATE = {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<last@example.com>",
+      replyTo: "user@example.com",
+      cc: [],
+    };
+
+    async function driveReconnect(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      addr: string,
+      privateKey: Uint8Array,
+    ) {
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc",
+          token: "tok",
+          agentAddresses: [addr],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+      const challenge = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [
+            {
+              address: addr,
+              signature: await signChallenge(
+                challenge.challenges[0].nonce,
+                addr,
+                privateKey,
+              ),
+            },
+          ],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+    }
+
+    test("a dependent frame after a non-empty register is processed, not dropped", async () => {
+      // The register key-existence gate awaits lookupPublicKey, so routing lands
+      // asynchronously. Per-ws serialization makes a following dependent frame
+      // (connector.state.changed for the just-registered keyless address) wait
+      // for that routing rather than be dropped because addressIndex was empty.
+      const r = createSidecarRouter({
+        requestTimeoutMs: 500,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: { lookupPublicKey: async () => null },
+      });
+      const ws = createMockWs();
+      r.handleOpen(ws);
+      // Non-empty register immediately followed by a dependent frame, with NO
+      // await between -- the follower must still observe the route.
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc",
+          token: "tok",
+          agentAddresses: ["fresh@local"],
+        }),
+      );
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: "fresh@local",
+          connectorState: STATE,
+        }),
+      );
+      await tick();
+
+      expect(r.getConnectorState("fresh@local")).toEqual(STATE);
+    });
+
+    test("a rogue's dependent frame for a keyed victim is dropped, not poisoned", async () => {
+      // Serialization must NOT reintroduce the poisoning it exists to prevent: a
+      // rogue's non-empty register naming a KEYED victim is refused by the gate,
+      // so a connector.state.changed from the rogue in the same window still
+      // sees addressIndex.get(victim) !== rogueWs and is dropped; the victim's
+      // cached state is untouched.
+      const kp = await generateKeyPair();
+      const victim = "victim@local";
+      const r = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === victim ? hexEncode(kp.publicKey) : null,
+        },
+      });
+      const ownerWs = createMockWs();
+      r.handleOpen(ownerWs);
+      await driveReconnect(r, ownerWs, victim, kp.privateKey);
+      r.handleMessage(
+        ownerWs,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: victim,
+          connectorState: STATE,
+        }),
+      );
+      await tick();
+      expect(r.getConnectorState(victim)).toEqual(STATE);
+
+      // Rogue: register naming the keyed victim + a poisoning frame, no await.
+      const rogueWs = createMockWs();
+      r.handleOpen(rogueWs);
+      r.handleMessage(
+        rogueWs,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "rogue",
+          token: "tok",
+          agentAddresses: [victim],
+        }),
+      );
+      r.handleMessage(
+        rogueWs,
+        JSON.stringify({
+          type: "connector.state.changed",
+          agentAddress: victim,
+          connectorState: { ...STATE, replyTo: "attacker@evil" },
+        }),
+      );
+      await tick();
+
+      // Not poisoned: still the owner's state.
+      expect(r.getConnectorState(victim)).toEqual(STATE);
+    });
+
+    test("a reconnect whose reaction awaits a later session.ack does not deadlock", async () => {
+      // handleChallengeResponse awaits the agent.reconnected reaction, whose
+      // subscriber issues sendSourcesUpdate -> awaits a LATER session.ack frame.
+      // session.ack must BYPASS the per-ws chain, or the reconnect wedges behind
+      // its own in-flight handler. (The test completing rather than timing out
+      // is the assertion.)
+      const kp = await generateKeyPair();
+      const addr = "agent@local";
+      const r = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async (a) =>
+            a === addr ? hexEncode(kp.publicKey) : null,
+        },
+      });
+      let reactionDone = false;
+      r.events.on("agent.reconnected", async () => {
+        await r.sendSourcesUpdate(addr, TEST_SOURCES, TEST_DEFAULT_SOURCE);
+        reactionDone = true;
+      });
+      const ws = createMockWs();
+      r.handleOpen(ws);
+      await driveReconnect(r, ws, addr, kp.privateKey);
+
+      // The reaction has sent a sources.update request and is awaiting its ack.
+      const sourcesFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "sources.update");
+      expect(sourcesFrame).toBeDefined();
+
+      // Answer with a session.ack (a later inbound frame). If it queued behind
+      // the still-in-flight handleChallengeResponse it would never resolve.
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "session.ack",
+          requestId: sourcesFrame.requestId,
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+
+      expect(reactionDone).toBe(true);
+      expect(r.getRoutableAddresses()).toContain(addr);
     });
   });
 
@@ -802,6 +988,7 @@ describe("SidecarRouter", () => {
           recipients: ["receiver@local"],
         }),
       );
+      await tick();
 
       const delivered = lastSent(ws2);
       expect(delivered.type).toBe("mail.inbound");
@@ -832,7 +1019,7 @@ describe("SidecarRouter", () => {
       expect(delivered.type).toBe("mail.inbound");
     });
 
-    test("unroutable mail emits mail.outbound.undelivered", () => {
+    test("unroutable mail emits mail.outbound.undelivered", async () => {
       const outbound: { rawMessage: string; recipients: string[] }[] = [];
       const router = createSidecarRouter({
         lookups: { lookupPublicKey: async () => null },
@@ -864,6 +1051,7 @@ describe("SidecarRouter", () => {
           recipients: ["external@remote"],
         }),
       );
+      await tick();
 
       expect(outbound).toHaveLength(1);
       expect(outbound[0]?.recipients).toEqual(["external@remote"]);
@@ -1028,6 +1216,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const config = {
         sessionId: "ses_test",
@@ -1090,6 +1279,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const config = {
         sessionId: "ses_test",
@@ -1149,6 +1339,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const config = {
         sessionId: "ses_test",
@@ -1198,6 +1389,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const config = {
         sessionId: "ses_test",
@@ -1283,6 +1475,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const config = {
         sessionId: "ses_test",
@@ -1351,6 +1544,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const config = {
         sessionId: "ses_test",
@@ -1467,7 +1661,7 @@ describe("SidecarRouter", () => {
   });
 
   describe("agent events", () => {
-    test("agent.event frames are forwarded to subscribers", () => {
+    test("agent.event frames are forwarded to subscribers", async () => {
       const events: { addr: string; sid: string; event: unknown }[] = [];
       const router = createSidecarRouter({
         lookups: { lookupPublicKey: async () => null },
@@ -1497,6 +1691,7 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(events).toHaveLength(1);
       expect(events[0]?.addr).toBe("agent@local");
@@ -1507,7 +1702,7 @@ describe("SidecarRouter", () => {
       });
     });
 
-    test("agent.event frames are emitted on router.events", () => {
+    test("agent.event frames are emitted on router.events", async () => {
       const seen: { addr: string; sid: string }[] = [];
       const router = createSidecarRouter({
         lookups: { lookupPublicKey: async () => null },
@@ -1536,6 +1731,7 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(seen).toEqual([{ addr: "agent@local", sid: "sess-1" }]);
     });
@@ -1600,6 +1796,7 @@ describe("SidecarRouter", () => {
           connectorState: state,
         }),
       );
+      await tick();
 
       expect(router.getConnectorState("agent@local")).toEqual(state);
 
@@ -1612,6 +1809,7 @@ describe("SidecarRouter", () => {
           connectorState: null,
         }),
       );
+      await tick();
 
       expect(router.getConnectorState("agent@local")).toBeNull();
     });
@@ -1656,6 +1854,7 @@ describe("SidecarRouter", () => {
           connectorState: state,
         }),
       );
+      await tick();
 
       expect(seen).toEqual([{ addr: "agent@local", state }]);
     });
@@ -1691,6 +1890,7 @@ describe("SidecarRouter", () => {
           },
         }),
       );
+      await tick();
       expect(router.getConnectorState("agent@local")).not.toBeNull();
 
       // A second sidecar registers claiming the same address without
@@ -1743,6 +1943,7 @@ describe("SidecarRouter", () => {
           },
         }),
       );
+      await tick();
 
       expect(router.getConnectorState("agent@local")).not.toBeNull();
 
@@ -1753,7 +1954,7 @@ describe("SidecarRouter", () => {
   });
 
   describe("session subscriptions", () => {
-    test("subscriber receives events for its session", () => {
+    test("subscriber receives events for its session", async () => {
       const received: unknown[] = [];
       const ws = createMockWs();
       router.handleOpen(ws);
@@ -1778,12 +1979,13 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(received).toHaveLength(1);
       expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
     });
 
-    test("subscriber does not receive events for other agents", () => {
+    test("subscriber does not receive events for other agents", async () => {
       const received: unknown[] = [];
       const ws = createMockWs();
       router.handleOpen(ws);
@@ -1808,11 +2010,12 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(received).toHaveLength(0);
     });
 
-    test("unsubscribe stops delivery", () => {
+    test("unsubscribe stops delivery", async () => {
       const received: unknown[] = [];
       const ws = createMockWs();
       router.handleOpen(ws);
@@ -1839,6 +2042,7 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       unsub();
 
@@ -1851,12 +2055,13 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.end", seq: 1, data: {} },
         }),
       );
+      await tick();
 
       expect(received).toHaveLength(1);
       expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
     });
 
-    test("multiple subscribers receive the same event", () => {
+    test("multiple subscribers receive the same event", async () => {
       const received1: unknown[] = [];
       const received2: unknown[] = [];
       const ws = createMockWs();
@@ -1883,12 +2088,13 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(received1).toHaveLength(1);
       expect(received2).toHaveLength(1);
     });
 
-    test("stale unsubscribe does not evict a later subscriber", () => {
+    test("stale unsubscribe does not evict a later subscriber", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -1920,11 +2126,12 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(received).toHaveLength(1);
     });
 
-    test("subscriber that unsubscribes mid-dispatch does not drop later subscribers", () => {
+    test("subscriber that unsubscribes mid-dispatch does not drop later subscribers", async () => {
       const received: unknown[] = [];
       const ws = createMockWs();
       router.handleOpen(ws);
@@ -1953,6 +2160,7 @@ describe("SidecarRouter", () => {
           event: { type: "reactor.start", seq: 0, data: {} },
         }),
       );
+      await tick();
 
       expect(received).toHaveLength(1);
       expect(received[0]).toEqual({ type: "reactor.start", seq: 0, data: {} });
@@ -2008,6 +2216,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       // A fresh provision routes to this sidecar during the restore window.
       const deployPromise = router.sendAgentDeploy(
@@ -2089,6 +2298,7 @@ describe("SidecarRouter", () => {
           agentAddresses: [],
         }),
       );
+      await tick();
 
       const deployPromise = router.sendAgentDeploy(
         "window-agent@local",
@@ -2119,6 +2329,7 @@ describe("SidecarRouter", () => {
           connectorState,
         }),
       );
+      await tick();
       expect(router.getConnectorState("window-agent@local")).toEqual(
         connectorState,
       );
