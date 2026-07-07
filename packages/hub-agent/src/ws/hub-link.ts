@@ -1188,6 +1188,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // Per-arm guards (mail/signal/drain) are the primary defence;
         // this catch is the belt-and-braces guarantee that no future
         // unguarded arm can wedge the link.
+        //
+        // This chain also serializes inbound frames: each frame's
+        // handler runs to completion before the next begins. A downstream
+        // invariant depends on that ordering -- the workflow
+        // source-rotation persist rolls back on failure assuming no second
+        // rotation is in flight, which holds only because sources.update
+        // frames are processed one at a time here. Parallelizing this
+        // dispatch would break that rollback.
         const data = event.data;
         messageQueue = messageQueue.then(() =>
           handleMessage(data).catch((err: unknown) => {

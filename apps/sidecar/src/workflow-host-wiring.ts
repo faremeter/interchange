@@ -1391,10 +1391,16 @@ export function createSidecarDeployRouter(deps: {
                   buildDeploymentRecord(spec, rotated),
                 );
               } catch (cause) {
-                // Restoring unconditionally is safe because rotations are
-                // single-flight per deployment: the hub awaits each
-                // sources.update ack before sending the next, so prevSources
-                // cannot clobber a concurrently-committed later rotation.
+                // Restoring unconditionally is safe because rotations for one
+                // deployment are serialized by the sidecar's per-connection
+                // inbound-frame queue: each hub frame, sources.update
+                // included, runs its handler to completion on that queue
+                // before the next frame's handler starts, so no second
+                // rotation is in flight whose committed table this rollback
+                // could clobber. This does NOT rely on the hub pacing its
+                // sends -- the hub dispatches sources.update fire-and-forget;
+                // the sidecar frame queue is the sole serializer. Parallelizing
+                // inbound-frame dispatch would break this rollback.
                 currentSources = prevSources;
                 throw cause;
               }
