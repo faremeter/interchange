@@ -308,7 +308,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       operatorApprovals: approvals,
     });
 
-    expect(result.publicKey).toBeTruthy();
+    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(deps.sources).toHaveLength(1);
     const sources = deps.sources[0];
     if (sources === undefined) throw new Error("missing sources");

@@ -629,7 +629,7 @@ describe("createWorkflowDeployOrchestrator", () => {
         throw new Error("missing step id");
       }
       expect(call.sources[expectedStepId]).toBeDefined();
-      expect(result.publicKey).toBeTruthy();
+      expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     });
 
     test("source-pin failure carries workflow.id and names the offending provider+model", async () => {
