@@ -8,7 +8,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { signEd25519, verifySSHSignature } from "@intx/crypto";
+import { generateKeyPair, signEd25519, verifySSHSignature } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 
@@ -183,15 +183,25 @@ type TestEnv = {
   router: SidecarRouter;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   outboundMail: { rawMessage: string; recipients: string[] }[];
+  // address -> hex-encoded Ed25519 public key, backing the hub's
+  // `lookupPublicKey`. A workflow deployment announced through the
+  // challenged reconnect frame routes only after signing the hub's nonce
+  // with the key registered here; tests populate it via
+  // `provisionDeploymentKey`.
+  deploymentKeys: Map<string, string>;
 };
 
 function startTestServer(): TestEnv {
   const agentEvents: TestEnv["agentEvents"] = [];
   const outboundMail: TestEnv["outboundMail"] = [];
+  const deploymentKeys = new Map<string, string>();
 
   const router = createSidecarRouter({
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
+    lookups: {
+      lookupPublicKey: async (address) => deploymentKeys.get(address) ?? null,
+    },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
@@ -238,7 +248,7 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router, agentEvents, outboundMail };
+  return { server, router, agentEvents, outboundMail, deploymentKeys };
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +260,23 @@ const env = startTestServer();
 afterAll(async () => {
   await env.server.stop(true);
 });
+
+/**
+ * Wire a workflow deployment for the challenged reconnect path: mint an
+ * Ed25519 keypair, register it in the sidecar's keyStore (so `signChallenge`
+ * can answer the hub's nonce) and in the hub's `deploymentKeys` lookup (so the
+ * hub issues a challenge and verifies the signature). After this, the
+ * deployment address named in `getWorkflowAddresses` routes once the
+ * reconnect challenge round-trips -- the same proof a launched agent makes.
+ */
+async function provisionDeploymentKey(
+  keyStore: ReturnType<typeof createTestKeyStore>,
+  address: string,
+): Promise<void> {
+  const kp = await generateKeyPair();
+  keyStore.registerKey(address, kp);
+  env.deploymentKeys.set(address, hexEncode(kp.publicKey));
+}
 
 describe("sidecar↔hub integration", () => {
   test("sidecar registers with hub on connect", async () => {
@@ -403,33 +430,32 @@ describe("sidecar↔hub integration", () => {
   test("disconnect cleans up routing table", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
+    const deploymentAddress = "ins_dep_disc1@integration.interchange";
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-disconnect",
       token: "test-token",
-
       transport,
       sessions,
-      ...withTestDeployBindings(),
-      getWorkflowAddresses: () => ["tracked@test.interchange"],
+      ...bindings,
+      getWorkflowAddresses: () => [deploymentAddress],
     });
 
     client.connect();
+    // Routability lags the connection: it lands only after the reconnect
+    // challenge round-trips, so wait on the routable address directly.
     await waitFor(() =>
-      env.router.getConnectedSidecars().includes("sc-disconnect"),
-    );
-    expect(env.router.getRoutableAddresses()).toContain(
-      "tracked@test.interchange",
+      env.router.getRoutableAddresses().includes(deploymentAddress),
     );
 
     client.close();
     await waitFor(
       () => !env.router.getConnectedSidecars().includes("sc-disconnect"),
     );
-    expect(env.router.getRoutableAddresses()).not.toContain(
-      "tracked@test.interchange",
-    );
+    expect(env.router.getRoutableAddresses()).not.toContain(deploymentAddress);
   });
 
   test("repo.pack.reject sent when applyDeployPack throws signature_invalid", async () => {
@@ -922,7 +948,7 @@ describe("sidecar↔hub integration", () => {
     // mail.inbound for it goes through the link's switch case, which
     // must consult mailInboundRouter first and -- on a `true` return
     // -- skip transport.deliver and sessions.commitInboundMail.
-    const deploymentAddress = "dep_multistep-1@integration.interchange";
+    const deploymentAddress = "ins_dep_mail1@integration.interchange";
 
     const routed: { address: string; bytes: Uint8Array }[] = [];
     const mailInboundRouter = {
@@ -932,13 +958,15 @@ describe("sidecar↔hub integration", () => {
       },
     };
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-multistep-mail",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       mailInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -969,7 +997,7 @@ describe("sidecar↔hub integration", () => {
   test("drainInboundRouter dispatches an inbound drain.deliver frame", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "dep_drain-1@integration.interchange";
+    const deploymentAddress = "ins_dep_drain1@integration.interchange";
 
     const routed: { agentAddress: string; deadlineMs: number }[] = [];
     const drainInboundRouter = {
@@ -985,13 +1013,15 @@ describe("sidecar↔hub integration", () => {
       },
     };
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-drain-router",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       drainInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -1031,7 +1061,7 @@ describe("sidecar↔hub integration", () => {
   test("sourcesInboundRouter acks an inbound sources.update round-trip", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "dep_sources-ack@integration.interchange";
+    const deploymentAddress = "ins_dep_srcack@integration.interchange";
 
     const routed: { agentAddress: string }[] = [];
     const sourcesInboundRouter = {
@@ -1041,13 +1071,15 @@ describe("sidecar↔hub integration", () => {
       },
     };
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-sources-ack",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       sourcesInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -1078,7 +1110,7 @@ describe("sidecar↔hub integration", () => {
   test("an unrouted sources.update is answered with session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "dep_sources-unrouted@integration.interchange";
+    const deploymentAddress = "ins_dep_srcunrouted@integration.interchange";
 
     const sourcesInboundRouter = {
       async tryRoute(): Promise<boolean> {
@@ -1086,13 +1118,15 @@ describe("sidecar↔hub integration", () => {
       },
     };
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-sources-unrouted",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       sourcesInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -1121,7 +1155,7 @@ describe("sidecar↔hub integration", () => {
   test("a rejected sources.update surfaces the reason as session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "dep_sources-reject@integration.interchange";
+    const deploymentAddress = "ins_dep_srcreject@integration.interchange";
 
     const sourcesInboundRouter = {
       async tryRoute(): Promise<boolean> {
@@ -1129,13 +1163,15 @@ describe("sidecar↔hub integration", () => {
       },
     };
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-sources-reject",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       sourcesInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -1163,15 +1199,17 @@ describe("sidecar↔hub integration", () => {
   test("a sources.update with no router wired is answered with session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "dep_sources-norouter@integration.interchange";
+    const deploymentAddress = "ins_dep_srcnorouter@integration.interchange";
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-sources-norouter",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       // No sourcesInboundRouter: a request/ack frame must still be answered
       // or the hub hangs on its request timeout.
       getWorkflowAddresses: () => [deploymentAddress],
@@ -1371,8 +1409,8 @@ describe("sidecar↔hub integration", () => {
   });
 });
 
-describe("register frame on connect", () => {
-  test("ships a single register carrying the sidecar's workflow addresses", async () => {
+describe("register + reconnect frames on connect", () => {
+  test("ships an empty register then a challenged reconnect carrying the workflow addresses", async () => {
     const frames: string[] = [];
     const app = new Hono();
     app.get(
@@ -1389,7 +1427,7 @@ describe("register frame on connect", () => {
 
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const workflowAddresses = ["ins_dep-1@integration.interchange"];
+    const workflowAddresses = ["ins_dep_reg1@integration.interchange"];
 
     const client = createHubLink({
       hubURL: `ws://localhost:${server.port}/ws`,
@@ -1403,27 +1441,27 @@ describe("register frame on connect", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
-        frames
-          .map((s) => JSON.parse(s))
-          .some((f: { type: string }) => f.type === "register"),
-      );
+      await waitFor(() => {
+        const types = frames.map((s) => JSON.parse(s).type);
+        return types.includes("register") && types.includes("reconnect");
+      });
       const parsed = frames.map((s) => JSON.parse(s));
       const registerFrames = parsed.filter(
         (f: { type: string }) => f.type === "register",
       );
-      // Exactly one register: the in-process session runtime is retired, so
-      // there is no empty-register-then-reconnect dance.
-      expect(registerFrames).toHaveLength(1);
-      // Session addresses are always empty now; the sidecar's workflow
-      // deployments ride the same register frame so the hub re-registers
-      // their keyless routes without a challenge.
-      expect(registerFrames[0].agentAddresses).toEqual([]);
-      expect(registerFrames[0].workflowAddresses).toEqual(workflowAddresses);
-      // No reconnect frame: disk-restored sessions no longer exist.
-      expect(parsed.some((f: { type: string }) => f.type === "reconnect")).toBe(
-        false,
+      const reconnectFrames = parsed.filter(
+        (f: { type: string }) => f.type === "reconnect",
       );
+      // First-connect register carries no addresses and no workflow field:
+      // a workflow deployment is announced only through the challenged
+      // reconnect, never as a keyless register route.
+      expect(registerFrames).toHaveLength(1);
+      expect(registerFrames[0].agentAddresses).toEqual([]);
+      expect(registerFrames[0].workflowAddresses).toBeUndefined();
+      // The reconnect frame announces the workflow addresses in
+      // agentAddresses, so each proves ownership via the Ed25519 challenge.
+      expect(reconnectFrames).toHaveLength(1);
+      expect(reconnectFrames[0].agentAddresses).toEqual(workflowAddresses);
     } finally {
       client.close();
       await server.stop(true);

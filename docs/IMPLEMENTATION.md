@@ -1242,11 +1242,11 @@ If the WebSocket disconnects mid-transfer, no git state is corrupted: the sideca
 
 ### Reconnect Sequencing
 
-On reconnect the sidecar restores its workflow deployments from local disk (see the deployment restore path) and re-announces them so the hub restores their routes:
+On reconnect the sidecar restores its workflow deployments from local disk (see the deployment restore path) and re-announces them so the hub restores their routes. A workflow-deployment address is **not** keyless: it carries the deployment's own Ed25519 key (minted at deploy, acked to the hub), so it proves ownership through the same challenge/response a launched agent does.
 
-1. Sidecar sends a single `register` frame carrying its live workflow-deployment addresses (`workflowAddresses`)
-2. Hub re-registers those addresses for routing. Workflow-deployment addresses are hub-minted and keyless, so they re-register without the challenge/response flow a per-agent key would require
-3. For a deployment whose deploy ref the hub tracks as behind, the hub initiates a pack transfer and waits for `pack.ack`
+1. Sidecar sends an empty `register` frame to establish the connection, then a `reconnect` frame carrying its live workflow-deployment addresses (in `agentAddresses`)
+2. For each address the hub resolves the stored deployment key (`workflow_deployment.publicKey`, gated on a live `deployed` status), issues a random nonce, and routes the address only after the sidecar returns a valid signature over `nonce ‖ address`. An address with no live key fails closed and stays unrouted — a token-holding sidecar cannot reclaim a deployment's route without the deployment's key
+3. The hub does not run its deploy-ref freshness catch-up for a workflow-deployment address — that pack-transfer path is launched-agent only (`isWorkflowDerivedAddress` short-circuits it). A deployment's in-flight run state is reconstructed sidecar-locally at restore, not re-fetched from the hub
 
 The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
 

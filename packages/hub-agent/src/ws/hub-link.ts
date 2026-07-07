@@ -393,9 +393,11 @@ export type HubLinkConfig = {
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts a live supervisor for. Called on every (re)connect to
-   * announce them to the hub for routing: they are hub-minted with no
-   * per-address key, so they re-register WITHOUT the challenge flow, and
-   * without this announcement the hub drops their route on a WS reconnect.
+   * announce them to the hub for routing through the CHALLENGED reconnect
+   * frame: each deployment carries its own Ed25519 key (minted at deploy,
+   * acked to the hub), so it proves ownership via challenge/response exactly
+   * like a launched agent -- there is no keyless routing shortcut. Without
+   * this announcement the hub drops the deployment's route on a WS reconnect.
    * Defaults to none when omitted (tests / deployments with no workflow
    * substrate).
    */
@@ -1117,22 +1119,48 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       packSender.cancelAll("Connection lost");
 
       // Announce this sidecar to the hub for routing. The hub learns of a
-      // sidecar only from a register frame, and `connections` is the map
-      // `sendAgentDeploy` consults to route a deploy. Session addresses are
-      // always empty -- the in-process session runtime is retired -- but the
-      // frame still establishes the sidecar in that map. Workflow deployments
-      // restored at boot (before this connect) re-register here WITHOUT a
-      // challenge: they are hub-minted and keyless, so the hub would otherwise
-      // drop their route on a WS reconnect.
-      const workflowAddresses = getWorkflowAddresses();
+      // sidecar only from a register frame; `connections` is the map
+      // `sendAgentDeploy` consults to route a deploy. This first-connect
+      // register carries no addresses -- it only establishes the sidecar in
+      // that map. Restored deployments are announced through the CHALLENGED
+      // reconnect frame below.
       send({
         type: "register",
         sidecarId,
         token,
-        agentAddresses: sessions.getAddresses(),
-        ...(workflowAddresses.length > 0 ? { workflowAddresses } : {}),
+        agentAddresses: [],
       });
       flush();
+
+      // Re-announce every deployment restored at boot through the reconnect
+      // frame so the hub proves ownership of each address (Ed25519
+      // challenge/response, signed by the deployment's own key via
+      // `signChallenge`) before it routes mail. Routing a restored address
+      // through `register`/`workflowAddresses` -- unchallenged -- would let a
+      // rogue sidecar holding a valid token reclaim a victim's address.
+      // Restore runs before `connect()`, so `getWorkflowAddresses()` is
+      // already populated; the only async work is reading each address's
+      // deploy ref for the hub's deploy-pack freshness check.
+      const restoredAddresses = getWorkflowAddresses();
+      if (restoredAddresses.length > 0) {
+        void (async () => {
+          const deployRefs: Record<string, string> = {};
+          for (const address of restoredAddresses) {
+            const ref = await sessions.getDeployRef(address);
+            if (ref !== null) {
+              deployRefs[address] = ref;
+            }
+          }
+          send({
+            type: "reconnect",
+            sidecarId,
+            token,
+            agentAddresses: restoredAddresses,
+            ...(Object.keys(deployRefs).length > 0 ? { deployRefs } : {}),
+          });
+          flush();
+        })();
+      }
     });
 
     ws.addEventListener("message", (event) => {

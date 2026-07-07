@@ -21,13 +21,13 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { base64Encode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import type {
   HarnessConfig,
   InboundMessage,
   KeyPair,
 } from "@intx/types/runtime";
-import { signEd25519, verifySSHSignature } from "@intx/crypto";
+import { generateKeyPair, signEd25519, verifySSHSignature } from "@intx/crypto";
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
@@ -162,12 +162,20 @@ const VALID_MESSAGE = new TextEncoder().encode(
 type TestEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: SidecarRouter;
+  // address -> hex-encoded Ed25519 public key, backing the hub's fail-closed
+  // `lookupPublicKey`. A workflow deployment routes only after signing the
+  // hub's reconnect nonce with the key registered here.
+  deploymentKeys: Map<string, string>;
 };
 
 function startTestServer(): TestEnv {
+  const deploymentKeys = new Map<string, string>();
   const router = createSidecarRouter({
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
+    lookups: {
+      lookupPublicKey: async (address) => deploymentKeys.get(address) ?? null,
+    },
   });
 
   const app = new Hono();
@@ -205,7 +213,7 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router };
+  return { server, router, deploymentKeys };
 }
 
 const env = startTestServer();
@@ -214,11 +222,27 @@ afterAll(async () => {
   await env.server.stop(true);
 });
 
+/**
+ * Wire a workflow deployment for the challenged reconnect path: mint a
+ * keypair, register it in the sidecar keyStore (so `signChallenge` answers the
+ * hub nonce) and in the hub's `deploymentKeys` lookup (so the hub challenges
+ * and verifies). The deployment address then routes once the reconnect
+ * challenge round-trips.
+ */
+async function provisionDeploymentKey(
+  keyStore: ReturnType<typeof createTestKeyStore>,
+  address: string,
+): Promise<void> {
+  const kp = await generateKeyPair();
+  keyStore.registerKey(address, kp);
+  env.deploymentKeys.set(address, hexEncode(kp.publicKey));
+}
+
 describe("hub-link mail.inbound throwing router", () => {
   test("a throwing mailInboundRouter does not wedge subsequent frames", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "dep_wedge-1@integration.interchange";
+    const deploymentAddress = "ins_dep_wedge1@integration.interchange";
     sessions.addresses.push(deploymentAddress);
 
     let calls = 0;
@@ -234,14 +258,17 @@ describe("hub-link mail.inbound throwing router", () => {
       },
     };
 
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-wedge",
       token: "test-token",
       transport,
       sessions,
-      ...withTestDeployBindings(),
+      ...bindings,
       mailInboundRouter,
+      getWorkflowAddresses: () => [deploymentAddress],
     });
 
     client.connect();

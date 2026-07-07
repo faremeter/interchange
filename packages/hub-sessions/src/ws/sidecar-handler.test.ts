@@ -185,121 +185,150 @@ describe("SidecarRouter", () => {
     });
   });
 
-  describe("workflow-address re-registration", () => {
-    test("register routes workflow addresses without a challenge", () => {
-      // The restart scenario: a sidecar hosting only workflow deployments
-      // reconnects and announces them via `workflowAddresses`. They must
-      // become routable directly -- they are hub-minted with no per-address
-      // key to challenge. Before this, such a sidecar sent no terminal frame
-      // carrying them, so the hub never re-learned the route.
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: ["ins_dep_abc@local"],
-        }),
-      );
+  describe("workflow-address reconnect (challenged, at parity with launched agents)", () => {
+    // A workflow-substrate deployment address (ins_dep_...) proves ownership
+    // through the SAME Ed25519 challenge as a launched agent: the hub resolves
+    // the deployment's public key, issues a nonce, and routes the address only
+    // after a valid signature. These tests pin that parity -- there is no
+    // keyless register-field shortcut for a workflow address anymore, so a
+    // token-holding sidecar cannot reclaim a deployment's route without the
+    // deployment's own key.
+    const WF_ADDR = "ins_dep_abc@local";
 
-      expect(router.getRoutableAddresses()).toEqual(["ins_dep_abc@local"]);
-      expect(router.routeMail("ins_dep_abc@local", "dGVzdA==")).toBe(true);
-    });
+    // Router whose key lookup resolves WF_ADDR to `publicKeyHex` (a live
+    // deployment) or to null (unknown / torn-down), mirroring the
+    // launched-agent reconnect tests.
+    function workflowReconnectRouter(publicKeyHex: string | null) {
+      return createSidecarRouter({
+        requestTimeoutMs: 5000,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === WF_ADDR ? publicKeyHex : null,
+        },
+      });
+    }
 
-    test("reconnect preserves a workflow address not in the challenged list", () => {
-      // A reconnect lists its workflow addresses only in `workflowAddresses`,
-      // never in the challenged `agentAddresses`. The internal empty-register
-      // clears the connection's addresses; the reconnect re-adds the workflow
-      // set, so it stays routable across the reconnect.
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: ["ins_dep_abc@local"],
-        }),
-      );
-      expect(router.routeMail("ins_dep_abc@local", "dGVzdA==")).toBe(true);
+    function findFrame(ws: ReturnType<typeof createMockWs>, type: string) {
+      return ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === type);
+    }
 
-      router.handleMessage(
+    async function reconnect(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+    ) {
+      r.handleOpen(ws);
+      r.handleMessage(
         ws,
         JSON.stringify({
           type: "reconnect",
           sidecarId: "sc-1",
           token: "tok",
-          agentAddresses: [],
-          workflowAddresses: ["ins_dep_abc@local"],
+          agentAddresses: [WF_ADDR],
         }),
       );
+      await new Promise((res) => setTimeout(res, 50));
+    }
 
-      expect(router.routeMail("ins_dep_abc@local", "dGVzdA==")).toBe(true);
-    });
-
-    test("disconnect removes workflow addresses from the routing table", () => {
-      // Guards the leak: without removing the connection's workflow addresses
-      // on close, a stale `addr -> dead ws` entry would survive in the routing
-      // table and the next sidecar could not cleanly reclaim it.
-      const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
+    async function respondToChallenge(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      privateKey: Uint8Array,
+    ) {
+      const { address, nonce } = findFrame(ws, "challenge").challenges[0];
+      r.handleMessage(
         ws,
         JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: ["ins_dep_abc@local"],
+          type: "challenge.response",
+          responses: [
+            {
+              address,
+              signature: await signChallenge(nonce, address, privateKey),
+            },
+          ],
         }),
       );
-      expect(router.routeMail("ins_dep_abc@local", "dGVzdA==")).toBe(true);
+      await new Promise((res) => setTimeout(res, 50));
+    }
 
-      router.handleClose(ws);
+    test("routes a workflow address only after a passed challenge", async () => {
+      const kp = await generateKeyPair();
+      const r = workflowReconnectRouter(hexEncode(kp.publicKey));
+      const ws = createMockWs();
+      await reconnect(r, ws);
 
-      expect(router.getRoutableAddresses()).toEqual([]);
-      expect(router.routeMail("ins_dep_abc@local", "dGVzdA==")).toBe(false);
+      // The reconnect frame alone earns nothing: the address is not routable
+      // until the challenge is answered.
+      expect(r.getRoutableAddresses()).not.toContain(WF_ADDR);
+      const challenge = findFrame(ws, "challenge");
+      expect(challenge).toBeDefined();
+      expect(challenge.challenges[0].address).toBe(WF_ADDR);
+
+      await respondToChallenge(r, ws, kp.privateKey);
+
+      expect(r.getRoutableAddresses()).toContain(WF_ADDR);
+      expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(true);
     });
 
-    test("a fresh ws reclaims a workflow address after an abrupt disconnect", () => {
-      // Restart without a clean close: the old ws still holds the route. A
-      // fresh ws re-announcing the same workflow address takes over routing,
-      // and the stale ws's later close must not clobber the new owner (the
-      // ownership guard in handleClose).
+    test("rejects a workflow address signed with the wrong key (no hijack)", async () => {
+      const kp = await generateKeyPair();
+      const wrongKp = await generateKeyPair();
+      const r = workflowReconnectRouter(hexEncode(kp.publicKey));
+      const ws = createMockWs();
+      await reconnect(r, ws);
+
+      await respondToChallenge(r, ws, wrongKp.privateKey);
+
+      expect(r.getRoutableAddresses()).not.toContain(WF_ADDR);
+      expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(false);
+      expect(findFrame(ws, "challenge.failed").address).toBe(WF_ADDR);
+    });
+
+    test("fails closed when the deployment has no live key", async () => {
+      // lookupPublicKey resolves null -- an unknown or torn-down deployment.
+      // No challenge is issued and the address never routes.
+      const r = workflowReconnectRouter(null);
+      const ws = createMockWs();
+      await reconnect(r, ws);
+
+      expect(r.getRoutableAddresses()).not.toContain(WF_ADDR);
+      expect(findFrame(ws, "challenge")).toBeUndefined();
+      expect(findFrame(ws, "challenge.failed").address).toBe(WF_ADDR);
+    });
+
+    test("disconnect removes a verified workflow address from routing", async () => {
+      const kp = await generateKeyPair();
+      const r = workflowReconnectRouter(hexEncode(kp.publicKey));
+      const ws = createMockWs();
+      await reconnect(r, ws);
+      await respondToChallenge(r, ws, kp.privateKey);
+      expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(true);
+
+      r.handleClose(ws);
+
+      expect(r.getRoutableAddresses()).toEqual([]);
+      expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(false);
+    });
+
+    test("a fresh ws reclaims a workflow address only by passing its own challenge", async () => {
+      const kp = await generateKeyPair();
+      const r = workflowReconnectRouter(hexEncode(kp.publicKey));
+
       const oldWs = createMockWs();
-      router.handleOpen(oldWs);
-      router.handleMessage(
-        oldWs,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: ["ins_dep_abc@local"],
-        }),
-      );
+      await reconnect(r, oldWs);
+      await respondToChallenge(r, oldWs, kp.privateKey);
+      expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(true);
 
       const newWs = createMockWs();
-      router.handleOpen(newWs);
-      router.handleMessage(
-        newWs,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: ["ins_dep_abc@local"],
-        }),
-      );
+      await reconnect(r, newWs);
+      await respondToChallenge(r, newWs, kp.privateKey);
 
-      router.handleClose(oldWs);
+      // The stale ws's later close must not clobber the new owner (the
+      // ownership guard in handleClose).
+      r.handleClose(oldWs);
 
-      expect(router.routeMail("ins_dep_abc@local", "dGVzdA==")).toBe(true);
+      expect(r.getRoutableAddresses()).toContain(WF_ADDR);
+      expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(true);
     });
   });
 
@@ -355,46 +384,63 @@ describe("SidecarRouter", () => {
     });
 
     test("a reconnect after unbind does not resurrect the transient route", async () => {
-      // A real reconnect only runs when `lookupPublicKey` is configured
-      // (otherwise `handleReconnect` bails before re-registering anything).
-      // Use a dedicated router with the lookup so the reconnect actually
-      // executes and this exercises the re-registration path.
+      // The deployment address is re-announced on reconnect and proves
+      // ownership through the challenge; the transient per-step route
+      // (bind/unbind) is never persisted into that announcement, so a
+      // reconnect must not bring it back.
+      const kp = await generateKeyPair();
       const reconnectRouter = createSidecarRouter({
-        requestTimeoutMs: 500,
+        requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
-        lookups: { lookupPublicKey: async () => null },
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === DEPLOYMENT_ADDR ? hexEncode(kp.publicKey) : null,
+        },
       });
       const ws = createMockWs();
       reconnectRouter.handleOpen(ws);
-      // The deployment address is a workflow-substrate address (no challenge).
-      reconnectRouter.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: [DEPLOYMENT_ADDR],
-        }),
-      );
+
+      // Bring the deployment address up through the challenged reconnect path.
+      async function reconnectDeployment() {
+        reconnectRouter.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "reconnect",
+            sidecarId: "sc-1",
+            token: "tok",
+            agentAddresses: [DEPLOYMENT_ADDR],
+          }),
+        );
+        await new Promise((r) => setTimeout(r, 50));
+        const challenges = ws.sent
+          .map((s) => JSON.parse(s))
+          .filter((f) => f.type === "challenge");
+        const { address, nonce } =
+          challenges[challenges.length - 1].challenges[0];
+        reconnectRouter.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "challenge.response",
+            responses: [
+              {
+                address,
+                signature: await signChallenge(nonce, address, kp.privateKey),
+              },
+            ],
+          }),
+        );
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      await reconnectDeployment();
+      expect(reconnectRouter.getRoutableAddresses()).toContain(DEPLOYMENT_ADDR);
+
       reconnectRouter.bindStepRoute(STEP_ADDR);
       reconnectRouter.unbindStepRoute(STEP_ADDR);
 
-      // The sidecar reconnects announcing only the deployment's workflow
-      // address -- never the transient per-step address, which was never
-      // persisted into the reconnect announcement.
-      reconnectRouter.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "reconnect",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: [DEPLOYMENT_ADDR],
-        }),
-      );
-      // Let the async reconnect re-registration settle.
-      await new Promise((r) => setTimeout(r, 0));
+      // The sidecar reconnects announcing only the deployment address -- never
+      // the transient per-step address.
+      await reconnectDeployment();
 
       // The reconnect actually ran (it did not bail and close the socket).
       expect(ws.closed).toBe(false);
@@ -2831,27 +2877,19 @@ describe("SidecarRouter", () => {
       expect(ack.repoId).toEqual(repoId);
     });
 
-    test("a workflow deployment announced via workflowAddresses can still push workflow-run packs", async () => {
-      // The reconnect/restart shape: the deployment address is announced via
-      // `workflowAddresses`, not `agentAddresses`. Pack-push authorization must
-      // still recognize it as owned by this connection -- otherwise the hub's
-      // workflow-run observation mirror silently stops updating after a
-      // reconnect (mail routing resumes, but pack push would reject the
-      // address as unrouted).
+    test("a workflow deployment owned by its connection can push workflow-run packs", async () => {
+      // Pack-push authorization keys on `connOwnsAddress`, which unions the
+      // connection's launched-agent and workflow-substrate address sets. A
+      // workflow deployment address owned by the connection must authorize a
+      // workflow-run pack -- otherwise the hub's workflow-run observation
+      // mirror silently stops updating (mail routing resumes, but pack push
+      // rejects the address as unrouted). The challenged-reconnect ownership
+      // path itself is covered by the "workflow-address reconnect" block; here
+      // the address is registered directly to keep the test on pack routing.
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
       const addr = "ins_dep_wfr@local";
-      r.handleOpen(ws);
-      r.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-wfr",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: [addr],
-        }),
-      );
+      registerAddr(r, ws, "sc-wfr", addr);
 
       const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-2" };
       pushPack(r, ws, {
@@ -2885,30 +2923,112 @@ describe("SidecarRouter", () => {
       const transferId = "t-reclaim";
 
       const oldWs = createMockWs();
-      r.handleOpen(oldWs);
-      r.handleMessage(
-        oldWs,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: [addr],
-        }),
-      );
+      registerAddr(r, oldWs, "sc", addr);
 
       const newWs = createMockWs();
-      r.handleOpen(newWs);
+      registerAddr(r, newWs, "sc", addr);
+
+      // The new owner starts (but does not finish) a workflow-run transfer.
+      for (const chunk of chunkPack(pack)) {
+        r.handleMessage(
+          newWs,
+          JSON.stringify({
+            type: "repo.pack.push",
+            agentAddress: addr,
+            repoId,
+            transferId,
+            seq: chunk.seq,
+            data: chunk.data,
+          }),
+        );
+      }
+
+      // The superseded connection closes mid-transfer.
+      r.handleClose(oldWs);
+
+      // The new owner completes the transfer; it must not have been cancelled.
       r.handleMessage(
         newWs,
         JSON.stringify({
-          type: "register",
-          sidecarId: "sc",
-          token: "tok",
-          agentAddresses: [],
-          workflowAddresses: [addr],
+          type: "repo.pack.done",
+          agentAddress: addr,
+          repoId,
+          transferId,
+          ref: "refs/heads/events",
+          commitSha: "a".repeat(40),
         }),
       );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(calls.length).toBe(1);
+      expect(calls[0]?.method).toBe("receiveWorkflowRunPack");
+    });
+
+    test("a workflow address reclaimed via challenged reconnect does not cancel the new owner's transfer", async () => {
+      // The register-reclaim variant above covers the handleRegister ghost
+      // cleanup. This covers the CHALLENGED RECONNECT reclaim path, where the
+      // deployment lives on the connection's workflow set: the verified reclaim
+      // must evict the address from the superseded connection, or that
+      // connection's close runs cancelByAgent and kills the new owner's
+      // in-flight transfer.
+      const kp = await generateKeyPair();
+      const calls: { method: string }[] = [];
+      const r = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async () => hexEncode(kp.publicKey),
+          async receiveWorkflowRunPack() {
+            calls.push({ method: "receiveWorkflowRunPack" });
+            return { accepted: true };
+          },
+        },
+      });
+      const addr = "ins_dep_reclaim_rc@local";
+      const repoId: RepoId = { kind: "workflow-run", id: "dep-reclaim-rc" };
+      const pack = new Uint8Array([4, 5, 6, 7]);
+      const transferId = "t-reclaim-rc";
+
+      async function reconnectVerify(ws: ReturnType<typeof createMockWs>) {
+        r.handleOpen(ws);
+        r.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "reconnect",
+            sidecarId: "sc",
+            token: "tok",
+            agentAddresses: [addr],
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const challenge = ws.sent
+          .map((s) => JSON.parse(s))
+          .find((f: { type: string }) => f.type === "challenge");
+        r.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "challenge.response",
+            responses: [
+              {
+                address: addr,
+                signature: await signChallenge(
+                  challenge.challenges[0].nonce,
+                  addr,
+                  kp.privateKey,
+                ),
+              },
+            ],
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const oldWs = createMockWs();
+      await reconnectVerify(oldWs);
+
+      const newWs = createMockWs();
+      await reconnectVerify(newWs);
 
       // The new owner starts (but does not finish) a workflow-run transfer.
       for (const chunk of chunkPack(pack)) {
