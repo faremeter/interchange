@@ -2400,8 +2400,8 @@ export const workflowRunAuthorize: AuthorizeFn = (
 // ---------------------------------------------------------------------
 // Claim-check API.
 //
-// Four operations layer on top of `RepoStore.writeTreePreservingPrefix`
-// to give the workflow runtime a FIFO claim-check queue per address:
+// Four operations layer on top of `RepoStore.writeTreeDelta` to give
+// the workflow runtime a FIFO claim-check queue per address:
 //
 //   enqueueInbox          — append a new inbox entry for an inbound
 //                           message.
@@ -2417,16 +2417,18 @@ export const workflowRunAuthorize: AuthorizeFn = (
 //                           its `<receivedAt>-<messageId>` filename
 //                           key so FIFO ordering survives a crash.
 //
-// All four route through `writeTreePreservingPrefix` with the
-// per-address subtree as `preservePrefix`. The substrate serializes
-// concurrent claim-check operations on the per-repo lock; the merge
-// callback reads the prior address subtree directly via
-// `isomorphic-git` (the substrate's `existing` parameter is a
-// direct-children-only view, which does not see entries nested under
-// inbox/processing/consumed), computes the new state, and returns the
-// full set of files. The substrate's `clearPrefix` semantics replace
-// the address subtree wholesale with the returned set, which is the
-// atomic-commit guarantee these operations require.
+// All four route through `writeTreeDelta`, scoped to the per-address
+// subtree via `changedPathPrefixes`. The substrate serializes concurrent
+// claim-check operations on the per-repo lock and invokes each
+// operation's `computeDelta` callback with a `prior` view of the
+// committed tree. The callback reads only what it needs directly --
+// `prior.listDirOids` for a directory's names and OIDs, and
+// `prior.readBlobByOid` for a specific entry's bytes -- and returns a
+// TARGETED delta (the `puts` and `deletes` for the paths that change),
+// not the full subtree. The substrate applies that delta atomically over
+// the prior tree, carrying every untouched entry forward by OID and
+// landing the whole delta in a single commit, which is the atomic-commit
+// guarantee these operations require.
 
 function claimCheckCommitRef(): string {
   // Every claim-check operation targets the same canonical ref used by
