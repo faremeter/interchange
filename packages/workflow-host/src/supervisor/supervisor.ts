@@ -2047,35 +2047,69 @@ export function createWorkflowSupervisor(
            path only waits for the substrate write to settle. */
       });
     }
-    if (recyclePolicy !== null) {
-      recyclePolicy.stop();
-      recyclePolicy = null;
-    }
-    spawnContext = null;
-    if (
-      prior.phase === "starting" ||
-      prior.phase === "running" ||
-      prior.phase === "recycling"
-    ) {
-      if (prior.mailUnsubscribe !== null) prior.mailUnsubscribe();
-      try {
-        bindings.mailBus.unregisterAddress(bindings.deploymentMailAddress);
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        logger.warn`mail bus unregisterAddress threw: ${message}`;
+    // Teardown is best-effort-and-log-and-continue: every step is
+    // individually guarded so a throw in one (an unsubscribe callback, a
+    // policy stop, a kill) cannot skip the steps after it -- in
+    // particular, a throwing `mailUnsubscribe` must not prevent the child
+    // `kill`. The `finally` makes the `stopped` transition unconditional:
+    // whatever a step does, the supervisor must not be left wedged in
+    // `stopping`. This is the documented shutdown carve-out to the
+    // fail-loud rule -- leaking the child or wedging the supervisor is
+    // strictly worse than logging and continuing -- so errors surface via
+    // `logger.warn`, they are not silently swallowed.
+    try {
+      if (recyclePolicy !== null) {
+        try {
+          recyclePolicy.stop();
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`recycle policy stop threw during shutdown: ${message}`;
+        }
+        recyclePolicy = null;
       }
-      prior.handle.kill();
-      await prior.handle.exited.catch(() => {
-        /* swallowed: the host has already been told the deployment is
-           coming down; an error surfaced from the spawner is the
-           process exiting with a non-zero code, which is what the
-           shutdown path expects. */
-      });
-      await prior.eventPump.catch(() => {
-        /* swallowed for the same reason as above. */
-      });
+      spawnContext = null;
+      if (
+        prior.phase === "starting" ||
+        prior.phase === "running" ||
+        prior.phase === "recycling"
+      ) {
+        if (prior.mailUnsubscribe !== null) {
+          try {
+            prior.mailUnsubscribe();
+          } catch (cause) {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`mail unsubscribe threw during shutdown: ${message}`;
+          }
+        }
+        try {
+          bindings.mailBus.unregisterAddress(bindings.deploymentMailAddress);
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`mail bus unregisterAddress threw: ${message}`;
+        }
+        try {
+          prior.handle.kill();
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`child kill threw during shutdown: ${message}`;
+        }
+        await prior.handle.exited.catch(() => {
+          /* swallowed: the host has already been told the deployment is
+             coming down; an error surfaced from the spawner is the
+             process exiting with a non-zero code, which is what the
+             shutdown path expects. */
+        });
+        await prior.eventPump.catch(() => {
+          /* swallowed for the same reason as above. */
+        });
+      }
+    } finally {
+      state = { phase: "stopped" };
     }
-    state = { phase: "stopped" };
     logger.info`supervisor shutdown complete (${opts.reason})`;
   }
 

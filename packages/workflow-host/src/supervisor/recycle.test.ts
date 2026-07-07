@@ -270,7 +270,10 @@ type SpawnTracker = {
   totalSpawns: number;
 };
 
-function createSpawnTracker(opts: { sigtermExits?: boolean }): SpawnTracker {
+function createSpawnTracker(opts: {
+  sigtermExits?: boolean;
+  killThrows?: boolean;
+}): SpawnTracker {
   const children: FakeChild[] = [];
   const spawnEnvs: Record<string, string>[] = [];
   const spawner: SubprocessSpawner = ({ env }) => {
@@ -306,6 +309,11 @@ function createSpawnTracker(opts: { sigtermExits?: boolean }): SpawnTracker {
           eventChildToSupervisor.close();
           childToSupervisor.close();
           child.resolveExit?.(0);
+        }
+        // Settle the exit above BEFORE throwing so a shutdown awaiting
+        // `exited` does not hang; the throw exercises the kill-step guard.
+        if (opts.killThrows === true) {
+          throw new Error("child kill boom");
         }
       },
       exited,
@@ -1676,5 +1684,81 @@ describe("supervisor recycle: respawn credentials-read failure", () => {
       throw new Error("tracker.children[1] missing");
     }
     expect(newChild.killSignals.length).toBeGreaterThan(0);
+  });
+});
+
+describe("supervisor shutdown: teardown robustness", () => {
+  test("shutdown still kills the child and reaches stopped when mail unsubscribe throws", async () => {
+    const baseDir = await makeTempDir("shutdown-unsub-throw-");
+    const ipcKeypair = await generateKeyPair();
+    const baseMailBus = createMockMailBus();
+    // The mail unsubscribe runs BEFORE the child kill in shutdown. Left
+    // unguarded, a throw here skips the kill (child leak) and leaves the
+    // supervisor wedged in `stopping`.
+    const mailBus: MailBusBindings = {
+      ...baseMailBus,
+      subscribeMailForAddress(address, handler) {
+        baseMailBus.subscribeMailForAddress(address, handler);
+        return () => {
+          throw new Error("mail unsubscribe boom during shutdown");
+        };
+      },
+    };
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+    });
+    const child = tracker.children[0];
+    if (child === undefined) {
+      throw new Error("tracker.children[0] missing");
+    }
+
+    // Shutdown must resolve despite the throwing unsubscribe.
+    await supervisor.shutdown();
+
+    // The kill step was reached even though the unsubscribe (which runs
+    // first) threw.
+    expect(child.killSignals.length).toBe(1);
+
+    // The supervisor reached `stopped`, not wedged in `stopping`: a second
+    // shutdown is an idempotent no-op that returns without re-running the
+    // (throwing) teardown, so no further kill is issued.
+    await supervisor.shutdown();
+    expect(child.killSignals.length).toBe(1);
+  });
+
+  test("shutdown reaches stopped when the child kill throws", async () => {
+    const baseDir = await makeTempDir("shutdown-kill-throw-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    // The child kill throws (after settling exit). The `finally` must still
+    // drive the supervisor to `stopped` rather than leaving it in
+    // `stopping`.
+    const tracker = createSpawnTracker({
+      sigtermExits: true,
+      killThrows: true,
+    });
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+    });
+    const child = tracker.children[0];
+    if (child === undefined) {
+      throw new Error("tracker.children[0] missing");
+    }
+
+    // Shutdown must resolve even though kill threw.
+    await supervisor.shutdown();
+    expect(child.killSignals.length).toBe(1);
+
+    // Reached `stopped`: the second shutdown no-ops rather than re-entering
+    // teardown (which would call the throwing kill again).
+    await supervisor.shutdown();
+    expect(child.killSignals.length).toBe(1);
   });
 });
