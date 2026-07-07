@@ -731,12 +731,20 @@ export function createSidecarRouter(
       addressIndex.set(addr, ws);
     }
 
-    // Look up stored public keys for all claimed addresses.
+    // Look up stored public keys for all claimed addresses. Fail closed on a
+    // lookup error (e.g. a transient DB failure): treat the address as
+    // unverifiable so it fails its challenge and stays unrouted, rather than
+    // letting the rejection float out of this void-dispatched handler as an
+    // unhandled rejection that could take down the hub.
     const keyLookups = await Promise.all(
-      agentAddresses.map(async (addr) => ({
-        address: addr,
-        publicKeyHex: await lookupKey(addr),
-      })),
+      agentAddresses.map(async (addr) => {
+        try {
+          return { address: addr, publicKeyHex: await lookupKey(addr) };
+        } catch (err) {
+          logger.error`Key lookup failed for ${addr} during reconnect: ${err instanceof Error ? err.message : String(err)}; failing closed`;
+          return { address: addr, publicKeyHex: null };
+        }
+      }),
     );
 
     // If the connection was closed or superseded while we were awaiting

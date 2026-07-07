@@ -2242,6 +2242,74 @@ describe("SidecarRouter", () => {
       expect(failedFrame.reason).toBe("Unknown agent address");
     });
 
+    test("fails closed on a key-lookup error during reconnect instead of crashing", async () => {
+      // A rejecting lookup (e.g. a transient DB failure) on the production
+      // reconnect path must be caught and surfaced, not floated out of the
+      // void-dispatched handler as an unhandled rejection that could take down
+      // the hub. Fail closed: the address is treated as unverifiable, fails
+      // its challenge, and stays unrouted. (The test completing rather than
+      // hanging on an unhandled rejection is itself part of the assertion.)
+      const captured: { level: string; message: string }[] = [];
+      const savedConfig = getConfig();
+      configureSync({
+        reset: true,
+        sinks: {
+          capture: (record) => {
+            const message = Array.isArray(record.message)
+              ? record.message
+                  .map((part) =>
+                    typeof part === "string" ? part : JSON.stringify(part),
+                  )
+                  .join("")
+              : String(record.message);
+            captured.push({ level: record.level, message });
+          },
+        },
+        loggers: [{ category: [], lowestLevel: "debug", sinks: ["capture"] }],
+      });
+      try {
+        const router = createSidecarRouter({
+          requestTimeoutMs: 5000,
+          lookups: {
+            lookupPublicKey: async () => {
+              throw new Error("db unavailable");
+            },
+          },
+        });
+        const ws = createMockWs();
+        router.handleOpen(ws);
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "reconnect",
+            sidecarId: "sc-1",
+            token: "tok",
+            agentAddresses: ["agent@local"],
+          }),
+        );
+
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(router.getRoutableAddresses()).not.toContain("agent@local");
+        const failedFrame = ws.sent
+          .map((s) => JSON.parse(s))
+          .find((f: { type: string }) => f.type === "challenge.failed");
+        expect(failedFrame?.address).toBe("agent@local");
+        expect(
+          captured.some(
+            (l) =>
+              l.level === "error" && l.message.includes("Key lookup failed"),
+          ),
+        ).toBe(true);
+      } finally {
+        if (savedConfig) {
+          configureSync({ reset: true, ...savedConfig });
+        } else {
+          resetSync();
+        }
+      }
+    });
+
     test("partial success routes verified addresses only", async () => {
       const kp1 = await generateKeyPair();
       const kp2 = await generateKeyPair();
