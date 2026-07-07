@@ -481,7 +481,6 @@ export function createSidecarRouter(
       case "connector.state.changed":
       case "repo.pack.push":
       case "repo.pack.done":
-      case "deploy.apply.error":
         return false;
       default:
         return assertNever(frame);
@@ -585,27 +584,6 @@ export function createSidecarRouter(
         return;
       case "repo.pack.done":
         return handlePackDone(ws, frame);
-      case "deploy.apply.error":
-        // Gate the failure emit on the sending sidecar actually
-        // owning the named agent. A misbehaving sidecar that knows
-        // another agent's address could otherwise drive the hub to
-        // record an apply failure against a deploy the other agent's
-        // sidecar still considers live, contaminating audit trails
-        // and any failure-driven rollback logic the hub runs.
-        if (addressIndex.get(frame.agentAddress) !== ws) {
-          logger.warn`Dropping deploy.apply.error for ${frame.agentAddress}: not registered to this sidecar`;
-          return;
-        }
-        events.emit("deploy.apply.error", {
-          agentAddress: frame.agentAddress,
-          attemptId: frame.attemptId,
-          previousDeployId: frame.previousDeployId,
-          category: frame.category,
-          message: frame.message,
-          ...(frame.package !== undefined ? { package: frame.package } : {}),
-          occurredAt: frame.occurredAt,
-        });
-        return;
       default:
         return assertNever(frame);
     }

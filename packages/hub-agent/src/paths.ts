@@ -13,6 +13,3 @@
 
 export { readDeployTree, type DeployTree } from "./deploy-tree";
 export { sanitizeAddress } from "./agent-paths";
-// Type-only re-export: `export type` is erased under `verbatimModuleSyntax`,
-// so it adds no runtime import edge to `harness-builder`.
-export type { DeployApplyErrorEmitter } from "./harness-builder";

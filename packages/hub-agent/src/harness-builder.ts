@@ -6,7 +6,6 @@
 // dependencies on the concrete inference packages the check consults.
 
 import type { InferenceSource } from "@intx/types/runtime";
-import type { DeployApplyErrorFrame } from "@intx/types/sidecar";
 
 export type HarnessBuilder = {
   /**
@@ -17,14 +16,3 @@ export type HarnessBuilder = {
    */
   canBuildSource(source: InferenceSource): void;
 };
-
-/**
- * Callback the tool-package loader uses to emit a deploy-apply error
- * frame back to the hub. The host (the sidecar's workflow-child tool
- * materialization) translates this into the wire-level frame. Lives here
- * as the dependency-light home the `@intx/hub-agent/paths` entry
- * re-exports without pulling in the orchestrator module graph.
- */
-export type DeployApplyErrorEmitter = (
-  payload: Omit<DeployApplyErrorFrame, "type" | "agentAddress">,
-) => void;

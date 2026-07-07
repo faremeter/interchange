@@ -37,11 +37,7 @@ import {
   type BaseEnv,
   type ToolBundle,
 } from "@intx/agent";
-import {
-  readDeployTree,
-  sanitizeAddress,
-  type DeployApplyErrorEmitter,
-} from "@intx/hub-agent/paths";
+import { readDeployTree, sanitizeAddress } from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 import { resolveStepAddress } from "@intx/workflow-deploy";
@@ -182,8 +178,8 @@ export function stepDeployTreeDir(args: {
  * A deploy with no tool-package manifest yields empty factories -- the
  * legitimate `rawManifestBytes === undefined` case. A manifest that is
  * present but fails to load surfaces loudly through
- * `materializeToolPackages` (the deploy.apply.error / throw path),
- * never a silent empty-tools fallback that would mask a broken deploy.
+ * `materializeToolPackages` (the throw path), never a silent
+ * empty-tools fallback that would mask a broken deploy.
  */
 export async function materializeStepTools(args: {
   dataDir: string;
@@ -193,7 +189,6 @@ export async function materializeStepTools(args: {
   /** Per-step state root; cache + instance dir + workspace live under it. */
   storeDir: string;
   cache: StepToolCacheConfig;
-  emitDeployApplyError?: DeployApplyErrorEmitter;
 }): Promise<StepToolMaterialization> {
   const deployTreeDir = stepDeployTreeDir({
     dataDir: args.dataDir,
@@ -227,9 +222,6 @@ export async function materializeStepTools(args: {
     cacheRoot,
     cacheMaxBytes: args.cache.cacheMaxBytes,
     registryMaxTarballBytes: args.cache.registryMaxTarballBytes,
-    ...(args.emitDeployApplyError !== undefined
-      ? { emitDeployApplyError: args.emitDeployApplyError }
-      : { emitDeployApplyError: undefined }),
   });
   return {
     factories: materialized.factories,

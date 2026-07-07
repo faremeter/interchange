@@ -29,8 +29,8 @@ export type DeployTree = {
    * JSON parsing and arktype validation are the caller's
    * responsibility — the sidecar's harness builder does both inside
    * `materializeToolPackages` so a corrupt or schema-invalid manifest
-   * routes through the same `deploy.apply.error` frame channel as
-   * every other apply-time failure (category `manifest.invalid`).
+   * fails the apply loudly (category `manifest.invalid`) the same way
+   * as every other apply-time failure.
    *
    * Undefined means the manifest file is not present.
    */

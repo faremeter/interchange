@@ -85,8 +85,8 @@ and the sidecar's fetch can cause the apply to fail with
 The substrate's `writeTreePreservingPrefix` primitive makes PUTs and
 DELETEs against the asset atomic with respect to one another, but it
 does not couple them to the sidecar's deploy-apply read. The
-intentional behavior is: the apply fails loudly through the existing
-`deploy.apply.error` frame channel. There is no silent corruption —
+intentional behavior is: the apply fails loudly as a rejected
+deploy-apply. There is no silent corruption —
 the integrity check on the sidecar side guarantees that mismatched
 bytes are rejected — but the operator does see a failed apply if the
 asset is mutated concurrently with a launch.

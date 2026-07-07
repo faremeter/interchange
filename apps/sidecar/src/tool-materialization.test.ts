@@ -27,31 +27,9 @@ afterEach(async () => {
   );
 });
 
-interface CapturedDeployApplyError {
-  attemptId: string;
-  previousDeployId: string;
-  category: string;
-  message: string;
-  occurredAt: string;
-}
-
-function captureEmitter(): {
-  calls: CapturedDeployApplyError[];
-  emit: (e: CapturedDeployApplyError) => void;
-} {
-  const calls: CapturedDeployApplyError[] = [];
-  return {
-    calls,
-    emit: (e) => {
-      calls.push(e);
-    },
-  };
-}
-
 describe("materializeToolPackages — manifest.invalid gate", () => {
   test("returns empty factories when no manifest bytes supplied", async () => {
     const storeDir = await tempDir();
-    const { calls, emit } = captureEmitter();
     const result = await materializeToolPackages({
       assetMounts: new Map(),
       rawManifestBytes: undefined,
@@ -60,16 +38,13 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
       cacheRoot: "/unused-by-manifest-invalid-gate",
       cacheMaxBytes: 1024 * 1024,
       registryMaxTarballBytes: 10 * 1024 * 1024,
-      emitDeployApplyError: emit,
     });
     expect(result.factories).toEqual([]);
     expect(result.pluginFactories).toEqual([]);
-    expect(calls).toEqual([]);
   });
 
-  test("JSON.parse failure persists the raw bytes verbatim and emits manifest.invalid", async () => {
+  test("JSON.parse failure throws and persists the raw bytes verbatim", async () => {
     const storeDir = await tempDir();
-    const { calls, emit } = captureEmitter();
     const corrupt = "{this is not valid json";
     let caught: unknown;
     try {
@@ -81,7 +56,6 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
-        emitDeployApplyError: emit,
       });
     } catch (err) {
       caught = err;
@@ -89,12 +63,6 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
     expect(caught).toBeInstanceOf(Error);
     expect(String(caught)).toMatch(/manifest\.invalid/);
     expect(String(caught)).toMatch(/JSON\.parse failed/);
-
-    expect(calls).toHaveLength(1);
-    const call = calls[0];
-    if (call === undefined) throw new Error("emitter was not called");
-    expect(call.category).toBe("manifest.invalid");
-    expect(call.previousDeployId).toBe("none");
 
     const auditRoot = path.join(storeDir, "audit", "rejected-applies");
     const attemptDirs = await fs.promises.readdir(auditRoot);
@@ -121,12 +89,13 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
     );
     expect(errorJson.category).toBe("manifest.invalid");
     expect(errorJson.message).toMatch(/JSON\.parse failed/);
-    expect(errorJson.attemptId).toBe(call.attemptId);
+    expect(errorJson.previousDeployId).toBe("none");
+    expect(typeof errorJson.attemptId).toBe("string");
+    expect(errorJson.attemptId.length).toBeGreaterThan(0);
   });
 
-  test("schema failure persists the raw bytes verbatim and emits manifest.invalid", async () => {
+  test("schema failure throws and persists the raw bytes verbatim", async () => {
     const storeDir = await tempDir();
-    const { calls, emit } = captureEmitter();
     // Valid JSON but wrong shape — arktype rejects it.
     const wrongShape = JSON.stringify({ schemaVersion: 99 });
     let caught: unknown;
@@ -139,7 +108,6 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
-        emitDeployApplyError: emit,
       });
     } catch (err) {
       caught = err;
@@ -147,11 +115,6 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
     expect(caught).toBeInstanceOf(Error);
     expect(String(caught)).toMatch(/manifest\.invalid/);
     expect(String(caught)).toMatch(/schema validation failed/);
-
-    expect(calls).toHaveLength(1);
-    const call = calls[0];
-    if (call === undefined) throw new Error("emitter was not called");
-    expect(call.category).toBe("manifest.invalid");
 
     const auditRoot = path.join(storeDir, "audit", "rejected-applies");
     const attemptDirs = await fs.promises.readdir(auditRoot);
@@ -170,6 +133,11 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
       "utf-8",
     );
     expect(persisted).toBe(wrongShape);
+
+    const errorJson = JSON.parse(
+      await fs.promises.readFile(path.join(attemptDir, "error.json"), "utf-8"),
+    );
+    expect(errorJson.category).toBe("manifest.invalid");
   });
 
   describe("parseActiveDeployId", () => {
@@ -290,12 +258,12 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
     });
   });
 
-  test("boot reconciliation reads the dirty marker as previousDeployId", async () => {
+  test("boot reconciliation records the dirty marker as previousDeployId", async () => {
     // Seed an instance where the prior apply could not durably record
     // the committed deploy id and a dirty marker carries the truth.
     // The next apply (any apply — here, a manifest-invalid one) must
-    // surface the marker's id as `previousDeployId` in the failure
-    // frame, not the stale recorded id and not "none".
+    // surface the marker's id as `previousDeployId` in the audit
+    // record, not the stale recorded id and not "none".
     const storeDir = await tempDir();
     const instanceDir = path.join(storeDir, "tool-packages");
     await fs.promises.mkdir(instanceDir, { recursive: true });
@@ -308,7 +276,6 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
       "v1:truth-from-marker",
     );
 
-    const { calls, emit } = captureEmitter();
     let caught: unknown;
     try {
       await materializeToolPackages({
@@ -319,21 +286,29 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
-        emitDeployApplyError: emit,
       });
     } catch (err) {
       caught = err;
     }
     expect(caught).toBeInstanceOf(Error);
-    expect(calls).toHaveLength(1);
-    const call = calls[0];
-    if (call === undefined) throw new Error("emitter was not called");
-    expect(call.previousDeployId).toBe("truth-from-marker");
+
+    const auditRoot = path.join(storeDir, "audit", "rejected-applies");
+    const attemptDirs = await fs.promises.readdir(auditRoot);
+    expect(attemptDirs).toHaveLength(1);
+    const attemptDirName = attemptDirs[0];
+    if (attemptDirName === undefined) {
+      throw new Error("no attempt dir was created");
+    }
+    const errorJson = JSON.parse(
+      await fs.promises.readFile(
+        path.join(auditRoot, attemptDirName, "error.json"),
+        "utf-8",
+      ),
+    );
+    expect(errorJson.previousDeployId).toBe("truth-from-marker");
   });
 
-  test("manifest.invalid still throws when no emitDeployApplyError is wired", async () => {
-    // The hub-side emitter is optional (e.g., for tests or offline
-    // boots). The gate must still reject and surface to the caller.
+  test("manifest.invalid throws and writes an audit entry", async () => {
     const storeDir = await tempDir();
     let caught: unknown;
     try {
@@ -341,11 +316,10 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         assetMounts: new Map(),
         rawManifestBytes: "{ not json",
         storeDir,
-        agentAddress: "agent-no-emitter",
+        agentAddress: "agent-throws",
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
-        emitDeployApplyError: undefined,
       });
     } catch (err) {
       caught = err;

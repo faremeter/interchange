@@ -620,44 +620,6 @@ export const DeployApplyErrorCategory = type.enumerated(
 export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
 
 /**
- * Sidecar reports a failed deploy-apply attempt back to the hub.
- *
- * `previousDeployId` is the atomicity contract for every category
- * except `apply.previous-rotation.failed`: it names the deploy the
- * instance was running before the rejected attempt, and after this
- * frame is emitted the instance continues to run that deploy untouched.
- *
- * For `apply.previous-rotation.failed` the field has inverted meaning.
- * The new deploy was staged and its `active-deploy-id` commit was
- * written through the degradation ladder (so the new deploy is live)
- * before the persist was found to be non-durable; the field carries
- * the **new** deploy id so the hub can record the on-disk truth rather
- * than a stale pre-apply id. The atomicity contract is preserved in
- * the sense that the field always reflects the deploy id the instance
- * is now running — what shifts is whether "now" is pre-apply or
- * post-apply, depending on whether the commit landed before the
- * failure. Renaming the field to make this explicit would break the
- * wire shape; the category's semantics document the override instead.
- *
- * `package` is set when the failure implicates a specific manifest
- * entry; deploy-wide failures (manifest.invalid) omit it.
- */
-export const DeployApplyErrorFrame = type({
-  type: "'deploy.apply.error'",
-  agentAddress: "string",
-  attemptId: "string",
-  previousDeployId: "string",
-  category: DeployApplyErrorCategory,
-  message: "string",
-  "package?": type({
-    name: "string",
-    version: "string",
-  }),
-  occurredAt: "string",
-});
-export type DeployApplyErrorFrame = typeof DeployApplyErrorFrame.infer;
-
-/**
  * Hub requests the sidecar to push its current agent state. The sidecar
  * responds by sending pack.push frames followed by pack.done using the
  * same transferId.
@@ -688,8 +650,7 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)
-  .or(PackRejectFrame)
-  .or(DeployApplyErrorFrame);
+  .or(PackRejectFrame);
 export type SidecarFrame = typeof SidecarFrame.infer;
 
 /** All frame types the hub sends to the sidecar. */

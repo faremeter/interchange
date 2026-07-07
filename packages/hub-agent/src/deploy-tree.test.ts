@@ -131,8 +131,8 @@ describe("readDeployTree", () => {
 
   test("returns corrupt-JSON bytes as-is for the caller to handle", async () => {
     // The reader does not parse; the caller's loader gate produces
-    // the manifest.invalid failure and routes it through the same
-    // deploy.apply.error frame channel as every other category.
+    // the manifest.invalid failure the same apply-rejection way as
+    // every other category.
     const dir = await tempDir();
     await fs.promises.mkdir(path.join(dir, "deploy"), { recursive: true });
     const garbage = "{this is not valid json";

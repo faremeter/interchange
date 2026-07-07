@@ -19,7 +19,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { type } from "arktype";
 import { type AnnotatedPluginFactory } from "@intx/agent";
-import { type DeployApplyErrorEmitter } from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
 import {
   type LoadedToolFactory,
@@ -201,7 +200,6 @@ export async function materializeToolPackages(args: {
   cacheRoot: string;
   cacheMaxBytes: number;
   registryMaxTarballBytes: number;
-  emitDeployApplyError: DeployApplyErrorEmitter | undefined;
 }): Promise<MaterializedToolPackages> {
   if (args.rawManifestBytes === undefined) {
     return { factories: [], pluginFactories: [] };
@@ -262,8 +260,8 @@ export async function materializeToolPackages(args: {
   // failures and arktype schema failures route through the same
   // `manifest.invalid` category so the hub sees a single failure
   // shape for malformed manifests regardless of the specific defect.
-  // The helper persists the rejected bytes + the failure payload and
-  // emits the WS frame, then returns the Error for the caller to throw.
+  // The helper persists the rejected bytes + the failure payload to
+  // the durable audit, then returns the Error for the caller to throw.
   // Returning instead of throwing lets the caller use `throw await ...`,
   // which TypeScript narrows control flow against without any
   // dead-code suffix at the call site.
@@ -283,15 +281,6 @@ export async function materializeToolPackages(args: {
         occurredAt,
       },
     });
-    if (args.emitDeployApplyError !== undefined) {
-      args.emitDeployApplyError({
-        attemptId,
-        previousDeployId,
-        category: "manifest.invalid",
-        message,
-        occurredAt,
-      });
-    }
     return new Error(
       `tool-package apply rejected (manifest.invalid): ${reason}`,
     );
@@ -354,16 +343,6 @@ export async function materializeToolPackages(args: {
       manifestBytes: rawManifestBytes,
       failure: result,
     });
-    if (args.emitDeployApplyError !== undefined) {
-      args.emitDeployApplyError({
-        attemptId: result.attemptId,
-        previousDeployId: result.previousDeployId,
-        category: result.category,
-        message: result.message,
-        ...(result.package !== undefined ? { package: result.package } : {}),
-        occurredAt: result.occurredAt,
-      });
-    }
     throw new Error(
       `tool-package apply rejected (${result.category}): ${result.message}`,
     );
@@ -377,11 +356,11 @@ export async function materializeToolPackages(args: {
   // `persistActiveDeployIdWithFallback` has already written the new id
   // through its no-fsync / dirty-marker degradation ladder, so the new
   // deploy is logically committed, but the id was not durably flushed.
-  // Route this through `apply.previous-rotation.failed` — the wire
-  // contract for that category says `previousDeployId` carries the
-  // **new** deploy id (the one now live) so the hub records the on-disk
-  // truth. Emit the failure frame and the audit entry, then throw so
-  // the harness tears down: the durability gap means the next apply
+  // Record this as `apply.previous-rotation.failed` — for that category
+  // `previousDeployId` carries the **new** deploy id (the one now live)
+  // so the durable audit records the on-disk truth. Write the audit
+  // entry, then throw so the harness tears
+  // down: the durability gap means the next apply
   // cannot trust `previousDeployId` until the next boot reconciles via
   // the dirty marker.
   const persistOutcome = await persistActiveDeployIdWithFallback(
@@ -406,15 +385,6 @@ export async function materializeToolPackages(args: {
         occurredAt,
       },
     });
-    if (args.emitDeployApplyError !== undefined) {
-      args.emitDeployApplyError({
-        attemptId,
-        previousDeployId: result.activeDeployId,
-        category: "apply.previous-rotation.failed",
-        message,
-        occurredAt,
-      });
-    }
     throw new Error(
       `tool-package apply rejected (apply.previous-rotation.failed): ${message}`,
       { cause: err },
@@ -558,11 +528,11 @@ export async function clearDirtyMarker(
  *
  * Returns `{ degraded: false }` on full success. Returns
  * `{ degraded: true, error }` when the primary persist failed; the
- * caller routes the existing `apply.previous-rotation.failed` frame on
- * the back of it.
+ * caller records an `apply.previous-rotation.failed` audit entry and
+ * throws on the back of it.
  *
  * If the fallback persist also fails, on-disk state will diverge from
- * the failure frame for one boot cycle. Boot-time reconciliation reads
+ * the recorded id for one boot cycle. Boot-time reconciliation reads
  * the dirty marker and prefers it.
  *
  * Exported for direct unit testing of the dirty-marker contract.
@@ -590,7 +560,7 @@ export async function persistActiveDeployIdWithFallback(
         logger.warn`active-deploy-id dirty marker written to ${dirtyPath}; next boot will prefer it over the stale recorded id`;
         return { degraded: true, error: primary };
       } catch (marker) {
-        logger.error`active-deploy-id dirty marker write also failed for ${activeIdFile}.dirty: ${marker instanceof Error ? marker.message : String(marker)}; on-disk state will diverge from the failure frame for one boot cycle`;
+        logger.error`active-deploy-id dirty marker write also failed for ${activeIdFile}.dirty: ${marker instanceof Error ? marker.message : String(marker)}; on-disk state will diverge from the recorded id for one boot cycle`;
         return { degraded: true, error: primary };
       }
     }
@@ -643,14 +613,14 @@ async function writeRejectedApplyAudit(args: {
   );
   await fs.promises.mkdir(dir, { recursive: true });
   // fsync the files and their parent directory before returning so the
-  // WS frame emitted by the caller is the second event in the durable
-  // sequence, not the first. Otherwise, a crash after the frame leaves
-  // the wire but before the audit bytes hit disk would have the hub
-  // know about a rejection the sidecar cannot prove the manifest for
-  // on replay. fsync failures are downgraded to warnings: the bytes
-  // are written either way, and a refusing fsync (rare networked-FS
-  // failure mode) should not turn into a second cascading failure on
-  // an already-failing apply.
+  // rejection's evidence is durable before the caller throws and tears
+  // the apply down. Otherwise, a crash after the throw begins
+  // propagating but before the audit bytes hit disk would leave a
+  // rejected apply the sidecar cannot prove the manifest for on replay.
+  // fsync failures are downgraded to warnings: the bytes are written
+  // either way, and a refusing fsync (rare networked-FS failure mode)
+  // should not turn into a second cascading failure on an already-
+  // failing apply.
   await fsyncWriteFile(path.join(dir, "manifest.json"), args.manifestBytes);
   await fsyncWriteFile(
     path.join(dir, "error.json"),
