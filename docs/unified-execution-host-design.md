@@ -737,8 +737,8 @@ oci-container`. A per-node declaration equal to or weaker than the current rung
 - **Workflow-level defaulting.** Unchanged from Decision 2: `defineWorkflow`
   normalizes an absent workflow-level `isolation` to
   `{ granularity: "per-tenant" }`. The single-agent launch path
-  (`wrapHarnessAsSingleStepAgent`) sets the workflow-level field from the launch
-  request / agent policy.
+  (`wrapHarnessAsSingleStepWorkflow`) sets the workflow-level field from the
+  launch request / agent policy.
 - **Validation.** `defineWorkflow`'s `normalize` validates every `isolation`
   occurrence — workflow-level and per-node — against the allowed
   `granularity` / `sandbox` sets, throwing a structured error on an unknown
@@ -1013,17 +1013,16 @@ Every surviving "trivial"-named symbol is renamed to reflect that the
 single-step identity path is the canonical single-agent deploy, not a "trivial"
 special case — or deleted where the in-process branch it served is gone:
 
-- `wrapHarnessAsSingleStepWorkflow` -> `wrapHarnessAsSingleStepAgent`
-  (`packages/workflow-deploy/src/orchestrator.ts`), still used to build the
-  one-step definition.
+- `wrapHarnessAsSingleStepWorkflow`
+  (`packages/workflow-deploy/src/orchestrator.ts`) kept its name; still used to
+  build the one-step definition.
 - `buildTrivialApprovalSet` -> `buildSingleStepApprovalSet`
   (`packages/hub-sessions/src/session-service.ts`).
 - `isTrivialDeploy` / `trivialBindings` / the trivial orchestrator branch:
   **deleted** if single-step routes through the multi-step branch (likely);
   otherwise renamed `isSingleStepDeploy`. Confirm during build.
-- `deriveDeploymentId` (`apps/sidecar/src/workflow-host-wiring.ts`):
-  deleted; call `deriveWorkflowRunRepoId` directly at the call sites (it is a
-  thin delegator).
+- `deriveDeploymentId` (`apps/sidecar/src/workflow-host-wiring.ts`): kept; still
+  called at the workflow-host wiring sites.
 - `TrivialLaunch` / `trivialLaunch` / `trivialClaimedSlugSucceeded`: deleted
   with the in-process branch.
 
