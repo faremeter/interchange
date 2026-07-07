@@ -5,6 +5,7 @@ import {
   DeployApplyErrorCategory,
   DeployApplyErrorFrame,
   SidecarFrame,
+  SourcesUpdateFrame,
 } from "./sidecar";
 
 describe("DeployApplyErrorCategory", () => {
@@ -213,6 +214,36 @@ describe("AgentDeployFrame", () => {
         sources: { plan: [stepSource] },
       },
     });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("SourcesUpdateFrame", () => {
+  const source = {
+    id: "src_a",
+    provider: "openai",
+    baseURL: "https://api.openai.test",
+    apiKey: "sk-a",
+    model: "gpt-a",
+  };
+  const base = {
+    type: "sources.update" as const,
+    requestId: "req_1",
+    agentAddress: "agt_1@example.test",
+    defaultSource: "src_a",
+  };
+
+  test("accepts a frame with a non-empty sources list", () => {
+    const result = SourcesUpdateFrame({ ...base, sources: [source] });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a frame whose sources list is empty", () => {
+    // The hub never emits an empty rotation -- `pushInstanceSourceUpdate`
+    // returns early when there is no head source -- so the boundary
+    // rejects an empty `sources` rather than accepting a rotation the
+    // agent could not swap to any live source.
+    const result = SourcesUpdateFrame({ ...base, sources: [] });
     expect(result instanceof type.errors).toBe(true);
   });
 });

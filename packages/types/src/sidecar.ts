@@ -361,15 +361,17 @@ export type PongFrame = typeof PongFrame.infer;
 /**
  * Push an updated inference-source list to a running single-step
  * deployment. The sidecar routes it to the deployment's supervisor, which
- * delivers it to the warm agent and swaps its sources in place; element 0
- * of `sources` is the active source and must equal `defaultSource`.
- * Responds with session.ack or session.error.
+ * delivers it to the warm agent and swaps its sources in place. `sources`
+ * is non-empty (validated at this boundary, mirroring the deploy frame's
+ * per-step source arrays). Element 0 is the active source; the producer
+ * sets `defaultSource` to its id -- that equality is producer-enforced,
+ * not checked here. Responds with session.ack or session.error.
  */
 export const SourcesUpdateFrame = type({
   type: "'sources.update'",
   requestId: "string",
   agentAddress: "string",
-  sources: InferenceSource.array(),
+  sources: InferenceSource.array().atLeastLength(1),
   defaultSource: "string",
 });
 export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
