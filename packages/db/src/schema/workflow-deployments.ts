@@ -35,13 +35,18 @@ export const workflowDeployment = pgTable(
     // than re-derived at read time so the reconnect ownership challenge can
     // look up the deployment's public key by address, symmetrically with the
     // `agent_instance` path. Unique so a double-insert fails loud.
+    //
+    // Added NOT NULL with no default and no backfill. Like the repo's other
+    // such adds (e.g. `credential.provider_id`), the migration relies on the
+    // table being empty when it runs: this table and the `address` column
+    // land one migration apart, both unreleased, so no populated row predates
+    // the column and none needs a backfilled address.
     address: text("address").notNull(),
     // The Ed25519 public key the sidecar minted for this deployment address,
     // persisted at deploy-ack. Nullable by design: the row is written at
-    // deploy-start and the key arrives at ack, so a not-yet-acked (or
-    // pre-migration) deployment reads `null` and its reconnect challenge
-    // fails closed -- the address stays unrouted rather than routing without
-    // ownership proof.
+    // deploy-start and the key arrives at ack, so a not-yet-acked deployment
+    // reads `null` and its reconnect challenge fails closed -- the address
+    // stays unrouted rather than routing without ownership proof.
     publicKey: text("public_key"),
     status: text("status")
       .$type<WorkflowDeploymentStatus>()
