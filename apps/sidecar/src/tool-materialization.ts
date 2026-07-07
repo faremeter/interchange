@@ -359,10 +359,9 @@ export async function materializeToolPackages(args: {
   // Record this as `apply.previous-rotation.failed` — for that category
   // `previousDeployId` carries the **new** deploy id (the one now live)
   // so the durable audit records the on-disk truth. Write the audit
-  // entry, then throw so the harness tears
-  // down: the durability gap means the next apply
-  // cannot trust `previousDeployId` until the next boot reconciles via
-  // the dirty marker.
+  // entry, then throw so the harness tears down: the durability gap
+  // means the next apply cannot trust `previousDeployId` until the next
+  // boot reconciles via the dirty marker.
   const persistOutcome = await persistActiveDeployIdWithFallback(
     instanceDir,
     activeIdFile,
