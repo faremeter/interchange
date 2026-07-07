@@ -1638,8 +1638,20 @@ export function createWorkflowSupervisor(
       };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
+      // Guard the teardown so a throw inside `shutdownInternal` (an
+      // unguarded `mailUnsubscribe`, `handle.kill`, broadcaster dispose,
+      // or accumulator stop) cannot replace the original spawn `cause`.
+      // A masked cause would hide the real startup failure behind a
+      // secondary teardown error. Mirrors the recycle-failure catch,
+      // which preserves its cause the same way.
       await shutdownInternal({
         reason: `spawn failed during startup: ${message}`,
+      }).catch((shutdownCause) => {
+        const inner =
+          shutdownCause instanceof Error
+            ? shutdownCause.message
+            : String(shutdownCause);
+        logger.error`shutdown after spawn failure also threw: ${inner}`;
       });
       throw cause;
     }

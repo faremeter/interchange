@@ -589,6 +589,57 @@ describe("supervisor spawn: failure cleanup", () => {
       "unregister:deployment-x@example.com",
     );
   });
+
+  test("a teardown failure during spawn cleanup does not mask the spawn cause", async () => {
+    // Regression: the spawn-failure catch tears the cohort down through
+    // shutdownInternal, whose steps (mail unsubscribe, kill, dispose) are
+    // individually unguarded. A throw in teardown must not replace the
+    // original spawn cause -- the operator needs the real startup failure,
+    // not a secondary teardown error.
+    const baseDir = await makeTempDir("spawn-teardown-mask-");
+    const ipcKeypair = await generateKeyPair();
+    const baseMailBus = createMockMailBus();
+    // The mail unsubscribe (called unguarded in shutdownInternal) throws,
+    // so the teardown itself fails while unwinding a failed spawn.
+    const mailBus: MailBusBindings = {
+      ...baseMailBus,
+      subscribeMailForAddress(address, handler) {
+        baseMailBus.subscribeMailForAddress(address, handler);
+        return () => {
+          throw new Error("mail unsubscribe boom during teardown");
+        };
+      },
+    };
+    // sigtermExits so the timeout path's kill settles the fake child.
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      readyTimeoutMs: 20,
+    });
+
+    // Never drive `ready`, so the handshake times out. The spawn cause
+    // (ready timeout) must surface even though the teardown then throws
+    // its own error.
+    await expect(
+      supervisor.spawn({
+        stepOrder: ["step-1"],
+        definitionHash: "def-hash-abc",
+        warmKeep: false,
+        onInferenceEvent: () => undefined,
+      }),
+    ).rejects.toThrow(/did not emit ready/);
+  });
 });
 
 describe("supervisor spawn: dynamic env", () => {
