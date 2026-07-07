@@ -1638,12 +1638,12 @@ export function createWorkflowSupervisor(
       };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      // Guard the teardown so a throw inside `shutdownInternal` (an
-      // unguarded `mailUnsubscribe`, `handle.kill`, broadcaster dispose,
-      // or accumulator stop) cannot replace the original spawn `cause`.
-      // A masked cause would hide the real startup failure behind a
-      // secondary teardown error. Mirrors the recycle-failure catch,
-      // which preserves its cause the same way.
+      // Defense-in-depth for a distinct invariant: the original spawn
+      // `cause` must survive the unwind. `shutdownInternal` is designed to
+      // be total and should not throw, but if it ever regresses this guard
+      // logs the secondary teardown error rather than letting it replace
+      // `cause` and hide the real startup failure. Mirrors the
+      // recycle-failure catch, which preserves its cause the same way.
       await shutdownInternal({
         reason: `spawn failed during startup: ${message}`,
       }).catch((shutdownCause) => {
@@ -1975,89 +1975,100 @@ export function createWorkflowSupervisor(
     if (state.phase === "idle" || state.phase === "stopped") return;
     const prior = state;
     state = { phase: "stopping" };
-    // Stop every armed drainTimeout accumulator before tearing the
-    // child down. An accumulator left running would otherwise fire
-    // its `setTimeout` callback (or its terminal-event watcher's
-    // settle hook) against a shutdown-mid-flight supervisor; the
-    // explicit `stop()` makes the lifecycle deterministic.
+    // shutdownInternal is designed to be TOTAL: when a child is up it must
+    // always kill it and always reach `stopped`, no matter which teardown
+    // step throws. Rather than depend on every step being individually
+    // non-throwing (an approach that has already leaked an escape hatch),
+    // the whole teardown body runs inside one `try`, and the two
+    // load-bearing actions -- the child kill and the `phase = "stopped"`
+    // transition -- live in the `finally`, so a throw anywhere above them
+    // still runs both. This is the documented shutdown carve-out to the
+    // fail-loud rule: leaking the child or wedging the supervisor in
+    // `stopping` is strictly worse than logging and continuing, so the
+    // steps that can throw surface at `logger.warn` and execution proceeds.
+    // (`terminalCohortAbort.abort`, `rejectCohortAwaiters`, and
+    // `wakeDispatch` cannot throw, and the broadcaster's `dispose` is total
+    // by construction; they sit inside the `try` regardless so the
+    // invariant survives if that ever changes.)
     const accumulatorsToDispose = [...drainAccumulators.values()];
-    for (const accumulator of accumulatorsToDispose) {
-      accumulator.stop();
-    }
-    drainAccumulators.clear();
-    if (
-      prior.phase === "starting" ||
-      prior.phase === "running" ||
-      prior.phase === "recycling"
-    ) {
-      prior.terminalCohortAbort.abort();
-      // Reject every pending merge round-trip and markConsumed waiter
-      // so handler closures awaiting them (including fire-and-forget
-      // `handleSubstrateWriteRequest` instances) cannot outlive the
-      // dying cohort. Without this, the `await new Promise` inside
-      // each handler would sit forever on a resolver the dying control
-      // channel will never invoke.
-      rejectCohortAwaiters("shutdown");
-      // Dispose the cohort broadcaster so any minted iterator settles
-      // with `done: true` -- the dispatch loop's `waitForRunTerminal`
-      // and any drainTimeout watcher unblock through the same shutdown
-      // path the cohort abort drives.
-      prior.terminalBroadcaster.dispose();
-      // Wake the dispatch loop so its `dispatchWake` await settles
-      // and the loop notices the cohort abort. Without the wake, the
-      // loop's `Promise.race` would sit on the wake promise until
-      // some other actor woke it.
-      wakeDispatch();
-    }
-    // Await every accumulator's `disposed()` so a pending escalation
-    // commit or terminal-event watcher coroutine cannot outlive the
-    // supervisor and fire against torn-down bindings.
-    await Promise.all(
-      accumulatorsToDispose.map((a) =>
-        a.disposed().catch(() => {
-          /* swallowed: each accumulator already logs its own failure. */
-        }),
-      ),
-    );
-    if (
-      (prior.phase === "running" || prior.phase === "recycling") &&
-      prior.dispatchLoop !== null
-    ) {
-      await prior.dispatchLoop.catch(() => {
-        /* swallowed: dispatch-loop failures are surfaced by the
-           loop's own logger; the shutdown path only waits for the
-           loop's last iteration to settle. */
-      });
-    }
-    if (
-      (prior.phase === "starting" ||
-        prior.phase === "running" ||
-        prior.phase === "recycling") &&
-      prior.replayDone !== null
-    ) {
-      // Await the spawn-time replayProcessingToInbox before tearing
-      // the bindings down. The replay's substrate write
-      // (`processing/` -> `inbox/` rename via a tree commit) must
-      // settle before the supervisor's exit; without the await the
-      // substrate I/O outlives the supervisor and a subsequent boot
-      // can observe a partially-applied replay.
-      await prior.replayDone.catch(() => {
-        /* swallowed: the replay's own catch already surfaces the
-           failure to the supervisor's warn channel; the shutdown
-           path only waits for the substrate write to settle. */
-      });
-    }
-    // Teardown is best-effort-and-log-and-continue: every step is
-    // individually guarded so a throw in one (an unsubscribe callback, a
-    // policy stop, a kill) cannot skip the steps after it -- in
-    // particular, a throwing `mailUnsubscribe` must not prevent the child
-    // `kill`. The `finally` makes the `stopped` transition unconditional:
-    // whatever a step does, the supervisor must not be left wedged in
-    // `stopping`. This is the documented shutdown carve-out to the
-    // fail-loud rule -- leaking the child or wedging the supervisor is
-    // strictly worse than logging and continuing -- so errors surface via
-    // `logger.warn`, they are not silently swallowed.
     try {
+      // Stop every armed drainTimeout accumulator before tearing the child
+      // down. An accumulator left running would otherwise fire its
+      // `setTimeout` callback (or its terminal-event watcher's settle hook)
+      // against a shutdown-mid-flight supervisor. Guard each `stop` so one
+      // throwing accumulator does not leave the rest armed.
+      for (const accumulator of accumulatorsToDispose) {
+        try {
+          accumulator.stop();
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`drain accumulator stop threw during shutdown: ${message}`;
+        }
+      }
+      drainAccumulators.clear();
+      if (
+        prior.phase === "starting" ||
+        prior.phase === "running" ||
+        prior.phase === "recycling"
+      ) {
+        prior.terminalCohortAbort.abort();
+        // Reject every pending merge round-trip and markConsumed waiter
+        // so handler closures awaiting them (including fire-and-forget
+        // `handleSubstrateWriteRequest` instances) cannot outlive the
+        // dying cohort. Without this, the `await new Promise` inside
+        // each handler would sit forever on a resolver the dying control
+        // channel will never invoke.
+        rejectCohortAwaiters("shutdown");
+        // Dispose the cohort broadcaster so any minted iterator settles
+        // with `done: true` -- the dispatch loop's `waitForRunTerminal`
+        // and any drainTimeout watcher unblock through the same shutdown
+        // path the cohort abort drives.
+        prior.terminalBroadcaster.dispose();
+        // Wake the dispatch loop so its `dispatchWake` await settles
+        // and the loop notices the cohort abort. Without the wake, the
+        // loop's `Promise.race` would sit on the wake promise until
+        // some other actor woke it.
+        wakeDispatch();
+      }
+      // Await every accumulator's `disposed()` so a pending escalation
+      // commit or terminal-event watcher coroutine cannot outlive the
+      // supervisor and fire against torn-down bindings.
+      await Promise.all(
+        accumulatorsToDispose.map((a) =>
+          a.disposed().catch(() => {
+            /* swallowed: each accumulator already logs its own failure. */
+          }),
+        ),
+      );
+      if (
+        (prior.phase === "running" || prior.phase === "recycling") &&
+        prior.dispatchLoop !== null
+      ) {
+        await prior.dispatchLoop.catch(() => {
+          /* swallowed: dispatch-loop failures are surfaced by the
+             loop's own logger; the shutdown path only waits for the
+             loop's last iteration to settle. */
+        });
+      }
+      if (
+        (prior.phase === "starting" ||
+          prior.phase === "running" ||
+          prior.phase === "recycling") &&
+        prior.replayDone !== null
+      ) {
+        // Await the spawn-time replayProcessingToInbox before tearing
+        // the bindings down. The replay's substrate write
+        // (`processing/` -> `inbox/` rename via a tree commit) must
+        // settle before the supervisor's exit; without the await the
+        // substrate I/O outlives the supervisor and a subsequent boot
+        // can observe a partially-applied replay.
+        await prior.replayDone.catch(() => {
+          /* swallowed: the replay's own catch already surfaces the
+             failure to the supervisor's warn channel; the shutdown
+             path only waits for the substrate write to settle. */
+        });
+      }
       if (recyclePolicy !== null) {
         try {
           recyclePolicy.stop();
@@ -2090,6 +2101,17 @@ export function createWorkflowSupervisor(
             cause instanceof Error ? cause.message : String(cause);
           logger.warn`mail bus unregisterAddress threw: ${message}`;
         }
+      }
+    } finally {
+      // Load-bearing: the child kill and the `stopped` transition run
+      // whatever happened above, so a throwing teardown step can neither
+      // leak the child nor wedge the supervisor in `stopping`. The kill is
+      // itself guarded so a throw here cannot re-escape the `finally`.
+      if (
+        prior.phase === "starting" ||
+        prior.phase === "running" ||
+        prior.phase === "recycling"
+      ) {
         try {
           prior.handle.kill();
         } catch (cause) {
@@ -2107,7 +2129,6 @@ export function createWorkflowSupervisor(
           /* swallowed for the same reason as above. */
         });
       }
-    } finally {
       state = { phase: "stopped" };
     }
     logger.info`supervisor shutdown complete (${opts.reason})`;

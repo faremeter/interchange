@@ -18,7 +18,15 @@
 // directly so the consumer wakes up even if its own cohort-abort race
 // has not landed yet).
 
+import { getLogger } from "@intx/log";
+
 import type { TerminalEventSource, TerminalRunEvent } from "./types";
+
+const logger = getLogger([
+  "workflow-host",
+  "supervisor",
+  "terminal-broadcaster",
+]);
 
 type Listener = {
   onEvent: (event: TerminalRunEvent) => void;
@@ -203,7 +211,19 @@ export function createTerminalBroadcaster(): TerminalBroadcaster {
       }
       listenersByRunId.clear();
       for (const listener of snapshot) {
-        listener.onDispose();
+        // Guard each `onDispose` so one throwing listener does not skip
+        // the rest: dispose must finalise every minted iterator or the
+        // supervisor's teardown can leak a consumer awaiting a `next()`
+        // that never settles. A throw here is a listener bug, so surface
+        // it at error and continue -- this is what lets the shutdown path
+        // treat `dispose()` as total.
+        try {
+          listener.onDispose();
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`terminal broadcaster listener onDispose threw: ${message}`;
+        }
       }
     },
     get disposed() {

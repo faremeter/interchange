@@ -598,17 +598,21 @@ describe("supervisor spawn: failure cleanup", () => {
     );
   });
 
-  test("a teardown failure during spawn cleanup does not mask the spawn cause", async () => {
-    // Regression: the spawn-failure catch tears the cohort down through
-    // shutdownInternal, whose steps (mail unsubscribe, kill, dispose) are
-    // individually unguarded. A throw in teardown must not replace the
-    // original spawn cause -- the operator needs the real startup failure,
-    // not a secondary teardown error.
+  test("a throwing teardown step during spawn cleanup is absorbed", async () => {
+    // On a failed spawn the spawn-catch unwinds the cohort through
+    // shutdownInternal. Its teardown steps are individually guarded and the
+    // child kill lives in its `finally`, so a throwing step (here the mail
+    // unsubscribe) is absorbed end to end: the spawn still rejects with the
+    // real ready-timeout cause rather than the secondary teardown error,
+    // and the child is still reaped. The spawn-catch guard that preserves
+    // the cause is now defense-in-depth -- shutdownInternal is total by
+    // construction -- so the discriminating coverage of the teardown guards
+    // themselves lives in the "supervisor shutdown: teardown robustness"
+    // block below, which drives shutdownInternal directly.
     const baseDir = await makeTempDir("spawn-teardown-mask-");
     const ipcKeypair = await generateKeyPair();
     const baseMailBus = createMockMailBus();
-    // The mail unsubscribe (called unguarded in shutdownInternal) throws,
-    // so the teardown itself fails while unwinding a failed spawn.
+    // The mail unsubscribe throws during the spawn-failure unwind.
     const mailBus: MailBusBindings = {
       ...baseMailBus,
       subscribeMailForAddress(address, handler) {
@@ -618,7 +622,7 @@ describe("supervisor spawn: failure cleanup", () => {
         };
       },
     };
-    // sigtermExits so the timeout path's kill settles the fake child.
+    // sigtermExits so the ready-timeout reap settles the fake child.
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
@@ -647,6 +651,14 @@ describe("supervisor spawn: failure cleanup", () => {
         onInferenceEvent: () => undefined,
       }),
     ).rejects.toThrow(/did not emit ready/);
+
+    // The child was reaped during the unwind despite the throwing
+    // unsubscribe -- a throwing teardown step leaves nothing orphaned.
+    const child = tracker.children[0];
+    if (child === undefined) {
+      throw new Error("tracker.children[0] missing");
+    }
+    expect(child.killSignals.length).toBeGreaterThan(0);
   });
 });
 
