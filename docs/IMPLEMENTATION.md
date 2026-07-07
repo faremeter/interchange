@@ -1252,6 +1252,8 @@ The sidecar verifies every inbound deploy pack's commit signature against the hu
 
 On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). The hub sends `agent.deploy` to provision the agent, and the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token and the authenticated WebSocket channel bound the trust for first-deploy; challenge/response protects all subsequent interactions.
 
+The hub enforces that boundary structurally in `handleRegister`: a `register` frame routes an address only when `lookupPublicKey` returns null for it — a genuine keyless first-deploy. An address that already has a stored key is refused and must re-enter routing through the challenged reconnect, so a token-holding sidecar cannot reclaim a keyed address's route (its own or a victim's) on token auth alone. The check runs before any routing mutation, so a refused address never even evicts its current owner. If the key lookup is not configured, register fails closed (routes nothing and logs an error) rather than routing unverified.
+
 ### State Push Policy
 
 The sidecar pushes state to the hub based on configurable policy:

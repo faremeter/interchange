@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
+import { configureSync, getConfig, resetSync } from "@intx/log";
 import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
@@ -38,6 +39,14 @@ function lastSent(ws: ReturnType<typeof createMockWs>) {
   return JSON.parse(last);
 }
 
+// Let the async register key-existence gate settle. A `register` frame now
+// routes on a microtask (handleRegister awaits `lookupPublicKey` per address),
+// so a test that reads the routing table right after sending one must await
+// this first.
+async function tick(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("SidecarRouter", () => {
   let router: ReturnType<typeof createSidecarRouter>;
 
@@ -61,11 +70,17 @@ describe("SidecarRouter", () => {
     router = createSidecarRouter({
       requestTimeoutMs: 500,
       hubPublicKey: TEST_HUB_KEY,
+      // Always-null lookup: no address has a stored key, so the register
+      // key-existence gate classifies every registered address as a keyless
+      // first-deploy and routes it. This makes the dependency explicit for
+      // the pure-routing tests (the gate is fail-closed without it) while
+      // preserving their "register routes the address" behavior.
+      lookups: { lookupPublicKey: async () => null },
     });
   });
 
   describe("registration", () => {
-    test("register frame populates routing table", () => {
+    test("register frame populates routing table", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -77,6 +92,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent-a@local", "agent-b@local"],
         }),
       );
+      await tick();
 
       expect(router.getConnectedSidecars()).toEqual(["sc-1"]);
       expect(router.getRoutableAddresses().sort()).toEqual([
@@ -85,7 +101,7 @@ describe("SidecarRouter", () => {
       ]);
     });
 
-    test("re-registration updates addresses", () => {
+    test("re-registration updates addresses", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -97,6 +113,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent-a@local"],
         }),
       );
+      await tick();
 
       router.handleMessage(
         ws,
@@ -107,6 +124,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent-c@local"],
         }),
       );
+      await tick();
 
       expect(router.getRoutableAddresses()).toEqual(["agent-c@local"]);
     });
@@ -149,7 +167,7 @@ describe("SidecarRouter", () => {
       expect(router.getConnectedSidecars()).toEqual([]);
     });
 
-    test("re-registration by another sidecar cleans ghost from old connection", () => {
+    test("re-registration by another sidecar cleans ghost from old connection", async () => {
       const ws1 = createMockWs();
       router.handleOpen(ws1);
       router.handleMessage(
@@ -161,6 +179,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local", "other@local"],
         }),
       );
+      await tick();
 
       const ws2 = createMockWs();
       router.handleOpen(ws2);
@@ -173,6 +192,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       // ws2 now owns agent@local. Closing ws1 should only remove
       // other@local (which ws1 still owns), not agent@local.
@@ -182,6 +202,239 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).not.toContain("other@local");
       expect(router.routeMail("agent@local", "hello")).toBe(true);
       expect(ws2.sent).toHaveLength(1);
+    });
+  });
+
+  describe("register key-existence gate", () => {
+    // A register frame is token-authenticated but proves no per-address
+    // ownership, so it may route only a KEYLESS first-deploy address. An
+    // address that already has a stored key must prove ownership through the
+    // challenged reconnect path; register must neither route it to the caller
+    // nor disturb its existing owner.
+    const KEYED = "victim@local";
+
+    function gatedRouter(publicKeyHex: string | null) {
+      return createSidecarRouter({
+        requestTimeoutMs: 5000,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === KEYED ? publicKeyHex : null,
+        },
+      });
+    }
+
+    // Bring KEYED up as owned by `ws` through the challenged reconnect path.
+    async function reconnectVerify(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      privateKey: Uint8Array,
+    ) {
+      r.handleOpen(ws);
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "owner",
+          token: "tok",
+          agentAddresses: [KEYED],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+      const challenge = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "challenge.response",
+          responses: [
+            {
+              address: KEYED,
+              signature: await signChallenge(
+                challenge.challenges[0].nonce,
+                KEYED,
+                privateKey,
+              ),
+            },
+          ],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+    }
+
+    test("routes a keyless first-deploy address", async () => {
+      const r = gatedRouter(null);
+      const ws = createMockWs();
+      r.handleOpen(ws);
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["fresh@local"],
+        }),
+      );
+      await tick();
+
+      expect(r.getRoutableAddresses()).toContain("fresh@local");
+      expect(r.routeMail("fresh@local", "dGVzdA==")).toBe(true);
+    });
+
+    test("refuses a keyed address and leaves its owner's route untouched", async () => {
+      const kp = await generateKeyPair();
+      const r = gatedRouter(hexEncode(kp.publicKey));
+
+      // The true owner establishes KEYED via the challenged reconnect.
+      const ownerWs = createMockWs();
+      await reconnectVerify(r, ownerWs, kp.privateKey);
+      expect(r.getRoutableAddresses()).toContain(KEYED);
+
+      // A rogue sidecar with a valid token names KEYED in a register frame.
+      const rogueWs = createMockWs();
+      r.handleOpen(rogueWs);
+      r.handleMessage(
+        rogueWs,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "rogue",
+          token: "tok",
+          agentAddresses: [KEYED],
+        }),
+      );
+      await tick();
+
+      // KEYED is still routed to the owner, not the rogue: the gate refused to
+      // route it AND -- because it runs before the ghost-cleanup -- never
+      // evicted the owner. No hijack, and no downgrade to a denial of service.
+      expect(r.getRoutableAddresses()).toContain(KEYED);
+      ownerWs.sent.length = 0;
+      rogueWs.sent.length = 0;
+      expect(r.routeMail(KEYED, "dGVzdA==")).toBe(true);
+      expect(ownerWs.sent).toHaveLength(1);
+      expect(rogueWs.sent).toHaveLength(0);
+    });
+
+    test("fails closed and surfaces an error when no lookup is configured", async () => {
+      const captured: { level: string; message: string }[] = [];
+      const savedConfig = getConfig();
+      configureSync({
+        reset: true,
+        sinks: {
+          capture: (record) => {
+            const message = Array.isArray(record.message)
+              ? record.message
+                  .map((part) =>
+                    typeof part === "string" ? part : JSON.stringify(part),
+                  )
+                  .join("")
+              : String(record.message);
+            captured.push({ level: record.level, message });
+          },
+        },
+        loggers: [{ category: [], lowestLevel: "debug", sinks: ["capture"] }],
+      });
+      try {
+        // No lookups configured: the gate cannot distinguish a keyed address
+        // from a first-deploy, so it must route nothing rather than permit.
+        const r = createSidecarRouter({
+          requestTimeoutMs: 500,
+          hubPublicKey: TEST_HUB_KEY,
+        });
+        const ws = createMockWs();
+        r.handleOpen(ws);
+        r.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "register",
+            sidecarId: "sc-1",
+            token: "tok",
+            agentAddresses: ["x@local"],
+          }),
+        );
+        await tick();
+
+        expect(r.getRoutableAddresses()).toEqual([]);
+        expect(r.routeMail("x@local", "dGVzdA==")).toBe(false);
+        // The missing dependency surfaces as an error, not a silent permit.
+        expect(
+          captured.some(
+            (l) =>
+              l.level === "error" &&
+              l.message.includes("lookupPublicKey is not configured"),
+          ),
+        ).toBe(true);
+      } finally {
+        if (savedConfig) {
+          configureSync({ reset: true, ...savedConfig });
+        } else {
+          resetSync();
+        }
+      }
+    });
+
+    test("fails closed on a key-lookup error instead of crashing", async () => {
+      // A rejecting lookup (e.g. a transient DB failure) must be caught and
+      // surfaced, not floated out of the void-dispatched handler as an
+      // unhandled rejection that could take down the hub. Fail closed: route
+      // nothing and log an error. (The test completing rather than hanging on
+      // an unhandled rejection is itself part of the assertion.)
+      const captured: { level: string; message: string }[] = [];
+      const savedConfig = getConfig();
+      configureSync({
+        reset: true,
+        sinks: {
+          capture: (record) => {
+            const message = Array.isArray(record.message)
+              ? record.message
+                  .map((part) =>
+                    typeof part === "string" ? part : JSON.stringify(part),
+                  )
+                  .join("")
+              : String(record.message);
+            captured.push({ level: record.level, message });
+          },
+        },
+        loggers: [{ category: [], lowestLevel: "debug", sinks: ["capture"] }],
+      });
+      try {
+        const r = createSidecarRouter({
+          requestTimeoutMs: 500,
+          hubPublicKey: TEST_HUB_KEY,
+          lookups: {
+            lookupPublicKey: async () => {
+              throw new Error("db unavailable");
+            },
+          },
+        });
+        const ws = createMockWs();
+        r.handleOpen(ws);
+        r.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "register",
+            sidecarId: "sc-1",
+            token: "tok",
+            agentAddresses: ["x@local"],
+          }),
+        );
+        await tick();
+
+        expect(r.getRoutableAddresses()).toEqual([]);
+        expect(
+          captured.some(
+            (l) =>
+              l.level === "error" && l.message.includes("Key lookup failed"),
+          ),
+        ).toBe(true);
+      } finally {
+        if (savedConfig) {
+          configureSync({ reset: true, ...savedConfig });
+        } else {
+          resetSync();
+        }
+      }
     });
   });
 
@@ -337,7 +590,9 @@ describe("SidecarRouter", () => {
     const STEP_ADDR = "ins_dep_multi-step1@local";
     const ZERO_SHA = "0".repeat(40);
 
-    function registerDeploymentSidecar(): ReturnType<typeof createMockWs> {
+    async function registerDeploymentSidecar(): Promise<
+      ReturnType<typeof createMockWs>
+    > {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -349,11 +604,14 @@ describe("SidecarRouter", () => {
           agentAddresses: [DEPLOYMENT_ADDR],
         }),
       );
+      // Register routing is async (the key-existence gate awaits the lookup);
+      // settle it before assertions read the routing table.
+      await new Promise((res) => setTimeout(res, 0));
       return ws;
     }
 
     test("bind makes a step address routable; unbind removes it", async () => {
-      registerDeploymentSidecar();
+      await registerDeploymentSidecar();
 
       // An unbound step address has no route: `sendPack` rejects before
       // touching the wire.
@@ -454,14 +712,14 @@ describe("SidecarRouter", () => {
       expect(() => router.bindStepRoute(STEP_ADDR)).toThrow(/No sidecar/);
     });
 
-    test("unbind is a no-op for an address that was never bound", () => {
-      registerDeploymentSidecar();
+    test("unbind is a no-op for an address that was never bound", async () => {
+      await registerDeploymentSidecar();
       expect(() => router.unbindStepRoute(STEP_ADDR)).not.toThrow();
       expect(router.getRoutableAddresses()).not.toContain(STEP_ADDR);
     });
 
-    test("handleClose reclaims a still-bound step route", () => {
-      const ws = registerDeploymentSidecar();
+    test("handleClose reclaims a still-bound step route", async () => {
+      const ws = await registerDeploymentSidecar();
       router.bindStepRoute(STEP_ADDR);
       expect(router.getRoutableAddresses()).toContain(STEP_ADDR);
 
@@ -473,7 +731,7 @@ describe("SidecarRouter", () => {
   });
 
   describe("mail routing", () => {
-    test("routes mail between two sidecars", () => {
+    test("routes mail between two sidecars", async () => {
       const ws1 = createMockWs();
       const ws2 = createMockWs();
       router.handleOpen(ws1);
@@ -497,6 +755,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["receiver@local"],
         }),
       );
+      await tick();
 
       router.handleMessage(
         ws1,
@@ -517,7 +776,7 @@ describe("SidecarRouter", () => {
       expect(router.routeMail("nobody@local", "dGVzdA==")).toBe(false);
     });
 
-    test("routeMail returns true for routable address", () => {
+    test("routeMail returns true for routable address", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -529,6 +788,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       expect(router.routeMail("agent@local", "dGVzdA==")).toBe(true);
       const delivered = lastSent(ws);
@@ -537,7 +797,9 @@ describe("SidecarRouter", () => {
 
     test("unroutable mail emits mail.outbound.undelivered", () => {
       const outbound: { rawMessage: string; recipients: string[] }[] = [];
-      const router = createSidecarRouter({});
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       router.events.on("mail.outbound.undelivered", (event) => {
         outbound.push({
           rawMessage: event.rawMessage,
@@ -578,6 +840,7 @@ describe("SidecarRouter", () => {
       const persisted: { id: string; address: string }[] = [];
       const router = createSidecarRouter({
         lookups: {
+          lookupPublicKey: async () => null,
           persistMail: async ({ senderAddress, recipients }) => {
             // Mirrors the fixed persistMail: always create the
             // outbound record for the sender, and only create
@@ -656,6 +919,7 @@ describe("SidecarRouter", () => {
       const persisted: { id: string; address: string }[] = [];
       const router = createSidecarRouter({
         lookups: {
+          lookupPublicKey: async () => null,
           persistMail: async ({ senderAddress, recipients }) => {
             return [
               {
@@ -946,6 +1210,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       const promise = router.sendAgentUndeploy("agent@local", "session_ended");
       const frame = lastSent(ws);
@@ -1026,6 +1291,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["undeploy-dc@local"],
         }),
       );
+      await tick();
 
       // Start an undeploy but disconnect before the ack arrives.
       const promise = router.sendAgentUndeploy("undeploy-dc@local", "teardown");
@@ -1088,6 +1354,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       const promise = router.sendSourcesUpdate(
         "agent@local",
@@ -1129,6 +1396,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       const promise = router.sendSourcesUpdate(
         "agent@local",
@@ -1164,7 +1432,9 @@ describe("SidecarRouter", () => {
   describe("agent events", () => {
     test("agent.event frames are forwarded to subscribers", () => {
       const events: { addr: string; sid: string; event: unknown }[] = [];
-      const router = createSidecarRouter({});
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
         events.push({ addr: agentAddress, sid: sessionId, event });
       });
@@ -1202,7 +1472,9 @@ describe("SidecarRouter", () => {
 
     test("agent.event frames are emitted on router.events", () => {
       const seen: { addr: string; sid: string }[] = [];
-      const router = createSidecarRouter({});
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       router.events.on("agent.event", ({ agentAddress, sessionId }) => {
         seen.push({ addr: agentAddress, sid: sessionId });
       });
@@ -1231,8 +1503,10 @@ describe("SidecarRouter", () => {
       expect(seen).toEqual([{ addr: "agent@local", sid: "sess-1" }]);
     });
 
-    test("sidecar.disconnect is emitted on router.events", () => {
-      const router = createSidecarRouter({});
+    test("sidecar.disconnect is emitted on router.events", async () => {
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       const seen: string[][] = [];
       router.events.on("sidecar.disconnect", ({ ownedAddresses }) => {
         seen.push(ownedAddresses);
@@ -1249,13 +1523,16 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
       router.handleClose(ws);
 
       expect(seen).toEqual([["agent@local"]]);
     });
 
-    test("connector.state.changed populates the cache and is readable via getConnectorState", () => {
-      const router = createSidecarRouter({});
+    test("connector.state.changed populates the cache and is readable via getConnectorState", async () => {
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -1267,6 +1544,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       // Before any state frame, the cache is absent → null.
       expect(router.getConnectorState("agent@local")).toBeNull();
@@ -1301,8 +1579,10 @@ describe("SidecarRouter", () => {
       expect(router.getConnectorState("agent@local")).toBeNull();
     });
 
-    test("connector.state.changed is emitted on router.events", () => {
-      const router = createSidecarRouter({});
+    test("connector.state.changed is emitted on router.events", async () => {
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       const seen: { addr: string; state: unknown }[] = [];
       router.events.on(
         "connector.state.changed",
@@ -1322,6 +1602,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       const state = {
         threadRoot: "<root@example.com>",
@@ -1342,8 +1623,10 @@ describe("SidecarRouter", () => {
       expect(seen).toEqual([{ addr: "agent@local", state }]);
     });
 
-    test("live takeover via register evicts the prior owner's cached connector state", () => {
-      const router = createSidecarRouter({});
+    test("live takeover via register evicts the prior owner's cached connector state", async () => {
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
 
       // First sidecar registers and reports connector state.
       const ws1 = createMockWs();
@@ -1357,6 +1640,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
       router.handleMessage(
         ws1,
         JSON.stringify({
@@ -1387,12 +1671,15 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       expect(router.getConnectorState("agent@local")).toBeNull();
     });
 
-    test("disconnect clears cached connector state for affected agents", () => {
-      const router = createSidecarRouter({});
+    test("disconnect clears cached connector state for affected agents", async () => {
+      const router = createSidecarRouter({
+        lookups: { lookupPublicKey: async () => null },
+      });
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -1404,6 +1691,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       router.handleMessage(
         ws,
@@ -2258,6 +2546,46 @@ describe("SidecarRouter", () => {
   });
 
   describe("disconnect message queuing", () => {
+    // Establish an initial route for a KEYED address through the challenged
+    // reconnect path. A keyed address cannot be routed by a plain register
+    // (the key-existence gate rejects it), so the disconnect-queue tests --
+    // whose agents have a stored key so the reconnect challenge can verify --
+    // bring the address up the same way production does.
+    async function connectAgentViaChallenge(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      addr: string,
+      privateKey: Uint8Array,
+    ) {
+      r.handleOpen(ws);
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [addr],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, privateKey),
+          }),
+        ),
+      );
+      r.handleMessage(
+        ws,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+    }
+
     test("mail queued during disconnect is flushed on reconnect", async () => {
       const kp = await generateKeyPair();
       const router = createSidecarRouter({
@@ -2269,18 +2597,10 @@ describe("SidecarRouter", () => {
         },
       });
 
-      // Initial connection with one agent.
+      // Initial connection with one agent, via the challenged reconnect path
+      // (a keyed address cannot be routed by a plain register).
       const ws1 = createMockWs();
-      router.handleOpen(ws1);
-      router.handleMessage(
-        ws1,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
+      await connectAgentViaChallenge(router, ws1, "agent@local", kp.privateKey);
 
       // Disconnect — creates a queue entry.
       router.handleClose(ws1);
@@ -2349,16 +2669,7 @@ describe("SidecarRouter", () => {
       });
 
       const ws = createMockWs();
-      router.handleOpen(ws);
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "register",
-          sidecarId: "sc-1",
-          token: "tok",
-          agentAddresses: ["agent@local"],
-        }),
-      );
+      await connectAgentViaChallenge(router, ws, "agent@local", kp.privateKey);
       router.handleClose(ws);
 
       // Queue 3 messages with max size 2 — oldest should be evicted.
@@ -2461,6 +2772,7 @@ describe("SidecarRouter", () => {
       const router = createSidecarRouter({
         requestTimeoutMs: 500,
         pingTimeoutMs: 100,
+        lookups: { lookupPublicKey: async () => null },
       });
 
       const ws = createMockWs();
@@ -2757,6 +3069,10 @@ describe("SidecarRouter", () => {
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
+          // Keyless lookup: the pack tests register the deployment address as a
+          // first-deploy so the key-existence gate routes it (the gate is
+          // fail-closed without a lookup configured).
+          lookupPublicKey: async () => null,
           async receiveAgentStatePack(repoId, pack, ref, commitSha) {
             calls.push({
               method: "receiveAgentStatePack",
@@ -2782,7 +3098,7 @@ describe("SidecarRouter", () => {
       return { router: packRouter, calls };
     }
 
-    function registerAddr(
+    async function registerAddr(
       r: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,
       sidecarId: string,
@@ -2798,6 +3114,9 @@ describe("SidecarRouter", () => {
           agentAddresses: [addr],
         }),
       );
+      // Register routing is async (the key-existence gate awaits the lookup);
+      // settle it before assertions read the routing table.
+      await new Promise((res) => setTimeout(res, 0));
     }
 
     function pushPack(
@@ -2842,7 +3161,7 @@ describe("SidecarRouter", () => {
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
       const addr = "agent-wfr@local";
-      registerAddr(r, ws, "sc-wfr", addr);
+      await registerAddr(r, ws, "sc-wfr", addr);
 
       const transferId = "t-wfr-1";
       const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-1" };
@@ -2889,7 +3208,7 @@ describe("SidecarRouter", () => {
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
       const addr = "ins_dep_wfr@local";
-      registerAddr(r, ws, "sc-wfr", addr);
+      await registerAddr(r, ws, "sc-wfr", addr);
 
       const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-2" };
       pushPack(r, ws, {
@@ -2923,10 +3242,10 @@ describe("SidecarRouter", () => {
       const transferId = "t-reclaim";
 
       const oldWs = createMockWs();
-      registerAddr(r, oldWs, "sc", addr);
+      await registerAddr(r, oldWs, "sc", addr);
 
       const newWs = createMockWs();
-      registerAddr(r, newWs, "sc", addr);
+      await registerAddr(r, newWs, "sc", addr);
 
       // The new owner starts (but does not finish) a workflow-run transfer.
       for (const chunk of chunkPack(pack)) {
@@ -3071,7 +3390,7 @@ describe("SidecarRouter", () => {
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
       const addr = "agent-mix@local";
-      registerAddr(r, ws, "sc-mix", addr);
+      await registerAddr(r, ws, "sc-mix", addr);
 
       // Reuse the same transferId across kinds. The two receivers'
       // in-flight state must be independent, so this must NOT collide.
@@ -3165,7 +3484,7 @@ describe("SidecarRouter", () => {
       });
       const ws = createMockWs();
       const addr = "agent-wfr-rej@local";
-      registerAddr(r, ws, "sc-wfr-rej", addr);
+      await registerAddr(r, ws, "sc-wfr-rej", addr);
 
       const transferId = "t-wfr-rej";
       const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-rej" };
@@ -3189,7 +3508,7 @@ describe("SidecarRouter", () => {
   });
 
   describe("sendDrain", () => {
-    test("ships a drain.deliver frame to the sidecar holding the deployment", () => {
+    test("ships a drain.deliver frame to the sidecar holding the deployment", async () => {
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -3201,6 +3520,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["dep@integration.interchange"],
         }),
       );
+      await tick();
       ws.sent.length = 0;
 
       router.sendDrain({

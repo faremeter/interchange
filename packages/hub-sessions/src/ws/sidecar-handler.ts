@@ -413,7 +413,12 @@ export function createSidecarRouter(
 
     switch (frame.type) {
       case "register":
-        handleRegister(ws, frame.sidecarId, frame.token, frame.agentAddresses);
+        void handleRegister(
+          ws,
+          frame.sidecarId,
+          frame.token,
+          frame.agentAddresses,
+        );
         break;
       case "reconnect":
         void handleReconnect(
@@ -524,16 +529,54 @@ export function createSidecarRouter(
     }
   }
 
-  function handleRegister(
+  async function handleRegister(
     ws: WsHandle,
     sidecarId: string,
     token: string,
     agentAddresses: string[],
-  ): void {
+  ): Promise<void> {
     if (validateToken !== undefined && !validateToken(sidecarId, token)) {
       logger.warn`Rejected registration from sidecar ${sidecarId}: invalid token`;
       ws.close();
       return;
+    }
+
+    // Key-existence gate. A register frame is token-authenticated but carries
+    // no per-address ownership proof, so it may route an address ONLY if that
+    // address has no stored key yet -- a genuine keyless first-deploy (the
+    // token-bounded first-deploy trust model). An address that already has a
+    // key must prove ownership through the challenged reconnect path; routing
+    // it here on token auth alone is the register-frame sibling of the
+    // reconnect hijack. The keyless-only set is computed up front, BEFORE the
+    // ghost-cleanup and every routing mutation below, so a rejected address
+    // touches nothing: no eviction of a live owner, hence no downgrade from
+    // hijack to denial-of-service on the victim.
+    const lookupKey = lookups.lookupPublicKey;
+    const routableAddresses: string[] = [];
+    for (const addr of agentAddresses) {
+      if (lookupKey === undefined) {
+        // Fail closed: without the ownership lookup a keyed address cannot be
+        // told apart from a first-deploy, so route nothing and surface the
+        // misconfiguration. Empty first-connect registers never reach here.
+        logger.error`Cannot gate register routing for ${addr}: lookupPublicKey is not configured; refusing to route (challenged reconnect required)`;
+        continue;
+      }
+      let existingKey: string | null;
+      try {
+        existingKey = await lookupKey(addr);
+      } catch (err) {
+        // Fail closed on a lookup error (e.g. a transient DB failure): route
+        // nothing for this address and surface the failure, rather than let
+        // the rejection float out of this void-dispatched handler and take
+        // down the hub.
+        logger.error`Key lookup failed for ${addr} during register: ${err instanceof Error ? err.message : String(err)}; failing closed (challenged reconnect required)`;
+        continue;
+      }
+      if (existingKey !== null) {
+        logger.warn`Refusing to route ${addr} via register: address already has a stored key; ownership must be proven via challenged reconnect`;
+        continue;
+      }
+      routableAddresses.push(addr);
     }
 
     // If this same ws is re-registering, drop its addressIndex entries so
@@ -544,6 +587,15 @@ export function createSidecarRouter(
     // current. A genuinely restarting harness opens a new ws (so existing
     // is undefined) and its stale state is cleared by the cross-ws ghost
     // loop below and by handleClose.
+    //
+    // An address this ws already proved via challenged reconnect (so it now
+    // carries a stored key) is dropped here and NOT re-added, because the gate
+    // above refuses a keyed address on register. A client that re-registers a
+    // keyed address on a live connection therefore self-evicts that route
+    // until its next reconnect. That is the intended contract -- keyed
+    // addresses route only via challenged reconnect, the honest client sends
+    // an empty register, and the harm is self-inflicted (a register frame can
+    // only name this connection's own routes, not another connection's).
     const existing = connections.get(ws);
     if (existing !== undefined) {
       for (const addr of existing.agentAddresses) {
@@ -554,7 +606,7 @@ export function createSidecarRouter(
       }
     }
 
-    const addrSet = new Set(agentAddresses);
+    const addrSet = new Set(routableAddresses);
     // The connection's workflow-address set starts empty and is populated
     // only from VERIFIED reconnect addresses (post-challenge) and from
     // `bindStepRoute`'s transient per-step routes -- never from an
@@ -612,15 +664,14 @@ export function createSidecarRouter(
         disconnectedAgents.delete(addr);
       }
     }
-    // Register does NOT route any workflow-substrate address: a restored
-    // deployment address is announced through the challenged reconnect frame
-    // and enters `addressIndex` only after its ownership challenge passes.
-    // Routing an address here from an unauthenticated register frame is the
-    // exact bypass that let a token-holding sidecar reclaim a victim's
-    // address, so this handler writes only the (empty, first-connect) session
-    // set above.
+    // Only keyless first-deploy addresses reach `addressIndex` here; an
+    // address that already has a stored key was filtered out by the gate
+    // above and must re-enter routing through the challenged reconnect path.
+    // Because the gate runs before the ghost-cleanup, a rejected (keyed)
+    // address never evicts its prior owner -- register cannot reclaim or
+    // disrupt a victim's route on token auth alone.
 
-    logger.info`Sidecar ${sidecarId} registered with ${String(agentAddresses.length)} agents`;
+    logger.info`Sidecar ${sidecarId} registered; routed ${String(addrSet.size)} of ${String(agentAddresses.length)} address(es) (keyless first-deploy only)`;
   }
 
   async function handleReconnect(
@@ -664,7 +715,8 @@ export function createSidecarRouter(
     // can receive frames while the ownership challenge is pending. Every
     // reconnect address -- session and workflow-derived alike -- enters
     // routing only through the verified path below, never unchallenged here.
-    handleRegister(ws, sidecarId, token, []);
+    // Empty address list, so the key-existence gate has nothing to await.
+    await handleRegister(ws, sidecarId, token, []);
 
     const conn = connections.get(ws);
     if (conn === undefined) return;
