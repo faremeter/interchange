@@ -458,6 +458,68 @@ describe("sidecar↔hub integration", () => {
     expect(env.router.getRoutableAddresses()).not.toContain(deploymentAddress);
   });
 
+  test("a failing deploy-ref read closes the socket instead of silently dropping the reconnect", async () => {
+    const failEnv = startTestServer();
+
+    // Capture the reconnect callback so no real timer fires during the
+    // test. Its presence is also the proof we assert on: the re-announce
+    // catch closes the socket, and the close handler schedules a reconnect
+    // through this scheduler. Without the fix the deploy-ref rejection is
+    // an unhandled promise, no close occurs, and this stays null.
+    let pendingReconnect: (() => void) | null = null;
+    const fakeScheduleReconnect: ReconnectScheduler = (cb) => {
+      pendingReconnect = cb;
+      return () => {
+        pendingReconnect = null;
+      };
+    };
+
+    const transport = createInMemoryTransport();
+    const deploymentAddress = "ins_dep_reffail1@integration.interchange";
+    // The deploy-ref read rejects the way a corrupt or unreadable ref
+    // would. The re-announce IIFE must catch it and close the socket
+    // rather than let the reconnect vanish with nothing logged.
+    const sessions: SessionManager = {
+      ...createMockSessionManager(),
+      getDeployRef: () =>
+        Promise.reject(new Error("simulated corrupt deploy ref")),
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${failEnv.server.port}/ws`,
+      sidecarId: "sc-ref-fail",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [deploymentAddress],
+      scheduleReconnect: fakeScheduleReconnect,
+    });
+
+    try {
+      client.connect();
+      // On open the register frame is sent, then the re-announce IIFE
+      // reads the deploy ref and the read rejects. The catch closes the
+      // socket, and the close handler schedules a reconnect through the
+      // fake scheduler. Observing that pending callback is the proof the
+      // socket was closed rather than the failure swallowed. Without the
+      // fix the rejection is an unhandled promise, no close occurs, and
+      // this stays null until the wait times out. (The connect→reject→
+      // close cycle is faster than a poll interval, so the transient
+      // connected state is deliberately not asserted -- the scheduled
+      // reconnect is the durable signal.)
+      await waitFor(() => pendingReconnect !== null);
+
+      // No reconnect frame was ever sent, so the address never routed.
+      expect(failEnv.router.getRoutableAddresses()).not.toContain(
+        deploymentAddress,
+      );
+    } finally {
+      client.close();
+      await failEnv.server.stop(true);
+    }
+  });
+
   test("repo.pack.reject sent when applyDeployPack throws signature_invalid", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();

@@ -1144,21 +1144,35 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       const restoredAddresses = getWorkflowAddresses();
       if (restoredAddresses.length > 0) {
         void (async () => {
-          const deployRefs: Record<string, string> = {};
-          for (const address of restoredAddresses) {
-            const ref = await sessions.getDeployRef(address);
-            if (ref !== null) {
-              deployRefs[address] = ref;
+          try {
+            const deployRefs: Record<string, string> = {};
+            for (const address of restoredAddresses) {
+              const ref = await sessions.getDeployRef(address);
+              if (ref !== null) {
+                deployRefs[address] = ref;
+              }
             }
+            send({
+              type: "reconnect",
+              sidecarId,
+              token,
+              agentAddresses: restoredAddresses,
+              ...(Object.keys(deployRefs).length > 0 ? { deployRefs } : {}),
+            });
+            flush();
+          } catch (err) {
+            // A failing deploy-ref read (corrupt or unreadable ref state)
+            // must not silently drop the reconnect. Without this frame the
+            // hub never re-challenges these addresses, so their routes
+            // vanish with nothing logged. Surface the failure and close the
+            // socket to force a clean reconnect retry. No partial reconnect
+            // frame is sent: the send sits after the loop, so a throw skips
+            // it. This IIFE runs in the `open` handler, outside the
+            // `messageQueue` tail-catch, so this catch is its only net.
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error`Deployment re-announce failed, closing connection: ${msg}`;
+            ws?.close();
           }
-          send({
-            type: "reconnect",
-            sidecarId,
-            token,
-            agentAddresses: restoredAddresses,
-            ...(Object.keys(deployRefs).length > 0 ? { deployRefs } : {}),
-          });
-          flush();
         })();
       }
     });
