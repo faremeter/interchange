@@ -876,9 +876,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * workflow frame. The workflow frame makes the sidecar initialize the
    * head repo and spawn the workflow-process child; the follow-up pack
    * lands the head's deploy tree. Returns the supervisor's principal
-   * public key from the frame's
-   * ack. A workflow-frame launch always yields a deploy-ack key; its
-   * absence is a wiring bug, not a tolerable case.
+   * public key from the frame's ack. A workflow-frame launch always
+   * yields a deploy-ack key; its absence is a wiring bug, not a
+   * tolerable case.
    */
   const deploySingleStepAtHead: DeploySingleStepFn = async (deployParams) => {
     const result = await executeLaunchPhases({

@@ -135,9 +135,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // updateIndex / commit / listFiles, and reuses parsed packfile
   // indexes across object reads. The index-free tree assembly
   // (git.writeTree / git.writeBlob) uses no index and threads no cache.
-  // The store is
-  // the single writer under withRepoLock, so a long-lived per-repo
-  // cache never races a concurrent mutator.
+  // The store is the single writer under withRepoLock, so a long-lived
+  // per-repo cache never races a concurrent mutator.
   //
   // The cache stays a pure accelerator, never a second source of truth,
   // because the on-disk repo remains authoritative on every axis:
