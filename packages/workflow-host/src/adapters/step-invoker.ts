@@ -235,8 +235,7 @@ async function invokeColdStep(
   // `onEvent` sink; absent a sink the agent's `stream()` is never
   // consumed (stub agents whose `stream()` throws stay untouched).
   //
-  // `message.received` is the single intentional exclusion, matching
-  // the in-process harness's forwarder (`default-harness.ts`): it is an
+  // `message.received` is the single intentional exclusion: it is an
   // assembly-internal dequeue signal, and the hub-facing audit chain
   // expresses per-message work through the `message.run.started` /
   // `message.run.ended` bracket pair instead. The filter is an
@@ -447,8 +446,7 @@ async function sendWithAbort(
  * Forwarding is best-effort observability: a sink that throws is
  * logged and swallowed so a downstream consumer's failure cannot abort
  * the step. A failure of the stream iterator itself (the agent's
- * teardown surfacing through the iterator) is logged at warn, mirroring
- * the in-process harness's forwarder.
+ * teardown surfacing through the iterator) is logged at warn.
  */
 function subscribeAgentEvents(
   agent: Agent,

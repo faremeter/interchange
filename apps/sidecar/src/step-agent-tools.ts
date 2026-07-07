@@ -57,8 +57,8 @@ const INSTANCE_PREFIX = "ins_";
  * Cache and registry caps the per-step tool loader needs. Resolved at
  * the sidecar boot edge from the existing `SIDECAR_CACHE_*` /
  * `SIDECAR_REGISTRY_*` config keys and threaded into the child through
- * the substrate config, so the child's per-step materialization uses
- * the same caps the in-process harness builder does.
+ * the substrate config, so the child's per-step materialization is
+ * bounded by those boot-edge-resolved caps.
  */
 export interface StepToolCacheConfig {
   readonly cacheMaxBytes: number;

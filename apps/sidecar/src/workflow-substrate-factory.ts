@@ -146,9 +146,9 @@ const SubstrateConfig = type({
   STEP_INFERENCE_SOURCES: "string > 0",
   // Per-step tool-loader caps. The supervisor threads the boot edge's
   // resolved `SIDECAR_CACHE_MAX_BYTES` / `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`
-  // through `substrateEnv`; the child's per-step tool materialization
-  // uses the same caps the in-process harness builder does. Validated
-  // as positive-finite-number strings at this boundary.
+  // through `substrateEnv` so the child's per-step tool materialization is
+  // bounded by the sidecar's boot-edge-resolved caps. Validated as
+  // positive-finite-number strings at this boundary.
   SIDECAR_CACHE_MAX_BYTES: "string > 0",
   SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "string > 0",
   // JSON-encoded custom inference adapter manifest. Required: the boot
@@ -641,8 +641,7 @@ export function createSidecarStepBuildEnv(
         // Feed the reactor the step's full ordered failover chain and pin
         // its initial source to element 0. The reactor resolves the initial
         // source by id and fails over forward through `sources`, so this
-        // restores cross-source failover inside the workflow-child, matching
-        // the legacy in-process harness.
+        // restores cross-source failover inside the workflow-child.
         sources,
         defaultSource: activeSource.id,
         storage,

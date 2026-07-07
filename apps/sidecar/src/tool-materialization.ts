@@ -2,18 +2,18 @@
 //
 // The deploy-tree reader, the `@intx/tool-packaging` loader
 // construction, `applyAtomic`, and the active-deploy-id persistence
-// ladder live here so both the in-process harness builder
-// (`default-harness.ts`) and the workflow-process child's substrate
-// factory (`workflow-substrate-factory.ts`) reach the same
-// implementation. Keeping this in `apps/sidecar` (and out of
-// `@intx/workflow-host`) preserves the portable orchestration
-// package's host-agnostic layering: the child IS the sidecar binary,
-// so the sidecar's tool runtime is already present in the child's
-// address space without the portable package depending on it.
+// ladder live here so the workflow-process child's substrate factory
+// (`workflow-substrate-factory.ts`) reaches this implementation without
+// the portable orchestration package depending on the sidecar's tool
+// runtime. Keeping this in `apps/sidecar` (and out of
+// `@intx/workflow-host`) preserves that package's host-agnostic
+// layering: the child IS the sidecar binary, so the sidecar's tool
+// runtime is already present in the child's address space.
 //
 // The module is deliberately free of any `@intx/harness` reactor
-// dependency so the workflow-process child does not drag the
-// in-process harness's transport/reactor ownership into its graph.
+// dependency so the workflow-process child's boot graph does not pull
+// in `@intx/harness`'s transport/reactor stack -- a forbidden-import
+// guard enforces that boundary.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -172,10 +172,9 @@ interface MaterializedToolPackages {
 }
 
 // Exported for direct unit testing of the manifest-invalid gate
-// (JSON.parse failure + arktype schema failure). The in-process
-// harness builder reaches it through `createDefaultHarnessBuilder`;
-// the workflow-process child reaches it through the substrate
-// factory's per-step agent builder.
+// (JSON.parse failure + arktype schema failure). The workflow-process
+// child reaches it through the substrate factory's per-step agent
+// builder.
 export async function materializeToolPackages(args: {
   rawManifestBytes: string | undefined;
   /**
@@ -188,9 +187,8 @@ export async function materializeToolPackages(args: {
   /**
    * Workspace root the loader resolves `kind: "asset"` tarball mounts
    * against (`<assetRoot>/<mountPath>/...`). Defaults to
-   * `<storeDir>/workspace` -- the in-process harness builder's layout,
-   * where the deploy flow stages asset packs into the same dir the
-   * agent runs in.
+   * `<storeDir>/workspace` -- the default workspace layout, where the
+   * deploy flow stages asset packs into the same dir the agent runs in.
    *
    * The workflow-process child overrides this: it stages assets in the
    * step's LEGACY agent dir workspace (where the hub's asset-pack push

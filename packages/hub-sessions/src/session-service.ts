@@ -1030,10 +1030,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     // Pin the step's inference sources to the instance's FULL ordered source
     // chain so the workflow-process child's reactor fails over across it at
-    // runtime, matching the legacy in-process harness. The route already
-    // resolved and authorized `config.sources` against the tenant catalog, so
-    // it is pinned directly rather than re-run through the orchestrator's
-    // operator-approval gate.
+    // runtime. The route already resolved and authorized `config.sources`
+    // against the tenant catalog, so it is pinned directly rather than re-run
+    // through the orchestrator's operator-approval gate.
     //
     // Fail loud on the invariant the reactor depends on: the reactor resolves
     // its initial source by id (`defaultSource`) and fails over FORWARD-ONLY
