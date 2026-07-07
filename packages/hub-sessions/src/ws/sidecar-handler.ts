@@ -579,43 +579,26 @@ export function createSidecarRouter(
       routableAddresses.push(addr);
     }
 
-    // If this same ws is re-registering, drop its addressIndex entries so
-    // the new register/reconnect rebuilds the owned set (handleReconnect
-    // and the loop below re-add the addresses that remain owned). Do not
-    // drop connectorStates here: this branch is reached only on a same-ws
-    // re-register, where the harness is live and its connector state is
-    // current. A genuinely restarting harness opens a new ws (so existing
-    // is undefined) and its stale state is cleared by the cross-ws ghost
-    // loop below and by handleClose.
+    // Additive re-register: inherit every address this ws already owns and ADD
+    // the frame's keyless first-deploys. Register never drops an owned route --
+    // an address proved via challenged reconnect stays routed, and removal
+    // happens via undeploy/disconnect, not register-omission.
     //
-    // An address this ws already proved via challenged reconnect (so it now
-    // carries a stored key) is dropped here and NOT re-added, because the gate
-    // above refuses a keyed address on register. A client that re-registers a
-    // keyed address on a live connection therefore self-evicts that route
-    // until its next reconnect. That is the intended contract -- keyed
-    // addresses route only via challenged reconnect, the honest client sends
-    // an empty register, and the harm is self-inflicted (a register frame can
-    // only name this connection's own routes, not another connection's).
+    // (Under the retired full-set model a register frame carried the sidecar's
+    // complete live set, so an omitted address meant "removed". Now the frame
+    // carries only keyless first-deploys the sidecar is adding -- keyed
+    // addresses arrive via reconnect -- so omission is meaningless, and a
+    // replace-on-register would wrongly drop an earlier first-deploy when a
+    // later one is registered, as well as any reconnect-verified keyed route.)
     const existing = connections.get(ws);
-    if (existing !== undefined) {
-      for (const addr of existing.agentAddresses) {
-        addressIndex.delete(addr);
-      }
-      for (const addr of existing.workflowAddresses) {
-        addressIndex.delete(addr);
-      }
-    }
+    const inheritedAgent = new Set(existing?.agentAddresses);
+    const inheritedWorkflow = new Set(existing?.workflowAddresses);
 
-    const addrSet = new Set(routableAddresses);
-    // The connection's workflow-address set starts empty and is populated
-    // only from VERIFIED reconnect addresses (post-challenge) and from
-    // `bindStepRoute`'s transient per-step routes -- never from an
-    // unauthenticated frame field. It backs `handleClose` reclamation.
-    const workflowSet = new Set<string>();
-
-    // Clean up ghost entries from other connections that previously
-    // owned addresses this sidecar is now claiming.
-    for (const addr of addrSet) {
+    // Clean up ghost entries from OTHER connections for the newly-claimed
+    // addresses only. An inherited address is already owned by this ws
+    // (prevWs === ws), so it needs no eviction and its in-flight deploy must
+    // not be cancelled.
+    for (const addr of routableAddresses) {
       const prevWs = addressIndex.get(addr);
       if (prevWs !== undefined && prevWs !== ws) {
         const prevConn = connections.get(prevWs);
@@ -640,6 +623,15 @@ export function createSidecarRouter(
       }
     }
 
+    // New keyless first-deploys join the inherited session set; the workflow
+    // set is inherited unchanged (register never adds to it -- a
+    // workflow-derived address routes only through the challenged reconnect).
+    for (const addr of routableAddresses) {
+      inheritedAgent.add(addr);
+    }
+    const addrSet = inheritedAgent;
+    const workflowSet = inheritedWorkflow;
+
     const conn: SidecarConnection = {
       sidecarId,
       agentAddresses: addrSet,
@@ -650,7 +642,9 @@ export function createSidecarRouter(
     };
 
     connections.set(ws, conn);
-    for (const addr of addrSet) {
+    // Only the newly-claimed addresses need a routing write + queue discard;
+    // inherited addresses already point at this ws in addressIndex.
+    for (const addr of routableAddresses) {
       addressIndex.set(addr, ws);
       // Discard any disconnect queue — register has no identity
       // verification, so flushing to an unverified connection is unsafe.

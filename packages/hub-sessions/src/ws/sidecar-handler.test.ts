@@ -101,7 +101,10 @@ describe("SidecarRouter", () => {
       ]);
     });
 
-    test("re-registration updates addresses", async () => {
+    test("re-registration adds addresses without dropping owned routes", async () => {
+      // Additive re-register: a second register ADDS its addresses without
+      // dropping those from the first. Removal happens via undeploy/disconnect,
+      // not register-omission (the frame no longer carries the full live set).
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -126,7 +129,10 @@ describe("SidecarRouter", () => {
       );
       await tick();
 
-      expect(router.getRoutableAddresses()).toEqual(["agent-c@local"]);
+      expect(router.getRoutableAddresses().sort()).toEqual([
+        "agent-a@local",
+        "agent-c@local",
+      ]);
     });
 
     test("disconnect cleans up routing table", () => {
@@ -314,6 +320,37 @@ describe("SidecarRouter", () => {
       expect(r.routeMail(KEYED, "dGVzdA==")).toBe(true);
       expect(ownerWs.sent).toHaveLength(1);
       expect(rogueWs.sent).toHaveLength(0);
+    });
+
+    test("a re-register does not drop an address already verified via reconnect", async () => {
+      // A connection that proved a keyed address via challenged reconnect keeps
+      // that route across a later register, even though the gate would refuse
+      // to re-add a keyed address: additive re-register inherits the owned set
+      // rather than replacing it. Removal is via undeploy/disconnect, not
+      // register-omission.
+      const kp = await generateKeyPair();
+      const r = gatedRouter(hexEncode(kp.publicKey));
+      const ws = createMockWs();
+      await reconnectVerify(r, ws, kp.privateKey);
+      expect(r.getRoutableAddresses()).toContain(KEYED);
+
+      // The same ws registers a keyless first-deploy. The keyed
+      // reconnect-verified route must survive alongside the new one.
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "owner",
+          token: "tok",
+          agentAddresses: ["fresh@local"],
+        }),
+      );
+      await tick();
+
+      expect(r.getRoutableAddresses().sort()).toEqual(
+        [KEYED, "fresh@local"].sort(),
+      );
+      expect(r.routeMail(KEYED, "dGVzdA==")).toBe(true);
     });
 
     test("fails closed and surfaces an error when no lookup is configured", async () => {
