@@ -13,6 +13,7 @@ import {
 import {
   action,
   defineWorkflow,
+  loop,
   step,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
@@ -246,6 +247,46 @@ describe("walkCapabilities", () => {
     expect(declarations.grants.some((g) => g.startsWith("director:"))).toBe(
       false,
     );
+  });
+
+  test("a loop node carries the union of its body's grants", () => {
+    const registry = createDefaultDirectorRegistry();
+    const body = defineWorkflow({
+      id: "loop-body",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent: makeTrivialAgent() }),
+        commit: action({
+          handler: "c",
+          effect: { requires: ["git:commit"] },
+          after: ["work"],
+        }),
+      },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_loop",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body,
+          while: "w",
+          carry: "c",
+          maxIterations: 3,
+          onExhausted: "esc",
+        }),
+        esc: step({ agent: makeTrivialAgent(), after: ["rework"] }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("rework");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    // The body agent's tool grant and the body action's effect grant both
+    // surface on the loop node so the approval gate sees them.
+    expect(grants.has("tool:@intx/tools-mail/sidecar-bundle")).toBe(true);
+    expect(grants.has("effect:git:commit")).toBe(true);
   });
 
   test("actions and agent steps each carry their own grants", () => {

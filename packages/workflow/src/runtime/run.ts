@@ -692,6 +692,13 @@ async function runPrimitive(
       return runStep(env, runId, primitive, selectorCtx, abort);
     case "action":
       return runAction(env, runId, primitive, selectorCtx, abort);
+    case "loop":
+      // The loop runtime (runLoop) lands in a later commit; the loop
+      // definition surface ships first. A definition using `loop` fails
+      // loudly here until the driver is wired.
+      throw new Error(
+        `loop ${primitive.id} has no runtime driver yet; runLoop is not wired`,
+      );
     case "map":
       return runMap(env, runId, primitive, selectorCtx, abort);
     case "gate":

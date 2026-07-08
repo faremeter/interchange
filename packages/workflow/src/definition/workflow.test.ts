@@ -8,15 +8,26 @@ import {
 } from "@intx/agent";
 
 import {
+  action,
   awaitSignal,
+  childWorkflow,
   defineWorkflow,
   gate,
   hashDefinition,
+  loop,
   map,
   sleep,
   step,
   type WorkflowDefinition,
 } from "./index";
+
+function simpleBody(): WorkflowDefinition {
+  return defineWorkflow({
+    id: "body",
+    trigger: { type: "manual" },
+    steps: { work: step({ agent: makeAgent("w") }) },
+  });
+}
 
 function makeAgent(id: string): AgentDefinition<BaseEnv> {
   return defineAgent({
@@ -242,6 +253,243 @@ describe("acyclicity validation", () => {
         },
       }),
     ).not.toThrow();
+  });
+});
+
+describe("loop validation", () => {
+  test("accepts a loop with a valid body and onExhausted target", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: simpleBody(),
+            while: "shouldContinue",
+            carry: "next",
+            maxIterations: 3,
+            onExhausted: "escalate",
+          }),
+          escalate: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("loop rejects a non-positive-integer maxIterations", () => {
+    for (const bad of [0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        loop({
+          body: simpleBody(),
+          while: "w",
+          carry: "c",
+          maxIterations: bad,
+          onExhausted: "e",
+        }),
+      ).toThrow(/positive integer maxIterations/);
+    }
+  });
+
+  test("allows a loop body containing map, action, or gate primitives", () => {
+    const bodies: WorkflowDefinition[] = [
+      defineWorkflow({
+        id: "map-body",
+        trigger: { type: "manual" },
+        steps: {
+          m: map({
+            over: { from: "trigger.payload" },
+            step: step({ agent: makeAgent("i") }),
+          }),
+        },
+      }),
+      defineWorkflow({
+        id: "action-body",
+        trigger: { type: "manual" },
+        steps: { a: action({ handler: "h" }) },
+      }),
+      defineWorkflow({
+        id: "gate-body",
+        trigger: { type: "manual" },
+        steps: {
+          g: gate({ when: { from: "trigger.payload" }, then: "x", else: "y" }),
+          x: step({ agent: makeAgent("x") }),
+          y: step({ agent: makeAgent("y") }),
+        },
+      }),
+    ];
+    for (const body of bodies) {
+      expect(() =>
+        defineWorkflow({
+          id: "w",
+          trigger: { type: "manual" },
+          steps: {
+            rework: loop({
+              body,
+              while: "w",
+              carry: "c",
+              maxIterations: 2,
+              onExhausted: "esc",
+            }),
+            esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+          },
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  test("rejects a loop whose onExhausted names an ancestor (back-edge)", () => {
+    // onExhausted is a routing target like a gate branch; naming an
+    // ancestor of the loop closes a cycle and is rejected.
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          seed: step({ agent: makeAgent("s") }),
+          rework: loop({
+            body: simpleBody(),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "seed",
+            after: ["seed"],
+          }),
+        },
+      }),
+    ).toThrow(/dependency cycle/);
+  });
+
+  test("a loop's definition hash reflects its body content", () => {
+    const withBodyAgent = (agentId: string) =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: defineWorkflow({
+              id: "body",
+              trigger: { type: "manual" },
+              steps: { work: step({ agent: makeAgent(agentId) }) },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      });
+    expect(hashDefinition(withBodyAgent("a"))).not.toEqual(
+      hashDefinition(withBodyAgent("b")),
+    );
+  });
+
+  test("rejects a loop whose onExhausted is not a known step", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: simpleBody(),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "nope",
+          }),
+        },
+      }),
+    ).toThrow(/onExhausted nope which is not a known step/);
+  });
+
+  test("rejects a loop whose body contains a nested loop", () => {
+    const nestedBody = defineWorkflow({
+      id: "nested-body",
+      trigger: { type: "manual" },
+      steps: {
+        inner: loop({
+          body: simpleBody(),
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "end",
+        }),
+        end: step({ agent: makeAgent("end"), after: ["inner"] }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          outer: loop({
+            body: nestedBody,
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("esc"), after: ["outer"] }),
+        },
+      }),
+    ).toThrow(/may not contain a loop/);
+  });
+
+  test("rejects a loop body containing awaitSignal, sleep, or childWorkflow", () => {
+    const forbiddenBodies: WorkflowDefinition[] = [
+      defineWorkflow({
+        id: "await-body",
+        trigger: { type: "manual" },
+        steps: { wait: awaitSignal({ name: "go" }) },
+      }),
+      defineWorkflow({
+        id: "sleep-body",
+        trigger: { type: "manual" },
+        steps: { nap: sleep({ duration: 10 }) },
+      }),
+      defineWorkflow({
+        id: "child-body",
+        trigger: { type: "manual" },
+        steps: { sub: childWorkflow({ definitionRef: "x" }) },
+      }),
+    ];
+    for (const body of forbiddenBodies) {
+      expect(() =>
+        defineWorkflow({
+          id: "w",
+          trigger: { type: "manual" },
+          steps: {
+            rework: loop({
+              body,
+              while: "w",
+              carry: "c",
+              maxIterations: 2,
+              onExhausted: "esc",
+            }),
+            esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+          },
+        }),
+      ).toThrow(/a loop body may not contain/);
+    }
+  });
+
+  test("hashes a definition with an inline loop body", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: simpleBody(),
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "esc",
+        }),
+        esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+      },
+    });
+    expect(() => hashDefinition(def)).not.toThrow();
+    expect(hashDefinition(def)).toEqual(hashDefinition(def));
   });
 });
 
