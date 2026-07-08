@@ -36,6 +36,7 @@ export {
 } from "./runtime/index";
 export {
   runLocal,
+  createLoopIteration,
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
