@@ -310,6 +310,24 @@ export type RunLoopIteration = (input: {
 }>;
 
 /**
+ * A loop's `while` predicate or `carry` transform. Deliberately receives
+ * only data -- the just-completed iteration's resolved output and the
+ * current carry state -- and NO effect context, authorize, or signal.
+ * These functions run in the runtime body on every forward pass and
+ * every resume, so they must be pure and side-effect free; the type has
+ * no effect parameter so an effectful function is not even expressible.
+ * `while` coerces its result to a boolean (continue while truthy);
+ * `carry` returns the next iteration's input.
+ */
+export type LoopFn = (childOutput: unknown, carryState: unknown) => unknown;
+
+/**
+ * Resolve a loop's `while`/`carry` string ref to a pure `LoopFn`,
+ * mirroring how `directors` and action handlers resolve string refs.
+ */
+export type LoopFnRegistry = (ref: string) => LoopFn;
+
+/**
  * The runtime body's full env surface. The two implementations
  * (`runLocal` and the production child-process entry point) construct
  * differently-flavoured concrete values for each field but the body
@@ -347,6 +365,11 @@ export interface WorkflowRuntimeEnv {
    * `runLoop` fails loudly. runLocal wires it.
    */
   runLoopIteration?: RunLoopIteration;
+  /**
+   * Resolve a loop's `while`/`carry` refs to pure functions. Optional
+   * for the same reason as `runLoopIteration`.
+   */
+  loopFns?: LoopFnRegistry;
   /**
    * Clock for timestamp generation. Tests inject a deterministic
    * implementation; production uses `new Date()`. Keeping the clock on

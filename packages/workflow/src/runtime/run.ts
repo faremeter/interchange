@@ -14,6 +14,7 @@ import type {
   ChildWorkflowPrimitive,
   EscalationPrimitive,
   GatePrimitive,
+  LoopPrimitive,
   MapPrimitive,
   Primitive,
   SleepPrimitive,
@@ -693,12 +694,7 @@ async function runPrimitive(
     case "action":
       return runAction(env, runId, primitive, selectorCtx, abort);
     case "loop":
-      // The loop runtime (runLoop) lands in a later commit; the loop
-      // definition surface ships first. A definition using `loop` fails
-      // loudly here until the driver is wired.
-      throw new Error(
-        `loop ${primitive.id} has no runtime driver yet; runLoop is not wired`,
-      );
+      return runLoop(definition, env, runId, primitive, selectorCtx, abort);
     case "map":
       return runMap(env, runId, primitive, selectorCtx, abort);
     case "gate":
@@ -1068,6 +1064,163 @@ async function runAction(
 }
 
 /**
+ * Bounded rework loop. Each iteration is a separate child run of the
+ * body against the shared store (via `env.runLoopIteration`), scoped
+ * `<loopId>[<index>]` at the step level (mirroring `runMap`) with a
+ * path-safe child run id `<loopId>__<index>`. The registered `while`
+ * predicate decides whether to continue on each iteration's output; the
+ * registered `carry` threads the next iteration's input. On convergence
+ * (`while` false) the loop routes to its normal `after`-dependents; on
+ * hitting `maxIterations` with `while` still true it routes to
+ * `onExhausted` -- a gate-style mutually-exclusive branch, so the
+ * not-taken side is pruned with skip sentinels before the loop's own
+ * StepCompleted lands.
+ */
+async function runLoop(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  primitive: LoopPrimitive,
+  selectorCtx: SelectorContext,
+  abort: AbortSignal,
+): Promise<unknown> {
+  const runLoopIteration = env.runLoopIteration;
+  const loopFns = env.loopFns;
+  if (runLoopIteration === undefined || loopFns === undefined) {
+    throw new Error(
+      `loop ${primitive.id} requires runLoopIteration and loopFns on the env; this host does not support loops`,
+    );
+  }
+  const whileFn = loopFns(primitive.while);
+  const carryFn = loopFns(primitive.carry);
+
+  const rawInput =
+    primitive.input !== undefined
+      ? evaluate(primitive.input, selectorCtx)
+      : null;
+  await emitStepStartedWithValue(env, runId, primitive.id, {
+    while: primitive.while,
+    carry: primitive.carry,
+    maxIterations: primitive.maxIterations,
+  });
+
+  let currentInput: unknown = rawInput === undefined ? null : rawInput;
+  let outcome: "converged" | "exhausted" = "exhausted";
+  let iterations = 0;
+  for (let i = 0; i < primitive.maxIterations; i += 1) {
+    iterations = i + 1;
+    const stepId = `${primitive.id}[${String(i)}]`;
+    const childRunId = `${primitive.id}__${String(i)}`;
+
+    await emitStepStartedWithValue(env, runId, stepId, currentInput);
+    let state = await reloadState(env, runId);
+    const spawned: WorkflowEvent = {
+      kind: "ChildSpawned",
+      seq: state.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId,
+      childRunId,
+      childDefinitionRef: primitive.body.id,
+    };
+    state = await commit(env, runId, spawned);
+    void state;
+    // Flush the spawn record durable before the child runs so a resumed
+    // run's parent log records the spawn ahead of any child-side work
+    // (mirrors runChildWorkflow).
+    await flush(env, runId);
+
+    const res = await runLoopIteration({
+      bodyDefinition: primitive.body,
+      childRunId,
+      input: currentInput,
+      parentRunId: runId,
+      parentStepId: stepId,
+      signal: abort,
+    });
+
+    let after = await reloadState(env, runId);
+    const childCompleted: WorkflowEvent = {
+      kind: "ChildCompleted",
+      seq: after.lastSeq + 1,
+      at: env.clock().toISOString(),
+      childRunId,
+      terminalStatus: res.terminalStatus,
+    };
+    after = await commit(env, runId, childCompleted);
+    void after;
+    await emitStepCompletedWithValue(env, runId, stepId, res.output);
+    await flush(env, runId);
+
+    if (res.terminalStatus !== "completed") {
+      // A failed or cancelled iteration is a real failure, not an
+      // exhaustion. Throw so runPrimitiveSafe lands StepFailed (or
+      // CancelPropagated when the run is cancelling) on the loop node.
+      // Note: throwing skips routeLoopOutcome, so neither branch is
+      // pruned; both the normal dependents and onExhausted then run
+      // before the run settles failed, per the engine's "a failed
+      // dependency is resolved" scheduling (the same as a failed gate).
+      // The mutually-exclusive routing holds only on the success path.
+      throw new Error(
+        `loop ${primitive.id} iteration ${String(i)} ended ${res.terminalStatus}`,
+      );
+    }
+
+    const shouldContinue = Boolean(whileFn(res.output, currentInput));
+    if (!shouldContinue) {
+      outcome = "converged";
+      break;
+    }
+    if (i + 1 >= primitive.maxIterations) {
+      outcome = "exhausted";
+      break;
+    }
+    currentInput = carryFn(res.output, currentInput);
+  }
+
+  await routeLoopOutcome(definition, env, runId, primitive, outcome, abort);
+  const output = { outcome, iterations, carry: currentInput };
+  await emitStepCompletedWithValue(env, runId, primitive.id, output);
+  return output;
+}
+
+/**
+ * Prune the not-taken branch of a completed loop with skip sentinels,
+ * BEFORE the loop's own StepCompleted lands, so the scheduler only ever
+ * hands back the live side. Converged -> the normal `after`-dependents
+ * run and `onExhausted` is pruned; exhausted -> `onExhausted` runs and
+ * the normal dependents are pruned. `onExhausted` names the loop in its
+ * own `after` (enforced at definition time), so it is excluded from the
+ * normal-dependent set here.
+ */
+async function routeLoopOutcome(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  primitive: LoopPrimitive,
+  outcome: "converged" | "exhausted",
+  abort: AbortSignal,
+): Promise<void> {
+  const normalDependents = Object.entries(definition.steps)
+    .filter(
+      ([id, p]) =>
+        id !== primitive.onExhausted &&
+        (p.after?.includes(primitive.id) ?? false),
+    )
+    .map(([id]) => id);
+  const onExhausted = [primitive.onExhausted];
+  const notSelected = outcome === "converged" ? onExhausted : normalDependents;
+  const selected = outcome === "converged" ? normalDependents : onExhausted;
+
+  const toSkip = collectBranchClosure(definition, notSelected, selected);
+  for (const skipId of toSkip) {
+    if (abort.aborted) break;
+    const sentinel = { skipped: true, loopId: primitive.id, outcome };
+    await emitStepStartedWithValue(env, runId, skipId, sentinel);
+    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
+  }
+}
+
+/**
  * Event-sourced timer wait.
  *
  * Tells the scheduler to commit `TimerFired{timerId}` at `fireAt`,
@@ -1234,7 +1387,7 @@ async function runGate(
   // the loop keeps cancellation from leaving the skip closure half-
   // written -- the runtime body's cancel sweep then picks up the
   // remaining steps via CancelPropagated.
-  const toSkip = collectBranchClosure(definition, notSelected, selected);
+  const toSkip = collectBranchClosure(definition, [notSelected], [selected]);
   for (const skipId of toSkip) {
     if (abort.aborted) break;
     const sentinel = {
@@ -1257,32 +1410,33 @@ async function runGate(
 }
 
 /**
- * Compute the set of steps that should be skipped when the gate's
- * not-selected branch is suppressed.
+ * Compute the set of steps to skip when the `notSelected` branch roots
+ * are suppressed in favor of the `selected` roots.
  *
  * The skip set is the transitive downstream closure of the not-selected
- * branch head, MINUS any step that is also reachable from the selected
- * branch head. A diamond-join step that lists both branches in its
- * `after` is reachable from the selected branch and must stay live --
- * its body must still run with the selected branch's output as input.
+ * roots, MINUS any step also reachable from the selected roots. A
+ * diamond-join step that lists both a selected and a not-selected root
+ * in its `after` is reachable from the selected side and must stay live.
+ * Both sides are sets: a `gate` calls this with singleton roots
+ * (`then`/`else`), while a `loop` calls it with `onExhausted` against the
+ * set of the loop's normal dependents. Computing `reachableFromSelected`
+ * as one union closure over all selected roots keeps the diamond guard a
+ * plain set-membership test regardless of how many roots each side has.
  */
 function collectBranchClosure(
   definition: WorkflowDefinition,
-  notSelected: string,
-  selected: string,
+  notSelected: readonly string[],
+  selected: readonly string[],
 ): readonly string[] {
-  // defineWorkflow rejects gate.then === gate.else, so notSelected and
-  // selected are guaranteed to differ here. No defensive equality
-  // check is needed.
-  if (!(notSelected in definition.steps)) return [];
+  const selectedSet = new Set(selected);
   const reachableFromSelected = downstreamClosure(definition, selected);
   const skip = new Set<string>();
-  const queue: string[] = [notSelected];
+  const queue: string[] = notSelected.filter((id) => id in definition.steps);
   while (queue.length > 0) {
     const id = queue.shift();
     if (id === undefined) break;
     if (skip.has(id)) continue;
-    if (id === selected) continue;
+    if (selectedSet.has(id)) continue;
     if (reachableFromSelected.has(id)) continue;
     skip.add(id);
     for (const [otherId, primitive] of Object.entries(definition.steps)) {
@@ -1291,7 +1445,7 @@ function collectBranchClosure(
       if (
         after.includes(id) &&
         !skip.has(otherId) &&
-        otherId !== selected &&
+        !selectedSet.has(otherId) &&
         !reachableFromSelected.has(otherId)
       ) {
         queue.push(otherId);
@@ -1303,11 +1457,10 @@ function collectBranchClosure(
 
 function downstreamClosure(
   definition: WorkflowDefinition,
-  start: string,
+  starts: readonly string[],
 ): Set<string> {
   const visited = new Set<string>();
-  if (!(start in definition.steps)) return visited;
-  const queue: string[] = [start];
+  const queue: string[] = starts.filter((id) => id in definition.steps);
   while (queue.length > 0) {
     const id = queue.shift();
     if (id === undefined) break;

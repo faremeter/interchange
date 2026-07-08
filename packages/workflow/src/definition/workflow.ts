@@ -269,6 +269,15 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
       if (primitive.onExhausted === stepId) {
         throw new Error(`loop ${stepId} cannot name itself as onExhausted`);
       }
+      // onExhausted routes only on exhaustion, so it must depend on the
+      // loop. Without `after: [loop]` it would be schedulable from
+      // RunStarted and the escalation would fire on every run.
+      const target = steps[primitive.onExhausted];
+      if (target !== undefined && !(target.after?.includes(stepId) ?? false)) {
+        throw new Error(
+          `loop ${stepId} onExhausted ${primitive.onExhausted} must name ${stepId} in its after`,
+        );
+      }
     }
   }
 }

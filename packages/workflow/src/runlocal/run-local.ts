@@ -25,6 +25,7 @@ import type {
   ActionInvoker,
   EffectContext,
   EffectLedger,
+  LoopFnRegistry,
   StepInvoker,
   SpawnChildWorkflow,
   WorkflowRun,
@@ -54,6 +55,8 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   invokeAction?: ActionInvoker;
   /** Resolve an action `handler` ref to a handler function. */
   actionResolver?: (ref: string) => ActionHandler;
+  /** Resolve a loop's `while`/`carry` refs to pure functions. */
+  loopFns?: LoopFnRegistry;
   /**
    * Workflow-level authorize. Defaults to `() => allow`; tests inject
    * a spy.
@@ -119,6 +122,9 @@ export function runLocal(
   // over the env it belongs to, so that each iteration's child run
   // shares the parent's repoStore, blobs, and effect ledger.
   env.runLoopIteration = createLoopIteration(env);
+  if (options.loopFns !== undefined) {
+    env.loopFns = options.loopFns;
+  }
 
   return runtimeRun(definition, env, extractRuntimeOptions(options));
 }
