@@ -23,7 +23,12 @@ import type {
 } from "../definition/index";
 import { hashDefinition } from "../definition/index";
 import { evaluate, type SelectorContext } from "./selectors";
-import { hasFailedStep, isRunDone, nextSchedulable } from "./dag";
+import {
+  hasFailedStep,
+  isResumableInFlightLoopStep,
+  isRunDone,
+  nextSchedulable,
+} from "./dag";
 import {
   commit as commitDurableToChain,
   commitBuffered as commitBufferedToChain,
@@ -38,6 +43,7 @@ import {
   isTerminalRunPhase,
   resumeFromLog,
   TransitionError,
+  type RunState,
   type WorkflowEvent,
 } from "../state-machine/index";
 
@@ -290,6 +296,13 @@ async function executeRunBody(
   // owns settling steps whose phase is `cancelling`.
   if (initialEvents.length > 0 && state.phase === "running") {
     for (const [stepId, stepState] of state.steps) {
+      // A resumable in-flight loop container (or its in-flight synthetic
+      // iteration step) is the one exception: runLoop re-derives its
+      // cursor from the log and continues. Every other in-flight or
+      // awaiting-* step stays rejected byte-for-byte.
+      if (isResumableInFlightLoopStep(definition, stepId, stepState.phase)) {
+        continue;
+      }
       if (
         stepState.phase === "in-flight" ||
         stepState.phase === "awaiting-signal" ||
@@ -1094,39 +1107,92 @@ async function runLoop(
   const whileFn = loopFns(primitive.while);
   const carryFn = loopFns(primitive.carry);
 
-  const rawInput =
+  // Read the log once for cursor re-derivation and input reconstruction.
+  // reloadState reflects durable + this-process buffer, so every "already
+  // emitted?" check below is against everything committed so far; a
+  // re-emit of anything reflected is refused by the state machine.
+  const log = await env.repoStore.read(runId);
+  let state = await reloadState(env, runId);
+
+  // The loop container is in state.steps only on resume; a fresh run
+  // emits its StepStarted, a resumed run must not (re-emit throws).
+  if (!state.steps.has(primitive.id)) {
+    await emitStepStartedWithValue(env, runId, primitive.id, {
+      while: primitive.while,
+      carry: primitive.carry,
+      maxIterations: primitive.maxIterations,
+    });
+  }
+
+  // Replay fully-done iterations (child terminal AND step completed) from
+  // the log to re-derive the cursor, the threaded input, and whether the
+  // loop already reached its outcome before the crash (the post-routing
+  // window). while/carry are pure, so replaying them over recorded inputs
+  // and outputs reproduces the pre-crash decisions.
+  const iterationZeroInput =
     primitive.input !== undefined
       ? evaluate(primitive.input, selectorCtx)
       : null;
-  await emitStepStartedWithValue(env, runId, primitive.id, {
-    while: primitive.while,
-    carry: primitive.carry,
-    maxIterations: primitive.maxIterations,
-  });
-
-  let currentInput: unknown = rawInput === undefined ? null : rawInput;
+  let currentInput: unknown =
+    iterationZeroInput === undefined ? null : iterationZeroInput;
+  let iteration = 0;
+  let terminated = false;
   let outcome: "converged" | "exhausted" = "exhausted";
-  let iterations = 0;
-  for (let i = 0; i < primitive.maxIterations; i += 1) {
+  while (isIterationDone(state, primitive.id, iteration)) {
+    const doneStepId = `${primitive.id}[${String(iteration)}]`;
+    const doneInput = await resolveIterationInput(env, log, doneStepId);
+    const doneOutput = await resolveIterationOutput(env, log, doneStepId);
+    iteration += 1;
+    if (!whileFn(doneOutput, doneInput)) {
+      outcome = "converged";
+      terminated = true;
+      break;
+    }
+    if (iteration >= primitive.maxIterations) {
+      outcome = "exhausted";
+      terminated = true;
+      break;
+    }
+    currentInput = carryFn(doneOutput, doneInput);
+  }
+
+  // Prefer the resume iteration's own recorded input (an in-flight
+  // iteration whose StepStarted is durable) over the carry recomputation.
+  if (!terminated) {
+    const resumeInputRef = findStepInputRef(
+      log,
+      `${primitive.id}[${String(iteration)}]`,
+    );
+    if (resumeInputRef !== undefined) {
+      currentInput = await env.blobs.resolveRef(resumeInputRef);
+    }
+  }
+
+  let iterations = iteration;
+  for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
     iterations = i + 1;
     const stepId = `${primitive.id}[${String(i)}]`;
     const childRunId = `${primitive.id}__${String(i)}`;
 
-    await emitStepStartedWithValue(env, runId, stepId, currentInput);
-    let state = await reloadState(env, runId);
-    const spawned: WorkflowEvent = {
-      kind: "ChildSpawned",
-      seq: state.lastSeq + 1,
-      at: env.clock().toISOString(),
-      stepId,
-      childRunId,
-      childDefinitionRef: primitive.body.id,
-    };
-    state = await commit(env, runId, spawned);
-    void state;
+    state = await reloadState(env, runId);
+    if (!state.steps.has(stepId)) {
+      await emitStepStartedWithValue(env, runId, stepId, currentInput);
+    }
+    state = await reloadState(env, runId);
+    if (!state.children.has(childRunId)) {
+      const spawned: WorkflowEvent = {
+        kind: "ChildSpawned",
+        seq: state.lastSeq + 1,
+        at: env.clock().toISOString(),
+        stepId,
+        childRunId,
+        childDefinitionRef: primitive.body.id,
+      };
+      state = await commit(env, runId, spawned);
+      void state;
+    }
     // Flush the spawn record durable before the child runs so a resumed
-    // run's parent log records the spawn ahead of any child-side work
-    // (mirrors runChildWorkflow).
+    // parent log records the spawn ahead of any child-side work.
     await flush(env, runId);
 
     const res = await runLoopIteration({
@@ -1139,16 +1205,21 @@ async function runLoop(
     });
 
     let after = await reloadState(env, runId);
-    const childCompleted: WorkflowEvent = {
-      kind: "ChildCompleted",
-      seq: after.lastSeq + 1,
-      at: env.clock().toISOString(),
-      childRunId,
-      terminalStatus: res.terminalStatus,
-    };
-    after = await commit(env, runId, childCompleted);
-    void after;
-    await emitStepCompletedWithValue(env, runId, stepId, res.output);
+    if (after.children.get(childRunId)?.terminalStatus === undefined) {
+      const childCompleted: WorkflowEvent = {
+        kind: "ChildCompleted",
+        seq: after.lastSeq + 1,
+        at: env.clock().toISOString(),
+        childRunId,
+        terminalStatus: res.terminalStatus,
+      };
+      after = await commit(env, runId, childCompleted);
+      void after;
+    }
+    after = await reloadState(env, runId);
+    if (after.steps.get(stepId)?.phase !== "completed") {
+      await emitStepCompletedWithValue(env, runId, stepId, res.output);
+    }
     await flush(env, runId);
 
     if (res.terminalStatus !== "completed") {
@@ -1165,8 +1236,7 @@ async function runLoop(
       );
     }
 
-    const shouldContinue = Boolean(whileFn(res.output, currentInput));
-    if (!shouldContinue) {
+    if (!whileFn(res.output, currentInput)) {
       outcome = "converged";
       break;
     }
@@ -1181,6 +1251,53 @@ async function runLoop(
   const output = { outcome, iterations, carry: currentInput };
   await emitStepCompletedWithValue(env, runId, primitive.id, output);
   return output;
+}
+
+function isIterationDone(
+  state: RunState,
+  loopId: string,
+  iteration: number,
+): boolean {
+  const child = state.children.get(`${loopId}__${String(iteration)}`);
+  const step = state.steps.get(`${loopId}[${String(iteration)}]`);
+  return child?.terminalStatus !== undefined && step?.phase === "completed";
+}
+
+function findStepInputRef(
+  log: readonly WorkflowEvent[],
+  stepId: string,
+): string | undefined {
+  for (const event of log) {
+    if (event.kind === "StepStarted" && event.stepId === stepId) {
+      return event.input.ref;
+    }
+  }
+  return undefined;
+}
+
+async function resolveIterationInput(
+  env: WorkflowRuntimeEnv,
+  log: readonly WorkflowEvent[],
+  stepId: string,
+): Promise<unknown> {
+  const ref = findStepInputRef(log, stepId);
+  if (ref === undefined) {
+    throw new Error(`loop resume: no StepStarted input for ${stepId}`);
+  }
+  return env.blobs.resolveRef(ref);
+}
+
+async function resolveIterationOutput(
+  env: WorkflowRuntimeEnv,
+  log: readonly WorkflowEvent[],
+  stepId: string,
+): Promise<unknown> {
+  for (const event of log) {
+    if (event.kind === "StepCompleted" && event.stepId === stepId) {
+      return env.blobs.resolveRef(event.output.ref);
+    }
+  }
+  throw new Error(`loop resume: no StepCompleted output for ${stepId}`);
 }
 
 /**
@@ -1212,8 +1329,13 @@ async function routeLoopOutcome(
   const selected = outcome === "converged" ? normalDependents : onExhausted;
 
   const toSkip = collectBranchClosure(definition, notSelected, selected);
+  // On a resume where routing already happened before the crash, the
+  // sentinels are durable; re-emitting a StepStarted for one would throw
+  // step-already-started. Skip anything already in state.steps.
+  const state = await reloadState(env, runId);
   for (const skipId of toSkip) {
     if (abort.aborted) break;
+    if (state.steps.has(skipId)) continue;
     const sentinel = { skipped: true, loopId: primitive.id, outcome };
     await emitStepStartedWithValue(env, runId, skipId, sentinel);
     await emitStepCompletedWithValue(env, runId, skipId, sentinel);

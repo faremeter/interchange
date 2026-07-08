@@ -10,7 +10,29 @@ import {
   isTerminalRunPhase,
   isTerminalStepPhase,
   type RunState,
+  type StepPhase,
 } from "../state-machine/index";
+
+/**
+ * A loop container `<loopId>` (or its synthetic iteration step
+ * `<loopId>[i]`) left in-flight in a seed log is the one resumable
+ * in-flight shape: `runLoop` re-derives its position from the log and
+ * continues. Every other in-flight/awaiting-* step stays rejected on
+ * resume. The resume guard and `nextSchedulable` both key their loop
+ * carve-out on this single predicate so the id-parsing lives in exactly
+ * one place. A synthetic iteration id `<loopId>[i]` is not a definition
+ * key (brackets are outside STEP_ID_PATTERN), so it is stripped back to
+ * its container to resolve the kind.
+ */
+export function isResumableInFlightLoopStep(
+  def: WorkflowDefinition,
+  stepId: string,
+  phase: StepPhase,
+): boolean {
+  if (phase !== "in-flight") return false;
+  const containerId = stepId.replace(/\[\d+\]$/, "");
+  return def.steps[containerId]?.kind === "loop";
+}
 
 export function nextSchedulable(
   def: WorkflowDefinition,
@@ -38,8 +60,19 @@ export function nextSchedulable(
   }
   const out: Primitive[] = [];
   for (const stepId of def.stepOrder) {
-    if (state.steps.has(stepId)) continue;
+    // The in-memory in-flight skip stays ahead of the loop exemption so a
+    // loop already running this process is not double-scheduled.
     if (inFlight.has(stepId)) continue;
+    const existing = state.steps.get(stepId);
+    // Skip any step already in state.steps EXCEPT a resumable in-flight
+    // loop container, which is re-scheduled so runLoop can re-derive its
+    // cursor from the log and continue.
+    if (
+      existing !== undefined &&
+      !isResumableInFlightLoopStep(def, stepId, existing.phase)
+    ) {
+      continue;
+    }
     const primitive = def.steps[stepId];
     if (!primitive) continue;
     if (!areDepsResolved(primitive, state)) continue;
