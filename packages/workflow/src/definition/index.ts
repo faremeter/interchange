@@ -12,6 +12,7 @@ export {
 } from "./selectors";
 
 export {
+  action,
   awaitSignal,
   childWorkflow,
   escalation,
@@ -19,11 +20,14 @@ export {
   map,
   sleep,
   step,
+  type ActionOpts,
+  type ActionPrimitive,
   type AwaitSignalOpts,
   type AwaitSignalPrimitive,
   type ChildWorkflowOpts,
   type ChildWorkflowPrimitive,
   type DrainBehavior,
+  type EffectSpec,
   type EscalationOpts,
   type EscalationPrimitive,
   type GateOpts,

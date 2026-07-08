@@ -183,6 +183,7 @@ function applyDefaultInput(
         ...primitive,
         step: applyDefaultInputStep(primitive.step, prior),
       };
+    case "action":
     case "awaitSignal":
     case "sleep":
     case "gate":

@@ -101,7 +101,13 @@ export function walkCapabilities(
     }
     const agent = extractAgent(primitive);
     if (agent === null) {
-      perStep.set(stepId, Object.freeze({ grants: triggerGrants }));
+      // Non-agent primitives carry no agent grants. An `action`
+      // additionally contributes its declared `effect:<cap>` grants so
+      // the operator-approval gate sees them; every other non-agent
+      // primitive gets only the trigger-derived grants.
+      const actionGrants = collectActionGrants(primitive);
+      const merged = mergeGrants(actionGrants, triggerGrants);
+      perStep.set(stepId, Object.freeze({ grants: merged }));
       continue;
     }
     const agentGrants = collectAgentGrants(agent, registry, unresolved);
@@ -131,6 +137,23 @@ function extractAgent(
     return primitive.step.agent;
   }
   return null;
+}
+
+/**
+ * Collect an action's `effect:<cap>` grants from its declared `requires`
+ * set. Non-action primitives contribute none.
+ */
+function collectActionGrants(
+  primitive: WorkflowDefinition["steps"][string],
+): string[] {
+  if (primitive.kind !== "action") {
+    return [];
+  }
+  const grants = new Set<string>();
+  for (const capability of primitive.effect?.requires ?? []) {
+    grants.add(`effect:${capability}`);
+  }
+  return [...grants];
 }
 
 function collectAgentGrants(

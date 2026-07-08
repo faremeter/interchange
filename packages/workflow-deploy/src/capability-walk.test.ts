@@ -11,7 +11,9 @@ import {
   type BaseEnv,
 } from "@intx/agent";
 import {
+  action,
   defineWorkflow,
+  step,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
 
@@ -217,5 +219,63 @@ describe("walkCapabilities", () => {
         (g) => g.startsWith("mail.address:") || g.startsWith("mail.send:"),
       ),
     ).toBe(false);
+  });
+
+  test("emits an effect grant for each of an action's declared requires", () => {
+    const registry = createDefaultDirectorRegistry();
+    const workflow = defineWorkflow({
+      id: "wf_action",
+      trigger: { type: "manual" },
+      steps: {
+        commit: action({
+          handler: "commit",
+          effect: { requires: ["git:commit", "shell:run"] },
+        }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("commit");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("effect:git:commit")).toBe(true);
+    expect(grants.has("effect:shell:run")).toBe(true);
+    // An action carries no agent, so it contributes no agent-shaped grants.
+    expect(declarations.grants.some((g) => g.startsWith("tool:"))).toBe(false);
+    expect(declarations.grants.some((g) => g.startsWith("director:"))).toBe(
+      false,
+    );
+  });
+
+  test("actions and agent steps each carry their own grants", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = makeTrivialAgent();
+    const workflow = defineWorkflow({
+      id: "wf_mixed",
+      trigger: { type: "manual" },
+      steps: {
+        plan: step({ agent }),
+        commit: action({
+          handler: "commit",
+          effect: { requires: ["git:commit"] },
+          after: ["plan"],
+        }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const planGrants = walk.perStep.get("plan");
+    const commitGrants = walk.perStep.get("commit");
+    if (planGrants === undefined || commitGrants === undefined) {
+      throw new Error("missing declarations");
+    }
+
+    // The agent step carries tool grants but no effect grants.
+    expect(planGrants.grants.some((g) => g.startsWith("tool:"))).toBe(true);
+    expect(planGrants.grants.some((g) => g.startsWith("effect:"))).toBe(false);
+    // The action carries its effect grant but no agent grants.
+    expect(commitGrants.grants).toContain("effect:git:commit");
+    expect(commitGrants.grants.some((g) => g.startsWith("tool:"))).toBe(false);
   });
 });
