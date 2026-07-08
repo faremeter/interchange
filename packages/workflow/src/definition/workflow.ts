@@ -125,6 +125,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
   }
 
   validateAfterRefs(steps);
+  // Runs after validateAfterRefs so every after/then/else endpoint is
+  // already known to name a real step; this pass only rejects cycles.
+  validateAcyclic(steps);
 
   const definition: WorkflowDefinition = {
     id: config.id,
@@ -255,6 +258,83 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
       }
     }
   }
+}
+
+/**
+ * Reject any dependency cycle in the definition. The graph is the union
+ * of two edge kinds: an `after: [X]` on step S contributes X -> S (X
+ * must precede S), and a `gate` G with branches `then`/`else`
+ * contributes G -> then and G -> else. A legitimate gate only ever names
+ * forward branches, so its edges run the same direction as the `after`
+ * edges and close no loop; a gate that names an ancestor (a back-edge)
+ * closes a cycle, which at runtime silently corrupts branch-pruning so
+ * the not-selected branch's subtree runs. Rejecting the cycle here makes
+ * that unconstructable. The check must include the gate edges: an F2
+ * back-edge forms a cycle only in the `after ∪ gate` graph, never in the
+ * `after` graph alone, so a pure-`after` check would miss it.
+ */
+function validateAcyclic(steps: Record<string, Primitive>): void {
+  const adjacency = buildDependencyAdjacency(steps);
+  const done = new Set<string>();
+  const onPath = new Set<string>();
+  const path: string[] = [];
+
+  const visit = (node: string): void => {
+    onPath.add(node);
+    path.push(node);
+    for (const next of adjacency.get(node) ?? []) {
+      if (onPath.has(next)) {
+        const cycle = path.slice(path.indexOf(next));
+        cycle.push(next);
+        throw new Error(
+          `workflow definition has a dependency cycle: ${cycle.join(" -> ")}`,
+        );
+      }
+      if (!done.has(next)) {
+        visit(next);
+      }
+    }
+    onPath.delete(node);
+    path.pop();
+    done.add(node);
+  };
+
+  for (const node of Object.keys(steps)) {
+    if (!done.has(node)) {
+      visit(node);
+    }
+  }
+}
+
+/**
+ * Build the dependency adjacency map once (dep -> dependents plus gate ->
+ * branch targets) so the cycle check is a single DFS over a precomputed
+ * graph rather than an edge rescan per node.
+ */
+function buildDependencyAdjacency(
+  steps: Record<string, Primitive>,
+): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>();
+  const addEdge = (from: string, to: string): void => {
+    const edges = adjacency.get(from);
+    if (edges === undefined) {
+      adjacency.set(from, [to]);
+    } else {
+      edges.push(to);
+    }
+  };
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    if (primitive.after !== undefined) {
+      for (const dep of primitive.after) {
+        addEdge(dep, stepId);
+      }
+    }
+    if (primitive.kind === "gate") {
+      addEdge(stepId, primitive.then);
+      addEdge(stepId, primitive.else);
+    }
+  }
+  return adjacency;
 }
 
 /**

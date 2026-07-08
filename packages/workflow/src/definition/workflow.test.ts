@@ -10,6 +10,7 @@ import {
 import {
   awaitSignal,
   defineWorkflow,
+  gate,
   hashDefinition,
   map,
   sleep,
@@ -123,6 +124,124 @@ describe("defineWorkflow", () => {
       steps: { a: step({ agent: a }) },
     });
     expect(def.triggers).toEqual([{ type: "manual" }]);
+  });
+});
+
+describe("acyclicity validation", () => {
+  test("rejects a gate whose branch names an ancestor (F2 back-edge)", () => {
+    // G runs after A, and G's then-branch points back at A. This is a
+    // cycle only in the after-union-gate graph; a pure-after check would
+    // accept it and the runtime would silently run the wrong branch.
+    const a = makeAgent("a");
+    const e = makeAgent("e");
+    const edown = makeAgent("edown");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          A: step({ agent: a }),
+          G: gate({
+            when: { from: "steps.A.output" },
+            then: "A",
+            else: "E",
+            after: ["A"],
+          }),
+          E: step({ agent: e, after: ["G"] }),
+          Edown: step({ agent: edown, after: ["E"] }),
+        },
+      }),
+    ).toThrow(/dependency cycle/);
+  });
+
+  test("rejects a transitive after cycle and names the path", () => {
+    const a = makeAgent("a");
+    const b = makeAgent("b");
+    const c = makeAgent("c");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          a: step({ agent: a, after: ["c"] }),
+          b: step({ agent: b, after: ["a"] }),
+          c: step({ agent: c, after: ["b"] }),
+        },
+      }),
+    ).toThrow(/dependency cycle: .*->.*/);
+  });
+
+  test("rejects a two-node cycle that the self-check does not catch", () => {
+    // validateAfterRefs only rejects a step depending on itself; a
+    // two-node cycle is the minimal case that validateAcyclic owns.
+    const x = makeAgent("x");
+    const y = makeAgent("y");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          x: step({ agent: x, after: ["y"] }),
+          y: step({ agent: y, after: ["x"] }),
+        },
+      }),
+    ).toThrow(/dependency cycle/);
+  });
+
+  test("accepts a diamond join (gate branches reconverge)", () => {
+    const plan = makeAgent("plan");
+    const x = makeAgent("x");
+    const y = makeAgent("y");
+    const j = makeAgent("j");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          plan: step({ agent: plan }),
+          decide: gate({
+            when: { from: "steps.plan.output" },
+            then: "x",
+            else: "y",
+            after: ["plan"],
+          }),
+          x: step({ agent: x, after: ["decide"] }),
+          y: step({ agent: y, after: ["decide"] }),
+          join: step({ agent: j, after: ["x", "y"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts two gates sharing a downstream target", () => {
+    const p = makeAgent("p");
+    const shared = makeAgent("shared");
+    const t1 = makeAgent("t1");
+    const t2 = makeAgent("t2");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          p: step({ agent: p }),
+          g1: gate({
+            when: { from: "steps.p.output" },
+            then: "shared",
+            else: "t1",
+            after: ["p"],
+          }),
+          g2: gate({
+            when: { from: "steps.p.output" },
+            then: "shared",
+            else: "t2",
+            after: ["p"],
+          }),
+          shared: step({ agent: shared, after: ["g1", "g2"] }),
+          t1: step({ agent: t1, after: ["g1"] }),
+          t2: step({ agent: t2, after: ["g2"] }),
+        },
+      }),
+    ).not.toThrow();
   });
 });
 
