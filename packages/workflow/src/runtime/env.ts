@@ -13,7 +13,7 @@ import type {
   AuthorizeContext,
   WorkflowAuthorizeFn,
 } from "../authorize-context";
-import type { Primitive } from "../definition/index";
+import type { Primitive, WorkflowDefinition } from "../definition/index";
 import type { WorkflowEvent } from "../state-machine/index";
 import type { DrainController } from "./drain";
 
@@ -285,6 +285,31 @@ export type SpawnChildWorkflow = (input: {
 }>;
 
 /**
+ * Run one loop iteration as a child run. Distinct from `spawnChild`:
+ * loop iterations run the inline `bodyDefinition` against a SHARED store
+ * (the parent's repoStore + blobs + effects) under a caller-supplied
+ * DETERMINISTIC `childRunId`, and return the child's RESOLVED step
+ * outputs (not just a terminal status) so the loop's while/carry
+ * functions can read them without touching blob refs. The host owns
+ * idempotency: a `childRunId` whose durable log is already terminal
+ * returns its recorded outputs without re-running. Because a loop body
+ * may not suspend (no awaitSignal/sleep/childWorkflow), a persisted
+ * child log is always terminal -- a mid-iteration crash drops the whole
+ * buffered segment, leaving an empty log the host re-runs fresh.
+ */
+export type RunLoopIteration = (input: {
+  bodyDefinition: WorkflowDefinition;
+  childRunId: string;
+  input: unknown;
+  parentRunId: string;
+  parentStepId: string;
+  signal: AbortSignal;
+}) => Promise<{
+  terminalStatus: "completed" | "failed" | "cancelled";
+  output: Record<string, unknown>;
+}>;
+
+/**
  * The runtime body's full env surface. The two implementations
  * (`runLocal` and the production child-process entry point) construct
  * differently-flavoured concrete values for each field but the body
@@ -316,6 +341,12 @@ export interface WorkflowRuntimeEnv {
   effects?: EffectLedger;
   /** Spawn callback for `childWorkflow`. */
   spawnChild: SpawnChildWorkflow;
+  /**
+   * Run one loop iteration as a child run against the shared store.
+   * Optional: a host that does not wire it does not support `loop`, and
+   * `runLoop` fails loudly. runLocal wires it.
+   */
+  runLoopIteration?: RunLoopIteration;
   /**
    * Clock for timestamp generation. Tests inject a deterministic
    * implementation; production uses `new Date()`. Keeping the clock on

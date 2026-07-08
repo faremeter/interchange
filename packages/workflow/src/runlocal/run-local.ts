@@ -31,6 +31,7 @@ import type {
   WorkflowRuntimeEnv,
 } from "../runtime/env";
 import { createInMemoryBlobSubstrate } from "./blob-substrate";
+import { createLoopIteration } from "./loop-iteration";
 import { createInMemoryRepoStore } from "./repo-store";
 import { createInMemoryScheduler } from "./scheduler";
 import { createInMemorySignalChannel } from "./signal-channel";
@@ -114,6 +115,10 @@ export function runLocal(
     newId,
     drain: createNoopDrainController(definition),
   };
+  // Wired after construction because the loop-iteration runner closes
+  // over the env it belongs to, so that each iteration's child run
+  // shares the parent's repoStore, blobs, and effect ledger.
+  env.runLoopIteration = createLoopIteration(env);
 
   return runtimeRun(definition, env, extractRuntimeOptions(options));
 }
