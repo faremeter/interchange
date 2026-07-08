@@ -20,7 +20,11 @@ import type {
 import type { WorkflowDefinition } from "../definition/index";
 import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
+import { createEffectContext } from "../runtime/effect-context";
 import type {
+  ActionInvoker,
+  EffectContext,
+  EffectLedger,
   StepInvoker,
   SpawnChildWorkflow,
   WorkflowRun,
@@ -40,6 +44,15 @@ export interface RunLocalOptions extends RuntimeRunOptions {
    * (which constructs `createAgent` and calls `agent.send`).
    */
   invokeStep?: StepInvoker;
+  /**
+   * Override the action-runner. The default resolves the handler ref via
+   * `actionResolver`, builds an `EffectContext` against the in-memory
+   * ledger, and runs the handler. Tests that need a shared durable
+   * ledger across a re-run construct the env directly instead.
+   */
+  invokeAction?: ActionInvoker;
+  /** Resolve an action `handler` ref to a handler function. */
+  actionResolver?: (ref: string) => ActionHandler;
   /**
    * Workflow-level authorize. Defaults to `() => allow`; tests inject
    * a spy.
@@ -78,6 +91,10 @@ export function runLocal(
     }));
   const invokeStep: StepInvoker =
     options.invokeStep ?? createDefaultStepInvoker(authorize);
+  const effects = createInMemoryEffectLedger();
+  const invokeAction: ActionInvoker =
+    options.invokeAction ??
+    createDefaultActionInvoker(authorize, effects, options.actionResolver);
   const clock = options.clock ?? defaultClock;
   const newId = options.newId ?? defaultNewId;
 
@@ -90,6 +107,8 @@ export function runLocal(
     directors,
     authorize,
     invokeStep,
+    invokeAction,
+    effects,
     spawnChild: createNoopSpawnChild(options.childResolver),
     clock,
     newId,
@@ -128,6 +147,61 @@ function createDefaultStepInvoker(authorize: WorkflowAuthorizeFn): StepInvoker {
   return async ({ agent, authzContext }) => {
     await authorize(`tool:${agent.id}`, "invoke", authzContext);
     return { output: null };
+  };
+}
+
+/**
+ * An action handler: deterministic host TypeScript that performs its
+ * external effects through the capability- and ledger-checked
+ * `EffectContext`. The default action invoker resolves a handler ref to
+ * one of these.
+ */
+export type ActionHandler = (
+  input: unknown,
+  ctx: EffectContext,
+  signal: AbortSignal,
+) => Promise<unknown>;
+
+/**
+ * Default action invoker. Resolves the handler ref, builds an
+ * EffectContext against the supplied ledger and authorize, and runs the
+ * handler. Failing loudly when no resolver is wired mirrors
+ * `createNoopSpawnChild`: a silent stub would let action workflows pass
+ * tests against effects that never ran.
+ */
+function createDefaultActionInvoker(
+  authorize: WorkflowAuthorizeFn,
+  effects: EffectLedger,
+  resolver: ((ref: string) => ActionHandler) | undefined,
+): ActionInvoker {
+  return async ({ handler, input, requires, authzContext, signal }) => {
+    if (!resolver) {
+      throw new Error(
+        `action ${handler} requires an actionResolver; pass one to runLocal({ actionResolver })`,
+      );
+    }
+    const fn = resolver(handler);
+    const ctx = createEffectContext({
+      authorize,
+      effects,
+      requires,
+      authzContext,
+      input,
+    });
+    const output = await fn(input, ctx, signal);
+    return { output };
+  };
+}
+
+function createInMemoryEffectLedger(): EffectLedger {
+  const store = new Map<string, { output: unknown }>();
+  return {
+    async lookup(effectKey) {
+      return store.get(effectKey);
+    },
+    async record(effectKey, output) {
+      store.set(effectKey, { output });
+    },
   };
 }
 

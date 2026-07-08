@@ -169,6 +169,74 @@ export interface StepInvokeResult {
 }
 
 /**
+ * Per-action deterministic effect handler invocation, the effect analog
+ * of `StepInvoker`. The runtime hands the handler ref, materialized
+ * input, declared effect capabilities, authz context, and abort signal
+ * across the boundary; the host resolves the ref to a handler function,
+ * runs it with a capability- and ledger-checked `EffectContext` built
+ * from `env.authorize` and `env.effects`, and returns the output. No
+ * inference runs. The runtime never resolves the handler ref itself,
+ * mirroring how it never reads `agent.toolFactories`.
+ */
+export type ActionInvoker = (
+  input: ActionInvokeRequest,
+) => Promise<ActionInvokeResult>;
+
+export interface ActionInvokeRequest {
+  /** Ref the host resolves to a deterministic effect handler. */
+  handler: string;
+  /** The materialized input the runtime resolved from the action's `input` selector. */
+  input: unknown;
+  /** Capabilities the action declared it may exercise (its `effect.requires`). */
+  requires: readonly string[];
+  /** Workflow-runtime context for every authz call inside the handler. */
+  authzContext: AuthorizeContext;
+  /** Cancelled when the action is being torn down (timeout, cancellation). */
+  signal: AbortSignal;
+}
+
+export interface ActionInvokeResult {
+  output: unknown;
+}
+
+/**
+ * Crash-safe exactly-once substrate for action effects. It is a
+ * substrate DISTINCT from the run event log: recording an effect must
+ * NOT enter the run-log commit chain or trigger a segment flush, so a
+ * dropped run-log buffer never takes the ledger with it.
+ *
+ * `record` MUST be durable on return (synchronous with respect to
+ * durability), independent of the run-log buffer, and MUST NOT be
+ * co-located with `StepCompleted` in a shared batch -- the crash-dedup
+ * contract depends on the ledger surviving a dropped run-log buffer.
+ * The in-memory implementation is trivially durable; a production
+ * substrate owns this contract.
+ */
+export interface EffectLedger {
+  /** Return the recorded output for a key, or `undefined` on a miss. */
+  lookup(effectKey: string): Promise<{ output: unknown } | undefined>;
+  /** Durably record an effect's output under its key (see contract above). */
+  record(effectKey: string, output: unknown): Promise<void>;
+}
+
+/**
+ * Capability- and ledger-checked handle passed to an action handler.
+ * Every external effect the handler performs must run through `perform`
+ * so it is (a) authorized against the operator-approved effect floor and
+ * (b) deduplicated by the effect ledger across a crash re-run. `perform`
+ * refuses any `capability` not in the action's declared `requires` set,
+ * calls `env.authorize` before the effect, and on a ledger hit returns
+ * the recorded result without running `run`.
+ */
+export interface EffectContext {
+  perform(opts: {
+    effectId: string;
+    capability: string;
+    run: () => Promise<unknown>;
+  }): Promise<unknown>;
+}
+
+/**
  * Blob substrate. The default-threshold (1 MiB) spill is implemented
  * by `recordOutput`; consumers receive the same shape (`{ ref }`)
  * regardless of whether the value spilled to a blob or inlined.
@@ -232,6 +300,20 @@ export interface WorkflowRuntimeEnv {
   authorize: WorkflowAuthorizeFn;
   /** Per-step reactor invocation. Production wires this through to `createAgent`. */
   invokeStep: StepInvoker;
+  /**
+   * Per-action deterministic effect handler invocation. Optional: a host
+   * that does not wire it does not support `action` primitives, and
+   * `runAction` fails loudly if a workflow uses one. runLocal always
+   * wires it.
+   */
+  invokeAction?: ActionInvoker;
+  /**
+   * Effect ledger for crash-safe exactly-once action effects. On the env
+   * only so the host's `invokeAction` can build its `EffectContext`
+   * against it; the runtime body never calls it directly (same as
+   * `authorize`). Optional for the same reason as `invokeAction`.
+   */
+  effects?: EffectLedger;
   /** Spawn callback for `childWorkflow`. */
   spawnChild: SpawnChildWorkflow;
   /**

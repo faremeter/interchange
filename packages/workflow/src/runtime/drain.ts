@@ -68,6 +68,8 @@ export function resolveDrainBehavior(
   switch (primitive.kind) {
     case "step":
       return primitive.drainBehavior ?? "cancel";
+    case "action":
+      return primitive.drainBehavior ?? "cancel";
     case "sleep":
       return primitive.drainBehavior ?? "cancel";
     case "childWorkflow":

@@ -9,6 +9,7 @@
 // body.
 
 import type {
+  ActionPrimitive,
   AwaitSignalPrimitive,
   ChildWorkflowPrimitive,
   EscalationPrimitive,
@@ -689,6 +690,8 @@ async function runPrimitive(
   switch (primitive.kind) {
     case "step":
       return runStep(env, runId, primitive, selectorCtx, abort);
+    case "action":
+      return runAction(env, runId, primitive, selectorCtx, abort);
     case "map":
       return runMap(env, runId, primitive, selectorCtx, abort);
     case "gate":
@@ -996,6 +999,64 @@ async function runStep(
       abort.removeEventListener("abort", onOuter);
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+}
+
+/**
+ * Execute a deterministic effect node. Mirrors the audit bracket the
+ * other non-step runners use (StepStarted -> invoke -> StepCompleted via
+ * the shared emit helpers) but calls `env.invokeAction` instead of
+ * `env.invokeStep`. No retry loop: an action is single-attempt, so a
+ * thrown effect lands `StepFailed` through `runPrimitiveSafe` like every
+ * other non-step runner. Exactly-once lives in the handler's
+ * EffectContext (per-effect ledger dedup), not here; the runtime records
+ * only the audit events and the node output.
+ */
+async function runAction(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  primitive: ActionPrimitive,
+  selectorCtx: SelectorContext,
+  abort: AbortSignal,
+): Promise<unknown> {
+  const invokeAction = env.invokeAction;
+  if (invokeAction === undefined) {
+    throw new Error(
+      `action ${primitive.id} requires an invokeAction on the env; this host does not support action primitives`,
+    );
+  }
+  const rawInput =
+    primitive.input !== undefined
+      ? evaluate(primitive.input, selectorCtx)
+      : null;
+  const input = rawInput === undefined ? null : rawInput;
+  await emitStepStartedWithValue(env, runId, primitive.id, input);
+
+  const actionAbort = new AbortController();
+  const onOuter = (): void => {
+    actionAbort.abort();
+  };
+  abort.addEventListener("abort", onOuter, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (primitive.timeout !== undefined) {
+    timer = setTimeout(() => {
+      actionAbort.abort();
+    }, primitive.timeout);
+  }
+
+  try {
+    const result = await invokeAction({
+      handler: primitive.handler,
+      input,
+      requires: primitive.effect?.requires ?? [],
+      authzContext: { stepId: primitive.id, attempt: 1, runId },
+      signal: actionAbort.signal,
+    });
+    await emitStepCompletedWithValue(env, runId, primitive.id, result.output);
+    return result.output;
+  } finally {
+    abort.removeEventListener("abort", onOuter);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

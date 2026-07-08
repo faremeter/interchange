@@ -1,5 +1,10 @@
 export type {
+  ActionInvokeRequest,
+  ActionInvokeResult,
+  ActionInvoker,
   BlobSubstrate,
+  EffectContext,
+  EffectLedger,
   PrimitiveKind,
   RepoStore,
   RunResult,
@@ -12,6 +17,11 @@ export type {
   WorkflowRun,
   WorkflowRuntimeEnv,
 } from "./env";
+
+export {
+  createEffectContext,
+  type EffectContextConfig,
+} from "./effect-context";
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 

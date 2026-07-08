@@ -114,9 +114,44 @@ export interface EscalationPrimitive extends PrimitiveBase {
   data?: Selector;
 }
 
+/**
+ * Declares the effect capabilities an action's handler may exercise.
+ * The deploy capability walk collects each entry as an `effect:<cap>`
+ * grant for operator approval, and the runtime's EffectContext refuses
+ * any effect whose capability is not listed here.
+ */
+export interface EffectSpec {
+  requires: readonly string[];
+}
+
+/**
+ * A deterministic host-effect node: git/build/commit work that must be
+ * a first-class, checkpointed step without an agent in front of it.
+ * `handler` is a string ref the host `invokeAction` callback resolves to
+ * a handler function, mirroring how `step.agent` is resolved by
+ * `invokeStep` -- kept a string so the definition stays hashable.
+ *
+ * Handler contract (the runtime cannot enforce these; the handler author
+ * owns them): every external effect must run through the EffectContext's
+ * `perform`, each effect must be idempotent keyed by its `effectId`
+ * (check-then-act) or atomic with its ledger record, and the handler's
+ * returned output must be deterministic given its effects' results --
+ * on crash-resume the handler body is replayed against ledger hits and
+ * its output reconstructed.
+ */
+export interface ActionPrimitive extends PrimitiveBase {
+  kind: "action";
+  handler: string;
+  input?: Selector;
+  effect?: EffectSpec;
+  timeout?: number;
+  drainBehavior?: DrainBehavior;
+}
+
 export type Primitive =
   | StepPrimitive
   | MapPrimitive
+  | ActionPrimitive
   | GatePrimitive
   | AwaitSignalPrimitive
   | SleepPrimitive
@@ -280,6 +315,29 @@ export function escalation(opts: EscalationOpts): EscalationPrimitive {
     id: "",
     to: opts.to,
     ...(opts.data !== undefined ? { data: opts.data } : {}),
+    ...(opts.after !== undefined ? { after: opts.after } : {}),
+  };
+}
+
+export interface ActionOpts {
+  handler: string;
+  input?: Selector;
+  effect?: EffectSpec;
+  timeout?: number;
+  drainBehavior?: DrainBehavior;
+  after?: readonly string[];
+}
+
+export function action(opts: ActionOpts): ActionPrimitive {
+  const drainBehavior: DrainBehavior = opts.drainBehavior ?? "cancel";
+  return {
+    kind: "action",
+    id: "",
+    handler: opts.handler,
+    drainBehavior,
+    ...(opts.input !== undefined ? { input: opts.input } : {}),
+    ...(opts.effect !== undefined ? { effect: opts.effect } : {}),
+    ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
   };
 }
