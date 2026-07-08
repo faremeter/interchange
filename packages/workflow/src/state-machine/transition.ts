@@ -70,7 +70,8 @@ export type TransitionErrorCode =
   | "timer"
   | "cancel-origin"
   | "consumed-message"
-  | "step-already-started";
+  | "step-already-started"
+  | "child-already-spawned";
 
 export class TransitionError extends Error {
   readonly event: WorkflowEvent;
@@ -517,6 +518,21 @@ function handleCancelPropagated(
 
 function handleChildSpawned(state: RunState, e: ChildSpawned): RunState {
   requireRunPhase(state, e, "running");
+  // ChildSpawned inserts a child into the keyed children map for the
+  // first time, like handleStepStarted inserts into steps. A second
+  // ChildSpawned for an existing childRunId is a double-insertion, not a
+  // re-observed transition, so it is rejected rather than allowed to
+  // clobber the child's terminalStatus/cancelRequested (which would
+  // resurrect a finished child into the cancel cascade). This is
+  // replay-safe because the sole emit site mints a fresh childRunId per
+  // spawn, so no duplicate ChildSpawned is ever persisted.
+  if (state.children.has(e.childRunId)) {
+    throw new TransitionError(
+      "child-already-spawned",
+      `ChildSpawned for child ${e.childRunId} which already has state`,
+      e,
+    );
+  }
   const children = new Map(state.children);
   children.set(e.childRunId, {
     childRunId: e.childRunId,

@@ -751,6 +751,89 @@ describe("applyEvent: children", () => {
     });
     expect(state.children.get("child-1")?.terminalStatus).toBe("completed");
   });
+
+  test("rejects a duplicate ChildSpawned for the same child id", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: T,
+          stepId: "a",
+          attempt: 1,
+          input: { ref: "i" },
+        },
+        {
+          kind: "ChildSpawned",
+          seq: 3,
+          at: T,
+          stepId: "a",
+          childRunId: "child-1",
+          childDefinitionRef: "h2",
+        },
+        {
+          kind: "ChildSpawned",
+          seq: 4,
+          at: T,
+          stepId: "a",
+          childRunId: "child-1",
+          childDefinitionRef: "h2",
+        },
+      ],
+      /already has state/,
+    );
+  });
+
+  test("a re-emitted ChildSpawned cannot clobber a child's terminal state", () => {
+    // Without the guard the second spawn would reset terminalStatus to
+    // undefined, resurrecting a finished child into the cancel cascade.
+    // This is the spike's R4 regression, encoded against the reducer.
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, {
+      kind: "StepStarted",
+      seq: 2,
+      at: T,
+      stepId: "a",
+      attempt: 1,
+      input: { ref: "i" },
+    });
+    state = applyEvent(state, {
+      kind: "ChildSpawned",
+      seq: 3,
+      at: T,
+      stepId: "a",
+      childRunId: "child-1",
+      childDefinitionRef: "h2",
+    });
+    state = applyEvent(state, {
+      kind: "ChildCompleted",
+      seq: 4,
+      at: T,
+      childRunId: "child-1",
+      terminalStatus: "completed",
+    });
+    const settled = state;
+    let thrown: unknown;
+    try {
+      applyEvent(settled, {
+        kind: "ChildSpawned",
+        seq: 5,
+        at: T,
+        stepId: "a",
+        childRunId: "child-1",
+        childDefinitionRef: "h2",
+      });
+    } catch (cause) {
+      thrown = cause;
+    }
+    expect(thrown).toBeInstanceOf(TransitionError);
+    if (thrown instanceof TransitionError) {
+      expect(thrown.code).toBe("child-already-spawned");
+    }
+    expect(settled.children.get("child-1")?.terminalStatus).toBe("completed");
+  });
 });
 
 describe("applyEvent: terminal phase locks", () => {
