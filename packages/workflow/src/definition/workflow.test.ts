@@ -337,9 +337,11 @@ describe("loop validation", () => {
     }
   });
 
-  test("rejects a loop whose onExhausted names an ancestor (back-edge)", () => {
-    // onExhausted is a routing target like a gate branch; naming an
-    // ancestor of the loop closes a cycle and is rejected.
+  test("rejects a loop whose onExhausted does not depend on the loop", () => {
+    // onExhausted routes only on exhaustion, so it must name the loop in
+    // its after; otherwise it would be schedulable from RunStarted and
+    // fire on every run. Naming an ancestor (no after: [loop]) is the
+    // canonical way this goes wrong.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -356,7 +358,7 @@ describe("loop validation", () => {
           }),
         },
       }),
-    ).toThrow(/dependency cycle/);
+    ).toThrow(/must name rework in its after/);
   });
 
   test("a loop's definition hash reflects its body content", () => {
