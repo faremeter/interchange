@@ -102,11 +102,15 @@ export function walkCapabilities(
     const agent = extractAgent(primitive);
     if (agent === null) {
       // Non-agent primitives carry no agent grants. An `action`
-      // additionally contributes its declared `effect:<cap>` grants so
-      // the operator-approval gate sees them; every other non-agent
-      // primitive gets only the trigger-derived grants.
-      const actionGrants = collectActionGrants(primitive);
-      const merged = mergeGrants(actionGrants, triggerGrants);
+      // additionally contributes its declared `effect:<cap>` grants, and
+      // a `loop` contributes the union of its body's grants (so the
+      // approval gate sees every agent/action the loop can run); every
+      // other non-agent primitive gets only the trigger-derived grants.
+      const nonAgentGrants = [
+        ...collectActionGrants(primitive),
+        ...collectLoopBodyGrants(primitive, registry, unresolved),
+      ];
+      const merged = mergeGrants(nonAgentGrants, triggerGrants);
       perStep.set(stepId, Object.freeze({ grants: merged }));
       continue;
     }
@@ -152,6 +156,41 @@ function collectActionGrants(
   const grants = new Set<string>();
   for (const capability of primitive.effect?.requires ?? []) {
     grants.add(`effect:${capability}`);
+  }
+  return [...grants];
+}
+
+/**
+ * Collect the union of a loop body's grants (agent grants for its step /
+ * map steps, effect grants for its action steps) so the loop node's
+ * approval covers every agent and effect the loop can run. The body-ban
+ * forbids a nested loop, so this does not recurse further.
+ */
+function collectLoopBodyGrants(
+  primitive: WorkflowDefinition["steps"][string],
+  registry: DirectorRegistry,
+  unresolved: Set<string>,
+): string[] {
+  if (primitive.kind !== "loop") {
+    return [];
+  }
+  const grants = new Set<string>();
+  for (const bodyStepId of primitive.body.stepOrder) {
+    const bodyPrimitive = primitive.body.steps[bodyStepId];
+    if (bodyPrimitive === undefined) {
+      throw new Error(
+        `capability walk: loop body step ${bodyStepId} listed in stepOrder is missing from steps`,
+      );
+    }
+    const bodyAgent = extractAgent(bodyPrimitive);
+    if (bodyAgent !== null) {
+      for (const grant of collectAgentGrants(bodyAgent, registry, unresolved)) {
+        grants.add(grant);
+      }
+    }
+    for (const grant of collectActionGrants(bodyPrimitive)) {
+      grants.add(grant);
+    }
   }
   return [...grants];
 }

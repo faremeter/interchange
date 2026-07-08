@@ -70,6 +70,8 @@ export function resolveDrainBehavior(
       return primitive.drainBehavior ?? "cancel";
     case "action":
       return primitive.drainBehavior ?? "cancel";
+    case "loop":
+      return primitive.drainBehavior ?? "cancel";
     case "sleep":
       return primitive.drainBehavior ?? "cancel";
     case "childWorkflow":

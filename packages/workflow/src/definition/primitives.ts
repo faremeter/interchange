@@ -19,6 +19,10 @@ import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type { Type } from "arktype";
 
 import type { Selector } from "./selectors";
+// Type-only import: a loop body is a full WorkflowDefinition. This is a
+// type-level cycle (workflow.ts imports Primitive from here), erased at
+// runtime by `import type`, so there is no runtime import cycle.
+import type { WorkflowDefinition } from "./workflow";
 
 export type DrainBehavior = "cancel" | "wait";
 
@@ -148,10 +152,38 @@ export interface ActionPrimitive extends PrimitiveBase {
   drainBehavior?: DrainBehavior;
 }
 
+/**
+ * Bounded rework loop. Each iteration is a separate child run of `body`
+ * (own run id `<loopId>[<index>]`, own event log in a shared store).
+ * `runLoop` spawns iteration 0, evaluates `while` on its output, threads
+ * `carry` to the next iteration's input, caps at `maxIterations`, and
+ * routes to `onExhausted` when the cap is hit without `while` going
+ * false.
+ *
+ * `while` and `carry` are string refs to PURE functions resolved via the
+ * runtime's loop-fn registry (mirroring how `handler`/`director` are
+ * string refs), so the definition stays hashable. Those functions
+ * receive only data and never an effect context -- they run on every
+ * resume and must be side-effect free. The loop body may not contain a
+ * `loop`, `awaitSignal`, `sleep`, or `childWorkflow` (enforced at
+ * definition time).
+ */
+export interface LoopPrimitive extends PrimitiveBase {
+  kind: "loop";
+  body: WorkflowDefinition;
+  while: string;
+  carry: string;
+  input?: Selector;
+  maxIterations: number;
+  onExhausted: string;
+  drainBehavior?: DrainBehavior;
+}
+
 export type Primitive =
   | StepPrimitive
   | MapPrimitive
   | ActionPrimitive
+  | LoopPrimitive
   | GatePrimitive
   | AwaitSignalPrimitive
   | SleepPrimitive
@@ -338,6 +370,36 @@ export function action(opts: ActionOpts): ActionPrimitive {
     ...(opts.input !== undefined ? { input: opts.input } : {}),
     ...(opts.effect !== undefined ? { effect: opts.effect } : {}),
     ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+    ...(opts.after !== undefined ? { after: opts.after } : {}),
+  };
+}
+
+export interface LoopOpts {
+  body: WorkflowDefinition;
+  while: string;
+  carry: string;
+  input?: Selector;
+  maxIterations: number;
+  onExhausted: string;
+  drainBehavior?: DrainBehavior;
+  after?: readonly string[];
+}
+
+export function loop(opts: LoopOpts): LoopPrimitive {
+  if (!Number.isInteger(opts.maxIterations) || opts.maxIterations <= 0) {
+    throw new Error("loop requires a positive integer maxIterations");
+  }
+  const drainBehavior: DrainBehavior = opts.drainBehavior ?? "cancel";
+  return {
+    kind: "loop",
+    id: "",
+    body: opts.body,
+    while: opts.while,
+    carry: opts.carry,
+    maxIterations: opts.maxIterations,
+    onExhausted: opts.onExhausted,
+    drainBehavior,
+    ...(opts.input !== undefined ? { input: opts.input } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
   };
 }

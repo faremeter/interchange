@@ -128,6 +128,7 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
   // Runs after validateAfterRefs so every after/then/else endpoint is
   // already known to name a real step; this pass only rejects cycles.
   validateAcyclic(steps);
+  validateLoopBody(steps);
 
   const definition: WorkflowDefinition = {
     id: config.id,
@@ -184,6 +185,7 @@ function applyDefaultInput(
         step: applyDefaultInputStep(primitive.step, prior),
       };
     case "action":
+    case "loop":
     case "awaitSignal":
     case "sleep":
     case "gate":
@@ -256,6 +258,52 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
       }
       if (primitive.then === stepId || primitive.else === stepId) {
         throw new Error(`gate ${stepId} cannot name itself as a branch`);
+      }
+    }
+    if (primitive.kind === "loop") {
+      if (!ids.has(primitive.onExhausted)) {
+        throw new Error(
+          `loop ${stepId} names onExhausted ${primitive.onExhausted} which is not a known step`,
+        );
+      }
+      if (primitive.onExhausted === stepId) {
+        throw new Error(`loop ${stepId} cannot name itself as onExhausted`);
+      }
+    }
+  }
+}
+
+// A loop body runs as an isolated child per iteration, so it may not
+// contain a suspending primitive (awaitSignal/sleep) or another
+// child-spawning primitive (loop/childWorkflow) -- those would nest the
+// resume-cancel interaction the first-cut loop deliberately does not
+// support. The outer per-level iteration in a real consumer stays in
+// host code instead of a nested loop.
+const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>([
+  "loop",
+  "awaitSignal",
+  "sleep",
+  "childWorkflow",
+]);
+
+/**
+ * Reject a loop whose body contains a forbidden primitive. This is a
+ * separate pass from `validateAcyclic` because that check does not
+ * recurse into a loop's nested body definition (the body is its own
+ * `WorkflowDefinition`, already normalized by its own `defineWorkflow`
+ * call, but its top-level kinds must still be constrained here).
+ */
+function validateLoopBody(steps: Record<string, Primitive>): void {
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    if (primitive.kind !== "loop") continue;
+    for (const [bodyStepId, bodyPrimitive] of Object.entries(
+      primitive.body.steps,
+    )) {
+      if (LOOP_BODY_FORBIDDEN.has(bodyPrimitive.kind)) {
+        throw new Error(
+          `loop ${stepId} body step ${bodyStepId} is a ${bodyPrimitive.kind}; ` +
+            `a loop body may not contain a loop, awaitSignal, sleep, or childWorkflow`,
+        );
       }
     }
   }
@@ -334,6 +382,12 @@ function buildDependencyAdjacency(
       addEdge(stepId, primitive.then);
       addEdge(stepId, primitive.else);
     }
+    if (primitive.kind === "loop") {
+      // onExhausted is a routing target like a gate branch: normally a
+      // forward step (redundant with its `after` edge), but naming an
+      // ancestor closes a cycle. Include it so a back-edge is rejected.
+      addEdge(stepId, primitive.onExhausted);
+    }
   }
   return adjacency;
 }
@@ -378,6 +432,14 @@ function projectPrimitive(primitive: Primitive): unknown {
       ...primitive,
       step: { ...primitive.step, agent: projectAgent(primitive.step.agent) },
     };
+  }
+  if (primitive.kind === "loop") {
+    // A loop carries an inline body definition whose steps may hold
+    // agents (function-valued tool factories). Project the body the same
+    // way as the top level so the whole thing is function-free before
+    // canonicalization. The body-ban forbids a nested loop, so this
+    // recursion is bounded.
+    return { ...primitive, body: projectForHash(primitive.body) };
   }
   return primitive;
 }
