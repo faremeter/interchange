@@ -51,9 +51,13 @@ export type AgentKeyStore = {
     address: string,
   ): Promise<{ keyPair: KeyPair; isNew: boolean }>;
   /**
-   * Sign the challenge payload with the agent's cached private key.
-   * Returns null when no key is cached for the address — the caller
-   * (HubLink) treats that as "skip this challenge."
+   * Sign the challenge payload with the agent's private key. On a cache
+   * miss the durable on-disk key is reloaded, so an address whose cache
+   * was wiped by forgetAgent (e.g. a challenge.failed during the deploy
+   * window) can still answer a later challenge instead of being stranded
+   * until process restart. Returns null only when no key is persisted for
+   * the address — the caller (HubLink) treats that as "skip this
+   * challenge."
    */
   signChallenge(
     address: string,
@@ -88,9 +92,7 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
   const agentKeys = new Map<string, KeyPair>();
   const hubKeys = new Map<string, Uint8Array>();
 
-  async function loadOrGenerateKey(
-    address: string,
-  ): Promise<{ keyPair: KeyPair; isNew: boolean }> {
+  async function loadKeyFromDisk(address: string): Promise<KeyPair | null> {
     const privPath = privateKeyPath(dataDir, address);
     const pubPath = publicKeyPath(dataDir, address);
 
@@ -106,24 +108,33 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
       );
     }
 
-    if (privExists) {
-      const [privateKey, publicKey] = await Promise.all([
-        fsp.readFile(privPath),
-        fsp.readFile(pubPath),
-      ]);
-      const keyPair: KeyPair = {
-        privateKey: new Uint8Array(privateKey),
-        publicKey: new Uint8Array(publicKey),
-      };
-      agentKeys.set(address, keyPair);
-      return { keyPair, isNew: false };
-    }
+    if (!privExists) return null;
+
+    const [privateKey, publicKey] = await Promise.all([
+      fsp.readFile(privPath),
+      fsp.readFile(pubPath),
+    ]);
+    const keyPair: KeyPair = {
+      privateKey: new Uint8Array(privateKey),
+      publicKey: new Uint8Array(publicKey),
+    };
+    agentKeys.set(address, keyPair);
+    return keyPair;
+  }
+
+  async function loadOrGenerateKey(
+    address: string,
+  ): Promise<{ keyPair: KeyPair; isNew: boolean }> {
+    const fromDisk = await loadKeyFromDisk(address);
+    if (fromDisk !== null) return { keyPair: fromDisk, isNew: false };
 
     const keyPair = await generateKeyPair();
     await fsp.mkdir(keysDir(dataDir, address), { recursive: true });
     await Promise.all([
-      fsp.writeFile(privPath, keyPair.privateKey, { mode: 0o600 }),
-      fsp.writeFile(pubPath, keyPair.publicKey),
+      fsp.writeFile(privateKeyPath(dataDir, address), keyPair.privateKey, {
+        mode: 0o600,
+      }),
+      fsp.writeFile(publicKeyPath(dataDir, address), keyPair.publicKey),
     ]);
     agentKeys.set(address, keyPair);
     return { keyPair, isNew: true };
@@ -133,8 +144,8 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     address: string,
     payload: Uint8Array,
   ): Promise<Uint8Array | null> {
-    const keyPair = agentKeys.get(address);
-    if (keyPair === undefined) return null;
+    const keyPair = agentKeys.get(address) ?? (await loadKeyFromDisk(address));
+    if (keyPair === null || keyPair === undefined) return null;
     return signEd25519(keyPair.privateKey, payload);
   }
 
