@@ -477,6 +477,22 @@ export type HubEnv = {
    */
   outboundMail: { senderAddress: string; recipients: string[] }[];
   hubDataDir: string;
+  /**
+   * Every server-side `WsHandle` currently open against this hub. Added on
+   * `onOpen`, removed on `onClose`. The sidecar holds exactly one hub link
+   * at a time, so this set carries a single handle in steady state; the
+   * reconnect helpers force-close every handle in it to sever the link.
+   */
+  liveHandles: Set<WsHandle>;
+  /**
+   * Monotonic count of workflow-run packs the hub has accepted from the
+   * sidecar, held in a mutable box so the router callback that bumps it and
+   * the settle helper that reads it share one reference. Bumped on every
+   * successful `receiveWorkflowRunPack`. The settle helper watches this
+   * count for a quiet window so it drops the hub link only once no
+   * workflow-run pack push is mid-flight.
+   */
+  workflowRunPackReceipts: { count: number };
 };
 
 // Hub WebSocket server (in-process) wired against a real AgentRepoStore
@@ -494,6 +510,13 @@ export async function startHub(
   const statePacks: HubEnv["statePacks"] = [];
   const statePackReceiveFailures: HubEnv["statePackReceiveFailures"] = [];
   const outboundMail: HubEnv["outboundMail"] = [];
+  // Every live server-side WsHandle, so the reconnect helpers can force-close
+  // the sidecar's hub link. Populated by the upgrade callback's onOpen/onClose.
+  const liveHandles = new Set<WsHandle>();
+  // Mutable box: the router callback below bumps `.count`; the settle helper
+  // reads it. A bare number field on the returned env would not reflect the
+  // bumps, so the count lives behind a stable object reference.
+  const workflowRunPackReceipts = { count: 0 };
 
   const hubDataDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "hub-data-"),
@@ -510,6 +533,17 @@ export async function startHub(
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
     lookups: {
+      // Answer a reconnecting sidecar's ownership challenge for a deployment
+      // address with the Ed25519 key that address acked at deploy time.
+      // Without this, `handleReconnect` hits its `lookupKey === undefined`
+      // guard and closes the socket every attempt, so the sidecar loops in a
+      // 3s reconnect cycle and never re-enters routing. Every deployment acks
+      // its own key (captured into `deployAcks` by the `agent.deploy.ack`
+      // listener below), and the sidecar re-signs the reconnect challenge
+      // with that same key, so a `deployAcks` lookup is the correct oracle.
+      async lookupPublicKey(agentAddress) {
+        return deployAcks.get(agentAddress) ?? null;
+      },
       async receiveAgentStatePack(repoId, pack, ref, commitSha) {
         if (repoId.kind !== "agent-state") {
           throw new Error(
@@ -568,6 +602,9 @@ export async function startHub(
           });
           return { accepted: false, reason: "corrupt" as const };
         }
+        // Record the accepted receipt so the settle helper can watch for a
+        // quiet window with no in-flight pack push before dropping the link.
+        workflowRunPackReceipts.count += 1;
         return { accepted: true };
       },
       // Capture delivered outbound mail the sidecar forwards for
@@ -709,6 +746,7 @@ export async function startHub(
               ws.close();
             },
           };
+          liveHandles.add(handle);
           router.handleOpen(handle);
         },
         onMessage(evt, _ws) {
@@ -717,6 +755,7 @@ export async function startHub(
           }
         },
         onClose(_evt, _ws) {
+          liveHandles.delete(handle);
           router.handleClose(handle);
         },
       };
@@ -740,6 +779,8 @@ export async function startHub(
     statePackReceiveFailures,
     outboundMail,
     hubDataDir,
+    liveHandles,
+    workflowRunPackReceipts,
   };
 }
 
@@ -886,6 +927,31 @@ export type StartDeployFlowEnvOpts = {
   transportBackedMailTool?: boolean;
 };
 
+/**
+ * Stop a `Bun.serve` server, bounding the wait so teardown cannot hang.
+ *
+ * A server-initiated WebSocket close (`ws.close()` from the hub upgrade
+ * callback, which the reconnect helpers use to drop the hub link) does
+ * NOT fire the server-side `onClose`, so Bun keeps counting the dropped
+ * connection as live. `server.stop(true)` and `server.stop(false)` both
+ * then wait forever for that phantom connection to drain -- a reproducible
+ * Bun/Hono behavior, not a product concern (the sidecar has already been
+ * killed and every tracked handle closed by the time this runs). This is
+ * a deliberate teardown bound, not an error swallow: the server's only
+ * remaining job is releasing its port, which the exiting test process
+ * reclaims regardless. Tests that never drop the hub link resolve the
+ * `stop(true)` promptly and never hit the bound.
+ */
+async function stopServerBounded(
+  server: ReturnType<typeof Bun.serve>,
+): Promise<void> {
+  const STOP_TIMEOUT_MS = 1_000;
+  await Promise.race([
+    server.stop(true),
+    new Promise<void>((resolve) => setTimeout(resolve, STOP_TIMEOUT_MS)),
+  ]);
+}
+
 // Compose the full deploy-flow env: hub server, mock inference, sidecar
 // subprocess. Owns every tempdir these subsystems open and tears them
 // all down in `teardown()`.
@@ -959,18 +1025,26 @@ export async function startDeployFlowEnv(
   };
 
   const teardown = async (): Promise<void> => {
-    // Wait for the sidecar subprocess to fully exit before removing
-    // its data directory. The earlier shape (kill, then immediately
-    // rm) raced the sidecar's still-open file handles inside
-    // `sidecar-data-*`; on a slow CI host the rm would observe EBUSY,
-    // EACCES, or partial removal, which the `.catch(() => {})`
-    // shrouded. Errors must surface from the rm, so the catch is
-    // dropped here.
+    // Close every tracked hub-side WebSocket handle before killing the
+    // sidecar so no live link lingers. Then wait for the sidecar
+    // subprocess to fully exit before removing its data directory. The
+    // earlier shape (kill, then immediately rm) raced the sidecar's
+    // still-open file handles inside `sidecar-data-*`; on a slow CI host
+    // the rm would observe EBUSY, EACCES, or partial removal, which the
+    // `.catch(() => {})` shrouded. Errors must surface from the rm, so
+    // the catch is dropped here. The server stops are bounded
+    // (`stopServerBounded`) because a test that dropped the hub link
+    // leaves Bun with a phantom connection its `server.stop` would wait
+    // on forever.
     deployments.clear();
+    for (const handle of hub.liveHandles) {
+      handle.close();
+    }
+    hub.liveHandles.clear();
     sidecar.proc.kill();
     await sidecar.proc.exited;
-    await hub.server.stop(true);
-    await inference.server.stop(true);
+    await stopServerBounded(hub.server);
+    await stopServerBounded(inference.server);
     for (const d of tempDirs.splice(0)) {
       await fs.promises.rm(d, { recursive: true, force: true });
     }
@@ -1556,4 +1630,134 @@ export async function waitForFirstRunId(
     }
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+// =========================================================================
+// Hub-link disconnect / reconnect helpers
+// =========================================================================
+//
+// These drive the sidecar's hub WebSocket through a drop and its automatic
+// reconnect so a survival test can assert a deployed workflow keeps running
+// across the reconnect. The in-process hub is normally lossless with no way
+// to sever the link; `startHub` now captures every live server-side
+// `WsHandle` (`env.hub.liveHandles`) and answers the reconnect ownership
+// challenge (`lookups.lookupPublicKey` backed by `deployAcks`), which is
+// what makes a dropped link reconnect instead of looping on a closed socket.
+
+/**
+ * Force-close every live server-side hub WebSocket, severing the sidecar's
+ * hub link. The sidecar's `hub-link` observes the close and begins its
+ * `DEFAULT_RECONNECT_DELAY_MS` reconnect cycle. Throws if no handle is
+ * live, so a test that expected an established link fails loudly rather
+ * than dropping nothing.
+ *
+ * This is the raw drop, with no settle: it may sever the link while a
+ * workflow-run pack push is mid-flight. The interrupted-pack regression
+ * test wants exactly that; every survival test that must NOT race an
+ * in-flight push should use `settleThenDrop` instead.
+ */
+export function dropHubLink(env: DeployFlowEnv): void {
+  const handles = [...env.hub.liveHandles];
+  if (handles.length === 0) {
+    throw new Error(
+      "dropHubLink: no live hub WebSocket handle to close; the sidecar link is not established",
+    );
+  }
+  for (const handle of handles) {
+    handle.close();
+  }
+}
+
+/** Options for `waitForReconnect`. */
+export type WaitForReconnectOpts = {
+  /**
+   * Ceiling on the reconnect wait. Defaults to `20_000`, comfortably above
+   * the observed ~3s reconnect (the sidecar's 3s `DEFAULT_RECONNECT_DELAY_MS`
+   * plus a handshake).
+   */
+  timeoutMs?: number;
+};
+
+/**
+ * Poll until `address` is routable on the hub again, then return the
+ * elapsed milliseconds. A keyed deployment address can only re-enter the
+ * hub's routing index by passing the reconnect ownership challenge (the
+ * plain `register` path leaves a keyed address unrouted until challenged),
+ * so "routable again" is a sound proxy for a completed challenge/response.
+ */
+export async function waitForReconnect(
+  env: DeployFlowEnv,
+  address: string,
+  opts: WaitForReconnectOpts = {},
+): Promise<number> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const start = Date.now();
+  await waitFor(() => env.hub.router.getRoutableAddresses().includes(address), {
+    timeoutMs,
+    diagnostics: env.sidecarDiagnostics,
+  });
+  return Date.now() - start;
+}
+
+/** Options for `settleThenDrop`. */
+export type SettleThenDropOpts = {
+  /**
+   * Length of the no-new-pack quiet window that must elapse before the drop
+   * fires. Defaults to `500`. The helper waits until no workflow-run pack
+   * has been accepted for this long, treating that as the pack-push pipeline
+   * having drained.
+   */
+  quietMs?: number;
+  /**
+   * Ceiling on the settle wait. Defaults to `10_000`. If the pack stream
+   * never goes quiet within this window the helper throws rather than
+   * dropping into an in-flight push.
+   */
+  timeoutMs?: number;
+};
+
+/**
+ * Wait for the workflow-run pack-push pipeline to go quiet, then drop the
+ * hub link. "Quiet" is `quietMs` with no newly-accepted workflow-run pack
+ * (`env.hub.workflowRunPackReceipts`), which is the hub-side, cross-process
+ * proxy for the sidecar's pack-push pipeline having drained
+ * (`flushWorkflowRunPushes` / `notifySettled` live inside the sidecar
+ * subprocess and cannot be awaited from the harness process). This is the
+ * default drop for survival tests: it guarantees no pack push is mid-flight
+ * when the link is severed, so the test exercises reconnect survival rather
+ * than an interrupted pack. Use the raw `dropHubLink` when an interrupted
+ * push is the thing under test.
+ *
+ * `address` is accepted for symmetry with the other reconnect helpers and
+ * to document which deployment the drop targets; the quiescence signal is
+ * hub-wide, and in the single-deployment survival tests the sidecar holds
+ * exactly one link, so a hub-wide quiet window is equivalent to a
+ * per-deployment one.
+ */
+export async function settleThenDrop(
+  env: DeployFlowEnv,
+  address: string,
+  opts: SettleThenDropOpts = {},
+): Promise<void> {
+  const quietMs = opts.quietMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const start = Date.now();
+  let lastCount = env.hub.workflowRunPackReceipts.count;
+  let lastChange = Date.now();
+  for (;;) {
+    const current = env.hub.workflowRunPackReceipts.count;
+    if (current !== lastCount) {
+      lastCount = current;
+      lastChange = Date.now();
+    }
+    if (Date.now() - lastChange >= quietMs) break;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `settleThenDrop: workflow-run pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms for ${address}` +
+          `\n${env.sidecarDiagnostics()}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  dropHubLink(env);
 }
