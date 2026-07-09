@@ -40,12 +40,22 @@
 // stub returns a bare `{ tasks }` with no `{ reply, turn }` wrapper. A bare
 // `map.over` selector into a real agent step cannot consume that wrapper.
 //
-// Two scenarios run the full pipeline with real agents:
+// Four scenarios run the full pipeline with real agents:
 //   1. Convergence: the gate-critic returns "amend" until the round hits a
 //      threshold, then "pass". The loop converges, consolidate runs, and
 //      escalate is pruned.
 //   2. Exhaustion: the gate-critic never passes. The loop exhausts at its
 //      cap and routes to escalate; consolidate is pruned.
+//   3. Crash-resume exactly-once: a mid-loop crash re-drives the final
+//      amendment iteration through the real step-invoker on resume, and the
+//      shared effect ledger holds every effect to one execution. The stubbed
+//      loop-resume tests (packages/workflow runtime) cover this dedup
+//      mechanically; proven HERE is the same dedup composed with real agents
+//      re-driven through the production seam.
+//   4. Defeated-ledger probe: the identical crash under a ledger that never
+//      dedups re-executes the re-driven effect, so the effect count rises --
+//      proving scenario 3's exactly-once assertion is non-vacuous (the crash
+//      truly re-drives the effect rather than replaying it from the log).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -224,7 +234,15 @@ const amendBody = defineWorkflow({
     rebuild: action({
       handler: "rebuild",
       effect: { requires: ["git:commit"] },
-      input: { from: "steps.fix.output" },
+      // Key the git effect on the deterministic iteration payload
+      // ({ round, tasks }), NOT on the fix map's { reply, turn } agent
+      // output. The ledger dedups by hash(runId, stepId, effectId, input),
+      // so a re-driven iteration must reconstruct the IDENTICAL input for
+      // dedup to fire -- and a real agent's turn (timestamps, ids) is not
+      // stable across a re-drive. Deterministic effect input is what makes
+      // the crash-resume exactly-once guarantee hold; keying an effect on
+      // upstream agent output would silently defeat it.
+      input: { from: "trigger.payload" },
       after: ["fix"],
     }),
     recritique: map({
@@ -491,6 +509,25 @@ function inMemoryLedger(): EffectLedger {
   };
 }
 
+// A ledger whose `lookup` never hits (always a miss) but whose `record`
+// still stores. It defeats the exactly-once dedup: on resume, the
+// re-driven iteration's `perform` sees no prior record and re-runs the
+// effect. Used only by the defeated-ledger probe, which asserts the
+// re-driven effect count goes strictly UP -- proving the primary
+// exactly-once assertion is non-vacuous (the crash point truly forces a
+// re-run that the real ledger dedups).
+function defeatedLedger(): EffectLedger {
+  const store = new Map<string, { output: unknown }>();
+  return {
+    async lookup() {
+      return undefined;
+    },
+    async record(effectKey, output) {
+      store.set(effectKey, { output });
+    },
+  };
+}
+
 // Allow the two authz shapes the pipeline exercises: per-tool invocation
 // (every agent's terminal tool) and per-effect invocation (the git-commit-
 // shaped `commit`/`rebuild` actions). Anything else is denied loudly.
@@ -528,8 +565,10 @@ const workflowAuthorize: WorkflowAuthorizeFn = (resource, action_) => {
 // A generous per-role matcher pool. Each role is invoked a small fixed
 // number of times across the pipeline; over-provisioning is safe -- unused
 // matchers never fire, and a shortfall surfaces loudly as an
-// UnmatchedFetchError from `harness.run()`.
-const POOL = 8;
+// UnmatchedFetchError from `harness.run()`. Sized for the crash-resume
+// drives too: a resumed run re-drives the in-flight iteration's turns,
+// drawing extra pulls from the non-round-partitioned fixed-role pool.
+const POOL = 16;
 
 function enqueueResponse(harness: Harness, chunks: Uint8Array[]) {
   const stream = harness.scenario.createStream();
@@ -846,5 +885,86 @@ describe("per-level pipeline with real agents", () => {
     });
     expect("escalate" in result.outputs).toBe(true);
     expect("consolidate" in result.outputs).toBe(false);
+  });
+
+  // Drive the pipeline to completion, then simulate a mid-loop crash by
+  // truncating the durable parent log right after the final amendment
+  // iteration's `ChildSpawned` -- before that child's log lands. Resuming
+  // with a FRESH repoStore but the SAME blobs and effect ledger leaves the
+  // iteration's child log empty, so the runtime re-drives that iteration
+  // (its fix/critic agents re-run through the real step-invoker and its
+  // `rebuild` action runs again). The re-driven effect's effectKey looks up
+  // the record the completed run already wrote; a real ledger dedups it, a
+  // defeated one does not. Returns the effect-run counts before and after
+  // the resume so a caller can assert either exactly-once or the probe.
+  async function runCrashResume(
+    effects: EffectLedger,
+  ): Promise<{ afterRun1: number; afterResume: number; result2: RunResult }> {
+    scriptWorkflow(harness, 2);
+    const blobs = createInMemoryBlobSubstrate();
+    const effectRuns = { n: 0 };
+
+    const result1 = await drivePipeline(
+      buildEnv({
+        repoStore: createInMemoryRepoStore(),
+        blobs,
+        effects,
+        baseDir: join(baseDir, "run1"),
+        effectRuns,
+      }),
+    );
+    expect(result1.terminalStatus).toBe("completed");
+    const afterRun1 = effectRuns.n;
+
+    // Crash right after the final amendment iteration's child is spawned,
+    // before its child log is durable, so the resume must re-drive it.
+    const trimmed: WorkflowEvent[] = [];
+    for (const e of result1.events) {
+      trimmed.push(e);
+      if (e.kind === "ChildSpawned" && e.childRunId === "amend__1") break;
+    }
+
+    const result2 = await drivePipeline(
+      buildEnv({
+        repoStore: createInMemoryRepoStore(),
+        blobs,
+        effects,
+        baseDir: join(baseDir, "resume"),
+        effectRuns,
+      }),
+      { runId: result1.runId, resumeFromEvents: trimmed },
+    );
+    return { afterRun1, afterResume: effectRuns.n, result2 };
+  }
+
+  test("a mid-loop crash resumes through real agents to exactly-once effects", async () => {
+    const { afterRun1, afterResume, result2 } =
+      await runCrashResume(inMemoryLedger());
+
+    // The resume re-drove the final amendment iteration through the real
+    // step-invoker and still converged: consolidate ran, escalate pruned.
+    expect(result2.terminalStatus).toBe("completed");
+    expect(loopOutcome(result2)).toEqual({
+      outcome: "converged",
+      iterations: 2,
+    });
+    expect(extractAgentPayload(result2.outputs.consolidate)).toEqual({
+      consolidated: true,
+    });
+    expect("escalate" in result2.outputs).toBe(false);
+
+    // The shared ledger held every effect to one execution across the crash:
+    // the re-driven iteration's rebuild deduped, so resume added no new runs.
+    expect(afterResume).toBe(afterRun1);
+  });
+
+  test("the crash-resume exactly-once claim is non-vacuous under a defeated ledger", async () => {
+    // The identical crash, but the ledger never dedups. The re-driven
+    // iteration's rebuild re-executes, so the effect count rises strictly
+    // above the completed-run total. If it did not, the crash point would be
+    // replaying an already-complete effect from the durable log rather than
+    // re-driving it, and the exactly-once assertion above would prove nothing.
+    const { afterRun1, afterResume } = await runCrashResume(defeatedLedger());
+    expect(afterResume).toBeGreaterThan(afterRun1);
   });
 });
