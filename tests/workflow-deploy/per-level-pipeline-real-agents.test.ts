@@ -115,11 +115,17 @@ import {
 // routes to the escalation branch.
 const AMENDMENT_CAP = 3;
 
-// The planner emits a single task so each `map` fan-out runs one inner
-// agent -- a real map without the parallel-ordering surface a multi-item
-// fan-out would add to the deterministic mock-inference script.
-const TASK_ID = "t1";
-const TASKS = [{ id: TASK_ID }];
+// The planner emits two tasks, so every `map` fan-out (implementers,
+// critique, and the loop body's fix/recritique) runs two DISTINCT inner
+// agents -- one per task. This is a real fan-out with per-task fidelity:
+// each task's inner agent must receive ITS OWN task item and return ITS
+// OWN taskId, which the per-task matchers below enforce. The runtime runs
+// the inner steps sequentially (runMap in packages/workflow), so this is
+// about per-task payload fidelity, not a concurrency race: without
+// per-task matchers, task t2's implementer would be served t1's hardcoded
+// output, and the fan-out would prove nothing.
+const TASK_IDS = ["t1", "t2"] as const;
+const TASKS = TASK_IDS.map((id) => ({ id }));
 
 const SOURCE: InferenceSource = {
   id: "anthropic:per-level-pipeline",
@@ -229,7 +235,17 @@ const amendBody = defineWorkflow({
   steps: {
     fix: map({
       over: { from: "trigger.payload.tasks" },
-      step: step({ agent: implementerAgent }),
+      // Thread the per-item task into the inner agent explicitly so each
+      // task's fix agent receives ITS OWN task. `runMap` rebinds
+      // `trigger.payload` to the current item, so this selector resolves to
+      // { id: "t1" } / { id: "t2" }. `fix` is the body's first step (the
+      // default-input convention would inject the same `trigger.payload`
+      // here), but naming it keeps all four maps' per-task threading uniform
+      // and self-evident rather than relying on first-step positioning.
+      step: step({
+        agent: implementerAgent,
+        input: { from: "trigger.payload" },
+      }),
     }),
     rebuild: action({
       handler: "rebuild",
@@ -247,7 +263,15 @@ const amendBody = defineWorkflow({
     }),
     recritique: map({
       over: { from: "trigger.payload.tasks" },
-      step: step({ agent: criticAgent }),
+      // Thread the per-item task into the inner critic explicitly: this map
+      // is not the body's first step, so without a named selector its inner
+      // step would receive `null` and every task's recritique agent would
+      // see the same empty input. `runMap` rebinds `trigger.payload` to the
+      // current task.
+      step: step({
+        agent: criticAgent,
+        input: { from: "trigger.payload" },
+      }),
       after: ["rebuild"],
     }),
     regate: step({
@@ -276,7 +300,19 @@ const pipeline = defineWorkflow({
     }),
     implementers: map({
       over: { from: "steps.parsePlan.output.tasks" },
-      step: step({ agent: implementerAgent }),
+      // Thread the current fan-out item into the inner agent explicitly.
+      // The default-input convention only injects `trigger.payload` for a
+      // map whose inner step is the workflow's FIRST record entry; this map
+      // is not first (plan/parsePlan precede it), so without an explicit
+      // selector the inner step would receive `null` and every task's agent
+      // would see the same empty input. `runMap` rebinds `trigger.payload`
+      // to the per-item value, so this selector resolves to the task item
+      // ({ id: "t1" } / { id: "t2" }) -- the per-task input the per-task
+      // matchers key on.
+      step: step({
+        agent: implementerAgent,
+        input: { from: "trigger.payload" },
+      }),
       after: ["parsePlan"],
     }),
     commit: action({
@@ -287,7 +323,14 @@ const pipeline = defineWorkflow({
     }),
     critique: map({
       over: { from: "steps.parsePlan.output.tasks" },
-      step: step({ agent: criticAgent }),
+      // Thread the per-item task into the inner critic explicitly, for the
+      // same reason as `implementers` above: a non-first map's inner step
+      // gets no default `trigger.payload` input, so it must name the
+      // per-item selector `runMap` rebinds to the current task.
+      step: step({
+        agent: criticAgent,
+        input: { from: "trigger.payload" },
+      }),
       after: ["commit"],
     }),
     gate: step({
@@ -483,6 +526,31 @@ function loopOutcome(result: RunResult): {
   return { outcome: amend.outcome, iterations: amend.iterations };
 }
 
+// Project the `taskId` field out of every entry of a map step's array
+// output, each parsed through the faithful `extractAgentPayload`. This is
+// the per-task fidelity claim's read side: a map that fanned two DISTINCT
+// tasks over two DISTINCT inner agents yields two payloads carrying t1 and
+// t2 respectively. It FAILS LOUDLY if the map output is not an array or an
+// entry has no string `taskId`, so a fan-out that collapsed both tasks to a
+// single hardcoded output (or dropped the per-task keying) surfaces as a
+// clear failure rather than a silent pass.
+function mapTaskIds(mapOutput: unknown): string[] {
+  if (!Array.isArray(mapOutput)) {
+    throw new Error(
+      `map step output is not an array: ${JSON.stringify(mapOutput)}`,
+    );
+  }
+  return mapOutput.map((entry) => {
+    const taskId = extractAgentPayload(entry).taskId;
+    if (typeof taskId !== "string") {
+      throw new Error(
+        `map entry payload has no string taskId: ${JSON.stringify(entry)}`,
+      );
+    }
+    return taskId;
+  });
+}
+
 const loopFns = (ref: string): LoopFn => {
   if (ref === "shouldAmend")
     return (childOutput) => verdictOf(childOutput) === "amend";
@@ -558,8 +626,19 @@ const workflowAuthorize: WorkflowAuthorizeFn = (resource, action_) => {
 // not (turn 1). The gate-critic's verdict is a deterministic function of the
 // round encoded in the request body, mirroring the sibling's
 // `convergeAtRound` but flowing through the terminal tool rather than a bare
-// switch. A single task per level means at most one fetch per role is in
-// flight at a time, so role-keyed body matchers never race.
+// switch.
+//
+// The per-level fan-out is two tasks (t1, t2), so the implementer and
+// critic roles each run once PER TASK inside their maps. A role-keyed
+// matcher alone would serve BOTH tasks the same hardcoded output, which
+// would look like it proves parallel fan-out and prove nothing. So the
+// implementer and critic matchers ALSO key on the task id as it appears in
+// the request body -- and return that task's OWN taskId -- so each task's
+// inner agent genuinely receives and returns its own task. This is the
+// fidelity the per-task fidelity assertion (see the convergence scenario)
+// then claims. The planner, consolidator, and gate-critic stay role-keyed:
+// the planner emits both tasks, the consolidator runs once for the level,
+// and the gate-critic judges the WHOLE level per round (not per task).
 // -------------------------------------------------------------------------
 
 // A generous per-role matcher pool. Each role is invoked a small fixed
@@ -606,6 +685,71 @@ function scriptFixedRole(
     );
     harness.scenario.whenRequestBodyMatches(
       (body) => body.includes(marker) && body.includes("tool_result"),
+      turn2,
+    );
+  }
+}
+
+// True when `body` carries the map item `{ id: "<taskId>" }`. The runtime
+// serializes the item with `JSON.stringify` into the inner step's input,
+// which the agent then embeds in its user message via a SECOND
+// `JSON.stringify`, so the item's quotes arrive doubly escaped: the raw
+// bytes read `\"id\":\"t1\"` (each `"` as backslash-quote). Keying on the
+// full `\"id\":\"<taskId>\"` object entry -- with the escaped closing quote
+// right after the id -- is boundary-safe: `t1` cannot substring-match a
+// longer id like `t10`, because the marker requires the closing `\"` to
+// follow the id immediately. This mirrors the `bodyHasRound` discipline of
+// demanding a delimiter after the value rather than a bare `includes`.
+function bodyHasTaskId(body: string, taskId: string): boolean {
+  return body.includes(`\\"id\\":\\"${taskId}\\"`);
+}
+
+// Register the two-turn matcher pair for a role that runs once PER TASK
+// inside a map (implementer, critic). Like `scriptFixedRole`, but BOTH turn
+// matchers additionally key on the task id in the request body, and the
+// caller passes THAT task's own structured `args` (its own taskId). Two
+// tasks served the same hardcoded output would make the fan-out vacuous;
+// keying on the task id makes each task's inner agent receive and return
+// its own task, which the per-task fidelity assertion then claims.
+function scriptFixedRolePerTask(
+  harness: Harness,
+  role: string,
+  toolName: string,
+  taskId: string,
+  args: Record<string, unknown>,
+): void {
+  const marker = `you are the ${role} for`;
+  const argsJSON = JSON.stringify(args);
+  for (let i = 0; i < POOL; i += 1) {
+    const turn1 = enqueueResponse(
+      harness,
+      wire.completeResponse("anthropic", {
+        toolCalls: [
+          {
+            callId: `call-${role}-${taskId}-${String(i)}`,
+            name: toolName,
+            argsJSON,
+          },
+        ],
+      }),
+    );
+    harness.scenario.whenRequestBodyMatches(
+      (body) =>
+        body.includes(marker) &&
+        bodyHasTaskId(body, taskId) &&
+        !body.includes("tool_result"),
+      turn1,
+    );
+
+    const turn2 = enqueueResponse(
+      harness,
+      wire.completeResponse("anthropic", { text: argsJSON }),
+    );
+    harness.scenario.whenRequestBodyMatches(
+      (body) =>
+        body.includes(marker) &&
+        bodyHasTaskId(body, taskId) &&
+        body.includes("tool_result"),
       turn2,
     );
   }
@@ -677,14 +821,19 @@ function scriptGateCritic(harness: Harness, convergeAtRound: number): void {
 
 function scriptWorkflow(harness: Harness, convergeAtRound: number): void {
   scriptFixedRole(harness, "planner", PLAN_TOOL, { tasks: TASKS });
-  scriptFixedRole(harness, "implementer", IMPLEMENT_TOOL, {
-    taskId: TASK_ID,
-    done: true,
-  });
-  scriptFixedRole(harness, "critic", CRITIQUE_TOOL, {
-    taskId: TASK_ID,
-    note: "looks reasonable",
-  });
+  // The implementer and critic run once per task inside their maps; each
+  // task gets its own matcher returning its own taskId, so distinct agents
+  // run with distinct inputs and produce distinct, correct outputs.
+  for (const taskId of TASK_IDS) {
+    scriptFixedRolePerTask(harness, "implementer", IMPLEMENT_TOOL, taskId, {
+      taskId,
+      done: true,
+    });
+    scriptFixedRolePerTask(harness, "critic", CRITIQUE_TOOL, taskId, {
+      taskId,
+      note: "looks reasonable",
+    });
+  }
   scriptFixedRole(harness, "consolidator", CONSOLIDATE_TOOL, {
     consolidated: true,
   });
@@ -855,6 +1004,15 @@ describe("per-level pipeline with real agents", () => {
       consolidated: true,
     });
     expect("escalate" in result.outputs).toBe(false);
+
+    // Per-task fidelity: the implementers and critique maps each fanned two
+    // DISTINCT tasks over two DISTINCT inner agents, and each inner agent
+    // received its own task item and returned its own taskId. Proving the
+    // outputs carry t1 and t2 respectively is what claims the fan-out --
+    // without it, a 2-task map serving both tasks the same hardcoded output
+    // would look parallel and prove nothing.
+    expect(mapTaskIds(result.outputs.implementers)).toEqual(["t1", "t2"]);
+    expect(mapTaskIds(result.outputs.critique)).toEqual(["t1", "t2"]);
 
     // The deterministic commit and each converged rebuild ran their effects.
     expect(effectRuns.n).toBeGreaterThan(0);
