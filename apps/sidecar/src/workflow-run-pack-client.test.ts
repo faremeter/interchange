@@ -21,6 +21,7 @@ function createRecordingUnderlyingRepoStore(): {
     ref: string;
   }[];
   packs: { principal: { kind: string }; repoId: RepoId; ref: string }[];
+  packedTipCommits: { repoId: RepoId; ref: string; commitSha: string }[];
 } {
   const preserveCalls: {
     principal: { kind: string };
@@ -31,6 +32,11 @@ function createRecordingUnderlyingRepoStore(): {
     principal: { kind: string };
     repoId: RepoId;
     ref: string;
+  }[] = [];
+  const packedTipCommits: {
+    repoId: RepoId;
+    ref: string;
+    commitSha: string;
   }[] = [];
   const stub: Partial<RepoStore> = {
     getRepoDir(_repoId: RepoId): string {
@@ -52,6 +58,9 @@ function createRecordingUnderlyingRepoStore(): {
         ref,
       };
     },
+    commitPackedTip(repoId, ref, commitSha) {
+      packedTipCommits.push({ repoId, ref, commitSha });
+    },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- in-test stub; the unused RepoStore methods are guarded by the Proxy below
   const store = new Proxy(stub as RepoStore, {
@@ -65,12 +74,13 @@ function createRecordingUnderlyingRepoStore(): {
       };
     },
   });
-  return { store, preserveCalls, packs };
+  return { store, preserveCalls, packs, packedTipCommits };
 }
 
 describe("createWorkflowRunPackClient", () => {
-  test("push builds a pack under the supervisor principal and forwards it to the hub link", async () => {
-    const { store, packs } = createRecordingUnderlyingRepoStore();
+  test("push builds a pack under the supervisor principal, forwards it to the hub link, and commits the packed tip on the ack", async () => {
+    const { store, packs, packedTipCommits } =
+      createRecordingUnderlyingRepoStore();
     const sent: {
       agentAddress: string;
       repoId: RepoId;
@@ -100,6 +110,35 @@ describe("createWorkflowRunPackClient", () => {
     expect(sent[0]?.agentAddress).toBe("agent@example.com");
     expect(sent[0]?.commitSha).toBe("stub-pack-sha");
     expect(sent[0]?.ref).toBe("refs/heads/main");
+    // The ack (pushWorkflowRunPack resolving) commits the packed tip
+    // for the shipped commit, so the next createPack ships incrementally.
+    expect(packedTipCommits).toHaveLength(1);
+    expect(packedTipCommits[0]?.repoId.id).toBe("agent-example-com");
+    expect(packedTipCommits[0]?.ref).toBe("refs/heads/main");
+    expect(packedTipCommits[0]?.commitSha).toBe("stub-pack-sha");
+  });
+
+  test("push does not commit the packed tip when the hub link rejects the transfer", async () => {
+    const { store, packedTipCommits } = createRecordingUnderlyingRepoStore();
+    const client = createWorkflowRunPackClient({
+      substrate: store,
+      hubLink: {
+        pushWorkflowRunPack: () =>
+          Promise.reject(new Error("transfer cancelled: Connection lost")),
+      },
+    });
+
+    await expect(
+      client.push({
+        agentAddress: "agent@example.com",
+        repoId: { kind: "workflow-run", id: "agent-example-com" },
+        ref: "refs/heads/main",
+      }),
+    ).rejects.toThrow(/Connection lost/);
+
+    // A cancelled/rejected transfer never acks, so the packed tip must
+    // not advance: the retry rebuild re-includes the un-acked commits.
+    expect(packedTipCommits).toHaveLength(0);
   });
 
   test("push rejects when given a non-workflow-run repoId", async () => {

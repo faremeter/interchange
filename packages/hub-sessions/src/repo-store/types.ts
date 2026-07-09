@@ -405,6 +405,19 @@ export interface RepoStore {
     repoId: RepoId,
     ref: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
+  /**
+   * Commit the "last shipped tip" for an incremental (`workflow-run`)
+   * pack ref, advancing the cursor `createPack` walks back to. The
+   * caller invokes this only once the receiver has acked the transfer
+   * that shipped `commitSha`, so an incremental pack the receiver never
+   * acknowledged — a transfer a reconnect cancelled before its ack —
+   * leaves the cursor where it was and the next `createPack` re-ships
+   * the un-acked commits. Building a pack must NOT advance the cursor
+   * itself: a built-but-un-acked transfer would then strand the
+   * receiver with a chain whose base commit the pack omits. A no-op for
+   * kinds whose packs are not incremental.
+   */
+  commitPackedTip(repoId: RepoId, ref: string, commitSha: string): void;
   resolveRef(
     principal: Principal,
     repoId: RepoId,
