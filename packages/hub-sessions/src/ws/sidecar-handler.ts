@@ -347,6 +347,29 @@ export function createSidecarRouter(
 
   let requestCounter = 0;
 
+  // Surface disconnect-queue mail that is being dropped rather than delivered.
+  // Every dropped frame reaches the same channel routing failures already use
+  // (`mail.outbound.undelivered`, logged by the orchestrator), plus a warn that
+  // names the recipient and the drop count so a size-cap eviction or a TTL
+  // expiry of a still-full queue is visible instead of silent. A queued frame
+  // is always a `mail.inbound` carrying the sender's rawMessage; a frame of any
+  // other shape has no rawMessage to relay and is surfaced by the warn alone.
+  function surfaceDroppedFrames(
+    agentAddress: string,
+    frames: HubFrame[],
+    reason: string,
+  ): void {
+    if (frames.length === 0) return;
+    logger.warn`Dropping ${String(frames.length)} queued message(s) for ${agentAddress}: ${reason}`;
+    for (const frame of frames) {
+      if (frame.type !== "mail.inbound") continue;
+      events.emit("mail.outbound.undelivered", {
+        rawMessage: frame.rawMessage,
+        recipients: [agentAddress],
+      });
+    }
+  }
+
   function enqueueForDisconnected(
     agentAddress: string,
     frame: HubFrame,
@@ -355,7 +378,10 @@ export function createSidecarRouter(
     if (entry === undefined) return false;
 
     if (entry.queue.length >= disconnectQueueMaxSize) {
-      entry.queue.shift();
+      const evicted = entry.queue.shift();
+      if (evicted !== undefined) {
+        surfaceDroppedFrames(agentAddress, [evicted], "disconnect queue full");
+      }
     }
     entry.queue.push(frame);
     return true;
@@ -1057,7 +1083,15 @@ export function createSidecarRouter(
       if (entry !== undefined) {
         clearTimeout(entry.timer);
         entry.timer = setTimeout(() => {
+          const expired = disconnectedAgents.get(addr);
           disconnectedAgents.delete(addr);
+          if (expired !== undefined) {
+            surfaceDroppedFrames(
+              addr,
+              expired.queue,
+              "disconnect queue TTL expired",
+            );
+          }
         }, disconnectQueueTTLMs);
       }
       conn.send({
@@ -1167,7 +1201,15 @@ export function createSidecarRouter(
         // there is no point queuing messages for an agent being torn down.
         if (!pendingUndeploys.has(addr)) {
           const timer = setTimeout(() => {
+            const expired = disconnectedAgents.get(addr);
             disconnectedAgents.delete(addr);
+            if (expired !== undefined) {
+              surfaceDroppedFrames(
+                addr,
+                expired.queue,
+                "disconnect queue TTL expired",
+              );
+            }
           }, disconnectQueueTTLMs);
           disconnectedAgents.set(addr, { queue: [], timer });
         }

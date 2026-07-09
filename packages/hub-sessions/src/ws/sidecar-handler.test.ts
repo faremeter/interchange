@@ -47,6 +47,50 @@ async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// Route the package logger's warn-level records into `sink` until the returned
+// restore is called. Used to assert loud surfacing of dropped disconnect-queue
+// mail, whose warn is emitted asynchronously from a TTL timer (so the capture
+// must stay installed across the wait, not just a synchronous block).
+function installWarningCapture(sink: string[]): () => void {
+  const savedConfig = getConfig();
+  configureSync({
+    reset: true,
+    sinks: {
+      capture: (record) => {
+        if (record.level !== "warning") return;
+        const message = Array.isArray(record.message)
+          ? record.message
+              .map((part) =>
+                typeof part === "string" ? part : JSON.stringify(part),
+              )
+              .join("")
+          : String(record.message);
+        sink.push(message);
+      },
+    },
+    loggers: [{ category: [], lowestLevel: "warning", sinks: ["capture"] }],
+  });
+  return () => {
+    if (savedConfig) {
+      configureSync({ reset: true, ...savedConfig });
+    } else {
+      resetSync();
+    }
+  };
+}
+
+// Capture the package logger's warn records emitted synchronously by `fn`.
+function captureWarnings(fn: () => void): string[] {
+  const warnings: string[] = [];
+  const restore = installWarningCapture(warnings);
+  try {
+    fn();
+  } finally {
+    restore();
+  }
+  return warnings;
+}
+
 describe("SidecarRouter", () => {
   let router: ReturnType<typeof createSidecarRouter>;
 
@@ -3036,6 +3080,200 @@ describe("SidecarRouter", () => {
       expect(flushed).toHaveLength(2);
       expect(flushed[0].rawMessage).toBe("msg-1");
       expect(flushed[1].rawMessage).toBe("msg-2");
+    });
+
+    test("size-cap eviction surfaces the dropped message loudly", async () => {
+      // A size-cap eviction must not silently discard the evicted message: it
+      // fires mail.outbound.undelivered for the dropped frame and warns with
+      // the recipient, so an operator can see mail was lost.
+      const kp = await generateKeyPair();
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        disconnectQueueMaxSize: 2,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+
+      const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+      router.events.on("mail.outbound.undelivered", (event) => {
+        undelivered.push({
+          rawMessage: event.rawMessage,
+          recipients: event.recipients,
+        });
+      });
+
+      const ws = createMockWs();
+      await connectAgentViaChallenge(router, ws, "agent@local", kp.privateKey);
+      router.handleClose(ws);
+
+      const warnings = captureWarnings(() => {
+        // Queue 3 with max size 2 — the oldest (msg-0) is evicted.
+        router.routeMail("agent@local", "msg-0");
+        router.routeMail("agent@local", "msg-1");
+        router.routeMail("agent@local", "msg-2");
+      });
+
+      // The evicted frame surfaces through the existing undelivered channel,
+      // carrying its rawMessage and the recipient it was queued for.
+      expect(undelivered).toEqual([
+        { rawMessage: "msg-0", recipients: ["agent@local"] },
+      ]);
+      // And a warn names the recipient and the drop count.
+      expect(
+        warnings.some(
+          (w) => w.includes("agent@local") && w.includes("Dropping"),
+        ),
+      ).toBe(true);
+    });
+
+    test("TTL expiry after disconnect surfaces the whole dropped queue loudly", async () => {
+      // When the disconnect-queue TTL fires on a still-full queue, every
+      // undelivered frame must surface -- not vanish. Each queued frame fires
+      // mail.outbound.undelivered and a single warn reports the recipient and
+      // count.
+      const kp = await generateKeyPair();
+      const router = createSidecarRouter({
+        requestTimeoutMs: 500,
+        disconnectQueueTTLMs: 20,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+
+      const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+      router.events.on("mail.outbound.undelivered", (event) => {
+        undelivered.push({
+          rawMessage: event.rawMessage,
+          recipients: event.recipients,
+        });
+      });
+
+      const ws = createMockWs();
+      await connectAgentViaChallenge(router, ws, "agent@local", kp.privateKey);
+      router.handleClose(ws);
+
+      router.routeMail("agent@local", "msg-a");
+      router.routeMail("agent@local", "msg-b");
+
+      const warnings: string[] = [];
+      const restore = installWarningCapture(warnings);
+      try {
+        // Wait past the TTL so the handleClose timer fires.
+        await new Promise((r) => setTimeout(r, 60));
+      } finally {
+        restore();
+      }
+
+      expect(undelivered).toEqual([
+        { rawMessage: "msg-a", recipients: ["agent@local"] },
+        { rawMessage: "msg-b", recipients: ["agent@local"] },
+      ]);
+      expect(
+        warnings.some(
+          (w) => w.includes("agent@local") && w.includes("Dropping"),
+        ),
+      ).toBe(true);
+    });
+
+    test("TTL expiry after a failed reconnect surfaces the whole dropped queue loudly", async () => {
+      // A reconnect whose governance reaction rejects the address resets the
+      // queue TTL. When that reset timer fires on a still-full queue, the
+      // dropped frames must surface the same way -- via
+      // mail.outbound.undelivered per frame and a warn naming the recipient.
+      // TTL long enough that the original handleClose timer does not fire
+      // during the ~100ms reconnect handshake -- the failed reconnect must be
+      // the thing that re-arms it, so this test exercises the reset timer's
+      // drop path rather than handleClose's.
+      const kp = await generateKeyPair();
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        disconnectQueueTTLMs: 250,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === "agent@local" ? hexEncode(kp.publicKey) : null,
+        },
+      });
+      const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+      router.events.on("mail.outbound.undelivered", (event) => {
+        undelivered.push({
+          rawMessage: event.rawMessage,
+          recipients: event.recipients,
+        });
+      });
+
+      // Establish the address (initial reconnect succeeds -- no governance
+      // reaction yet), disconnect to create a queue, and fill it.
+      const ws1 = createMockWs();
+      await connectAgentViaChallenge(router, ws1, "agent@local", kp.privateKey);
+      router.handleClose(ws1);
+      expect(router.routeMail("agent@local", "msg-x")).toBe(true);
+      expect(router.routeMail("agent@local", "msg-y")).toBe(true);
+
+      // Now arm a governance reaction that always rejects, so the SECOND
+      // reconnect forces the address into the failed set and exercises the
+      // TTL-reset timer rather than a flush.
+      router.events.on("agent.reconnected", () => {
+        throw new Error("governance rejected");
+      });
+
+      // Reconnect and answer the challenge; the governance reaction rejects the
+      // address, resetting the queue TTL rather than flushing.
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: ["agent@local"],
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      const challengeFrame = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, kp.privateKey),
+          }),
+        ),
+      );
+      router.handleMessage(
+        ws2,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      // The address failed governance, so the queue was preserved with a reset
+      // TTL rather than flushed.
+      expect(undelivered).toHaveLength(0);
+
+      const warnings: string[] = [];
+      const restore = installWarningCapture(warnings);
+      try {
+        // Wait past the reset TTL so the failed-reconnect timer fires.
+        await new Promise((r) => setTimeout(r, 320));
+      } finally {
+        restore();
+      }
+
+      expect(undelivered).toEqual([
+        { rawMessage: "msg-x", recipients: ["agent@local"] },
+        { rawMessage: "msg-y", recipients: ["agent@local"] },
+      ]);
+      expect(
+        warnings.some(
+          (w) => w.includes("agent@local") && w.includes("Dropping"),
+        ),
+      ).toBe(true);
     });
 
     test("sendSourcesUpdate rejects when agent is disconnected", async () => {
