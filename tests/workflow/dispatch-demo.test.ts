@@ -10,9 +10,12 @@
 // mid-loop crash resuming to exactly-once effects.
 //
 // The demo's real agents (planner/critic/fixer/...) are stubbed behind
-// the invokeStep seam here; porting them onto that seam is separate
-// follow-up work (they target an older @intx/agent API). This test
-// validates that the engine expresses the demo's orchestration shape.
+// the invokeStep seam here, which keeps this the fast, deterministic,
+// LLM-free check of the engine's routing and crash-resume behaviour. The
+// real-agent integration proof -- the same per-level pipeline driven by
+// genuine @intx/agent agents through the production step-invoker seam --
+// lives in its sibling
+// `tests/workflow-deploy/per-level-pipeline-real-agents.test.ts`.
 
 import { describe, test, expect } from "bun:test";
 
