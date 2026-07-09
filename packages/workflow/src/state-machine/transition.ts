@@ -523,9 +523,11 @@ function handleChildSpawned(state: RunState, e: ChildSpawned): RunState {
   // ChildSpawned for an existing childRunId is a double-insertion, not a
   // re-observed transition, so it is rejected rather than allowed to
   // clobber the child's terminalStatus/cancelRequested (which would
-  // resurrect a finished child into the cancel cascade). This is
-  // replay-safe because the sole emit site mints a fresh childRunId per
-  // spawn, so no duplicate ChildSpawned is ever persisted.
+  // resurrect a finished child into the cancel cascade). The guard is the
+  // invariant, not any assumption about freshly minted ids: a re-emitted
+  // ChildSpawned for an already-known child -- which a loop's
+  // deterministic per-iteration child id produces on resume -- is rejected
+  // rather than allowed to overwrite the existing child.
   if (state.children.has(e.childRunId)) {
     throw new TransitionError(
       "child-already-spawned",
