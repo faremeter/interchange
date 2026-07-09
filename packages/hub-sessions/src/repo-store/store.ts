@@ -226,20 +226,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // ever write via writeTree.
   const existingCommitsCache = new Map<string, Set<string>>();
 
-  // Per-(repoId, ref) cache of "the commit OID createPack last packed
-  // into a workflow-run pack". After the first successful push lands
-  // a ref's tip on the receiver, every subsequent push only needs to
-  // carry the commits added since then — the parent chain older than
-  // this tip is already on the receiver, so re-shipping it wastes
-  // pack bytes and inflates `receivePack` time per push. The cache
-  // advances on every createPack call so the substrate's view of
-  // "what has been shipped" stays in sync with the wrapper's
-  // serialised push pipeline. A failed push leaves the cache pointing
-  // at the unshipped tip; the wrapper's bootstrap retry re-sends the
-  // same pack bytes and the cache stays consistent. The cache key is
-  // `${repoId.kind}/${repoId.id}/${ref}` so writes against different
-  // refs on the same repo (events vs the workflow-run ref) do not
-  // interfere.
+  // Per-(repoId, ref) cache of "the commit OID the receiver has acked
+  // for a workflow-run pack". After the first push lands a ref's tip on
+  // the receiver, every subsequent push only needs to carry the commits
+  // added since then — the parent chain older than this tip is already
+  // on the receiver, so re-shipping it wastes pack bytes and inflates
+  // `receivePack` time per push. The cursor advances in
+  // `commitPackedTip`, which the push pipeline calls once the receiver
+  // acks the transfer — NOT when `createPack` builds the pack. Advancing
+  // on build would strand the receiver whenever a transfer is cancelled
+  // before its ack (a reconnect drops the in-flight push): the next
+  // rebuild would walk back only to the un-acked commit and omit it, so
+  // the receiver would reject the pack with a dangling parent forever.
+  // Gating the advance on the ack keeps a cancelled transfer cleanly
+  // re-shippable. The cache key is `${repoId.kind}/${repoId.id}/${ref}`
+  // so writes against different refs on the same repo (events vs the
+  // workflow-run ref) do not interfere.
   const lastPackedTip = new Map<string, string>();
   function lastPackedTipKey(repoId: RepoId, ref: string): string {
     return `${repoId.kind}/${repoId.id}/${ref}`;
@@ -1760,11 +1762,33 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
           `packObjects returned no packfile for ref "${ref}" (${commitSha})`,
         );
       }
-      lastPackedTip.set(tipKey, commitSha);
+      // The cursor is NOT advanced here. Building a pack only produces
+      // bytes; the shipped tip advances in `commitPackedTip` once the
+      // receiver acks the transfer that carried these commits. A
+      // transfer a reconnect cancels before its ack thus leaves the
+      // cursor where it was, so the next `createPack` re-includes the
+      // un-acked commits and the receiver still gets a self-consistent
+      // chain instead of a pack whose base commit it never received.
       return { pack: result.packfile, commitSha, ref };
     }
     const { pack, commitSha } = await createDeployPack(repoDir(repoId), ref);
     return { pack, commitSha, ref };
+  }
+
+  // Advance the incremental-pack cursor for `(repoId, ref)` to
+  // `commitSha`. Called by the pack-push pipeline once the receiver has
+  // acked the transfer that shipped `commitSha`. Gating the advance on
+  // the ack — rather than advancing inside `createPack` when the pack
+  // bytes are produced — is what lets a cancelled-before-ack transfer
+  // (a reconnect drops the in-flight push) be re-shipped cleanly: the
+  // cursor stays put, so the next `createPack` re-includes the un-acked
+  // commits and the receiver gets a self-consistent chain. Only the
+  // `workflow-run` kind ships incremental packs; for every other kind
+  // `createPack` produces a self-contained deploy pack and the cursor
+  // is unused, so this is a no-op there.
+  function commitPackedTip(repoId: RepoId, ref: string, commitSha: string) {
+    if (repoId.kind !== "workflow-run") return;
+    lastPackedTip.set(lastPackedTipKey(repoId, ref), commitSha);
   }
 
   // Collect every object OID reachable from `tipSha` and from every
@@ -1991,6 +2015,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     writeTreeDelta,
     receivePack,
     createPack,
+    commitPackedTip,
     resolveRef,
     listRefs,
     resolveHead,

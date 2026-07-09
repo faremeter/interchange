@@ -23,6 +23,9 @@ function repoStoreFor(dirById: Map<string, string>): RepoStore {
     writeTreeDelta: unused,
     receivePack: unused,
     createPack: unused,
+    commitPackedTip: () => {
+      throw new Error("workflow-run reader test: method not wired");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,

@@ -234,6 +234,9 @@ function unusedRepoStore(): RepoStore {
     writeTreeDelta: unused,
     receivePack: unused,
     createPack: unused,
+    commitPackedTip: () => {
+      throw new Error("mock AgentRepoStore.repoStore is not wired");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,

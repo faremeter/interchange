@@ -2026,4 +2026,118 @@ describe("RepoStore", () => {
     expect(resolved).toBeNull();
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
   });
+
+  // A workflow-run pack transfer cancelled by a reconnect never lands
+  // an ack. The send-side "last shipped tip" must therefore advance on
+  // the ack, not when the pack is built: an un-acked build has to leave
+  // the tip where it was so the next rebuild re-ships the un-acked
+  // commit. If the tip advanced at build time, the rebuild would walk
+  // its incremental chain back only as far as the un-acked commit and
+  // omit that commit's own object from the pack, stranding the receiver
+  // with a dangling parent it can never resolve.
+  test("createPack advances the packed tip on commitPackedTip, not at build time, so a cancelled transfer re-ships the un-acked commit", async () => {
+    const makePermissiveWorkflowRunHandler = (): TestHandler => {
+      const onRefUpdatedCalls: RefUpdateRecord[] = [];
+      return {
+        kind: "workflow-run",
+        directoryPrefix: "workflow-runs-under-test",
+        validatePush(): ValidatePushResult {
+          return { ok: true };
+        },
+        onRefUpdated(args) {
+          onRefUpdatedCalls.push(args);
+        },
+        onRefUpdatedCalls,
+      };
+    };
+
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+
+    const sourceDir = await makeTempDir("repo-store-ack-tip-source-");
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "workflow-run": makePermissiveWorkflowRunHandler() },
+      authorize: allowAll,
+    });
+
+    // First commit and its pack. This transfer is the one a reconnect
+    // cancels: the build succeeds but no ack ever lands, so the tip is
+    // never committed for it.
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+    );
+    const firstBuild = await sourceStore.createPack(principal, wfRepoId, REF);
+    expect(firstBuild.commitSha).toBe(firstSha);
+
+    // The reconnect cancels the transfer without an ack, then the
+    // coalescing retry loop commits a second event and rebuilds. The
+    // rebuild must re-include the un-acked first commit because the tip
+    // was never committed.
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/1.json": "v2" }, message: "v2" },
+    );
+    const rebuild = await sourceStore.createPack(principal, wfRepoId, REF);
+    expect(rebuild.commitSha).toBe(secondSha);
+
+    // A fresh receiver that has never seen the first commit must accept
+    // the rebuilt pack: it carries the full chain from genesis, so no
+    // commit references a parent the receiver cannot resolve. Under a
+    // build-time tip advance the rebuild's chain would stop at
+    // `firstSha` and omit it, and this receive would reject with
+    // `pack_walk_dangling_parent` on the second commit's parent.
+    const rebuildTargetDir = await makeTempDir("repo-store-ack-tip-rebuild-");
+    const rebuildTargetHandler = makePermissiveWorkflowRunHandler();
+    const rebuildTargetStore = createRepoStore({
+      dataDir: rebuildTargetDir,
+      signingKey,
+      handlers: { "workflow-run": rebuildTargetHandler },
+      authorize: allowAll,
+    });
+    await rebuildTargetStore.initRepo(wfRepoId);
+    await rebuildTargetStore.receivePack(
+      principal,
+      wfRepoId,
+      REF,
+      rebuild.pack,
+      secondSha,
+      null,
+    );
+    expect(await rebuildTargetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+      secondSha,
+    );
+
+    // Committing the tip on the ack lets the next build ship only the
+    // commits added since: after `commitPackedTip(secondSha)`, a third
+    // commit's pack walks back to `secondSha` and stops, so the pack
+    // no longer carries the already-acked history. A receiver that
+    // already holds the chain up to the second commit accepts this
+    // incremental pack.
+    sourceStore.commitPackedTip(wfRepoId, REF, secondSha);
+    const { commitSha: thirdSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/2.json": "v3" }, message: "v3" },
+    );
+    const incremental = await sourceStore.createPack(principal, wfRepoId, REF);
+    expect(incremental.commitSha).toBe(thirdSha);
+    await rebuildTargetStore.receivePack(
+      principal,
+      wfRepoId,
+      REF,
+      incremental.pack,
+      thirdSha,
+      secondSha,
+    );
+    expect(await rebuildTargetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+      thirdSha,
+    );
+  });
 });

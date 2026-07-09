@@ -79,6 +79,14 @@ export function createWorkflowRunPackClient(
         ref,
         commitSha,
       });
+      // `pushWorkflowRunPack` resolves only on the hub's
+      // `repo.pack.ack` and rejects on a reject or a reconnect that
+      // cancels the transfer. Advancing the substrate's shipped-tip
+      // cursor here — after the ack, never at build time — is what
+      // lets a cancelled transfer be re-shipped: a rejected push throws
+      // before this line, so the cursor stays put and the next
+      // `createPack` re-includes the un-acked commits.
+      substrate.commitPackedTip(repoId, ref, commitSha);
     },
   };
 }
@@ -385,20 +393,27 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
  * serial round-trips' worth of hub-ack latency. The push body
  * captures the current local ref tip at the moment it runs, so the
  * single pack it builds covers every commit landed since the prior
- * shipped tip -- the substrate's incremental `createPack` already
- * walks the chain from the prior `lastPackedTip` forward, so the
- * receiver still sees every commit transition.
+ * ACKED tip -- the substrate's incremental `createPack` walks the
+ * chain from the cursor `commitPackedTip` last committed on an ack
+ * forward, so the receiver still sees every commit transition.
  *
  * Single-writer + FIFO correctness: the underlying substrate
  * serialises local writes via `withRepoLock`, so commits land on
  * disk in submission order. The hub's `receivePack` validates each
  * commit's parent against its existing-commits set; as long as the
- * pack carries the full chain from prior shipped tip to current
- * tip (which `createPack` does for `workflow-run` repos), every
- * intermediate commit is validated by the receiver. Coalescing
+ * pack carries the full chain from prior acked tip to current tip,
+ * every intermediate commit is validated by the receiver. Coalescing
  * multiple local commits into one network push therefore preserves
  * the receive-time CAS invariant while collapsing N hub round-trips
  * into 1.
+ *
+ * Reconnect-safe re-shipping: the substrate advances its shipped-tip
+ * cursor on the ack (`push` calls `commitPackedTip` only after
+ * `pushWorkflowRunPack` resolves), never at build time. A transfer a
+ * reconnect cancels before its ack therefore leaves the cursor where
+ * it was, so the retry loop's next `createPack` re-includes the
+ * un-acked commits and the receiver gets a self-consistent chain
+ * rather than a pack whose base commit it never received.
  *
  * Failure surfacing: a failed push latches its error on the
  * per-(repoId, ref) slot's `lastError` field. The next call to
@@ -552,6 +567,7 @@ export function createWorkflowRunPackPushingRepoStore(
     writeTree: underlying.writeTree.bind(underlying),
     receivePack: underlying.receivePack.bind(underlying),
     createPack: underlying.createPack.bind(underlying),
+    commitPackedTip: underlying.commitPackedTip.bind(underlying),
     resolveRef: underlying.resolveRef.bind(underlying),
     listRefs: underlying.listRefs.bind(underlying),
     resolveHead: underlying.resolveHead.bind(underlying),

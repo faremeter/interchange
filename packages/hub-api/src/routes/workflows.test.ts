@@ -272,6 +272,9 @@ function createStubRepoStore(repoDirById?: Map<string, string>): RepoStore {
     writeTreeDelta: unused,
     receivePack: unused,
     createPack: unused,
+    commitPackedTip: () => {
+      throw new Error("stub repoStore is not wired in workflow tests");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,
