@@ -93,6 +93,7 @@ import {
   type RunResult,
   type StepInvoker,
   type WorkflowAuthorizeFn,
+  type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
@@ -665,21 +666,29 @@ describe("per-level pipeline with real agents", () => {
     rmSync(baseDir, { recursive: true, force: true });
   });
 
-  // Build the runtime env: real agents through the production step-invoker
-  // adapter (each step gets its own isogit-backed context store and workdir
-  // under a fresh per-invocation dir), a git-commit-shaped `invokeAction`
-  // over an in-memory effect ledger, and the loop wiring.
-  function buildEnv(effectRuns: { n: number }): WorkflowRuntimeEnv {
-    const repoStore = createInMemoryRepoStore();
-    const blobs = createInMemoryBlobSubstrate();
-    const effects = inMemoryLedger();
+  // Build the runtime env over caller-supplied substrates: real agents
+  // through the production step-invoker adapter (each step gets its own
+  // isogit-backed context store and workdir under a fresh per-invocation dir
+  // rooted at `baseDir`), a git-commit-shaped `invokeAction` over the
+  // supplied effect ledger, and the loop wiring. Taking the repoStore, blob
+  // substrate, and effect ledger as parameters lets a crash-resume test
+  // share the ledger and blobs across a simulated crash while giving the
+  // resumed run a fresh repoStore (empty child log) and a distinct `baseDir`.
+  function buildEnv(opts: {
+    repoStore: ReturnType<typeof createInMemoryRepoStore>;
+    blobs: ReturnType<typeof createInMemoryBlobSubstrate>;
+    effects: EffectLedger;
+    baseDir: string;
+    effectRuns: { n: number };
+  }): WorkflowRuntimeEnv {
+    const { repoStore, blobs, effects, baseDir: envBaseDir, effectRuns } = opts;
     const clock = () => new Date();
     let stepDir = 0;
 
     const invokeStep: StepInvoker = createWorkflowStepInvoker({
       workflowAuthorize,
       buildEnv: async (): Promise<Omit<BaseEnv, "authorize">> => {
-        const dir = join(baseDir, `step-${String(stepDir++)}`);
+        const dir = join(envBaseDir, `step-${String(stepDir++)}`);
         const storage = await createIsogitStore(join(dir, "ctx"));
         return {
           sources: [SOURCE],
@@ -757,8 +766,17 @@ describe("per-level pipeline with real agents", () => {
   // reactor replies, and the reactor replies only once `harness.run()` fires
   // the response stream on the virtual clock; the runtime drives many steps
   // sequentially, so the harness must be re-driven as each new fetch arrives.
-  async function drivePipeline(env: WorkflowRuntimeEnv): Promise<RunResult> {
-    const run = runtimeRun(pipeline, env);
+  async function drivePipeline(
+    env: WorkflowRuntimeEnv,
+    resume?: { runId: string; resumeFromEvents: readonly WorkflowEvent[] },
+  ): Promise<RunResult> {
+    const run =
+      resume === undefined
+        ? runtimeRun(pipeline, env)
+        : runtimeRun(pipeline, env, {
+            runId: resume.runId,
+            resumeFromEvents: resume.resumeFromEvents,
+          });
     let settled = false;
     const complete = run.complete.finally(() => {
       settled = true;
@@ -775,7 +793,15 @@ describe("per-level pipeline with real agents", () => {
   test("the amendment loop converges through real agents and the level consolidates", async () => {
     scriptWorkflow(harness, 2);
     const effectRuns = { n: 0 };
-    const result = await drivePipeline(buildEnv(effectRuns));
+    const result = await drivePipeline(
+      buildEnv({
+        repoStore: createInMemoryRepoStore(),
+        blobs: createInMemoryBlobSubstrate(),
+        effects: inMemoryLedger(),
+        baseDir,
+        effectRuns,
+      }),
+    );
 
     expect(result.terminalStatus).toBe("completed");
 
@@ -799,7 +825,15 @@ describe("per-level pipeline with real agents", () => {
     // The gate-critic never passes, so the loop exhausts at AMENDMENT_CAP.
     scriptWorkflow(harness, AMENDMENT_CAP + 2);
     const effectRuns = { n: 0 };
-    const result = await drivePipeline(buildEnv(effectRuns));
+    const result = await drivePipeline(
+      buildEnv({
+        repoStore: createInMemoryRepoStore(),
+        blobs: createInMemoryBlobSubstrate(),
+        effects: inMemoryLedger(),
+        baseDir,
+        effectRuns,
+      }),
+    );
 
     expect(result.terminalStatus).toBe("completed");
 
