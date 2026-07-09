@@ -139,4 +139,70 @@ describe("runLocal dispatch-shape fixture", () => {
     // the escalator agent must not have been invoked.
     expect(observed.filter((c) => c.stepId === "escalate")).toHaveLength(0);
   });
+
+  test("a map over an empty list fans out to no inner steps and yields an empty output", async () => {
+    const planner = makeAgent("planner");
+    const implementer = makeAgent("implementer");
+    const consumer = makeAgent("consumer");
+    const def = defineWorkflow({
+      id: "empty-fan-out",
+      trigger: { type: "manual" },
+      steps: {
+        plan: step({ agent: planner }),
+        impl: map({
+          over: { from: "steps.plan.output.tasks" },
+          step: step({ agent: implementer }),
+          after: ["plan"],
+        }),
+        consume: step({
+          agent: consumer,
+          input: { from: "steps.impl.output" },
+          after: ["impl"],
+        }),
+      },
+    });
+
+    const observed: AuthorizeContext[] = [];
+    const authorize: WorkflowAuthorizeFn = async (
+      _resource,
+      _action,
+      context,
+    ) => {
+      observed.push(context);
+      return { effect: "allow", matchingGrants: [], resolvedBy: null };
+    };
+
+    let consumeInput: unknown = "unset";
+    const invokeStep: StepInvoker = async ({ agent, input, authzContext }) => {
+      await authorize(`tool:${agent.id}`, "invoke", authzContext);
+      if (agent.id === "planner") {
+        return { output: { tasks: [] } };
+      }
+      if (agent.id === "consumer") {
+        consumeInput = input;
+        return { output: { done: true } };
+      }
+      return { output: { processed: input } };
+    };
+
+    const run = runLocal(def, {
+      triggerPayload: { goal: "nothing to do" },
+      authorize,
+      invokeStep,
+    });
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // The empty fan-out scheduled no inner implementer step, so the
+    // implementer agent was never invoked.
+    expect(
+      observed.filter(
+        (c) => typeof c.stepId === "string" && c.stepId.startsWith("impl["),
+      ),
+    ).toHaveLength(0);
+    // The map container still completes with an empty output, which the
+    // downstream step consumes as an empty array.
+    expect(result.outputs.impl).toEqual([]);
+    expect(consumeInput).toEqual([]);
+  });
 });
