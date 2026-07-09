@@ -1939,6 +1939,117 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(await recordExists(dataDir, deploymentId)).toBe(true);
   });
 
+  test("restore isolates an unbuildable-provider record: it keeps the record and surfaces the failure while the healthy deployment still restores", async () => {
+    const dataDir = await createTempBaseDir(
+      "sidecar-restore-unbuildable-isolate-data-",
+    );
+    const healthyHead = "ins_healthy_isolate@example.com";
+    const unbuildableHead = "ins_unbuildable_isolate@example.com";
+    const healthyId = deriveDeploymentId(healthyHead);
+    const unbuildableId = deriveDeploymentId(unbuildableHead);
+
+    // The unbuildable deployment pins a source whose provider the restart's
+    // gate will reject; the healthy deployment keeps the default `anthropic`
+    // source the gate admits. Distinguishing on `provider` lets one
+    // `assertSourceBuildable` reject exactly one of the two restored records.
+    const unbuildableProvider = "phantom-provider";
+    function unbuildableSingleStepFrame(): AgentDeployFrame {
+      return makeMultistepFrame({
+        agentAddress: unbuildableHead,
+        definition: {
+          id: "wf-unbuildable-isolate",
+          triggers: [{ type: "manual" }],
+          stepOrder: ["step-1"],
+          steps: { "step-1": { kind: "step" } },
+        },
+        sources: {
+          "step-1": [
+            { ...makeInferenceSource("step-1"), provider: unbuildableProvider },
+          ],
+        },
+      });
+    }
+
+    // First process: a permissive gate lets BOTH deploys through, persisting
+    // each record and its workflow.json.
+    const first = makeReadyDrivingSpawner(11400);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployHealthy = routerA.deploy(
+      singleStepFrame(healthyHead, "wf-healthy-isolate"),
+    );
+    await first.driveReadyFor(0);
+    await deployHealthy;
+    const deployUnbuildable = routerA.deploy(unbuildableSingleStepFrame());
+    await first.driveReadyFor(1);
+    await deployUnbuildable;
+    expect(await recordExists(dataDir, healthyId)).toBe(true);
+    expect(await recordExists(dataDir, unbuildableId)).toBe(true);
+
+    // Restart: a fresh transport plus a gate that rejects ONLY the phantom
+    // provider. Capture the module's warn output through the default console
+    // sink (threshold "warning" routes `logger.warn` to `console.warn`) so we
+    // can assert the failure is surfaced loudly rather than silently dropped.
+    const warnCaptured: string[] = [];
+    // eslint-disable-next-line no-console -- intentionally spy on the default sink's warn target to prove the restore failure is surfaced
+    const originalWarn = console.warn;
+    // eslint-disable-next-line no-console
+    console.warn = (...parts: unknown[]) => {
+      warnCaptured.push(parts.map((part) => String(part)).join(" "));
+    };
+    try {
+      const second = makeReadyDrivingSpawner(11500);
+      const freshTransport = createInMemoryTransport();
+      const { router: routerB } = await buildMultistepFixture({
+        spawner: second.spawner,
+        transport: freshTransport,
+        multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+        assertSourceBuildable: (source) => {
+          if (source.provider === unbuildableProvider) {
+            throw new Error(
+              `Source provider "${source.provider}" is not registered`,
+            );
+          }
+        },
+      });
+
+      // Only the healthy deployment spawns, so its handshake is the sole one
+      // to drive; the unbuildable record faults before its spawner is ever
+      // reached. Restore is serial and per-record isolated, so scan order does
+      // not change the outcome.
+      const restorePromise = routerB.restoreWorkflowDeployments();
+      await second.driveReadyFor(0);
+      await restorePromise;
+
+      // The unbuildable record did NOT strand the healthy one: it re-spawned
+      // exactly once and its head is routable again on the fresh transport.
+      expect(second.spawnCount()).toBe(1);
+      expect(isRegistered(freshTransport, healthyHead)).toBe(true);
+
+      // The unbuildable deployment was not stood up: no spawn, no route.
+      expect(isRegistered(freshTransport, unbuildableHead)).toBe(false);
+
+      // Its record survives -- restore keeps an unrestorable record so a later
+      // boot with the provider restored can retry it.
+      expect(await recordExists(dataDir, unbuildableId)).toBe(true);
+
+      // The failure is surfaced loudly: a warning naming the failed deployment
+      // and the provider rejection reason, not a silent drop.
+      const failureWarn = warnCaptured.find(
+        (line) =>
+          line.includes(unbuildableId) &&
+          line.includes(unbuildableProvider) &&
+          line.includes("is not registered"),
+      );
+      expect(failureWarn).toBeDefined();
+    } finally {
+      // eslint-disable-next-line no-console
+      console.warn = originalWarn;
+    }
+  });
+
   test("a deploy whose child never signals ready times out and rejects", async () => {
     const dataDir = await createTempBaseDir("sidecar-ready-timeout-data-");
     const head = "ins_readytimeout@example.com";
