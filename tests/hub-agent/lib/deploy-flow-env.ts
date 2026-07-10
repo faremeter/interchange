@@ -493,6 +493,23 @@ export type HubEnv = {
    * workflow-run pack push is mid-flight.
    */
   workflowRunPackReceipts: { count: number };
+  /**
+   * Opt-in, arm-once mid-pack interrupt for the workflow-run push. Off by
+   * default (`armed: false`), so ordinary tests are unaffected. When a test
+   * sets `armed = true`, the FIRST `refs/heads/main` workflow-run pack the
+   * hub receives is applied DURABLY (the commit lands on the hub), then
+   * every live hub link is dropped BEFORE the ack is returned, and `armed`
+   * flips back to `false`. `handleClose` then rejects the sidecar's pending
+   * pack transfer, so the sidecar's push rejects and latches "Connection
+   * lost" -- the deterministic interrupted-pack failure mode, provoked
+   * without a bespoke hub. The recorded fields let a test observe that the
+   * interrupt fired and on which ref/commit.
+   */
+  interrupt: {
+    armed: boolean;
+    interruptedRef: string | null;
+    interruptedCommitSha: string | null;
+  };
 };
 
 // Hub WebSocket server (in-process) wired against a real AgentRepoStore
@@ -517,6 +534,23 @@ export async function startHub(
   // reads it. A bare number field on the returned env would not reflect the
   // bumps, so the count lives behind a stable object reference.
   const workflowRunPackReceipts = { count: 0 };
+
+  // Arm-once mid-pack interrupt state, off by default. A test flips
+  // `armed = true` to make the FIRST refs/heads/main workflow-run pack drop
+  // every live link before its ack. Shared by reference between the
+  // `receiveWorkflowRunPack` lookup below and the returned env so the test
+  // can arm it and observe that it fired.
+  const interrupt: HubEnv["interrupt"] = {
+    armed: false,
+    interruptedRef: null,
+    interruptedCommitSha: null,
+  };
+
+  function dropAllHandles(): void {
+    for (const handle of [...liveHandles]) {
+      handle.close();
+    }
+  }
 
   const hubDataDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "hub-data-"),
@@ -586,6 +620,27 @@ export async function startHub(
           throw new Error(
             `deploy-flow test mock received unsupported workflow-run repo kind ${JSON.stringify(repoId.kind)}`,
           );
+        }
+        // Arm-once mid-pack interrupt: apply the pack durably (so the hub
+        // has the commit), then drop every live link BEFORE returning the
+        // ack. `handleClose` rejects the sidecar's pending transfer, so the
+        // sidecar's push rejects and latches "Connection lost" even though
+        // the hub durably holds the commit -- the interrupted-pack failure
+        // mode. Restricted to the run-events ref so the claim-check ref
+        // (refs/heads/events) keeps flowing.
+        if (interrupt.armed && ref === "refs/heads/main") {
+          interrupt.armed = false;
+          interrupt.interruptedRef = ref;
+          interrupt.interruptedCommitSha = commitSha;
+          await agentRepoStore.receiveWorkflowRunPack(
+            repoId,
+            pack,
+            ref,
+            commitSha,
+          );
+          workflowRunPackReceipts.count += 1;
+          dropAllHandles();
+          return { accepted: true };
         }
         try {
           await agentRepoStore.receiveWorkflowRunPack(
@@ -781,6 +836,7 @@ export async function startHub(
     hubDataDir,
     liveHandles,
     workflowRunPackReceipts,
+    interrupt,
   };
 }
 

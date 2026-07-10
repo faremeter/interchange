@@ -1379,17 +1379,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
   });
 
-  test("a registerDeployment failure after spawn unwinds the supervisor, routers, and slug", async () => {
-    // The H1 multi-step partial-state unwind: when an earlier
-    // commit's slug-only release is extended to the full deploy
-    // pipeline, a `registerDeployment` failure must kill the
-    // freshly-spawned workflow-process child, drop the
-    // `activeSupervisors` entry, unregister the three multistep
-    // routers, and release the slug. The observable evidence here
-    // is that (a) the spawner's `kill` is invoked on the first
-    // child after deploy rejects and (b) a subsequent deploy on the
-    // SAME address succeeds, which is only possible if the slug
-    // and the activeSupervisors entry were released.
+  test("a registerDeployment failure before spawn unwinds the slug and leaves the address claimable", async () => {
+    // The multi-step partial-state unwind for the address-registry step.
+    // `registerDeployment` runs BEFORE `supervisor.spawn` -- the replay the
+    // spawn kicks off writes through the pack-pushing facade, which must
+    // resolve the deployment-address mapping, so the mapping has to exist
+    // before the spawn. A `registerDeployment` failure therefore throws
+    // before any child is spawned; the unwind must release the slug (and
+    // reverse nothing else, since nothing after it ran). The observable
+    // evidence is that (a) NO child was spawned for the failed deploy and
+    // (b) a subsequent deploy on the SAME address succeeds, which is only
+    // possible if the slug was released.
     const childIpcKeyPair = await generateKeyPair();
     const spawnedHandles: {
       pid: number;
@@ -1490,12 +1490,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
     const frame = makeMultistepFrame({ definition, sources });
 
-    const firstDeploy = router.deploy(frame);
-    await driveReadyFor(0, 9000);
-
+    // The first deploy throws at `registerDeployment`, which now runs before
+    // `supervisor.spawn`, so it rejects WITHOUT spawning a child -- no ready
+    // handshake to drive.
     let firstCaught: unknown;
     try {
-      await firstDeploy;
+      await router.deploy(frame);
     } catch (err) {
       firstCaught = err;
     }
@@ -1504,24 +1504,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       /registerDeployment failure \(synthetic\)/,
     );
 
-    // The first child must have been killed by the unwind's
-    // `supervisor.shutdown()` call. Without the unwind, the
-    // freshly-spawned workflow-process child would remain alive
-    // under no owner.
-    const firstHandle = spawnedHandles[0];
-    if (firstHandle === undefined) {
-      throw new Error("spawnedHandles[0] missing");
-    }
-    expect(firstHandle.killed).toBe(true);
+    // No child was spawned for the failed deploy: the throw preceded spawn.
+    expect(spawnedHandles).toHaveLength(0);
 
-    // Re-deploy on the SAME address must succeed. If the unwind
-    // missed the slug release OR the activeSupervisors entry, the
-    // second deploy would surface a phantom collision (slug) or
-    // overwrite a stale entry (activeSupervisors). The router's
-    // public contract is that a failed deploy leaves the address
-    // claimable again.
+    // Re-deploy on the SAME address must succeed. If the unwind missed the
+    // slug release, the second deploy would surface a phantom collision. The
+    // router's public contract is that a failed deploy leaves the address
+    // claimable again. This is the first deploy that actually spawns, so its
+    // ready handshake is at index 0.
     const secondDeploy = router.deploy(frame);
-    await driveReadyFor(1, 9001);
+    await driveReadyFor(0, 9000);
     const secondResult = await secondDeploy;
     expect(secondResult.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(registerCallCount).toBe(2);

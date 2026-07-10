@@ -56,6 +56,24 @@ export function createWorkflowRunPackClient(
   opts: CreateWorkflowRunPackClientOpts,
 ): WorkflowRunPackClient {
   const { substrate, hubLink } = opts;
+
+  // Shadow of the substrate's shipped-tip cursor, keyed by `(repoId.id, ref)`.
+  // This client is the SOLE caller of `commitPackedTip` for the workflow-run
+  // kind, so its own record of "the last commitSha I acked" cannot drift from
+  // the substrate cursor. It exists to answer one question `createPack` cannot
+  // answer to its caller: is the current ref tip already shipped? When the tip
+  // equals the last acked sha there is nothing un-acked to ship, and building
+  // a pack would produce an empty delta whose declared tip is not in the pack
+  // -- which the hub rejects as `sha_mismatch`. Skipping the wire send in that
+  // case is what makes a re-drive of an already-shipped tip a clean no-op
+  // rather than a spurious rejection. The reconnect re-drive path
+  // (`notifyAddressRoutable`) can legitimately fire for a slot whose commits
+  // already landed on an earlier attempt, so this guard is load-bearing.
+  const lastAckedSha = new Map<string, string>();
+  function ackKey(repoId: RepoId, ref: string): string {
+    return `${repoId.id}/${ref}`;
+  }
+
   return {
     async push({ agentAddress, repoId, ref }) {
       if (repoId.kind !== "workflow-run") {
@@ -67,6 +85,14 @@ export function createWorkflowRunPackClient(
         kind: "supervisor",
         deploymentId: repoId.id,
       };
+      // Nothing to ship when the local tip is already the last acked tip:
+      // the run's commits landed on a prior push. Return without a wire send
+      // so a re-drive of an already-shipped tip is a clean no-op instead of
+      // an empty-delta pack the hub rejects.
+      const tip = await substrate.resolveRef(principal, repoId, ref);
+      if (tip !== null && tip === lastAckedSha.get(ackKey(repoId, ref))) {
+        return;
+      }
       const { pack, commitSha } = await substrate.createPack(
         principal,
         repoId,
@@ -87,6 +113,7 @@ export function createWorkflowRunPackClient(
       // before this line, so the cursor stays put and the next
       // `createPack` re-includes the un-acked commits.
       substrate.commitPackedTip(repoId, ref, commitSha);
+      lastAckedSha.set(ackKey(repoId, ref), commitSha);
     },
   };
 }
@@ -453,6 +480,31 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
    * surface).
    */
   flushWorkflowRunPushes: (repoId: RepoId, ref: string) => Promise<void>;
+  /**
+   * Re-drive any workflow-run push for `agentAddress` that a disconnect
+   * cancelled. Called when the hub-link observes the deployment address
+   * become routable again after a reconnect challenge. For each slot bound
+   * to `agentAddress` whose last push attempt failed (its `lastError` is
+   * latched), it re-arms the coalescing loop so a fresh `createPack` re-ships
+   * the un-acked commits -- the liveness path a synchronous single-step run
+   * lacks, because it has no later local write to re-set `dirty`.
+   *
+   * A re-ship that fails again re-latches without self-retrying, so a
+   * genuinely unrecoverable failure still surfaces loudly on the next local
+   * write rather than spinning. It is gated on the address being routable
+   * again (the caller only fires post-challenge) so the re-ship cannot race
+   * ahead of the hub re-routing the address.
+   */
+  notifyAddressRoutable: (agentAddress: string) => void;
+  /**
+   * Block workflow-run pushes for `agentAddress` until the next
+   * `notifyAddressRoutable`. Called when the hub-link observes its WS drop:
+   * the address's hub route is gone until the reconnect challenge re-proves
+   * ownership, so a push shipped in the interim is dropped by the hub as
+   * "unrouted". Holding the push at the block -- rather than shipping and
+   * failing -- is what lets the reconnect re-ship wait for the challenge.
+   */
+  markAddressUnroutable: (agentAddress: string) => void;
 };
 
 export function createWorkflowRunPackPushingRepoStore(
@@ -462,6 +514,8 @@ export function createWorkflowRunPackPushingRepoStore(
 
   type Slot = {
     agentAddress: string;
+    repoId: RepoId;
+    ref: string;
     inFlight: Promise<void> | null;
     dirty: boolean;
     lastError: Error | null;
@@ -472,6 +526,18 @@ export function createWorkflowRunPackPushingRepoStore(
     return `${repoId.kind}/${repoId.id}/${ref}`;
   }
 
+  // Addresses whose hub route was dropped and has not been re-established by a
+  // reconnect challenge. Absent means routable -- the steady state, and the
+  // first-connect state (a deployment routes via its `agent.deploy`, not a
+  // challenge, so it is never blocked before its first push). An address is
+  // added on `markAddressUnroutable` (WS disconnect) and removed on
+  // `notifyAddressRoutable` (challenge passed). A push for a blocked address
+  // is held: the coalescing loop pauses with `dirty` still set rather than
+  // shipping to a hub that has not yet re-routed the address -- which is what
+  // makes the reconnect re-ship wait for the challenge instead of racing
+  // ahead of it and being dropped as "unrouted".
+  const blockedAddresses = new Set<string>();
+
   function notifySettled(slot: Slot): void {
     const callbacks = slot.settled;
     slot.settled = [];
@@ -480,8 +546,18 @@ export function createWorkflowRunPackPushingRepoStore(
 
   function startLoop(slot: Slot, repoId: RepoId, ref: string): void {
     if (slot.inFlight !== null) return;
+    // Hold the push while the address is not routable (dropped, awaiting the
+    // reconnect challenge). Leave `dirty` set and start no loop: the loop
+    // resumes when `notifyAddressRoutable` clears the block and re-arms it.
+    // Shipping now would race ahead of the hub re-routing the address, and
+    // the frames would be dropped as "unrouted".
+    if (blockedAddresses.has(slot.agentAddress)) return;
     slot.inFlight = (async () => {
       while (slot.dirty) {
+        // Re-check routability each iteration: a disconnect mid-drain must
+        // pause the loop rather than push into a severed link. Leave `dirty`
+        // set so the post-challenge resume re-ships.
+        if (blockedAddresses.has(slot.agentAddress)) break;
         slot.dirty = false;
         try {
           await packClient.push({
@@ -512,6 +588,8 @@ export function createWorkflowRunPackPushingRepoStore(
     if (slot === undefined) {
       slot = {
         agentAddress,
+        repoId,
+        ref,
         inFlight: null,
         dirty: false,
         lastError: null,
@@ -536,6 +614,40 @@ export function createWorkflowRunPackPushingRepoStore(
     const err = slot.lastError;
     if (err !== null) slot.lastError = null;
     return err;
+  }
+
+  function markAddressUnroutable(agentAddress: string): void {
+    // The hub route for this address just dropped (WS disconnect). Block its
+    // pushes until the reconnect challenge re-routes it. A push already
+    // in-flight when the link dropped rejects through `packSender.cancelAll`
+    // and latches its error; the block stops the coalescing loop from
+    // immediately re-shipping on the fresh (not-yet-challenged) connection.
+    blockedAddresses.add(agentAddress);
+  }
+
+  function notifyAddressRoutable(agentAddress: string): void {
+    // The reconnect challenge re-routed this address on the hub. Clear the
+    // block and re-drive so a push the disconnect cancelled -- or one held
+    // while the block was up -- ships now. This is the liveness path a
+    // synchronous single-step run lacks: with all its events in one batch it
+    // has no later local write to re-arm the coalescing loop, so the drop
+    // would otherwise strand it forever.
+    blockedAddresses.delete(agentAddress);
+    for (const slot of slots.values()) {
+      if (slot.agentAddress !== agentAddress) continue;
+      // Re-drive a slot that has pending work (`dirty`, e.g. a push held at
+      // the block) OR whose last attempt failed (`lastError` latched by the
+      // disconnect-cancel). A slot that is clean and already acked
+      // (`!dirty && lastError === null`) has nothing un-shipped -- the
+      // `packClient.push` empty-delta guard would skip it anyway, but not
+      // re-arming it avoids a pointless loop spin. Re-arming `dirty` and
+      // restarting is safe against double-ship: `startLoop` no-ops when a
+      // push is already in flight, and the per-(repoId, ref) serialization in
+      // the hub-link's `pushWorkflowRunPack` prevents overlapping transfers.
+      if (!slot.dirty && slot.lastError === null) continue;
+      slot.dirty = true;
+      startLoop(slot, slot.repoId, slot.ref);
+    }
   }
 
   async function flushWorkflowRunPushes(
@@ -574,6 +686,8 @@ export function createWorkflowRunPackPushingRepoStore(
     getRepoDir: underlying.getRepoDir.bind(underlying),
     subscribe: underlying.subscribe.bind(underlying),
     flushWorkflowRunPushes,
+    notifyAddressRoutable,
+    markAddressUnroutable,
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
       if (repoId.kind === "workflow-run") {
         const latched = takeLatchedError(repoId, ref);

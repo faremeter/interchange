@@ -1162,6 +1162,7 @@ export function createSidecarDeployRouter(deps: {
     let routersRegistered = false;
     let agentTransportRegistered = false;
     let hubKeyRecorded = false;
+    let deploymentRegistered = false;
     try {
       const definitionHash = await computeWireDefinitionHash(spec.definition);
 
@@ -1302,6 +1303,23 @@ export function createSidecarDeployRouter(deps: {
         },
       };
 
+      // Record the deployment-address mapping BEFORE `spawn`, because
+      // `spawn` kicks off `replayProcessingToInbox`, whose workflow-run
+      // substrate write routes through the boot-edge pack-pushing facade and
+      // resolves this mapping to address the outbound pack frame. Recording
+      // it after `spawn` (as the other registrations below are) loses the
+      // race: the replay's write throws "no agent address registered" (a
+      // real defect masked as a swallowed best-effort warning in the
+      // supervisor's replay catch). Constraint ownership: the registry owns
+      // "address is resolvable"; the spawn path must satisfy that contract
+      // before the replay writes. The finally unwinds it on any failure
+      // between here and the end of the try.
+      deps.registerDeployment({
+        deploymentId,
+        agentAddress: spec.agentAddress,
+      });
+      deploymentRegistered = true;
+
       // Surface spawn-time errors structurally: a subprocess spawner that
       // crashes immediately rejects here, and the caller converts the
       // rejection into a structured failure frame. The supervisor is
@@ -1414,15 +1432,6 @@ export function createSidecarDeployRouter(deps: {
       }
       routersRegistered = true;
 
-      // Register the deployment-address mapping last so a failure in any
-      // earlier step leaves the boot-edge `DeploymentAddressRegistry`
-      // untouched. Nothing fallible runs after it, so the finally unwind
-      // has no registry entry to reverse.
-      deps.registerDeployment({
-        deploymentId,
-        agentAddress: spec.agentAddress,
-      });
-
       succeeded = true;
       return { publicKey: deploymentPublicKey };
     } finally {
@@ -1468,6 +1477,18 @@ export function createSidecarDeployRouter(deps: {
           // removing the repo would destroy an identity a rerouted head must
           // keep across a failed redeploy.
           deps.keyStore.forgetAgent(spec.agentAddress);
+        }
+        if (deploymentRegistered) {
+          // Reverse the pre-spawn `registerDeployment`: drop the address
+          // mapping so a failed spawn leaves the boot-edge registry as it
+          // found it. Registered first (before spawn), unwound last. A
+          // subsequent stale workflow-run write for the dead deployment then
+          // surfaces structurally (`registry.resolve` returns null) rather
+          // than resolving to the address of a deployment that never came up.
+          deps.unregisterDeployment({
+            deploymentId,
+            agentAddress: spec.agentAddress,
+          });
         }
       }
     }
