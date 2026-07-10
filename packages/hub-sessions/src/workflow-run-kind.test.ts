@@ -2146,6 +2146,58 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     expect(owned.has("done")).toBe(false);
   });
 
+  test("a CancelRequested-without-finalizer run is still owned (its message stays suppressed)", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-owned-cancelling-",
+    );
+    // A cancelling run: the operator requested cancel (CancelRequested)
+    // but the run has not yet reached its RunCancelled finalizer.
+    // CancelRequested is NOT terminal -- only RunCancelled is -- so the
+    // run still owns its message and must stay in the owned set, keeping
+    // its message suppressed on replay until the finalizer lands.
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/cancelling/events/0.json`]:
+          runStartedBody("cancelling"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/cancelling/events/1.json`]:
+          JSON.stringify({
+            type: "CancelRequested",
+            seq: 1,
+            at: "2026-01-01T00:00:00.500Z",
+            origin: "hub-admin",
+            reason: "operator pressed stop",
+          }),
+      },
+      message: "seed a run with a pending cancel but no finalizer",
+    });
+    const owned = await readOwnedMessageIds(store, repoId);
+    expect(owned.has("cancelling")).toBe(true);
+  });
+
+  test("a run whose RunStarted omits consumedMessageId contributes nothing to the owned set", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-no-msgid-");
+    // A child run (e.g. a spawned sub-run) starts without a
+    // consumedMessageId: it was not triggered by an inbound claim-check
+    // message. readOwnedMessageIds only adds when consumedMessageId is a
+    // string, so this live run contributes no messageId to suppress.
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/child/events/0.json`]: JSON.stringify({
+          type: "RunStarted",
+          seq: 0,
+          at: "2026-01-01T00:00:00.000Z",
+          runId: "child",
+          definitionHash: "x",
+          trigger: { type: "spawn" },
+        }),
+      },
+      message: "seed a live child run with no consumedMessageId",
+    });
+    const owned = await readOwnedMessageIds(store, repoId);
+    expect(owned.size).toBe(0);
+  });
+
   test("replay leaves an owned entry in processing and re-admits the rest", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-owned-replay-");
