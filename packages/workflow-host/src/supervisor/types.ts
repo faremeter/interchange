@@ -17,6 +17,7 @@ import type {
   Principal,
   RepoId,
   RepoStore as SubstrateRepoStore,
+  ReplayProcessingToInboxOpts,
   ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions/substrate";
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
@@ -247,6 +248,7 @@ export interface InboxPrimitives {
     principal: Principal,
     repoId: RepoId,
     address: string,
+    opts?: ReplayProcessingToInboxOpts,
   ): Promise<ReplayProcessingToInboxResult>;
 }
 

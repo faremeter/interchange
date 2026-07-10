@@ -20,6 +20,7 @@ export {
   dequeueToProcessing,
   enqueueInbox,
   markConsumed,
+  readOwnedMessageIds,
   readProcessingEntry,
   replayProcessingToInbox,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
@@ -32,6 +33,7 @@ export type {
   EnqueueInboxResult,
   MarkConsumedArgs,
   MarkConsumedResult,
+  ReplayProcessingToInboxOpts,
   ReplayProcessingToInboxResult,
 } from "./workflow-run-kind";
 
