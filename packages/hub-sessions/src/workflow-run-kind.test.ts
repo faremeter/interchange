@@ -2198,6 +2198,38 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     expect(owned.size).toBe(0);
   });
 
+  test("a sealed run (combined events.jsonl) is excluded from the owned set", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-sealed-");
+    // A terminated run is sealed: its per-event `events/<seq>.json` blobs
+    // are folded into one combined `events.jsonl` file. Only a terminated
+    // run may be sealed, so a sealed run owns nothing even though its
+    // RunStarted still carries a consumedMessageId. readOwnedMessageIds
+    // detects the sealed run by the combined file's presence and skips it
+    // without reading the (absent) per-event directory.
+    const sealed =
+      [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/sealed/events.jsonl`]: sealed,
+      },
+      message: "seed a sealed (terminated, compacted) run",
+    });
+    const owned = await readOwnedMessageIds(store, repoId);
+    expect(owned.has("sealed")).toBe(false);
+    expect(owned.size).toBe(0);
+  });
+
+  test("an absent runs directory yields an empty owned set", async () => {
+    const { store, repoId } = await makeClaimCheckStore("cc-owned-no-runs-");
+    // A freshly-initialised repo has only a `.gitignore` genesis tree and
+    // no `runs/` directory. readdir on the missing directory surfaces
+    // ENOENT, which readOwnedMessageIds treats as an empty owned set
+    // rather than throwing.
+    const owned = await readOwnedMessageIds(store, repoId);
+    expect(owned.size).toBe(0);
+  });
+
   test("replay leaves an owned entry in processing and re-admits the rest", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-owned-replay-");
