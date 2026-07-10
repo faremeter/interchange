@@ -51,6 +51,15 @@ const gateOnlyTimeout = defineWorkflow({
   steps: { w: awaitSignal({ name: "go", timeout: 60_000 }) },
 });
 
+const twoGatesSameName = defineWorkflow({
+  id: "wait-resume-two-gates",
+  trigger: { type: "manual" },
+  steps: {
+    gateA: awaitSignal({ name: "go" }),
+    gateB: awaitSignal({ name: "go" }),
+  },
+});
+
 const gateThenStep = defineWorkflow({
   id: "wait-resume-gate-then-step",
   trigger: { type: "manual" },
@@ -242,6 +251,77 @@ describe("resume awaiting signal", () => {
     expect(
       events.some((e) => e.kind === "StepCompleted" && e.stepId === "after"),
     ).toBe(true);
+  });
+
+  test("two concurrent same-name gates both left in-flight-received is refused (ambiguous: payload cannot be bound to a gate)", async () => {
+    const runId = "run-ambiguous";
+    const env = buildEnv(twoGatesSameName);
+    // Both dependency-free gates parked on "go", then two deliveries landed
+    // durably before the crash: SignalReceived{sig-1} consumes gateA (first
+    // awaiter), SignalReceived{sig-2} then consumes gateB. Both gates are
+    // now `in-flight` with no StepCompleted -- the same crash window as the
+    // single-gate case, but findConsumedSignal (match by name only) cannot
+    // tell which delivery each gate consumed, so completing either would
+    // risk binding it to the other gate's payload.
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "gateA",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 3, at, stepId: "gateA", signalName: "go" },
+      {
+        kind: "StepStarted",
+        seq: 4,
+        at,
+        stepId: "gateB",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 5, at, stepId: "gateB", signalName: "go" },
+      {
+        kind: "SignalReceived",
+        seq: 6,
+        at,
+        signalName: "go",
+        signalId: "sig-1",
+        payload: { which: "A" },
+      },
+      {
+        kind: "SignalReceived",
+        seq: 7,
+        at,
+        signalName: "go",
+        signalId: "sig-2",
+        payload: { which: "B" },
+      },
+    ];
+
+    const result = await runtimeRun(twoGatesSameName, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+
+    // Fail-loud: the ambiguous topology is refused rather than silently
+    // completing a gate with the wrong payload. The short-circuit guard
+    // throws RuntimeResumeUnsupportedError; the body lands it as StepFailed
+    // and the run ends `failed`. Neither gate ever reaches StepCompleted, so
+    // no wrong payload is bound.
+    expect(result.terminalStatus).toBe("failed");
+    const types = result.events.map((e) => e.kind);
+    expect(types.filter((t) => t === "StepCompleted").length).toBe(0);
+    const failures = result.events.filter((e) => e.kind === "StepFailed");
+    expect(failures.length).toBeGreaterThan(0);
+    for (const f of failures) {
+      if (f.kind !== "StepFailed") throw new Error("unreachable");
+      expect(f.error.message).toContain(
+        "more than one concurrent awaitSignal gate for go consumed a signal",
+      );
+    }
   });
 
   test("a timeout-bearing awaitSignal left in-flight stays rejected (indistinguishable from a fired timeout)", async () => {

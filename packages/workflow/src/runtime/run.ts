@@ -1734,6 +1734,38 @@ function findConsumedSignal(
 }
 
 /**
+ * Count how many `awaitSignal` gates for `signalName` are sitting in the
+ * same crash window as the step being recovered: gates that emitted a
+ * `SignalAwaited` for this name and are still `in-flight` (consumed a
+ * signal, no `StepCompleted` yet). `findConsumedSignal` binds a payload to
+ * a gate by signal name alone, so when more than one same-name gate is
+ * concurrently in this window it cannot tell which gate consumed which
+ * delivery -- returning the last matching payload would silently bind it
+ * to the wrong gate. This count lets the short-circuit path refuse that
+ * ambiguous topology while still recovering the provably-unambiguous
+ * single-gate case.
+ */
+function countConcurrentInFlightAwaiters(
+  log: readonly WorkflowEvent[],
+  signalName: string,
+  state: RunState,
+): number {
+  const awaiterStepIds = new Set<string>();
+  for (const event of log) {
+    if (event.kind === "SignalAwaited" && event.signalName === signalName) {
+      awaiterStepIds.add(event.stepId);
+    }
+  }
+  let count = 0;
+  for (const stepId of awaiterStepIds) {
+    if (state.steps.get(stepId)?.phase === "in-flight") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
  * Find an unfired pending timer bound to `stepId` in the reduced state.
  * On a re-park resume of an awaiting-signal step with a timeout, its
  * original `TimerSet` is still pending (a fired timeout would have moved
@@ -1779,6 +1811,18 @@ async function runAwaitSignal(
   // (indistinguishable in reduced state) never reaches here.
   if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
     const log = await env.repoStore.read(runId);
+    // `findConsumedSignal` matches by signal name only, so it cannot bind a
+    // payload to the right gate when more than one same-name gate consumed a
+    // delivery and none has completed. Refuse that ambiguous topology rather
+    // than silently recovering a wrong payload; the single-gate case (count
+    // === 1) stays provably correct.
+    if (countConcurrentInFlightAwaiters(log, primitive.name, state) > 1) {
+      throw new RuntimeResumeUnsupportedError(
+        primitive.id,
+        "in-flight",
+        `more than one concurrent awaitSignal gate for ${primitive.name} consumed a signal with no StepCompleted, so the consumed payload cannot be bound to a gate`,
+      );
+    }
     const received = findConsumedSignal(log, primitive.name, state);
     if (received === undefined) {
       throw new Error(
