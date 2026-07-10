@@ -344,19 +344,16 @@ describe("multi-step per-step re-route survival across reconnect", () => {
       deploymentMailAddress,
     );
 
-    // Every per-step address is once again a workflow-derived address sharing
-    // the deployment's `ins_dep_<deploymentId>` prefix. The per-step staging
-    // bindings are transient (never persisted into the reconnect set), so the
-    // hub route that survives the reconnect is the deployment address the
-    // steps collapse under -- not a per-step route resurrected on its own. The
-    // steps' addresses staying workflow-derived is what routes their runtime
-    // through that single re-challenged deployment address; the second run
-    // below is the end-to-end proof that inter-step routing came back with it.
-    const deploymentInstanceId = `ins_${DEPLOYMENT_ID}`;
-    for (const stepAddress of stepAddresses) {
-      expect(isWorkflowDerivedAddress(stepAddress)).toBe(true);
-      expect(stepAddress.startsWith(`${deploymentInstanceId}-`)).toBe(true);
-    }
+    // The per-step staging bindings are transient: they are never persisted
+    // into the reconnect set, so no per-step address appears in the hub's
+    // routable set to assert against. The only hub route that survives the
+    // reconnect is the deployment address the steps collapse under (asserted
+    // routable again just above); the per-step runtimes route through that
+    // single re-challenged address. The second inter-step run below, reaching
+    // completion with a distinct runId, is the load-bearing proof that
+    // inter-step routing came back with it -- re-deriving the step addresses
+    // locally here would only restate what `deriveStepAddress` already
+    // guarantees before the reconnect and pin nothing about it.
 
     // ---- second run after reconnect: full inter-step chain again ----
     // Only reachable because the sidecar re-established the link, the hub

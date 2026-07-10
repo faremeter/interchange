@@ -525,9 +525,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
 
   test("notifyAddressRoutable is a no-op for a slot with nothing un-shipped", async () => {
     // A clean, already-acked slot (no dirty work, no latched error) has
-    // nothing to re-ship. A routable-again notification must not spin a
-    // spurious push for it -- that would build an empty-delta pack the hub
-    // rejects. Only slots with pending work or a latched failure re-drive.
+    // nothing to re-ship. This pins the facade's re-drive gating: a
+    // routable-again notification for such a slot does not re-drive, so it
+    // does not call push again. Only slots with pending work or a latched
+    // failure re-drive.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-clean", "agent-clean@example.com");

@@ -45,7 +45,6 @@ import {
 import {
   SESSION_ID,
   SIDECAR_ID,
-  dropHubLink,
   fireMailTrigger,
   listRunIds,
   settleThenDrop,
@@ -282,9 +281,5 @@ describe("hub-link drop -> reconnect survival (harness smoke)", () => {
       { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
     expect(secondTerminal.type).toBe("RunCompleted");
-
-    // `dropHubLink` is exported for the interrupted-pack regression path;
-    // reference it here so the smoke test pins the full helper surface.
-    expect(typeof dropHubLink).toBe("function");
   }, 120_000);
 });
