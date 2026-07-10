@@ -2872,6 +2872,72 @@ describe("SidecarRouter", () => {
       expect(staleAddresses).toEqual([]);
     });
 
+    // Pins the pinned-forever workflow-definition decision at the wire layer:
+    // a workflow deployment keeps its deploy-time definition until an explicit
+    // undeploy/redeploy, so the reconnect deploy-ref freshness catch-up must
+    // fire for a launched-agent address whose ref went stale but must NOT fire
+    // for a workflow-derived (ins_dep_...) address on the same stale-ref
+    // reconnect. A definition change on the hub during the disconnect does not
+    // reconcile onto the reconnected deployment.
+    test("reconnect fires deploy.ref.stale for a launched agent but not a workflow-derived address", async () => {
+      const kp = await generateKeyPair();
+      const publicKeyHex = hexEncode(kp.publicKey);
+      const launchedAddr = "agent@local";
+      const workflowAddr = "ins_dep_abc@local";
+      const staleAddresses: string[] = [];
+
+      const router = createSidecarRouter({
+        requestTimeoutMs: 5000,
+        lookups: {
+          // Both addresses are keyed (deployment addresses carry the
+          // deployment's own key), so both reach the challenged reconnect path.
+          lookupPublicKey: async () => publicKeyHex,
+          // Hub ref differs from every sidecar ref below, so the catch-up would
+          // fire for any address it is NOT deliberately skipping.
+          lookupDeployRef: async () => "aaaa",
+        },
+      });
+      router.events.on("deploy.ref.stale", ({ agentAddress }) => {
+        staleAddresses.push(agentAddress);
+      });
+
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [launchedAddr, workflowAddr],
+          deployRefs: { [launchedAddr]: "bbbb", [workflowAddr]: "bbbb" },
+        }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, kp.privateKey),
+          }),
+        ),
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(staleAddresses).toContain(launchedAddr);
+      expect(staleAddresses).not.toContain(workflowAddr);
+    });
+
     test("disconnect cleans up pending challenge", async () => {
       const kp = await generateKeyPair();
 

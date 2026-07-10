@@ -1053,10 +1053,16 @@ export function createSidecarRouter(
     const checkDeployRef = lookups.lookupDeployRef;
     if (checkDeployRef !== undefined) {
       for (const addr of ready) {
-        // Deploy-pack freshness (createDeployPack / parseAgentId) is an
-        // agent-repo path scoped to launched agents; it is not validated for
-        // workflow-derived deployment addresses, and the current register
-        // path never ran it for them. Skip it here to match that.
+        // Workflow deployments are pinned-forever: a deployment keeps its
+        // deploy-time definition until an explicit undeploy/redeploy, so the
+        // deploy-ref freshness catch-up is deliberately NOT run for a
+        // workflow-derived address. A definition edited on the hub while the
+        // sidecar was disconnected does not reconcile on reconnect; it affects
+        // only newly created deployments. The deployment's in-flight run state
+        // is reconstructed sidecar-locally at restore, not re-fetched here. Do
+        // NOT add a reconcile path for these addresses -- see the "Workflow
+        // Definition Versioning: Pinned-Forever" note under "Reconnect
+        // Sequencing" in docs/IMPLEMENTATION.md.
         if (isWorkflowDerivedAddress(addr)) continue;
         void (async () => {
           try {
