@@ -25,7 +25,9 @@ import { hashDefinition } from "../definition/index";
 import { evaluate, type SelectorContext } from "./selectors";
 import {
   hasFailedStep,
+  isResumableAwaitingSignalStep,
   isResumableInFlightLoopStep,
+  isResumableReceivedAwaitSignalStep,
   isRunDone,
   nextSchedulable,
 } from "./dag";
@@ -58,14 +60,17 @@ export interface RuntimeRunOptions {
    * Resume is supported for seed logs that are either
    * complete-or-cancelled or aligned on step boundaries -- every
    * non-terminal entry in `state.steps` must be schedulable by the
-   * DAG's `nextSchedulable` set (i.e. the seed log stopped between
-   * step boundaries, not mid-primitive). Seed logs whose tail leaves
-   * a step `awaiting-signal`, `awaiting-timer`, mid-`map`, or
-   * otherwise `in-flight` are unsupported: the in-process runtime
-   * has no surface for re-arming the signal channel, the timer
-   * scheduler entry, or the inner-map iteration state from the log
-   * alone. `runtimeRun` rejects such seed logs with
-   * `RuntimeResumeUnsupportedError` rather than stalling.
+   * DAG's `nextSchedulable` set. The resumable carve-outs on top of the
+   * step-boundary base are: an in-flight `loop` container (runLoop
+   * re-derives its cursor), an `awaitSignal` step still `awaiting-signal`
+   * (runAwaitSignal re-parks on the signal channel for a signal delivered
+   * later), and an `awaitSignal` step (no timeout) left `in-flight` by an
+   * already-logged `SignalReceived` (runAwaitSignal completes it from that
+   * logged event -- the crash-after-signal-before-StepCompleted window).
+   * Seed logs whose tail leaves a step `awaiting-timer`, mid-`map`, or
+   * otherwise `in-flight` (including a timeout-bearing `awaitSignal` left
+   * `in-flight`, indistinguishable in reduced state from a fired timeout)
+   * stay unsupported and surface as `RuntimeResumeUnsupportedError`.
    *
    * When omitted, the runtime starts fresh from `emptyState(runId)`
    * and emits `RunStarted` itself.
@@ -87,16 +92,17 @@ export interface RuntimeRunOptions {
  *      `runLocal` in-memory substrate is `ephemeral` and starts empty
  *      per instance; resume against a fresh one with a seed log that
  *      contains blob: refs fails fast with a targeted error.
- *   2. The seed log is either complete-or-cancelled or aligned on
- *      step boundaries -- mid-step resume (a step left
- *      `awaiting-signal`, `awaiting-timer`, mid-`map`, or otherwise
- *      `in-flight`) is unsupported. The runtime body has no surface
- *      for re-arming the signal channel, the timer scheduler entry,
- *      or the inner-map iteration state from the log alone. Such
- *      seed logs surface as `RuntimeResumeUnsupportedError`; the
- *      host (supervisor) owns the recovery decision (crash and let
- *      a fresh deploy pick up the live log, re-inject the awaited
- *      signal, etc).
+ *   2. The seed log is either complete-or-cancelled, aligned on step
+ *      boundaries, or left in one of the resumable carve-outs: an
+ *      in-flight `loop` container, or an `awaitSignal` step (still
+ *      `awaiting-signal`, or -- with no timeout -- `in-flight` from a
+ *      received signal). A step left `awaiting-timer`, mid-`map`, or
+ *      otherwise `in-flight` (including a timeout-bearing `awaitSignal`
+ *      left `in-flight`) is unsupported: the runtime body has no surface
+ *      for re-arming the timer scheduler entry or the inner-map
+ *      iteration state from the log alone. Such seed logs surface as
+ *      `RuntimeResumeUnsupportedError`; the host (supervisor) owns the
+ *      recovery decision.
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -296,11 +302,24 @@ async function executeRunBody(
   // owns settling steps whose phase is `cancelling`.
   if (initialEvents.length > 0 && state.phase === "running") {
     for (const [stepId, stepState] of state.steps) {
-      // A resumable in-flight loop container (or its in-flight synthetic
-      // iteration step) is the one exception: runLoop re-derives its
-      // cursor from the log and continues. Every other in-flight or
-      // awaiting-* step stays rejected byte-for-byte.
-      if (isResumableInFlightLoopStep(definition, stepId, stepState.phase)) {
+      // Resumable carve-outs, each re-offered by `nextSchedulable` on the
+      // SAME predicate:
+      //   - a mid-loop container (or its in-flight synthetic iteration
+      //     step): runLoop re-derives its cursor from the log;
+      //   - an `awaitSignal` step still `awaiting-signal`: runAwaitSignal
+      //     skips its already-emitted markers and re-parks on the signal
+      //     channel, holding a live awaiter for a later signal;
+      //   - an `awaitSignal` step (no timeout) left `in-flight` by an
+      //     already-logged `SignalReceived`: runAwaitSignal short-circuits
+      //     to completion from that logged event (the
+      //     crash-after-signal-before-StepCompleted window).
+      // Every other in-flight or awaiting-timer step stays rejected
+      // byte-for-byte: the runtime has no surface to re-arm those.
+      if (
+        isResumableInFlightLoopStep(definition, stepId, stepState.phase) ||
+        isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
+        isResumableReceivedAwaitSignalStep(definition, stepId, stepState.phase)
+      ) {
         continue;
       }
       if (
@@ -333,13 +352,27 @@ async function executeRunBody(
     try {
       state = await commit(env, runId, event);
     } catch (cause) {
-      // A `cancel("self", ...)` racing the very first `RunStarted`
-      // commit can land `CancelRequested` first (legal from `pending`
-      // since the state-machine admits early-lifecycle cancellation).
-      // The chain then reloads, sees phase=cancelling, and rejects
-      // `RunStarted` with `code: "phase"`. Reload and proceed to the
-      // main loop, which routes through the cancellation cleanup
-      // branch and emits `RunCancelled`.
+      // Two distinct callers land a `code: "phase"` rejection here; do
+      // NOT narrow this to either one -- both must reload and continue:
+      //
+      //   1. A `cancel("self", ...)` racing the very first `RunStarted`
+      //      commit lands `CancelRequested` first (legal from `pending`
+      //      since the state-machine admits early-lifecycle cancellation).
+      //      The chain reloads, sees phase=cancelling, and rejects
+      //      `RunStarted`. Proceeding routes through the cancellation
+      //      cleanup branch and emits `RunCancelled`.
+      //   2. A FRESH run (no `resumeFromEvents`) started against a runId
+      //      whose durable log ALREADY carries a `RunStarted` -- the
+      //      host's re-trigger recovery: the supervisor re-fires a parked
+      //      inbound message (its `runId` is the messageId) as a new run
+      //      after a crash. The chain reads the existing log (phase
+      //      already `running`), so this `RunStarted` is rejected.
+      //      Reloading adopts the durable log, and the main loop resumes
+      //      the run from its actual frontier via `nextSchedulable`
+      //      (which skips already-terminal steps -- adopt-by-skip -- so
+      //      completed steps are NOT re-executed). Narrowing this catch to
+      //      the cancel case would break that recovery: a re-triggered run
+      //      would throw instead of adopting the log.
       if (cause instanceof TransitionError && cause.code === "phase") {
         state = await reloadState(env, runId);
       } else {
@@ -1673,38 +1706,130 @@ async function emitStepCompletedWithValue(
   await emitStepCompleted(env, runId, stepId, ref);
 }
 
+/**
+ * Recover the `SignalReceived` that consumed an awaitSignal step on a
+ * resume that finds the step `in-flight`. The reduced `StepState` carries
+ * no payload, so the payload survives only on the durable log. Match the
+ * signal by name and by membership in `observedSignalIds` (the reduction
+ * that moved the step off `awaiting-signal` also recorded the signal's id
+ * there), preferring the last such event so a name that legitimately
+ * carried multiple deliveries resolves to the one actually consumed.
+ */
+function findConsumedSignal(
+  log: readonly WorkflowEvent[],
+  signalName: string,
+  state: RunState,
+): { payload: unknown; signalId: string } | undefined {
+  let found: { payload: unknown; signalId: string } | undefined;
+  for (const event of log) {
+    if (
+      event.kind === "SignalReceived" &&
+      event.signalName === signalName &&
+      state.observedSignalIds.has(event.signalId)
+    ) {
+      found = { payload: event.payload, signalId: event.signalId };
+    }
+  }
+  return found;
+}
+
+/**
+ * Find an unfired pending timer bound to `stepId` in the reduced state.
+ * On a re-park resume of an awaiting-signal step with a timeout, its
+ * original `TimerSet` is still pending (a fired timeout would have moved
+ * the step to `in-flight`); re-arming re-adopts it rather than minting a
+ * duplicate.
+ */
+function findUnfiredTimerForStep(
+  state: RunState,
+  stepId: string,
+): { timerId: string; fireAt: string } | undefined {
+  for (const pending of state.pendingTimers.values()) {
+    if (pending.stepId === stepId) {
+      return { timerId: pending.timerId, fireAt: pending.fireAt };
+    }
+  }
+  return undefined;
+}
+
 async function runAwaitSignal(
   env: WorkflowRuntimeEnv,
   runId: string,
   primitive: AwaitSignalPrimitive,
   abort: AbortSignal,
 ): Promise<unknown> {
-  await emitStepStartedWithValue(env, runId, primitive.id, {
-    name: primitive.name,
-    ...(primitive.timeout !== undefined ? { timeout: primitive.timeout } : {}),
-    ...(primitive.onTimeout !== undefined
-      ? { onTimeout: primitive.onTimeout }
-      : {}),
-    ...(primitive.drainBehavior !== undefined
-      ? { drainBehavior: primitive.drainBehavior }
-      : {}),
-  });
+  // Read the log once for resume idempotency. On a run re-driving the
+  // durable log, the gate's `StepStarted`/`SignalAwaited`/`TimerSet` are
+  // already committed; re-emitting any of them throws in the state
+  // machine, so each marker below is emitted only when absent (mirroring
+  // runLoop). A fresh gate has no state entry, so all three emit normally.
   let state = await reloadState(env, runId);
-  const awaited: WorkflowEvent = {
-    kind: "SignalAwaited",
-    seq: state.lastSeq + 1,
-    at: env.clock().toISOString(),
-    stepId: primitive.id,
-    signalName: primitive.name,
-    ...(primitive.timeout !== undefined
-      ? {
-          timeoutAt: new Date(
-            env.clock().getTime() + primitive.timeout,
-          ).toISOString(),
-        }
-      : {}),
-  };
-  state = await commit(env, runId, awaited);
+  const resumed = state.steps.has(primitive.id);
+
+  // Short-circuit resume: an `awaitSignal` step found `in-flight` means an
+  // already-logged `SignalReceived` (or a pre-await queued signal consumed
+  // by `SignalAwaited`) moved it off `awaiting-signal`. The signal is
+  // logically received; the step only lacks its `StepCompleted` -- the
+  // crash-after-signal-before-StepCompleted window
+  // (`isResumableReceivedAwaitSignalStep`). The payload survives only on
+  // the durable log (the reduced `StepState` carries no payload slot), so
+  // recover it from the logged `SignalReceived` and complete without
+  // parking on `awaitNext`. The predicate admits this shape only when the
+  // step has no timeout, so a `TimerFired`-induced `in-flight`
+  // (indistinguishable in reduced state) never reaches here.
+  if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
+    const log = await env.repoStore.read(runId);
+    const received = findConsumedSignal(log, primitive.name, state);
+    if (received === undefined) {
+      throw new Error(
+        `runAwaitSignal resume: step ${primitive.id} is in-flight but no consumed SignalReceived for ${primitive.name} is in the log`,
+      );
+    }
+    await emitStepCompletedWithValue(
+      env,
+      runId,
+      primitive.id,
+      received.payload,
+    );
+    return received.payload;
+  }
+
+  if (!resumed) {
+    await emitStepStartedWithValue(env, runId, primitive.id, {
+      name: primitive.name,
+      ...(primitive.timeout !== undefined
+        ? { timeout: primitive.timeout }
+        : {}),
+      ...(primitive.onTimeout !== undefined
+        ? { onTimeout: primitive.onTimeout }
+        : {}),
+      ...(primitive.drainBehavior !== undefined
+        ? { drainBehavior: primitive.drainBehavior }
+        : {}),
+    });
+    state = await reloadState(env, runId);
+  }
+  // Re-emit `SignalAwaited` only when the gate is not already awaiting it.
+  // On a re-park resume the gate is already `awaiting-signal` (StepStarted
+  // + SignalAwaited durable), so this is skipped and the tail re-parks on
+  // the signal channel for a signal that has not yet arrived.
+  if (state.steps.get(primitive.id)?.phase !== "awaiting-signal") {
+    const awaited: WorkflowEvent = {
+      kind: "SignalAwaited",
+      seq: state.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId: primitive.id,
+      signalName: primitive.name,
+      ...(primitive.timeout !== undefined
+        ? {
+            timeoutAt: new Date(
+              env.clock().getTime() + primitive.timeout,
+            ).toISOString(),
+          }
+        : {}),
+    };
+    state = await commit(env, runId, awaited);
+  }
   // The per-step timeout commits TimerSet before asking the scheduler
   // to fire, so the pairing with the scheduler-committed `TimerFired`
   // is explicit in the log. Without TimerSet, a production scheduler
@@ -1717,19 +1842,32 @@ async function runAwaitSignal(
   let fireAtDate: Date | undefined;
   let subscribeFromSeq: number | undefined;
   if (primitive.timeout !== undefined) {
-    timerId = env.newId("timer");
-    fireAtDate = new Date(env.clock().getTime() + primitive.timeout);
     let beforeTimer = await reloadState(env, runId);
-    const timerSet: WorkflowEvent = {
-      kind: "TimerSet",
-      seq: beforeTimer.lastSeq + 1,
-      at: env.clock().toISOString(),
-      timerId,
-      fireAt: fireAtDate.toISOString(),
-      stepId: primitive.id,
-    };
-    beforeTimer = await commit(env, runId, timerSet);
-    subscribeFromSeq = beforeTimer.lastSeq + 1;
+    // On a re-park resume the durable log already carries this step's
+    // TimerSet with its original id in `pendingTimers` (unfired -- a fired
+    // timeout would have moved the step to `in-flight` and been refused).
+    // Re-adopt that timer rather than minting a second one: a duplicate
+    // TimerSet would double-count the deadline and leave two scheduler
+    // entries racing to fire.
+    const existing = findUnfiredTimerForStep(beforeTimer, primitive.id);
+    if (existing !== undefined) {
+      timerId = existing.timerId;
+      fireAtDate = new Date(existing.fireAt);
+      subscribeFromSeq = beforeTimer.lastSeq + 1;
+    } else {
+      timerId = env.newId("timer");
+      fireAtDate = new Date(env.clock().getTime() + primitive.timeout);
+      const timerSet: WorkflowEvent = {
+        kind: "TimerSet",
+        seq: beforeTimer.lastSeq + 1,
+        at: env.clock().toISOString(),
+        timerId,
+        fireAt: fireAtDate.toISOString(),
+        stepId: primitive.id,
+      };
+      beforeTimer = await commit(env, runId, timerSet);
+      subscribeFromSeq = beforeTimer.lastSeq + 1;
+    }
   }
   void state;
 

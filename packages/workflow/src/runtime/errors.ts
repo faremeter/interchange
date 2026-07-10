@@ -5,16 +5,19 @@
  * cannot honour with its in-process re-arming surface.
  *
  * The v1 runtime body supports resume from seed logs that are either
- * complete-or-cancelled or aligned on step boundaries: every
- * non-terminal entry in the seed log's reconstructed `state.steps`
- * must be schedulable via the DAG's `nextSchedulable` set. Seed logs
- * that stop while a step is `awaiting-signal`, `awaiting-timer`, or
- * mid-`map` have no schedulable primitive to advance them -- the
- * runtime cannot rehydrate the signal channel, re-arm the timer
- * scheduler entry, or rebuild the inner-map iteration state from the
- * log alone. The host (supervisor) owns the recovery decision: crash
- * the workflow process and let a fresh deploy pick up the live log,
- * re-inject the awaited signal, etc.
+ * complete-or-cancelled, aligned on step boundaries, or left in one of
+ * the resumable carve-outs (an in-flight `loop` container, or an
+ * `awaitSignal` step still `awaiting-signal` [re-parked] or -- with no
+ * timeout -- left `in-flight` by an already-logged `SignalReceived`):
+ * every remaining non-terminal entry in the seed log's reconstructed
+ * `state.steps` must be schedulable via the DAG's `nextSchedulable` set.
+ * Seed logs that stop while a step is `awaiting-timer`, mid-`map`, or
+ * otherwise `in-flight` (including a timeout-bearing `awaitSignal` left
+ * `in-flight`) have no schedulable primitive to advance them -- the
+ * runtime cannot re-arm the timer scheduler entry or rebuild the
+ * inner-map iteration state from the log alone. The host (supervisor)
+ * owns the recovery decision: crash the workflow process and let a fresh
+ * deploy re-drive the live log.
  *
  * Surfacing the limitation as a structured error keeps the contract
  * honest instead of stalling with an opaque "no schedulable
