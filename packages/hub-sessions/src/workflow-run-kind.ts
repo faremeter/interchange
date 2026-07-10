@@ -394,6 +394,14 @@ export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
  * Terminal event discriminators. A run whose log contains an entry
  * with one of these `type` values must not receive any event with a
  * strictly greater seq.
+ *
+ * This set is a hand-rolled copy of the runtime's terminal-run vocabulary
+ * (`isTerminalRunPhase` in `@intx/workflow` state-machine `transition.ts`),
+ * duplicated here because `@intx/hub-sessions` must not depend on
+ * `@intx/workflow`. It MUST stay in sync with that canonical definition:
+ * if the runtime adds or removes a terminal run phase, update this set too.
+ * Drift silently reopens the restore-time double-driver collision that
+ * `readOwnedMessageIds` (below) exists to prevent.
  */
 const TERMINAL_EVENT_TYPES = new Set<string>([
   "RunCompleted",
@@ -3001,6 +3009,116 @@ export type ReplayProcessingToInboxResult = {
 };
 
 /**
+ * Read the run event logs under `runs/` and return the set of
+ * `consumedMessageId`s belonging to NON-terminal runs -- the messages a
+ * live run still owns. The caller (the supervisor's spawn-time replay)
+ * feeds this into `replayProcessingToInbox`'s `ownedMessageIds` so a
+ * parked run's message is not re-admitted to inbox and dispatched a
+ * second time while the run is recovered by re-driving its durable log.
+ * Without this, the re-drive AND the re-triggered fresh run both re-park
+ * the same awaitSignal gate on the same runId, and the two concurrent
+ * runtime bodies race to a corrupt terminal.
+ *
+ * Reads the substrate's working tree via `getRepoDir`, mirroring the
+ * child's `discoverInFlightRuns`. The working tree tracks the run-event
+ * ref (`refs/heads/main`); the claim-check ref (`refs/heads/events`)
+ * cannot see it, which is why this lives at the caller rather than inside
+ * `replayProcessingToInbox`'s single-ref delta. A run whose log is sealed
+ * (combined `events.json`, only permitted for a terminated run) or
+ * carries a terminal event is excluded; an absent `runs/` directory
+ * yields an empty set.
+ */
+export async function readOwnedMessageIds(
+  store: RepoStore,
+  repoId: RepoId,
+): Promise<Set<string>> {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const repoDir = store.getRepoDir(repoId);
+  const runsDir = path.join(repoDir, WORKFLOW_RUN_RUNS_PREFIX);
+  let runIds: string[];
+  try {
+    runIds = await fs.readdir(runsDir);
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
+      return new Set();
+    }
+    throw cause;
+  }
+  const owned = new Set<string>();
+  for (const runId of runIds) {
+    const runDir = path.join(runsDir, runId);
+    // A sealed run (combined events file) is terminal by the handler's
+    // own invariant -- only a terminated run is sealed -- so it owns
+    // nothing. Its presence also means the per-event directory is absent.
+    let sealed = false;
+    try {
+      await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
+      sealed = true;
+    } catch {
+      sealed = false;
+    }
+    if (sealed) continue;
+    const eventsDir = path.join(runDir, WORKFLOW_RUN_EVENTS_DIR);
+    let files: string[];
+    try {
+      files = await fs.readdir(eventsDir);
+    } catch {
+      continue;
+    }
+    let terminal = false;
+    let consumedMessageId: string | undefined;
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(
+          await fs.readFile(path.join(eventsDir, file), "utf8"),
+        );
+      } catch {
+        continue;
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !("type" in parsed)
+      ) {
+        continue;
+      }
+      const type = parsed.type;
+      if (typeof type !== "string") continue;
+      if (TERMINAL_EVENT_TYPES.has(type)) {
+        terminal = true;
+        break;
+      }
+      if (type === "RunStarted" && "consumedMessageId" in parsed) {
+        const mid = parsed.consumedMessageId;
+        if (typeof mid === "string") consumedMessageId = mid;
+      }
+    }
+    if (terminal) continue;
+    if (consumedMessageId !== undefined) owned.add(consumedMessageId);
+  }
+  return owned;
+}
+
+export type ReplayProcessingToInboxOpts = {
+  /**
+   * MessageIds whose run is still LIVE (non-terminal) and therefore owns
+   * its inbound message: recovery re-drives that run against the durable
+   * log, so re-admitting the message to `inbox/` would dispatch a SECOND
+   * run for it, colliding with the re-drive on the shared runId. Entries
+   * in this set are left in `processing/` untouched; the run's eventual
+   * `markConsumed` clears them. The caller computes this by reading the
+   * run event logs, which live on a DIFFERENT ref (`refs/heads/main`)
+   * than the claim-check subtree this operation commits to
+   * (`refs/heads/events`). Empty/absent means replay every processing
+   * entry (the pre-existing behaviour: recover all orphans).
+   */
+  ownedMessageIds?: ReadonlySet<string>;
+};
+
+/**
  * Recovery path: move every processing entry at `address` back to
  * inbox preserving the original `<receivedAt>-<messageId>` filename
  * key so FIFO ordering survives a workflow-process crash. Returns
@@ -3028,9 +3146,11 @@ export async function replayProcessingToInbox(
   principal: Principal,
   repoId: RepoId,
   address: string,
+  opts: ReplayProcessingToInboxOpts = {},
 ): Promise<ReplayProcessingToInboxResult> {
   const addressSegment = addressSegmentFor(address);
   const ref = claimCheckCommitRef();
+  const ownedMessageIds = opts.ownedMessageIds ?? new Set<string>();
   const replayedKeys: string[] = [];
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
@@ -3043,6 +3163,22 @@ export async function replayProcessingToInbox(
       const puts: Record<string, string | Uint8Array> = {};
       const deletes: string[] = [];
       for (const entry of listing.processing) {
+        const bytes = await prior.readBlobByOid(entry.oid);
+        // A processing entry whose run is still live (non-terminal durable
+        // log) is owned by the recovery re-drive of that same run. Re-
+        // admitting the message to inbox would dispatch a SECOND run for
+        // it, colliding with the re-drive on the shared runId. Leave such
+        // an entry in processing untouched; the run's eventual
+        // `markConsumed` clears it. Only genuinely orphaned entries (no
+        // run, or a terminal run) are replayed. The run logs live on a
+        // different ref, so the caller precomputes the owned set.
+        const envelope = decodeQueueEnvelopeOrThrow(
+          bytes,
+          `${processingDir}${entry.name}`,
+        );
+        if (ownedMessageIds.has(envelope.messageId)) {
+          continue;
+        }
         const inboxFull = `${inboxDir}${entry.name}`;
         if (inboxNames.has(entry.name)) {
           throw new Error(
@@ -3054,7 +3190,6 @@ export async function replayProcessingToInbox(
         // below-watermark receivedAt is no reason to refuse it. Applying
         // the stale-check here would lose a legitimately in-flight
         // message after a crash. Do not tighten this.
-        const bytes = await prior.readBlobByOid(entry.oid);
         puts[inboxFull] = bytes;
         deletes.push(`${processingDir}${entry.name}`);
         replayedKeys.push(entry.name.slice(0, -".json".length));

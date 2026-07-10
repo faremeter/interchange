@@ -12,6 +12,7 @@ import {
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
+  readOwnedMessageIds,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,
@@ -2094,6 +2095,142 @@ describe("claim-check substrate FIFO invariant", () => {
     if (second === null) throw new Error("unreachable");
     expect(second.envelope.messageId).toBe("msg-B");
     expect(second.key).toBe("100-msg-B");
+  });
+});
+
+// A `processing/` entry whose run is still live (non-terminal durable
+// log) is owned by the recovery re-drive of that run after a crash.
+// `readOwnedMessageIds` finds those runs' messageIds so the spawn-time
+// replay leaves them in `processing/` rather than re-admitting them to
+// `inbox/` and dispatching a colliding second run on the same runId. The
+// run logs live on the run-event ref (`refs/heads/main`); the claim-check
+// ref (`refs/heads/events`) cannot see them, so the caller reads them via
+// the working tree and hands the owned set to `replayProcessingToInbox`.
+describe("claim-check API — resume-owned processing entries survive replay", () => {
+  function runStartedBody(runId: string): string {
+    return JSON.stringify({
+      type: "RunStarted",
+      seq: 0,
+      at: "2026-01-01T00:00:00.000Z",
+      runId,
+      definitionHash: "x",
+      trigger: { type: "mail" },
+      consumedMessageId: runId,
+    });
+  }
+
+  function runCompletedBody(seq: number): string {
+    return JSON.stringify({
+      type: "RunCompleted",
+      seq,
+      at: "2026-01-01T00:00:01.000Z",
+    });
+  }
+
+  test("readOwnedMessageIds returns non-terminal run messageIds and excludes terminal ones", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-owned-");
+    // A mail-triggered run's runId is its messageId. `live` is parked
+    // (RunStarted only); `done` reached RunCompleted.
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/0.json`]:
+          runStartedBody("done"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/1.json`]: runCompletedBody(1),
+      },
+      message: "seed one live and one terminal run",
+    });
+    const owned = await readOwnedMessageIds(store, repoId);
+    expect(owned.has("live")).toBe(true);
+    expect(owned.has("done")).toBe(false);
+  });
+
+  test("replay leaves an owned entry in processing and re-admits the rest", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-replay-");
+    // Two messages dequeued to processing (a crash mid-processing left
+    // both claimed). `live` is owned by a non-terminal run; `orphan` has
+    // no run. Route through the real enqueue+dequeue so the processing
+    // entries originate from prior-tree inbox entries.
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "live",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/live" },
+    });
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "orphan",
+      receivedAt: 200,
+      mailAuditRef: { store: "audit", path: "mail/orphan" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+      },
+      message: "seed the live run for the owned entry",
+    });
+
+    const owned = await readOwnedMessageIds(store, repoId);
+    expect(owned).toEqual(new Set(["live"]));
+
+    const replay = await replayProcessingToInbox(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+      { ownedMessageIds: owned },
+    );
+    // Only the orphan is re-admitted; the owned entry stays in processing.
+    expect(replay.replayedKeys).toEqual(["200-orphan"]);
+
+    const repoDir = store.getRepoDir(repoId);
+    const processingDir = path.join(
+      repoDir,
+      `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_PROCESSING_DIR}`,
+    );
+    const inboxDir = path.join(
+      repoDir,
+      `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}`,
+    );
+    expect((await fs.promises.readdir(processingDir)).sort()).toEqual([
+      "100-live.json",
+    ]);
+    expect((await fs.promises.readdir(inboxDir)).sort()).toEqual([
+      "200-orphan.json",
+    ]);
+  });
+
+  test("without the owned set (default), replay re-admits every processing entry", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-default-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "live",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/live" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+      },
+      message: "seed the live run",
+    });
+    // A caller that does not supply the owned set replays everything --
+    // the pre-existing recover-all-orphans behaviour is unchanged.
+    const replay = await replayProcessingToInbox(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(replay.replayedKeys).toEqual(["100-live"]);
   });
 });
 
