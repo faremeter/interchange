@@ -1148,12 +1148,13 @@ export function createSidecarDeployRouter(deps: {
       multistepDeriveStepAddress,
     });
 
-    // Unwind every piece of spawn state if any step between here and
-    // `registerDeployment` throws, so a failed spawn leaks no
-    // freshly-spawned workflow-process child, `activeSupervisors` entry,
-    // transport registration, or multistep router registration. The
-    // ordering inside the finally is the reverse of the success-path
-    // registration order. The caller owns the deployment slug: it must
+    // Unwind every piece of spawn state if any step in this block throws,
+    // so a failed spawn leaks no freshly-spawned workflow-process child,
+    // `activeSupervisors` entry, transport registration, or multistep
+    // router registration. (The deployment-address registration happens
+    // before spawn and is unwound by its own guard.) The ordering inside
+    // the finally is the reverse of the success-path registration order.
+    // The caller owns the deployment slug: it must
     // claim the collision guard before any durable write and release it on
     // failure, so the slug is not touched here.
     let succeeded = false;

@@ -562,4 +562,6 @@ async function main(): Promise<void> {
   process.stdout.write(`results.json written to ${opts.outDir}\n`);
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
