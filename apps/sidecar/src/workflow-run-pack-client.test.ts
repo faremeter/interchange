@@ -50,6 +50,14 @@ function createRecordingUnderlyingRepoStore(): {
         newlyTerminalRuns: [],
       };
     },
+    async resolveRef(_principal, _repoId, _ref) {
+      // The client's empty-delta guard compares the current ref tip against
+      // the last commit it acked. Return a fixed tip distinct from the
+      // `createPack` sha so the guard never short-circuits these tests: the
+      // client acks `stub-pack-sha`, so a tip of `stub-tip-sha` always has
+      // un-shipped work.
+      return "stub-tip-sha";
+    },
     async createPack(principal, repoId, ref) {
       packs.push({ principal, repoId, ref });
       return {
@@ -425,6 +433,132 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
         },
       ),
     ).rejects.toThrow(/no agent address registered/);
+  });
+
+  test("markAddressUnroutable holds a push until notifyAddressRoutable resumes it", async () => {
+    // The reconnect ordering contract. A WS disconnect blocks the address:
+    // a write that lands while blocked schedules no wire push, because a
+    // push shipped on the fresh, not-yet-challenged connection is dropped by
+    // the hub as "unrouted". The reconnect challenge lifts the block and the
+    // held push ships then -- after the hub has re-routed the address.
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-blocked", "agent-blocked@example.com");
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      underlying: store,
+      packClient: {
+        async push() {
+          pushCount += 1;
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-blocked" };
+
+    facade.markAddressUnroutable("agent-blocked@example.com");
+    await facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      repoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ "runs/r/events/0.json": "{}" }),
+        message: "append while blocked",
+      },
+    );
+    // Yield: a wire push would have run by now if the block were not held.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pushCount).toBe(0);
+
+    facade.notifyAddressRoutable("agent-blocked@example.com");
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushCount).toBe(1);
+  });
+
+  test("notifyAddressRoutable re-drives a push a disconnect cancelled with no fresh write", async () => {
+    // The liveness contract a synchronous single-step run depends on. The
+    // first push rejects "Connection lost" (the disconnect cancelled the
+    // in-flight transfer) and latches its error. There is no later local
+    // write to re-arm the coalescing loop, so without the routable-again
+    // re-drive the run would strand forever. notifyAddressRoutable re-ships
+    // the un-acked commits once the challenge re-routes the address.
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-cancelled", "agent-cancelled@example.com");
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      underlying: store,
+      packClient: {
+        async push() {
+          pushCount += 1;
+          if (pushCount === 1) {
+            throw new Error("transfer cancelled: Connection lost");
+          }
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-cancelled" };
+
+    await facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      repoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ "runs/r/events/0.json": "{}" }),
+        message: "single batch",
+      },
+    );
+    // Let the first push settle and latch "Connection lost" without a
+    // second write to re-arm the loop.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(pushCount).toBe(1);
+
+    facade.notifyAddressRoutable("agent-cancelled@example.com");
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    // The re-drive re-shipped the un-acked commits; the second attempt
+    // succeeds, so the latched error clears and flush resolves cleanly.
+    expect(pushCount).toBe(2);
+  });
+
+  test("notifyAddressRoutable is a no-op for a slot with nothing un-shipped", async () => {
+    // A clean, already-acked slot (no dirty work, no latched error) has
+    // nothing to re-ship. A routable-again notification must not spin a
+    // spurious push for it -- that would build an empty-delta pack the hub
+    // rejects. Only slots with pending work or a latched failure re-drive.
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-clean", "agent-clean@example.com");
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      underlying: store,
+      packClient: {
+        async push() {
+          pushCount += 1;
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-clean" };
+
+    await facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      repoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ "runs/r/events/0.json": "{}" }),
+        message: "append",
+      },
+    );
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushCount).toBe(1);
+
+    facade.notifyAddressRoutable("agent-clean@example.com");
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushCount).toBe(1);
   });
 });
 

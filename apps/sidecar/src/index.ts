@@ -382,6 +382,28 @@ const orchestrator = createSidecarOrchestrator({
     }
     return sidecarDeployRouter.activeAddresses();
   },
+  // When the hub-link re-answers a reconnect challenge for a deployment
+  // address, re-drive any workflow-run pack the disconnect cancelled. The
+  // link fires this AFTER sending the challenge.response, so the hub routes
+  // the address before it sees the re-shipped pack (both frame families
+  // queue on the hub's per-connection chain). This is the liveness half of
+  // reconnect recovery: without it, a synchronous single-step run whose only
+  // pack was interrupted mid-transfer never re-ships, because it has no later
+  // local write to re-arm the coalescing loop.
+  onWorkflowAddressesRoutable: (addresses) => {
+    for (const address of addresses) {
+      wrappedRepoStore.notifyAddressRoutable(address);
+    }
+  },
+  // On disconnect, block the deployment addresses' workflow-run pushes until
+  // the reconnect challenge above re-routes them. Without the block, the
+  // coalescing pusher re-ships onto the fresh, not-yet-challenged connection
+  // and the hub drops the frames as "unrouted".
+  onWorkflowAddressesUnroutable: (addresses) => {
+    for (const address of addresses) {
+      wrappedRepoStore.markAddressUnroutable(address);
+    }
+  },
   createDeployRouter: ({
     sessions,
     keyStore,

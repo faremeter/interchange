@@ -188,6 +188,19 @@ const DEFAULT_PING_INTERVAL_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 3_000;
 
 /**
+ * The reason string `packSender.cancelAll` rejects an in-flight transfer with
+ * when the link cycles on the reconnect `open` handler. A push that fails with
+ * this is a dropped connection, not a receiver-side rejection, so the
+ * workflow-run push path must not fast-retry it (see `runWithBootstrap`); the
+ * pushing store's post-challenge re-drive owns reconnect recovery.
+ */
+const CONNECTION_LOST_REASON = "Connection lost";
+
+function isConnectionLost(err: unknown): boolean {
+  return err instanceof Error && err.message === CONNECTION_LOST_REASON;
+}
+
+/**
  * Schedules a deferred callback and returns a cancel function. Injection
  * point for tests: a fake scheduler records the callback so the test
  * can observe whether cancellation actually happened, without relying
@@ -402,6 +415,32 @@ export type HubLinkConfig = {
    * substrate).
    */
   getWorkflowAddresses?: () => string[];
+  /**
+   * Invoked once per reconnect ownership challenge with the addresses this
+   * link just signed a `challenge.response` for. Signing the response is the
+   * sidecar-local proxy for "the hub is about to (re)route these addresses":
+   * the hub adds a verified address to its routing index in
+   * `handleChallengeResponse`, and because both `challenge.response` and the
+   * subsequent `repo.pack.push`/`done` frames are QUEUE-class on the hub's
+   * per-connection chain, the hub processes the response (routing the
+   * address) BEFORE it sees any pack re-shipped in reaction to this callback.
+   * The workflow-run pack pusher subscribes so it can re-drive a push that a
+   * disconnect cancelled -- gated on this signal so the re-ship cannot race
+   * ahead of the address becoming routable again. Absent when omitted (tests
+   * / deployments with no workflow-run pack pipeline).
+   */
+  onWorkflowAddressesRoutable?: (addresses: string[]) => void;
+  /**
+   * Invoked on WS disconnect with the workflow-substrate addresses this link
+   * hosts (`getWorkflowAddresses()`). Their hub route is gone until the next
+   * reconnect challenge re-proves ownership, so the workflow-run pack pusher
+   * blocks their pushes in the interim -- a push shipped on the fresh,
+   * not-yet-challenged connection is dropped by the hub as "unrouted". Paired
+   * with `onWorkflowAddressesRoutable`, which lifts the block once the
+   * challenge passes. Absent when omitted (tests / deployments with no
+   * workflow-run pack pipeline).
+   */
+  onWorkflowAddressesUnroutable?: (addresses: string[]) => void;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
   scheduleReconnect?: ReconnectScheduler;
@@ -446,6 +485,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     drainInboundRouter,
     sourcesInboundRouter,
     getWorkflowAddresses = () => [],
+    onWorkflowAddressesRoutable,
+    onWorkflowAddressesUnroutable,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     scheduleReconnect = defaultScheduleReconnect,
@@ -666,6 +707,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
 
     send({ type: "challenge.response", responses });
+
+    // Signal the workflow-run pack pusher that these addresses are becoming
+    // routable again, so it can re-drive a push a disconnect cancelled. Fires
+    // AFTER the response is sent: the hub routes each verified address before
+    // it processes any pack the pusher re-ships in reaction (both frame
+    // families queue on the hub's per-connection chain), so the re-ship
+    // cannot arrive at the hub ahead of the address's routing write. Only the
+    // addresses this link actually signed for are announced; an address with
+    // no key pair was skipped above and stays unrouted, so re-driving its
+    // push would just re-fail.
+    if (onWorkflowAddressesRoutable !== undefined && responses.length > 0) {
+      onWorkflowAddressesRoutable(responses.map((r) => r.address));
+    }
   }
 
   async function handleChallengeFailed(
@@ -948,6 +1002,18 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       try {
         await sendOnce();
       } catch (first) {
+        // A disconnect that cancelled the transfer (`cancelAll` on the
+        // link's reconnect `open`) is NOT the initRepo bootstrap race: the
+        // link just cycled, and re-sending on the fresh, not-yet-challenged
+        // connection would ship to a hub that has dropped this address's
+        // route (the frames land "unrouted"). Reconnect recovery is owned by
+        // the pushing store's post-challenge re-drive, not by this
+        // fast-retry, so re-throw and let the caller latch the failure. Only
+        // the genuine bootstrap race -- a receiver reject against an
+        // uninitialised hub repo -- retries here.
+        if (isConnectionLost(first)) {
+          throw first;
+        }
         // First push to a never-bootstrapped (repoId, ref) lost the
         // race with the hub substrate's `receivePack` initRepo step
         // (see the comment on `workflowRunPackBootstrapped` above).
@@ -1116,7 +1182,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }, pingIntervalMs);
 
       packReceiver.reset();
-      packSender.cancelAll("Connection lost");
+      packSender.cancelAll(CONNECTION_LOST_REASON);
 
       // Announce this sidecar to the hub for routing. The hub learns of a
       // sidecar only from a register frame; `connections` is the map
@@ -1212,6 +1278,18 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       if (pingTimer !== null) {
         clearInterval(pingTimer);
         pingTimer = null;
+      }
+      // The hub dropped every route this link held. Block workflow-run pushes
+      // for the deployments it hosts until the reconnect challenge re-routes
+      // them, so the coalescing pusher does not re-ship onto the fresh,
+      // not-yet-challenged connection (which the hub drops as "unrouted").
+      // `onWorkflowAddressesRoutable`, fired when the challenge passes, lifts
+      // the block and re-drives.
+      if (onWorkflowAddressesUnroutable !== undefined) {
+        const hosted = getWorkflowAddresses();
+        if (hosted.length > 0) {
+          onWorkflowAddressesUnroutable(hosted);
+        }
       }
       if (!closed) {
         cancelReconnect = scheduleReconnect(() => {
