@@ -396,9 +396,11 @@ export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
  * strictly greater seq.
  *
  * This set is a hand-rolled copy of the runtime's terminal-run vocabulary
- * (`isTerminalRunPhase` in `@intx/workflow` state-machine `transition.ts`),
- * duplicated here because `@intx/hub-sessions` must not depend on
- * `@intx/workflow`. It MUST stay in sync with that canonical definition:
+ * (`isTerminalRunPhase` in `@intx/workflow` state-machine `state.ts`,
+ * re-exported from the state-machine index and consumed by
+ * `transition.ts`), duplicated here because `@intx/hub-sessions` must not
+ * depend on `@intx/workflow`. It MUST stay in sync with that canonical
+ * definition:
  * if the runtime adds or removes a terminal run phase, update this set too.
  * Drift silently reopens the restore-time double-driver collision that
  * `readOwnedMessageIds` (below) exists to prevent.
