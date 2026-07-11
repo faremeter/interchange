@@ -25,6 +25,7 @@ import { hashDefinition } from "../definition/index";
 import { evaluate, type SelectorContext } from "./selectors";
 import {
   hasFailedStep,
+  isCrashedInvocationStep,
   isResumableAwaitingSignalStep,
   isResumableInFlightLoopStep,
   isResumableReceivedAwaitSignalStep,
@@ -67,10 +68,14 @@ export interface RuntimeRunOptions {
    * later), and an `awaitSignal` step (no timeout) left `in-flight` by an
    * already-logged `SignalReceived` (runAwaitSignal completes it from that
    * logged event -- the crash-after-signal-before-StepCompleted window).
-   * Seed logs whose tail leaves a step `awaiting-timer`, mid-`map`, or
-   * otherwise `in-flight` (including a timeout-bearing `awaitSignal` left
-   * `in-flight`, indistinguishable in reduced state from a fired timeout)
-   * stay unsupported and surface as `RuntimeResumeUnsupportedError`.
+   * A seed log whose tail leaves an invocation-boundary step -- an agent
+   * `step` or a deterministic `action` -- `in-flight` is a crash
+   * mid-invocation: the runtime settles it as a terminal `StepFailed`
+   * (at-most-once refusal) instead of re-invoking it. A step left
+   * `awaiting-timer`, mid-`map`, or otherwise `in-flight` (a
+   * `childWorkflow`, or a timeout-bearing `awaitSignal` left `in-flight`
+   * and indistinguishable in reduced state from a fired timeout) stays
+   * unsupported and surfaces as `RuntimeResumeUnsupportedError`.
    *
    * When omitted, the runtime starts fresh from `emptyState(runId)`
    * and emits `RunStarted` itself.
@@ -96,13 +101,16 @@ export interface RuntimeRunOptions {
  *      boundaries, or left in one of the resumable carve-outs: an
  *      in-flight `loop` container, or an `awaitSignal` step (still
  *      `awaiting-signal`, or -- with no timeout -- `in-flight` from a
- *      received signal). A step left `awaiting-timer`, mid-`map`, or
+ *      received signal). An invocation-boundary step -- an agent `step`
+ *      or a deterministic `action` -- left `in-flight` is a crash
+ *      mid-invocation and settles as a terminal `StepFailed` rather
+ *      than re-invoking. A step left `awaiting-timer`, mid-`map`, or
  *      otherwise `in-flight` (including a timeout-bearing `awaitSignal`
  *      left `in-flight`) is unsupported: the runtime body has no surface
  *      for re-arming the timer scheduler entry or the inner-map
- *      iteration state from the log alone. Such seed logs surface as
- *      `RuntimeResumeUnsupportedError`; the host (supervisor) owns the
- *      recovery decision.
+ *      iteration state from the log alone, so it surfaces as
+ *      `RuntimeResumeUnsupportedError` and the host (supervisor) owns
+ *      the recovery decision.
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -218,9 +226,13 @@ function commit(
 // pending buffer (this event LAST) in one durable `appendBatch`. Used
 // for the terminal events (RunCompleted/RunFailed/RunCancelled) so the
 // terminal is on disk -- and the supervisor's terminal-write sniff
-// fires -- the moment the commit resolves, and for the control-plane
-// `cancel` whose `CancelRequested` must persist immediately. The
-// terminal event being the last blob in the merge keeps the
+// fires -- the moment the commit resolves, for the control-plane
+// `cancel` whose `CancelRequested` must persist immediately, and for
+// the agent-invoke barrier in `runStep` (the agent step's `StepStarted`
+// is flushed durably before `env.invokeStep` runs, so a crash
+// mid-invocation leaves a durable marker the recovery path settles as a
+// terminal failure rather than re-invoking the non-idempotent agent).
+// The terminal event being the last blob in the merge keeps the
 // workflow-run kind handler's terminal-lock satisfied.
 function commitDurable(
   env: WorkflowRuntimeEnv,
@@ -290,16 +302,30 @@ async function executeRunBody(
     await env.repoStore.append(runId, event);
   }
 
-  // Reject seed logs that leave any step in a non-terminal phase the
+  // Classify seed logs that leave a step in a non-terminal phase the
   // runtime body cannot re-arm. The DAG's `nextSchedulable` skips any
   // step that already appears in `state.steps` (the safe-runner needs
   // a fresh `StepStarted` to advance one), so a step left
   // `in-flight`, `awaiting-signal`, or `awaiting-timer` would stall
-  // the main loop with no schedulable primitive. Surface the
-  // limitation honestly rather than dressing it up as a generic
-  // stall: the host decides whether to crash, alert, or recover via
-  // redeploy. Cancellation paths are exempt -- the cleanup branch
-  // owns settling steps whose phase is `cancelling`.
+  // the main loop with no schedulable primitive. Cancellation paths are
+  // exempt -- the cleanup branch owns settling steps whose phase is
+  // `cancelling`.
+  //
+  // A residual `in-flight` step whose primitive is an invocation
+  // boundary (`isCrashedInvocationStep`: an agent `step` or an `action`)
+  // is a crash mid-invocation: its `StepStarted` is durable but no
+  // `StepCompleted` landed, and the invoked primitive is
+  // non-deterministic and unrecorded, so it cannot be replayed
+  // exactly-once. Rather than re-invoke it (at-most-once refusal), settle
+  // it as a terminal `StepFailed`. Every OTHER non-terminal residual --
+  // an `in-flight` coordination container (mid-`map`, timeout-bearing
+  // `awaitSignal` reduced to `in-flight`, `childWorkflow`), or an
+  // `awaiting-signal`/`awaiting-timer` step -- still surfaces
+  // `RuntimeResumeUnsupportedError`: those have a live re-arming surface
+  // the host owns (rebuild the map state, distinguish a fired timeout
+  // from a received signal, re-park on a later signal), so declining
+  // honestly is correct there.
+  const crashedInFlight: { stepId: string; attempt: number }[] = [];
   if (initialEvents.length > 0 && state.phase === "running") {
     for (const [stepId, stepState] of state.steps) {
       // Resumable carve-outs, each re-offered by `nextSchedulable` on the
@@ -313,8 +339,6 @@ async function executeRunBody(
       //     already-logged `SignalReceived`: runAwaitSignal short-circuits
       //     to completion from that logged event (the
       //     crash-after-signal-before-StepCompleted window).
-      // Every other in-flight or awaiting-timer step stays rejected
-      // byte-for-byte: the runtime has no surface to re-arm those.
       if (
         isResumableInFlightLoopStep(definition, stepId, stepState.phase) ||
         isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
@@ -322,6 +346,20 @@ async function executeRunBody(
       ) {
         continue;
       }
+      // A crashed-mid-invocation step (agent step or action). Collect it
+      // for terminal settling AFTER this loop -- committing StepFailed
+      // inline would leave `state` stale and merely relocate the stall to
+      // the main loop. A crashed in-flight action lands here too and is
+      // settled terminal (it stalls today; this is strictly better).
+      if (isCrashedInvocationStep(definition, stepId, stepState.phase)) {
+        crashedInFlight.push({
+          stepId,
+          attempt: stepState.currentAttempt,
+        });
+        continue;
+      }
+      // Every other non-terminal residual keeps declining: the host owns
+      // the recovery decision (crash, alert, or redeploy).
       if (
         stepState.phase === "in-flight" ||
         stepState.phase === "awaiting-signal" ||
@@ -334,6 +372,27 @@ async function executeRunBody(
         );
       }
     }
+  }
+
+  // Settle each crashed-mid-invocation step as a terminal `StepFailed`
+  // (`retriesExhausted: true`), advancing `state`/`seq` per commit. This
+  // moves the step to phase `failed`, so `nextSchedulable` will not
+  // re-schedule it and the agent is never re-invoked; the post-loop
+  // `hasFailedStep` path is left to commit `RunFailed` and settle the run.
+  for (const { stepId, attempt } of crashedInFlight) {
+    const failed: WorkflowEvent = {
+      kind: "StepFailed",
+      seq: state.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId,
+      attempt,
+      error: {
+        message: `step ${stepId} crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)`,
+        code: "crash-mid-invocation",
+      },
+      retriesExhausted: true,
+    };
+    state = await commitDurable(env, runId, failed);
   }
 
   // Issue RunStarted only if the state machine has not seen it.
@@ -866,6 +925,25 @@ async function runPrimitiveSafe(
   }
 }
 
+/**
+ * Run an agent step (the agent path; `runAction` is the separate action
+ * path).
+ *
+ * Agent-invoke durability barrier: the step's `StepStarted` is flushed
+ * durably via `commitDurable` BEFORE `env.invokeStep` is called, not
+ * left in the run-body buffer. The agent invocation is a
+ * non-deterministic, potentially non-idempotent side effect that the
+ * runtime cannot record exactly-once; flushing the marker first means a
+ * crash mid-invocation leaves a durable `StepStarted` with no
+ * `StepCompleted`, which the recovery path in `executeRunBody` settles
+ * as a terminal failure rather than silently re-invoking the agent
+ * (at-most-once). On a fresh single-step run this flush carries the
+ * still-buffered `RunStarted` to durable storage together with the
+ * `StepStarted` in one batch, so both are on disk before the agent
+ * runs. `StepStarted` is emitted exactly once per step (the
+ * `stepStartedEmitted` guard), so retry attempts re-enter without a
+ * second flush.
+ */
 async function runStep(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -915,7 +993,7 @@ async function runStep(
         attempt,
         input: { ref: inputRef },
       };
-      state = await commit(env, runId, started);
+      state = await commitDurable(env, runId, started);
       void state;
       stepStartedEmitted = true;
     }

@@ -90,6 +90,48 @@ export function isResumableReceivedAwaitSignalStep(
   return primitive.timeout === undefined;
 }
 
+/**
+ * An `in-flight` step whose primitive is an invocation boundary -- an
+ * agent `step` or a deterministic `action` -- is a crash
+ * mid-invocation, not a resumable coordination primitive: a
+ * durable `StepStarted` with no `StepCompleted`, whose invoked
+ * primitive is non-deterministic (agent) or already dedup-owned by its
+ * effect ledger (action) and has no runtime-body re-arm surface, so it
+ * cannot be re-invoked safely. The resume guard settles such a step as
+ * a terminal `StepFailed` (at-most-once refusal) rather than throwing.
+ *
+ * How the `StepStarted` became durable differs by kind. An agent `step`
+ * flushes its own before invoking (the `commitDurable` barrier in
+ * `runStep`), so a lone crashed agent always leaves this residual. An
+ * `action` does not: `runAction` commits `StepStarted` buffered, so a
+ * lone crashed action drops it with the pending buffer and leaves no
+ * residual at all. An action reaches this branch only incidentally --
+ * when a concurrently-running step's `commitDurable` flush persisted the
+ * action's buffered `StepStarted` first (the pending buffer is shared
+ * per run). Settling that residual terminal still beats the prior stall.
+ *
+ * Container/coordination primitives left `in-flight` -- a `map` outer
+ * step, a timeout-bearing `awaitSignal` reduced to `in-flight`, a
+ * `childWorkflow`, etc. -- are deliberately excluded: they have a
+ * re-arm surface the in-process runtime body lacks (rebuilding the map
+ * iteration state, distinguishing a fired timeout from a received
+ * signal), so they stay `RuntimeResumeUnsupportedError` and the host
+ * owns recovery. A synthetic map/loop inner id (`<id>[i]`) is not a
+ * definition key, so it resolves to `undefined` and is excluded here;
+ * resumable loop iterations are handled by
+ * `isResumableInFlightLoopStep`, and a mid-`map` inner step stays
+ * unsupported with its container.
+ */
+export function isCrashedInvocationStep(
+  def: WorkflowDefinition,
+  stepId: string,
+  phase: StepPhase,
+): boolean {
+  if (phase !== "in-flight") return false;
+  const kind = def.steps[stepId]?.kind;
+  return kind === "step" || kind === "action";
+}
+
 export function nextSchedulable(
   def: WorkflowDefinition,
   state: RunState,
