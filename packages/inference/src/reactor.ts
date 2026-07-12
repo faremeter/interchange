@@ -446,6 +446,11 @@ export function createReactor(config: ReactorConfig): Reactor {
       await persistBlobs(result.blobs);
     }
 
+    const ephemeral = options?.ephemeralTurns;
+    if (ephemeral !== undefined && ephemeral.length > 0) {
+      prompt = [...prompt, ...ephemeral];
+    }
+
     // Tripwire: a malformed tool sequence is invalid in a coherent tool
     // conversation and would otherwise surface as an opaque provider rejection.
     // Catch it here, before the prompt is persisted or sent, so the corruption
