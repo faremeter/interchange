@@ -25,6 +25,10 @@ see [`LAYOUT.md`](../LAYOUT.md).
 - [`HARNESS_DESIGN.md`](./HARNESS_DESIGN.md) — agent harness
   implementation. How the sidecar manages harnesses on behalf of
   the hub.
+- [`unified-execution-host-design.md`](./unified-execution-host-design.md)
+  — design of record for the workflow-process execution host: how the
+  sidecar runs each agent as a supervised workflow-process child. Its
+  forward-looking sections are marked not-yet-built.
 - [`INFERENCE.md`](./INFERENCE.md) — inference layer. Provider
   adapters, streaming, tool execution, context management, token
   accounting.
