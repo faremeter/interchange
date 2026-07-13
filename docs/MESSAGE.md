@@ -478,6 +478,8 @@ subscribe(listAddress: string, subscriberAddress: string): Promise<void>
 unsubscribe(listAddress: string, subscriberAddress: string): Promise<void>
 ```
 
+> **Status: not yet implemented.** `createList`, `listMembers`, `subscribe`, and `unsubscribe` currently throw `Distribution list management is not implemented` in the shipped transports; the M:N distribution-list model is planned, not current behavior.
+
 `ListInfo` includes: address, name, member count, creation date. When an agent joins a conversation via `conversation.join`, the harness subscribes the agent to the corresponding list. When it leaves via `conversation.leave`, the harness unsubscribes.
 
 ## Transport Interface
