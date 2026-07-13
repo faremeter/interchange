@@ -77,8 +77,12 @@ export interface RuntimeRunOptions {
    * and indistinguishable in reduced state from a fired timeout) stays
    * unsupported and surfaces as `RuntimeResumeUnsupportedError`.
    *
-   * When omitted, the runtime starts fresh from `emptyState(runId)`
-   * and emits `RunStarted` itself.
+   * When omitted, the runtime reduces canonical state from the durable
+   * log for `runId`: an empty log starts fresh and emits `RunStarted`;
+   * a non-terminal log is adopted and driven to terminal -- the same
+   * recovery the seed path performs, for a supervisor re-fire that
+   * carries no seed; an already-terminal log is returned as-is without
+   * re-driving.
    */
   resumeFromEvents?: readonly WorkflowEvent[];
 }
@@ -88,8 +92,10 @@ export interface RuntimeRunOptions {
  * single runtime body invoked by both `runLocal` and the (future)
  * child-process entry point.
  *
- * Resume contract: when `options.resumeFromEvents` is supplied, the
- * seed log must satisfy two constraints:
+ * Resume contract: recovery runs against canonical state, whether it
+ * arrived as an `options.resumeFromEvents` seed or was reduced from a
+ * durable log this call adopts (a supervisor re-fire that carries no
+ * seed). A supplied seed log must satisfy two constraints:
  *
  *   1. The env's `BlobSubstrate` either holds the blob: refs the seed
  *      log references, or is durable enough that the refs are
@@ -270,7 +276,6 @@ async function executeRunBody(
   options: RuntimeRunOptions,
 ): Promise<RunResult> {
   const initialEvents = options.resumeFromEvents ?? [];
-  let state = resumeFromLog(runId, initialEvents);
 
   // Restore prior events to the repo store on resume so a downstream
   // read sees the historical log alongside any newly-appended events.
@@ -302,12 +307,59 @@ async function executeRunBody(
     await env.repoStore.append(runId, event);
   }
 
-  // Classify seed logs that leave a step in a non-terminal phase the
-  // runtime body cannot re-arm. The DAG's `nextSchedulable` skips any
-  // step that already appears in `state.steps` (the safe-runner needs
-  // a fresh `StepStarted` to advance one), so a step left
-  // `in-flight`, `awaiting-signal`, or `awaiting-timer` would stall
-  // the main loop with no schedulable primitive. Cancellation paths are
+  // Seed-contract guard, before any blob resolution. A resume that
+  // supplied `resumeFromEvents` referencing blob: refs requires the
+  // BlobSubstrate that recorded them; the runLocal in-memory substrate
+  // is ephemeral and starts empty, so it cannot serve them. Fail with a
+  // targeted error naming the contract rather than a deep
+  // `resolveRef`-miss surfacing downstream. This must run BEFORE the
+  // terminal short-circuit's `buildResultFromLog` and the canonical-log
+  // hydration below -- both call `resolveRef`, and either would otherwise
+  // hit the raw "unknown blob ref" failure first. Keyed on
+  // `initialEvents` because it is the seed contract: it fires for a
+  // seeded resume whether the seeded log is terminal or not, and is a
+  // no-op for a fresh re-fire that supplied no seed.
+  const seedBlobRefs = initialEvents.filter(
+    (e): e is typeof e & { kind: "StepCompleted" } =>
+      e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
+  );
+  if (seedBlobRefs.length > 0 && env.blobs.ephemeral) {
+    throw new Error(
+      `resume requires the BlobSubstrate that recorded the seed log's blob refs (${String(seedBlobRefs.length)} blob output(s) present); the runLocal in-memory substrate is ephemeral and starts empty. Pass the originating env, or use a durable substrate.`,
+    );
+  }
+
+  // Establish canonical state from the durable log itself, not from the
+  // seed array. The seed may have arrived two ways -- as a
+  // `resumeFromEvents` array this process just wrote, or as a log a
+  // prior (crashed) process left on disk that this process is re-firing
+  // fresh (the supervisor re-fires a parked inbound message with
+  // `runId = messageId` and NO `resumeFromEvents`). Reducing the durable
+  // log answers the only question that matters for recovery -- "does the
+  // canonical log carry residual work?" -- identically for both, so
+  // every decision below (terminal short-circuit, crashed-in-flight
+  // settling, the RunStarted emit) keys on canonical state rather than
+  // on how the events reached this process.
+  let state = await reloadState(env, runId);
+
+  // Terminal short-circuit. A re-fire whose canonical log is already
+  // terminal (`completed`/`failed`/`cancelled`) must NOT emit a fresh
+  // `RunStarted` -- that throws `TransitionError("terminal-phase")`,
+  // uncaught, and rejects the run. Return the existing terminal result
+  // reconstructed from the durable log, matching the shape the live
+  // terminal path below produces (`emitTerminalEvent` and the child
+  // entry point walk `events` for the terminal event and read
+  // `terminalStatus`).
+  if (isTerminalRunPhase(state.phase)) {
+    return buildResultFromLog(env, runId, state);
+  }
+
+  // Classify residual steps the canonical log leaves in a non-terminal
+  // phase the runtime body cannot re-arm. The DAG's `nextSchedulable`
+  // skips any step that already appears in `state.steps` (the safe-runner
+  // needs a fresh `StepStarted` to advance one), so a step left
+  // `in-flight`, `awaiting-signal`, or `awaiting-timer` would stall the
+  // main loop with no schedulable primitive. Cancellation paths are
   // exempt -- the cleanup branch owns settling steps whose phase is
   // `cancelling`.
   //
@@ -325,8 +377,16 @@ async function executeRunBody(
   // the host owns (rebuild the map state, distinguish a fired timeout
   // from a received signal, re-park on a later signal), so declining
   // honestly is correct there.
+  //
+  // The pass runs whenever canonical state is `running`, whether the
+  // residual arrived via a `resumeFromEvents` seed OR was adopted from a
+  // durable log this process is re-firing fresh. Keying on
+  // `state.phase === "running"` (not on whether a seed was supplied) is
+  // what settles a crashed step under the fresh re-fire recovery; the
+  // RunStarted emit below is skipped in that case because the canonical
+  // phase is already `running`.
   const crashedInFlight: { stepId: string; attempt: number }[] = [];
-  if (initialEvents.length > 0 && state.phase === "running") {
+  if (state.phase === "running") {
     for (const [stepId, stepState] of state.steps) {
       // Resumable carve-outs, each re-offered by `nextSchedulable` on the
       // SAME predicate:
@@ -368,7 +428,7 @@ async function executeRunBody(
         throw new RuntimeResumeUnsupportedError(
           stepId,
           stepState.phase,
-          `seed log tail leaves step ${stepId} in phase ${stepState.phase} with no schedulable primitive on the DAG`,
+          `durable log leaves step ${stepId} in phase ${stepState.phase} with no schedulable primitive on the DAG`,
         );
       }
     }
@@ -411,27 +471,18 @@ async function executeRunBody(
     try {
       state = await commit(env, runId, event);
     } catch (cause) {
-      // Two distinct callers land a `code: "phase"` rejection here; do
-      // NOT narrow this to either one -- both must reload and continue:
-      //
-      //   1. A `cancel("self", ...)` racing the very first `RunStarted`
-      //      commit lands `CancelRequested` first (legal from `pending`
-      //      since the state-machine admits early-lifecycle cancellation).
-      //      The chain reloads, sees phase=cancelling, and rejects
-      //      `RunStarted`. Proceeding routes through the cancellation
-      //      cleanup branch and emits `RunCancelled`.
-      //   2. A FRESH run (no `resumeFromEvents`) started against a runId
-      //      whose durable log ALREADY carries a `RunStarted` -- the
-      //      host's re-trigger recovery: the supervisor re-fires a parked
-      //      inbound message (its `runId` is the messageId) as a new run
-      //      after a crash. The chain reads the existing log (phase
-      //      already `running`), so this `RunStarted` is rejected.
-      //      Reloading adopts the durable log, and the main loop resumes
-      //      the run from its actual frontier via `nextSchedulable`
-      //      (which skips already-terminal steps -- adopt-by-skip -- so
-      //      completed steps are NOT re-executed). Narrowing this catch to
-      //      the cancel case would break that recovery: a re-triggered run
-      //      would throw instead of adopting the log.
+      // This block is reached only when canonical state was `pending`
+      // (an empty or RunStarted-less log), so the fresh re-fire recovery
+      // -- whose canonical log already carries `RunStarted` -- never
+      // lands here: reload-at-entry sees its `running`/terminal phase and
+      // skips this emit entirely. The one race that still lands a
+      // `code: "phase"` rejection is a `cancel("self", ...)` that beats
+      // this very first `RunStarted` commit: `CancelRequested` is legal
+      // from `pending` (the state machine admits early-lifecycle
+      // cancellation), so the chain reloads, sees phase=cancelling, and
+      // rejects `RunStarted`. Reload and continue -- proceeding routes
+      // through the cancellation cleanup branch and emits `RunCancelled`.
+      // Any other rejection is a real error and must surface.
       if (cause instanceof TransitionError && cause.code === "phase") {
         state = await reloadState(env, runId);
       } else {
@@ -442,27 +493,19 @@ async function executeRunBody(
 
   const inFlight = new Set<string>();
   const stepOutputs: Record<string, unknown> = {};
-  // On resume, hydrate stepOutputs from the log's StepCompleted events
-  // so downstream steps can resolve `{ from: "steps.<id>.output" }`
-  // selectors. Without hydration, the runtime starts with an empty
-  // stepOutputs and any selector referencing a previously-completed
-  // step's output throws, landing as a spurious StepFailed.
-  //
-  // Every primitive that produces a value commits its StepCompleted
-  // with a substrate-resolvable ref (inline:<json> or blob:<key>);
-  // there are no marker refs to filter. An ephemeral substrate that
-  // cannot serve the seed log's blob refs surfaces here as a
-  // targeted error rather than a deep resolve failure.
-  const seedBlobRefs = initialEvents.filter(
-    (e): e is typeof e & { kind: "StepCompleted" } =>
-      e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
-  );
-  if (seedBlobRefs.length > 0 && env.blobs.ephemeral) {
-    throw new Error(
-      `resume requires the BlobSubstrate that recorded the seed log's blob refs (${String(seedBlobRefs.length)} blob output(s) present); the runLocal in-memory substrate is ephemeral and starts empty. Pass the originating env, or use a durable substrate.`,
-    );
-  }
-  for (const event of initialEvents) {
+  // Hydrate stepOutputs from the canonical log's StepCompleted events so
+  // downstream steps can resolve `{ from: "steps.<id>.output" }`
+  // selectors against work that completed before this process took over
+  // -- whether that work arrived as a `resumeFromEvents` seed or was
+  // adopted from a durable log this process is re-firing fresh (the
+  // adopt-by-skip frontier). Without hydration, the runtime starts with
+  // an empty stepOutputs and any selector referencing a
+  // previously-completed step's output throws, landing as a spurious
+  // StepFailed. The ephemeral-substrate seed-contract guard that
+  // protects these `resolveRef` calls runs up front, before any blob
+  // resolution.
+  const canonicalLog = await env.repoStore.read(runId);
+  for (const event of canonicalLog) {
     if (event.kind !== "StepCompleted") continue;
     stepOutputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
   }
@@ -653,6 +696,42 @@ async function executeRunBody(
     outputs: stepOutputs,
     events,
   };
+}
+
+/**
+ * Reconstruct the terminal `RunResult` for a run whose canonical log is
+ * already terminal, without re-driving it. Used by the fresh-re-fire
+ * terminal short-circuit: a re-fire against an already-terminal durable
+ * log must return the existing result rather than emit a fresh
+ * `RunStarted` (which would throw `terminal-phase`).
+ *
+ * The shape matches the live terminal path at the tail of
+ * `executeRunBody` byte-for-byte: `terminalStatus` derived from the
+ * (already terminal) `state.phase`, `events` read from the durable log
+ * (so it carries the terminal event `emitTerminalEvent` and the child
+ * entry point walk for), and `outputs` hydrated from the log's
+ * `StepCompleted` refs (the live path threads in-process `stepOutputs`,
+ * which for a run driven end to end holds exactly those completed-step
+ * outputs).
+ */
+async function buildResultFromLog(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: ReturnType<typeof resumeFromLog>,
+): Promise<RunResult> {
+  const events = await env.repoStore.read(runId);
+  const outputs: Record<string, unknown> = {};
+  for (const event of events) {
+    if (event.kind !== "StepCompleted") continue;
+    outputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
+  }
+  const terminalStatus =
+    state.phase === "completed"
+      ? "completed"
+      : state.phase === "failed"
+        ? "failed"
+        : "cancelled";
+  return { runId, terminalStatus, outputs, events };
 }
 
 /**
