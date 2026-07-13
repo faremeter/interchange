@@ -1066,11 +1066,11 @@ export function createSidecarSubstrateFactory(
     // runtime off the per-step env (set by `buildStepEnv` via
     // `attachStepTools`), attaches the loaded tool factories to the
     // step's `AgentDefinition`, builds the plugin chain on
-    // `env.plugins` exactly as `default-harness.ts` does, and wraps
-    // `agent.close()` so every plugin (the LSP subprocess included) and
-    // tool bundle is torn down with the agent on every exit path. The
-    // factory is stateless across steps, so it is pinned once here and
-    // shared by every per-step invoker built below.
+    // `env.plugins`, and wraps `agent.close()` so every plugin (the LSP
+    // subprocess included) and tool bundle is torn down with the agent
+    // on every exit path. The factory is stateless across steps, so it
+    // is pinned once here and shared by every per-step invoker built
+    // below.
     const stepAgentFactory = createToolBearingAgentFactory();
 
     // Child-runtime step invoker. The in-process `runChild` (see
