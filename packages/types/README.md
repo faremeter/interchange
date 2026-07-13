@@ -26,12 +26,12 @@ pull in the shapes they need:
 - `@intx/types/authz` — grant rules, condition contexts, and
   authorization result shapes shared between `@intx/authz` and the
   hub.
-- `@intx/types/audit` — `AuditStore` contract for tool-authorization
-  records.
+- `@intx/types/audit` — the `AuditAuthz`, `AuditRecord`, and
+  `ErrorRecord` shapes for tool-authorization and error records.
 - `@intx/types/runtime` — inference and harness contracts:
-  `ContextStore`, `ToolRunner`, `ToolDefinition`, `InferenceSource`
-  (the resolved provider/model/credential a call executes against),
-  retry policy, director and reactor types.
+  `ContextStore`, `ToolRunner`, `ToolDefinition`, `AuditStore`,
+  `InferenceSource` (the resolved provider/model/credential a call
+  executes against), retry policy, director and reactor types.
 - `@intx/types/runtime-capabilities` — the capability-registry
   contract harness extensions resolve against (e.g. mail transport,
   blob reader).

@@ -27,8 +27,12 @@ factories `@intx/hub-api` composes into the application.
 
 ## Surface
 
-The single `@intx/types`-style entry point (`@intx/hub-sessions`)
-re-exports the following, grouped by concern. See the source modules
+The package barrel (`@intx/hub-sessions`) re-exports the following,
+grouped by concern. A db-free repo substrate — the `RepoStore`, the
+workflow-run claim-check and event-log primitives, and the
+kind-subscription protocol — is additionally exported from the
+`@intx/hub-sessions/substrate` subpath, which the agent-runtime host
+consumes without linking the database layer. See the source modules
 for the authoritative type shapes.
 
 ### Session orchestration
@@ -80,6 +84,13 @@ for the authoritative type shapes.
   `validateTarballPackageJSON`, and the constants `TARBALLS_PREFIX`,
   `TARBALL_FILENAME_PATTERN`, `REGISTRY_INDEX_PATH`,
   `WORKSPACE_BUILTINS_REGISTRY`.
+
+### Workflow-run substrate
+
+- `workflowRunKindHandler`, `createWorkflowRunReader`, and the
+  `WORKFLOW_RUN_*` path constants — the workflow-run repo kind
+  handler, its reader, and the on-disk layout constants for the
+  workflow-run substrate.
 
 ### Asset service
 
