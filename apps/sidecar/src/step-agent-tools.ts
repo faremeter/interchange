@@ -6,10 +6,10 @@
 // the child's address space. This module is the seam that runs that
 // runtime when the real step-invoker builds a step's agent: it reads
 // the step's deploy tree off disk, materializes the pinned tool-package
-// closure via `materializeToolPackages`, builds the plugin chain
-// (mirroring `default-harness.ts`'s `build()`), attaches the resulting
-// tool factories to the step's `AgentDefinition`, and returns an
-// `Agent` whose `close()` tears every plugin and tool bundle down.
+// closure via `materializeToolPackages`, builds the plugin chain,
+// attaches the resulting tool factories to the step's
+// `AgentDefinition`, and returns an `Agent` whose `close()` tears every
+// plugin and tool bundle down.
 //
 // LSP lifecycle (the riskiest sub-item, design §6): the LSP plugin
 // factory's `dispose` terminates the LSP subprocess. The
@@ -251,8 +251,8 @@ export function attachStepTools(
  * factory reads the materialized tool runtime off the env (set by
  * `buildEnv` via `attachStepTools`), augments the step's
  * `AgentDefinition` with the loaded tool factories (wrapped to capture
- * each bundle's disposer), constructs the plugin chain on `env.plugins`
- * exactly as `default-harness.ts` does, builds the agent, and wraps
+ * each bundle's disposer), constructs the plugin chain on `env.plugins`,
+ * builds the agent, and wraps
  * `agent.close()` so every plugin instance and tool bundle is disposed
  * when the step's agent closes.
  *
@@ -274,9 +274,9 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     }
 
     // Wrap each loaded tool factory so its bundle's `dispose` (when
-    // present) is captured. Dedupe by closure identity, mirroring
-    // `default-harness.ts`: a factory whose bundle returns the same
-    // `dispose` on every invocation must not be torn down once per
+    // present) is captured. Dedupe by closure identity: a factory whose
+    // bundle returns the same `dispose` on every invocation must not be
+    // torn down once per
     // push. `defineTool` re-annotates the wrapper with the loader's
     // `id`/`requires` so the resulting factory is a real
     // `AnnotatedToolFactory<BaseEnv>`, not a hand-shaped lookalike.
@@ -301,7 +301,7 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     // so the runnable factories come from materialization, not the
     // incoming def. `defineAgent` owns the contravariance escape for
     // the `BaseEnv`-typed loader factories (see its `EnvRequiredByAll`
-    // machinery), the same path `default-harness.ts` takes.
+    // machinery).
     const toolDef = defineAgent({
       id: def.id,
       systemPrompt: def.systemPrompt,
@@ -316,10 +316,10 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     });
 
     // Instantiate plugin factories one at a time so each successive
-    // factory sees the prior plugins' instances on `env.plugins`. This
-    // mirrors `default-harness.ts`'s `build()`: posix's bundle reads
-    // `env.plugins` and threads ToolPlugin-shaped values into
-    // `createPosixTools`; the LSP plugin factory is what populates them.
+    // factory sees the prior plugins' instances on `env.plugins`:
+    // posix's bundle reads `env.plugins` and threads ToolPlugin-shaped
+    // values into `createPosixTools`; the LSP plugin factory is what
+    // populates them.
     //
     // On a midway factory throw, every plugin instance already
     // constructed releases what it acquired (the LSP plugin starts a
