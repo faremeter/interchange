@@ -7,9 +7,14 @@ just like packages and apps — they are not throwaway scratch code,
 and they are expected to keep working as the packages they consume
 evolve.
 
-Every example here targets `@intx/agent`. Start with
-[`agent-quickstart`](./agent-quickstart/README.md); the rest layer
-one concept on top of that baseline.
+Most examples here target `@intx/agent`; `agent-gemini-image` is the
+exception — it uses `@intx/inference`'s `runInference` directly because
+`image_output` is a streaming shape the higher-level `agent.send()`
+await does not surface. Shared boilerplate lives in
+[`agent-common`](./agent-common/README.md), which is not itself a
+runnable example. Start with
+[`agent-quickstart`](./agent-quickstart/README.md); the rest layer one
+concept on top of that baseline.
 
 ## Where to start
 

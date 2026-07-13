@@ -63,8 +63,8 @@ rm -rf ../../tmp/agent-rewind
    `fs/promises.cp` to recursively duplicate the contextDir into the
    sibling path, then `isomorphic-git`'s `git.checkout({ ref, force:
 true })` to move the clone's `HEAD` to the rewind target. The
-   working tree (turns.jsonl, manifest.jsonl, response.jsonl) is
-   rewritten to match the target commit's tree.
+   working tree (turns.jsonl, prompt.jsonl, manifest.jsonl,
+   response.jsonl) is rewritten to match the target commit's tree.
 
 5. **Open a new agent on the rewound directory.** The new agent reads
    `history()` from the store at its current `HEAD`, which is the
