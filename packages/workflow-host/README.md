@@ -88,12 +88,12 @@ The constructor argument shape:
   registers the deployment's address at spawn time, subscribes to
   inbound mail, and unregisters on teardown.
 - `subprocessSpawner` — invoked once per spawn to launch the
-  package-owned `bin/workflow-child` script. Production wires it
+  host-owned `bin/workflow-child` script. Production wires it
   against `Bun.spawn`; tests inject a deterministic mock.
-- `binaryPath` — absolute path to the package-owned binary the
+- `binaryPath` — absolute path to the host-owned binary the
   spawner invokes (resolved by the host via
-  `require.resolve` / `import.meta.resolve` against the workflow-
-  host package).
+  `require.resolve` / `import.meta.resolve` against the host's own
+  package, `@intx/<host>`).
 - `substrateEnv`, `workflowRunRepoId`, `workflowRunRef`,
   `deploymentId`, `deploymentMailAddress`, `readPrincipal`,
   `deriveStepAddress`, `deriveStepRepoId?`, `ipcKeyPairFactory?` —

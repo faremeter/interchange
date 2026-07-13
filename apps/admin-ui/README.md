@@ -10,7 +10,8 @@ The router gates every authenticated route behind a `/api/me`
 session check (redirecting to `/login` on failure) and exposes the
 tenant-management console: a dashboard plus per-tenant pages for
 agents, instances, principals, roles, grants, credentials, wallets,
-and offerings, each with a list and detail view.
+offerings, models, model providers, model offerings, and workflows,
+each with a list and detail view.
 
 Develop with `bun run dev` (Vite dev server), build with
 `bun run build`, and preview a production build with

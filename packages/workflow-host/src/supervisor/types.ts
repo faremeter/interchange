@@ -179,7 +179,7 @@ export interface SubprocessHandle {
  * private key), and the prepared event-channel socketpair handle.
  */
 export type SubprocessSpawner = (args: {
-  /** Absolute path to the package-owned `bin/workflow-child` script. */
+  /** Absolute path to the host-owned `bin/workflow-child` script. */
   binaryPath: string;
   /** Fresh env object containing IPC trust anchors + substrate-config keys. */
   env: Record<string, string>;
@@ -270,7 +270,7 @@ export interface WorkflowSupervisorBindings {
   /** Subprocess spawner the supervisor invokes per spawn. */
   subprocessSpawner: SubprocessSpawner;
   /**
-   * Absolute path to the package-owned `bin/workflow-child` script
+   * Absolute path to the host-owned `bin/workflow-child` script
    * the spawner invokes. Pre-resolved by the host so the supervisor
    * does not have to consult `require.resolve` / `import.meta.resolve`
    * itself (tests inject a sentinel path the spawner mock asserts on).
