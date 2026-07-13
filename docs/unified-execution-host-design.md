@@ -86,9 +86,11 @@ capability ceiling.
 - **Real agent execution everywhere.** The step-invoker stub is gone; steps
   run real `createAgent` instances with real tools and real inference. The
   same composition serves the single-agent and multi-step cases.
-- **The in-process runtime is retired.** `provisionAgent`,
-  `createSessionManager`, and `default-harness.ts`'s transport/reactor
-  ownership are deleted, not duplicated. Their tool/inference/reactor
+- **The in-process runtime is retired.** `provisionAgent` and
+  `default-harness.ts`'s transport/reactor ownership are deleted, not
+  duplicated. `createSessionManager`'s deletion is deferred to the
+  not-yet-shipped Phase 5; today it survives, reduced to a thin repo-ops
+  layer over the agent repo store. Their tool/inference/reactor
   _composition_ moves into the child and is reused.
 - **Identity is preserved.** A launched agent keeps its legacy
   `ins_<hex>@<domain>` address and its `agent_instance` row; the deploy-ack
@@ -939,16 +941,19 @@ as the multi-step path already does:
 ### Retired (deleted, not duplicated)
 
 - `packages/hub-agent/src/session-manager.ts`: `provisionAgent`,
-  `createSessionManager`, `startSession`/`destroySession`/`abortSession` as the
-  in-process execution surface, `restoreSessions`, `persistHubPublicKey`,
-  `onAgentEvent` fan-out, the mail-commit queue. The `SessionManager` type
-  collapses to whatever (if anything) the boot edge still needs; the
-  in-process-runtime surface is gone.
+  `startSession`/`destroySession`/`abortSession` as the in-process execution
+  surface, `restoreSessions`, `persistHubPublicKey`, `onAgentEvent` fan-out,
+  the mail-commit queue. `createSessionManager`'s deletion is deferred to
+  Phase 5; today it survives, reduced to a thin repo-ops layer over the agent
+  repo store (deploy/asset-pack applies, state-pack reads, teardown), and the
+  rest of the in-process-runtime surface is gone.
 - `apps/sidecar/src/default-harness.ts`: the **transport/reactor ownership** —
   the `createHarness` call that owns transport subscription, the connector
   reactor, INBOX draining, `MailEnv.transport` wiring. The `HarnessBuilder`
-  seam (`packages/hub-agent/src/harness-builder.ts`) is retired as a standalone
-  concept; its composition logic moves (see Reused).
+  seam's harness-wiring role is retired and its composition logic moves (see
+  Reused), but the `HarnessBuilder` type in
+  `packages/hub-agent/src/harness-builder.ts` survives, reduced to a
+  one-method `canBuildSource` admission check.
 - `apps/sidecar/src/workflow-host-wiring.ts`: the in-process trivial deploy
   branch (`frame.workflow === undefined`) and the hand-rolled run-event
   projector — `driveTrivialRunChain`, `TrivialRunCell`, `TRIVIAL_STEP_ID`,
@@ -1461,12 +1466,22 @@ are explicitly **not** a go-live gate for INTR-209.
 
 ## Appendix: stable reference index
 
-- In-process runtime: `packages/hub-agent/src/session-manager.ts`
-  (`provisionAgent`, `createSessionManager`, `startSession`, `restoreSessions`);
-  `packages/hub-agent/src/harness-builder.ts` (`HarnessBuilder`,
-  `BuildHarnessArgs`, `HarnessBundle`).
-- Concrete harness builder: `apps/sidecar/src/default-harness.ts`
-  (`materializeToolPackages`, `build`).
+- In-process runtime (retired): `packages/hub-agent/src/session-manager.ts`
+  (`provisionAgent`, `startSession`, `restoreSessions`);
+  `packages/hub-agent/src/harness-builder.ts` (`BuildHarnessArgs`,
+  `HarnessBundle`).
+- Survived, repurposed: `createSessionManager`
+  (`packages/hub-agent/src/session-manager.ts`, now a thin repo-ops layer over
+  the agent repo store); `HarnessBuilder`
+  (`packages/hub-agent/src/harness-builder.ts`, now a one-method
+  `canBuildSource` admission seam).
+- Tool-package materialization: `apps/sidecar/src/tool-materialization.ts`
+  (`materializeToolPackages`).
+- Plugin-chain composition: `apps/sidecar/src/step-agent-tools.ts`
+  (`createToolBearingAgentFactory`, `attachStepTools`).
+- Source-admission seam: `apps/sidecar/src/default-harness.ts`
+  (`canBuildSource`; it admits a step's pinned inference source and does
+  nothing else).
 - Harness runtime: `packages/harness/src/harness.ts` (`createHarness`,
   `Harness`, `MailEnv`, `MailToolWrapper`, `createWrappedStorageOverrides`,
   connector router).

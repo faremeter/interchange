@@ -109,7 +109,7 @@ This model is consistent with the architecture document's statement that child t
 
 ### Credential Rotation Push (Current Behavior)
 
-When a tenant administrator rotates a credential's secret, the control plane pushes the updated inference sources to every running instance in the tenant that may use credentials from the affected provider. It re-resolves each running instance's full sources array and sends a `sources.update` frame to the instance's sidecar over the persistent bidirectional connection that sidecars maintain with the control plane (described in the architecture document). The sidecar hot-swaps the active source on the harness and re-persists the agent config.
+When a tenant administrator rotates a credential's secret, the control plane pushes the updated inference sources to every running instance in the tenant. The rotation is not filtered to the affected provider — the push takes only the tenant, re-resolves each running instance's full sources array, and sends a `sources.update` frame to the instance's sidecar over the persistent bidirectional connection that sidecars maintain with the control plane (described in the architecture document). The sidecar hot-swaps the active source on the harness and re-persists the agent config.
 
 This push is triggered only by an administrator rotating the secret. It is not an automatic token-refresh loop: the control plane does not, on its own, detect an expiring or invalid token and obtain a new one. The planned proactive and reactive refresh flows below would add that capability; today the only way an updated credential reaches a running instance is an administrator rotation.
 
