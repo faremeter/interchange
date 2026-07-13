@@ -47,6 +47,8 @@ SMTP/IMAP naturally supports the topologies defined in the architecture:
 - **1:N** - Distribution lists or CC/BCC for broadcast
 - **M:N** - Distribution lists where multiple agents can post and receive
 
+1:1 direct messaging and 1:N broadcast via `To`/`Cc`/`Bcc` are implemented. The distribution-list machinery that backs list-driven 1:N and the M:N collaborative model is not yet implemented — the transport's `createList`/`listMembers`/`subscribe`/`unsubscribe` operations currently throw.
+
 ### Authentication and Trust
 
 Interchange uses standard SMTP authentication mechanisms:
@@ -890,6 +892,8 @@ Subset policies are paired with the delegated credentials for the API. The harne
 
 ## Wallets: Payment Tools and Plugins
 
+> **Status: not yet implemented.** The wallet and payment tools described in this section are a planned capability. No wallet tools are registered on the harness and there is no Faremeter integration in the code today (`@faremeter/*` is not a dependency). This section describes the intended design, not current behavior.
+
 Wallets provide agents with the ability to send and receive payments. The harness exposes wallet functionality as tools, with a plugin architecture for payment backends.
 
 ### Payment Tools
@@ -1031,7 +1035,7 @@ The harness instruments key operations:
 
 Trace context propagates through the message bus:
 
-- Outbound messages include trace context in a custom MIME header (`X-Trace-Context`)
+- Outbound messages carry trace context in the W3C trace-context headers (`traceparent`, and `tracestate` when present)
 - Inbound message parsing extracts trace context and resumes the trace
 - Cross-tenant traces work the same way; trace context is just data in the message header
 
@@ -1061,28 +1065,26 @@ Each deploy commit represents an immutable version. The control plane tracks whi
 
 ### Health Protocol
 
-The harness exposes health endpoints:
+The hub derives an instance's health rather than polling a harness-exposed endpoint. `GET /api/tenants/:tenantId/agents/instances/:instanceId/health` returns:
 
-- **Liveness** - Returns OK if the harness process is running and responsive
-- **Readiness** - Returns OK if the agent is ready to accept work (connections established, initialization complete)
+- **Liveness** — `ok` when the instance's address is in the hub's routable set, `unhealthy` otherwise.
+- **Readiness** — `ok` when the instance has a recorded status, `not_ready` otherwise.
 
-Health checks are polled by the control plane. Agents that fail liveness are restarted. Agents that fail readiness are removed from discovery until they recover.
-
-Health can also be reported via periodic heartbeat messages to the control plane. Missed heartbeats trigger the same failure handling.
+The response's `lastCheckedAt` is currently always `null`: this is a derived read of hub-side state, not an active probe. Automated liveness-restart, readiness-gating, and heartbeat-driven failure handling are not yet wired — the deployment procedure's health gate and the health-triggered rollback below describe the intended flow, not an automated control loop that exists today.
 
 ### Deployment Procedure
 
 1. **Stage** - Hub sends `agent.deploy`; the sidecar's deploy router stages the deploy through the workflow-run substrate (priming the per-step repo or spawning the supervised workflow-process child) and returns the public key
 2. **Assembly** - Hub resolves skill dependencies and assembles the deploy tree
 3. **Pack transfer** - Hub streams the packfile to the sidecar; the workflow-process child reads the deploy tree from the substrate and begins inference (see Agent Deployment)
-4. **Health gate** - New version must pass health checks before receiving traffic
+4. **Health gate** - New version must pass health checks before receiving traffic (see the Health Protocol above: this gate is intended flow, not yet an automated control loop)
 5. **Traffic shift** - Registry updates discovery to point to new version
 6. **Drain** - Old version stops accepting new work, completes in-flight operations
 7. **Retirement** - Old version shuts down; deploy tag remains for rollback
 
 ### Rollback
 
-If a new version fails health checks or exhibits problems in production:
+If a new version fails health checks or exhibits problems in production (health-triggered rollback is intended flow — see the Health Protocol above):
 
 1. Operator or agent triggers rollback via control plane
 2. Traffic shifts back to previous version
@@ -1152,13 +1154,13 @@ Deploy content travels from the hub to sidecars as git packfiles streamed over t
 
 The following frames are additions to the hub-sidecar protocol:
 
-| Frame          | Direction      | Purpose                                             |
-| -------------- | -------------- | --------------------------------------------------- |
-| `pack.push`    | Either         | Chunked packfile data with sequence number          |
-| `pack.done`    | Either         | End of transfer; carries target refs and commit SHA |
-| `pack.ack`     | Receiver       | Refs accepted                                       |
-| `pack.reject`  | Receiver       | Transfer rejected (with reason code)                |
-| `sync.request` | Hub to sidecar | Request state push for a specific agent             |
+| Frame              | Direction      | Purpose                                             |
+| ------------------ | -------------- | --------------------------------------------------- |
+| `repo.pack.push`   | Either         | Chunked packfile data with sequence number          |
+| `repo.pack.done`   | Either         | End of transfer; carries target refs and commit SHA |
+| `repo.pack.ack`    | Receiver       | Refs accepted                                       |
+| `repo.pack.reject` | Receiver       | Transfer rejected (with reason code)                |
+| `sync.request`     | Hub to sidecar | Request state push for a specific agent             |
 
 Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation. Multiple transfers for different agents can be in flight concurrently.
 
@@ -1166,18 +1168,18 @@ Additionally, `ReconnectFrame` gains an optional `deployRefs` field: a mapping o
 
 ### Encoding and Flow Control
 
-Packfile chunks are base64-encoded within JSON frames, consistent with how mail bytes are encoded in the protocol. Each `pack.push` frame carries a bounded chunk (64 KiB before encoding) to avoid blocking the frame parser.
+Packfile chunks are base64-encoded within JSON frames, consistent with how mail bytes are encoded in the protocol. Each `repo.pack.push` frame carries a bounded chunk (64 KiB before encoding) to avoid blocking the frame parser.
 
 Pack transfers share the WebSocket with live session traffic. To prevent interference:
 
 - Pack chunks are interleaved with other frames at the WebSocket message level (messages are atomic; the receiver processes each independently)
 - The sender limits unacknowledged pack data to a configurable window before pausing
 - Session-critical frames (`mail.inbound`, `message.send`) are never delayed by pack transfers
-- The receiver buffers incoming chunks in memory (or a temp file for large transfers) and only unpacks atomically on `pack.done`
+- The receiver buffers incoming chunks in memory (or a temp file for large transfers) and only unpacks atomically on `repo.pack.done`
 
 ### Rejection Reasons
 
-`pack.reject` carries a `reason` field distinguishing failure modes:
+`repo.pack.reject` carries a `reason` field distinguishing failure modes:
 
 | Reason              | Meaning                                          | Sender action                  |
 | ------------------- | ------------------------------------------------ | ------------------------------ |
@@ -1201,15 +1203,15 @@ Deployment is a two-phase operation: stage and pack delivery. There is no separa
 **Phase 2: Pack delivery**
 
 5. Hub assembles the deploy tree and produces a packfile
-6. Hub sends `pack.push` frames (chunked, interleaved with other traffic)
-7. Hub sends `pack.done` with target ref (`refs/heads/deploy`) and commit SHA
+6. Hub sends `repo.pack.push` frames (chunked, interleaved with other traffic)
+7. Hub sends `repo.pack.done` with target ref (`refs/heads/deploy`) and commit SHA
 8. Sidecar validates the packfile integrity
 9. Sidecar verifies the deploy commit signature against the recorded hub public key
 10. Sidecar unpacks objects into the git object store
 11. Sidecar updates `refs/heads/deploy` to the new commit
 12. Sidecar merges `deploy` into its agent branch (fast-forward)
 13. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
-14. Sidecar responds with `pack.ack`; the workflow-process child reads the deploy tree from the substrate and runs
+14. Sidecar responds with `repo.pack.ack`; the workflow-process child reads the deploy tree from the substrate and runs
 
 The agent is now running and can receive messages.
 
@@ -1219,7 +1221,7 @@ On first deploy a full packfile is sent. On subsequent deploys, if the sidecar a
 
 1. Hub sends `agent.undeploy` with a reason string
 2. Sidecar shuts the deployment's supervisor down, releasing the workflow-process child and its per-deployment routing state (a no-op if no supervisor is live for the address)
-3. Sidecar pushes state to the hub via `pack.push`/`pack.done` (best-effort — the `statePushed` field in the ack indicates whether this was attempted, not whether the hub confirmed receipt)
+3. Sidecar pushes state to the hub via `repo.pack.push`/`repo.pack.done` (best-effort — the `statePushed` field in the ack indicates whether this was attempted, not whether the hub confirmed receipt)
 4. Sidecar deletes the agent directory
 5. Sidecar responds with `agent.undeploy.ack`
 6. Hub removes the agent from the routing table
@@ -1231,14 +1233,14 @@ If the sidecar disconnects before sending the ack, the hub removes the agent fro
 1. Sidecar commits context/audit under `state/` on its agent branch (every commit is signed with the agent's Ed25519 key using SSH signature format)
 2. On policy trigger (see State Push Policy):
    - Sidecar produces a packfile of new commits since last successful push
-   - Sidecar sends `pack.push` / `pack.done` with its agent ref
+   - Sidecar sends `repo.pack.push` / `repo.pack.done` with its agent ref
 3. Hub verifies commit signatures against the stored public key for that agent
 4. Hub verifies path ownership (no commits modify `deploy/` paths)
-5. Hub responds with `pack.ack` or `pack.reject`
+5. Hub responds with `repo.pack.ack` or `repo.pack.reject`
 
 ### Partial Transfer Recovery
 
-If the WebSocket disconnects mid-transfer, no git state is corrupted: the sidecar buffers chunks in memory and only unpacks on `pack.done`. On reconnect, the sidecar advertises its current deploy ref. The hub detects it is behind and initiates a fresh transfer.
+If the WebSocket disconnects mid-transfer, no git state is corrupted: the sidecar buffers chunks in memory and only unpacks on `repo.pack.done`. On reconnect, the sidecar advertises its current deploy ref. The hub detects it is behind and initiates a fresh transfer.
 
 ### Reconnect Sequencing
 
@@ -1369,11 +1371,7 @@ The agent branch forks from the deploy ref at launch time. On redeploy, the new 
 
 The harness uses a hybrid commit strategy:
 
-- **Auto-commits** - The harness commits automatically only on lifecycle boundaries:
-  - On agent suspension or shutdown (preserving state before the agent goes offline)
-  - On context window compaction (preserving state before truncation loses information)
-
-  Auto-commits use generated messages describing the triggering event.
+- **Auto-commits** - The storage layer commits automatically as tool-audit and error records accumulate: `commitAudit` batches pending tool-audit records and `commitErrors` batches pending error records, each with a fixed-format message stating the count and a singularized noun (a single record commits as `Record 1 tool audit record` / `Record 1 error record`; multiple as `Record <count> tool audit records` / `Record <count> error records`). These commits are not driven by any write-path batching threshold. Audit and error records accumulate in memory with no cap and are flushed by lifecycle hooks: `afterCheckpoint`, which fires after every cycle-boundary commit — inference, tool-call, and compaction cycles alike — and `onShutdown`. The "batch" is simply whatever accumulated since the previous hook fired; the hook is the trigger, not record volume.
 
 - **Agent checkpoints** - Agents explicitly create checkpoints when they want to mark meaningful points in their work. The agent controls the commit message, making history readable and intentional. This is the primary mechanism for building useful change history.
 
