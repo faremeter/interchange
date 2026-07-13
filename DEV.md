@@ -57,19 +57,23 @@ code and have working defaults. All are optional; set them only to
 override the default behavior. They are commented out in the example
 files next to the matching service config.
 
-| Variable                             | Read by                                      | Default                             | Purpose                                                                                                                |
-| ------------------------------------ | -------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `HUB_ADMIN_EMAIL`                    | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `alice@example.com`                 | Admin identity `bin/dev.ts` uses to publish the seed tool packages.                                                    |
-| `HUB_ADMIN_PASSWORD`                 | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `password123`                       | Password for that admin identity.                                                                                      |
-| `HUB_TENANT_SLUG`                    | `bin/dev.ts`                                 | `acme`                              | Tenant the seed tool packages are published into.                                                                      |
-| `HUB_TENANT_NAME`                    | `bin/dev.ts`                                 | `Acme Corp`                         | Display name for that tenant.                                                                                          |
-| `HUB_URL`                            | `bin/seed.ts`                                | `http://localhost:3000`             | Base URL `bin/seed.ts` targets when seeding via the hub API.                                                           |
-| `HUB_MAX_TARBALL_BYTES`              | hub (`apps/hub`)                             | 10 MiB                              | Per-tarball cap for tool packages uploaded to the package registry.                                                    |
-| `PG_SCHEMA`                          | hub (`apps/hub`)                             | unset                               | Pins the hub to a postgres schema. Integration-test-only; leave unset normally.                                        |
-| `SIDECAR_CACHE_DIR`                  | sidecar (`apps/sidecar`)                     | `<SIDECAR_DATA_DIR>/cache/tarballs` | Directory for the tool-package tarball cache.                                                                          |
-| `SIDECAR_CACHE_MAX_BYTES`            | sidecar (`apps/sidecar`)                     | 10 GiB                              | Maximum total size of the tarball cache.                                                                               |
-| `SIDECAR_REGISTRY_MAX_TARBALL_BYTES` | sidecar (`apps/sidecar`)                     | 10 MiB                              | Per-tarball cap enforced when pulling from upstream tool registries.                                                   |
-| `SIDECAR_TOOL_REGISTRIES`            | sidecar (`apps/sidecar`)                     | public npmjs                        | JSON array of `{name, url, auth?}` tool registries. Unset the variable to use npmjs; do not set it to an empty string. |
+| Variable                             | Read by                                      | Default                             | Purpose                                                                                                                                              |
+| ------------------------------------ | -------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HUB_ADMIN_EMAIL`                    | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `alice@example.com`                 | Admin identity `bin/dev.ts` uses to publish the seed tool packages.                                                                                  |
+| `HUB_ADMIN_PASSWORD`                 | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `password123`                       | Password for that admin identity.                                                                                                                    |
+| `HUB_TENANT_SLUG`                    | `bin/dev.ts`                                 | `acme`                              | Tenant the seed tool packages are published into.                                                                                                    |
+| `HUB_TENANT_NAME`                    | `bin/dev.ts`                                 | `Acme Corp`                         | Display name for that tenant.                                                                                                                        |
+| `HUB_URL`                            | `bin/seed.ts`                                | `http://localhost:3000`             | Base URL `bin/seed.ts` targets when seeding via the hub API.                                                                                         |
+| `HUB_MAX_TARBALL_BYTES`              | hub (`apps/hub`)                             | 10 MiB                              | Per-tarball cap for tool packages uploaded to the package registry.                                                                                  |
+| `PG_SCHEMA`                          | hub (`apps/hub`)                             | unset                               | Pins the hub to a postgres schema. Integration-test-only; leave unset normally.                                                                      |
+| `SIDECAR_CACHE_DIR`                  | sidecar (`apps/sidecar`)                     | `<SIDECAR_DATA_DIR>/cache/tarballs` | Directory for the tool-package tarball cache.                                                                                                        |
+| `SIDECAR_CACHE_MAX_BYTES`            | sidecar (`apps/sidecar`)                     | 10 GiB                              | Maximum total size of the tarball cache.                                                                                                             |
+| `SIDECAR_REGISTRY_MAX_TARBALL_BYTES` | sidecar (`apps/sidecar`)                     | 10 MiB                              | Per-tarball cap enforced when pulling from upstream tool registries.                                                                                 |
+| `SIDECAR_TOOL_REGISTRIES`            | sidecar (`apps/sidecar`)                     | public npmjs                        | JSON array of `{name, url, auth?}` tool registries. Unset the variable to use npmjs; do not set it to an empty string.                               |
+| `SIDECAR_LATENCY_BENCH_FILE`         | sidecar (`apps/sidecar`)                     | unset (disabled)                    | When set to a file path, appends a per-operation latency line to that file. A dev latency-benchmarking hook; leave unset in normal use.              |
+| `SIDECAR_REPACK_EVERY_MESSAGES`      | sidecar (`apps/sidecar`)                     | unset (disabled)                    | Forces a git repack of the workflow-run repo every N messages (positive integer). A repack-cadence A/B toggle; leave unset in normal use.            |
+| `CONSUMED_RETENTION_MS`              | sidecar (`apps/sidecar`)                     | 24h                                 | Retention horizon in milliseconds (positive integer) for the workflow-run consumed-dedup index.                                                      |
+| `CHILD_READY_TIMEOUT_MS`             | sidecar (`apps/sidecar`)                     | 30s                                 | Milliseconds (positive integer) the supervisor waits for a spawned workflow-process child to signal ready before killing it and rejecting the spawn. |
 
 ### Database Users
 
@@ -99,11 +103,12 @@ This runs: database migration, hub server (with `--watch` for auto-reload), side
 
 Options:
 
-| Flag            | Effect                                   |
-| --------------- | ---------------------------------------- |
-| `--seed`        | Seed the database after the hub is ready |
-| `--no-admin-ui` | Skip the admin UI dev server             |
-| `--no-sidecar`  | Skip the sidecar                         |
+| Flag                    | Effect                                                                                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--seed`                | Seed the database after the hub is ready                                                                                                                            |
+| `--no-admin-ui`         | Skip the admin UI dev server                                                                                                                                        |
+| `--no-sidecar`          | Skip the sidecar                                                                                                                                                    |
+| `--no-publish-builtins` | Skip publishing the built-in tool packages. Incompatible with `--seed` (errors out — the seed pins the built-ins, so the launch would fail with `tarball.missing`). |
 
 Default ports: hub on 3000, admin UI on 5173. The sidecar connects to the hub via websocket at `ws://localhost:3000/api/sidecars/ws`.
 
