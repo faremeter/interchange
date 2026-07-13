@@ -119,7 +119,7 @@ Three route groups expose the wire:
   - `GET /api/tenants/:tenantId/assets/:kind/:name.git/info/refs` (with `?service=git-upload-pack` or `?service=git-receive-pack`) is the smart-HTTP advertise endpoint.
   - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-upload-pack` serves clone and fetch.
   - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-receive-pack` serves push.
-  - `:kind` is `skill` or `agent-state`; `:name` is the kebab-case asset name. The `.git` suffix on the trailing segment is required — it is how the URL grammar disambiguates the asset namespace from arbitrary tenant sub-paths.
+  - `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`; `:name` is the kebab-case asset name. The `.git` suffix on the trailing segment is required — it is how the URL grammar disambiguates the asset namespace from arbitrary tenant sub-paths.
 
 - **Agent-state per-instance smart-HTTP** under `/api/tenants/:tenantId/agents/instances/:instanceId/state.git/...`.
   - Read-only. `info/refs` and `git-upload-pack` are served; `git-receive-pack` returns a pkt-line-framed protocol-level rejection so `git push -v` surfaces a readable error even when no `Authorization` header is present.
