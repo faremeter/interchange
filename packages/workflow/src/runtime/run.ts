@@ -409,8 +409,7 @@ async function executeRunBody(
       // A crashed-mid-invocation step (agent step or action). Collect it
       // for terminal settling AFTER this loop -- committing StepFailed
       // inline would leave `state` stale and merely relocate the stall to
-      // the main loop. A crashed in-flight action lands here too and is
-      // settled terminal (it stalls today; this is strictly better).
+      // the main loop.
       if (isCrashedInvocationStep(definition, stepId, stepState.phase)) {
         crashedInFlight.push({
           stepId,
@@ -1209,14 +1208,24 @@ async function runStep(
 }
 
 /**
- * Execute a deterministic effect node. Mirrors the audit bracket the
- * other non-step runners use (StepStarted -> invoke -> StepCompleted via
- * the shared emit helpers) but calls `env.invokeAction` instead of
- * `env.invokeStep`. No retry loop: an action is single-attempt, so a
- * thrown effect lands `StepFailed` through `runPrimitiveSafe` like every
- * other non-step runner. Exactly-once lives in the handler's
- * EffectContext (per-effect ledger dedup), not here; the runtime records
- * only the audit events and the node output.
+ * Execute a deterministic effect node -- the action invocation boundary.
+ * Like `runStep`, the action's `StepStarted` is flushed durably via
+ * `commitDurable` BEFORE `env.invokeAction` runs, not left in the run-body
+ * buffer. An action handler can perform observable side effects the
+ * runtime cannot record exactly-once: the EffectContext ledger dedups
+ * only effects routed through `perform`, which is an author obligation the
+ * runtime cannot enforce. Flushing the marker first means a crash
+ * mid-invocation leaves a durable `StepStarted` with no `StepCompleted`,
+ * which the recovery path in `executeRunBody` settles as a terminal
+ * failure rather than re-invoking the handler (at-most-once). On a fresh
+ * single-action run this flush carries the still-buffered `RunStarted` to
+ * durable storage together with the `StepStarted` in one batch.
+ *
+ * No retry loop: an action is single-attempt, so a thrown effect lands
+ * `StepFailed` through `runPrimitiveSafe` like every other non-step
+ * runner. The per-effect ledger is a deeper exactly-once line of defense
+ * for effects routed through `perform`; the barrier here is what makes the
+ * action non-re-invocable at the runtime layer.
  */
 async function runAction(
   env: WorkflowRuntimeEnv,
@@ -1236,7 +1245,26 @@ async function runAction(
       ? evaluate(primitive.input, selectorCtx)
       : null;
   const input = rawInput === undefined ? null : rawInput;
-  await emitStepStartedWithValue(env, runId, primitive.id, input);
+  // Action-invoke durability barrier: flush `StepStarted` durably before
+  // `invokeAction` runs, inline like `runStep` rather than through the
+  // buffered `emitStepStartedWithValue` the coordination runners share.
+  // An action is single-attempt, so `attempt` is 1.
+  const { ref: inputRef } = await env.blobs.recordOutput(
+    `${primitive.id}.input`,
+    1,
+    input,
+  );
+  let started = await reloadState(env, runId);
+  const startedEvent: WorkflowEvent = {
+    kind: "StepStarted",
+    seq: started.lastSeq + 1,
+    at: env.clock().toISOString(),
+    stepId: primitive.id,
+    attempt: 1,
+    input: { ref: inputRef },
+  };
+  started = await commitDurable(env, runId, startedEvent);
+  void started;
 
   const actionAbort = new AbortController();
   const onOuter = (): void => {

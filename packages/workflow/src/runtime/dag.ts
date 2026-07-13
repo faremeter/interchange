@@ -93,22 +93,17 @@ export function isResumableReceivedAwaitSignalStep(
 /**
  * An `in-flight` step whose primitive is an invocation boundary -- an
  * agent `step` or a deterministic `action` -- is a crash
- * mid-invocation, not a resumable coordination primitive: a
- * durable `StepStarted` with no `StepCompleted`, whose invoked
- * primitive is non-deterministic (agent) or already dedup-owned by its
- * effect ledger (action) and has no runtime-body re-arm surface, so it
- * cannot be re-invoked safely. The resume guard settles such a step as
- * a terminal `StepFailed` (at-most-once refusal) rather than throwing.
- *
- * How the `StepStarted` became durable differs by kind. An agent `step`
- * flushes its own before invoking (the `commitDurable` barrier in
- * `runStep`), so a lone crashed agent always leaves this residual. An
- * `action` does not: `runAction` commits `StepStarted` buffered, so a
- * lone crashed action drops it with the pending buffer and leaves no
- * residual at all. An action reaches this branch only incidentally --
- * when a concurrently-running step's `commitDurable` flush persisted the
- * action's buffered `StepStarted` first (the pending buffer is shared
- * per run). Settling that residual terminal still beats the prior stall.
+ * mid-invocation, not a resumable coordination primitive: a durable
+ * `StepStarted` with no `StepCompleted`, whose invoked primitive was
+ * dispatched once and has no runtime-body re-arm surface, so it cannot
+ * be re-invoked safely. Both kinds flush their `StepStarted` durably
+ * before invoking (the `commitDurable` barrier in `runStep` and
+ * `runAction`), so a lone crash of either always leaves this residual.
+ * The resume guard settles such a step as a terminal `StepFailed`
+ * (at-most-once refusal) rather than throwing. For an `action` the
+ * per-effect ledger is a deeper exactly-once line of defense for effects
+ * routed through the EffectContext; the barrier is what makes the action
+ * non-re-invocable at this layer.
  *
  * Container/coordination primitives left `in-flight` -- a `map` outer
  * step, a timeout-bearing `awaitSignal` reduced to `in-flight`, a
