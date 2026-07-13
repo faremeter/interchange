@@ -110,7 +110,7 @@ the request.
 
 Text and vision captures route through what the response identifies
 as the Moonshot AI backend. The non-streaming text response
-(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/text-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/plain-text/response.json`)
 carries `model: "moonshotai/kimi-k2.6-20260420"`, `provider:
 "Moonshot AI"`, a `system_fingerprint`, a `native_finish_reason`
 mirroring `finish_reason`, and a message envelope with `refusal:
@@ -129,7 +129,7 @@ Function-calling and reasoning captures route through what the
 response identifies as the Fireworks backend
 (`accounts/fireworks/models/kimi-k2p6`). The single-turn
 function-calling response
-(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/function-calling-single/response.json`)
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/function-calling/response.json`)
 uses `reasoning_content` rather than `reasoning`, omits `provider`
 and `system_fingerprint`, adds `prompt_token_ids` at the top level
 and `token_ids` per choice, and each `tool_calls[]` entry carries
@@ -138,10 +138,10 @@ nested `function.name`. The `tool_calls[].id` follows a
 function-name-keyed scheme (`functions.getCurrentWeather:0`) rather
 than the `call_<hash>` convention seen elsewhere. The reasoning
 non-streaming response
-(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-content/response.json`)
 similarly carries `reasoning_content` on the message and is shaped
 like the function-calling response. The streaming counterpart at
-`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-streaming/response.sse`
+`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-content-streaming/response.sse`
 emits `choices[0].delta.reasoning_content` deltas (no `content` key
 during the reasoning phase), then transitions to
 `choices[0].delta.content` deltas for the visible answer, terminates
@@ -151,7 +151,7 @@ trailing `data: {"choices":[],"cost":"0"}` follows the `[DONE]`
 sentinel.
 
 The streaming text response
-(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/text-streaming/response.sse`)
+(`packages/inference-testing/wire/opencode-zen/kimi-k2.6/plain-text-streaming/response.sse`)
 routes through the Fireworks backend and ends with the same
 `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}` trailer. The
 multi-turn function-calling capture
@@ -210,7 +210,7 @@ output.
 The relay surfaces `glm-5.1` consistently across all four captured
 capabilities: every response carries `model: "frank/GLM-5.1"` and
 the same message envelope. The non-streaming text response
-(`packages/inference-testing/wire/opencode-zen/glm-5.1/text-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/plain-text/response.json`)
 returns a single choice with
 `message: {role, content, reasoning_content, name: null,
 tool_calls: []}`. `usage` includes an `estimated_cost: 0` field that
@@ -218,7 +218,7 @@ no other vendor in this corpus emits, plus
 `prompt_tokens_details.cache_write_tokens: null`.
 
 The function-calling single-turn response
-(`packages/inference-testing/wire/opencode-zen/glm-5.1/function-calling-single/response.json`)
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/function-calling/response.json`)
 keeps the `message.name: null` slot and adds a non-empty
 `tool_calls` array. Each `tool_calls[]` entry omits the `index` key
 that the other tool-calling vendors include, and the `id` follows a
@@ -229,10 +229,10 @@ echoes the assistant message verbatim, including the spurious
 `name: null` slot, and turn 2 succeeds with `finish_reason: "stop"`.
 
 The reasoning non-streaming response
-(`packages/inference-testing/wire/opencode-zen/glm-5.1/reasoning-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/reasoning-content/response.json`)
 carries `message.reasoning_content` matching the documented thinking
 mode. The streaming counterpart
-(`packages/inference-testing/wire/opencode-zen/glm-5.1/reasoning-streaming/response.sse`)
+(`packages/inference-testing/wire/opencode-zen/glm-5.1/reasoning-content-streaming/response.sse`)
 emits `delta.reasoning_content` deltas without a `content` key
 during the reasoning phase, then transitions to `delta.content`
 deltas, and terminates with the same `data: [DONE]` plus trailing
@@ -293,14 +293,14 @@ captured capabilities: every response carries
 `model: "deepseek-v4-pro"`, the same `system_fingerprint`
 (`fp_9954b31ca7_prod0820_fp8_kvcache_20260402`), and the same
 message envelope shape. The non-streaming text response
-(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/text-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/plain-text/response.json`)
 returns `message: {role, content, reasoning_content}` plus a `logprobs:
 null` slot at the choice level. `usage` carries DeepSeek-specific
 fields `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`
 alongside `completion_tokens_details.reasoning_tokens`.
 
 The function-calling single-turn response
-(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/function-calling-single/response.json`)
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/function-calling/response.json`)
 adds `tool_calls` to the message envelope; each `tool_calls[]` entry
 includes an `index` integer and the `id` follows a long opaque form
 (`call_00_KR3pk4MS8NfIg90cJ3997058`). The multi-turn turn-2 request
@@ -319,10 +319,10 @@ assistant message into turn-2 for every model so the same code path
 handles every vendor's contract.
 
 The reasoning non-streaming response
-(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/reasoning-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/reasoning-content/response.json`)
 matches the documented `message.reasoning_content` shape. The
 streaming counterpart
-(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/reasoning-streaming/response.sse`)
+(`packages/inference-testing/wire/opencode-zen/deepseek-v4-pro/reasoning-content-streaming/response.sse`)
 emits `delta: {content: null, reasoning_content: "..."}` chunks
 during the reasoning phase (the explicit `content: null` is always
 present alongside reasoning) and `delta: {content: "...",
@@ -341,7 +341,7 @@ ends with `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
   reference, where the assistant turn's structure is the caller's
   choice. The simplest portable implementation is to forward the
   verbatim turn-1 assistant body into turn 2 unconditionally.
-- The reasoning-streaming deltas always include explicit
+- The reasoning-content-streaming deltas always include explicit
   `content: null` alongside `reasoning_content`, where two other
   vendors (`kimi-k2.6`, `glm-5.1`) omit the `content` key during
   the reasoning phase. A consumer that distinguishes "reasoning
@@ -383,7 +383,7 @@ differs from the OpenAI convention — `choices` appears before
 `id`, `cost` — but the field set is OpenAI-compatible.
 
 The non-streaming text response
-(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/text-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/plain-text/response.json`)
 returns `message: {content, reasoning_content, role}` with
 `reasoning_content` populated even on a single-word reply.
 `usage.completion_tokens_details` carries both
@@ -392,7 +392,7 @@ returns `message: {content, reasoning_content, role}` with
 breakdown (echoed as `image_tokens` in the vision capture).
 
 The function-calling single-turn response
-(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/function-calling-single/response.json`)
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/function-calling/response.json`)
 adds a `tool_calls` array whose entries carry `index`, `id` (long
 opaque `call_<24-hex>`), `type`, and `function`. The multi-turn
 turn-2 request
@@ -401,9 +401,9 @@ forwards the verbatim turn-1 assistant message, and turn 2 returns
 a natural-language answer with `finish_reason: "stop"`.
 
 The reasoning non-streaming response
-(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/reasoning-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/reasoning-content/response.json`)
 matches the documented shape. The streaming counterpart
-(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/reasoning-streaming/response.sse`)
+(`packages/inference-testing/wire/opencode-zen/qwen3.6-plus/reasoning-content-streaming/response.sse`)
 emits `delta: {content: null, reasoning_content: "...", role:
 "assistant"}` for the first chunk, then varies between including
 `content: null` and omitting it across the rest of the reasoning
@@ -434,7 +434,7 @@ plus `reasoning_content`. The image cost is reported in
   served through this relay path; the OpenAI Chat Completions
   reference makes no commitment about default reasoning behaviour
   for non-reasoning prompts.
-- In reasoning-streaming, the presence of `content: null` alongside
+- In reasoning-content-streaming, the presence of `content: null` alongside
   `reasoning_content` in deltas is inconsistent across chunks:
   present in the first delta, then dropped. A consumer that
   classifies deltas by key presence rather than value will see a
@@ -462,14 +462,14 @@ and `cost`. There is no `system_fingerprint` and no `provider`
 field.
 
 The non-streaming text response
-(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/text-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/plain-text/response.json`)
 returns `message: {content, role, tool_calls, reasoning_content}`
 where `tool_calls` is explicitly `null` on a plain text turn.
 `usage.completion_tokens_details.reasoning_tokens` is reported
 alongside `prompt_tokens_details.cached_tokens`.
 
 The function-calling single-turn response
-(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/function-calling-single/response.json`)
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/function-calling/response.json`)
 is the only capture in the corpus where
 `choices[0].message.content` is `null` rather than the empty string
 the other four vendors emit. Each `tool_calls[]` entry omits the
@@ -483,10 +483,10 @@ forwards the verbatim turn-1 assistant message, and turn 2 returns
 a natural-language answer with `finish_reason: "stop"`.
 
 The reasoning non-streaming response
-(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/reasoning-non-streaming/response.json`)
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/reasoning-content/response.json`)
 matches the documented `reasoning_content` shape, with
 `tool_calls: null` slotted alongside it. The streaming counterpart
-(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/reasoning-streaming/response.sse`)
+(`packages/inference-testing/wire/opencode-zen/mimo-v2-omni/reasoning-content-streaming/response.sse`)
 emits the most verbose delta shape of any model in the corpus —
 every delta carries `content`, `role`, `tool_calls`, and
 `reasoning_content` keys, with `content: null`, `role: null`,
@@ -524,8 +524,8 @@ cache hit.
 These items are not specific to any one model.
 
 **The post-`[DONE]` cost trailer is universal.** Every captured
-streaming response in this corpus — text-streaming and
-reasoning-streaming, across all five models — ends with a literal
+streaming response in this corpus — plain-text-streaming and
+reasoning-content-streaming, across all five models — ends with a literal
 `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}\n\n` sequence. The
 OpenAI Chat Completions SSE specification documents `[DONE]` as the
 terminator; the relay emits one further `data:` event after it.
@@ -535,7 +535,7 @@ chunk with empty `choices` and a stringified `cost`. This corrects
 the upstream note from
 `dispatch/intr-78-phase-2/2a-opencode_function_calling/output.yaml`
 which had attributed the trailer only to `mimo-v2-omni` and
-`qwen3.6-plus`; the reasoning-streaming captures recorded in
+`qwen3.6-plus`; the reasoning-content-streaming captures recorded in
 `dispatch/intr-78-phase-2/3a-opencode_reasoning/output.yaml` showed
 all five models emit it.
 
