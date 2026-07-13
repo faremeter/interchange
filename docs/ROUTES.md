@@ -39,15 +39,15 @@ Definitions are catalog entries and blueprints — they describe what an agent c
 
 Nesting would mean listing all agents in a tenant requires knowing all definition IDs first. It also creates awkward paths when a definition is retired but its historical agents are still queryable. Agents are first-class tenant resources alongside wallets, credentials, and approvals.
 
-Runtime state — data, history, branches, health, logs, metrics — lives on agent paths (`/agents/instances/:instanceId/...`), not on definition paths. This follows from the model: runtime state belongs to the running agent, not the blueprint. Definition paths carry versioning, rollback, and catalog-level offerings.
+Runtime state — data, history, branches, health, logs, metrics — lives on agent paths (`/agents/instances/:instanceId/...`), not on definition paths. This follows from the model: runtime state belongs to the running agent, not the blueprint. Definition paths carry versioning, rollback, and catalog-level offerings. Most of these runtime-state routes are defined but not yet implemented: the data, history, and branches handlers (`agent-data.ts`) and the logs, metrics, and traces handlers (`observability.ts`) currently return `501`. Only the health read is wired, and it is a derived read of hub-side state rather than an active probe (see the Health Protocol in IMPLEMENTATION.md).
 
 ### Why cross-tenant reads are separate endpoints
 
 A user who belongs to multiple tenants needs dashboard views: "all my definitions across all orgs", "all my running agents", "all pending approvals". Rather than making the tenant-scoped endpoints optionally cross-tenant (via an absent header or special parameter), we provide explicit endpoints under `/api/me/...`.
 
-This is clearer for clients: `/api/me/agents/definitions` is a different operation from `/api/tenants/:tenantId/agents/definitions`. The former aggregates across tenants and tags each result with `tenantId`. The latter is scoped to one tenant. No mode-switching, no ambiguity about what "list definitions" means in a given context.
+This is clearer for clients: `/api/me/agents` aggregates a user's agents across every tenant they belong to and tags each result with `tenantId`, a different operation from the tenant-scoped `/api/tenants/:tenantId/agents/definitions`. No mode-switching, no ambiguity about what "list agents" means in a given context.
 
-Only resources that benefit from cross-tenant aggregation have `/api/me/...` endpoints: definitions, agents, and approvals. These are the "dashboard" resources -- what's defined, what's running, what needs my attention.
+Cross-tenant `/api/me/...` endpoints exist for the dashboard resources — agents, running instances, approvals, principals, and sessions — the cross-tenant views of what's defined, what's running, and what needs a user's attention. The agents, instances, and principals views aggregate live across tenants; the approvals and sessions endpoints are deferred stubs that currently return an empty array.
 
 ## Conventions
 
@@ -104,7 +104,7 @@ Response types are documented in the OpenAPI spec via the same ArkType types but
 
 There are no dedicated "binding" endpoints for connecting resources to principals. No `POST /wallets/:walletId/agents/:agentId` to give an agent wallet access. No `POST /credentials/:credentialId/agents/:agentId` to bind a credential.
 
-Instead, all authorization flows through capability grants. The grant endpoints (`/api/tenants/:tenantId/grants`) manage tenant-level policies and role-based grants. These are the materialized grants that live on principals. The evaluate endpoint (`/api/tenants/:tenantId/principals/:principalId/evaluate`) lets operators debug authorization by asking "what would happen if this principal tried to do X?"
+Instead, all authorization flows through capability grants. The grant endpoints (`/api/tenants/:tenantId/grants`) manage tenant-level policies and role-based grants. These are the materialized grants that live on principals. The evaluate endpoint (`/api/tenants/:tenantId/principals/:principalId/evaluate`) lets operators debug authorization by asking "what would happen if this principal tried to do X?" In the same discovery vein, `GET /api/tenants/:tenantId/credentials/resolve/:name` resolves a named credential through the tenant hierarchy and returns its metadata (no secret) — which credential an agent would get.
 
 Agent definitions declare grant requirements with source annotations (tenant, creator, invoker). These requirements are resolved at launch time by the control plane, which materializes grants on the agent's new principal. Creator-sourced and invoker-sourced grants are resolved against the respective principal's authority at launch time. Tenant-sourced grants are resolved from tenant role and system policies. The grant API endpoints manage the tenant-level policy layer; the launch flow handles per-agent materialization.
 
@@ -150,11 +150,23 @@ For the bearer-token model — how `git_token` rows compose with the principal-a
 
 ## Approvals as First-Class Resources
 
+> **Status: not yet implemented.** The approval surface is stubbed end-to-end: every tenant-scoped endpoint under `/api/tenants/:tenantId/approvals` — listing, fetching, approving, and rejecting — returns `501`, and the cross-tenant list `/api/me/approvals` is a deferred stub that returns an empty array regardless of pending approvals. The flow below is the intended design.
+
 When an agent encounters a capability grant with `effect: "ask"`, execution blocks and an approval request is created. These approvals are not buried inside instance state. They are top-level resources under `/api/tenants/:tenantId/approvals` with their own cross-tenant view at `/api/me/approvals`.
 
 This design supports mobile clients that need notification-driven approval flows. A user gets a push notification, opens the app, sees the pending approval with full context (what action, which agent, which instance), and approves or rejects. The approval flow is independent of the instance UI.
 
 When a user approves with `scope: "always"`, the system creates a persistent capability grant so the agent won't need to ask again for the same operation. This is the bridge between interactive approval and long-term authorization policy.
+
+## Workflow Deployment
+
+The workflow-process model (see LAYOUT.md and ARCHITECTURE.md) is driven through a tenant-scoped route group at `/api/tenants/:tenantId/workflows`, a notable group in the same sense as the git and mail surfaces. It exposes a deployment resource with members for launching, driving, and observing workflow runs:
+
+- Deploy a workflow and list a tenant's workflow deployments (`POST` and `GET .../workflows/instances`).
+- Drive a running deployment by delivering a signal or inbound mail (`POST .../workflows/:deploymentId/signals`, `POST .../workflows/:deploymentId/mail`).
+- Observe a deployment's runs and per-run events (`GET .../workflows/:deploymentId/runs`, `GET .../workflows/:deploymentId/runs/:runId/events`).
+
+As with the other groups, the exhaustive per-endpoint request and response shapes live in the generated route reference (`docs/API.md`); this section describes the group's shape and role, not each endpoint.
 
 ## Mail and Streaming
 
