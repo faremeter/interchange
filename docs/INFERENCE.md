@@ -39,7 +39,7 @@ Adapters never see the API key. The harness performs credential substitution bet
 - `CREDENTIAL_SENTINEL` — replaced with the API key verbatim. Use for headers like `x-api-key` (Anthropic) and `x-goog-api-key` (Google).
 - `BEARER_CREDENTIAL_SENTINEL` — replaced with `Bearer <apiKey>`. Use for `authorization` headers in providers that follow the Bearer convention (OpenAI and OpenAI-compatible).
 
-A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters registered via `registerProvider` can use them directly. Match is exact: substring occurrences are not replaced.
+A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters — loaded from an `AdapterManifest` via `loadAdapterRegistry` (`@intx/inference/providers`) — can use them directly. Match is exact: substring occurrences are not replaced.
 
 ### Capability Detection
 
@@ -377,7 +377,7 @@ The reactor validates the action set returned by the director before executing:
 - **Suspend is exclusive** — `suspend` cannot appear alongside `infer` or `execute_tools`. You either do work or you wait.
 - **Reply is terminal for the cycle** — At most one `reply` action. It carries a `content` string. The reactor flushes any pending cycle work, emits a `connector.reply` event carrying the content (and the current checkpoint hash, when one exists), then returns to the event loop to await the next inbound message. Because `reply` ends the turn by handing content back to the connector, it cannot appear alongside `infer`, `execute_tools`, `done`, `suspend`, or `wait` — the reactor will not both reply and continue doing work or terminate in the same set. It composes with the always-composable actions (`fork`, `emit`, `checkpoint`), which fire before the reply is emitted.
 - **Checkpoint is composable** — At most one `checkpoint` per action set; it can appear alongside any other action (it fires before the other action executes). The checkpoint carries a `message` string used as the git commit message.
-- **Compact selects a registered compactor** — The `compact` action carries a `compactor` name (resolved against the reactor's compactor registry) and a `reason` string recorded in the manifest. Composition rules with other actions are defined in [Context Transforms and Compactors](#context-transforms-and-compactors); the Phase 1 type surface declares the action but does not yet execute it.
+- **Compact selects a registered compactor** — The `compact` action carries a `compactor` name (resolved against the reactor's compactor registry) and a `reason` string recorded in the manifest. Composition rules with other actions are defined in [Context Transforms and Compactors](#context-transforms-and-compactors). The reactor executes it via `executeCompact`, which runs the selected compactor and overwrites the durable turns (`turns.jsonl`, via `ContextStore.writeTurns`) with its output.
 - **Wait is exclusive** — `wait` returns to the event loop immediately. It cannot appear alongside `infer` or `execute_tools`.
 
 Invalid action sets produce a `reactor.error` event with a diagnostic message. The reactor does not guess intent.
@@ -468,7 +468,11 @@ The model needs to know what async operations are pending and when they resolve.
 "The auth module looks good, but the token refresh logic has a race condition on line 42."
 ```
 
-**Pending status injection (optional)** — A `ContextTransform` can inject a compact summary of still-pending operations before each inference call. This is ephemeral — generated from the reactor's live async state, never written to `turns.jsonl`. It lands in the materialized prompt (`prompt.jsonl`) and is regenerated on each cycle:
+**Pending status injection (optional)** —
+
+> **Status: not yet implemented.** The `ContextTransform` chain is wired into the reactor and the reactor tracks async operation state, but no built-in transform that injects a pending-status summary ships. The mechanism described in this subsection is intended design; the synthetic resolution messages above and the async-state tracking are real.
+
+A `ContextTransform` can inject a compact summary of still-pending operations before each inference call. This is ephemeral — generated from the reactor's live async state, never written to `turns.jsonl`. It lands in the materialized prompt (`prompt.jsonl`) and is regenerated on each cycle:
 
 ```
 [pending: agent-y "check database schema" (sent 4m ago)]
@@ -606,7 +610,7 @@ Extensions layer on top of the core director without replacing it. Extensions ar
 Three role-specific abstractions describe how content flowing into and out of the conversation is mutated. They share a common shape — each takes a typed input, produces a typed output, and emits a `TransformRecord` documenting what was done — but differ in where they fire and which file in the context store's working tree their output lands in. Type definitions live in `@intx/types/runtime` and the runtime wiring is in `@intx/inference`.
 
 - **`ToolResultTransform`** — Runs on each tool result entering history. The default size-cap policy (`createSizeCapTransform`) ships out of the box: oversized payloads are spilled to `tool-output/{callId}` via `ContextStore.writeBlob` and the inline content is replaced with a marker carrying a `tool-output:///{callId}` URI. The reactor calls the transform chain between `toolRunner.run` and `createToolResultTurn`; the transformed output is appended to `turns.jsonl`.
-- **`ContextTransform`** — Runs in order before every inference call, producing the materialized prompt. Output is written to `prompt.jsonl` for the cycle; the durable history in `turns.jsonl` is untouched. Pending status injection, aged-result clearing, and post-success collapse are all describable as `ContextTransform`s.
+- **`ContextTransform`** — Runs in order before every inference call, producing the materialized prompt. Output is written to `prompt.jsonl` for the cycle; the durable history in `turns.jsonl` is untouched. The type and chain are wired into the reactor and accept operator-supplied transforms, but no built-in `ContextTransform` ships yet — pending status injection, aged-result clearing, and post-success collapse are all describable as `ContextTransform`s and are the planned built-ins; the only shipped built-in transform is the `ToolResultTransform` size-cap above.
 - **`Compactor`** — Named, registered in a registry, invoked explicitly by the director via the `compact` action. Output overwrites `turns.jsonl`; the `TransformRecord` is appended to the per-cycle manifest. The director chooses _when_ to compact based on signals it observes (capacity, cost, overflow recovery); the reactor enforces the mechanics.
 
 Every invocation produces a `TransformRecord` carrying the strategy name, version, parameters, reason, and decision details. Records are written to `manifest.jsonl` so a future operator can `git log` the manifest and reconstruct exactly which strategy made which change to any past prompt.
@@ -659,11 +663,19 @@ Examples: a language server (LSP) validating code, a JSON schema validator check
 
 Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved turns ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
 
-**Tool result clearing.** A `ContextTransform` can clear old tool results before each inference call. Cleared results are replaced with a placeholder indicating that the result existed but was removed. The model knows the tool was called and completed, but does not see the full output. Clearing is ephemeral — it affects the materialized prompt for the cycle but not the durable history in `turns.jsonl`.
+**Tool result clearing.**
+
+> **Status: not yet implemented.** No built-in `ContextTransform` implementing tool-result clearing ships; the transform chain is wired but this transform is not built. The description below is intended design.
+
+A `ContextTransform` can clear old tool results before each inference call. Cleared results are replaced with a placeholder indicating that the result existed but was removed. The model knows the tool was called and completed, but does not see the full output. Clearing is ephemeral — it affects the materialized prompt for the cycle but not the durable history in `turns.jsonl`.
 
 Clearing strategy: prioritize clearing the oldest and largest tool results first. Results from the current step (the most recent tool call/response cycle) should never be cleared. Results from older steps that have been superseded by newer information (a file was read again, a search was re-run) are safe to clear. The director controls the clearing policy.
 
-**Post-success collapse.** When a tool fails and the model retries, the failure sequence (error result, model apology, retry call, success result) pollutes the conversation. After a successful retry, the failure sequence can be collapsed into a compact annotation on the successful result: "Applied successfully. 2 prior attempts failed: missing required field, invalid reference format." The model retains the lesson without the verbose error/retry/apology turns consuming context.
+**Post-success collapse.**
+
+> **Status: not yet implemented.** No built-in `ContextTransform` implementing post-success collapse ships; the transform chain is wired but this transform is not built. The description and cache analysis below are intended design.
+
+When a tool fails and the model retries, the failure sequence (error result, model apology, retry call, success result) pollutes the conversation. After a successful retry, the failure sequence can be collapsed into a compact annotation on the successful result: "Applied successfully. 2 prior attempts failed: missing required field, invalid reference format." The model retains the lesson without the verbose error/retry/apology turns consuming context.
 
 Collapse should happen before the next inference call so the collapsed form becomes part of the stable cache prefix. The alternative — leaving the full failure sequence — gives better immediate cache hits (the prefix is unchanged) but worse long-term cost (the verbose sequence is re-sent on every future turn at 10% of base price per cached token).
 
