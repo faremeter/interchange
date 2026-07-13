@@ -85,8 +85,8 @@ export type OpenExampleAgentSpec = {
  *     factory wrapping the example's `AgentTool[]`.
  *   - An `AgentEnv` carrying the active source (the entry whose `id`
  *     matches `defaultSource`), an isogit-backed `ContextStore` at the
- *     example's context dir, no-op audit, and a permissive authorize
- *     (per `@intx/agent/testing`).
+ *     example's context dir that also serves as the audit store, and a
+ *     permissive authorize (per `@intx/agent/testing`).
  *
  * `opts.deps` (test fetch-stub) threads onto env.deps so harness-driven
  * tests can swap inference dependencies without dragging the spread
