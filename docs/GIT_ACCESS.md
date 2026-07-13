@@ -8,7 +8,7 @@ For the underlying authorization model — the relationship between session-auth
 
 Two repo families speak the smart-HTTP wire:
 
-- **Assets.** Operator-curated, tenant-scoped repositories — skill assets today, with room for additional kinds. Both `git clone` (upload-pack) and `git push` (receive-pack) are supported.
+- **Assets.** Operator-curated, tenant-scoped repositories spanning the `skill`, `agent-state`, `package-registry`, and `workflow` kinds. Both `git clone` (upload-pack) and `git push` (receive-pack) are supported.
 - **Agent state.** Two URL grammars, both read-only over HTTP. The per-instance grammar exposes the runtime state of a single agent; the per-definition grammar exposes the deploy artifacts the hub materializes at instance launch.
 
 Anonymous access is not supported. Every smart-HTTP request must present a hub-issued bearer token. Unauthenticated clones receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="Interchange"` challenge so stock git falls into its credential helper or askpass prompt.
@@ -43,9 +43,17 @@ The response carries the plaintext secret exactly once:
   "id": "gtk_...",
   "secret": "itx_pat_...",
   "name": "laptop",
-  "expiresAt": "2026-12-31T00:00:00Z"
+  "kind": "pat",
+  "claims": {
+    "resource": "asset:*",
+    "refPattern": "refs/heads/**",
+    "actions": ["createPack", "resolveRef", "receivePack"],
+    "expiresAt": "2026-12-31T00:00:00Z"
+  }
 }
 ```
+
+The `claims` echo the token's resolved grant. `resource`, `refPattern`, and `expiresAt` pass through from the request unchanged, while the `can_read`/`can_push` action aliases are expanded into the underlying `RepoAction` set (`can_read` → `createPack`, `resolveRef`; `can_push` → `receivePack`).
 
 The secret is not persisted in plaintext on the server — only its SHA-256 digest. There is no recovery flow if you lose the secret; mint a new token and revoke the old one.
 
@@ -143,7 +151,7 @@ git clone https://hub.example/api/tenants/tnt_abc/assets/skill/greet.git
 ```
 
 - `:tenantId` is the `tnt_*` ID.
-- `:kind` is one of `skill` or `agent-state`. (The `agent-state` _kind_ is the asset family used for shared agent-state templates; it is not the same surface as the per-instance and per-definition agent-state routes below.)
+- `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`. (The `agent-state` _kind_ is the asset family used for shared agent-state templates; it is not the same surface as the per-instance and per-definition agent-state routes below.)
 - `:name` is the kebab-case asset name as registered via `POST /api/tenants/:tenantId/assets`.
 - The `.git` suffix on the trailing segment is required — it is how the hub disambiguates the asset namespace from arbitrary tenant sub-paths.
 
