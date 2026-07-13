@@ -48,7 +48,7 @@ rm -rf ../../tmp/agent-quickstart
 
 Without `ANTHROPIC_API_KEY` set the example prints a short message
 explaining what to set and exits non-zero. That message comes from
-`@intx/example-agent-common`'s `resolveSource` helper, which
+`@intx/example-agent-common`'s `resolveAgentSource` helper, which
 every agent-\* example shares.
 
 ## Walkthrough
@@ -58,12 +58,13 @@ The `main()` function in `src/cli.ts` does five things in order:
 1. **Parse arguments.** The prompt is the rest of the command line
    joined by spaces; an empty prompt prints a one-line usage message
    and returns exit code 1.
-2. **Resolve the inference source.** `resolveSource` reads
-   `ANTHROPIC_API_KEY` from `env`, defaults the model to
-   `claude-sonnet-4-6`, synthesizes an `id` of
-   `${provider}:${model}`, and returns `{ ok: false, help }` when the
-   env is incomplete. Tests bypass env resolution entirely by
-   supplying `sourceOverride`.
+2. **Resolve the inference source.** `resolveAgentSource` wraps the
+   lower-level `resolveSource` (which reads `ANTHROPIC_API_KEY` from
+   `env`, defaults the model to `claude-sonnet-4-6`, and synthesizes an
+   `id` of `${provider}:${model}`); on incomplete env it writes a
+   friendly help message to stderr and returns `null`, otherwise it
+   returns the resolved `InferenceSource`. Tests bypass env resolution
+   by supplying `sourceOverride`.
 3. **Construct the agent.** `contextDir` is the only piece of state
    the example owns; the isogit-backed context store materialises
    inside it on first use. `tools: []` keeps the surface honest — a
