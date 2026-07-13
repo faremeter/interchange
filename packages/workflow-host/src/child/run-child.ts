@@ -524,6 +524,14 @@ export async function runWorkflowChild(
     runtimeRepoStore,
   });
   const resumedRunIds: string[] = [];
+  // One-driver-per-run claim. A runId present here is already being
+  // driven by a live `runtimeRun` in this process (a resume below, or an
+  // earlier trigger). The trigger.fire path consults it to refuse
+  // spawning a second concurrent driver for the same runId: two drivers
+  // race to settle the same residual and the loser throws an uncaught
+  // TransitionError into its fire-and-forget continuation. Each site
+  // removes its entry when the run reaches terminal.
+  const runsInFlight = new Map<string, WorkflowRun>();
   for (const run of discovered) {
     const env = buildRuntimeEnv({
       runId: run.runId,
@@ -546,6 +554,7 @@ export async function runWorkflowChild(
       runId: run.runId,
       resumeFromEvents: run.seedEvents,
     });
+    runsInFlight.set(run.runId, handle);
     // Fire-and-forget: the runtime body's `complete` settles when the
     // run reaches a terminal phase; the child's control-loop does not
     // block on resumed runs. The supervisor's dispatch loop / drain
@@ -562,6 +571,9 @@ export async function runWorkflowChild(
       })
       .catch((cause) => {
         logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
+      })
+      .finally(() => {
+        runsInFlight.delete(run.runId);
       });
     resumedRunIds.push(run.runId);
   }
@@ -617,6 +629,7 @@ export async function runWorkflowChild(
           upstreamSender,
           drainController,
           triggeredRunIds,
+          runsInFlight,
           warmCache,
           sourcesRef,
           ...(opts.substrateWriteBridge !== undefined
@@ -690,6 +703,7 @@ async function handleControlPayload(
     upstreamSender: ControlChannelSender;
     drainController: DrainController;
     triggeredRunIds: string[];
+    runsInFlight: Map<string, WorkflowRun>;
     warmCache: WarmAgentCache | undefined;
     sourcesRef: SourcesSnapshotRef;
     substrateWriteBridge?: SubstrateWriteResponseSink;
@@ -698,6 +712,25 @@ async function handleControlPayload(
 ): Promise<boolean> {
   switch (payload.type) {
     case "trigger.fire": {
+      // One driver per runId. If this child is already driving this
+      // runId -- self-discovery resumed it, or an earlier trigger opened
+      // it -- the supervisor's re-fire (which carries `runId = messageId`
+      // and no resumeFromEvents) must NOT spawn a second `runtimeRun`. A
+      // second concurrent driver would race the live one to settle the
+      // same residual and the loser throws an uncaught TransitionError,
+      // and even a driver that avoided the throw would double-emit the
+      // terminal. The live driver's completion continuation owns the
+      // single terminal emission; the supervisor's terminal-event-driven
+      // `markConsumed` consumes the message off that one terminal, so no
+      // work is dropped by declining here. Record the runId (the
+      // supervisor did fire a trigger and it was accepted) and signal
+      // "handled, not shutdown" the same way the normal trigger case
+      // returns, without awaiting the live handle's `complete` inline
+      // (that would block the control loop).
+      if (ctx.runsInFlight.has(payload.data.runId)) {
+        ctx.triggeredRunIds.push(payload.data.runId);
+        return false;
+      }
       // Resolve the inbound mail bytes for this messageId from the
       // claim-check processing entry the supervisor created when it
       // dequeued the message. The bytes become the run's trigger
@@ -737,6 +770,7 @@ async function handleControlPayload(
         consumedMessageId: payload.data.messageId,
         triggerPayload,
       });
+      ctx.runsInFlight.set(payload.data.runId, handle);
       // Fan the run's terminal status back to the supervisor over the
       // upstream control channel. The supervisor's dispatch loop and
       // any armed drainTimeout accumulator subscribe through the
@@ -756,6 +790,9 @@ async function handleControlPayload(
         })
         .catch((cause) => {
           logger.error`triggered run ${payload.data.runId} failed: ${String(cause)}`;
+        })
+        .finally(() => {
+          ctx.runsInFlight.delete(payload.data.runId);
         });
       ctx.triggeredRunIds.push(payload.data.runId);
       return false;

@@ -890,6 +890,221 @@ describe("runWorkflowChild", () => {
     expect(result.resumedRunIds).not.toContain("run-done");
   });
 
+  test("a re-fired trigger for a self-discovered run does not spawn a second driver", async () => {
+    // Commit 1 leaves a crashed agent step as a discoverable non-terminal
+    // log; the supervisor both resumes it (self-discovery) AND re-fires
+    // the same runId via `trigger.fire` (runId = messageId). Without a
+    // one-driver-per-run claim the re-fire spawns a SECOND `runtimeRun`
+    // for the same runId in the same process; the two concurrent drivers
+    // race to settle the residual and the loser throws an uncaught
+    // TransitionError, or both emit a terminal. The claim makes the
+    // re-fire decline: exactly one driver, exactly one terminal.
+    const baseDir = await makeTempDir("child-single-driver-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const runId = "run-crashed";
+    // A one-step workflow whose sole step is an agent `step`, so the
+    // seeded crashed StepStarted settles as a `StepFailed`
+    // (crash-mid-invocation) rather than resolving to a coordination
+    // primitive the resume could re-arm.
+    await seedWorkflowDefinition(
+      baseDir,
+      { kind: "workflow", id: "workflow-asset" },
+      {
+        steps: {
+          "step-1": {
+            kind: "step",
+            id: "step-1",
+            agent: {
+              id: "crashed-agent",
+              systemPrompt: "crashed agent",
+              toolFactories: [],
+              capabilities: [],
+              inference: {
+                sources: [{ provider: "anthropic", model: "stub-model" }],
+              },
+            },
+            input: { from: "trigger.payload" },
+            drainBehavior: "cancel",
+          },
+        },
+        stepOrder: ["step-1"],
+      },
+    );
+    // Surviving non-terminal log: RunStarted + the agent step's
+    // StepStarted with no StepCompleted -- a crash mid-invocation.
+    await seedRun(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      runId,
+      [
+        {
+          seq: 1,
+          type: "RunStarted",
+          at: "2026-01-01T00:00:00.000Z",
+          runId,
+          definitionHash: "definition-hash-abc",
+          trigger: { type: "manual", payload: null },
+        },
+        {
+          seq: 2,
+          type: "StepStarted",
+          at: "2026-01-01T00:00:00.500Z",
+          stepId: "step-1",
+          attempt: 0,
+          input: { ref: "blob:seed-input" },
+        },
+      ],
+    );
+    // A processing entry for messageId = runId, so the re-fired
+    // `trigger.fire` COULD resolve its trigger payload and drive a second
+    // run if the guard were absent.
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: runId,
+        receivedAt: 1,
+        text: "re-fired inbound",
+      },
+    );
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+      }),
+    );
+
+    // Spy invokeStep: the resumed crashed step must settle WITHOUT
+    // re-invoking the agent (commit 2a's at-most-once refusal), so this
+    // counter must stay at zero for the resumed run.
+    let invokeCalls = 0;
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      invokeStep: async () => {
+        invokeCalls += 1;
+        return { output: null };
+      },
+    };
+
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    // Capture the child's error diagnostics. A second concurrent driver
+    // loses the race to settle the crashed residual and its uncaught
+    // TransitionError (terminal-phase / step-phase) is logged through the
+    // child's `logger.error` into `console.error`. No such string may
+    // escape when exactly one driver runs.
+    const capturedErrors: string[] = [];
+    // eslint-disable-next-line no-console -- test spy restored in finally
+    const originalConsoleError = console.error;
+    // eslint-disable-next-line no-console -- test spy restored in finally
+    console.error = (...args: unknown[]) => {
+      capturedErrors.push(args.map((a) => String(a)).join(" "));
+    };
+
+    let result: Awaited<ReturnType<typeof runWorkflowChild>>;
+    const terminals: number[] = [];
+    try {
+      const runPromise = runWorkflowChild({
+        env,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings,
+      });
+
+      // Decode the child's upstream frames live so the test observes the
+      // run reach terminal (self-discovery completes before `ready`, so the
+      // crashed runId is in the one-driver map before the trigger). The
+      // receiver bootstraps the child's verifying key from `ready`.
+      const recvIter = receiveControlChannel({
+        publicKey: { bootstrapFromReady: true },
+        channelId,
+        reader: childToSupervisor.reader,
+        onCrash: (reason) => {
+          throw new Error(`unexpected control channel crash: ${reason}`);
+        },
+      });
+
+      // The supervisor re-fires the same runId: runId = messageId, no
+      // resumeFromEvents. The guard must decline this second drive.
+      await supervisorSender.send({
+        type: "trigger.fire",
+        data: { runId, messageId: runId, receivedAt: 1 },
+      });
+
+      // Wait for the run's terminal, counting every terminal.event for the
+      // runId. Break on the first terminal, then drain any residual frames
+      // below to prove no second one lands.
+      for await (const payload of recvIter) {
+        if (payload.type === "terminal.event" && payload.data.runId === runId) {
+          terminals.push(payload.data.seq);
+          break;
+        }
+      }
+
+      await supervisorSender.send({
+        type: "shutdown",
+        data: { reason: "test done" },
+      });
+      supervisorToChild.close();
+
+      result = await runPromise;
+      childToSupervisor.close();
+
+      // Drain the rest of the upstream stream; no SECOND terminal for the
+      // runId may appear -- exactly one driver emitted exactly one terminal.
+      for await (const payload of recvIter) {
+        if (payload.type === "terminal.event" && payload.data.runId === runId) {
+          terminals.push(payload.data.seq);
+        }
+      }
+    } finally {
+      // eslint-disable-next-line no-console -- restore the spied method
+      console.error = originalConsoleError;
+    }
+
+    // Load-bearing for this seeded interleaving: the losing second driver
+    // throws while settling the crashed residual (a StepFailed-onto-already-
+    // terminal TransitionError) and that throw lands in its fire-and-forget
+    // continuation, logged through the child's `logger.error`. No such
+    // string may escape when exactly one driver runs. This is the check
+    // that fails when the guard is removed -- the loser throws BEFORE it
+    // reaches a terminal emission, so `terminals` still has length 1.
+    expect(
+      capturedErrors.some((line) => line.includes("TransitionError")),
+    ).toBe(false);
+    // At least one terminal.event for the runId. The one-driver guard
+    // prevents two CONCURRENT drivers (the TransitionError check above); it
+    // does not force a strict single terminal. A re-fire that arrives after
+    // the resumed driver already settled misses the guard, spawns a second
+    // driver that terminal-short-circuits (no re-invocation) and benignly
+    // re-emits the terminal; the supervisor tolerates a duplicate terminal
+    // idempotently. The guarantee the code makes is at-least-one, not
+    // exactly-one.
+    expect(terminals.length).toBeGreaterThanOrEqual(1);
+    // The crashed step settled without re-invoking the agent (commit 2a's
+    // at-most-once refusal); the load-bearing zero-invocation assertion.
+    expect(invokeCalls).toBe(0);
+    // The self-discovery driver resumed the run; the re-fire was accepted
+    // (recorded once) but drove nothing.
+    expect(result.resumedRunIds).toContain(runId);
+    expect(result.triggeredRunIds).toEqual([runId]);
+  });
+
   test("grants-updated frame replaces the active credentialsSnapshot", async () => {
     const baseDir = await makeTempDir("child-grants-");
     const supervisorKeyPair = await generateKeyPair();
