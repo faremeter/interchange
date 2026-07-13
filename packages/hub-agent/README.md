@@ -1,29 +1,37 @@
 # @intx/hub-agent
 
-Sidecar-side orchestrator. Builds harnesses for each agent the
-sidecar hosts, manages session lifecycle (provision, restore,
-shutdown), reconnects to the hub WebSocket on disconnect, owns
-the per-agent key store, and applies deploy and asset packs
-received from the hub.
+Sidecar-side orchestrator. Wires the package-side pieces of the
+sidecar runtime — the per-agent key and repo stores, a session
+manager, and the hub WebSocket link — into a single start/close
+handle, applies deploy and asset packs received from the hub, and
+forwards a spawned child's verified inference events back to the hub.
 
-Consumed by `apps/sidecar` as the core orchestrator that turns a
-sidecar process into a fleet of agent runtimes.
+In-process harness construction and agent provisioning are retired:
+every agent now runs as a supervised workflow-process child on the
+workflow-run substrate. What remains in `createSessionManager` is a
+thin serialization layer over the agent repo store (deploy/asset-pack
+applies, state-pack reads, deploy-ref reads, directory teardown);
+operations run one at a time per agent so a teardown never races an
+in-flight git op.
+
+Consumed by `apps/sidecar` as the orchestrator that turns a sidecar
+process into a host for hub-deployed agents.
 
 `createSidecarOrchestrator` takes a `SidecarOrchestratorConfig`
 specifying how to reach the hub (`hubURL`, `sidecarId`, `token`,
-`transport`), where to persist agent state (`dataDir`), how to
-build per-agent harnesses (`buildHarness`), and how to mint and
-operate the sidecar's crypto material (`createAgentCrypto`,
-`cryptoOps`). Optional fields control reconnect cadence. See
-`SidecarOrchestratorConfig` in `src/sidecar-orchestrator.ts` for
-the full surface; `createSessionManager` and `createHubLink` are
-the companion factories that produce the `buildHarness` and
-`transport` arguments.
+`transport`), where to persist agent state (`dataDir`), the sidecar's
+crypto operations (`cryptoOps`), and the host-injected deploy-router
+factory (`createDeployRouter`) that routes every `agent.deploy` frame
+on the link. Optional fields supply the multi-step inbound routers
+(`mailInboundRouter`, `signalInboundRouter`, `drainInboundRouter`,
+`sourcesInboundRouter`), the workflow-address announce and routability
+hooks, and the reconnect cadence. See `SidecarOrchestratorConfig` in
+`src/sidecar-orchestrator.ts` for the full surface.
 
-`HarnessBuilder` is a seam type the embedder supplies (the
-`buildHarness` field on both `SidecarOrchestratorConfig` and
-`SessionManagerConfig`); the session manager calls into it to wire
-`@intx/harness` together with the per-agent context store, mail
-transport, and runtime capabilities. The hub link handles the
-WebSocket transport and reconnect schedule against
-`@intx/hub-sessions` on the hub side.
+`HarnessBuilder` is a one-method source-admission seam
+(`canBuildSource`) the host supplies: the deploy router calls it to
+admit a step's pinned inference source before spawning, so an
+unbuildable source is rejected on the control plane rather than during
+the next inference call. It is not a harness-wiring seam — the package
+declares the shape and stays free of the concrete inference packages
+the check consults.
