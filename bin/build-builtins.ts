@@ -344,6 +344,10 @@ async function bundleInterchangeEntry(args: {
     naming: path.basename(outAbs),
     target: "node",
     format: "esm",
+    // Resolve the bundled workspace deps (`@intx/*`) to their TypeScript
+    // source via the `intx-src` exports condition; no `dist` exists during
+    // the workspace build.
+    conditions: ["intx-src"],
     minify: false,
     sourcemap: "none",
   });

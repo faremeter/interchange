@@ -298,7 +298,7 @@ if (!skipSidecar) {
         SIDECAR_ID: sidecarEnv["SIDECAR_ID"],
         SIDECAR_TOKEN: sidecarEnv["SIDECAR_TOKEN"],
       },
-    })`bun run ${resolve(ROOT, "bin/provision-sidecar.ts")}`;
+    })`bun run --conditions=intx-src ${resolve(ROOT, "bin/provision-sidecar.ts")}`;
 
     for (const line of provision.stdout.split("\n")) {
       if (line) console.log(`\x1b[90m[provision]\x1b[0m ${line}`);
@@ -324,7 +324,7 @@ console.log(`Starting hub on port ${hubPort}...`);
 const hubProc = spawnLabeled(
   "hub",
   "\x1b[32m", // green
-  ["bun", "run", "--watch", "apps/hub/src/index.ts"],
+  ["bun", "run", "--conditions=intx-src", "--watch", "apps/hub/src/index.ts"],
   hubEnv,
 );
 watchProcess("hub", hubProc);
@@ -358,7 +358,7 @@ if (!skipPublishBuiltins) {
     const build = await $({
       cwd: ROOT,
       env: { ...process.env, ...sharedEnv },
-    })`bun run bin/build-builtins.ts`;
+    })`bun run --conditions=intx-src bin/build-builtins.ts`;
     for (const line of build.stdout.split("\n")) {
       if (line) console.log(`\x1b[90m[builtins]\x1b[0m ${line}`);
     }
@@ -424,7 +424,7 @@ if (wantSeed) {
     const seed = await $({
       cwd: ROOT,
       env: { ...process.env, ...hubEnv, HUB_URL: hubURL },
-    })`bun bin/seed.ts`;
+    })`bun --conditions=intx-src bin/seed.ts`;
 
     for (const line of seed.stdout.split("\n")) {
       if (line) console.log(`\x1b[90m[seed]\x1b[0m ${line}`);
@@ -450,7 +450,7 @@ if (!skipSidecar) {
   const sidecarProc = spawnLabeled(
     "sidecar",
     "\x1b[33m", // yellow
-    ["bun", "run", "apps/sidecar/src/index.ts"],
+    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
     sidecarEnv,
   );
   watchProcess("sidecar", sidecarProc);
