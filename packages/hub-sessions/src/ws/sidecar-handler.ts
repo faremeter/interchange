@@ -211,6 +211,29 @@ export type SidecarRouter = {
   events: SidecarEventEmitter;
 };
 
+/**
+ * A verified sidecar-connection identity resolved by an authenticator from
+ * the credentials a sidecar presents on the WebSocket handshake. The
+ * `sidecarId` is the connection's own trusted id; it is not the untrusted
+ * `sidecarId` claimed on the register/reconnect frame, and it carries no
+ * tenant scope. Modeled as a discriminated union so a future non-sidecar
+ * principal (e.g. an operator user) can be added as an additional arm
+ * without changing existing consumers.
+ */
+export type SidecarAuthIdentity = { kind: "sidecar"; sidecarId: string };
+
+/**
+ * Resolves the credentials a sidecar presents on the handshake to a
+ * verified identity, or `null` when the credentials are not recognized.
+ * The claimed `sidecarId` is an unauthenticated hint; the authenticator
+ * derives the trusted identity from the `token` and the returned
+ * `sidecarId` is what the router keys connection state off of.
+ */
+export type SidecarAuthenticator = (claim: {
+  sidecarId: string;
+  token: string;
+}) => Promise<SidecarAuthIdentity | null>;
+
 export type SidecarRouterConfig = {
   requestTimeoutMs?: number;
   /** Hex-encoded 32-byte Ed25519 public key for signing deploy commits.
