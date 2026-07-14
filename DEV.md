@@ -43,12 +43,12 @@ cp .env.sidecar.example .env.sidecar   # optional, dev defaults are provided
 
 The example files contain working dev defaults for most values. The only value you must generate is `BETTER_AUTH_SECRET` in `.env.hub` (any 32+ byte hex string works, e.g. `openssl rand -hex 32`).
 
-| File           | Contains                                                                        |
-| -------------- | ------------------------------------------------------------------------------- |
-| `.env`         | Shared settings: database host/port/name, demo runner config                    |
-| `.env.hub`     | Hub secrets: database credentials, auth secret, OAuth (optional)                |
-| `.env.migrate` | Migration database credentials (DDL user)                                       |
-| `.env.sidecar` | Sidecar overrides: hub URL, sidecar ID, data directory (optional, has defaults) |
+| File           | Contains                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `.env`         | Shared settings: database host/port/name, demo runner config                                     |
+| `.env.hub`     | Hub secrets: database credentials, auth secret, OAuth (optional)                                 |
+| `.env.migrate` | Migration database credentials (DDL user)                                                        |
+| `.env.sidecar` | Sidecar overrides: hub URL, sidecar ID, handshake token, data directory (optional, has defaults) |
 
 ### Optional Environment Overrides
 
@@ -99,7 +99,9 @@ The dev orchestrator starts everything in the correct order with colored log out
 bun bin/dev.ts
 ```
 
-This runs: database migration, hub server (with `--watch` for auto-reload), sidecar, and admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
+This runs: database migration, sidecar-identity provisioning, hub server (with `--watch` for auto-reload), sidecar, and admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
+
+The hub authenticates the sidecar's WebSocket handshake against a per-sidecar token hash stored in the database, so the orchestrator provisions the dev sidecar's row (hashing the resolved `SIDECAR_TOKEN` from `.env.sidecar` or its default) before the sidecar starts. This step is skipped with `--no-sidecar`.
 
 Options:
 
@@ -169,20 +171,21 @@ is validated.
 
 All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://github.com/alexanderguy/opsh) framework as a library from `bin/opsh`, so opsh does not need to be installed separately.
 
-| Script                | Usage                                            | Description                                                                                             |
-| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `bin/dev.ts`          | `bun bin/dev.ts [flags]`                         | Dev orchestrator (see above)                                                                            |
-| `bin/hub`             | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                             |
-| `bin/db-migrate`      | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                |
-| `bin/db-reset`        | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state. |
-| `bin/seed.ts`         | `bun bin/seed.ts`                                | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                |
-| `bin/add-package`     | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                   |
-| `bin/check-env`       | `bin/check-env`                                  | Verify git hooks are configured                                                                         |
-| `bin/audit`           | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                       |
-| `bin/discover.ts`     | `bun bin/discover.ts --provider <name> [flags]`  | Run the wire-capture rig against a registered inference provider (needs provider credentials in env)    |
-| `bin/gen-api-docs.ts` | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                                                           |
-| `bin/posix-demo`      | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                     |
-| `bin/ring-demo`       | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                             |
+| Script                     | Usage                                            | Description                                                                                                               |
+| -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `bin/dev.ts`               | `bun bin/dev.ts [flags]`                         | Dev orchestrator (see above)                                                                                              |
+| `bin/hub`                  | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                                               |
+| `bin/db-migrate`           | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                                  |
+| `bin/db-reset`             | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state.                   |
+| `bin/seed.ts`              | `bun bin/seed.ts`                                | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                                  |
+| `bin/provision-sidecar.ts` | `bun bin/provision-sidecar.ts`                   | Write the sidecar identity row from `SIDECAR_ID`/`SIDECAR_TOKEN` so the handshake authenticates (reads DB creds from env) |
+| `bin/add-package`          | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                                     |
+| `bin/check-env`            | `bin/check-env`                                  | Verify git hooks are configured                                                                                           |
+| `bin/audit`                | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                                         |
+| `bin/discover.ts`          | `bun bin/discover.ts --provider <name> [flags]`  | Run the wire-capture rig against a registered inference provider (needs provider credentials in env)                      |
+| `bin/gen-api-docs.ts`      | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                                                                             |
+| `bin/posix-demo`           | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                                       |
+| `bin/ring-demo`            | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                                               |
 
 ## Seed Data
 
