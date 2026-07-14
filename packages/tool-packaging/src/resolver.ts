@@ -102,6 +102,7 @@ export interface PackumentVersion {
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   os?: string[];
   cpu?: string[];
 }
@@ -421,6 +422,29 @@ export class AssetRegistrySource implements RegistrySource {
  * npm's documented package.json schema rather than the substrate's
  * invariants, so they are validated here at the resolver boundary.
  */
+/** A peer-dependency declaration captured during the closure walk, with
+ *  whether the dependent marked it optional via `peerDependenciesMeta`. An
+ *  unsatisfied optional peer is not a violation. */
+interface PeerDeclaration {
+  dependent: { name: string; version: string };
+  peer: { name: string; range: string };
+  optional: boolean;
+}
+
+/** True for a `peerDependenciesMeta` object: a record whose values are
+ *  objects carrying an optional boolean `optional` flag. */
+function isPeerMetaRecord(
+  value: unknown,
+): value is Record<string, { optional?: boolean }> {
+  if (!isPlainObject(value)) return false;
+  return Object.values(value).every(
+    (entry) =>
+      isPlainObject(entry) &&
+      (entry["optional"] === undefined ||
+        typeof entry["optional"] === "boolean"),
+  );
+}
+
 function readDependencyFields(raw: unknown): Partial<PackumentVersion> {
   if (!isPlainObject(raw)) return {};
   const out: Partial<PackumentVersion> = {};
@@ -430,6 +454,8 @@ function readDependencyFields(raw: unknown): Partial<PackumentVersion> {
   if (isStringRecord(optionalDeps)) out.optionalDependencies = optionalDeps;
   const peerDeps = raw["peerDependencies"];
   if (isStringRecord(peerDeps)) out.peerDependencies = peerDeps;
+  const peerMeta = raw["peerDependenciesMeta"];
+  if (isPeerMetaRecord(peerMeta)) out.peerDependenciesMeta = peerMeta;
   const osField = raw["os"];
   if (isStringArray(osField)) out.os = osField;
   const cpuField = raw["cpu"];
@@ -534,10 +560,7 @@ export function createClosureResolver(
         seenPinNames.add(pin.name);
       }
       const entries = new Map<string, ToolPackageManifestEntry>();
-      const peerDeclarations: {
-        dependent: { name: string; version: string };
-        peer: { name: string; range: string };
-      }[] = [];
+      const peerDeclarations: PeerDeclaration[] = [];
       // Per-walk packument cache. The dedup that gates the queue is
       // keyed by `(name, range, subtreeId)` to keep subtree poisoning
       // contained — the same `(name, range)` seen first inside one
@@ -624,13 +647,7 @@ export function createClosureResolver(
         number,
         Map<string, ToolPackageManifestEntry>
       >();
-      const subtreePeerDeclarations = new Map<
-        number,
-        {
-          dependent: { name: string; version: string };
-          peer: { name: string; range: string };
-        }[]
-      >();
+      const subtreePeerDeclarations = new Map<number, PeerDeclaration[]>();
       const subtreePending = new Map<number, number>();
       const poisonedSubtrees = new Set<number>();
       // Parent/child relationships between nested optional subtrees.
@@ -850,9 +867,10 @@ export function createClosureResolver(
         for (const [name, range] of Object.entries(
           picked.peerDependencies ?? {},
         )) {
-          const decl = {
+          const decl: PeerDeclaration = {
             dependent: { name: picked.name, version: picked.version },
             peer: { name, range },
+            optional: picked.peerDependenciesMeta?.[name]?.optional === true,
           };
           if (next.subtreeId === null) {
             peerDeclarations.push(decl);
@@ -895,10 +913,7 @@ export function createClosureResolver(
 }
 
 function checkPeerDependencies(
-  declarations: readonly {
-    dependent: { name: string; version: string };
-    peer: { name: string; range: string };
-  }[],
+  declarations: readonly PeerDeclaration[],
   entries: ReadonlyMap<string, ToolPackageManifestEntry>,
 ): PeerDependencyViolation[] {
   const versionsByName = new Map<string, string[]>();
@@ -914,7 +929,7 @@ function checkPeerDependencies(
     const satisfying = candidates.filter((v) =>
       semver.satisfies(v, d.peer.range, { includePrerelease: true }),
     );
-    if (satisfying.length === 0) {
+    if (satisfying.length === 0 && !d.optional) {
       violations.push({
         dependent: d.dependent,
         peer: d.peer,
