@@ -32,5 +32,14 @@
     "drizzle-orm": "catalog:",
     "isomorphic-git": "catalog:",
     "tar": "catalog:"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

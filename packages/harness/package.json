@@ -20,5 +20,14 @@
     "@intx/mime": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "arktype": "catalog:"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

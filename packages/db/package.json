@@ -24,5 +24,15 @@
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.9"
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

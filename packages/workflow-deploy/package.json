@@ -15,5 +15,14 @@
     "@intx/tool-packaging": "workspace:*",
     "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

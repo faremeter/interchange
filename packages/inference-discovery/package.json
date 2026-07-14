@@ -17,5 +17,15 @@
   },
   "dependencies": {
     "arktype": "catalog:"
+  },
+  "files": [
+    "dist",
+    "media",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

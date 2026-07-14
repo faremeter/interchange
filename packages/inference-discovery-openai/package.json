@@ -13,5 +13,14 @@
   "dependencies": {
     "@intx/inference-discovery": "workspace:*",
     "arktype": "catalog:"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

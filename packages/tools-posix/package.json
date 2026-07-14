@@ -21,5 +21,14 @@
   "dependencies": {
     "@intx/agent": "workspace:*",
     "@intx/types": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }
