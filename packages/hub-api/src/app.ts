@@ -43,7 +43,6 @@ import { createModelProviderRoutes } from "./routes/model-providers";
 import { createModelOfferingRoutes } from "./routes/model-offerings";
 import { createObservabilityRoutes } from "./routes/observability";
 import { createAgentDataRoutes } from "./routes/agent-data";
-import { createSidecarRoutes } from "./routes/sidecars";
 import {
   createMeGitTokenRoutes,
   createTenantGitTokenRoutes,
@@ -353,12 +352,9 @@ export function mountHubRoutes(
     );
   }
 
-  app.route(
-    "/api/sidecars",
-    createSidecarRoutes(
-      sidecarWsHandler ? { db, wsHandler: sidecarWsHandler } : { db },
-    ),
-  );
+  if (sidecarWsHandler) {
+    app.get("/api/sidecars/ws", sidecarWsHandler);
+  }
 }
 
 export type CreateAppOpts = {

@@ -8,7 +8,6 @@ import {
   grantOrigins,
   ModelProviderPlugin,
   ModelRequirements,
-  sidecarStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
@@ -57,8 +56,6 @@ const TransactionDirectionValidator = type.enumerated(...transactionDirections);
 
 const transactionStatuses = ["pending", "completed", "failed"] as const;
 const TransactionStatusValidator = type.enumerated(...transactionStatuses);
-
-const SidecarStatusValidator = type.enumerated(...sidecarStatuses);
 
 const gitTokenKinds = ["pat", "svc"] as const;
 export const GitTokenKindValidator = type.enumerated(...gitTokenKinds);
@@ -195,12 +192,6 @@ export function parseGitTokenRow(row: typeof gitToken.$inferSelect) {
     kind: GitTokenKindValidator.assert(row.kind),
     actions: RepoAction.array().assert(row.actions),
   };
-}
-
-export function parseSidecarStatus(
-  status: string,
-): "online" | "offline" | "error" {
-  return SidecarStatusValidator.assert(status);
 }
 
 export function parseTurnPartType(
