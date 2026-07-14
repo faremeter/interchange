@@ -3,9 +3,15 @@ export {
   type SidecarRouter,
   type SidecarRouterConfig,
   type SidecarConnection,
+  type SidecarAuthIdentity,
+  type SidecarAuthenticator,
   type SendPackOptions,
   type WsHandle,
 } from "./sidecar-handler";
+export {
+  createSidecarTokenAuthenticator,
+  type CreateSidecarTokenAuthenticatorDeps,
+} from "./sidecar-token-authenticator";
 export {
   createSidecarEmitter,
   type SidecarEventEmitter,
