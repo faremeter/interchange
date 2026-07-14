@@ -686,6 +686,32 @@ describe("validateActions", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error).toMatch(/reply.*suspend/i);
   });
+
+  // The director builds action sets with a leading checkpoint. The
+  // reply+done and wait+reply invariants must hold for that emitted
+  // three-action shape, not only the bare pairs above, so a checkpoint
+  // prefix cannot smuggle a contradictory set past the validator.
+  test("checkpoint + reply + done is invalid", () => {
+    const result = validateActions([
+      { type: "checkpoint", message: "checkpoint: after-inference-abort" },
+      { type: "reply", content: "budget exhausted" },
+      { type: "done" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/reply.*done/i);
+  });
+
+  test("checkpoint + reply + wait is invalid", () => {
+    const result = validateActions([
+      { type: "checkpoint", message: "checkpoint: after-inference-halt" },
+      { type: "reply", content: "paused for top-up" },
+      { type: "wait" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toMatch(/wait.*reply/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
