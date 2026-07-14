@@ -53,7 +53,6 @@ export {
   parseTransactionRow,
   parseOAuthClientRow,
   parseGitTokenRow,
-  parseSidecarStatus,
   parseTurnPartType,
 } from "./parse-row";
 export * as schema from "./schema";
