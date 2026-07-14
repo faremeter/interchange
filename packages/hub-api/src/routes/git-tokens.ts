@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
+import { sha256 } from "@intx/crypto";
 import { gitToken } from "@intx/db/schema";
 import { parseGitTokenRow } from "@intx/db";
 import type { DB } from "@intx/db";
@@ -169,12 +170,6 @@ function generateSecret(kind: "pat" | "svc"): string {
   // the global `crypto` object in both Node and Bun.
   crypto.getRandomValues(bytes);
   return `${prefix}${base64urlEncode(bytes)}`;
-}
-
-async function sha256(input: string): Promise<Uint8Array> {
-  return new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)),
-  );
 }
 
 /**
