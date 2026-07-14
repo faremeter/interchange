@@ -25,6 +25,7 @@ function packument(
       dependencies?: Record<string, string>;
       optionalDependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
+      peerDependenciesMeta?: Record<string, { optional?: boolean }>;
       os?: string[];
       cpu?: string[];
       integrity?: string;
@@ -51,6 +52,9 @@ function packument(
             : {}),
           ...(body.peerDependencies !== undefined
             ? { peerDependencies: body.peerDependencies }
+            : {}),
+          ...(body.peerDependenciesMeta !== undefined
+            ? { peerDependenciesMeta: body.peerDependenciesMeta }
             : {}),
           ...(body.os !== undefined ? { os: body.os } : {}),
           ...(body.cpu !== undefined ? { cpu: body.cpu } : {}),
@@ -388,6 +392,51 @@ describe("resolveClosure peer-dependency validation", () => {
       {
         "react-tools": packument("react-tools", {
           "1.0.0": { peerDependencies: { react: "^17.0.0" } },
+        }),
+      },
+    );
+    const resolver = createClosureResolver({
+      registries: registriesOf(src),
+      defaultRegistry: "npmjs",
+    });
+    await expect(
+      resolver.resolveClosure([{ name: "react-tools", version: "1.0.0" }]),
+    ).rejects.toBeInstanceOf(ManifestInvalidError);
+  });
+
+  test("an unsatisfied peer flagged optional is accepted", async () => {
+    const src = httpSource(
+      { name: "npmjs", url: "https://r.test" },
+      {
+        "react-tools": packument("react-tools", {
+          "1.0.0": {
+            peerDependencies: { react: "^17.0.0" },
+            peerDependenciesMeta: { react: { optional: true } },
+          },
+        }),
+      },
+    );
+    const resolver = createClosureResolver({
+      registries: registriesOf(src),
+      defaultRegistry: "npmjs",
+    });
+    const manifest = await resolver.resolveClosure([
+      { name: "react-tools", version: "1.0.0" },
+    ]);
+    expect(
+      manifest.entries.find((e) => e.name === "react-tools")?.version,
+    ).toBe("1.0.0");
+  });
+
+  test("an optional peer does not excuse a sibling mandatory peer", async () => {
+    const src = httpSource(
+      { name: "npmjs", url: "https://r.test" },
+      {
+        "react-tools": packument("react-tools", {
+          "1.0.0": {
+            peerDependencies: { react: "^17.0.0", vue: "^3.0.0" },
+            peerDependenciesMeta: { react: { optional: true } },
+          },
         }),
       },
     );
