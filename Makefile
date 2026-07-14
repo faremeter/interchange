@@ -27,6 +27,9 @@ test: FORCE
 test-load: FORCE
 	$(BUN) test --timeout 300000 tests/workflow-deploy/fifo-mail-load.test.ts
 
+verify-tool-load: FORCE
+	bun bin/verify-tool-load.ts
+
 format: FORCE
 	prettier -w .
 
@@ -50,5 +53,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build build-admin-ui lint test test-load format docs clean builtins publish-builtins
+.PHONY: all build build-admin-ui lint test test-load verify-tool-load format docs clean builtins publish-builtins
 FORCE:
