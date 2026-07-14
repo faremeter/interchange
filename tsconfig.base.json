@@ -9,6 +9,7 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "moduleResolution": "bundler",
+    "customConditions": ["intx-src"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
