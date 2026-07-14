@@ -253,6 +253,13 @@
       "when": 1783373028980,
       "tag": "0035_violet_giant_man",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1783998502613,
+      "tag": "0036_sharp_the_executioner",
+      "breakpoints": true
     }
   ]
 }
