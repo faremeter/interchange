@@ -101,13 +101,23 @@ Publishing is a manual, credentialed operation. The flow:
    each `workspace:*` dependency to the sibling's on-disk version, the
    versions must be bumped and consistent **before** publishing — this is
    what makes the internal dependency graph resolvable on npm.
-2. `bin/publish` is the guarded publish path. By default it is a dry run:
-   it verifies the working tree is clean, that `HEAD` is exactly the
-   release tag, and that every non-private package's `version` equals the
-   tag; emits `dist`; runs a Node smoke test on the packed tarballs; and
-   prints the publish plan without uploading. Only `bin/publish --execute`
-   runs `bun publish`, leaf-first, under the `faremeter-dist` npm
-   credentials.
+2. `bin/publish` is the guarded publish path. By default it is a dry run.
+   It refuses to proceed unless the working tree is clean, `HEAD` is
+   exactly the release tag, every non-private package's `version` equals
+   the tag, and every internal `@intx/*` dependency is expressed as
+   `workspace:` or `catalog:` (so pack rewrites it to the release
+   version). It then packs one internal package and confirms the rewrite
+   landed on the release version — a fast check that `bun.lock` is not
+   stale — before emitting `dist`, packing every target, installing the
+   whole set into a scratch consumer, and loading each package. The load
+   smoke asserts every package loads under Node, Bun, and Deno and that
+   default resolution lands on `dist` (never the inert `intx-src` source),
+   with `@intx/tools-lsp` asserted to load under Bun but not Node or Deno —
+   it depends on `vscode-jsonrpc/node`, a CommonJS subpath neither the Node
+   nor Deno loader can resolve. Deno runs under `--node-modules-dir=manual`
+   so it resolves the npm-installed packages; a runtime not on PATH is
+   skipped, not failed. Only `bin/publish --execute` runs `bun publish`,
+   leaf-first, under the `faremeter-dist` npm credentials.
 
 The version-sync-before-publish guard exists because the live `0.1.2`
 packages shipped broken — published from a tree whose sibling versions
