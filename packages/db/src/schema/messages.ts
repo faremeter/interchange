@@ -1,5 +1,4 @@
 import {
-  customType,
   index,
   integer,
   jsonb,
@@ -8,21 +7,10 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
+import { bytea } from "./column-types";
 import { agentInstance } from "./instances";
 import { agentSession } from "./sessions";
 import { tenant } from "./tenants";
-
-const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
-  dataType() {
-    return "bytea";
-  },
-  toDriver(value) {
-    return value;
-  },
-  fromDriver(value) {
-    return new Uint8Array(value);
-  },
-});
 
 export const inferenceTurn = pgTable(
   "inference_turn",
