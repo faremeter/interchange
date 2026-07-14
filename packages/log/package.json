@@ -26,5 +26,21 @@
     "hono": {
       "optional": true
     }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "./src/index.ts",
+    "./src/hono.ts",
+    "./src/default-sink.ts",
+    "./dist/index.js",
+    "./dist/hono.js",
+    "./dist/default-sink.js"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

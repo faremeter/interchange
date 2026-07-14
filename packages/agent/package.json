@@ -24,5 +24,14 @@
   },
   "devDependencies": {
     "@intx/storage-isogit": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -29,5 +29,14 @@
     "@intx/crypto": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
     "hono": "catalog:"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

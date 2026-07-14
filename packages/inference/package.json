@@ -22,5 +22,14 @@
   },
   "devDependencies": {
     "@intx/mime": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -26,5 +26,14 @@
     "@types/npm-package-arg": "^6.1.4",
     "@types/semver": "catalog:",
     "@types/ssri": "^7.1.5"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

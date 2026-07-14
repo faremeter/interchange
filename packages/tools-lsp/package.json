@@ -29,5 +29,14 @@
   },
   "devDependencies": {
     "@types/which": "^3.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }

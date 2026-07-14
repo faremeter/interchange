@@ -34,5 +34,14 @@
     "@intx/agent": "workspace:*",
     "@intx/inference": "workspace:*",
     "arktype": "catalog:"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   }
 }
