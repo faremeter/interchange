@@ -239,6 +239,9 @@ const hubURL = `http://localhost:${hubPort}`;
 const hubWsURL = `ws://localhost:${hubPort}/api/sidecars/ws`;
 
 // Sidecar env — use .env.sidecar if present, otherwise provide dev defaults.
+// The resolved SIDECAR_ID/SIDECAR_TOKEN below are what the sidecar presents
+// on its handshake; the provisioning step hashes this same SIDECAR_TOKEN into
+// the sidecar row so the hub's token-authenticated handshake accepts it.
 const sidecarFileEnv = loadEnvFile(resolve(ROOT, ".env.sidecar"));
 const sidecarEnv: Record<string, string> = {
   ...sharedEnv,
@@ -276,6 +279,43 @@ try {
 }
 
 console.log("Migrations complete.");
+
+// -- Step 1b: Provision the sidecar identity --
+//
+// The hub authenticates the sidecar handshake against a per-sidecar token
+// hash on the sidecar table, so the sidecar cannot connect until its row
+// exists. Provision it before the sidecar spawns, hashing the same
+// SIDECAR_TOKEN the sidecar will present. Skipped when no sidecar runs.
+
+if (!skipSidecar) {
+  console.log("Provisioning sidecar identity...");
+
+  try {
+    const provision = await $({
+      env: {
+        ...process.env,
+        ...migrateEnv,
+        SIDECAR_ID: sidecarEnv["SIDECAR_ID"],
+        SIDECAR_TOKEN: sidecarEnv["SIDECAR_TOKEN"],
+      },
+    })`bun run ${resolve(ROOT, "bin/provision-sidecar.ts")}`;
+
+    for (const line of provision.stdout.split("\n")) {
+      if (line) console.log(`\x1b[90m[provision]\x1b[0m ${line}`);
+    }
+    for (const line of provision.stderr.split("\n")) {
+      if (line) console.error(`\x1b[90m[provision]\x1b[0m ${line}`);
+    }
+  } catch (err) {
+    console.error("Sidecar provisioning failed:");
+    if (hasStderr(err)) {
+      console.error(err.stderr);
+    }
+    process.exit(1);
+  }
+
+  console.log("Sidecar provisioning complete.");
+}
 
 // -- Step 2: Start hub --
 
