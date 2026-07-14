@@ -115,7 +115,7 @@ data:
 
 ```bash
 bun install
-bin/db-reset && bun bin/dev.ts --seed
+bin/db-reset && bin/dev --seed
 ```
 
 Starts the hub, sidecar, and admin UI — entry points in

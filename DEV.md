@@ -17,7 +17,7 @@ bun install
 If env files are already configured (see Environment Setup below):
 
 ```bash
-bin/db-reset && bun bin/dev.ts --seed
+bin/db-reset && bin/dev --seed
 ```
 
 This drops and recreates the database, runs migrations, grants permissions, starts all services, and seeds test data. After startup, the hub is at `http://localhost:3000` and the admin UI is at `http://localhost:5173`.
@@ -96,7 +96,7 @@ If you get "role already exists" errors, the users are already set up and you ca
 The dev orchestrator starts everything in the correct order with colored log output:
 
 ```bash
-bun bin/dev.ts
+bin/dev
 ```
 
 This runs: database migration, sidecar-identity provisioning, hub server (with `--watch` for auto-reload), sidecar, and admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
@@ -173,7 +173,7 @@ All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://g
 
 | Script                     | Usage                                            | Description                                                                                                               |
 | -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `bin/dev.ts`               | `bun bin/dev.ts [flags]`                         | Dev orchestrator (see above)                                                                                              |
+| `bin/dev.ts`               | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                                              |
 | `bin/hub`                  | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                                               |
 | `bin/db-migrate`           | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                                  |
 | `bin/db-reset`             | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state.                   |

@@ -887,12 +887,17 @@ export async function startSidecarSubprocess(opts: {
     ...(opts.extraEnv ?? {}),
   };
 
-  const proc = Bun.spawn(["bun", "run", "apps/sidecar/src/index.ts"], {
-    cwd: path.resolve(import.meta.dir, "../../.."),
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  // --conditions=intx-src resolves @intx/* to source; the spawned sidecar
+  // runs from the workspace, where the dev loop builds no dist.
+  const proc = Bun.spawn(
+    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
+    {
+      cwd: path.resolve(import.meta.dir, "../../.."),
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
 
   // Drain stderr into a rolling buffer for diagnostics on timeout.
   void (async () => {

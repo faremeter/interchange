@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+#
+# Run the dev orchestrator with the intx-src resolution condition, so that
+# @intx/* imports resolve to TypeScript source. The dev loop builds no
+# `dist`; without the condition the published `default` target (compiled
+# `dist`) would be selected and fail to resolve. The orchestrator's own
+# process resolves @intx/* at import time, so the condition must be set
+# here, not only on the child processes it spawns. All arguments are
+# forwarded to bin/dev.ts.
+
+set -euo pipefail
+exec bun --conditions=intx-src "$(dirname -- "${BASH_SOURCE[0]}")/dev.ts" "$@"

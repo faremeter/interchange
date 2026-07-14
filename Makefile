@@ -17,6 +17,7 @@ lint: FORCE
 	eslint --cache .
 	$(BUN) bin/gen-api-docs.ts --check
 	$(BUN) bin/check-deps.ts
+	$(BUN) bin/exports-shape.ts
 
 test: FORCE
 	$(BUN) test packages/ apps/ bin/ tests/agent/ tests/agent-audit-log/ tests/agent-blob-spill/ tests/agent-common/ tests/agent-multi-provider/ tests/agent-quickstart/ tests/agent-resume/ tests/agent-rewind/ tests/agent-rich-tool/ tests/agent-structured-payload/ tests/coding-agent/ tests/hub-agent/lib/ tests/inference-testing/ tests/tool-packaging/ tests/workflow/

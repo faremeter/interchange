@@ -5,24 +5,29 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "intx-src": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./state-machine": {
-      "types": "./src/state-machine/index.ts",
-      "default": "./src/state-machine/index.ts"
+      "intx-src": "./src/state-machine/index.ts",
+      "types": "./dist/state-machine/index.d.ts",
+      "default": "./dist/state-machine/index.js"
     },
     "./definition": {
-      "types": "./src/definition/index.ts",
-      "default": "./src/definition/index.ts"
+      "intx-src": "./src/definition/index.ts",
+      "types": "./dist/definition/index.d.ts",
+      "default": "./dist/definition/index.js"
     },
     "./runtime": {
-      "types": "./src/runtime/index.ts",
-      "default": "./src/runtime/index.ts"
+      "intx-src": "./src/runtime/index.ts",
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
     },
     "./runlocal": {
-      "types": "./src/runlocal/index.ts",
-      "default": "./src/runlocal/index.ts"
+      "intx-src": "./src/runlocal/index.ts",
+      "types": "./dist/runlocal/index.d.ts",
+      "default": "./dist/runlocal/index.js"
     }
   },
   "dependencies": {
