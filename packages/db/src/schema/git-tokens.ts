@@ -1,27 +1,10 @@
 import { sql } from "drizzle-orm";
-import {
-  customType,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 import { user } from "./auth";
+import { bytea } from "./column-types";
 import { principal } from "./principals";
 import { tenant } from "./tenants";
-
-const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
-  dataType() {
-    return "bytea";
-  },
-  toDriver(value) {
-    return value;
-  },
-  fromDriver(value) {
-    return new Uint8Array(value);
-  },
-});
 
 // Hub-issued bearer tokens for the smart-HTTP git endpoints. Opaque
 // tokens of the form `itx_pat_<base64>` or `itx_svc_<base64>` whose
