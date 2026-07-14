@@ -32,21 +32,24 @@ const logger = getLogger(["interchange", "inference", "default-director"]);
  *
  *   continue — proceed with the director's normal post-inference logic
  *              (tool extraction, reply, or wait per the existing flow).
- *   abort    — terminate the agent. Routes to `[checkpoint, reply, done]`
- *              and the reactor shuts down. Stronger than the
+ *   abort    — terminate the agent. Routes to `[checkpoint, done]` and
+ *              the reactor shuts down. Stronger than the
  *              `inference.error` branch, which only replies and stays
  *              alive — `abort` is for "session is over, do not accept
  *              further inputs."
  *   halt     — pause the current cycle without terminating. Routes to
- *              `[checkpoint, reply, wait]`. Reactor stays alive waiting
- *              for the next inbound event. There is no auto-resume; an
- *              external event (mail, gate clearance, etc.) must reach
- *              the reactor for the agent to make progress again.
+ *              `[checkpoint, reply]`; the reply returns the reactor to
+ *              waiting for the next inbound event, so it stays alive.
+ *              There is no auto-resume; an external event (mail, gate
+ *              clearance, etc.) must reach the reactor for the agent to
+ *              make progress again.
  *
- * `reason` becomes the connector reply text verbatim — policy authors
- * choose what is safe to surface to the user. There is no separate
- * private-reason / user-message split today; add one if a real need
- * appears.
+ * `reason` on a `halt` becomes the connector reply text verbatim, so
+ * policy authors choose what is safe to surface to the user. On an
+ * `abort` the reason is not surfaced: a terminal action cannot carry a
+ * reply, since a reply invites continuation. Delivering an abort reason
+ * to the user needs a dedicated terminal-notice path, which does not
+ * exist today.
  */
 export type AfterInferenceDecision =
   | { type: "continue" }
@@ -237,17 +240,21 @@ export class DefaultDirector implements ReactorDirector {
             };
           }
           if (decision.type === "abort") {
+            // A reply invites the next inbound message, but abort is
+            // terminal — the reactor rejects reply paired with done. The
+            // reason is therefore not surfaced on this path.
             return [
               capabilities.checkpoint("after-inference-abort"),
-              capabilities.reply(decision.reason),
               capabilities.done(),
             ];
           }
           if (decision.type === "halt") {
+            // A reply already returns the reactor to waiting for the next
+            // inbound message, so no separate wait is needed (and the
+            // reactor rejects reply paired with wait).
             return [
               capabilities.checkpoint("after-inference-halt"),
               capabilities.reply(decision.reason),
-              capabilities.wait(),
             ];
           }
           // decision.type === "continue" — fall through.

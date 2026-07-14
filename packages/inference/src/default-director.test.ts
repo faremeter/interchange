@@ -20,6 +20,7 @@ import type {
   DefaultDirectorPolicy,
 } from "./default-director";
 import { createCapabilities } from "./director";
+import { validateActions } from "./actions";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -136,7 +137,7 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     ]);
   });
 
-  test("abort: returns [checkpoint, reply, done] with the policy reason", async () => {
+  test("abort: returns [checkpoint, done], reason not surfaced", async () => {
     const hook: AfterInferenceHook = () => ({
       type: "abort",
       reason: "budget exhausted",
@@ -147,12 +148,12 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     );
     expect(actions).toEqual([
       { type: "checkpoint", message: "checkpoint: after-inference-abort" },
-      { type: "reply", content: "budget exhausted" },
       { type: "done" },
     ]);
+    expect(validateActions(actions).ok).toBe(true);
   });
 
-  test("halt: returns [checkpoint, reply, wait] with the policy reason", async () => {
+  test("halt: returns [checkpoint, reply] with the policy reason", async () => {
     const hook: AfterInferenceHook = () => ({
       type: "halt",
       reason: "paused for top-up",
@@ -164,8 +165,8 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     expect(actions).toEqual([
       { type: "checkpoint", message: "checkpoint: after-inference-halt" },
       { type: "reply", content: "paused for top-up" },
-      { type: "wait" },
     ]);
+    expect(validateActions(actions).ok).toBe(true);
   });
 
   test("hook not set: existing behavior preserved", async () => {
@@ -179,7 +180,7 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     ]);
   });
 
-  test("hook throws: caught, routed to abort with synthesized reason", async () => {
+  test("hook throws: caught, routed to abort (terminates)", async () => {
     const hook: AfterInferenceHook = () => {
       throw new Error("policy died");
     };
@@ -189,10 +190,6 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     );
     expect(actions).toEqual([
       { type: "checkpoint", message: "checkpoint: after-inference-abort" },
-      {
-        type: "reply",
-        content: "afterInferenceDone policy threw: policy died",
-      },
       { type: "done" },
     ]);
   });
@@ -212,7 +209,6 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     );
     expect(actions).toEqual([
       { type: "checkpoint", message: "checkpoint: after-inference-abort" },
-      { type: "reply", content: "async abort" },
       { type: "done" },
     ]);
   });
@@ -251,7 +247,6 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
     // policy authors about this; the test pins the behavior.
     expect(actions).toEqual([
       { type: "checkpoint", message: "checkpoint: after-inference-abort" },
-      { type: "reply", content: "stop now" },
       { type: "done" },
     ]);
   });
