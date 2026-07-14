@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import type { Context, Env, MiddlewareHandler } from "hono";
 
+import { sha256 } from "@intx/crypto";
 import type { DB } from "@intx/db";
 import { parseGitTokenRow } from "@intx/db";
 import { gitToken, principal, tenant } from "@intx/db/schema";
@@ -267,12 +268,6 @@ function decodeBase64Utf8(input: string): string | null {
 
 function hasKnownPrefix(secret: string): boolean {
   return secret.startsWith(PAT_PREFIX) || secret.startsWith(SVC_PREFIX);
-}
-
-async function sha256(input: string): Promise<Uint8Array> {
-  return new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)),
-  );
 }
 
 async function resolvePrincipal(
