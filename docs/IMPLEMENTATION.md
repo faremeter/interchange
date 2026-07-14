@@ -858,7 +858,7 @@ future alternative-sidecar implementer belongs inside the
 
 ### How This Differs From The Hub-Sidecar WebSocket Boundary
 
-The session-channels transport documented above runs between two trusted services across a network. Mutual TLS plus per-sidecar tokens plus challenge/response cover the authentication problem; framing is JSON over WebSocket; reconnection handles transport flakiness with sequence numbers carried on the resume; lifecycle frames travel alongside event frames on the same wire.
+The session-channels transport documented above runs between two services across a network, and the hub does not treat the sidecar as trusted on connection. A per-sidecar bearer token, presented on the sidecar's first `register`/`reconnect` frame, authenticates the connection; the router keys off the verified identity, not the id claimed in the frame. Ed25519 per-address challenge/response then proves deployment ownership on reconnect. There is no mutual TLS or transport-level client authentication, and network isolation is not enforced in code. Framing is JSON over WebSocket; reconnection handles transport flakiness with sequence numbers carried on the resume; lifecycle frames travel alongside event frames on the same wire.
 
 The supervisor/child IPC runs between two processes on the same host where one of them is the trust anchor and the other is not. The threat model is "compromised user code in the child," not "lossy network in the middle." That changes three things in shape:
 
@@ -1252,7 +1252,7 @@ On reconnect the sidecar restores its workflow deployments from local disk (see 
 
 The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
 
-On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). The hub sends `agent.deploy` to provision the agent, and the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token and the authenticated WebSocket channel bound the trust for first-deploy; challenge/response protects all subsequent interactions.
+On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). The hub sends `agent.deploy` to provision the agent, and the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token, validated on the sidecar's `register` frame before any route is established, bounds the trust for first-deploy; challenge/response protects all subsequent interactions.
 
 The hub enforces that boundary structurally in `handleRegister`: a `register` frame routes an address only when `lookupPublicKey` returns null for it — a genuine keyless first-deploy. An address that already has a stored key is refused and must re-enter routing through the challenged reconnect, so a token-holding sidecar cannot reclaim a keyed address's route (its own or a victim's) on token auth alone. The check runs before any routing mutation, so a refused address never even evicts its current owner. If the key lookup is not configured, register fails closed (routes nothing and logs an error) rather than routing unverified.
 
