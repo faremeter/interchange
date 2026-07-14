@@ -1,6 +1,7 @@
 // Default conversational director — reference ReactorDirector implementation.
 //
-// Implements the decision table from INFERENCE.md § Director Decision Function:
+// Inbound-event → action map (see INFERENCE.md § Director Decision Function
+// for the director contract and action-validation rules):
 //
 //   message.received          → infer
 //   inference.done (tools)    → checkpoint + execute_tools
@@ -9,6 +10,10 @@
 //   inference.error           → checkpoint + reply (error message to user)
 //   abort                     → done
 //   reactor.gate.cleared      → checkpoint + infer (resume after gate)
+//
+// The inference.done branch additionally runs the optional afterInferenceDone
+// policy hook, whose continue/abort/halt decisions route independently of the
+// event map above. See AfterInferenceDecision for that contract.
 //
 // The director never throws. Inference errors are surfaced to the user as a
 // reply so the problem is visible, and the agent remains alive for retries.
