@@ -5,40 +5,49 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "intx-src": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./authz": {
-      "types": "./src/authz.ts",
-      "default": "./src/authz.ts"
+      "intx-src": "./src/authz.ts",
+      "types": "./dist/authz.d.ts",
+      "default": "./dist/authz.js"
     },
     "./audit": {
-      "types": "./src/audit.ts",
-      "default": "./src/audit.ts"
+      "intx-src": "./src/audit.ts",
+      "types": "./dist/audit.d.ts",
+      "default": "./dist/audit.js"
     },
     "./runtime": {
-      "types": "./src/runtime.ts",
-      "default": "./src/runtime.ts"
+      "intx-src": "./src/runtime.ts",
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
     },
     "./runtime-capabilities": {
-      "types": "./src/runtime-capabilities.ts",
-      "default": "./src/runtime-capabilities.ts"
+      "intx-src": "./src/runtime-capabilities.ts",
+      "types": "./dist/runtime-capabilities.d.ts",
+      "default": "./dist/runtime-capabilities.js"
     },
     "./sidecar": {
-      "types": "./src/sidecar.ts",
-      "default": "./src/sidecar.ts"
+      "intx-src": "./src/sidecar.ts",
+      "types": "./dist/sidecar.d.ts",
+      "default": "./dist/sidecar.js"
     },
     "./grant-wire": {
-      "types": "./src/grant-wire.ts",
-      "default": "./src/grant-wire.ts"
+      "intx-src": "./src/grant-wire.ts",
+      "types": "./dist/grant-wire.d.ts",
+      "default": "./dist/grant-wire.js"
     },
     "./tool-packages": {
-      "types": "./src/tool-packages.ts",
-      "default": "./src/tool-packages.ts"
+      "intx-src": "./src/tool-packages.ts",
+      "types": "./dist/tool-packages.d.ts",
+      "default": "./dist/tool-packages.js"
     },
     "./package-json": {
-      "types": "./src/package-json.ts",
-      "default": "./src/package-json.ts"
+      "intx-src": "./src/package-json.ts",
+      "types": "./dist/package-json.d.ts",
+      "default": "./dist/package-json.js"
     }
   },
   "dependencies": {

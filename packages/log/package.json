@@ -5,12 +5,14 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "intx-src": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./hono": {
-      "types": "./src/hono.ts",
-      "default": "./src/hono.ts"
+      "intx-src": "./src/hono.ts",
+      "types": "./dist/hono.d.ts",
+      "default": "./dist/hono.js"
     }
   },
   "dependencies": {

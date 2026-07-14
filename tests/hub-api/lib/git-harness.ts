@@ -511,7 +511,9 @@ export async function startHub(
     BETTER_AUTH_SECRET: hubEnv.betterAuthSecret,
     BETTER_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
   };
-  const child = spawn("bun", ["run", hubSrc], {
+  // --conditions=intx-src resolves @intx/* to source; the spawned hub
+  // runs from the workspace, where the dev loop builds no dist.
+  const child = spawn("bun", ["run", "--conditions=intx-src", hubSrc], {
     cwd: REPO_ROOT,
     env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],

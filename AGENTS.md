@@ -19,7 +19,7 @@ Read `DEV.md` for the full development guide. The essentials:
 
 ```bash
 bun install
-bin/db-reset && bun bin/dev.ts --seed
+bin/db-reset && bin/dev --seed
 ```
 
 `bun install` materializes the workspace symlinks under `node_modules/@intx/`;
@@ -32,22 +32,22 @@ The remaining command gets a clean, running system with seed data. It drops and 
 
 ### Common Operations
 
-| Task                          | Command                        |
-| ----------------------------- | ------------------------------ |
-| Start stack (no seed)         | `bun bin/dev.ts`               |
-| Start stack with seed         | `bun bin/dev.ts --seed`        |
-| Start stack without admin UI  | `bun bin/dev.ts --no-admin-ui` |
-| Full database reset           | `bin/db-reset`                 |
-| Full reset (DB + agent state) | `bin/db-reset --clean`         |
-| Apply migrations only         | `bin/db-migrate`               |
-| Seed (requires running hub)   | `bun bin/seed.ts`              |
-| Full build verification       | `make all`                     |
-| Type check only               | `make build`                   |
-| Bundle the admin UI           | `make build-admin-ui`          |
-| Lint only                     | `make lint`                    |
-| Run tests only                | `make test`                    |
-| Auto-format                   | `make format`                  |
-| Regenerate API docs           | `make docs`                    |
+| Task                          | Command                 |
+| ----------------------------- | ----------------------- |
+| Start stack (no seed)         | `bin/dev`               |
+| Start stack with seed         | `bin/dev --seed`        |
+| Start stack without admin UI  | `bin/dev --no-admin-ui` |
+| Full database reset           | `bin/db-reset`          |
+| Full reset (DB + agent state) | `bin/db-reset --clean`  |
+| Apply migrations only         | `bin/db-migrate`        |
+| Seed (requires running hub)   | `bun bin/seed.ts`       |
+| Full build verification       | `make all`              |
+| Type check only               | `make build`            |
+| Bundle the admin UI           | `make build-admin-ui`   |
+| Lint only                     | `make lint`             |
+| Run tests only                | `make test`             |
+| Auto-format                   | `make format`           |
+| Regenerate API docs           | `make docs`             |
 
 Use the `make` targets above for build, lint, test, format, and docs.
 The Makefile is the authoritative entrypoint: it runs each command
