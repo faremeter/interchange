@@ -8,6 +8,7 @@ import {
   createHubSessionOrchestrator,
   createSessionService,
   createSidecarRouter,
+  createSidecarTokenAuthenticator,
   WORKSPACE_BUILTINS_REGISTRY,
   type WsHandle,
 } from "@intx/hub-sessions";
@@ -113,6 +114,7 @@ const lookups = createHubSessionLookups({ db, agentRepoStore });
 
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
+  authenticateSidecar: createSidecarTokenAuthenticator({ db }),
   lookups,
 });
 

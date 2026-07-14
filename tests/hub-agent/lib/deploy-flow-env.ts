@@ -566,6 +566,11 @@ export async function startHub(
   const router = createSidecarRouter({
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
+    // The spawned sidecar presents TOKEN on its handshake; verify it and
+    // resolve to the fixed integration sidecar id, exercising the real
+    // token-authenticated handshake rather than accepting any token.
+    authenticateSidecar: async ({ token }) =>
+      token === TOKEN ? { kind: "sidecar", sidecarId: SIDECAR_ID } : null,
     lookups: {
       // Answer a reconnecting sidecar's ownership challenge for a deployment
       // address with the Ed25519 key that address acked at deploy time.

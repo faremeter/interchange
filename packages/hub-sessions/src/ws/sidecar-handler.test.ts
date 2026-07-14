@@ -4,7 +4,34 @@ import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
 import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
-import { createSidecarRouter, type WsHandle } from "./sidecar-handler";
+import {
+  createSidecarRouter,
+  type SidecarAuthenticator,
+  type SidecarRouterConfig,
+  type WsHandle,
+} from "./sidecar-handler";
+
+// Test authenticator that accepts any presented token and echoes the
+// claimed id back as the verified identity. Tests that exercise routing
+// rather than auth use it so the handshake succeeds; tests that assert
+// auth behavior pass their own authenticator instead.
+const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
+  kind: "sidecar",
+  sidecarId,
+});
+
+// Build a router with a default accept-any authenticator so routing tests
+// need not restate it. A test that cares about auth passes its own
+// `authenticateSidecar` in `config`, which overrides the default.
+function createTestRouter(
+  config: Omit<SidecarRouterConfig, "authenticateSidecar"> &
+    Partial<Pick<SidecarRouterConfig, "authenticateSidecar">> = {},
+): ReturnType<typeof createSidecarRouter> {
+  return createSidecarRouter({
+    authenticateSidecar: acceptAnySidecar,
+    ...config,
+  });
+}
 
 async function signChallenge(
   nonce: string,
@@ -111,7 +138,7 @@ describe("SidecarRouter", () => {
   const TEST_DEFAULT_SOURCE = "anthropic:claude-sonnet-4-20250514";
 
   beforeEach(() => {
-    router = createSidecarRouter({
+    router = createTestRouter({
       requestTimeoutMs: 500,
       hubPublicKey: TEST_HUB_KEY,
       // Always-null lookup: no address has a stored key, so the register
@@ -197,10 +224,10 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).toEqual([]);
     });
 
-    test("invalid token closes connection", async () => {
-      const router = createSidecarRouter({
-        validateToken: () => false,
-      });
+    const rejectAll: SidecarAuthenticator = async () => null;
+
+    test("register with an invalid token closes the connection", async () => {
+      const router = createTestRouter({ authenticateSidecar: rejectAll });
       const ws = createMockWs();
       router.handleOpen(ws);
       router.handleMessage(
@@ -216,6 +243,104 @@ describe("SidecarRouter", () => {
 
       expect(ws.closed).toBe(true);
       expect(router.getConnectedSidecars()).toEqual([]);
+    });
+
+    test("reconnect with an invalid token closes the connection", async () => {
+      const router = createTestRouter({
+        authenticateSidecar: rejectAll,
+        lookups: { lookupPublicKey: async () => null },
+      });
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "bad",
+          agentAddresses: ["agent-a@local"],
+        }),
+      );
+      await tick();
+
+      expect(ws.closed).toBe(true);
+      expect(router.getConnectedSidecars()).toEqual([]);
+    });
+
+    test("a thrown authenticator fails closed and closes the connection", async () => {
+      const router = createTestRouter({
+        authenticateSidecar: async () => {
+          throw new Error("database unavailable");
+        },
+      });
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      expect(ws.closed).toBe(true);
+      expect(router.getConnectedSidecars()).toEqual([]);
+    });
+
+    test("the connection is keyed by the verified id, not the claimed id", async () => {
+      // The claimed frame id is untrusted: the authenticator resolves the
+      // token to a different verified id, and routing must key off that.
+      const router = createTestRouter({
+        authenticateSidecar: async () => ({
+          kind: "sidecar",
+          sidecarId: "verified-sc",
+        }),
+        lookups: { lookupPublicKey: async () => null },
+      });
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "claimed-sc",
+          token: "tok",
+          agentAddresses: ["agent-a@local"],
+        }),
+      );
+      await tick();
+
+      expect(router.getConnectedSidecars()).toEqual(["verified-sc"]);
+    });
+
+    test("a reconnect authenticates exactly once despite its internal register", async () => {
+      // handleReconnect performs an internal register; the handshake must
+      // authenticate at the dispatch boundary only, never twice per frame.
+      let calls = 0;
+      const router = createTestRouter({
+        authenticateSidecar: async ({ sidecarId }) => {
+          calls += 1;
+          return { kind: "sidecar", sidecarId };
+        },
+        lookups: { lookupPublicKey: async () => null },
+      });
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      expect(calls).toBe(1);
     });
 
     test("re-registration by another sidecar cleans ghost from old connection", async () => {
@@ -265,7 +390,7 @@ describe("SidecarRouter", () => {
     const KEYED = "victim@local";
 
     function gatedRouter(publicKeyHex: string | null) {
-      return createSidecarRouter({
+      return createTestRouter({
         requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -420,7 +545,7 @@ describe("SidecarRouter", () => {
       try {
         // No lookups configured: the gate cannot distinguish a keyed address
         // from a first-deploy, so it must route nothing rather than permit.
-        const r = createSidecarRouter({
+        const r = createTestRouter({
           requestTimeoutMs: 500,
           hubPublicKey: TEST_HUB_KEY,
         });
@@ -481,7 +606,7 @@ describe("SidecarRouter", () => {
         loggers: [{ category: [], lowestLevel: "debug", sinks: ["capture"] }],
       });
       try {
-        const r = createSidecarRouter({
+        const r = createTestRouter({
           requestTimeoutMs: 500,
           hubPublicKey: TEST_HUB_KEY,
           lookups: {
@@ -571,7 +696,7 @@ describe("SidecarRouter", () => {
       // asynchronously. Per-ws serialization makes a following dependent frame
       // (connector.state.changed for the just-registered keyless address) wait
       // for that routing rather than be dropped because addressIndex was empty.
-      const r = createSidecarRouter({
+      const r = createTestRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
         lookups: { lookupPublicKey: async () => null },
@@ -610,7 +735,7 @@ describe("SidecarRouter", () => {
       // cached state is untouched.
       const kp = await generateKeyPair();
       const victim = "victim@local";
-      const r = createSidecarRouter({
+      const r = createTestRouter({
         requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -666,7 +791,7 @@ describe("SidecarRouter", () => {
       // is the assertion.)
       const kp = await generateKeyPair();
       const addr = "agent@local";
-      const r = createSidecarRouter({
+      const r = createTestRouter({
         requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -719,7 +844,7 @@ describe("SidecarRouter", () => {
     // deployment) or to null (unknown / torn-down), mirroring the
     // launched-agent reconnect tests.
     function workflowReconnectRouter(publicKeyHex: string | null) {
-      return createSidecarRouter({
+      return createTestRouter({
         requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -914,7 +1039,7 @@ describe("SidecarRouter", () => {
       // (bind/unbind) is never persisted into that announcement, so a
       // reconnect must not bring it back.
       const kp = await generateKeyPair();
-      const reconnectRouter = createSidecarRouter({
+      const reconnectRouter = createTestRouter({
         requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -1065,7 +1190,7 @@ describe("SidecarRouter", () => {
 
     test("unroutable mail emits mail.outbound.undelivered", async () => {
       const outbound: { rawMessage: string; recipients: string[] }[] = [];
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       router.events.on("mail.outbound.undelivered", (event) => {
@@ -1107,7 +1232,7 @@ describe("SidecarRouter", () => {
       // record on the sender's session and emit mail.persisted so a
       // mail.delivered SSE event is dispatched.
       const persisted: { id: string; address: string }[] = [];
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: {
           lookupPublicKey: async () => null,
           persistMail: async ({ senderAddress, recipients }) => {
@@ -1186,7 +1311,7 @@ describe("SidecarRouter", () => {
 
     test("persistMail lookup result fans out as mail.persisted events", async () => {
       const persisted: { id: string; address: string }[] = [];
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: {
           lookupPublicKey: async () => null,
           persistMail: async ({ senderAddress, recipients }) => {
@@ -1304,7 +1429,7 @@ describe("SidecarRouter", () => {
 
     test("agent.deploy.ack invokes subscribers before resolving", async () => {
       const ackCalls: { address: string; publicKey: string }[] = [];
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
       });
@@ -1364,7 +1489,7 @@ describe("SidecarRouter", () => {
     });
 
     test("agent.deploy rejects when agent.deploy.ack subscriber throws", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
       });
@@ -1691,6 +1816,7 @@ describe("SidecarRouter", () => {
           agentAddresses: ["agent@local"],
         }),
       );
+      await tick();
 
       router.handleMessage(
         ws1,
@@ -1707,7 +1833,7 @@ describe("SidecarRouter", () => {
   describe("agent events", () => {
     test("agent.event frames are forwarded to subscribers", async () => {
       const events: { addr: string; sid: string; event: unknown }[] = [];
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
@@ -1748,7 +1874,7 @@ describe("SidecarRouter", () => {
 
     test("agent.event frames are emitted on router.events", async () => {
       const seen: { addr: string; sid: string }[] = [];
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       router.events.on("agent.event", ({ agentAddress, sessionId }) => {
@@ -1781,7 +1907,7 @@ describe("SidecarRouter", () => {
     });
 
     test("sidecar.disconnect is emitted on router.events", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       const seen: string[][] = [];
@@ -1807,7 +1933,7 @@ describe("SidecarRouter", () => {
     });
 
     test("connector.state.changed populates the cache and is readable via getConnectorState", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       const ws = createMockWs();
@@ -1859,7 +1985,7 @@ describe("SidecarRouter", () => {
     });
 
     test("connector.state.changed is emitted on router.events", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       const seen: { addr: string; state: unknown }[] = [];
@@ -1904,7 +2030,7 @@ describe("SidecarRouter", () => {
     });
 
     test("live takeover via register evicts the prior owner's cached connector state", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
 
@@ -1958,7 +2084,7 @@ describe("SidecarRouter", () => {
     });
 
     test("disconnect clears cached connector state for affected agents", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         lookups: { lookupPublicKey: async () => null },
       });
       const ws = createMockWs();
@@ -2218,7 +2344,7 @@ describe("SidecarRouter", () => {
       // lands. lookupPublicKey returns null so the challenge
       // short-circuits; the eviction under test happens in
       // handleReconnect's internal register before any challenge work.
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -2302,7 +2428,7 @@ describe("SidecarRouter", () => {
       // during the restore window must keep it across the reconnect, or a
       // following no-history user message forks a new thread instead of
       // continuing the agent's active one.
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -2402,7 +2528,7 @@ describe("SidecarRouter", () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -2455,7 +2581,7 @@ describe("SidecarRouter", () => {
       const wrongKp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -2505,7 +2631,7 @@ describe("SidecarRouter", () => {
     });
 
     test("reconnect sends challenge.failed for unknown address", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async () => null,
@@ -2560,7 +2686,7 @@ describe("SidecarRouter", () => {
         loggers: [{ category: [], lowestLevel: "debug", sinks: ["capture"] }],
       });
       try {
-        const router = createSidecarRouter({
+        const router = createTestRouter({
           requestTimeoutMs: 5000,
           lookups: {
             lookupPublicKey: async () => {
@@ -2612,7 +2738,7 @@ describe("SidecarRouter", () => {
         ["agent-b@local", hexEncode(kp2.publicKey)],
       ]);
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) => keys.get(addr) ?? null,
@@ -2669,7 +2795,7 @@ describe("SidecarRouter", () => {
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -2722,7 +2848,7 @@ describe("SidecarRouter", () => {
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -2775,7 +2901,7 @@ describe("SidecarRouter", () => {
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -2827,7 +2953,7 @@ describe("SidecarRouter", () => {
       const publicKeyHex = hexEncode(kp.publicKey);
       const staleAddresses: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -2886,7 +3012,7 @@ describe("SidecarRouter", () => {
       const workflowAddr = "ins_dep_abc@local";
       const staleAddresses: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           // Both addresses are keyed (deployment addresses carry the
@@ -2941,7 +3067,7 @@ describe("SidecarRouter", () => {
     test("disconnect cleans up pending challenge", async () => {
       const kp = await generateKeyPair();
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -3014,7 +3140,7 @@ describe("SidecarRouter", () => {
 
     test("mail queued during disconnect is flushed on reconnect", async () => {
       const kp = await generateKeyPair();
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         lookups: {
           async lookupPublicKey() {
@@ -3084,7 +3210,7 @@ describe("SidecarRouter", () => {
 
     test("queue evicts oldest when full", async () => {
       const kp = await generateKeyPair();
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         disconnectQueueMaxSize: 2,
         lookups: {
@@ -3153,7 +3279,7 @@ describe("SidecarRouter", () => {
       // fires mail.outbound.undelivered for the dropped frame and warns with
       // the recipient, so an operator can see mail was lost.
       const kp = await generateKeyPair();
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         disconnectQueueMaxSize: 2,
         lookups: {
@@ -3201,7 +3327,7 @@ describe("SidecarRouter", () => {
       // mail.outbound.undelivered and a single warn reports the recipient and
       // count.
       const kp = await generateKeyPair();
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         disconnectQueueTTLMs: 20,
         lookups: {
@@ -3256,7 +3382,7 @@ describe("SidecarRouter", () => {
       // the thing that re-arms it, so this test exercises the reset timer's
       // drop path rather than handleClose's.
       const kp = await generateKeyPair();
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         disconnectQueueTTLMs: 250,
         lookups: {
@@ -3389,7 +3515,7 @@ describe("SidecarRouter", () => {
     });
 
     test("connection closed after ping timeout", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         pingTimeoutMs: 100,
         lookups: { lookupPublicKey: async () => null },
@@ -3414,7 +3540,7 @@ describe("SidecarRouter", () => {
     });
 
     test("ping resets the liveness timer", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
         pingTimeoutMs: 100,
       });
@@ -3448,7 +3574,7 @@ describe("SidecarRouter", () => {
       const publicKeyHex = hexEncode(kp.publicKey);
       const reconnected: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -3499,7 +3625,7 @@ describe("SidecarRouter", () => {
       const publicKeyHex = hexEncode(kp.publicKey);
       const reconnected: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) =>
@@ -3548,7 +3674,7 @@ describe("SidecarRouter", () => {
       const kp2 = await generateKeyPair();
       const reconnected: string[] = [];
 
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 5000,
         lookups: {
           lookupPublicKey: async (addr) => {
@@ -3620,7 +3746,7 @@ describe("SidecarRouter", () => {
 
   describe("configuration guards", () => {
     test("sendAgentDeploy without hub key throws without mutating routing table", async () => {
-      const router = createSidecarRouter({
+      const router = createTestRouter({
         requestTimeoutMs: 500,
       });
 
@@ -3685,7 +3811,7 @@ describe("SidecarRouter", () => {
       const calls: RecordedReceive[] = [];
       const stateVerdict = verdicts.agentState ?? ({ accepted: true } as const);
       const wfrVerdict = verdicts.workflowRun ?? ({ accepted: true } as const);
-      const packRouter = createSidecarRouter({
+      const packRouter = createTestRouter({
         requestTimeoutMs: 500,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {
@@ -3913,7 +4039,7 @@ describe("SidecarRouter", () => {
       // in-flight transfer.
       const kp = await generateKeyPair();
       const calls: { method: string }[] = [];
-      const r = createSidecarRouter({
+      const r = createTestRouter({
         requestTimeoutMs: 5000,
         hubPublicKey: TEST_HUB_KEY,
         lookups: {

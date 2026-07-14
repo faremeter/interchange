@@ -23,6 +23,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
+  type SidecarAuthenticator,
   type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
@@ -168,7 +169,12 @@ function startTestServer(): TestEnv {
   let attemptsThisEpoch = 0;
   let currentEpoch = 0;
 
+  const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
+    kind: "sidecar",
+    sidecarId,
+  });
   const router = createSidecarRouter({
+    authenticateSidecar: acceptAnySidecar,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
     lookups: {

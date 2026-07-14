@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
+  type SidecarAuthenticator,
   type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
@@ -25,6 +26,13 @@ import type {
 } from "@intx/types/sidecar";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
+
+// These tests exercise routing and the hub-link protocol, not handshake
+// auth, so the router accepts any token and keys off the claimed id.
+const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
+  kind: "sidecar",
+  sidecarId,
+});
 
 /**
  * Test-only deploy router modelling the current deploy path: record the
@@ -197,6 +205,7 @@ function startTestServer(): TestEnv {
   const deploymentKeys = new Map<string, string>();
 
   const router = createSidecarRouter({
+    authenticateSidecar: acceptAnySidecar,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
     lookups: {
@@ -612,6 +621,7 @@ describe("sidecar↔hub integration", () => {
 
     // Stand up a hub router with an odd-length hex key to trigger hexDecode.
     const badRouter = createSidecarRouter({
+      authenticateSidecar: acceptAnySidecar,
       requestTimeoutMs: 5000,
       hubPublicKey: "abc", // odd length — hexDecode should throw
     });
@@ -688,6 +698,7 @@ describe("sidecar↔hub integration", () => {
     const hubPublicKeyHex = hexEncode(hubKp.publicKey);
 
     const deployHubRouter = createSidecarRouter({
+      authenticateSidecar: acceptAnySidecar,
       requestTimeoutMs: 5000,
       challengeTimeoutMs: 5000,
       hubPublicKey: hubPublicKeyHex,
@@ -1323,6 +1334,7 @@ describe("sidecar↔hub integration", () => {
       transferIds: string[];
     } = { transferIds: [] };
     const wfrRouter = createSidecarRouter({
+      authenticateSidecar: acceptAnySidecar,
       requestTimeoutMs: 5000,
       hubPublicKey: "a".repeat(64),
       lookups: {
