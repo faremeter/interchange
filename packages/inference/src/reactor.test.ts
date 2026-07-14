@@ -5,6 +5,7 @@ import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
 import { createDefaultDependencies } from "./providers";
+import { createDefaultDirector } from "./default-director";
 import { createInboundMessage } from "@intx/mime";
 
 import type {
@@ -32,6 +33,7 @@ import type {
 import type { ReactorConfig, Reactor, ReactorEmittedEvent } from "./reactor";
 import type { Dependencies, InferenceHarnessOptions } from "./harness";
 import type { CorrelationValidator } from "./correlation";
+import type { AfterInferenceHook } from "./default-director";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2584,6 +2586,98 @@ function makeInferenceRunner(
     }
   };
 }
+
+// ---------------------------------------------------------------------------
+// afterInferenceDone abort/halt policy, end to end
+//
+// These drive the real DefaultDirector so the action sets its abort and
+// halt branches build are validated by the reactor, not just asserted in
+// isolation. The bug was that those sets were rejected, so the reactor
+// crashed with a fatal "Invalid action set" instead of terminating
+// (abort) or pausing and replying (halt).
+// ---------------------------------------------------------------------------
+
+describe("createReactor — afterInferenceDone abort and halt", () => {
+  test("abort terminates without an invalid action set", async () => {
+    const hook: AfterInferenceHook = () => ({
+      type: "abort",
+      reason: "budget exhausted",
+    });
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createDefaultDirector("test agent", [], {
+        afterInferenceDone: hook,
+      }),
+      inferenceRunner: makeInferenceRunner({
+        type: "done",
+        turn: makeAssistantTurn("ignored"),
+        usage: emptyUsage(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(
+      events.some(
+        (e) =>
+          e.type === "reactor.error" &&
+          /invalid action set/i.test(e.data.error),
+      ),
+    ).toBe(false);
+    // Abort is terminal and does not surface the reason, so no reply.
+    expect(events.some((e) => e.type === "connector.reply")).toBe(false);
+  });
+
+  test("halt replies and keeps the reactor alive", async () => {
+    let hookCalls = 0;
+    const hook: AfterInferenceHook = () => {
+      hookCalls++;
+      return { type: "halt", reason: "paused for top-up" };
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createDefaultDirector("test agent", [], {
+        afterInferenceDone: hook,
+      }),
+      inferenceRunner: makeInferenceRunner({
+        type: "done",
+        turn: makeAssistantTurn("ignored"),
+        usage: emptyUsage(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitForEvent(events, (e) => e.type === "connector.reply");
+
+    // Halt returned the reactor to waiting rather than shutting down, so a
+    // second message must still be processed — that is the liveness proof.
+    reactor.deliver(makeInboundMessage());
+    await waitForEvent(
+      events,
+      () => events.filter((e) => e.type === "connector.reply").length >= 2,
+    );
+
+    // The reactor is still alive; abort it so the test does not leak it.
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+
+    const replies = events.filter((e) => e.type === "connector.reply");
+    expect(replies.length).toBe(2);
+    expect(hookCalls).toBe(2);
+    for (const reply of replies) {
+      if (reply.type !== "connector.reply") throw new Error("unreachable");
+      expect(reply.data.content).toBe("paused for top-up");
+    }
+    expect(
+      events.some(
+        (e) =>
+          e.type === "reactor.error" &&
+          /invalid action set/i.test(e.data.error),
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("createReactor — inference path", () => {
   test("infer action drives inference.done through to director and accumulates usage", async () => {
