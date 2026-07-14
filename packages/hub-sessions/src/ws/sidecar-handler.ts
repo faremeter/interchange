@@ -239,7 +239,10 @@ export type SidecarRouterConfig = {
   /** Hex-encoded 32-byte Ed25519 public key for signing deploy commits.
    * Included in agent.deploy frames so sidecars can verify pack signatures. */
   hubPublicKey?: string;
-  validateToken?: (sidecarId: string, token: string) => boolean;
+  /** Resolves each register/reconnect handshake to a verified sidecar
+   * identity. Required: without it a connection could route on an
+   * unverified frame claim. Return null to reject the handshake. */
+  authenticateSidecar: SidecarAuthenticator;
   challengeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
@@ -270,13 +273,13 @@ const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PING_TIMEOUT_MS = 60_000;
 
 export function createSidecarRouter(
-  config: SidecarRouterConfig = {},
+  config: SidecarRouterConfig,
 ): SidecarRouter {
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     challengeTimeoutMs = DEFAULT_CHALLENGE_TIMEOUT_MS,
     hubPublicKey: hubPublicKeyHex,
-    validateToken,
+    authenticateSidecar,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
@@ -546,21 +549,19 @@ export function createSidecarRouter(
     frame: SidecarFrame,
   ): void | Promise<void> {
     switch (frame.type) {
-      case "register":
-        return handleRegister(
-          ws,
-          frame.sidecarId,
-          frame.token,
-          frame.agentAddresses,
+      case "register": {
+        const agentAddresses = frame.agentAddresses;
+        return authenticateHandshake(ws, frame, (identity) =>
+          handleRegister(ws, identity, agentAddresses),
         );
-      case "reconnect":
-        return handleReconnect(
-          ws,
-          frame.sidecarId,
-          frame.token,
-          frame.agentAddresses,
-          frame.deployRefs ?? {},
+      }
+      case "reconnect": {
+        const agentAddresses = frame.agentAddresses;
+        const deployRefs = frame.deployRefs ?? {};
+        return authenticateHandshake(ws, frame, (identity) =>
+          handleReconnect(ws, identity, agentAddresses, deployRefs),
         );
+      }
       case "challenge.response":
         return handleChallengeResponse(ws, frame.responses);
       case "agent.deploy.ack":
@@ -638,17 +639,46 @@ export function createSidecarRouter(
     }
   }
 
-  async function handleRegister(
+  // Authenticate a register/reconnect handshake exactly once, then run the
+  // frame's handler with the verified identity. The claimed `sidecarId` on
+  // the frame is an unauthenticated hint: it is logged if it disagrees with
+  // the verified id but never trusted -- routing keys off the verified id.
+  // Fails closed by closing the connection when the authenticator rejects
+  // (returns null) or throws (e.g. a database failure), so a handshake never
+  // proceeds on unverified credentials.
+  async function authenticateHandshake(
     ws: WsHandle,
-    sidecarId: string,
-    token: string,
-    agentAddresses: string[],
+    frame: { type: string; sidecarId: string; token: string },
+    run: (identity: SidecarAuthIdentity) => Promise<void>,
   ): Promise<void> {
-    if (validateToken !== undefined && !validateToken(sidecarId, token)) {
-      logger.warn`Rejected registration from sidecar ${sidecarId}: invalid token`;
+    let identity: SidecarAuthIdentity | null;
+    try {
+      identity = await authenticateSidecar({
+        sidecarId: frame.sidecarId,
+        token: frame.token,
+      });
+    } catch (err) {
+      logger.error`Rejected ${frame.type} from claimed sidecar ${frame.sidecarId}: authenticator failed: ${err instanceof Error ? err.message : String(err)}`;
       ws.close();
       return;
     }
+    if (identity === null) {
+      logger.warn`Rejected ${frame.type} from claimed sidecar ${frame.sidecarId}: invalid token`;
+      ws.close();
+      return;
+    }
+    if (identity.sidecarId !== frame.sidecarId) {
+      logger.warn`Sidecar ${frame.type} claimed id ${frame.sidecarId} but token verifies as ${identity.sidecarId}; keying off the verified id`;
+    }
+    await run(identity);
+  }
+
+  async function handleRegister(
+    ws: WsHandle,
+    identity: SidecarAuthIdentity,
+    agentAddresses: string[],
+  ): Promise<void> {
+    const sidecarId = identity.sidecarId;
 
     // Key-existence gate. A register frame is token-authenticated but carries
     // no per-address ownership proof, so it may route an address ONLY if that
@@ -779,16 +809,11 @@ export function createSidecarRouter(
 
   async function handleReconnect(
     ws: WsHandle,
-    sidecarId: string,
-    token: string,
+    identity: SidecarAuthIdentity,
     agentAddresses: string[],
     deployRefs: Record<string, string> = {},
   ): Promise<void> {
-    if (validateToken !== undefined && !validateToken(sidecarId, token)) {
-      logger.warn`Rejected reconnect from sidecar ${sidecarId}: invalid token`;
-      ws.close();
-      return;
-    }
+    const sidecarId = identity.sidecarId;
 
     const lookupKey = lookups.lookupPublicKey;
     if (lookupKey === undefined) {
@@ -819,7 +844,9 @@ export function createSidecarRouter(
     // reconnect address -- session and workflow-derived alike -- enters
     // routing only through the verified path below, never unchallenged here.
     // Empty address list, so the key-existence gate has nothing to await.
-    await handleRegister(ws, sidecarId, token, []);
+    // The identity was already verified at the dispatch boundary, so the
+    // internal register does not re-authenticate.
+    await handleRegister(ws, identity, []);
 
     const conn = connections.get(ws);
     if (conn === undefined) return;

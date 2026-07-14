@@ -8,6 +8,7 @@ import {
   createEventCollectorRegistry,
   createSidecarRouter,
   type SessionService,
+  type SidecarAuthenticator,
 } from "@intx/hub-sessions";
 import type { GetSession } from "./session";
 
@@ -18,7 +19,13 @@ const OpenAPISpec = type({
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
-const sidecarRouter = createSidecarRouter({});
+const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
+  kind: "sidecar",
+  sidecarId,
+});
+const sidecarRouter = createSidecarRouter({
+  authenticateSidecar: acceptAnySidecar,
+});
 const sessionService: SessionService = {
   stageWorkflowStep(_params) {
     throw new Error("mock: sessionService.stageWorkflowStep not implemented");
