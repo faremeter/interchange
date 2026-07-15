@@ -7,32 +7,38 @@
 // in this repo no `dist` is built, so every bun process that resolves
 // `@intx/*` must pass `--conditions=intx-src` to reach the TypeScript
 // source. `make` (via the `BUN` variable), `tsc` (customConditions), and
-// vite set that structurally, in one place each. The one surface where the
-// flag is hand-written and can silently rot is a `bin/` bash launcher that
-// execs `bun` on a `.ts` entry point: for every such launcher, each
-// `bun <script>.ts` invocation whose target imports `@intx/*` must carry
-// `--conditions=intx-src`. A launcher that loses the flag resolves `@intx/*`
-// to the non-existent `dist` and fails at run time; catching it at lint
-// keeps a hand-run command from breaking the way a broken `v0.2.0` install
-// would.
+// vite set that structurally, in one place each. The surfaces where the
+// flag is hand-written and can silently rot are the launchers invoked
+// directly; this guard fails `make lint` when one runs an `@intx/*`
+// importer without the flag:
 //
-// The flag scope is deliberately narrow. The guard never inspects the `.ts`
-// entry points themselves — a shebang flag is inert under `bun x.ts`, and
-// several entry points import `@intx/*` yet are correctly flag-less because
-// they run only through a wrapper that supplies it. Nor does it inspect
-// make-invoked scripts (the `BUN` variable covers those) or `bin/lib`
-// helpers (never a launcher target). Only the wrapper — the one artifact
-// that both holds the flag and can drop it — is checked.
+//   1. `bin/*` bash wrappers — the flag rides on the `bun <script>.ts`
+//      exec line.
+//   2. `apps/*/bin` and `packages/*/bin` shebang binaries run by path
+//      (e.g. the sidecar's workflow-child) — the flag rides on the
+//      shebang, since `--conditions` is not inherited across a spawn.
+//   3. `examples/*` and `apps/*` package.json `scripts` that `bun run` a
+//      `.ts` — the flag rides on the script command.
+//
+// It never inspects the `bin/*.ts` entry points' own shebangs (inert under
+// `bun x.ts`; they run through a wrapper that supplies the flag), make-
+// invoked scripts (the `BUN` variable covers those), or `bin/lib` helpers
+// (never a launcher target).
 //
 // The guard also catches the wrapper's other hazard: an extensionless
 // wrapper `bin/<name>` and its `bin/<name>.ts` share a basename, so a
 // top-level `bin/*.ts` importing `./<name>` resolves to the bash wrapper,
-// not the `.ts`, and bun parses shell as TypeScript. The fix is to move the
-// shared code into `bin/lib/` (no wrapper twin) and import it from there, so
-// the guard fails any `./<name>` import that collides with a wrapper and
-// names that remedy.
+// not the `.ts`, and bun parses shell as TypeScript. It fails any such
+// `./<name>` import and names the `bin/lib/` remedy.
 //
-// `checkLaunchers` runs both scans and is exported for tests, along with the
+// Scope boundary: the bun-invocation match covers the command positions
+// launchers actually use (line start, after a separator, or `exec`). A
+// `bun` invocation behind an env-assignment, `command`, or `time` prefix
+// is deliberately not matched — no launcher uses those forms, and widening
+// the match to every shell command position would reimplement shell
+// parsing. Prose commands in docs are likewise out of scope.
+//
+// `checkLaunchers` runs the scans and is exported for tests, along with the
 // pure `bunTsTarget`/`scanLauncher`/`importsIntx`/`shadowingImports` helpers;
 // the CLI gate runs only when this file is the entry point.
 
@@ -71,15 +77,20 @@ export function importsIntx(code: string): boolean {
  *  this guard cannot resolve — an unparsed launcher is an unguarded one. */
 export function bunTsTarget(line: string, wrapperRel: string): string | null {
   if (!BUN_INVOCATION.test(line)) return null;
-  const base = line.match(/([\w.-]+\.ts)\b/)?.[1];
+  // Strip the condition flag (either form) before locating the target: the
+  // space form `--conditions intx-src` would otherwise leave a bare
+  // `intx-src` token the target parser could misread. The flag's presence
+  // is detected separately, by HAS_FLAG on the original line.
+  const cleaned = line.replace(/--conditions[= ]intx-src/g, " ");
+  const base = cleaned.match(/([\w.-]+\.ts)\b/)?.[1];
   if (base === undefined) return null;
   // `$(dirname -- "${BASH_SOURCE[0]}")/<name>.ts` -> the wrapper's own dir.
-  if (line.includes("BASH_SOURCE")) return join(dirname(wrapperRel), base);
+  if (cleaned.includes("BASH_SOURCE")) return join(dirname(wrapperRel), base);
   // `$REPODIR/<path>.ts` -> path relative to the repo root.
-  const repoDir = line.match(/\$REPODIR\/([\w./-]+\.ts)\b/)?.[1];
+  const repoDir = cleaned.match(/\$REPODIR\/([\w./-]+\.ts)\b/)?.[1];
   if (repoDir !== undefined) return repoDir;
   // bare `bun [run] [--flags] <path>.ts` -> path relative to the repo root.
-  const bare = line.match(
+  const bare = cleaned.match(
     /bun\s+(?:run\s+)?(?:--[\w=.-]+\s+)*["']?([\w./-]+\.ts)\b/,
   )?.[1];
   if (bare !== undefined) return bare;
@@ -122,11 +133,31 @@ export function scanLauncher(
   const candidates: LauncherCandidate[] = [];
   for (const raw of text.split("\n")) {
     if (/^\s*#/.test(raw)) continue;
-    const target = bunTsTarget(raw, wrapperRel);
+    // Drop a trailing ` # ...` comment so a `.ts` mentioned there is not
+    // read as a bun target.
+    const line = raw.replace(/\s#.*$/, "");
+    const target = bunTsTarget(line, wrapperRel);
     if (target === null) continue;
-    candidates.push({ line: raw.trim(), target, hasFlag: HAS_FLAG.test(raw) });
+    candidates.push({
+      line: line.trim(),
+      target,
+      hasFlag: HAS_FLAG.test(line),
+    });
   }
   return candidates;
+}
+
+/** The `.ts` target a package.json `scripts` command runs `bun` on, relative
+ *  to the package directory (scripts run with the package as cwd), or null
+ *  when the command does not `bun run` a `.ts`. */
+export function scriptBunTsTarget(cmd: string): string | null {
+  if (!/\bbun\b/.test(cmd)) return null;
+  const cleaned = cmd.replace(/--conditions[= ]intx-src/g, " ");
+  return (
+    cleaned.match(
+      /\bbun\s+(?:run\s+)?(?:--[\w=.-]+\s+)*["']?([\w./-]+\.ts)\b/,
+    )?.[1] ?? null
+  );
 }
 
 export type LauncherReport = {
@@ -145,11 +176,12 @@ function isShellLauncher(abs: string): boolean {
   return /^#!.*\b(?:bash|sh)\b/.test(shebang);
 }
 
-/** Scan every top-level `bin/` launcher for two hazards: a `bun <script>.ts`
- *  invocation whose target imports `@intx/*` must carry `--conditions=intx-src`,
- *  and no top-level `bin/*.ts` may import `./<name>` where `bin/<name>` is a
- *  wrapper (which would resolve to the wrapper, not the `.ts`). Throws when a
- *  launcher's bun target cannot be resolved to an existing file. */
+/** Scan every launcher surface (bin bash wrappers, app/package shebang
+ *  binaries, and example/app package.json scripts) and require
+ *  `--conditions=intx-src` on each `bun` invocation whose `.ts` target imports
+ *  `@intx/*`; also fail any top-level `bin/*.ts` that imports a `./<name>` a
+ *  wrapper shadows. Throws when a bin wrapper's bun target cannot be resolved
+ *  to an existing file. */
 export function checkLaunchers(repoRoot: string): LauncherReport {
   const violations: string[] = [];
   let launcherCount = 0;
@@ -213,6 +245,66 @@ export function checkLaunchers(repoRoot: string): LauncherReport {
     }
   }
 
+  // Pass 4: shebang binaries under `apps/*/bin` and `packages/*/bin` run by
+  // path, so `--conditions` is not inherited and rides on the shebang alone.
+  const shebangLaunchers = [
+    ...new Bun.Glob("apps/*/bin/*").scanSync(repoRoot),
+    ...new Bun.Glob("packages/*/bin/*").scanSync(repoRoot),
+  ].sort();
+  for (const rel of shebangLaunchers) {
+    const abs = join(repoRoot, rel);
+    if (!statSync(abs).isFile()) continue;
+    const text = readFileSync(abs, "utf8");
+    const nl = text.indexOf("\n");
+    const shebang = nl === -1 ? text : text.slice(0, nl);
+    if (!/^#!.*\bbun\b/.test(shebang)) continue;
+    launcherCount += 1;
+    if (!importsIntx(text)) continue;
+    guardedCount += 1;
+    if (!HAS_FLAG.test(shebang)) {
+      violations.push(
+        `${rel}: its bun shebang runs an @intx/* importer without ${FLAG}. ` +
+          `This binary is executed by path, so the flag must ride on the ` +
+          `shebang: #!/usr/bin/env -S bun ${FLAG}.`,
+      );
+    }
+  }
+
+  // Pass 5: package.json `scripts` under `examples/*` and `apps/*` that
+  // `bun run` a `.ts` importing @intx/*. Scripts run with the package dir as
+  // cwd, so the target resolves against that dir.
+  const manifests = [
+    ...new Bun.Glob("examples/*/package.json").scanSync(repoRoot),
+    ...new Bun.Glob("apps/*/package.json").scanSync(repoRoot),
+  ].sort();
+  for (const rel of manifests) {
+    const pkgDir = dirname(rel);
+    const parsed: unknown = JSON.parse(
+      readFileSync(join(repoRoot, rel), "utf8"),
+    );
+    const scripts =
+      typeof parsed === "object" && parsed !== null && "scripts" in parsed
+        ? (parsed as { scripts: unknown }).scripts
+        : undefined;
+    if (typeof scripts !== "object" || scripts === null) continue;
+    for (const [scriptName, cmd] of Object.entries(scripts)) {
+      if (typeof cmd !== "string") continue;
+      const target = scriptBunTsTarget(cmd);
+      if (target === null) continue;
+      const targetAbs = join(repoRoot, pkgDir, target);
+      if (!existsSync(targetAbs)) continue;
+      if (!importsIntx(readFileSync(targetAbs, "utf8"))) continue;
+      guardedCount += 1;
+      if (!HAS_FLAG.test(cmd)) {
+        violations.push(
+          `${rel} script "${scriptName}" runs \`${cmd}\` (${target} imports ` +
+            `@intx/*) without ${FLAG}, so it resolves @intx/* to a dist that ` +
+            `is never built. Add the flag: bun ${FLAG} run ${target}.`,
+        );
+      }
+    }
+  }
+
   return { violations, launcherCount, guardedCount };
 }
 
@@ -228,9 +320,9 @@ if (import.meta.main) {
     console.error(`check-launchers: ${violations.length} violation(s)\n`);
     for (const v of violations) console.error(`  - ${v}`);
     console.error(
-      `\nEvery bin/ launcher that runs a bun target importing @intx/* must ` +
-        `pass ${FLAG} (the Makefile's $(BUN) variable does this for ` +
-        `make-invoked scripts).`,
+      `\nEvery launcher that runs a bun target importing @intx/* must pass ` +
+        `${FLAG} (make-invoked scripts get it from the Makefile's $(BUN) ` +
+        `variable).`,
     );
     process.exit(1);
   }

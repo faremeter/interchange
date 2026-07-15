@@ -417,7 +417,7 @@ recording scripts should never pass either flag.
 `packages/inference-testing/bin/record-example-sessions.ts` is a small
 script that uses the test seam to regenerate the committed example
 sessions without provider credentials. Run it with
-`bun packages/inference-testing/bin/record-example-sessions.ts`.
+`bun --conditions=intx-src packages/inference-testing/bin/record-example-sessions.ts`.
 
 ### Replay
 
