@@ -66,8 +66,9 @@ eventStream.write(event, () => {
     // production callsite invokes the binary directly. The script
     // path here points to a TypeScript file which requires Bun's
     // shebang to execute; the production binary at
-    // `apps/sidecar/bin/workflow-child` is `#!/usr/bin/env bun`,
-    // so the wiring module spawns it as a bare argv entry. The
+    // `apps/sidecar/bin/workflow-child` is
+    // `#!/usr/bin/env -S bun --conditions=intx-src`, so the wiring
+    // module spawns it as a bare argv entry. The
     // test mirrors that by routing the spawn through a tiny
     // wrapper script that points at Bun's runtime.
     const wrapperPath = path.join(tmpRoot, `wrapper-${String(Date.now())}.sh`);
