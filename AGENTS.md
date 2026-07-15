@@ -40,7 +40,7 @@ The remaining command gets a clean, running system with seed data. It drops and 
 | Full database reset           | `bin/db-reset`          |
 | Full reset (DB + agent state) | `bin/db-reset --clean`  |
 | Apply migrations only         | `bin/db-migrate`        |
-| Seed (requires running hub)   | `bun bin/seed.ts`       |
+| Seed (requires running hub)   | `bin/seed`              |
 | Full build verification       | `make all`              |
 | Type check only               | `make build`            |
 | Bundle the admin UI           | `make build-admin-ui`   |
