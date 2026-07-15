@@ -76,6 +76,17 @@ export type PublishOptions = {
   fromDir: string;
 };
 
+// The dev seed's publishing identity and target tenant. Both callers —
+// `bin/dev.ts`'s in-process publish and the CLI entry point — resolve these
+// from the environment, defaulting to the seed, so the defaults live in one
+// place and the two edges cannot authenticate as different identities.
+export const PUBLISH_SEED_DEFAULTS = {
+  adminEmail: "alice@example.com",
+  adminPassword: "password123",
+  tenantSlug: "acme",
+  tenantName: "Acme Corp",
+} as const;
+
 type CookieJar = string[];
 
 type ApiResult = {
