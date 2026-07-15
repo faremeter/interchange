@@ -199,6 +199,22 @@ test("checkLaunchers throws when a wrapper's bun target does not exist", () => {
   expect(() => checkLaunchers(root)).toThrow(/does not exist/);
 });
 
+test("checkLaunchers accepts a comma-separated condition list containing intx-src", () => {
+  const root = makeRepo({
+    "bin/seed": `#!/usr/bin/env bash\nexec bun --conditions=node,intx-src "$(dirname -- "\${BASH_SOURCE[0]}")/seed.ts" "$@"\n`,
+    "bin/seed.ts": `import { x } from "@intx/agent";\n`,
+  });
+  expect(checkLaunchers(root).violations).toEqual([]);
+});
+
+test("checkLaunchers flags a look-alike condition that is not intx-src", () => {
+  const root = makeRepo({
+    "bin/seed": `#!/usr/bin/env bash\nexec bun --conditions=intx-src-extra "$(dirname -- "\${BASH_SOURCE[0]}")/seed.ts" "$@"\n`,
+    "bin/seed.ts": `import { x } from "@intx/agent";\n`,
+  });
+  expect(checkLaunchers(root).violations).toHaveLength(1);
+});
+
 test("checkLaunchers flags an apps/*/bin shebang binary missing the flag", () => {
   const root = makeRepo({
     "apps/sidecar/bin/child": `#!/usr/bin/env -S bun\nimport { x } from "@intx/agent";\n`,
