@@ -1,6 +1,6 @@
 {
   "name": "@intx/types",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "LGPL-2.1-only",
   "type": "module",
   "exports": {
