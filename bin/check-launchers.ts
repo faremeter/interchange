@@ -31,12 +31,15 @@
 // not the `.ts`, and bun parses shell as TypeScript. It fails any such
 // `./<name>` import and names the `bin/lib/` remedy.
 //
-// Scope boundary: the bun-invocation match covers the command positions
-// launchers actually use (line start, after a separator, or `exec`). A
-// `bun` invocation behind an env-assignment, `command`, or `time` prefix
-// is deliberately not matched — no launcher uses those forms, and widening
-// the match to every shell command position would reimplement shell
-// parsing. Prose commands in docs are likewise out of scope.
+// Scope boundary: the guard matches the launcher forms the repo uses, not
+// every conceivable one. A `bun` invocation behind an env-assignment,
+// `command`, or `time` prefix is not matched; a line invoking bun on more
+// than one `.ts` guards only the first; and `importsIntx` relies on the
+// TypeScript pre-processor, which surfaces every import/re-export form in
+// use here except `export * as ns from "@intx/..."`. Each is a deliberate
+// false-negative for a form no launcher uses — widening to cover them would
+// reimplement shell and module parsing. Prose commands in docs are likewise
+// out of scope.
 //
 // `checkLaunchers` runs the scans and is exported for tests, along with the
 // pure `bunTsTarget`/`scanLauncher`/`importsIntx`/`shadowingImports` helpers;
@@ -54,8 +57,11 @@ const FLAG = "--conditions=intx-src";
 // argument (`command -v bun`).
 const BUN_INVOCATION = /(?:^\s*|[;&|(]\s*|\bexec\s+)bun\b/;
 
-// The condition flag as a whole token, in either `=` or space form.
-const HAS_FLAG = /--conditions[= ]intx-src\b/;
+// The condition flag, in either `=` or space form, with `intx-src` present
+// as a whole comma-delimited element of the condition list — so
+// `--conditions=node,intx-src` matches but `--conditions=intx-src-extra`
+// (a different, non-resolving condition) does not.
+const HAS_FLAG = /--conditions[= ](?:[\w.-]+,)*intx-src(?:,[\w.-]+)*(?![\w.-])/;
 
 /** True when a TypeScript source imports any `@intx/*` package directly.
  *  Imports are extracted with the TypeScript pre-processor, so an `@intx`
@@ -77,11 +83,10 @@ export function importsIntx(code: string): boolean {
  *  this guard cannot resolve — an unparsed launcher is an unguarded one. */
 export function bunTsTarget(line: string, wrapperRel: string): string | null {
   if (!BUN_INVOCATION.test(line)) return null;
-  // Strip the condition flag (either form) before locating the target: the
-  // space form `--conditions intx-src` would otherwise leave a bare
-  // `intx-src` token the target parser could misread. The flag's presence
-  // is detected separately, by HAS_FLAG on the original line.
-  const cleaned = line.replace(/--conditions[= ]intx-src/g, " ");
+  // Strip any `--conditions` flag (including a comma-separated list) before
+  // locating the target, so its value is not misread as the script. The
+  // flag's presence is detected separately, by HAS_FLAG on the original line.
+  const cleaned = line.replace(/--conditions[= ][\w.,-]*/g, " ");
   const base = cleaned.match(/([\w.-]+\.ts)\b/)?.[1];
   if (base === undefined) return null;
   // `$(dirname -- "${BASH_SOURCE[0]}")/<name>.ts` -> the wrapper's own dir.
@@ -152,7 +157,7 @@ export function scanLauncher(
  *  when the command does not `bun run` a `.ts`. */
 export function scriptBunTsTarget(cmd: string): string | null {
   if (!/\bbun\b/.test(cmd)) return null;
-  const cleaned = cmd.replace(/--conditions[= ]intx-src/g, " ");
+  const cleaned = cmd.replace(/--conditions[= ][\w.,-]*/g, " ");
   return (
     cleaned.match(
       /\bbun\s+(?:run\s+)?(?:--[\w=.-]+\s+)*["']?([\w./-]+\.ts)\b/,

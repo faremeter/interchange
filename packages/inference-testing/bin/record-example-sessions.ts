@@ -10,7 +10,7 @@
 //
 // To regenerate after a manifest-schema or capture-format change:
 //
-//     bun packages/inference-testing/bin/record-example-sessions.ts
+//     bun --conditions=intx-src packages/inference-testing/bin/record-example-sessions.ts
 
 import fs from "node:fs/promises";
 import path from "node:path";
