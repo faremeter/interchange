@@ -45,7 +45,8 @@ const EXPECTED_CHILD_ROOTS = [
 // the runtime value graph the walk below captures.
 function binaryImportSpecifiers(): string[] {
   const raw = readFileSync(join(repoRoot, CHILD_BINARY), "utf8");
-  // The transpiler does not accept the binary's `#!/usr/bin/env bun` shebang.
+  // The transpiler does not accept the binary's
+  // `#!/usr/bin/env -S bun --conditions=intx-src` shebang.
   const source = raw.replace(/^#![^\n]*\n/, "");
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const specs = new Set(transpiler.scanImports(source).map((i) => i.path));
