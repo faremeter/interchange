@@ -22,7 +22,10 @@ import { $, type ProcessPromise, type ProcessOutput } from "zx";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { publishToolPackages } from "./lib/publish-tool-packages";
+import {
+  PUBLISH_SEED_DEFAULTS,
+  publishToolPackages,
+} from "./lib/publish-tool-packages";
 import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
 
 $.verbose = false;
@@ -391,19 +394,19 @@ if (!skipPublishBuiltins) {
       hubURL,
       adminEmail:
         adminEmailEnv === undefined || adminEmailEnv === ""
-          ? "alice@example.com"
+          ? PUBLISH_SEED_DEFAULTS.adminEmail
           : adminEmailEnv,
       adminPassword:
         adminPasswordEnv === undefined || adminPasswordEnv === ""
-          ? "password123"
+          ? PUBLISH_SEED_DEFAULTS.adminPassword
           : adminPasswordEnv,
       tenantSlug:
         tenantSlugEnv === undefined || tenantSlugEnv === ""
-          ? "acme"
+          ? PUBLISH_SEED_DEFAULTS.tenantSlug
           : tenantSlugEnv,
       tenantName:
         tenantNameEnv === undefined || tenantNameEnv === ""
-          ? "Acme Corp"
+          ? PUBLISH_SEED_DEFAULTS.tenantName
           : tenantNameEnv,
       registryName: WORKSPACE_BUILTINS_REGISTRY,
       fromDir: resolve(ROOT, "dist/builtins"),

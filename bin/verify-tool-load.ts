@@ -37,8 +37,6 @@ import { packAndInstall } from "./lib/pack";
 import { readWorkspacePackages } from "./lib/packages";
 import { makeRun } from "./lib/run";
 
-const TOOL_ROOTS = ["@intx/tools-lsp", "@intx/tools-mail", "@intx/tools-posix"];
-
 // The factory each tool's sidecar-bundle exports, and whether it is a
 // plugin (vs. a tool) factory.
 const EXPECTED = [
@@ -46,6 +44,10 @@ const EXPECTED = [
   { pkg: "@intx/tools-posix", named: "posix", plugin: false },
   { pkg: "@intx/tools-lsp", named: "lsp", plugin: true },
 ];
+
+// The tool packages whose closure is packed, derived from EXPECTED so the
+// packed set and the load assertions cannot drift apart.
+const TOOL_ROOTS = EXPECTED.map((e) => e.pkg);
 
 /** The full `@intx/*` dependency closure of the tool packages, walking
  *  every internal dependency field (dependencies, peer, optional) so no

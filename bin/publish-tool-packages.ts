@@ -12,7 +12,10 @@ import { parseArgs } from "node:util";
 
 import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
 
-import { publishToolPackages } from "./lib/publish-tool-packages";
+import {
+  PUBLISH_SEED_DEFAULTS,
+  publishToolPackages,
+} from "./lib/publish-tool-packages";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -73,11 +76,20 @@ async function runCLI(): Promise<void> {
       "[publish] running with dev seed credentials — set HUB_ADMIN_EMAIL and HUB_ADMIN_PASSWORD to override",
     );
   }
-  const adminEmail = optionalEnv("HUB_ADMIN_EMAIL", "alice@example.com");
-  const adminPassword = optionalEnv("HUB_ADMIN_PASSWORD", "password123");
-  const tenantSlug = values.tenant ?? optionalEnv("HUB_TENANT_SLUG", "acme");
+  const adminEmail = optionalEnv(
+    "HUB_ADMIN_EMAIL",
+    PUBLISH_SEED_DEFAULTS.adminEmail,
+  );
+  const adminPassword = optionalEnv(
+    "HUB_ADMIN_PASSWORD",
+    PUBLISH_SEED_DEFAULTS.adminPassword,
+  );
+  const tenantSlug =
+    values.tenant ??
+    optionalEnv("HUB_TENANT_SLUG", PUBLISH_SEED_DEFAULTS.tenantSlug);
   const tenantName =
-    values["tenant-name"] ?? optionalEnv("HUB_TENANT_NAME", "Acme Corp");
+    values["tenant-name"] ??
+    optionalEnv("HUB_TENANT_NAME", PUBLISH_SEED_DEFAULTS.tenantName);
   // parseArgs above declares defaults for `registry` and `from`, so
   // `values.registry` and `values.from` are always strings here.
   const registryName = values.registry;
