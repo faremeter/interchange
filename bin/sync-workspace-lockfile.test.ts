@@ -153,3 +153,59 @@ describe("rewriteWorkspaceVersions", () => {
     ).toThrow(/no workspaces section/);
   });
 });
+
+// Exercises the `escaped` branch of the shared stepStringScan: a string value
+// with an escaped quote or backslash must not be mistaken for closing the
+// string, so a structural-looking `,}` inside it is left intact.
+describe("escaped characters inside string values", () => {
+  test("escaped quote followed by comma-brace is not corrupted", () => {
+    const lock = `{
+  "workspaces": {
+    "packages/e": {
+      "name": "@intx/e",
+      "description": "he said \\",}\\" loudly",
+      "version": "0.1.2",
+    },
+  },
+  "packages": {},
+}
+`;
+    const out = rewriteWorkspaceVersions(lock, "0.2.0");
+    expect(out).toContain('"description": "he said \\",}\\" loudly"');
+    expect(workspaceVersions(out)).toEqual({ "packages/e": "0.2.0" });
+  });
+
+  test("escaped backslash at end of string still closes the string", () => {
+    const lock = `{
+  "workspaces": {
+    "packages/f": {
+      "name": "@intx/f",
+      "path": "c:\\\\",
+      "version": "0.1.2",
+    },
+  },
+  "packages": {},
+}
+`;
+    const out = rewriteWorkspaceVersions(lock, "0.2.0");
+    expect(out).toContain('"path": "c:\\\\"');
+    expect(workspaceVersions(out)).toEqual({ "packages/f": "0.2.0" });
+  });
+
+  test("comma-brace inside a string with escaped content is preserved", () => {
+    const lock = `{
+  "workspaces": {
+    "packages/g": {
+      "name": "@intx/g",
+      "note": "a\\\\,}b",
+      "version": "0.1.2",
+    },
+  },
+  "packages": {},
+}
+`;
+    const out = rewriteWorkspaceVersions(lock, "0.2.0");
+    expect(out).toContain('"note": "a\\\\,}b"');
+    expect(workspaceVersions(out)).toEqual({ "packages/g": "0.2.0" });
+  });
+});

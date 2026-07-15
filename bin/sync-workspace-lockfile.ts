@@ -23,29 +23,38 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type } from "arktype";
 
+/** The character-level string-scan state: whether the scanner is inside a
+ *  JSON string, and whether the previous character escaped the next one. */
+interface StringScan {
+  inString: boolean;
+  escaped: boolean;
+}
+
+/** Advance the string-scan state by one character, so a structural scan can
+ *  tell whether a brace or comma sits inside a string value (where it must be
+ *  ignored) or outside it. */
+function stepStringScan(c: string | undefined, s: StringScan): StringScan {
+  if (s.inString) {
+    if (s.escaped) return { inString: true, escaped: false };
+    if (c === "\\") return { inString: true, escaped: true };
+    if (c === '"') return { inString: false, escaped: false };
+    return { inString: true, escaped: false };
+  }
+  if (c === '"') return { inString: true, escaped: false };
+  return { inString: false, escaped: false };
+}
+
 /** Drop the trailing commas (before `}`/`]`) that appear outside strings —
  *  the only JSON5 feature bun.lock uses — so the result parses as JSON. A
- *  naive regex would also strip a comma inside a string value; this scanner
- *  tracks string state so such a value is never corrupted. */
+ *  naive regex would also strip a comma inside a string value; tracking
+ *  string state keeps such a value intact. */
 function stripTrailingCommas(text: string): string {
   let out = "";
-  let inString = false;
-  let escaped = false;
+  let scan: StringScan = { inString: false, escaped: false };
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (inString) {
-      out += c;
-      if (escaped) escaped = false;
-      else if (c === "\\") escaped = true;
-      else if (c === '"') inString = false;
-      continue;
-    }
-    if (c === '"') {
-      inString = true;
-      out += c;
-      continue;
-    }
-    if (c === ",") {
+    let drop = false;
+    if (!scan.inString && c === ",") {
       let j = i + 1;
       while (
         j < text.length &&
@@ -56,9 +65,10 @@ function stripTrailingCommas(text: string): string {
       ) {
         j++;
       }
-      if (text[j] === "}" || text[j] === "]") continue; // drop the trailing comma
+      drop = text[j] === "}" || text[j] === "]";
     }
-    out += c;
+    if (!drop) out += c;
+    scan = stepStringScan(c, scan);
   }
   return out;
 }
@@ -91,19 +101,14 @@ export function workspaceVersions(lockText: string): Record<string, string> {
  *  inside strings. */
 function matchingBrace(text: string, open: number): number {
   let depth = 0;
-  let inString = false;
-  let escaped = false;
+  let scan: StringScan = { inString: false, escaped: false };
   for (let i = open; i < text.length; i++) {
     const c = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (c === "\\") escaped = true;
-      else if (c === '"') inString = false;
-      continue;
+    if (!scan.inString) {
+      if (c === "{") depth += 1;
+      else if (c === "}" && (depth -= 1) === 0) return i;
     }
-    if (c === '"') inString = true;
-    else if (c === "{") depth += 1;
-    else if (c === "}" && (depth -= 1) === 0) return i;
+    scan = stepStringScan(c, scan);
   }
   throw new Error(
     "sync-workspace-lockfile: unbalanced braces in the workspaces section",
