@@ -173,7 +173,7 @@ All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://g
 
 | Script                  | Usage                                            | Description                                                                                                               |
 | ----------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `bin/dev.ts`            | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                                              |
+| `bin/dev`               | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                                              |
 | `bin/hub`               | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                                               |
 | `bin/db-migrate`        | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                                  |
 | `bin/db-reset`          | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state.                   |

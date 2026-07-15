@@ -75,6 +75,6 @@ returns a plug-in for the runtime.
 
 Then register the new plug-in in `bin/discover.ts` and add its
 (model, capability) entries to `SUPPORT_MATRIX` in
-`@intx/inference-discovery/catalog`. Run `bun bin/discover.ts
---provider <new-name> --all` against a funded account to produce
+`@intx/inference-discovery/catalog`. Run `bin/discover --provider
+<new-name> --all` against a funded account to produce
 the fixture corpus.
