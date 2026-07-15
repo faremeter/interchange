@@ -34,6 +34,7 @@ import { join } from "node:path";
 
 import { buildDist } from "./build-dist";
 import { readWorkspacePackages } from "./lib/packages";
+import { makeRun } from "./lib/run";
 
 const TOOL_ROOTS = ["@intx/tools-lsp", "@intx/tools-mail", "@intx/tools-posix"];
 
@@ -87,20 +88,7 @@ for (const { pkg, named, plugin } of expected) {
 console.log("verify-tool-load: ok");
 `;
 
-function run(cmd: string[], cwd: string): void {
-  const proc = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
-  if (proc.exitCode !== 0) {
-    const detail = [
-      proc.stdout.toString().trim(),
-      proc.stderr.toString().trim(),
-    ]
-      .filter(Boolean)
-      .join("\n");
-    throw new Error(
-      `verify-tool-load: \`${cmd.join(" ")}\` failed in ${cwd}:\n${detail}`,
-    );
-  }
-}
+const run = makeRun("verify-tool-load");
 
 async function main(repoRoot: string): Promise<void> {
   const closure = toolClosure(repoRoot);
