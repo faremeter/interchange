@@ -1,6 +1,3 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -10,7 +7,6 @@ import {
   checkInternalDepExpressions,
   checkPackedManifest,
   checkVersionSync,
-  readTargets,
   topoSortLeafFirst,
 } from "./publish";
 
@@ -190,41 +186,5 @@ describe("assertMatrix", () => {
     const violations = assertMatrix(observed);
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("deno");
-  });
-});
-
-describe("readTargets", () => {
-  test("includes non-private packages, skips private and manifest-less dirs", () => {
-    const repo = mkdtempSync(join(tmpdir(), "readtargets-"));
-    const pkgs = join(repo, "packages");
-    mkdirSync(pkgs);
-    const writePkg = (dir: string, manifest: unknown): void => {
-      const d = join(pkgs, dir);
-      mkdirSync(d);
-      if (manifest !== undefined) {
-        writeFileSync(join(d, "package.json"), JSON.stringify(manifest));
-      }
-    };
-    writePkg("a", {
-      name: "@intx/a",
-      version: "0.2.0",
-      dependencies: { "@intx/b": "workspace:*" },
-    });
-    writePkg("b", { name: "@intx/b", version: "0.2.0" });
-    writePkg("secret", {
-      name: "@intx/secret",
-      version: "0.2.0",
-      private: true,
-    });
-    writePkg("empty", undefined); // no package.json -> ENOENT -> skipped
-    try {
-      const targets = readTargets(repo);
-      expect(targets.map((t) => t.name)).toEqual(["@intx/a", "@intx/b"]);
-      expect(targets.find((t) => t.name === "@intx/a")?.internalDeps).toEqual([
-        "@intx/b",
-      ]);
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
   });
 });

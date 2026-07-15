@@ -32,40 +32,21 @@
 
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type } from "arktype";
 
 import { rewriteDistTree } from "./dist-rewrite";
+import { readWorkspacePackages } from "./lib/packages";
 
 const GENERATED_CONFIG = "tsconfig.dist.generated.json";
-
-const manifestSchema = type({ name: "string", "private?": "boolean" });
 
 type Target = { name: string; dir: string };
 
 /** Every non-private workspace package under `packages/*`, as
  *  `{ name, absolute dir }`, sorted by name for deterministic output. */
-async function publishTargets(repoRoot: string): Promise<Target[]> {
-  const targets: Target[] = [];
-  for (const manifestRel of new Bun.Glob("packages/*/package.json").scanSync(
-    repoRoot,
-  )) {
-    const parsed = manifestSchema(
-      await Bun.file(join(repoRoot, manifestRel)).json(),
-    );
-    if (parsed instanceof type.errors) {
-      throw new Error(
-        `build-dist: ${manifestRel} is not a well-formed manifest: ${parsed.summary}`,
-      );
-    }
-    if (parsed.private === true) continue;
-    targets.push({
-      name: parsed.name,
-      dir: join(repoRoot, manifestRel.replace(/\/package\.json$/, "")),
-    });
-  }
-  return targets.sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  );
+function publishTargets(repoRoot: string): Target[] {
+  return readWorkspacePackages(repoRoot).map((p) => ({
+    name: p.name,
+    dir: p.dir,
+  }));
 }
 
 /** The ephemeral per-package build config: inherit the package's own
@@ -125,7 +106,7 @@ export async function buildDist(
   repoRoot: string,
   only?: readonly string[],
 ): Promise<Target[]> {
-  const all = await publishTargets(repoRoot);
+  const all = publishTargets(repoRoot);
   const selected =
     only && only.length > 0 ? all.filter((t) => only.includes(t.name)) : all;
   if (only && only.length > 0) {

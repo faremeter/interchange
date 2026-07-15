@@ -30,6 +30,8 @@
 import { join } from "node:path";
 import { type } from "arktype";
 
+import { readWorkspacePackages } from "./lib/packages";
+
 const SRC_CONDITION = "intx-src";
 
 // One exports subpath's condition object: condition name -> target path.
@@ -105,10 +107,6 @@ async function readManifest(path: string): Promise<Manifest> {
   return parsed;
 }
 
-function nonPrivatePackageManifests(repoRoot: string): string[] {
-  return [...new Bun.Glob("packages/*/package.json").scanSync(repoRoot)].sort();
-}
-
 export type ExportsReport = { violations: string[]; packageCount: number };
 
 /** Check every non-private package's `exports` against the canonical
@@ -118,11 +116,10 @@ export async function checkWorkspaceExports(
 ): Promise<ExportsReport> {
   const violations: string[] = [];
   let packageCount = 0;
-  for (const rel of nonPrivatePackageManifests(repoRoot)) {
-    const manifest = await readManifest(join(repoRoot, rel));
-    if (manifest.private === true) continue;
+  for (const { manifestPath } of readWorkspacePackages(repoRoot)) {
+    const manifest = await readManifest(manifestPath);
     packageCount += 1;
-    const self = manifest.name ?? rel;
+    const self = manifest.name ?? manifestPath;
     for (const [subpath, conditions] of Object.entries(
       manifest.exports ?? {},
     )) {
@@ -148,10 +145,9 @@ export async function checkWorkspaceExports(
  *  Returns the packages changed. */
 export async function fixWorkspaceExports(repoRoot: string): Promise<string[]> {
   const changed: string[] = [];
-  for (const rel of nonPrivatePackageManifests(repoRoot)) {
-    const path = join(repoRoot, rel);
+  for (const { manifestPath: path } of readWorkspacePackages(repoRoot)) {
     const manifest = await readManifest(path);
-    if (manifest.private === true || manifest.exports === undefined) continue;
+    if (manifest.exports === undefined) continue;
     const raw = rawObjectSchema(await Bun.file(path).json());
     if (raw instanceof type.errors) {
       throw new Error(
@@ -164,7 +160,7 @@ export async function fixWorkspaceExports(repoRoot: string): Promise<string[]> {
       const src = sourceTarget(conditions);
       if (src === null) {
         throw new Error(
-          `exports-shape: cannot fix ${manifest.name ?? rel}: exports["${subpath}"] has no "./src/*.ts" target`,
+          `exports-shape: cannot fix ${manifest.name ?? path}: exports["${subpath}"] has no "./src/*.ts" target`,
         );
       }
       const expected = expectedConditions(src);
@@ -174,7 +170,7 @@ export async function fixWorkspaceExports(repoRoot: string): Promise<string[]> {
     if (!mutated) continue;
     raw["exports"] = nextExports;
     await Bun.write(path, JSON.stringify(raw, null, 2) + "\n");
-    changed.push(manifest.name ?? rel);
+    changed.push(manifest.name ?? path);
   }
   return changed;
 }
