@@ -167,29 +167,13 @@ describe("assertMatrix", () => {
     expect(assertMatrix(observed)).toEqual([]);
   });
 
-  test("accepts a documented incompatibility failing as expected", () => {
-    const observed: ObservedMatrix = {
-      "@intx/tools-lsp": { node: "fail", bun: "load", deno: "fail" },
-    };
-    expect(assertMatrix(observed)).toEqual([]);
-  });
-
-  test("flags a documented incompatibility that unexpectedly loads", () => {
-    const observed: ObservedMatrix = {
-      "@intx/tools-lsp": { node: "load", bun: "load" },
-    };
-    const violations = assertMatrix(observed);
-    expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain("remove the exception");
-  });
-
-  test("flags a package that fails a runtime it should load under", () => {
+  test("flags a package that fails a runtime", () => {
     const observed: ObservedMatrix = {
       "@intx/a": { node: "fail", bun: "load" },
     };
     const violations = assertMatrix(observed);
     expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain("expected to load");
+    expect(violations[0]).toContain("failed to load under node");
   });
 
   test("skips a runtime that was unavailable (no observed result)", () => {

@@ -23,7 +23,7 @@
     "@intx/log": "workspace:*",
     "@intx/tools-posix": "workspace:*",
     "@intx/types": "workspace:*",
-    "vscode-jsonrpc": "^8.2.0",
+    "vscode-jsonrpc": "^9.0.1",
     "vscode-languageserver-types": "^3.17.5",
     "which": "^4.0.0"
   },

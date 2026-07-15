@@ -23,10 +23,7 @@
 //      plugin factory.
 //
 // The interchange tool loader runs under Bun, so the load is exercised
-// under Bun rather than Node: `@intx/tools-lsp` depends on
-// `vscode-jsonrpc/node`, a CommonJS subpath its dependency exposes without
-// an `exports` map, which Node's ESM loader cannot resolve but Bun (like
-// `require`) can. This mirrors the real runtime.
+// under Bun to mirror the real runtime.
 //
 // This is build- and network-heavy (it emits dist and installs from npm),
 // so it runs from its own `make verify-tool-load` target, not `make all`.
