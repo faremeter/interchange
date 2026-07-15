@@ -8,6 +8,7 @@ import {
   checkLaunchers,
   importsIntx,
   scanLauncher,
+  scriptBunTsTarget,
   shadowingImports,
 } from "./check-launchers";
 
@@ -89,6 +90,25 @@ test("bunTsTarget throws when a .ts target uses an unrecognized path form", () =
   expect(() => bunTsTarget(`exec bun "$WEIRD/thing.ts"`, "bin/x")).toThrow(
     /unrecognized/,
   );
+});
+
+test("bunTsTarget accepts the space form of the condition flag", () => {
+  const line = `exec bun --conditions intx-src "$(dirname -- "\${BASH_SOURCE[0]}")/seed.ts" "$@"`;
+  expect(bunTsTarget(line, "bin/seed")).toBe("bin/seed.ts");
+});
+
+test("scanLauncher ignores a .ts named in a trailing comment", () => {
+  const text = `#!/usr/bin/env bash\nbun install # regenerates foo.ts\n`;
+  expect(scanLauncher(text, "bin/add-package")).toEqual([]);
+});
+
+test("scriptBunTsTarget extracts the bun .ts target from a package script", () => {
+  expect(scriptBunTsTarget("bun --conditions=intx-src run src/cli.ts")).toBe(
+    "src/cli.ts",
+  );
+  expect(scriptBunTsTarget("bun run src/cli.ts")).toBe("src/cli.ts");
+  expect(scriptBunTsTarget("tsc --noEmit")).toBeNull();
+  expect(scriptBunTsTarget("bun install")).toBeNull();
 });
 
 test("scanLauncher skips comment lines and the shebang", () => {
@@ -179,10 +199,50 @@ test("checkLaunchers throws when a wrapper's bun target does not exist", () => {
   expect(() => checkLaunchers(root)).toThrow(/does not exist/);
 });
 
+test("checkLaunchers flags an apps/*/bin shebang binary missing the flag", () => {
+  const root = makeRepo({
+    "apps/sidecar/bin/child": `#!/usr/bin/env -S bun\nimport { x } from "@intx/agent";\n`,
+  });
+  const report = checkLaunchers(root);
+  expect(report.violations).toHaveLength(1);
+  expect(report.violations[0]).toContain("apps/sidecar/bin/child");
+  expect(report.violations[0]).toContain("shebang");
+});
+
+test("checkLaunchers passes an apps/*/bin shebang binary carrying the flag", () => {
+  const root = makeRepo({
+    "apps/sidecar/bin/child": `#!/usr/bin/env -S bun --conditions=intx-src\nimport { x } from "@intx/agent";\n`,
+  });
+  expect(checkLaunchers(root).violations).toEqual([]);
+});
+
+test("checkLaunchers flags an example package.json script missing the flag", () => {
+  const root = makeRepo({
+    "examples/quickstart/package.json": JSON.stringify({
+      scripts: { start: "bun run src/cli.ts" },
+    }),
+    "examples/quickstart/src/cli.ts": `import { x } from "@intx/agent";\n`,
+  });
+  const report = checkLaunchers(root);
+  expect(report.violations).toHaveLength(1);
+  expect(report.violations[0]).toContain("examples/quickstart/package.json");
+  expect(report.violations[0]).toContain("--conditions=intx-src");
+});
+
+test("checkLaunchers passes an example script carrying the flag", () => {
+  const root = makeRepo({
+    "examples/quickstart/package.json": JSON.stringify({
+      scripts: { start: "bun --conditions=intx-src run src/cli.ts" },
+    }),
+    "examples/quickstart/src/cli.ts": `import { x } from "@intx/agent";\n`,
+  });
+  expect(checkLaunchers(root).violations).toEqual([]);
+});
+
 test("checkLaunchers passes against the real repository", () => {
   const here = import.meta.dirname;
   if (here === undefined) throw new Error("import.meta.dirname is undefined");
   const report = checkLaunchers(join(here, ".."));
   expect(report.violations).toEqual([]);
-  expect(report.guardedCount).toBeGreaterThanOrEqual(10);
+  expect(report.guardedCount).toBeGreaterThanOrEqual(20);
 });
