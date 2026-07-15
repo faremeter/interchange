@@ -353,7 +353,22 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
     if (execute) {
       for (const t of ordered) {
         console.log(`publishing ${t.name}@${version}`);
-        run(["bun", "publish"], t.dir);
+        // Inherit the terminal so an interactive npm 2FA one-time-password
+        // prompt is visible and answerable. The pre-publish steps capture
+        // their output to surface errors, but a publish that needs an OTP
+        // would then block on a prompt the operator cannot see.
+        const proc = Bun.spawnSync(["bun", "publish"], {
+          cwd: t.dir,
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+        if (proc.exitCode !== 0) {
+          throw new Error(
+            `publish: bun publish failed for ${t.name}@${version} ` +
+              `(exit ${proc.exitCode ?? "signal"})`,
+          );
+        }
       }
       console.log(
         `publish: published ${ordered.length} packages at ${version}`,
