@@ -28,11 +28,12 @@
 // This is build- and network-heavy (it emits dist and installs from npm),
 // so it runs from its own `make verify-tool-load` target, not `make all`.
 
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildDist } from "./build-dist";
+import { packAndInstall } from "./lib/pack";
 import { readWorkspacePackages } from "./lib/packages";
 import { makeRun } from "./lib/run";
 
@@ -95,28 +96,19 @@ async function main(repoRoot: string): Promise<void> {
   console.log(`closure: ${closure.join(" ")}`);
 
   const scratch = mkdtempSync(join(tmpdir(), "verify-tool-load-"));
-  const tarballs = join(scratch, "tarballs");
-  const consumer = join(scratch, "consumer");
   try {
-    run(["mkdir", "-p", tarballs, consumer], repoRoot);
-
-    // 1. emit dist for the closure.
+    // Emit dist for the closure, then pack it and install into a consumer.
     await buildDist(repoRoot, closure);
+    const { consumer } = packAndInstall(
+      run,
+      scratch,
+      closure.map((name) =>
+        join(repoRoot, "packages", name.replace("@intx/", "")),
+      ),
+      repoRoot,
+    );
 
-    // 2. pack each closure package (rewrites deps to concrete versions).
-    for (const name of closure) {
-      const dir = join(repoRoot, "packages", name.replace("@intx/", ""));
-      run(["bun", "pm", "pack", "--destination", tarballs, "--quiet"], dir);
-    }
-
-    // 3. install the closure into the scratch consumer.
-    const tgz = readdirSync(tarballs)
-      .filter((f) => f.endsWith(".tgz"))
-      .map((f) => join(tarballs, f));
-    run(["npm", "init", "-y"], consumer);
-    run(["npm", "install", "--silent", ...tgz], consumer);
-
-    // 4. load the compiled bundles under plain Bun (no intx-src condition).
+    // Load the compiled bundles under plain Bun (no intx-src condition).
     await Bun.write(join(consumer, "load.ts"), LOAD_PROGRAM);
     run(["bun", "load.ts"], consumer);
     console.log(

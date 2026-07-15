@@ -55,6 +55,7 @@ import {
   manifestSchema,
   readWorkspacePackages,
 } from "./lib/packages";
+import { packAndInstall } from "./lib/pack";
 import { makeRun } from "./lib/run";
 import { checkWorkspaceMetadata } from "./publish-metadata";
 
@@ -424,23 +425,13 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
       copiedLicenses.push(dest);
     }
 
-    // Pack every target, then install the whole set together so internal
-    // @intx/* dependencies resolve to the just-packed tarballs, never the
-    // public registry (which still holds the broken 0.1.x).
-    const tarballs = join(scratch, "tarballs");
-    const consumer = join(scratch, "consumer");
-    run(["mkdir", "-p", tarballs, consumer], repoRoot);
-    for (const t of ordered) {
-      run(["bun", "pm", "pack", "--destination", tarballs, "--quiet"], t.dir);
-    }
-    const tgz = readdirSync(tarballs)
-      .filter((f) => f.endsWith(".tgz"))
-      .map((f) => join(tarballs, f));
-    console.log(`packed ${tgz.length} tarballs`);
-    run(["npm", "init", "-y"], consumer);
-    // No --silent: on failure the run() helper surfaces npm's own diagnostic
-    // (which package at which version 404'd), which is the actionable detail.
-    run(["npm", "install", "--no-audit", "--no-fund", ...tgz], consumer);
+    const { consumer, tarballCount } = packAndInstall(
+      run,
+      scratch,
+      ordered.map((t) => t.dir),
+      repoRoot,
+    );
+    console.log(`packed ${tarballCount} tarballs`);
 
     // Load every package under each available runtime; assert the matrix.
     // A runtime not on PATH is skipped (assertMatrix ignores it), so the
