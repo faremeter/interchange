@@ -27,6 +27,8 @@
 import { join } from "node:path";
 import { type } from "arktype";
 
+import { readWorkspacePackages } from "./lib/packages";
+
 const ACCESS = "public";
 
 // A few packages read a package-root data directory at runtime, resolved
@@ -61,11 +63,6 @@ export function expectedSideEffects(name: string): false | string[] {
   return name === "@intx/log" ? LOG_SIDE_EFFECTS : false;
 }
 
-const manifestSchema = type({
-  name: "string",
-  "private?": "boolean",
-});
-
 const rawObjectSchema = type({ "[string]": "unknown" }).narrow((value, ctx) =>
   Array.isArray(value) ? ctx.mustBe("a non-array object") : true,
 );
@@ -80,28 +77,6 @@ async function readRaw(path: string): Promise<Record<string, unknown>> {
   return raw;
 }
 
-function nonPrivatePackageManifests(repoRoot: string): string[] {
-  return [...new Bun.Glob("packages/*/package.json").scanSync(repoRoot)].sort();
-}
-
-/** Non-private packages, as `{ name, manifest-relative path }`. */
-async function targets(
-  repoRoot: string,
-): Promise<{ name: string; rel: string }[]> {
-  const out: { name: string; rel: string }[] = [];
-  for (const rel of nonPrivatePackageManifests(repoRoot)) {
-    const parsed = manifestSchema(await Bun.file(join(repoRoot, rel)).json());
-    if (parsed instanceof type.errors) {
-      throw new Error(
-        `publish-metadata: ${rel} is not a well-formed manifest: ${parsed.summary}`,
-      );
-    }
-    if (parsed.private === true) continue;
-    out.push({ name: parsed.name, rel });
-  }
-  return out;
-}
-
 export type MetadataReport = { violations: string[]; packageCount: number };
 
 function eq(a: unknown, b: unknown): boolean {
@@ -112,9 +87,9 @@ export async function checkWorkspaceMetadata(
   repoRoot: string,
 ): Promise<MetadataReport> {
   const violations: string[] = [];
-  const list = await targets(repoRoot);
-  for (const { name, rel } of list) {
-    const raw = await readRaw(join(repoRoot, rel));
+  const list = readWorkspacePackages(repoRoot);
+  for (const { name, manifestPath } of list) {
+    const raw = await readRaw(manifestPath);
     if (!eq(raw["files"], expectedFiles(name))) {
       violations.push(
         `${name}: "files" must be ${JSON.stringify(expectedFiles(name))}`,
@@ -140,8 +115,7 @@ export async function fixWorkspaceMetadata(
   repoRoot: string,
 ): Promise<string[]> {
   const changed: string[] = [];
-  for (const { name, rel } of await targets(repoRoot)) {
-    const path = join(repoRoot, rel);
+  for (const { name, manifestPath: path } of readWorkspacePackages(repoRoot)) {
     const raw = await readRaw(path);
     const sideEffects = expectedSideEffects(name);
     if (

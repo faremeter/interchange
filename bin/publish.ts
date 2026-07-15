@@ -43,91 +43,39 @@
 // idempotent skip of already-published `name@version` is needed. This
 // session only exercises the dry run.
 
-import {
-  cpSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type } from "arktype";
 
 import { buildDist } from "./build-dist";
 import { checkWorkspaceExports } from "./exports-shape";
+import {
+  INTX_FIELDS,
+  manifestSchema,
+  readWorkspacePackages,
+} from "./lib/packages";
 import { checkWorkspaceMetadata } from "./publish-metadata";
 
-const manifestSchema = type({
-  name: "string",
-  version: "string",
-  "private?": "boolean",
-  "dependencies?": { "[string]": "string" },
-  "peerDependencies?": { "[string]": "string" },
-  "optionalDependencies?": { "[string]": "string" },
-});
-
-/** A non-private package that `bin/publish` targets. */
+/** A non-private package that `bin/publish` targets — the fields the publish
+ *  guards project from the shared `WorkspacePackage` record. */
 export interface Target {
   name: string;
-  /** Absolute path to the package directory. */
   dir: string;
-  version: string;
-  /** Distinct internal `@intx/*` dependency names across the
-   *  resolution-relevant fields, for publish ordering. */
+  version: string | undefined;
   internalDeps: string[];
-  /** Every internal `@intx/*` dependency spec across the resolution-relevant
-   *  fields, for the expression guard. */
   intxSpecs: { field: string; name: string; spec: string }[];
 }
 
-const INTX_FIELDS = [
-  "dependencies",
-  "peerDependencies",
-  "optionalDependencies",
-] as const;
-
 /** Read every non-private package under `packages/`. */
 export function readTargets(repoRoot: string): Target[] {
-  const pkgsDir = join(repoRoot, "packages");
-  const targets: Target[] = [];
-  for (const entry of readdirSync(pkgsDir)) {
-    const dir = join(pkgsDir, entry);
-    const pjPath = join(dir, "package.json");
-    let text: string;
-    try {
-      text = readFileSync(pjPath, "utf8");
-    } catch (err) {
-      // A directory without a package.json is not a package; skip it. Any
-      // other read failure (permissions, I/O) must surface — silently
-      // dropping a real package would publish from an incomplete tree.
-      if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-        continue;
-      }
-      throw err;
-    }
-    const parsed = manifestSchema(JSON.parse(text));
-    if (parsed instanceof type.errors) {
-      throw new Error(`publish: ${pjPath} malformed: ${parsed.summary}`);
-    }
-    if (parsed.private === true) continue;
-    const intxSpecs: Target["intxSpecs"] = [];
-    for (const field of INTX_FIELDS) {
-      const deps = parsed[field] ?? {};
-      for (const [name, spec] of Object.entries(deps)) {
-        if (name.startsWith("@intx/")) intxSpecs.push({ field, name, spec });
-      }
-    }
-    const internalDeps = [...new Set(intxSpecs.map((s) => s.name))];
-    targets.push({
-      name: parsed.name,
-      dir,
-      version: parsed.version,
-      internalDeps,
-      intxSpecs,
-    });
-  }
-  return targets.sort((a, b) => a.name.localeCompare(b.name));
+  return readWorkspacePackages(repoRoot).map((p) => ({
+    name: p.name,
+    dir: p.dir,
+    version: p.version,
+    internalDeps: p.internalDeps,
+    intxSpecs: p.intxSpecs,
+  }));
 }
 
 /** Every target whose `version` is not the release version. */

@@ -28,12 +28,12 @@
 // This is build- and network-heavy (it emits dist and installs from npm),
 // so it runs from its own `make verify-tool-load` target, not `make all`.
 
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type } from "arktype";
 
 import { buildDist } from "./build-dist";
+import { readWorkspacePackages } from "./lib/packages";
 
 const TOOL_ROOTS = ["@intx/tools-lsp", "@intx/tools-mail", "@intx/tools-posix"];
 
@@ -45,34 +45,20 @@ const EXPECTED = [
   { pkg: "@intx/tools-lsp", named: "lsp", plugin: true },
 ];
 
-const depsSchema = type({ "dependencies?": { "[string]": "string" } });
-
-/** Read a package's `@intx/*` runtime dependencies from its manifest. */
-function intxDependencies(repoRoot: string, name: string): string[] {
-  const path = join(
-    repoRoot,
-    "packages",
-    name.replace("@intx/", ""),
-    "package.json",
-  );
-  const parsed = depsSchema(JSON.parse(readFileSync(path, "utf8")));
-  if (parsed instanceof type.errors) {
-    throw new Error(`verify-tool-load: ${path} malformed: ${parsed.summary}`);
-  }
-  return Object.keys(parsed.dependencies ?? {}).filter((d) =>
-    d.startsWith("@intx/"),
-  );
-}
-
-/** The full `@intx/*` dependency closure of the tool packages. */
+/** The full `@intx/*` dependency closure of the tool packages, walking
+ *  every internal dependency field (dependencies, peer, optional) so no
+ *  sibling is omitted from the packed set. */
 export function toolClosure(repoRoot: string): string[] {
+  const internalDepsByName = new Map(
+    readWorkspacePackages(repoRoot).map((p) => [p.name, p.internalDeps]),
+  );
   const seen = new Set<string>();
   const stack = [...TOOL_ROOTS];
   while (stack.length > 0) {
     const name = stack.pop();
     if (name === undefined || seen.has(name)) continue;
     seen.add(name);
-    for (const dep of intxDependencies(repoRoot, name)) stack.push(dep);
+    for (const dep of internalDepsByName.get(name) ?? []) stack.push(dep);
   }
   return [...seen].sort();
 }
