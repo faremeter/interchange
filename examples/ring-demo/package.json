@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun run src/cli.ts"
+    "start": "bun --conditions=intx-src run src/cli.ts"
   },
   "dependencies": {
     "@intx/agent": "workspace:*",
