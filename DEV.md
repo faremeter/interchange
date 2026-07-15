@@ -63,7 +63,7 @@ files next to the matching service config.
 | `HUB_ADMIN_PASSWORD`                 | `bin/dev.ts`, `bin/publish-tool-packages.ts` | `password123`                       | Password for that admin identity.                                                                                                                    |
 | `HUB_TENANT_SLUG`                    | `bin/dev.ts`                                 | `acme`                              | Tenant the seed tool packages are published into.                                                                                                    |
 | `HUB_TENANT_NAME`                    | `bin/dev.ts`                                 | `Acme Corp`                         | Display name for that tenant.                                                                                                                        |
-| `HUB_URL`                            | `bin/seed.ts`                                | `http://localhost:3000`             | Base URL `bin/seed.ts` targets when seeding via the hub API.                                                                                         |
+| `HUB_URL`                            | `bin/seed`                                   | `http://localhost:3000`             | Base URL `bin/seed` targets when seeding via the hub API.                                                                                            |
 | `HUB_MAX_TARBALL_BYTES`              | hub (`apps/hub`)                             | 10 MiB                              | Per-tarball cap for tool packages uploaded to the package registry.                                                                                  |
 | `PG_SCHEMA`                          | hub (`apps/hub`)                             | unset                               | Pins the hub to a postgres schema. Integration-test-only; leave unset normally.                                                                      |
 | `SIDECAR_CACHE_DIR`                  | sidecar (`apps/sidecar`)                     | `<SIDECAR_DATA_DIR>/cache/tarballs` | Directory for the tool-package tarball cache.                                                                                                        |
@@ -171,25 +171,25 @@ is validated.
 
 All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://github.com/alexanderguy/opsh) framework as a library from `bin/opsh`, so opsh does not need to be installed separately.
 
-| Script                     | Usage                                            | Description                                                                                                               |
-| -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `bin/dev.ts`               | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                                              |
-| `bin/hub`                  | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                                               |
-| `bin/db-migrate`           | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                                  |
-| `bin/db-reset`             | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state.                   |
-| `bin/seed.ts`              | `bun bin/seed.ts`                                | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                                  |
-| `bin/provision-sidecar.ts` | `bun bin/provision-sidecar.ts`                   | Write the sidecar identity row from `SIDECAR_ID`/`SIDECAR_TOKEN` so the handshake authenticates (reads DB creds from env) |
-| `bin/add-package`          | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                                     |
-| `bin/check-env`            | `bin/check-env`                                  | Verify git hooks are configured                                                                                           |
-| `bin/audit`                | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                                         |
-| `bin/discover.ts`          | `bun bin/discover.ts --provider <name> [flags]`  | Run the wire-capture rig against a registered inference provider (needs provider credentials in env)                      |
-| `bin/gen-api-docs.ts`      | `bun bin/gen-api-docs.ts`                        | Generate API documentation from route schemas                                                                             |
-| `bin/posix-demo`           | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                                       |
-| `bin/ring-demo`            | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                                               |
+| Script                  | Usage                                            | Description                                                                                                               |
+| ----------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `bin/dev.ts`            | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                                              |
+| `bin/hub`               | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                                               |
+| `bin/db-migrate`        | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                                  |
+| `bin/db-reset`          | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state.                   |
+| `bin/seed`              | `bin/seed`                                       | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                                  |
+| `bin/provision-sidecar` | `bin/provision-sidecar`                          | Write the sidecar identity row from `SIDECAR_ID`/`SIDECAR_TOKEN` so the handshake authenticates (reads DB creds from env) |
+| `bin/add-package`       | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                                     |
+| `bin/check-env`         | `bin/check-env`                                  | Verify git hooks are configured                                                                                           |
+| `bin/audit`             | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                                         |
+| `bin/discover`          | `bin/discover --provider <name> [flags]`         | Run the wire-capture rig against a registered inference provider (needs provider credentials in env)                      |
+| `bin/gen-api-docs`      | `bin/gen-api-docs`                               | Generate API documentation from route schemas                                                                             |
+| `bin/posix-demo`        | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                                       |
+| `bin/ring-demo`         | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                                               |
 
 ## Seed Data
 
-`bin/seed.ts` creates the full dev dataset: users, tenants, agents, roles, grants, credentials, and offerings. It requires a running hub (the dev orchestrator handles this when `--seed` is passed). See the Quick Start section for seed account credentials.
+`bin/seed` creates the full dev dataset: users, tenants, agents, roles, grants, credentials, and offerings. It requires a running hub (the dev orchestrator handles this when `--seed` is passed). See the Quick Start section for seed account credentials.
 
 ## Project Structure
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveProvisionConfig } from "./provision-sidecar";
+import { resolveProvisionConfig } from "./lib/provision-config";
 
 const baseEnv = {
   SIDECAR_ID: "dev-sidecar-1",

@@ -209,7 +209,7 @@ shape — `packages/inference-discovery-anthropic/src/sse.ts` accumulates
 `redacted_thinking` as one-shot at `content_block_start` (no deltas),
 and the turn-2 builder echoes the assistant content array verbatim,
 including any `redacted_thinking` blocks. A re-capture on a day the
-safety classifier does fire (`bun bin/discover.ts --provider anthropic --only redacted-thinking --only redacted-thinking-streaming`)
+safety classifier does fire (`bin/discover --provider anthropic --only redacted-thinking --only redacted-thinking-streaming`)
 will land the redacted shape without code changes and will flip these
 six rows from `misled` to `captured`.
 
@@ -277,7 +277,7 @@ models and across both streaming and non-streaming.
 ## Regeneration
 
 ```bash
-bun bin/discover.ts --provider anthropic --all
+bin/discover --provider anthropic --all
 ```
 
 Requires `ANTHROPIC_API_KEY` in `.env`. The plug-in hard-fails when `CI`

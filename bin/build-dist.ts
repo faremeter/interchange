@@ -5,7 +5,7 @@
 // package's `dist/`, for npm distribution.
 //
 // The packages type-check with `noEmit` and are consumed inside the
-// repo as `.ts` source (via the `development` exports condition). For
+// repo as `.ts` source (via the `intx-src` exports condition). For
 // publication they must ship compiled JavaScript that runs on plain
 // Node. This script produces that output per package:
 //

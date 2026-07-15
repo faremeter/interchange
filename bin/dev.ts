@@ -22,7 +22,7 @@ import { $, type ProcessPromise, type ProcessOutput } from "zx";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { publishToolPackages } from "./publish-tool-packages";
+import { publishToolPackages } from "./lib/publish-tool-packages";
 import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
 
 $.verbose = false;

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+#
+# Run seed.ts with the intx-src resolution condition so `@intx/*` imports
+# resolve to TypeScript source in-repo. The dev loop builds no `dist`;
+# without the condition the published `default` target (compiled `dist`)
+# would be selected and fail to resolve. All arguments are forwarded.
+
+set -euo pipefail
+exec bun --conditions=intx-src "$(dirname -- "${BASH_SOURCE[0]}")/seed.ts" "$@"

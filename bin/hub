@@ -23,4 +23,4 @@ if [[ -f "$REPODIR/.env.hub" ]]; then
 	log::info "loaded .env.hub"
 fi
 
-exec bun run --watch "$REPODIR/apps/hub/src/index.ts"
+exec bun run --conditions=intx-src --watch "$REPODIR/apps/hub/src/index.ts"
