@@ -1,0 +1,98 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  make-all:
+    name: make all
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # bin/db-reset runs psql with -h/-p only (no -U), so its superuser identity
+      # comes from libpq's PGUSER/PGPASSWORD here. Do not add -U to db-reset to
+      # "fix" this — that is what would break CI.
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: "5432"
+
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      # bin/check-env requires core.hooksPath=.githooks. The hook never fires in
+      # CI (no commits happen); this only satisfies the gate.
+      - name: Configure git hooks path
+        run: git config core.hooksPath .githooks
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Copy the committed dev-default env files. BETTER_AUTH_SECRET ships empty in
+      # the example, so set it in place (do not append — a second line would leave
+      # the key defined twice and the hub tests read the empty one and hard-fail).
+      - name: Write env files
+        run: |
+          cp .env.example .env
+          cp .env.migrate.example .env.migrate
+          cp .env.hub.example .env.hub
+          secret=$(openssl rand -hex 32)
+          sed -i "s/^BETTER_AUTH_SECRET=.*/BETTER_AUTH_SECRET=${secret}/" .env.hub
+
+      # The DB/hub-api test harness skips only when the env files are absent, so a
+      # missing file would silently drop the entire DB layer while CI stays green.
+      # Fail loudly instead: the files must exist, BETTER_AUTH_SECRET must be
+      # non-empty (else the hub tests hard-fail on requireKey), and Postgres must
+      # be reachable.
+      - name: Assert DB test env is wired
+        run: |
+          test -f .env
+          test -f .env.migrate
+          test -f .env.hub
+          grep -q '^BETTER_AUTH_SECRET=.\+' .env.hub
+          pg_isready -h localhost -p 5432
+
+      # Pre-create the two roles db-reset assumes exist (deriving each password
+      # from its env file so the role and the file cannot drift), then run
+      # db-reset unchanged for the drop/create/migrate/grant choreography. The
+      # statements are fed over stdin so psql interpolates each password through
+      # its :'var' form, quoting it as a SQL literal regardless of contents;
+      # psql does not interpolate variables in a -c argument, only in stdin/-f
+      # input.
+      - name: Bootstrap database
+        run: |
+          migrate_pw=$(grep '^DB_PASSWORD=' .env.migrate | cut -d= -f2-)
+          hub_pw=$(grep '^DB_PASSWORD=' .env.hub | cut -d= -f2-)
+          psql -d postgres -v migrate_pw="$migrate_pw" -v hub_pw="$hub_pw" <<'SQL'
+          CREATE USER "interchange-migrate" WITH PASSWORD :'migrate_pw';
+          CREATE USER "interchange-hub" WITH PASSWORD :'hub_pw';
+          SQL
+          bin/db-reset
+
+      - name: Run make all
+        run: make all
