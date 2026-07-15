@@ -142,8 +142,8 @@ export const RUNTIMES = ["node", "bun", "deno"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 
 /** Runtimes whose results gate the publish — all three the distribution
- *  targets. Every available runtime here is asserted; a runtime that is not
- *  on PATH is skipped, not failed. */
+ *  targets. A dry run tolerates an asserted runtime that is not on PATH
+ *  (with a loud warning); `--execute` requires every one. */
 export const ASSERTED_RUNTIMES: ReadonlySet<Runtime> = new Set([
   "node",
   "bun",
@@ -439,6 +439,19 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
     const scriptPath = join(consumer, "load-check.mjs");
     await Bun.write(scriptPath, LOAD_CHECK);
     const runtimes = availableRuntimes();
+    const missing = [...ASSERTED_RUNTIMES].filter((r) => !runtimes.includes(r));
+    if (missing.length > 0) {
+      const detail = `asserted runtime(s) not on PATH: ${missing.join(", ")}`;
+      if (execute) {
+        // A real publish must verify every runtime it claims to support.
+        throw new Error(
+          `publish: ${detail}; refusing to --execute without verifying them`,
+        );
+      }
+      // Dry run tolerates a missing runtime, but says so loudly rather than
+      // reporting a green that silently skipped part of the guarantee.
+      console.warn(`WARNING: ${detail} — those runtimes were NOT verified`);
+    }
     console.log(`load smoke (runtimes: ${runtimes.join(", ")}):`);
     const observed = loadMatrix(consumer, scriptPath, ordered, runtimes);
     const matrixViolations = assertMatrix(observed);
