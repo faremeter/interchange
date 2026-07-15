@@ -96,11 +96,15 @@ sink at load). `bin/publish-metadata.ts` is the transform and the
 
 Publishing is a manual, credentialed operation. The flow:
 
-1. `bin/release [major|minor|patch]` bumps every package's `version`,
-   commits, and creates a signed `v*` tag. Because `bun publish` resolves
-   each `workspace:*` dependency to the sibling's on-disk version, the
-   versions must be bumped and consistent **before** publishing — this is
-   what makes the internal dependency graph resolvable on npm.
+1. `bin/release [major|minor|patch]` bumps every workspace package's
+   `version`, refreshes the version `bun.lock` records for each workspace
+   member to match (via `bin/sync-workspace-lockfile`), commits both, and
+   creates a signed `v*` tag. The lockfile refresh matters because
+   `bun pm pack` resolves each `workspace:*` dependency to the version
+   `bun.lock` records for the sibling — not the on-disk `package.json`
+   version, which a plain `bun install` does not write back. A stale
+   lockfile would freeze internal dependencies at the previous version and
+   404 on npm even when every `package.json` version is correct.
 2. `bin/publish` is the guarded publish path. By default it is a dry run.
    It refuses to proceed unless the working tree is clean, `HEAD` is
    exactly the release tag, every non-private package's `version` equals

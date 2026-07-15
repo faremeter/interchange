@@ -12,6 +12,12 @@ major | minor | patch) ;;
 *) log::fatal "usage: release [major|minor|patch] (default: minor)" ;;
 esac
 
+# Every workspace member the root package.json declares (tests/lib is a
+# single member, not a glob). bin/sync-workspace-lockfile refreshes the same
+# set in bun.lock, so all workspace versions stay in lockstep. Defined at top
+# level so every step — including one invoked on its own via resume — sees it.
+WORKSPACE_PKGFILES=(packages/*/package.json apps/*/package.json examples/*/package.json tests/lib/package.json)
+
 step::10::check_prerequisites() {
 	git::repo::is-clean || log::fatal "working tree is not clean"
 
@@ -38,11 +44,10 @@ step::20::determine_version() {
 }
 
 step::30::update_package_versions() {
-	local pkgfiles pkgfile tmpfile actual
-	pkgfiles=(packages/*/package.json apps/*/package.json examples/*/package.json)
-	[[ -f ${pkgfiles[0]} ]] || log::fatal "no package.json files found"
+	local pkgfile tmpfile actual
+	[[ -f ${WORKSPACE_PKGFILES[0]} ]] || log::fatal "no package.json files found"
 
-	for pkgfile in "${pkgfiles[@]}"; do
+	for pkgfile in "${WORKSPACE_PKGFILES[@]}"; do
 		[[ -f $pkgfile ]] || continue
 		jq -e '.version' "$pkgfile" >/dev/null 2>&1 || continue
 
@@ -54,13 +59,40 @@ step::30::update_package_versions() {
 		[[ $actual == "$NEW_VERSION" ]] || log::fatal "$pkgfile: expected version $NEW_VERSION, got $actual"
 	done
 
-	bun x prettier --write packages/*/package.json apps/*/package.json examples/*/package.json >/dev/null
+	bun x prettier --write "${WORKSPACE_PKGFILES[@]}" >/dev/null
+}
+
+step::35::refresh_lockfile() {
+	log::info "refreshing bun.lock workspace versions to $NEW_VERSION"
+
+	# bun does not rewrite the versions bun.lock records for workspace members
+	# when their package.json versions change, and bun pm pack resolves
+	# workspace:* dependencies from those recorded versions. Refresh them so a
+	# publish ships the release version, not the previous one.
+	bun bin/sync-workspace-lockfile.ts "$NEW_VERSION" \
+		|| log::fatal "failed to refresh bun.lock workspace versions"
+
+	# Postcondition: pack an internal package with many @intx/* dependencies
+	# and confirm bun pm pack rewrote them to the release version — the exact
+	# mechanism bin/publish relies on. Fail loudly if the lockfile is stale.
+	local scratch tgz stale
+	scratch=$(temp::dir) # reclaimed by opsh's EXIT trap, even on log::fatal
+	(cd packages/workflow-host && bun pm pack --destination "$scratch" --quiet) \
+		|| log::fatal "postcondition: bun pm pack failed"
+	tgz=$(echo "$scratch"/*.tgz)
+	stale=$(tar -xzOf "$tgz" package/package.json | jq -r --arg v "$NEW_VERSION" '
+		[ (.dependencies // {}, .peerDependencies // {}, .optionalDependencies // {})
+		  | to_entries[] | select(.key | startswith("@intx/"))
+		  | .value | ltrimstr("^") | ltrimstr("~") ]
+		| map(select(. != $v)) | length')
+	[[ $stale == "0" ]] \
+		|| log::fatal "bun.lock still stale: workflow-host @intx/* deps did not all rewrite to $NEW_VERSION"
 }
 
 step::40::commit_and_tag() {
 	log::info "committing and tagging $NEW_TAG"
 
-	git add packages/*/package.json apps/*/package.json examples/*/package.json
+	git add "${WORKSPACE_PKGFILES[@]}" bun.lock
 	git commit -m "Update interchange version to $NEW_TAG"
 	git tag -s "$NEW_TAG" -m "interchange $NEW_TAG"
 
