@@ -55,6 +55,7 @@ import {
   manifestSchema,
   readWorkspacePackages,
 } from "./lib/packages";
+import { makeRun } from "./lib/run";
 import { checkWorkspaceMetadata } from "./publish-metadata";
 
 /** A non-private package that `bin/publish` targets — the fields the publish
@@ -211,20 +212,7 @@ export function checkPackedManifest(
 
 // ---- effectful orchestration ----
 
-function run(cmd: string[], cwd: string): void {
-  const proc = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
-  if (proc.exitCode !== 0) {
-    const detail = [
-      proc.stdout.toString().trim(),
-      proc.stderr.toString().trim(),
-    ]
-      .filter(Boolean)
-      .join("\n");
-    throw new Error(
-      `publish: \`${cmd.join(" ")}\` failed in ${cwd}:\n${detail}`,
-    );
-  }
-}
+const run = makeRun("publish");
 
 /** Fail fast, before the expensive dist build, if `bun.lock` is stale: pack
  *  one internal package and confirm `bun pm pack` rewrote its `@intx/*`
