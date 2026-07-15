@@ -31,13 +31,10 @@
 // the condition stays inert on every dry run.
 //
 // The smoke test loads every package under each available runtime (Node,
-// Bun, and Deno) and asserts the result against an expected matrix (see
-// RUNTIME_INCOMPATIBLE). `@intx/tools-lsp` cannot load under Node or Deno
-// because it depends on `vscode-jsonrpc/node`, a CommonJS subpath its
-// dependency exposes without an `exports` map that neither loader can
-// resolve, though Bun can — so those failures are *expected and asserted*.
-// Any other failure, or tools-lsp unexpectedly loading, fails the matrix
-// rather than hiding behind a fallback.
+// Bun, and Deno) and asserts they all load, and that default-condition
+// resolution lands on `dist/`, never the inert `intx-src` source. A load
+// failure under any asserted runtime, or a runtime resolving to `src/`,
+// fails the matrix rather than hiding behind a fallback.
 //
 // `--execute` publishes leaf-first so a dependency is on the registry
 // before any dependent. Partial-failure recovery is a known gap to close
@@ -203,32 +200,16 @@ export const ASSERTED_RUNTIMES: ReadonlySet<Runtime> = new Set([
   "deno",
 ]);
 
-/** Packages that are expected NOT to load under a runtime, with the reason.
- *  An entry loading, or a package outside the table failing, fails the
- *  matrix — the incompatibility is asserted, never silently absorbed. */
-export const RUNTIME_INCOMPATIBLE: Record<
-  string,
-  Partial<Record<Runtime, string>>
-> = {
-  "@intx/tools-lsp": {
-    node:
-      "depends on vscode-jsonrpc/node, a CommonJS subpath with no exports " +
-      "map; Node's ESM loader cannot resolve it, Bun can",
-    deno:
-      "depends on vscode-jsonrpc/node, a CommonJS subpath with no exports " +
-      "map; Deno's node-compat loader cannot resolve it, Bun can",
-  },
-};
-
 export type LoadResult = "load" | "fail";
 export type ObservedMatrix = Record<
   string,
   Partial<Record<Runtime, LoadResult>>
 >;
 
-/** Compare observed loads against the expected matrix for the asserted
- *  runtimes only. Unavailable runtimes (absent from `observed[pkg]`) are
- *  skipped, not failed. */
+/** Every package must load under every asserted runtime. A `fail` — whether
+ *  from an import error or the `dist/`-resolution check in LOAD_CHECK — is a
+ *  violation. A runtime absent from `observed[pkg]` (not on PATH) is skipped,
+ *  not failed. */
 export function assertMatrix(
   observed: ObservedMatrix,
   asserted: ReadonlySet<Runtime> = ASSERTED_RUNTIMES,
@@ -238,17 +219,8 @@ export function assertMatrix(
     for (const runtime of asserted) {
       const result = byRuntime[runtime];
       if (result === undefined) continue; // runtime unavailable
-      const reason = RUNTIME_INCOMPATIBLE[pkg]?.[runtime];
-      const expectFail = reason !== undefined;
-      if (expectFail && result === "load") {
-        violations.push(
-          `${pkg} loaded under ${runtime} but is listed as incompatible ` +
-            `(${reason}); remove the exception`,
-        );
-      } else if (!expectFail && result === "fail") {
-        violations.push(
-          `${pkg} failed to load under ${runtime} but was expected to load`,
-        );
+      if (result === "fail") {
+        violations.push(`${pkg} failed to load under ${runtime}`);
       }
     }
   }
@@ -452,11 +424,8 @@ function loadMatrix(
       });
       const result: LoadResult = proc.exitCode === 0 ? "load" : "fail";
       row[runtime] = result;
-      const reason = RUNTIME_INCOMPATIBLE[t.name]?.[runtime];
-      const tag =
-        result === "fail" && reason !== undefined ? "fail (expected)" : result;
-      console.log(`    ${runtime.padEnd(5)} ${t.name.padEnd(40)} ${tag}`);
-      if (result === "fail" && reason === undefined) {
+      console.log(`    ${runtime.padEnd(5)} ${t.name.padEnd(40)} ${result}`);
+      if (result === "fail") {
         console.log(`      ${proc.stderr.toString().trim().split("\n")[0]}`);
       }
     }

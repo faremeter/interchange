@@ -111,13 +111,11 @@ Publishing is a manual, credentialed operation. The flow:
    stale — before emitting `dist`, packing every target, installing the
    whole set into a scratch consumer, and loading each package. The load
    smoke asserts every package loads under Node, Bun, and Deno and that
-   default resolution lands on `dist` (never the inert `intx-src` source),
-   with `@intx/tools-lsp` asserted to load under Bun but not Node or Deno —
-   it depends on `vscode-jsonrpc/node`, a CommonJS subpath neither the Node
-   nor Deno loader can resolve. Deno runs under `--node-modules-dir=manual`
-   so it resolves the npm-installed packages; a runtime not on PATH is
-   skipped, not failed. Only `bin/publish --execute` runs `bun publish`,
-   leaf-first, under the `faremeter-dist` npm credentials.
+   default resolution lands on `dist` (never the inert `intx-src` source).
+   Deno runs under `--node-modules-dir=manual` so it resolves the
+   npm-installed packages; a runtime not on PATH is skipped, not failed.
+   Only `bin/publish --execute` runs `bun publish`, leaf-first, under the
+   `faremeter-dist` npm credentials.
 
 The version-sync-before-publish guard exists because the live `0.1.2`
 packages shipped broken — published from a tree whose sibling versions
