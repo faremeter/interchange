@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+#
+# Run the guarded publish path. Dry run by default; pass --execute to
+# publish for real under the release credentials. All arguments forward.
+#
+# Unlike the other launchers this deliberately carries no
+# --conditions=intx-src: publish.ts imports no @intx/* of its own (it emits
+# dist and runs the load smoke in separate subprocesses that must resolve
+# @intx/* to the compiled dist, exactly as a consumer does), so it has
+# nothing to resolve to source.
+
+set -euo pipefail
+exec bun "$(dirname -- "${BASH_SOURCE[0]}")/publish.ts" "$@"
