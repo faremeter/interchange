@@ -67,6 +67,8 @@ export interface Target {
   version: string | undefined;
   internalDeps: string[];
   intxSpecs: { field: string; name: string; spec: string }[];
+  importSpecifiers: string[];
+  optionalPeers: { name: string; range: string }[];
 }
 
 /** Read every non-private package under `packages/`. */
@@ -77,6 +79,8 @@ export function readTargets(repoRoot: string): Target[] {
     version: p.version,
     internalDeps: p.internalDeps,
     intxSpecs: p.intxSpecs,
+    importSpecifiers: p.importSpecifiers,
+    optionalPeers: p.optionalPeers,
   }));
 }
 
@@ -156,21 +160,21 @@ export type ObservedMatrix = Record<
   Partial<Record<Runtime, LoadResult>>
 >;
 
-/** Every package must load under every asserted runtime. A `fail` — whether
- *  from an import error or the `dist/`-resolution check in LOAD_CHECK — is a
- *  violation. A runtime absent from `observed[pkg]` (not on PATH) is skipped,
- *  not failed. */
+/** Every import specifier must load under every asserted runtime. A `fail` —
+ *  whether from an import error or the `dist/`-resolution check in LOAD_CHECK —
+ *  is a violation. A runtime absent from `observed[specifier]` (not on PATH) is
+ *  skipped, not failed. */
 export function assertMatrix(
   observed: ObservedMatrix,
   asserted: ReadonlySet<Runtime> = ASSERTED_RUNTIMES,
 ): string[] {
   const violations: string[] = [];
-  for (const [pkg, byRuntime] of Object.entries(observed)) {
+  for (const [specifier, byRuntime] of Object.entries(observed)) {
     for (const runtime of asserted) {
       const result = byRuntime[runtime];
       if (result === undefined) continue; // runtime unavailable
       if (result === "fail") {
-        violations.push(`${pkg} failed to load under ${runtime}`);
+        violations.push(`${specifier} failed to load under ${runtime}`);
       }
     }
   }
@@ -306,10 +310,14 @@ function availableRuntimes(): Runtime[] {
   });
 }
 
-// Loads a package under Node, Bun, or Deno: resolves the package under
-// default conditions, asserts the resolution lands on dist/ (never the inert
-// intx-src -> src), then imports it. Deno exposes `process` via its
-// node-compat layer, so one program serves all three.
+// Loads one import specifier (a package root or an exports subpath) under
+// Node, Bun, or Deno: resolves it under default conditions, asserts the
+// resolution lands on dist/ (never the inert intx-src -> src), then imports
+// it. Deno exposes `process` via its node-compat layer, so one program serves
+// all three. @intx/log's console-sink side effect is a top-level import in its
+// entry, so a successful root import runs it; there is no separate side-effect
+// probe because a Node loader cannot tree-shake that import, so such a check
+// could never fail independently of the load already asserted here.
 const LOAD_CHECK = `
 const pkg = process.argv[2];
 try {
@@ -342,7 +350,8 @@ const RUNTIME_CMD: Record<Runtime, (script: string, pkg: string) => string[]> =
     ],
   };
 
-/** Load every target under every available runtime, recording pass/fail. */
+/** Load every target's import specifiers (root and every exports subpath)
+ *  under every available runtime, recording pass/fail keyed by specifier. */
 function loadMatrix(
   consumer: string,
   scriptPath: string,
@@ -351,19 +360,26 @@ function loadMatrix(
 ): ObservedMatrix {
   const observed: ObservedMatrix = {};
   for (const t of targets) {
-    const row: Partial<Record<Runtime, LoadResult>> = {};
-    observed[t.name] = row;
-    for (const runtime of runtimes) {
-      const proc = Bun.spawnSync(RUNTIME_CMD[runtime](scriptPath, t.name), {
-        cwd: consumer,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const result: LoadResult = proc.exitCode === 0 ? "load" : "fail";
-      row[runtime] = result;
-      console.log(`    ${runtime.padEnd(5)} ${t.name.padEnd(40)} ${result}`);
-      if (result === "fail") {
-        console.log(`      ${proc.stderr.toString().trim().split("\n")[0]}`);
+    for (const specifier of t.importSpecifiers) {
+      const row: Partial<Record<Runtime, LoadResult>> = {};
+      observed[specifier] = row;
+      for (const runtime of runtimes) {
+        const proc = Bun.spawnSync(
+          RUNTIME_CMD[runtime](scriptPath, specifier),
+          {
+            cwd: consumer,
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+        );
+        const result: LoadResult = proc.exitCode === 0 ? "load" : "fail";
+        row[runtime] = result;
+        console.log(
+          `    ${runtime.padEnd(5)} ${specifier.padEnd(40)} ${result}`,
+        );
+        if (result === "fail") {
+          console.log(`      ${proc.stderr.toString().trim().split("\n")[0]}`);
+        }
       }
     }
   }
@@ -433,6 +449,20 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
     );
     console.log(`packed ${tarballCount} tarballs`);
 
+    // Install optional peer deps so a peer-gated subpath (e.g. @intx/log/hono)
+    // imports instead of failing on a missing transitive module. npm does not
+    // install optional peers with the tarball set, so the smoke stands in for
+    // a consumer that opted into the gated integration.
+    const optionalPeers = new Map<string, string>();
+    for (const t of ordered) {
+      for (const p of t.optionalPeers) optionalPeers.set(p.name, p.range);
+    }
+    if (optionalPeers.size > 0) {
+      const specs = [...optionalPeers].map(([n, range]) => `${n}@${range}`);
+      console.log(`installing optional peers: ${specs.join(", ")}`);
+      run(["npm", "install", "--no-audit", "--no-fund", ...specs], consumer);
+    }
+
     // Load every package under each available runtime; assert the matrix.
     // A runtime not on PATH is skipped (assertMatrix ignores it), so the
     // printed runtime list is the record of what was actually verified.
@@ -460,8 +490,12 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
         `publish: load matrix failed:\n${matrixViolations.join("\n")}`,
       );
     }
+    const specifierCount = ordered.reduce(
+      (n, t) => n + t.importSpecifiers.length,
+      0,
+    );
     console.log(
-      `load smoke: ok (${ordered.length} packages; asserted ${[...ASSERTED_RUNTIMES].join(", ")})`,
+      `load smoke: ok (${ordered.length} packages, ${specifierCount} specifiers; asserted ${[...ASSERTED_RUNTIMES].join(", ")})`,
     );
 
     if (execute) {

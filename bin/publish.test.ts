@@ -25,6 +25,8 @@ function target(
     version,
     internalDeps: [...new Set(intxSpecs.map((s) => s.name))],
     intxSpecs,
+    importSpecifiers: [name],
+    optionalPeers: [],
   };
 }
 

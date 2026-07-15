@@ -42,6 +42,60 @@ describe("readWorkspacePackages", () => {
     }
   });
 
+  test("derives import specifiers and optional peers from the manifest", () => {
+    const repo = repoWith({
+      log: {
+        name: "@intx/log",
+        version: "0.2.0",
+        exports: {
+          ".": { default: "./dist/index.js" },
+          "./hono": { default: "./dist/hono.js" },
+        },
+        peerDependencies: { hono: "^4.0.0" },
+        peerDependenciesMeta: { hono: { optional: true } },
+      },
+    });
+    try {
+      const log = readWorkspacePackages(repo).find(
+        (p) => p.name === "@intx/log",
+      );
+      expect(log?.importSpecifiers).toEqual(["@intx/log", "@intx/log/hono"]);
+      expect(log?.optionalPeers).toEqual([{ name: "hono", range: "^4.0.0" }]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("skips wildcard exports keys, which are not importable specifiers", () => {
+    const repo = repoWith({
+      a: {
+        name: "@intx/a",
+        version: "0.2.0",
+        exports: {
+          ".": { default: "./dist/index.js" },
+          "./feat/*": { default: "./dist/feat/*.js" },
+        },
+      },
+    });
+    try {
+      const a = readWorkspacePackages(repo).find((p) => p.name === "@intx/a");
+      expect(a?.importSpecifiers).toEqual(["@intx/a"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("a package with no exports has only its root specifier", () => {
+    const repo = repoWith({ a: { name: "@intx/a", version: "0.2.0" } });
+    try {
+      const a = readWorkspacePackages(repo).find((p) => p.name === "@intx/a");
+      expect(a?.importSpecifiers).toEqual(["@intx/a"]);
+      expect(a?.optionalPeers).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test("unions @intx deps across dependencies, peer, and optional", () => {
     const repo = repoWith({
       a: {

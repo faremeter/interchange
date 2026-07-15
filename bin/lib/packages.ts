@@ -28,6 +28,10 @@ export const manifestSchema = type({
   "dependencies?": { "[string]": "string" },
   "peerDependencies?": { "[string]": "string" },
   "optionalDependencies?": { "[string]": "string" },
+  // Only the subpath keys are read here (to enumerate importable specifiers);
+  // exports-shape owns the per-condition-target validation.
+  "exports?": { "[string]": "unknown" },
+  "peerDependenciesMeta?": { "[string]": { "optional?": "boolean" } },
 });
 
 export type PackageManifest = typeof manifestSchema.infer;
@@ -48,6 +52,14 @@ export interface WorkspacePackage {
   /** Distinct internal `@intx/*` dependency names across those fields, for
    *  ordering and closure walks. */
   internalDeps: string[];
+  /** Every importable specifier the package exports: the bare package name
+   *  for the `.` entry, plus `<name>/<subpath>` for each other `exports` key.
+   *  The load smoke imports each one. */
+  importSpecifiers: string[];
+  /** Peer dependencies flagged optional in `peerDependenciesMeta`. A consumer
+   *  that uses the gated subpath must install these; the load smoke does so
+   *  before importing such a subpath. */
+  optionalPeers: { name: string; range: string }[];
 }
 
 /** Read every non-private package under `packages/`, sorted by name. A
@@ -81,6 +93,19 @@ export function readWorkspacePackages(repoRoot: string): WorkspacePackage[] {
         if (name.startsWith("@intx/")) intxSpecs.push({ field, name, spec });
       }
     }
+    const importSpecifiers = [parsed.name];
+    for (const key of Object.keys(parsed.exports ?? {})) {
+      // Skip the root (already added) and wildcard subpaths (`./*`), which
+      // are patterns, not a single importable specifier.
+      if (key === "." || key.includes("*")) continue;
+      importSpecifiers.push(parsed.name + key.slice(1));
+    }
+    const peerMeta = parsed.peerDependenciesMeta ?? {};
+    const optionalPeers: WorkspacePackage["optionalPeers"] = [];
+    for (const [name, range] of Object.entries(parsed.peerDependencies ?? {})) {
+      if (peerMeta[name]?.optional === true)
+        optionalPeers.push({ name, range });
+    }
     packages.push({
       name: parsed.name,
       dir,
@@ -89,6 +114,8 @@ export function readWorkspacePackages(repoRoot: string): WorkspacePackage[] {
       manifest: parsed,
       intxSpecs,
       internalDeps: [...new Set(intxSpecs.map((s) => s.name))],
+      importSpecifiers,
+      optionalPeers,
     });
   }
   return packages.sort((a, b) => a.name.localeCompare(b.name));
