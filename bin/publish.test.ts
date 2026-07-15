@@ -8,7 +8,7 @@ import {
   checkPackedManifest,
   checkVersionSync,
   topoSortLeafFirst,
-} from "./publish";
+} from "./lib/publish-targets";
 
 function target(
   name: string,
