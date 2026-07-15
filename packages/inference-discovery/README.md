@@ -86,13 +86,13 @@ than substance.
 the provider plug-in packages and exposes them as a single command:
 
 ```
-bun bin/discover.ts --provider <name> (--all | --model <name> | --only <capability>)
+bin/discover --provider <name> (--all | --model <name> | --only <capability>)
 ```
 
 `--all` is mutually exclusive with `--model` and `--only`; at least
 one of the three must be present (an invocation with none errors
 out). Available providers and their required environment variables
-are listed by `bun bin/discover.ts --help`. The CLI calls
+are listed by `bin/discover --help`. The CLI calls
 `assertNotCI` first, validates the requested provider's environment
 variables via `requireEnvSet`, filters `SUPPORT_MATRIX` to the
 matching captured entries, and runs each through `runCapture`.
