@@ -1,5 +1,6 @@
 {
   "name": "@intx/test-harness",
+  "description": "Database and environment test-harness primitives shared across the tests tree",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

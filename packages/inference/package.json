@@ -1,5 +1,6 @@
 {
   "name": "@intx/inference",
+  "description": "Provider-agnostic inference runtime with Anthropic, OpenAI, and Google GenAI adapters",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

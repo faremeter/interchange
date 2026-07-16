@@ -1,5 +1,6 @@
 {
   "name": "@intx/tools-mail",
+  "description": "Mail tool runner giving agents mail_send, mail_reply, mail_search, mail_read, and mail_wait",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

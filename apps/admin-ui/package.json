@@ -1,5 +1,6 @@
 {
   "name": "@intx/admin-ui",
+  "description": "Browser single-page app operators use to manage the Interchange control plane",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

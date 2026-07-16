@@ -36,6 +36,38 @@ export const manifestSchema = type({
 
 export type PackageManifest = typeof manifestSchema.infer;
 
+// Only the `workspaces` globs are read from the root manifest here; the rest
+// of its shape is irrelevant to enumerating members.
+const rootManifestSchema = type({ workspaces: "string[]" });
+
+/** Every workspace member's `package.json` path, absolute and sorted,
+ *  derived from the root manifest's `workspaces` globs — private members and
+ *  non-`packages/` members (apps, examples, `tests/lib`) included.
+ *
+ *  This is the authoritative member set. Unlike {@link readWorkspacePackages}
+ *  it neither filters by private status nor restricts to `packages/`, because
+ *  callers that enforce a per-member invariant on every declared member — a
+ *  required `description`, dependency hygiene — must see exactly the members
+ *  the workspace declares, no more and no less. Deriving from root
+ *  `workspaces` keeps that set in one authoritative place rather than a
+ *  hardcoded directory list each caller can drift from. */
+export function readWorkspaceManifestPaths(repoRoot: string): string[] {
+  const rootPath = join(repoRoot, "package.json");
+  const parsed = rootManifestSchema(JSON.parse(readFileSync(rootPath, "utf8")));
+  if (parsed instanceof type.errors) {
+    throw new Error(
+      `packages: ${rootPath} has no well-formed "workspaces" array: ${parsed.summary}`,
+    );
+  }
+  const paths = new Set<string>();
+  for (const glob of parsed.workspaces) {
+    for (const rel of new Bun.Glob(`${glob}/package.json`).scanSync(repoRoot)) {
+      paths.add(join(repoRoot, rel));
+    }
+  }
+  return [...paths].sort();
+}
+
 /** A non-private workspace package under `packages/`. */
 export interface WorkspacePackage {
   name: string;

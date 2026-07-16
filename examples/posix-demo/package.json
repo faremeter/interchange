@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-posix-demo",
+  "description": "Example: two agents relaying over in-process mail with POSIX and mail tools",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

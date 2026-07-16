@@ -1,5 +1,6 @@
 {
   "name": "@intx/pack-transport",
+  "description": "Git pack chunking and reassembly for the hub-sidecar WebSocket wire",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

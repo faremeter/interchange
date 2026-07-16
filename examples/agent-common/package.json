@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-agent-common",
+  "description": "Shared helpers for the agent-* example packages",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

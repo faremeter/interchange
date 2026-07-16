@@ -1,5 +1,6 @@
 {
   "name": "@intx/harness",
+  "description": "Mail-transport composition layer over @intx/agent adding INBOX watch and connector routing",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

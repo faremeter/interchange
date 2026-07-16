@@ -1,5 +1,6 @@
 {
   "name": "@intx/inference-discovery-openai",
+  "description": "OpenAI-protocol provider plug-in for the inference discovery rig",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

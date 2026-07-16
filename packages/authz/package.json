@@ -1,5 +1,6 @@
 {
   "name": "@intx/authz",
+  "description": "Grant evaluation engine that authorizes a principal against a resource and action",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

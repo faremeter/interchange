@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-agent-rich-tool",
+  "description": "Example: the pendingMarker ToolResult field that opens an approval or payment-pending gate",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

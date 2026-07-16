@@ -1,5 +1,6 @@
 {
   "name": "@intx/crypto",
+  "description": "Ed25519 cryptographic provider with SSH and PGP detached signatures and ASCII armoring",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

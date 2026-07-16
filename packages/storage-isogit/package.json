@@ -1,5 +1,6 @@
 {
   "name": "@intx/storage-isogit",
+  "description": "Git-backed ContextStore and AuditStore with pack send/receive for moving repositories over the wire",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /* eslint-disable no-console */
 
-// Publish-metadata guard for the non-private workspace packages.
+// Publish-metadata guard for the workspace.
 //
 // Three fields must be present and correct on every package published to
 // npm, or the tarball misbehaves:
@@ -18,16 +18,32 @@
 //     entry points import the default console sink), so it names those
 //     files instead.
 //
-// This module is both the one-time transform that sets these fields and
-// the check that keeps them, mirroring `exports-shape`. It runs in
-// `make lint`, so a package added later without the fields fails the gate
-// rather than shipping a broken or oversized tarball. Private packages
-// are skipped.
+// Those three are publish-tarball concerns, so they apply only to the
+// non-private packages under `packages/` (the ones that ship). A fourth
+// requirement has a different scope:
+//
+//   - `description`: a non-empty summary. npm shows it in search results
+//     and on the package page, and it documents the package for anyone
+//     reading the manifest. Every workspace member should carry one —
+//     private members included — so this check enumerates all members the
+//     root `workspaces` globs declare, not just the publishable packages.
+//
+// This module is both the one-time transform that sets the three tarball
+// fields and the check that keeps them, mirroring `exports-shape`. It runs
+// in `make lint`, so a package added later without the fields fails the
+// gate rather than shipping a broken or oversized tarball. The transform
+// never authors a `description` — wording is written by hand — so `--fix`
+// sets the three mechanical fields and then fails loudly on any member
+// still missing one rather than reporting a success a later check-mode run
+// would contradict.
 
 import { join } from "node:path";
 import { type } from "arktype";
 
-import { readWorkspacePackages } from "./lib/packages";
+import {
+  readWorkspaceManifestPaths,
+  readWorkspacePackages,
+} from "./lib/packages";
 
 const ACCESS = "public";
 
@@ -109,6 +125,35 @@ export async function checkWorkspaceMetadata(
   return { violations, packageCount: list.length };
 }
 
+export type DescriptionReport = {
+  violations: string[];
+  manifestCount: number;
+};
+
+/** A `description` must be a present, non-whitespace string. */
+function hasDescription(raw: Record<string, unknown>): boolean {
+  const value = raw["description"];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Require a non-empty `description` on every workspace member the root
+ *  `workspaces` globs declare — private members included. A malformed
+ *  member manifest surfaces from `readRaw` rather than being skipped. */
+export async function checkWorkspaceDescriptions(
+  repoRoot: string,
+): Promise<DescriptionReport> {
+  const violations: string[] = [];
+  const paths = readWorkspaceManifestPaths(repoRoot);
+  for (const manifestPath of paths) {
+    const raw = await readRaw(manifestPath);
+    if (!hasDescription(raw)) {
+      const name = typeof raw["name"] === "string" ? raw["name"] : manifestPath;
+      violations.push(`${name}: "description" must be a non-empty string`);
+    }
+  }
+  return { violations, manifestCount: paths.length };
+}
+
 /** Set the three fields on every non-private package. Returns the packages
  *  changed. */
 export async function fixWorkspaceMetadata(
@@ -145,18 +190,31 @@ if (import.meta.main) {
     const changed = await fixWorkspaceMetadata(repoRoot);
     for (const name of changed) console.log(`  set metadata on ${name}`);
     console.log(`publish-metadata: updated ${changed.length} package(s)`);
+    // `--fix` never authors a description. A member left without one is a
+    // real failure, so surface it and exit non-zero rather than reporting a
+    // success that the check-mode run in `make lint` would contradict.
+    const { violations } = await checkWorkspaceDescriptions(repoRoot);
+    if (violations.length > 0) {
+      console.error(
+        `\npublish-metadata: ${violations.length} member(s) still need a hand-written "description":\n`,
+      );
+      for (const v of violations) console.error(`  - ${v}`);
+      process.exit(1);
+    }
   } else {
-    const { violations, packageCount } = await checkWorkspaceMetadata(repoRoot);
+    const metadata = await checkWorkspaceMetadata(repoRoot);
+    const descriptions = await checkWorkspaceDescriptions(repoRoot);
+    const violations = [...metadata.violations, ...descriptions.violations];
     if (violations.length > 0) {
       console.error(`publish-metadata: ${violations.length} violation(s)\n`);
       for (const v of violations) console.error(`  - ${v}`);
       console.error(
-        `\nRun \`bun bin/publish-metadata.ts --fix\` to set the publish metadata.`,
+        `\nRun \`bun bin/publish-metadata.ts --fix\` to set the mechanical publish metadata; a "description" must be written by hand.`,
       );
       process.exit(1);
     }
     console.log(
-      `publish-metadata: ok (${packageCount} non-private package(s))`,
+      `publish-metadata: ok (${metadata.packageCount} non-private package(s), ${descriptions.manifestCount} manifest(s) with a description)`,
     );
   }
 }

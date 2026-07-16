@@ -1,5 +1,6 @@
 {
   "name": "@intx/log",
+  "description": "Structured logging with per-package loggers and pluggable development and production sinks",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

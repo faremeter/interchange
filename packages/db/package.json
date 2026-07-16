@@ -1,5 +1,6 @@
 {
   "name": "@intx/db",
+  "description": "Client, schema, migrations, and row parsers for the hub's PostgreSQL database",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",
