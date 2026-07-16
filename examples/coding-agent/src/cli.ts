@@ -119,8 +119,13 @@ export async function main(
   const streamPump = pumpStreamToStderr(agent.stream(), stderr);
 
   try {
-    const { reply } = await agent.send(args.prompt);
-    stdout(reply + "\n");
+    const result = await agent.send(args.prompt);
+    if (result.type !== "reply") {
+      throw new Error(
+        `agent send suspended on correlationId ${result.correlationId}; this example drives a single prompt and has no resume path`,
+      );
+    }
+    stdout(result.reply + "\n");
     return 0;
   } finally {
     await close();

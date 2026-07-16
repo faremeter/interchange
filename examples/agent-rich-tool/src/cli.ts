@@ -130,8 +130,13 @@ export async function main(
     // be dropped between subscription and delivery.
     const correlated = waitForCorrelation(agent.stream(), timeoutMs);
 
-    const { reply } = await agent.send(prompt);
-    stdout(`assistant: ${reply}\n\n`);
+    const result = await agent.send(prompt);
+    if (result.type !== "reply") {
+      throw new Error(
+        `agent send suspended on correlationId ${result.correlationId}; this example drives a single prompt and has no resume path`,
+      );
+    }
+    stdout(`assistant: ${result.reply}\n\n`);
 
     // The tool stamped the correlation ID into the tool_result's
     // `detail` field; pull it back out so we can construct a

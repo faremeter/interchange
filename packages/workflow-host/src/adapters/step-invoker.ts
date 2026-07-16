@@ -58,6 +58,7 @@ import {
   type AgentDefinition,
   type AuthorizeFn,
   type BaseEnv,
+  type SendResult,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
@@ -245,7 +246,7 @@ async function invokeColdStep(
 
   try {
     const sendResult = await sendWithAbort(agent, req, { closeOnAbort: true });
-    return { output: { reply: sendResult.reply, turn: sendResult.turn } };
+    return stepResultFromSend(sendResult);
   } finally {
     // `close` is idempotent: a second call after the send already
     // resolved still releases the workdir lock and tears down stream
@@ -328,7 +329,7 @@ async function invokeWarmStep(
   }
   try {
     const sendResult = await sendWithAbort(agent, req, { closeOnAbort: false });
-    return { output: { reply: sendResult.reply, turn: sendResult.turn } };
+    return stepResultFromSend(sendResult);
   } finally {
     // Do NOT close the agent or drain its forwarder: both span
     // messages and are owned by the warm cache, torn down at eviction.
@@ -386,46 +387,44 @@ async function sendWithAbort(
   agent: Agent,
   req: StepInvokeRequest,
   cfg: { closeOnAbort: boolean },
-): Promise<{ reply: string; turn: unknown }> {
+): Promise<SendResult> {
   let abortListener: (() => void) | null = null;
   try {
-    return await new Promise<{ reply: string; turn: unknown }>(
-      (resolve, reject) => {
-        // Re-check the abort signal inside the executor. `buildEnv` and
-        // `agentFactory` (or a warm-cache acquire) yield to the
-        // microtask queue, and the caller can fire `signal.abort()`
-        // between the entry-time check and here. Without this re-check,
-        // a mid-construction abort would attach the listener to an
-        // already-aborted signal that never fires the event again, and
-        // the send would hang to the workflow runtime's step timeout.
-        if (req.signal.aborted) {
-          reject(abortError(req.signal));
-          return;
-        }
-        const onAbort = (): void => {
-          // The abort signal racing the send. On the cold path the
-          // caller's `finally` close aborts the reactor and the
-          // in-flight `agent.send` rejects shortly after; on the warm
-          // path the signal threaded into `agent.send` rejects the
-          // send. Either way we reject here so the abort attribution
-          // wins regardless of which side settles first.
-          reject(abortError(req.signal));
-        };
-        abortListener = onAbort;
-        req.signal.addEventListener("abort", onAbort, { once: true });
-        let synthesized: string;
-        try {
-          synthesized = synthesizeInputContent(req.input);
-        } catch (cause) {
-          reject(cause instanceof Error ? cause : new Error(String(cause)));
-          return;
-        }
-        const sendOpts = cfg.closeOnAbort ? undefined : { signal: req.signal };
-        agent.send(synthesized, sendOpts).then(resolve, (cause: unknown) => {
-          reject(cause instanceof Error ? cause : new Error(String(cause)));
-        });
-      },
-    );
+    return await new Promise<SendResult>((resolve, reject) => {
+      // Re-check the abort signal inside the executor. `buildEnv` and
+      // `agentFactory` (or a warm-cache acquire) yield to the
+      // microtask queue, and the caller can fire `signal.abort()`
+      // between the entry-time check and here. Without this re-check,
+      // a mid-construction abort would attach the listener to an
+      // already-aborted signal that never fires the event again, and
+      // the send would hang to the workflow runtime's step timeout.
+      if (req.signal.aborted) {
+        reject(abortError(req.signal));
+        return;
+      }
+      const onAbort = (): void => {
+        // The abort signal racing the send. On the cold path the
+        // caller's `finally` close aborts the reactor and the
+        // in-flight `agent.send` rejects shortly after; on the warm
+        // path the signal threaded into `agent.send` rejects the
+        // send. Either way we reject here so the abort attribution
+        // wins regardless of which side settles first.
+        reject(abortError(req.signal));
+      };
+      abortListener = onAbort;
+      req.signal.addEventListener("abort", onAbort, { once: true });
+      let synthesized: string;
+      try {
+        synthesized = synthesizeInputContent(req.input);
+      } catch (cause) {
+        reject(cause instanceof Error ? cause : new Error(String(cause)));
+        return;
+      }
+      const sendOpts = cfg.closeOnAbort ? undefined : { signal: req.signal };
+      agent.send(synthesized, sendOpts).then(resolve, (cause: unknown) => {
+        reject(cause instanceof Error ? cause : new Error(String(cause)));
+      });
+    });
   } finally {
     if (abortListener !== null) {
       req.signal.removeEventListener("abort", abortListener);
@@ -487,6 +486,31 @@ function wrapAuthorize(
 ): AuthorizeFn {
   return async (resource, action) =>
     workflowAuthorize(resource, action, authzContext);
+}
+
+/**
+ * Translate a settled `SendResult` into the step's `StepInvokeResult`.
+ *
+ * A `"reply"` outcome carries the assistant's reply and full-fidelity
+ * turn, which become the step output so downstream consumers can read
+ * either shape.
+ *
+ * A `"suspended"` outcome throws: the reactor parked on a gate awaiting
+ * an external decision, and this invoker has no path to resume a
+ * suspended reactor -- it drives a single `agent.send` per step and
+ * tears the agent down on exit, with no signal bridge to deliver the
+ * correlated decision and no state to resume against. A parked send is
+ * therefore not a completable step. Throwing surfaces the gap loudly;
+ * fabricating an empty-reply output would swallow the suspension and
+ * hand the workflow a bogus completed step.
+ */
+function stepResultFromSend(result: SendResult): StepInvokeResult {
+  if (result.type === "suspended") {
+    throw new Error(
+      `workflow step invoker: agent send suspended on correlationId ${result.correlationId}; this invoker cannot resume a parked reactor -- it has no signal bridge to deliver the correlated decision and no resume path, so a suspended send is not a completable step`,
+    );
+  }
+  return { output: { reply: result.reply, turn: result.turn } };
 }
 
 /**

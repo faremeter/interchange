@@ -72,6 +72,7 @@ export {
   type SendOptions,
   type SendResult,
   AgentClosedError,
+  GateSuspendedWithoutCorrelationError,
   createAgent,
 } from "./agent";
 export {

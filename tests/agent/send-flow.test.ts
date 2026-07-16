@@ -92,6 +92,9 @@ describe("@intx/agent send-flow integration", () => {
       const sendPromise = agent.send("Hello");
       await harness.run();
       const result = await sendPromise;
+      if (result.type !== "reply") {
+        throw new Error(`expected a reply outcome, got ${result.type}`);
+      }
       expect(result.reply).toBe("Hi there!");
       expect(result.turn.role).toBe("assistant");
     } finally {
@@ -213,6 +216,9 @@ describe("@intx/agent send-flow integration", () => {
       const second = agent.send("Hello again");
       await harness.run();
       const r = await second;
+      if (r.type !== "reply") {
+        throw new Error(`expected a reply outcome, got ${r.type}`);
+      }
       expect(r.reply).toBe("rotated reply");
 
       const matched = harness.scenario.matchedRequests().at(-1);
@@ -254,6 +260,9 @@ describe("@intx/agent send-flow integration", () => {
       const second = agent.send("Hello again");
       await harness.run();
       const r = await second;
+      if (r.type !== "reply") {
+        throw new Error(`expected a reply outcome, got ${r.type}`);
+      }
       expect(r.reply).toBe("second-model reply");
 
       const matched = harness.scenario.matchedRequests().at(-1);
@@ -297,6 +306,9 @@ describe("@intx/agent send-flow integration", () => {
       const next = agent.send("Round two");
       await harness.run();
       const result = await next;
+      if (result.type !== "reply") {
+        throw new Error(`expected a reply outcome, got ${result.type}`);
+      }
       expect(result.reply).toBe("post-abort reply");
     } finally {
       await agent.close();
