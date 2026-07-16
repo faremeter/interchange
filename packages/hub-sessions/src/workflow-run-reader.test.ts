@@ -140,16 +140,18 @@ describe("WorkflowRunReader", () => {
     ]);
   });
 
-  test("ignores non-event blobs in the events dir", async () => {
+  test("rejects an illegal event filename in the events dir", async () => {
+    // Only `<seq>.json` may land under `events/`; validatePush enforces
+    // that, so a foreign name here is corruption the reader surfaces
+    // rather than silently dropping.
     await commitFiles(dir, {
       "runs/run-1/events/0.json": JSON.stringify({ type: "RunStarted" }),
-      "runs/run-1/events/notanumber.json": JSON.stringify({ type: "Junk" }),
       "runs/run-1/events/1.txt": "not json",
     });
 
-    const events = await reader.readRunEvents(REPO_ID, REF, "run-1");
-    expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe("RunStarted");
+    await expect(reader.readRunEvents(REPO_ID, REF, "run-1")).rejects.toThrow(
+      "event_filename_invalid",
+    );
   });
 
   test("lists run ids present under runs/", async () => {

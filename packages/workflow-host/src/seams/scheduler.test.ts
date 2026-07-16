@@ -376,6 +376,50 @@ describe("workflow-host scheduler", () => {
   );
 
   test(
+    "recovery throws on an illegal event filename",
+    async () => {
+      const dataDir = await makeTempDir("scheduler-recovery-badname-");
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: {
+          "agent-state": permissiveHandler("workflow-runs-badname"),
+        },
+        authorize: allowAll,
+      });
+      const repoId: RepoId = { kind: "agent-state", id: "deployment-g" };
+
+      // A foreign name under events/ is corruption; recovery surfaces it
+      // rather than silently dropping the blob.
+      await store.writeTree(principal, repoId, REF, {
+        files: {
+          "runs/r1/events/not-a-seq.json": JSON.stringify({
+            type: "TimerSet",
+            data: { timerId: "x", fireAt: new Date().toISOString() },
+          }),
+        },
+        message: "bad filename",
+      });
+
+      const scheduler = createWorkflowHostScheduler({
+        repoStore: store,
+        principal,
+        listActiveDeployments: () => [repoId],
+        ref: REF,
+        clock: () => new Date(),
+      });
+      try {
+        await expect(scheduler.start()).rejects.toThrow(
+          /event_filename_invalid/,
+        );
+      } finally {
+        await scheduler.stop();
+      }
+    },
+    { timeout: 5000 },
+  );
+
+  test(
     "cron-style TimerSet whose fireAt is in the past is skipped on recovery",
     async () => {
       const dataDir = await makeTempDir("scheduler-cron-skip-");

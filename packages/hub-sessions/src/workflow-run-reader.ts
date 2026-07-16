@@ -4,7 +4,7 @@ import git from "isomorphic-git";
 import type { RepoId } from "./repo-store/types";
 import type { RepoStore } from "./repo-store/types";
 import {
-  parseEventSeq,
+  requireEventSeq,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
@@ -175,10 +175,9 @@ export function createWorkflowRunReader(
     const events: WorkflowRunEvent[] = [];
     for (const entry of tree.tree) {
       if (entry.type !== "blob") continue;
-      const seq = parseEventSeq(entry.path);
-      if (seq === null) continue;
-      const blob = await git.readBlob({ fs, dir, oid: entry.oid });
       const path = `${eventsDir}/${entry.path}`;
+      const seq = requireEventSeq(entry.path, path);
+      const blob = await git.readBlob({ fs, dir, oid: entry.oid });
       const parsed = parseEventObject(
         new TextDecoder().decode(blob.blob),
         path,

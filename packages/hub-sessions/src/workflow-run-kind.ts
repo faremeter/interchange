@@ -305,6 +305,24 @@ export function parseEventSeq(filename: string): number | null {
 }
 
 /**
+ * Narrow a per-event filename to its seq, throwing when it is illegal.
+ * A reader that enumerates the committed event log to act on its entries
+ * uses this rather than `parseEventSeq`: `validatePush` is the authority
+ * that keeps an illegal name from ever landing under
+ * `runs/<runId>/events/`, so a name that reaches a reader is corruption,
+ * and silently skipping it would drop an event from processing. `context`
+ * is the repo-root-relative blob path, surfaced in the error so the
+ * offending entry is identifiable.
+ */
+export function requireEventSeq(filename: string, context: string): number {
+  const seq = parseEventSeq(filename);
+  if (seq === null) {
+    throw new Error(`event_filename_invalid: ${context}`);
+  }
+  return seq;
+}
+
+/**
  * Per-blob filename shape for the `runs/<runId>/blobs/` subtree: a
  * lowercase 64-character sha256 hex string. Pins the regex to the key
  * the production `BlobSubstrate` adapter computes via `sha256Hex` so a
