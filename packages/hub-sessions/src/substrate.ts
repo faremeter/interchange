@@ -51,6 +51,8 @@ export type { SubscribeKindEntry } from "./repo-store/subscribe-kind";
 export { createAgentRepoStore } from "./agent-repo";
 
 export type {
+  CommittedReads,
+  CommittedTreeEntry,
   Principal,
   RepoId,
   RepoStore,

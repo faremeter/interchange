@@ -684,6 +684,7 @@ export function createWorkflowRunPackPushingRepoStore(
     listRefs: underlying.listRefs.bind(underlying),
     resolveHead: underlying.resolveHead.bind(underlying),
     getRepoDir: underlying.getRepoDir.bind(underlying),
+    openCommittedReads: underlying.openCommittedReads.bind(underlying),
     subscribe: underlying.subscribe.bind(underlying),
     flushWorkflowRunPushes,
     notifyAddressRoutable,

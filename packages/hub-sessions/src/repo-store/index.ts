@@ -1,5 +1,7 @@
 export type {
   AuthorizeFn,
+  CommittedReads,
+  CommittedTreeEntry,
   InitRepoOpts,
   KindHandler,
   NewlyTerminalRun,

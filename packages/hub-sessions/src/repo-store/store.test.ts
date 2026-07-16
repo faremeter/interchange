@@ -2140,4 +2140,159 @@ describe("RepoStore", () => {
       thirdSha,
     );
   });
+
+  test("openCommittedReads lists committed entries and reads blobs by oid", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-reads-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: {
+        "runs/r1/events/0.json": "zero",
+        "runs/r1/events/1.json": "one",
+      },
+      message: "seed events",
+    });
+
+    const reads = await store.openCommittedReads(principal, repoId, REF);
+    if (reads === null) throw new Error("expected committed reads");
+
+    const runs = await reads.listDir("runs");
+    expect(runs.map((e) => e.name)).toEqual(["r1"]);
+    expect(runs[0]?.type).toBe("tree");
+
+    const events = await reads.listDir("runs/r1/events");
+    expect(events.map((e) => e.name).sort()).toEqual(["0.json", "1.json"]);
+    for (const e of events) expect(e.type).toBe("blob");
+
+    const zero = events.find((e) => e.name === "0.json");
+    if (zero === undefined) throw new Error("unreachable");
+    const bytes = await reads.readBlobByOid(zero.oid);
+    expect(new TextDecoder().decode(bytes)).toBe("zero");
+  });
+
+  test("openCommittedReads reads committed state after the working tree is wiped", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-vs-worktree-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "committed" },
+      message: "seed",
+    });
+
+    // Diverge the working tree from the object store: delete the
+    // materialized checkout while leaving `.git` intact. A working-tree
+    // read would now miss the event; a committed read must not.
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    await fs.promises.rm(path.join(dir, "runs"), {
+      recursive: true,
+      force: true,
+    });
+
+    const reads = await store.openCommittedReads(principal, repoId, REF);
+    if (reads === null) throw new Error("expected committed reads");
+    const events = await reads.listDir("runs/r1/events");
+    expect(events.map((e) => e.name)).toEqual(["0.json"]);
+    const only = events[0];
+    if (only === undefined) throw new Error("unreachable");
+    const bytes = await reads.readBlobByOid(only.oid);
+    expect(new TextDecoder().decode(bytes)).toBe("committed");
+  });
+
+  test("openCommittedReads returns null for a missing repo or unresolved ref", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-null-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    expect(await store.openCommittedReads(principal, repoId, REF)).toBeNull();
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    expect(
+      await store.openCommittedReads(principal, repoId, "refs/heads/absent"),
+    ).toBeNull();
+  });
+
+  test("openCommittedReads listing an absent directory returns the empty array", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-empty-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+
+    const reads = await store.openCommittedReads(principal, repoId, REF);
+    if (reads === null) throw new Error("expected committed reads");
+    expect(await reads.listDir("runs/absent/events")).toEqual([]);
+  });
+
+  test("openCommittedReads lists the repository root with the empty path", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-root-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "a.json": "x", "runs/r1/events/0.json": "y" },
+      message: "seed",
+    });
+
+    const reads = await store.openCommittedReads(principal, repoId, REF);
+    if (reads === null) throw new Error("expected committed reads");
+    const root = await reads.listDir("");
+    expect(root.map((e) => e.name).sort()).toEqual(["a.json", "runs"]);
+  });
+
+  test("openCommittedReads is gated on the resolveRef authorize action", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-gate-");
+    const handler = createTestHandler();
+    const denyResolveRef: AuthorizeFn = (_p, _r, _ref, action) =>
+      action === "resolveRef"
+        ? { allowed: false, reason: "no committed reads" }
+        : { allowed: true };
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: denyResolveRef,
+    });
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+
+    await expect(
+      store.openCommittedReads(principal, repoId, REF),
+    ).rejects.toThrow("authorize_denied: no committed reads");
+  });
 });

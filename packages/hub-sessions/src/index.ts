@@ -146,6 +146,8 @@ export {
 } from "./workflow-run-event-log";
 export type {
   AuthorizeFn,
+  CommittedReads,
+  CommittedTreeEntry,
   CreateRepoStoreConfig,
   InitRepoOpts,
   KindHandler,

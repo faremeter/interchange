@@ -50,8 +50,8 @@ export interface CreateProxyWorkflowRunRepoStoreOpts {
    * Bare substrate handle the child opens against the shared on-disk
    * data dir. Used for the read-only methods that consult the
    * substrate's local state -- `getRepoDir` (path computation, no
-   * I/O), `resolveRef`, `listRefs`, `resolveHead`, `createPack`. The
-   * bare store is never used as a writer here; its
+   * I/O), `resolveRef`, `listRefs`, `resolveHead`, `openCommittedReads`,
+   * `createPack`. The bare store is never used as a writer here; its
    * `writeTreePreservingPrefix` / `writeTree` / `receivePack` are not
    * reachable through this proxy.
    */
@@ -215,6 +215,7 @@ export function createProxyWorkflowRunRepoStore(
     listRefs: bareStore.listRefs.bind(bareStore),
     resolveHead: bareStore.resolveHead.bind(bareStore),
     getRepoDir: bareStore.getRepoDir.bind(bareStore),
+    openCommittedReads: bareStore.openCommittedReads.bind(bareStore),
     subscribe(
       _principal: Principal,
       repoId: RepoId,

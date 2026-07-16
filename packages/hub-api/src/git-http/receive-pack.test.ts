@@ -118,6 +118,9 @@ function createStubStore(stub: ReceivePackStub): {
     getRepoDir: () => {
       throw new Error("getRepoDir: not used in this test");
     },
+    openCommittedReads: async () => {
+      throw new Error("openCommittedReads: not used in this test");
+    },
     receivePack: async (
       _principal: Principal,
       _repoId: RepoId,
