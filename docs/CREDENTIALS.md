@@ -93,6 +93,12 @@ The grant validation ensures that a definition creator cannot grant an agent acc
 
 At launch time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of tenant, creator, and invoker credentials, subject to each party's authorization.
 
+### Model-Source Credential Authorization (Interim)
+
+Model-source (tenant-catalog) credentials carry an additional gate: the secret behind a catalog offering only enters a launchable inference source when the agent's creator holds a `credential:{id}` / `use` grant for the referenced credential. This is enforced fail-closed — anything other than an `allow` effect (including `ask`, `deny`, or no matching grant) withholds the secret — at agent launch and again on credential rotation, so a rotated secret is never pushed to a running instance whose creator lacks the grant.
+
+This is a deliberate interim tightening. Catalog credentials are tenant-owned (tenant-source), and under the source-based authority model (tenant/creator/invoker) a tenant-source credential would be authorized by tenant/role policy rather than by a per-principal `use` grant. Gating catalog-credential use on the creator's explicit grant is stricter than that model requires. Unifying catalog-credential authorization with the source-based model is planned; until then the creator `use` grant is the authoritative check on this path.
+
 ## Walk-up Resolution
 
 All three concepts (providers, OAuth clients, credentials) use the same walk-up resolution pattern through the tenant hierarchy. Starting from the current tenant, the system checks for a match, then moves to the parent tenant, and continues until it finds a match or reaches the root.

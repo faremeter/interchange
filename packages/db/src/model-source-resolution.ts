@@ -143,6 +143,13 @@ async function buildSource(
   // an `allow` effect (including `ask`, `deny`, and no matching grant at all)
   // withholds the secret so it never enters a launchable source.
   //
+  // Gating on the creator's `use` grant is a deliberate interim tightening over
+  // the tenant-source default: catalog credentials are tenant-owned, and the
+  // broader source-based credential-authority model (tenant/creator/invoker)
+  // would authorize a tenant-source credential via tenant/role policy rather
+  // than a per-principal grant. That model is where this check should ultimately
+  // live; until it subsumes catalog credentials, this stays as-is by design.
+  //
   // No condition registry is passed: credential-use grants are minted and
   // backfilled unconditionally (conditions: null), so conditional grants are
   // intentionally not evaluated on this path.
