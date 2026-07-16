@@ -27,9 +27,11 @@
 // tests; the lockfile check and CLI gate run only when this file is the entry
 // point. Exits non-zero with a list of violations, or zero when clean.
 
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { type } from "arktype";
 import ts from "typescript";
+
+import { readWorkspaceManifestPaths } from "./lib/packages";
 
 const NODE_BUILTINS = new Set([
   "assert",
@@ -196,16 +198,18 @@ export async function checkWorkspace(
   let memberCount = 0;
   let fileCount = 0;
 
-  const manifestPaths = [
-    ...new Bun.Glob("packages/*/package.json").scanSync(repoRoot),
-    ...new Bun.Glob("apps/*/package.json").scanSync(repoRoot),
-    ...new Bun.Glob("examples/*/package.json").scanSync(repoRoot),
-  ].sort();
+  const manifestPaths = readWorkspaceManifestPaths(repoRoot);
+  // Member directories, repo-relative, used below to exclude member subtrees
+  // from the root-scripts scan: a member is checked against its own manifest
+  // here, not a second time against the root manifest.
+  const memberDirs: string[] = [];
 
-  for (const manifestRel of manifestPaths) {
-    const dir = join(repoRoot, manifestRel.replace(/\/package\.json$/, ""));
-    const manifest = await readManifest(join(repoRoot, manifestRel));
-    const self = manifest.name ?? manifestRel;
+  for (const manifestPath of manifestPaths) {
+    const dir = dirname(manifestPath);
+    const rel = relative(repoRoot, dir);
+    memberDirs.push(rel);
+    const manifest = await readManifest(manifestPath);
+    const self = manifest.name ?? rel;
     const declared = declaredNames(manifest);
     const { aliases, outDir } = memberConfig(dir);
     workspaceNames.add(self);
@@ -244,7 +248,7 @@ export async function checkWorkspace(
           continue;
         if (!declared.has(name)) {
           violations.push(
-            `${self}: imports "${name}" (${manifestRel.replace(/\/package\.json$/, "")}/${file}) but does not declare it in package.json`,
+            `${self}: imports "${name}" (${rel}/${file}) but does not declare it in package.json`,
           );
         }
       }
@@ -298,10 +302,14 @@ export async function checkWorkspace(
     }
   }
 
-  // --- check 1 for the root scripts: bin/ and tests/ are not workspace
-  // members (no package.json of their own) and are never published, so their
-  // imports resolve against the root manifest. Workspace packages are always
-  // available to them; only external imports must be declared in root. ---
+  // --- check 1 for the root scripts: files under bin/ and tests/ that are
+  // not part of a workspace member. These have no package.json of their own
+  // and are never published, so their imports resolve against the root
+  // manifest. Files that DO sit under a member directory — e.g. tests/lib,
+  // the @intx/test-harness package — are already checked against that
+  // member's own manifest in the loop above and are excluded here. Workspace
+  // packages are always available to root scripts; only external imports must
+  // be declared in root. ---
   const rootDeclared = declaredNames(rootManifest);
   for (const area of ["bin", "tests"]) {
     const areaDir = join(repoRoot, area);
@@ -309,6 +317,11 @@ export async function checkWorkspace(
     for (const file of new Bun.Glob(
       "**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
     ).scanSync(areaDir)) {
+      // A member's own files are checked against its manifest above; match
+      // on a path boundary so `tests/lib` never swallows a `tests/library`.
+      const repoRel = `${area}/${file}`;
+      if (memberDirs.some((m) => repoRel === m || repoRel.startsWith(`${m}/`)))
+        continue;
       const segments = file.split("/");
       if (segments.includes("node_modules") || segments.includes("dist"))
         continue;
