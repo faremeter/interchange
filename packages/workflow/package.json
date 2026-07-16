@@ -34,6 +34,7 @@
   "dependencies": {
     "@intx/agent": "workspace:*",
     "@intx/inference": "workspace:*",
+    "@intx/types": "workspace:*",
     "arktype": "catalog:"
   },
   "files": [

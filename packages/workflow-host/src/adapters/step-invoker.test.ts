@@ -12,6 +12,7 @@ import { createDefaultDirectorRegistry } from "@intx/agent";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
+  StepInvokeResult,
   WorkflowAuthorizeFn,
 } from "@intx/workflow";
 import type {
@@ -367,7 +368,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
 
     stub.resolveSend({ type: "reply", reply: "pong", turn });
     const result = await sendPromise;
-    expect(result.output).toEqual({ reply: "pong", turn });
+    expect(expectOutput(result)).toEqual({ reply: "pong", turn });
     expect(stub.events[0]).toBe(`send:${JSON.stringify({ goal: "ping" })}`);
     expect(stub.events).toContain("close");
   });
@@ -512,7 +513,7 @@ describe("workflow-host StepInvoker adapter - output shape", () => {
     await Promise.resolve();
     stub.resolveSend({ type: "reply", reply: "hello", turn });
     const result = await settled;
-    expect(result.output).toEqual({ reply: "hello", turn });
+    expect(expectOutput(result)).toEqual({ reply: "hello", turn });
   });
 });
 
@@ -538,7 +539,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     });
 
     const result = await invoker(buildRequest({ input: { goal: "go" } }));
-    expect(result.output).toMatchObject({ reply: "ok" });
+    expect(expectOutput(result)).toMatchObject({ reply: "ok" });
     expect(calls).toBeGreaterThan(0);
     expect(stub.state.closed).toBe(true);
   });
@@ -725,8 +726,8 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
 
     // Conversation continuity: the warm agent retained the first message
     // in memory, so the second reply reflects both turns.
-    const firstReply = readReply(first.output);
-    const secondReply = readReply(second.output);
+    const firstReply = readReply(expectOutput(first));
+    const secondReply = readReply(expectOutput(second));
     expect(firstReply).toBe("reply1:first message");
     expect(secondReply).toBe("reply2:first message|second message");
 
@@ -826,7 +827,7 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
 
     const after = await invoker(buildRequest({ input: "next message" }));
     expect(factoryCalls).toBe(1);
-    expect(readReply(after.output)).toBe("ok:next message");
+    expect(readReply(expectOutput(after))).toBe("ok:next message");
 
     // Teardown closes the warm agent once.
     await warmCache.evictAll("test teardown");
@@ -867,6 +868,149 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
     await warmCache.evictAll("test teardown");
   });
 });
+
+describe("workflow-host StepInvoker adapter - resume send path", () => {
+  test("a resume request sends the correlated decision and returns the resumed reply", async () => {
+    // The resumed reactor's reply turn -- what the step output should carry.
+    const resumeTurn = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "resumed reply" }],
+      model: STUB_SOURCE.model,
+      timestamp: 7,
+    };
+
+    let sentContent: string | InboundMessage | undefined;
+    const agent = buildResumeStubAgent((content) => {
+      sentContent = content;
+      return { type: "reply", reply: "resumed reply", turn: resumeTurn };
+    });
+
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+
+    const req: StepInvokeRequest = {
+      ...buildRequest({ input: { goal: "start" } }),
+      resume: { correlationId: "corr-1", decision: { outcome: "approved" } },
+    };
+    const result = await invoker(req);
+
+    // The invoker sent a full InboundMessage (not a plain string) stamped
+    // with the correlation id so the reactor's tryCorrelate can match the
+    // rehydrated gate, carrying the decision body as its content.
+    if (typeof sentContent === "string" || sentContent === undefined) {
+      throw new Error(
+        `resume must send an InboundMessage, got ${typeof sentContent}`,
+      );
+    }
+    expect(sentContent.headers.interchangeCorrelationId).toBe("corr-1");
+    expect(sentContent.content).toBe(JSON.stringify({ outcome: "approved" }));
+
+    // The step output is the resumed reply paired with the reactor's turn.
+    expect(expectOutput(result)).toEqual({
+      reply: "resumed reply",
+      turn: resumeTurn,
+    });
+  });
+
+  test("a resumed cycle that re-parks on a second gate re-suspends instead of hanging", async () => {
+    // The resumed cycle (tool A approved) hits a second gate (tool B needs
+    // approval) and re-parks. `agent.send` settles that as a "suspended"
+    // SendResult carrying the new correlation id; the invoker must hand
+    // that straight back as a fresh suspend rather than hanging waiting for
+    // a reply that never comes.
+    let sentContent: string | InboundMessage | undefined;
+    const agent = buildResumeStubAgent((content) => {
+      sentContent = content;
+      return { type: "suspended", correlationId: "corr-B" };
+    });
+
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+
+    const req: StepInvokeRequest = {
+      ...buildRequest({ input: { goal: "start" } }),
+      resume: { correlationId: "corr-A", decision: { outcome: "approved" } },
+    };
+    const result = await invoker(req);
+
+    if (typeof sentContent === "string" || sentContent === undefined) {
+      throw new Error(
+        `resume must send an InboundMessage, got ${typeof sentContent}`,
+      );
+    }
+    expect(sentContent.headers.interchangeCorrelationId).toBe("corr-A");
+
+    if (!("suspend" in result)) {
+      throw new Error(
+        `expected a re-suspension, got output ${JSON.stringify(result)}`,
+      );
+    }
+    expect(result.suspend.correlationId).toBe("corr-B");
+  });
+});
+
+/**
+ * Construct an `Agent` stub whose `send` runs `onSend` (recording the
+ * message and returning the settled `SendResult`) and whose `deliver`
+ * throws -- the resume path must route through `send`, never `deliver`.
+ */
+function buildResumeStubAgent(
+  onSend: (content: string | InboundMessage) => SendResult,
+): Agent {
+  return {
+    async send(content): Promise<SendResult> {
+      return onSend(content);
+    },
+    stream() {
+      throw new Error("stub stream() not used");
+    },
+    deliver(_message: InboundMessage) {
+      throw new Error("resume path must not call deliver()");
+    },
+    async close() {
+      /* nothing to tear down on the resume stub */
+    },
+    setSource() {
+      throw new Error("stub setSource() not used");
+    },
+    setSources() {
+      throw new Error("stub setSources() not used");
+    },
+    async history() {
+      return [];
+    },
+    async checkpoints() {
+      return [];
+    },
+    async readAt() {
+      return [];
+    },
+    blobReader: stubBlobReader(),
+  };
+}
+
+function expectOutput(result: StepInvokeResult): unknown {
+  if (!("output" in result)) {
+    throw new Error(
+      `expected an output-shaped step result, got suspend on ${result.suspend.correlationId}`,
+    );
+  }
+  return result.output;
+}
 
 function readReply(output: unknown): string {
   if (

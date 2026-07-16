@@ -45,6 +45,7 @@ import { createWorkflowStepInvoker } from "@intx/workflow-host";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
+  StepInvokeResult,
   WorkflowAuthorizeFn,
 } from "@intx/workflow";
 import type {
@@ -53,6 +54,15 @@ import type {
   ToolCall,
   ToolResult,
 } from "@intx/types/runtime";
+
+function outputOf(result: StepInvokeResult): unknown {
+  if (!("output" in result)) {
+    throw new Error(
+      `expected an output-shaped step result, got suspend on ${result.suspend.correlationId}`,
+    );
+  }
+  return result.output;
+}
 
 const SOURCE: InferenceSource = {
   id: "anthropic:event-threading",
@@ -201,7 +211,7 @@ describe("single-step event threading", () => {
     const result = await settled;
 
     // The step produced the real agent reply, and the real tool ran.
-    expect(result.output).toMatchObject({ reply: "recorded the value" });
+    expect(outputOf(result)).toMatchObject({ reply: "recorded the value" });
     expect(sentinelWritten.value).toBe(true);
 
     const types = recorded.map((e) => e.type);
@@ -260,7 +270,7 @@ describe("single-step event threading", () => {
     await harness.run();
     const result = await settled;
 
-    expect(result.output).toMatchObject({ reply: "no observers" });
+    expect(outputOf(result)).toMatchObject({ reply: "no observers" });
     expect(existsSync(storeDir)).toBe(true);
   });
 });

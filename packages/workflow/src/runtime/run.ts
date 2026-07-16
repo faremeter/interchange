@@ -8,6 +8,8 @@
 // us swap the env implementations underneath without re-validating the
 // body.
 
+import { signalName } from "@intx/types";
+
 import type {
   ActionPrimitive,
   AwaitSignalPrimitive,
@@ -1091,19 +1093,57 @@ async function runStep(
     }
 
     try {
-      const result = await env.invokeStep({
-        agent: step.agent,
-        input,
-        authzContext: {
-          stepId: step.id,
-          attempt,
+      // Suspend/resume bridge. The first invocation drives a plain agent
+      // send; if the reactor parks on a gate, `invokeStep` returns
+      // `{ suspend: { correlationId } }` instead of an output. The step
+      // then becomes a durable `awaiting-signal` step parked under the
+      // reserved `signalName(correlationId)` channel via `parkOnSignal`
+      // (which emits SignalAwaited + parks and returns the delivered
+      // decision). When the decision arrives, the step is re-invoked with
+      // `resume`, so the invoker re-dispatches the tool and drives the
+      // reactor to a real reply -- that reply, not the raw signal payload,
+      // is the step output. A resume that parks again re-parks, mirroring
+      // runAwaitSignal's re-park.
+      let output: unknown;
+      let resume: { correlationId: string; decision: unknown } | undefined;
+      while (true) {
+        const result = await env.invokeStep({
+          agent: step.agent,
+          input,
+          authzContext: {
+            stepId: step.id,
+            attempt,
+            runId,
+          },
+          signal: stepAbort.signal,
+          ...(resume !== undefined ? { resume } : {}),
+        });
+        if ("output" in result) {
+          output = result.output;
+          break;
+        }
+        // The reactor parked. Park the step on the reserved signal channel
+        // for this correlation. Unlike runAwaitSignal, the agent step
+        // already emitted its own `StepStarted` on runStep entry, so the
+        // reduced state passed to `parkOnSignal` reads the step as
+        // `in-flight`, and its re-park guard emits a fresh `SignalAwaited`
+        // rather than treating this as a re-park of an already-awaiting
+        // gate.
+        const parkState = await reloadState(env, runId);
+        const decision = await parkOnSignal(
+          env,
           runId,
-        },
-        signal: stepAbort.signal,
-      });
-      const outputRef = (
-        await env.blobs.recordOutput(step.id, attempt, result.output)
-      ).ref;
+          {
+            stepId: step.id,
+            signalName: signalName(result.suspend.correlationId),
+          },
+          parkState,
+          stepAbort.signal,
+        );
+        resume = { correlationId: result.suspend.correlationId, decision };
+      }
+      const outputRef = (await env.blobs.recordOutput(step.id, attempt, output))
+        .ref;
       let after = await reloadState(env, runId);
       const completed: WorkflowEvent = {
         kind: "StepCompleted",
@@ -1115,7 +1155,7 @@ async function runStep(
       };
       after = await commit(env, runId, completed);
       void after;
-      return result.output;
+      return output;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       const exhausted = attempt >= maxAttempts;
@@ -1971,17 +2011,21 @@ function findUnfiredTimerForStep(
 }
 
 /**
- * Signal-park core, shared by `runAwaitSignal` and a future step-suspend
- * arm. Given a step already marked started, it emits the
+ * Signal-park core, shared by `runAwaitSignal` and the step-suspend arm
+ * in `runStep`. Given a step already marked started, it emits the
  * `SignalAwaited` marker (unless the step is already `awaiting-signal` on
  * a re-park resume), arms the optional timeout timer, flushes the
  * segment, parks on the signal channel via `awaitNext`, and on a received
- * signal commits `SignalReceived` + `StepCompleted`, returning the
- * payload.
+ * signal commits `SignalReceived` and returns the payload WITHOUT
+ * completing the step.
+ *
+ * The completion seam stays with the caller: `runAwaitSignal` completes
+ * the gate with the raw payload, whereas the `runStep` step-suspend arm
+ * re-invokes the agent against the payload and completes with the reply.
  *
  * The seam: this helper owns only the park/flush/awaitNext/resolve block.
  * The two pieces of resume idempotency that sit ABOVE it stay with the
- * caller, because a future `step`-origin caller diverges there:
+ * caller, because the `step`-origin caller diverges there:
  *
  *   - The in-flight-with-logged-`SignalReceived` short-circuit (the
  *     crash-after-signal-before-`StepCompleted` window) recovers a payload
@@ -2148,7 +2192,6 @@ async function parkOnSignal(
     };
     next = await commit(env, runId, signalReceived);
     void next;
-    await emitStepCompletedWithValue(env, runId, opts.stepId, received.payload);
     return received.payload;
   } catch (cause) {
     // Distinguish timeout from outer cancellation: the safe-runner's
@@ -2248,10 +2291,13 @@ async function runAwaitSignal(
   // block live in the shared `parkOnSignal` core. The two resume
   // idempotency pieces ABOVE this call -- the in-flight-received
   // short-circuit and the `StepStarted` emit -- stay here because
-  // runAwaitSignal owns its gate's `StepStarted` (a future step-suspend
-  // caller emits its own via runStep) and recovers the crash-window
-  // payload by binding it to an awaitSignal gate by name.
-  return parkOnSignal(
+  // runAwaitSignal owns its gate's `StepStarted` (the step-suspend arm
+  // emits its own via runStep) and recovers the crash-window payload by
+  // binding it to an awaitSignal gate by name. The completion seam is
+  // also owned here: an awaitSignal gate completes with the raw delivered
+  // payload, whereas the step-suspend arm re-invokes and completes with a
+  // reply.
+  const payload = await parkOnSignal(
     env,
     runId,
     {
@@ -2264,6 +2310,8 @@ async function runAwaitSignal(
     state,
     abort,
   );
+  await emitStepCompletedWithValue(env, runId, primitive.id, payload);
+  return payload;
 }
 
 async function runSleep(
