@@ -7,7 +7,7 @@
 // Effects:
 //   allow  → tool proceeds
 //   deny   → tool blocked
-//   ask    → tool blocked (gate-based approval deferred to a future commit)
+//   ask    → tool suspended (parked awaiting an external approval decision)
 //   null   → tool blocked (fail-closed: no grants matched)
 //
 // The action is always "invoke" — all tool calls are invocations. If
@@ -21,8 +21,17 @@
 // logged but swallowed so it cannot interfere with the authorization
 // decision or mask the original error.
 
-import type { BeforeToolExtension } from "@intx/types/runtime";
+import type {
+  BeforeToolExtension,
+  PendingOperation,
+} from "@intx/types/runtime";
 import type { Effect } from "@intx/types/authz";
+
+// Default deadline for an approval suspension when the caller does not supply
+// one. Matches the reactor's DEFAULT_GATE_TIMEOUT_MS (one hour); the value is
+// duplicated rather than imported to avoid a dependency from the pure-policy
+// extension onto the reactor module.
+const DEFAULT_APPROVAL_TIMEOUT_MS = 3_600_000;
 
 export type AuthzMatchedGrant = {
   id: string;
@@ -59,9 +68,14 @@ export type AuthzExtensionOptions<Ctx = unknown> = {
     context: Ctx,
   ) => Promise<AuthzCallResult>;
   onDecision?: (decision: AuthzDecision) => void;
+  /**
+   * Deadline applied to an approval suspension, in milliseconds from the
+   * moment the `ask` effect is hit. Defaults to `DEFAULT_APPROVAL_TIMEOUT_MS`.
+   */
+  approvalTimeoutMs?: number;
 };
 
-type BlockEffect = "deny" | "ask" | null;
+type BlockEffect = "deny" | null;
 
 function formatBlockReason(
   effect: BlockEffect,
@@ -71,8 +85,6 @@ function formatBlockReason(
   switch (effect) {
     case "deny":
       return `Denied by policy: ${resource}/${action}`;
-    case "ask":
-      return `Requires approval: ${resource}/${action}`;
     case null:
       return `No matching grants for ${resource}/${action}`;
   }
@@ -128,11 +140,12 @@ export function createAuthzExtension<Ctx = unknown>(
         throw cause;
       }
 
-      const blocked = result.effect !== "allow";
+      // An `ask` effect suspends the call rather than blocking it, so it is
+      // neither cleanly blocked nor allowed: the decision records
+      // `blocked: false` with no block reason. Only `deny`/null (fail-closed)
+      // are blocks.
       const blockReason =
-        result.effect === "deny" ||
-        result.effect === "ask" ||
-        result.effect === null
+        result.effect === "deny" || result.effect === null
           ? formatBlockReason(result.effect, resource, action)
           : undefined;
 
@@ -144,13 +157,39 @@ export function createAuthzExtension<Ctx = unknown>(
         effect: result.effect,
         resolvedBy: result.resolvedBy,
         matchingGrants: result.matchingGrants,
-        blocked,
+        blocked: blockReason !== undefined,
         blockReason,
         error: undefined,
       };
       safeOnDecision(opts.onDecision, decision);
 
-      return blockReason;
+      if (blockReason !== undefined) {
+        return { type: "block", reason: blockReason };
+      }
+
+      if (result.effect === "ask") {
+        // Mint the correlationId once here so it is the single source of
+        // identity for both the gate and the persisted operation. The
+        // reactor persists the operation, so this id survives a restart.
+        const correlationId = crypto.randomUUID();
+        const timeoutAt =
+          Date.now() + (opts.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS);
+        const gateId = `pending-${correlationId}`;
+        const pendingOp: PendingOperation = {
+          correlationId,
+          kind: "approval",
+          registeredAt: Date.now(),
+          gateId,
+          timeoutAt,
+        };
+        return {
+          type: "suspend",
+          gate: { type: "approval", gateId, correlationId, timeoutAt },
+          pendingOp,
+        };
+      }
+
+      return { type: "allow" };
     },
   };
 }
