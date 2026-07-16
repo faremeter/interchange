@@ -206,10 +206,20 @@ export function createInstanceRoutes({
         invokerPreferences[preference.model] = preference.providers;
       }
 
+      // A model source only carries a credential secret when the definition's
+      // creator holds `credential:{id}` / `use` for it. Resolution authorizes
+      // the creator against these grants and withholds the secret otherwise,
+      // surfacing an unauthorized credential as a not-launchable skip below.
+      const creatorSourceGrants = await grantStore.collectGrants(
+        creatorPrincipalId,
+        tenant.id,
+      );
+
       const resolution = await resolveModelSources(
         db,
         tenant.id,
         modelRequirements,
+        creatorSourceGrants,
         { invokerPreferences },
       );
       if (!resolution.ok) {

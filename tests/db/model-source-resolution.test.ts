@@ -9,6 +9,7 @@ import {
 
 import { resolveInstanceModelSources, resolveModelSources } from "@intx/db";
 import type { ModelRequirement } from "@intx/types";
+import type { GrantRule } from "@intx/types/authz";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -17,6 +18,7 @@ import {
 import {
   seedAgent,
   seedCredential,
+  seedGrant,
   seedModel,
   seedModelOffering,
   seedModelProvider,
@@ -27,6 +29,24 @@ import {
 } from "@intx/test-harness/seed";
 
 const REQ_OPUS: ModelRequirement[] = [{ model: "opus" }];
+
+// A creator grant list that authorizes use of every credential, mirroring a
+// tenant owner's `*` / `*`. These direct-call tests exercise catalog ordering
+// and credential resolution, not credential-use authorization, so they pass an
+// authorized creator; the authorization gate has its own dedicated suite.
+const AUTHORIZED_CREATOR_GRANTS: GrantRule[] = [
+  {
+    id: "grt_test_owner",
+    resource: "*",
+    action: "*",
+    effect: "allow",
+    origin: "role",
+    conditions: null,
+    expiresAt: null,
+    roleId: null,
+    principalId: "prn_owner",
+  },
+];
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "model-source-resolution (real DB)",
@@ -113,13 +133,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
     describe("resolveModelSources", () => {
       test("returns no_requirements for an empty requirement list", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", []);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [],
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
       });
 
       test("builds a credential-backed source from the catalog", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources).toEqual([
@@ -137,7 +167,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("orders sources by ascending priority", async () => {
         await seedBase();
         await addRelay(5);
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.id)).toEqual(["mof_a", "mof_relay"]);
@@ -145,17 +180,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("matches when an offering carries the required capability", async () => {
         await seedBase({ offeringCapabilities: ["vision"] });
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          { model: "opus", capabilities: ["vision"] },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [{ model: "opus", capabilities: ["vision"] }],
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result.ok).toBe(true);
       });
 
       test("is unavailable when no offering carries the required capability", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          { model: "opus", capabilities: ["vision"] },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [{ model: "opus", capabilities: ["vision"] }],
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result).toMatchObject({
           ok: false,
           reason: "model_unavailable",
@@ -165,9 +206,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("hard-pin restricts to the named providers in order", async () => {
         await seedBase();
         await addRelay(0);
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          { model: "opus", providers: { mode: "pin", order: ["relay"] } },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [{ model: "opus", providers: { mode: "pin", order: ["relay"] } }],
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
@@ -178,12 +222,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await addRelay(0);
         // relay has the better catalog priority, but the creator prefers
         // anthropic.
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          {
-            model: "opus",
-            providers: { mode: "prefer", order: ["anthropic"] },
-          },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [
+            {
+              model: "opus",
+              providers: { mode: "prefer", order: ["anthropic"] },
+            },
+          ],
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.id)).toEqual(["mof_a", "mof_relay"]);
@@ -209,7 +258,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           modelId: "mdl_opus",
           providerId: "mpv_anthropic",
         });
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result).toMatchObject({
           ok: false,
           reason: "model_unavailable",
@@ -255,7 +309,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           modelId: "mdl_opus",
           providerId: "mpv_anthropic",
         });
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
         expect(result).toMatchObject({
           ok: false,
           reason: "model_unavailable",
@@ -276,6 +335,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               providers: { mode: "prefer", order: ["anthropic"] },
             },
           ],
+          AUTHORIZED_CREATOR_GRANTS,
           { invokerPreferences: { opus: { mode: "pin", order: ["relay"] } } },
         );
         expect(result.ok).toBe(true);
@@ -295,6 +355,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedPrincipal(h.db, {
           id: "prn_creator",
           tenantId: "tnt_root",
+        });
+        // The creator is authorized to use every catalog credential, so
+        // rotation-time re-resolution keeps emitting the secret. The
+        // authorization gate itself is exercised by a dedicated suite.
+        await seedGrant(h.db, {
+          id: "grt_creator_use",
+          tenantId: "tnt_root",
+          principalId: "prn_creator",
+          resource: "credential:*",
+          action: "use",
         });
         await seedAgent(h.db, {
           id: "agt_1",

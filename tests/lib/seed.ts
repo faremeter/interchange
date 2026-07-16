@@ -12,6 +12,7 @@ import {
   agent,
   asset,
   credential,
+  grant,
   model,
   modelOffering,
   modelProvider,
@@ -282,5 +283,33 @@ export async function seedAgent(db: Db, a: SeedAgent): Promise<void> {
     creatorPrincipalId: a.creatorPrincipalId,
     name: a.name ?? a.id,
     modelRequirements: a.modelRequirements ?? null,
+  });
+}
+
+export type SeedGrant = {
+  id: string;
+  tenantId: string;
+  resource: string;
+  action: string;
+  principalId?: string | null;
+  roleId?: string | null;
+  effect?: "allow" | "deny" | "ask";
+  origin?: "system" | "role" | "creator" | "invoker";
+  conditions?: Record<string, unknown> | null;
+  expiresAt?: Date | null;
+};
+
+export async function seedGrant(db: Db, g: SeedGrant): Promise<void> {
+  await db.insert(grant).values({
+    id: g.id,
+    tenantId: g.tenantId,
+    resource: g.resource,
+    action: g.action,
+    principalId: g.principalId ?? null,
+    roleId: g.roleId ?? null,
+    effect: g.effect ?? "allow",
+    origin: g.origin ?? "creator",
+    conditions: g.conditions ?? null,
+    expiresAt: g.expiresAt ?? null,
   });
 }
