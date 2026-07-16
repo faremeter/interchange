@@ -9,6 +9,7 @@
 import { type } from "arktype";
 import type { AuditRecord, ErrorRecord } from "./audit";
 import { WireGrantRule } from "./grant-wire";
+import type { SignalKind } from "./signals";
 
 // ---------------------------------------------------------------------------
 // Cryptographic Identity (ARCHITECTURE.md § Cryptographic Identity,
@@ -1572,6 +1573,7 @@ export function parseInferenceEvent(
  */
 export type PendingOperation = {
   correlationId: string;
+  kind: SignalKind;
   expectedFrom?: string;
   registeredAt: number;
   gateId: string;

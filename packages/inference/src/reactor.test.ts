@@ -830,7 +830,12 @@ describe("createGateManager", () => {
 
 describe("createCorrelationRegistry", () => {
   function op(id: string): PendingOperation {
-    return { correlationId: id, registeredAt: Date.now(), gateId: `g-${id}` };
+    return {
+      correlationId: id,
+      kind: "approval",
+      registeredAt: Date.now(),
+      gateId: `g-${id}`,
+    };
   }
 
   test("register and lookup", () => {

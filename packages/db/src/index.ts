@@ -45,6 +45,8 @@ export {
   parseAgentRow,
   parseAgentVersionRow,
   parseGrantRow,
+  parseApprovalRow,
+  parseSignalCorrelationRow,
   parseOfferingRow,
   parseCredentialRow,
   parseProviderRow,

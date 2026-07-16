@@ -8,6 +8,7 @@ import {
   grantOrigins,
   ModelProviderPlugin,
   ModelRequirements,
+  signalKinds,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
@@ -15,6 +16,7 @@ import { ToolPackagePinArray } from "@intx/types/tool-packages";
 import type {
   agent,
   agentVersion,
+  approval,
   credential,
   gitToken,
   grant,
@@ -23,6 +25,7 @@ import type {
   oauthClient,
   offering,
   provider,
+  signalCorrelation,
   tenant,
   transaction,
   turnPart,
@@ -33,6 +36,20 @@ const JSONObject = type("Record<string, unknown>");
 
 const GrantEffectValidator = type.enumerated(...grantEffects);
 const GrantOriginValidator = type.enumerated(...grantOrigins);
+
+const approvalScopes = ["once", "always"] as const;
+const ApprovalScopeValidator = type.enumerated(...approvalScopes);
+
+const approvalStatuses = [
+  "pending",
+  "approved",
+  "rejected",
+  "timeout",
+  "expired",
+] as const;
+const ApprovalStatusValidator = type.enumerated(...approvalStatuses);
+
+const SignalKindValidator = type.enumerated(...signalKinds);
 
 const agentVersionStatuses = ["active", "inactive", "failed"] as const;
 const AgentVersionStatusValidator = type.enumerated(...agentVersionStatuses);
@@ -115,6 +132,26 @@ export function parseGrantRow(row: typeof grant.$inferSelect) {
     origin: GrantOriginValidator.assert(row.origin),
     conditions:
       row.conditions !== null ? JSONObject.assert(row.conditions) : null,
+  };
+}
+
+export function parseApprovalRow(row: typeof approval.$inferSelect) {
+  return {
+    ...row,
+    scope: row.scope !== null ? ApprovalScopeValidator.assert(row.scope) : null,
+    status: ApprovalStatusValidator.assert(row.status),
+    originKind: GrantOriginValidator.assert(row.originKind),
+    toolDefinition: JSONObject.assert(row.toolDefinition),
+    toolArguments: JSONObject.assert(row.toolArguments),
+  };
+}
+
+export function parseSignalCorrelationRow(
+  row: typeof signalCorrelation.$inferSelect,
+) {
+  return {
+    ...row,
+    kind: SignalKindValidator.assert(row.kind),
   };
 }
 

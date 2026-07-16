@@ -288,6 +288,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // 10->99, pendingOperations 0->1). The turn list is unchanged.
     const pendingOp: PendingOperation = {
       correlationId: "corr-1",
+      kind: "approval",
       registeredAt: 0,
       gateId: "gate-1",
     };
