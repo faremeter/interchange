@@ -85,7 +85,7 @@ When the control plane launches an agent into a harness, it processes each crede
 2. Find credentials matching the provider, source (principal filter), and scopes
 3. If a name is specified, narrow to that name
 4. If multiple credentials still match, the launch fails -- the administrator must resolve the ambiguity
-5. Validate that the agent's principal has appropriate grants for the resolved credential
+5. Validate that the creator has appropriate grants for the resolved credential, using the creator's context (via `creatorPrincipalId` on the definition)
 6. If zero matches, the launch fails (missing required credential)
 7. If all checks pass, the resolved credential is included in the harness's launch payload
 
