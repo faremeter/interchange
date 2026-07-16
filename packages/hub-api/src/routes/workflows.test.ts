@@ -287,6 +287,7 @@ function createStubRepoStore(repoDirById?: Map<string, string>): RepoStore {
       }
       return dir;
     },
+    openCommittedReads: unused,
     subscribe: () => {
       throw new Error("stub repoStore is not wired in workflow tests");
     },

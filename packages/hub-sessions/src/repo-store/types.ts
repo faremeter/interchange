@@ -323,6 +323,42 @@ export interface KindHandler {
   }) => Promise<void> | void;
 }
 
+/**
+ * A single child entry returned by `CommittedReads.listDir`. `name` is
+ * the entry's own path segment (no parent prefix); `oid` is its git
+ * object id; `type` is the git tree-entry kind. `oid` lets a consumer
+ * read a blob's bytes via `readBlobByOid` without re-resolving the path,
+ * and lets it prove a subtree byte-unchanged by OID equality.
+ */
+export type CommittedTreeEntry = {
+  readonly name: string;
+  readonly oid: string;
+  readonly type: "blob" | "tree" | "commit";
+};
+
+/**
+ * Cache-backed reads pinned to the commit a ref resolved to at the
+ * moment `openCommittedReads` was called. Every read resolves against
+ * the git object store, never the materialized working tree, so a
+ * consumer observes committed state even when the on-disk checkout lags
+ * the committed tree. The pin is fixed at open time: a concurrent commit
+ * that advances the ref afterwards does not shift the reads, so an
+ * enumerate-then-read sequence sees a single coherent snapshot.
+ *
+ * `listDir` returns the direct children of a repo-root-relative POSIX
+ * directory path (no leading or trailing slash; the empty string lists
+ * the root). A path that is absent, or resolves to a non-tree, lists as
+ * the empty array — mirroring the prior-tree closures the substrate
+ * hands a kind handler. `readBlobByOid` reads a blob's bytes by its
+ * object id; a read fault surfaces as a thrown error rather than an
+ * empty result so a consumer cannot silently degrade a missing object
+ * into an absent event.
+ */
+export type CommittedReads = {
+  listDir(relPath: string): Promise<CommittedTreeEntry[]>;
+  readBlobByOid(oid: string): Promise<Uint8Array>;
+};
+
 export interface RepoStore {
   /**
    * Bookkeeping primitive. Idempotent. Creates the repo directory
@@ -459,6 +495,27 @@ export interface RepoStore {
    * they reach into for ref-listing and pack negotiation.
    */
   getRepoDir(repoId: RepoId): string;
+  /**
+   * Open cache-backed reads of the committed tree at `ref`'s tip. The
+   * ref is resolved once, at call time, and every read the returned
+   * handle serves is pinned to that commit and resolves through the git
+   * object store — not the materialized working tree `getRepoDir` points
+   * at. A consumer that must observe committed state (e.g. start-time
+   * recovery reconstructing a ledger from the persisted log) reads
+   * through this rather than the working tree, which a non-atomic
+   * post-commit materialization can leave lagging on a contended
+   * filesystem.
+   *
+   * Gated under the same `resolveRef` action as `resolveRef` / `listRefs`
+   * / `subscribe`. Returns `null` when the repo does not yet exist
+   * (mirrors `listRefs`'s empty-list contract for uninitialised repos)
+   * or when `ref` does not resolve to a commit.
+   */
+  openCommittedReads(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+  ): Promise<CommittedReads | null>;
   /**
    * Tail a ref's commit log. Returns an async iterator that emits
    * `{ seq, event }` entries: one per commit on the ref. `seq` is

@@ -15,6 +15,8 @@ import { hasCode } from "@intx/types";
 import { getLogger } from "@intx/log";
 import type {
   AuthorizeFn,
+  CommittedReads,
+  CommittedTreeEntry,
   InitRepoOpts,
   KindHandler,
   Principal,
@@ -1846,6 +1848,35 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return resolveRefSha(repoDir(repoId), ref);
   }
 
+  async function openCommittedReads(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+  ): Promise<CommittedReads | null> {
+    gateAccess(principal, repoId, ref, "resolveRef");
+    const dir = repoDir(repoId);
+    const repoExists = await fs.promises
+      .stat(path.join(dir, ".git"))
+      .then(() => true)
+      .catch(() => false);
+    if (!repoExists) return null;
+    const commitSha = await resolveRefSha(dir, ref);
+    if (commitSha === null) return null;
+    const { readBlobByOid } = buildPriorTreeClosures(dir, commitSha);
+    const listDir = async (relPath: string): Promise<CommittedTreeEntry[]> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return tree.map((e) => ({ name: e.path, oid: e.oid, type: e.type }));
+    };
+    return { listDir, readBlobByOid };
+  }
+
   function subscribe(
     principal: Principal,
     repoId: RepoId,
@@ -2020,6 +2051,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     listRefs,
     resolveHead,
     getRepoDir,
+    openCommittedReads,
     subscribe,
   };
 }

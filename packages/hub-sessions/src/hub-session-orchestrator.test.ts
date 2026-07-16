@@ -243,6 +243,7 @@ function unusedRepoStore(): RepoStore {
     getRepoDir: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
+    openCommittedReads: unused,
     subscribe: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
