@@ -222,6 +222,160 @@ describe("workflow-host scheduler", () => {
   );
 
   test(
+    "recovery reads committed state, not the working tree",
+    async () => {
+      // The invariant: recovery reconstructs its ledger from the git
+      // object store, so a committed TimerFired excludes its timer even
+      // when the materialized working tree does not reflect it. We force
+      // the hardest form of that divergence -- the working tree is gone
+      // entirely while the object store is intact -- so a working-tree
+      // read would recover nothing, and a committed read must recover the
+      // full ledger.
+      const dataDir = await makeTempDir("scheduler-recovery-committed-");
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: {
+          "agent-state": permissiveHandler("workflow-runs-committed"),
+        },
+        authorize: allowAll,
+      });
+      const repoId: RepoId = { kind: "agent-state", id: "deployment-d" };
+      const runId = "r1";
+
+      const farFuture = Date.now() + 60_000;
+      await seedTimerSet(store, repoId, runId, 0, "t-unfired", farFuture);
+      await seedTimerSet(store, repoId, runId, 1, "t-fired", farFuture);
+      await store.writeTree(principal, repoId, REF, {
+        files: {
+          [`runs/${runId}/events/2.json`]: JSON.stringify({
+            seq: 2,
+            type: "TimerFired",
+            data: { timerId: "t-fired" },
+          }),
+        },
+        message: "TimerFired t-fired",
+      });
+
+      // Diverge the working tree from the committed object store: remove
+      // the materialized checkout while leaving `.git` intact. Only a
+      // committed read survives this.
+      await fs.promises.rm(path.join(store.getRepoDir(repoId), "runs"), {
+        recursive: true,
+        force: true,
+      });
+
+      const scheduler = createWorkflowHostScheduler({
+        repoStore: store,
+        principal,
+        listActiveDeployments: () => [repoId],
+        ref: REF,
+        clock: () => new Date(),
+      });
+      try {
+        await scheduler.start();
+        const queued = scheduler.queuedTimers();
+        const ids = queued.map((q) => q.timerId);
+        // The fired timer's committed TimerFired excludes it...
+        expect(ids).not.toContain("t-fired");
+        // ...and the unfired timer is still recovered from committed
+        // state, proving the read walked real events rather than the
+        // wiped working tree.
+        expect(ids).toEqual(["t-unfired"]);
+      } finally {
+        await scheduler.stop();
+      }
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "recovery skips a compacted run with no events subtree",
+    async () => {
+      const dataDir = await makeTempDir("scheduler-recovery-compacted-");
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: {
+          "agent-state": permissiveHandler("workflow-runs-compacted"),
+        },
+        authorize: allowAll,
+      });
+      const repoId: RepoId = { kind: "agent-state", id: "deployment-e" };
+
+      const farFuture = Date.now() + 60_000;
+      await seedTimerSet(store, repoId, "r1", 0, "t-live", farFuture);
+      // A terminated run is sealed into a combined `events.jsonl` with no
+      // `events/` subtree. Recovery walks per-event blobs only, so it must
+      // skip such a run rather than choke on the missing subtree.
+      await store.writeTree(principal, repoId, REF, {
+        files: {
+          "runs/r2/events.jsonl": JSON.stringify({
+            seq: 0,
+            type: "TimerSet",
+            data: {
+              timerId: "t-sealed",
+              fireAt: new Date(farFuture).toISOString(),
+            },
+          }),
+        },
+        message: "seal r2",
+      });
+
+      const scheduler = createWorkflowHostScheduler({
+        repoStore: store,
+        principal,
+        listActiveDeployments: () => [repoId],
+        ref: REF,
+        clock: () => new Date(),
+      });
+      try {
+        await scheduler.start();
+        const ids = scheduler.queuedTimers().map((q) => q.timerId);
+        expect(ids).toEqual(["t-live"]);
+      } finally {
+        await scheduler.stop();
+      }
+    },
+    { timeout: 5000 },
+  );
+
+  test(
+    "recovery throws on an unparseable event blob",
+    async () => {
+      const dataDir = await makeTempDir("scheduler-recovery-badjson-");
+      const store = createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: {
+          "agent-state": permissiveHandler("workflow-runs-badjson"),
+        },
+        authorize: allowAll,
+      });
+      const repoId: RepoId = { kind: "agent-state", id: "deployment-f" };
+
+      await store.writeTree(principal, repoId, REF, {
+        files: { "runs/r1/events/0.json": "{ not json" },
+        message: "corrupt blob",
+      });
+
+      const scheduler = createWorkflowHostScheduler({
+        repoStore: store,
+        principal,
+        listActiveDeployments: () => [repoId],
+        ref: REF,
+        clock: () => new Date(),
+      });
+      try {
+        await expect(scheduler.start()).rejects.toThrow(/cannot parse/);
+      } finally {
+        await scheduler.stop();
+      }
+    },
+    { timeout: 5000 },
+  );
+
+  test(
     "cron-style TimerSet whose fireAt is in the past is skipped on recovery",
     async () => {
       const dataDir = await makeTempDir("scheduler-cron-skip-");
