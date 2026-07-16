@@ -1,5 +1,6 @@
 {
   "name": "@intx/agent",
+  "description": "In-process agent runtime: construct an agent, send it a message, get a reply",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

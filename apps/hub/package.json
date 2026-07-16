@@ -1,5 +1,6 @@
 {
   "name": "@intx/hub-app",
+  "description": "Interchange control-plane server process that wires the hub packages into one HTTP application",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

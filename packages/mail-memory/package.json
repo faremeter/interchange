@@ -1,5 +1,6 @@
 {
   "name": "@intx/mail-memory",
+  "description": "In-memory MessageTransport for single-process and test environments",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

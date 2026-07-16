@@ -1,5 +1,6 @@
 {
   "name": "@intx/hub-common",
+  "description": "Shared utilities for the Interchange hub packages",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

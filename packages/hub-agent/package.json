@@ -1,5 +1,6 @@
 {
   "name": "@intx/hub-agent",
+  "description": "Sidecar-side orchestrator linking per-agent stores and sessions to the hub over WebSocket",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

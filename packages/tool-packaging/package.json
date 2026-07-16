@@ -1,5 +1,6 @@
 {
   "name": "@intx/tool-packaging",
+  "description": "Resolver and loader for the npm-distributed Interchange tool-package format",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

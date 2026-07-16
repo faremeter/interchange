@@ -1,5 +1,6 @@
 {
   "name": "@intx/sidecar-app",
+  "description": "Host process running a fleet of hub-orchestrated agent runtimes in one Bun process",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

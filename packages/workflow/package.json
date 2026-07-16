@@ -1,5 +1,6 @@
 {
   "name": "@intx/workflow",
+  "description": "Definition surface, state machine, and abstract runtime for multi-step agent workflows",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

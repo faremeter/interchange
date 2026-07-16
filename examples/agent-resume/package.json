@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-agent-resume",
+  "description": "Example: an @intx/agent conversation surviving process death via its contextDir",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

@@ -1,5 +1,6 @@
 {
   "name": "@intx/inference-discovery",
+  "description": "Runtime for the inference discovery rig: plug-in contract, capture runs, and capability catalog",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

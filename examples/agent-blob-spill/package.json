@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-agent-blob-spill",
+  "description": "Example: spilling oversized tool output to a context-store blob referenced by URI",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

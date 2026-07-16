@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-agent-structured-payload",
+  "description": "Example: delivering a typed InterchangeType payload to an @intx/agent intact",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,

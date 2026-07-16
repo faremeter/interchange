@@ -1,5 +1,6 @@
 {
   "name": "@intx/hub-api",
+  "description": "The hub's HTTP API: routes, middleware, authentication, and served OpenAPI spec",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

@@ -1,5 +1,6 @@
 {
   "name": "@intx/tools-posix",
+  "description": "POSIX tool runner giving agents read_file, write_file, edit_file, run_shell, search_files, and grep",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "type": "module",

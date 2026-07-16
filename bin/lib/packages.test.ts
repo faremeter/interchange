@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { readWorkspacePackages } from "./packages";
+import { readWorkspaceManifestPaths, readWorkspacePackages } from "./packages";
 
 function repoWith(pkgs: Record<string, unknown | undefined>): string {
   const repo = mkdtempSync(join(tmpdir(), "packages-"));
@@ -123,6 +123,96 @@ describe("readWorkspacePackages", () => {
     const repo = repoWith({ a: { version: "0.2.0" } }); // missing name
     try {
       expect(() => readWorkspacePackages(repo)).toThrow(/well-formed/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A repo with a root manifest declaring `workspaces`, plus a manifest at
+ *  each `dir`. A `dir` mapped to `undefined` is created without a
+ *  `package.json` (a directory that is not a member). */
+function repoWithWorkspaces(
+  workspaces: string[],
+  members: Record<string, Record<string, unknown> | undefined>,
+): string {
+  const repo = mkdtempSync(join(tmpdir(), "manifest-paths-"));
+  writeFileSync(
+    join(repo, "package.json"),
+    JSON.stringify({ name: "root", private: true, workspaces }),
+  );
+  for (const [dir, manifest] of Object.entries(members)) {
+    const d = join(repo, dir);
+    mkdirSync(d, { recursive: true });
+    if (manifest !== undefined) {
+      writeFileSync(join(d, "package.json"), JSON.stringify(manifest));
+    }
+  }
+  return repo;
+}
+
+describe("readWorkspaceManifestPaths", () => {
+  test("enumerates every member across all globs, private and tests/lib included", () => {
+    const repo = repoWithWorkspaces(
+      ["packages/*", "apps/*", "examples/*", "tests/lib"],
+      {
+        "packages/a": { name: "@intx/a" },
+        "packages/secret": { name: "@intx/secret", private: true },
+        "apps/ui": { name: "@intx/ui", private: true },
+        "examples/demo": { name: "@intx/demo", private: true },
+        "tests/lib": { name: "@intx/test-harness", private: true },
+      },
+    );
+    try {
+      expect(readWorkspaceManifestPaths(repo)).toEqual(
+        [
+          join(repo, "packages/a/package.json"),
+          join(repo, "packages/secret/package.json"),
+          join(repo, "apps/ui/package.json"),
+          join(repo, "examples/demo/package.json"),
+          join(repo, "tests/lib/package.json"),
+        ].sort(),
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("skips a glob-matched directory that has no package.json", () => {
+    const repo = repoWithWorkspaces(["packages/*"], {
+      "packages/a": { name: "@intx/a" },
+      "packages/empty": undefined,
+    });
+    try {
+      expect(readWorkspaceManifestPaths(repo)).toEqual([
+        join(repo, "packages/a/package.json"),
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("de-duplicates a member matched by overlapping globs", () => {
+    const repo = repoWithWorkspaces(["packages/*", "packages/a"], {
+      "packages/a": { name: "@intx/a" },
+    });
+    try {
+      expect(readWorkspaceManifestPaths(repo)).toEqual([
+        join(repo, "packages/a/package.json"),
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("throws when the root manifest has no workspaces array", () => {
+    const repo = mkdtempSync(join(tmpdir(), "manifest-paths-"));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ name: "root", private: true }),
+    );
+    try {
+      expect(() => readWorkspaceManifestPaths(repo)).toThrow(/workspaces/);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

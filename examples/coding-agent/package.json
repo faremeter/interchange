@@ -1,5 +1,6 @@
 {
   "name": "@intx/example-coding-agent",
+  "description": "Reference coding agent wiring @intx/agent to @intx/tools-posix and @intx/tools-lsp",
   "version": "0.2.2",
   "license": "LGPL-2.1-only",
   "private": true,
