@@ -11,6 +11,8 @@ export {
   createNoopDrainController,
   createEffectContext,
   resolveDrainBehavior,
+  scopedStepId,
+  baseStepId,
   type ActionInvokeRequest,
   type ActionInvokeResult,
   type ActionInvoker,

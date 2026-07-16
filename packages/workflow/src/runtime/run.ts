@@ -42,6 +42,7 @@ import {
 import type { RunResult, WorkflowRun, WorkflowRuntimeEnv } from "./env";
 import { shouldAbortForDrain } from "./drain";
 import { RuntimeResumeUnsupportedError } from "./errors";
+import { scopedStepId } from "./step-scope";
 import {
   isTerminalRunPhase,
   resumeFromLog,
@@ -1357,7 +1358,7 @@ async function runLoop(
   let terminated = false;
   let outcome: "converged" | "exhausted" = "exhausted";
   while (isIterationDone(state, primitive.id, iteration)) {
-    const doneStepId = `${primitive.id}[${String(iteration)}]`;
+    const doneStepId = scopedStepId(primitive.id, iteration);
     const doneInput = await resolveIterationInput(env, log, doneStepId);
     const doneOutput = await resolveIterationOutput(env, log, doneStepId);
     iteration += 1;
@@ -1379,7 +1380,7 @@ async function runLoop(
   if (!terminated) {
     const resumeInputRef = findStepInputRef(
       log,
-      `${primitive.id}[${String(iteration)}]`,
+      scopedStepId(primitive.id, iteration),
     );
     if (resumeInputRef !== undefined) {
       currentInput = await env.blobs.resolveRef(resumeInputRef);
@@ -1389,7 +1390,7 @@ async function runLoop(
   let iterations = iteration;
   for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
     iterations = i + 1;
-    const stepId = `${primitive.id}[${String(i)}]`;
+    const stepId = scopedStepId(primitive.id, i);
     const childRunId = `${primitive.id}__${String(i)}`;
 
     state = await reloadState(env, runId);
@@ -1477,7 +1478,7 @@ function isIterationDone(
   iteration: number,
 ): boolean {
   const child = state.children.get(`${loopId}__${String(iteration)}`);
-  const step = state.steps.get(`${loopId}[${String(iteration)}]`);
+  const step = state.steps.get(scopedStepId(loopId, iteration));
   return child?.terminalStatus !== undefined && step?.phase === "completed";
 }
 
@@ -1686,7 +1687,7 @@ async function runMap(
     };
     const scopedStep: StepPrimitive = {
       ...inner,
-      id: `${primitive.id}[${String(i)}]`,
+      id: scopedStepId(primitive.id, i),
       // The outer map's retry policy applies as the fan-out-level
       // default when the inner step does not declare its own. The
       // inner step's policy already rides in via `...inner`; the

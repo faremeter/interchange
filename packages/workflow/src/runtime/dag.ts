@@ -12,6 +12,7 @@ import {
   type RunState,
   type StepPhase,
 } from "../state-machine/index";
+import { baseStepId } from "./step-scope";
 
 /**
  * A loop container `<loopId>` (or its synthetic iteration step
@@ -30,7 +31,7 @@ export function isResumableInFlightLoopStep(
   phase: StepPhase,
 ): boolean {
   if (phase !== "in-flight") return false;
-  const containerId = stepId.replace(/\[\d+\]$/, "");
+  const containerId = baseStepId(stepId);
   return def.steps[containerId]?.kind === "loop";
 }
 

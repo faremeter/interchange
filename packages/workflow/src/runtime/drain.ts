@@ -20,6 +20,7 @@
 // `WorkflowDefinition`.
 
 import type { DrainBehavior, WorkflowDefinition } from "../definition/index";
+import { baseStepId } from "./step-scope";
 
 /**
  * Runtime body's view of the host-initiated drain. The runtime body
@@ -97,10 +98,8 @@ function lookupPrimitive(
 ): import("../definition/index").Primitive | null {
   const direct = definition.steps[stepId];
   if (direct !== undefined) return direct;
-  const mapMatch = /^([^[]+)\[\d+\]$/.exec(stepId);
-  if (mapMatch !== null) {
-    const outerId = mapMatch[1];
-    if (outerId === undefined) return null;
+  const outerId = baseStepId(stepId);
+  if (outerId !== stepId) {
     const outer = definition.steps[outerId];
     if (outer !== undefined && outer.kind === "map") {
       return outer.step;
