@@ -103,6 +103,29 @@ import {
 // supervisor's wrapped substrate.
 
 /**
+ * Thrown by the child-runtime step invoker when a `childWorkflow` (or a
+ * `map` nested inside one) reaches a per-step agent invocation. Real
+ * per-step child execution -- threading the child
+ * `WorkflowDefinition`-derived inference sources, tools, and grants into
+ * a real agent, backed by deploy-side child asset staging and capability
+ * approval -- is not built; that work is tracked in INTR-310.
+ *
+ * Failing here is deliberate. Returning a fabricated success output would
+ * report a child run `completed` whose agent never ran, a silent
+ * correctness trap; a loud, structured failure is the honest behavior for
+ * an unbuilt seam.
+ */
+export class ChildStepNotImplementedError extends Error {
+  constructor(agentId: string, stepId: string | undefined) {
+    super(
+      `childWorkflow per-step execution is not implemented (tracked as INTR-310); ` +
+        `the child runtime cannot run a real per-step agent for step ${JSON.stringify(stepId)} (agent ${JSON.stringify(agentId)})`,
+    );
+    this.name = "ChildStepNotImplementedError";
+  }
+}
+
+/**
  * Required substrate-config keys the sidecar's binary forwards into
  * the factory's `substrateConfig` slot. Listed here so the binary
  * passes the same names to the helper; the helper enforces
@@ -737,14 +760,11 @@ interface SidecarRunChildDeps {
    * parent's stepIds and throws on any other id; routing the child's
    * step invocations through that closure surfaces a misleading
    * "no InferenceSource pinned" error for every child step. Callers
-   * therefore supply a SEPARATE invokeStep for the child that does
-   * not consult the parent's pinned source table. The substrate
-   * factory's default wires a stub that mirrors the parent's stub
-   * step output (`{ output: { reply: req.agent.id, turn: null } }`)
-   * without resolving any per-step InferenceSource -- threading the
-   * child's WorkflowDefinition-derived sources into a real inference
-   * call is on the same agent-harness wiring backlog as the parent's
-   * stub.
+   * therefore supply a SEPARATE invokeStep for the child. The substrate
+   * factory's default rejects with `ChildStepNotImplementedError`
+   * because real per-step child execution is not built (see
+   * `childInvokeStep` in `createSidecarSubstrateFactory`); a test may
+   * inject a functional invoker.
    */
   invokeStep: StepInvoker;
   /** Director registry the child runtime uses; defaults to the canonical built-ins. */
@@ -1088,15 +1108,23 @@ export function createSidecarSubstrateFactory(
 
     // Child-runtime step invoker. The in-process `runChild` (see
     // `createSidecarRunChild` below) runs a separate WorkflowDefinition
-    // whose stepIds are disjoint from the parent's, so the parent's
-    // `STEP_INFERENCE_SOURCES`-driven `buildStepEnv` would throw on
-    // every child stepId ("no InferenceSource pinned"). The child
-    // invoker returns a deterministic success output without consulting
-    // the parent's pinned source table; threading the child's
-    // WorkflowDefinition-derived sources into a real per-step agent is
-    // the recursive-honoring work, not the single-step path.
+    // whose stepIds are disjoint from the parent's, and deploy does not
+    // stage the child definition's per-step assets (inference sources,
+    // tool trees, grant state) or walk its capabilities. Running a real
+    // per-step agent for a `childWorkflow` / `map` fan-out step is
+    // therefore not implemented; that work is tracked in INTR-310.
+    //
+    // This is a deliberate hard stop, not a fabricated result. A fake
+    // success output (the shape this once returned) reported a child run
+    // `completed` whose agent never ran -- a silent correctness trap.
+    // Failing loudly surfaces the child step as `StepFailed` with a
+    // structured, INTR-310-named error instead. The `spawnChild` /
+    // `runChild` recursion and the sub-namespace scoping around it are
+    // real and exercised right up to this seam.
     const childInvokeStep: StepInvoker = (req) =>
-      Promise.resolve({ output: { reply: req.agent.id, turn: null } });
+      Promise.reject(
+        new ChildStepNotImplementedError(req.agent.id, req.authzContext.stepId),
+      );
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
     // `ChildStepInvoker` shape. The host's `onEvent` is the child's

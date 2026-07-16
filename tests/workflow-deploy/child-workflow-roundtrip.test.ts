@@ -50,8 +50,38 @@ import {
   waitFor,
   waitForFirstRunId,
   type DeployFlowEnv,
+  type WorkflowRunEvent,
 } from "../hub-agent/lib/deploy-flow-env";
 import { toLaunchDeployContent } from "./launch-session-bridge";
+
+/**
+ * Assert a child (or grandchild) run's `StepFailed` event is the loud,
+ * structured "childWorkflow per-step execution not implemented" failure
+ * (INTR-310) rather than a fabricated `{ reply, turn }` success. The child
+ * step invoker (`childInvokeStep`) rejects with `ChildStepNotImplementedError`,
+ * whose message crosses into `StepFailed.error.message`.
+ */
+function expectChildStepNotImplemented(
+  event: WorkflowRunEvent | undefined,
+): void {
+  if (event === undefined) {
+    throw new Error("unreachable: missing StepFailed event");
+  }
+  expect(event.type).toBe("StepFailed");
+  const error = event.body["error"];
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("message" in error) ||
+    typeof error.message !== "string"
+  ) {
+    throw new Error(
+      `child StepFailed.error is not a { message: string }: ${JSON.stringify(error)}`,
+    );
+  }
+  expect(error.message).toContain("INTR-310");
+  expect(error.message).toContain("not implemented");
+}
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const PARENT_DEPLOYMENT_ID = "child-workflow-parent-1";
@@ -342,7 +372,7 @@ describe("parent -> child workflow round-trip", () => {
           PARENT_DEPLOYMENT_ID,
           parentRunId,
         );
-        return events.some((e) => e.type === "RunCompleted");
+        return events.some((e) => e.type === "RunFailed");
       },
       { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
     );
@@ -369,59 +399,53 @@ describe("parent -> child workflow round-trip", () => {
     );
     const childSpawnedIdx = parentTypes.indexOf("ChildSpawned");
     const childCompletedIdx = parentTypes.indexOf("ChildCompleted");
-    const spawnCompletedIdx = parentTypes.findIndex(
+    const spawnFailedIdx = parentTypes.findIndex(
       (t, i) =>
-        t === "StepCompleted" &&
-        finalParentEvents[i]?.body["stepId"] === "spawn",
+        t === "StepFailed" && finalParentEvents[i]?.body["stepId"] === "spawn",
     );
-    const step2StartedIdx = parentTypes.findIndex(
-      (t, i) =>
-        t === "StepStarted" && finalParentEvents[i]?.body["stepId"] === "step2",
-    );
-    const step2CompletedIdx = parentTypes.findIndex(
-      (t, i) =>
-        t === "StepCompleted" &&
-        finalParentEvents[i]?.body["stepId"] === "step2",
-    );
-    const runCompletedIdx = parentTypes.indexOf("RunCompleted");
+    const runFailedIdx = parentTypes.indexOf("RunFailed");
 
+    // The parent's first step runs a real agent and completes; the
+    // childWorkflow spawn then fails loud because per-step child
+    // execution is not built (INTR-310). The spawn machinery still
+    // fires ChildSpawned and settles ChildCompleted before the failure.
     expect(runStartedIdx).toBeGreaterThanOrEqual(0);
     expect(step1StartedIdx).toBeGreaterThan(runStartedIdx);
     expect(step1CompletedIdx).toBeGreaterThan(step1StartedIdx);
     expect(spawnStartedIdx).toBeGreaterThan(step1CompletedIdx);
     expect(childSpawnedIdx).toBeGreaterThan(spawnStartedIdx);
     expect(childCompletedIdx).toBeGreaterThan(childSpawnedIdx);
-    expect(spawnCompletedIdx).toBeGreaterThan(childCompletedIdx);
-    expect(step2StartedIdx).toBeGreaterThan(spawnCompletedIdx);
-    expect(step2CompletedIdx).toBeGreaterThan(step2StartedIdx);
-    expect(runCompletedIdx).toBeGreaterThan(step2CompletedIdx);
+    expect(spawnFailedIdx).toBeGreaterThan(childCompletedIdx);
+    // The failed spawn step fails the run. (The parent's post-spawn step2
+    // is scheduled once the failed spawn resolves, but whether its own
+    // completion lands before the run settles failed is a scheduling race
+    // this test does not pin.)
+    expect(runFailedIdx).toBeGreaterThan(spawnFailedIdx);
 
     const childCompletedBody = finalParentEvents[childCompletedIdx]?.body;
     if (childCompletedBody === undefined) throw new Error("unreachable");
     expect(childCompletedBody["childRunId"]).toBe(childRunId);
-    expect(childCompletedBody["terminalStatus"]).toBe("completed");
+    expect(childCompletedBody["terminalStatus"]).toBe("failed");
 
-    // Parent's namespace must contain only the parent's StepStarted /
-    // StepCompleted entries. A regression that leaked the child's step
-    // events into the parent's run log would expand the parentTypes
-    // array silently; the ordering checks above would still pass.
-    // Assert positively that no per-step event in the parent log
-    // carries a stepId outside the parent's stepOrder.
+    // Parent's namespace must contain only the parent's per-step entries.
+    // A regression that leaked the child's step events into the parent's
+    // run log would surface a stepId outside the parent's stepOrder.
     const parentStepIds = new Set(["step1", "spawn", "step2"]);
     for (const event of finalParentEvents) {
-      if (event.type !== "StepStarted" && event.type !== "StepCompleted") {
+      if (
+        event.type !== "StepStarted" &&
+        event.type !== "StepCompleted" &&
+        event.type !== "StepFailed"
+      ) {
         continue;
       }
       const stepId = event.body["stepId"];
       expect(parentStepIds.has(String(stepId))).toBe(true);
     }
 
-    const spawnCompletedBody = finalParentEvents[spawnCompletedIdx]?.body;
-    if (spawnCompletedBody === undefined) throw new Error("unreachable");
-
     // Child run lives under runs/<childRunId>/events/ in the same
-    // workflow-run repo. Read it back through the fixture helper, which
-    // resolves the events path against the parent's deployment handle.
+    // workflow-run repo. It fails loud: its step fails with the
+    // structured INTR-310 error instead of fabricating output.
     const childEvents = await readWorkflowRunEvents(
       env,
       PARENT_DEPLOYMENT_ID,
@@ -431,24 +455,19 @@ describe("parent -> child workflow round-trip", () => {
     const childTypes = childEvents.map((e) => e.type);
     const childRunStartedIdx = childTypes.indexOf("RunStarted");
     const childStepStartedIdx = childTypes.indexOf("StepStarted");
-    const childStepCompletedIdx = childTypes.indexOf("StepCompleted");
-    const childRunCompletedIdx = childTypes.indexOf("RunCompleted");
+    const childStepFailedIdx = childTypes.indexOf("StepFailed");
+    const childRunFailedIdx = childTypes.indexOf("RunFailed");
 
     expect(childRunStartedIdx).toBeGreaterThanOrEqual(0);
     expect(childStepStartedIdx).toBeGreaterThan(childRunStartedIdx);
-    expect(childStepCompletedIdx).toBeGreaterThan(childStepStartedIdx);
-    expect(childRunCompletedIdx).toBeGreaterThan(childStepCompletedIdx);
+    expect(childStepFailedIdx).toBeGreaterThan(childStepStartedIdx);
+    expect(childRunFailedIdx).toBeGreaterThan(childStepFailedIdx);
+
+    expectChildStepNotImplemented(childEvents[childStepFailedIdx]);
 
     const childRunStartedBody = childEvents[childRunStartedIdx]?.body;
     if (childRunStartedBody === undefined) throw new Error("unreachable");
     expect(childRunStartedBody["runId"]).toBe(childRunId);
-    // The runtime body's RunStarted event does not (yet) carry
-    // parentRunId / parentStepId attribution. Parent->child attribution
-    // is observable through the parent's ChildSpawned/ChildCompleted
-    // events (asserted above against childRunId). When the runtime
-    // gains a "child RunStarted carries parent attribution" surface,
-    // re-assert against childRunStartedBody["parentRunId"] /
-    // childRunStartedBody["parentStepId"] here.
     void parentRunId;
   });
 
@@ -712,7 +731,8 @@ describe("parent -> child workflow round-trip", () => {
     // grandchild runs must have terminated too (the parent's
     // ChildCompleted only commits after the child returns terminal,
     // and the child's ChildCompleted likewise gates on the
-    // grandchild).
+    // grandchild). Every rung fails loud at its leaf step (INTR-310),
+    // so the parent settles failed rather than completed.
     await waitFor(
       async () => {
         const events = await readWorkflowRunEvents(
@@ -720,7 +740,7 @@ describe("parent -> child workflow round-trip", () => {
           NESTED_PARENT_DEPLOYMENT_ID,
           parentRunId,
         );
-        return events.some((e) => e.type === "RunCompleted");
+        return events.some((e) => e.type === "RunFailed");
       },
       { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
     );
@@ -751,7 +771,7 @@ describe("parent -> child workflow round-trip", () => {
       throw new Error("nested test: parent has no ChildCompleted event");
     }
     expect(parentChildCompleted.body["childRunId"]).toBe(childRunId);
-    expect(parentChildCompleted.body["terminalStatus"]).toBe("completed");
+    expect(parentChildCompleted.body["terminalStatus"]).toBe("failed");
 
     // Child run lives under `runs/<childRunId>/events/` in the same
     // workflow-run repo (sub-namespace scoping). The child must have
@@ -786,11 +806,13 @@ describe("parent -> child workflow round-trip", () => {
       throw new Error("nested test: child has no ChildCompleted event");
     }
     expect(childChildCompleted.body["childRunId"]).toBe(grandchildRunId);
-    expect(childChildCompleted.body["terminalStatus"]).toBe("completed");
+    expect(childChildCompleted.body["terminalStatus"]).toBe("failed");
 
     // Grandchild run lives under `runs/<grandchildRunId>/events/` in
     // the same parent workflow-run repo. The sub-namespace scoping
-    // collapses cross-rung run logs into one repo without overwrite.
+    // collapses cross-rung run logs into one repo without overwrite. The
+    // grandchild is the recursion leaf: its step fails loud (INTR-310),
+    // so the run terminates failed.
     const grandchildEvents = await readWorkflowRunEvents(
       env,
       NESTED_PARENT_DEPLOYMENT_ID,
@@ -799,9 +821,12 @@ describe("parent -> child workflow round-trip", () => {
     expect(grandchildEvents.length).toBeGreaterThan(0);
     const grandchildTypes = grandchildEvents.map((e) => e.type);
     const grandchildRunStartedIdx = grandchildTypes.indexOf("RunStarted");
-    const grandchildRunCompletedIdx = grandchildTypes.indexOf("RunCompleted");
+    const grandchildStepFailedIdx = grandchildTypes.indexOf("StepFailed");
+    const grandchildRunFailedIdx = grandchildTypes.indexOf("RunFailed");
     expect(grandchildRunStartedIdx).toBeGreaterThanOrEqual(0);
-    expect(grandchildRunCompletedIdx).toBeGreaterThan(grandchildRunStartedIdx);
+    expect(grandchildStepFailedIdx).toBeGreaterThan(grandchildRunStartedIdx);
+    expect(grandchildRunFailedIdx).toBeGreaterThan(grandchildStepFailedIdx);
+    expectChildStepNotImplemented(grandchildEvents[grandchildStepFailedIdx]);
 
     const grandchildRunStartedBody =
       grandchildEvents[grandchildRunStartedIdx]?.body;
@@ -817,9 +842,10 @@ describe("parent -> child workflow round-trip", () => {
   test(`parent -> ${String(SIBLINGS_CHILD_COUNT)} siblings via stepOrder`, async () => {
     // Sibling-fanout coverage. The runtime resolves
     // dependency-graph order via stepOrder; the parent must record
-    // one ChildSpawned + one ChildCompleted per sibling and
-    // reach RunCompleted with every sibling's run materialised under
-    // a distinct `runs/<childRunId>/` sub-namespace.
+    // one ChildSpawned + one ChildCompleted per sibling with every
+    // sibling's run materialised under a distinct `runs/<childRunId>/`
+    // sub-namespace. Each sibling fails loud at its leaf step, so the
+    // parent reaches RunFailed.
     const parentStepAgent = defineAgent({
       id: "agent-siblings-parent-step",
       systemPrompt: "You are the siblings parent step agent.",
@@ -1054,10 +1080,11 @@ describe("parent -> child workflow round-trip", () => {
       timeoutMs: 30_000,
     });
 
-    // Wait for the parent run to reach RunCompleted. Every sibling
-    // must terminate before the parent's terminal lands because the
-    // runtime's spawn step does not complete until the child's
-    // terminal status is committed.
+    // Wait for the parent run to terminate. Every sibling must terminate
+    // before the parent's terminal lands because the runtime's spawn step
+    // does not settle until the child's terminal status is committed.
+    // Each sibling fails loud at its leaf step (INTR-310), so the parent
+    // settles failed rather than completed.
     await waitFor(
       async () => {
         const events = await readWorkflowRunEvents(
@@ -1065,7 +1092,7 @@ describe("parent -> child workflow round-trip", () => {
           SIBLINGS_PARENT_DEPLOYMENT_ID,
           parentRunId,
         );
-        return events.some((e) => e.type === "RunCompleted");
+        return events.some((e) => e.type === "RunFailed");
       },
       { diagnostics: env.sidecarDiagnostics, timeoutMs: 90_000 },
     );
@@ -1084,7 +1111,7 @@ describe("parent -> child workflow round-trip", () => {
 
     // Each ChildSpawned must reference a distinct definitionRef and a
     // distinct childRunId; every ChildCompleted must reference one of
-    // those runIds with terminalStatus completed.
+    // those runIds with terminalStatus failed (the loud leaf failure).
     const spawnedRefs = new Set<string>();
     const spawnedRunIds = new Set<string>();
     for (const ev of spawnedEvents) {
@@ -1118,14 +1145,14 @@ describe("parent -> child workflow round-trip", () => {
           `siblings test: ChildCompleted missing string childRunId`,
         );
       }
-      expect(status).toBe("completed");
+      expect(status).toBe("failed");
       completedRunIds.add(runId);
     }
     expect(completedRunIds).toEqual(spawnedRunIds);
 
     // Each sibling run materialised under a distinct
-    // `runs/<childRunId>/` sub-namespace and reached its own
-    // RunCompleted.
+    // `runs/<childRunId>/` sub-namespace and failed loud at its step
+    // (INTR-310) rather than fabricating a completed run.
     for (const childRunId of spawnedRunIds) {
       const childEvents = await readWorkflowRunEvents(
         env,
@@ -1134,10 +1161,13 @@ describe("parent -> child workflow round-trip", () => {
       );
       expect(childEvents.length).toBeGreaterThan(0);
       const types = childEvents.map((e) => e.type);
-      expect(types.indexOf("RunStarted")).toBeGreaterThanOrEqual(0);
-      expect(types.indexOf("RunCompleted")).toBeGreaterThan(
-        types.indexOf("RunStarted"),
-      );
+      const runStartedIdx = types.indexOf("RunStarted");
+      const stepFailedIdx = types.indexOf("StepFailed");
+      const runFailedIdx = types.indexOf("RunFailed");
+      expect(runStartedIdx).toBeGreaterThanOrEqual(0);
+      expect(stepFailedIdx).toBeGreaterThan(runStartedIdx);
+      expect(runFailedIdx).toBeGreaterThan(stepFailedIdx);
+      expectChildStepNotImplemented(childEvents[stepFailedIdx]);
     }
   });
 });
