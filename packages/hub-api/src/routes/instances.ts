@@ -210,7 +210,11 @@ export function createInstanceRoutes({
       // creator holds `credential:{id}` / `use` for it. Resolution authorizes
       // the creator against these grants and withholds the secret otherwise,
       // surfacing an unauthorized credential as a not-launchable skip below.
-      const creatorSourceGrants = await grantStore.collectGrants(
+      // Collect across the tenant ancestor chain: credential resolution reaches
+      // inherited credentials up the chain, and the authorizing `use` grant is
+      // stamped with the credential's own (ancestor) tenant, so single-tenant
+      // collection would withhold a legitimately inherited credential.
+      const creatorSourceGrants = await grantStore.collectGrantsInChain(
         creatorPrincipalId,
         tenant.id,
       );

@@ -15,14 +15,25 @@
 import type { GrantRule, GrantStore } from "./types";
 
 export function createInMemoryGrantStore(grants: GrantRule[]): GrantStore {
+  function collect(principalId: string): GrantRule[] {
+    const now = new Date();
+    return grants.filter((g) => {
+      if (g.principalId !== principalId) return false;
+      if (g.expiresAt !== null && g.expiresAt <= now) return false;
+      return true;
+    });
+  }
+
+  // tenantId (and thus the ancestor chain) is a no-op here: the caller
+  // pre-scopes the grant array, so chain collection returns the same set as
+  // single-tenant collection. The DB-backed store is where the chain walk
+  // actually happens.
   return {
     async collectGrants(principalId: string): Promise<GrantRule[]> {
-      const now = new Date();
-      return grants.filter((g) => {
-        if (g.principalId !== principalId) return false;
-        if (g.expiresAt !== null && g.expiresAt <= now) return false;
-        return true;
-      });
+      return collect(principalId);
+    },
+    async collectGrantsInChain(principalId: string): Promise<GrantRule[]> {
+      return collect(principalId);
     },
   };
 }
