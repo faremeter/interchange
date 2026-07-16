@@ -37,6 +37,7 @@ function repoStoreFor(dirById: Map<string, string>): RepoStore {
       return dir;
     },
     openCommittedReads: unused,
+    openCommittedReadsAtCommit: unused,
     subscribe: () => {
       throw new Error("workflow-run reader test: subscribe not wired");
     },

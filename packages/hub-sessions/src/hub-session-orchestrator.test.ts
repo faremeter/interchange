@@ -244,6 +244,7 @@ function unusedRepoStore(): RepoStore {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
     openCommittedReads: unused,
+    openCommittedReadsAtCommit: unused,
     subscribe: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },

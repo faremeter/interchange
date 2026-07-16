@@ -2295,4 +2295,99 @@ describe("RepoStore", () => {
       store.openCommittedReads(principal, repoId, REF),
     ).rejects.toThrow("authorize_denied: no committed reads");
   });
+
+  test("openCommittedReadsAtCommit reads the pinned commit, not the ref tip", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-at-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "c1",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/1.json": "one" },
+      message: "c2",
+    });
+
+    // Pinned to the first commit, the reads see only that commit's tree
+    // even though the ref tip has advanced to include 1.json.
+    const reads = await store.openCommittedReadsAtCommit(
+      principal,
+      repoId,
+      first.commitSha,
+    );
+    if (reads === null) throw new Error("expected committed reads");
+    const events = await reads.listDir("runs/r1/events");
+    expect(events.map((e) => e.name)).toEqual(["0.json"]);
+  });
+
+  test("openCommittedReadsAtCommit returns null for a missing repo or unknown commit", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-at-null-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    const absent = "0".repeat(40);
+    expect(
+      await store.openCommittedReadsAtCommit(principal, repoId, absent),
+    ).toBeNull();
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    // Well-formed SHA that names no commit in the object store.
+    expect(
+      await store.openCommittedReadsAtCommit(principal, repoId, absent),
+    ).toBeNull();
+  });
+
+  test("openCommittedReadsAtCommit rejects a malformed commit SHA", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-at-bad-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+
+    await expect(
+      store.openCommittedReadsAtCommit(principal, repoId, "not-a-sha"),
+    ).rejects.toThrow("commit_sha_invalid");
+  });
+
+  test("openCommittedReadsAtCommit is gated on the resolveRef authorize action", async () => {
+    const dataDir = await makeTempDir("repo-store-committed-at-gate-");
+    const handler = createTestHandler();
+    const denyResolveRef: AuthorizeFn = (_p, _r, _ref, action) =>
+      action === "resolveRef"
+        ? { allowed: false, reason: "no committed reads" }
+        : { allowed: true };
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: denyResolveRef,
+    });
+
+    const { commitSha } = await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+
+    await expect(
+      store.openCommittedReadsAtCommit(principal, repoId, commitSha),
+    ).rejects.toThrow("authorize_denied: no committed reads");
+  });
 });
