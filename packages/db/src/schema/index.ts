@@ -3,6 +3,8 @@ export * from "./tenants";
 export * from "./principals";
 export * from "./roles";
 export * from "./grants";
+export * from "./approvals";
+export * from "./signal-correlations";
 export * from "./agents";
 export * from "./providers";
 export * from "./oauth-clients";

@@ -661,6 +661,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         const gateId = `pending-${marker.correlationId}`;
         const op: import("@intx/types/runtime").PendingOperation = {
           correlationId: marker.correlationId,
+          kind: "approval",
           registeredAt: Date.now(),
           gateId,
           ...(marker.expectedFrom !== undefined

@@ -61,6 +61,7 @@ const ConversationTurnSchema = type({
 
 const PendingOperationSchema = type({
   correlationId: "string",
+  kind: "'approval'",
   "expectedFrom?": "string",
   registeredAt: "number",
   gateId: "string",
