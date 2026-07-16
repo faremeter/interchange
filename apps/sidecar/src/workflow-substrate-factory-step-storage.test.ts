@@ -36,7 +36,7 @@ import type {
   SourcesSnapshotRef,
   StepEnvBase,
 } from "@intx/workflow-host";
-import type { StepInvokeRequest } from "@intx/workflow";
+import { scopedStepId, type StepInvokeRequest } from "@intx/workflow";
 
 import {
   createSidecarStepBuildEnv,
@@ -253,5 +253,31 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     );
     expect(after.sources).toEqual([rotated]);
     expect(after.defaultSource).toBe(rotated.id);
+  });
+
+  test("a map iteration resolves the base step's source while keeping scratch scoped", async () => {
+    // Deploy pins one source per base step, keyed by the base step id; a map
+    // iteration runs under a scoped step id `<base>[<index>]`. The source
+    // table holds only the base id, so without base resolution the build
+    // would throw "no InferenceSource pinned". The scratch, by contrast,
+    // stays keyed by the scoped id so concurrent iterations never collide.
+    const dataDir = await makeTempDir();
+    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const scopedId = scopedStepId(STEP_ID, 0);
+
+    const scopedRequest: StepInvokeRequest = {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext; the agent definition is never consulted here
+      agent: {} as StepInvokeRequest["agent"],
+      input: null,
+      authzContext: { stepId: scopedId, runId: "run-1", attempt: 1 },
+      signal: new AbortController().signal,
+    };
+    const env: StepEnvBase = await buildEnv(scopedRequest, sourcesRefFor());
+
+    // The scoped iteration resolves the base step's pinned source.
+    expect(env.sources).toEqual([SOURCE]);
+    expect(env.defaultSource).toBe(SOURCE.id);
+    // Per-iteration scratch stays keyed by the scoped id, not the base.
+    expect(env.workdir).toContain(path.join("steps", scopedId));
   });
 });

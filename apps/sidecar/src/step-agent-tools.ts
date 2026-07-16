@@ -42,6 +42,7 @@ import { getLogger } from "@intx/log";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 import { resolveStepAddress } from "@intx/workflow-deploy";
 import { parseAgentAddress } from "@intx/types";
+import { baseStepId } from "@intx/workflow";
 
 import { materializeToolPackages } from "./tool-materialization";
 
@@ -159,9 +160,14 @@ export function stepDeployTreeDir(args: {
     );
   }
   const deploymentId = parsed.instanceId.slice(INSTANCE_PREFIX.length);
+  // A `map` iteration runs under a scoped step id `<base>[<index>]`, but
+  // deploy stages one deploy tree per base step, so the scoped id resolves
+  // to its base address -- every iteration reads the base step's tree.
+  // `baseStepId` is the identity on an unscoped id, so a plain step is
+  // unaffected.
   const stepAddress = resolveStepAddress({
     deploymentId,
-    stepId: args.stepId,
+    stepId: baseStepId(args.stepId),
     deploymentDomain: parsed.domain,
     stepCount: args.stepCount,
   });
@@ -211,6 +217,12 @@ export async function materializeStepTools(args: {
   // tree lives in), not under the per-step store dir. Point the loader's
   // asset resolution there while keeping the apply-state + cache rooted
   // per step under `storeDir`.
+  //
+  // This `<deployTreeDir>/workspace` (read-only staged assets, keyed by the
+  // BASE step) and the agent's read-write workdir `<storeDir>/workspace`
+  // (keyed by the SCOPED step) share a leaf name but are deliberately
+  // different roots -- a map iteration reads one shared deploy tree while
+  // each iteration writes its own scratch. Do not unify them.
   const assetRoot = path.join(deployTreeDir, "workspace");
 
   const materialized = await materializeToolPackages({

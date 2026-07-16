@@ -72,6 +72,7 @@ import {
   type SubstrateFactoryEnv,
 } from "@intx/workflow-host";
 import {
+  baseStepId,
   createNoopDrainController,
   emptyState,
   runtimeRun,
@@ -268,19 +269,31 @@ export function parseAdapterManifest(raw: string): AdapterManifest {
  * build reads. The supervisor's multi-step branch only invokes
  * a step whose `stepId` appears in `frame.workflow.sources`; a lookup
  * miss here is a programmer error in the supervisor, not a wire-side
- * failure, and the resolver surfaces it with the missing `stepId`
- * named. The returned list is the step's ordered chain (element 0 the
- * active source, the tail the reactor's failover targets); the table's
- * arktype guarantees it is non-empty.
+ * failure, and the resolver surfaces it with the missing base step id
+ * named (plus the scoped invocation id, for a map iteration). The
+ * returned list is the step's ordered chain (element 0 the active
+ * source, the tail the reactor's failover targets); the table's arktype
+ * guarantees it is non-empty.
+ *
+ * A `map` iteration runs under a scoped step id `<base>[<index>]`, but
+ * deploy pins one source per base step, so the scoped id is resolved to
+ * its base before the lookup -- every iteration shares the base step's
+ * pinned source. `baseStepId` is the identity on an unscoped id, so a
+ * plain step is unaffected.
  */
 function createStepInferenceSourceResolver(
   table: StepInferenceSourceTable,
 ): (stepId: string) => InferenceSource[] {
   return (stepId: string): InferenceSource[] => {
-    const sources = table[stepId];
+    const base = baseStepId(stepId);
+    const sources = table[base];
     if (sources === undefined) {
+      const scopedNote =
+        base === stepId
+          ? ""
+          : ` (normalized from scoped invocation id ${JSON.stringify(stepId)})`;
       throw new Error(
-        `sidecar workflow-child step invoker buildEnv: no InferenceSource pinned for stepId ${JSON.stringify(stepId)}; the supervisor must populate frame.workflow.sources for every stepOrder entry`,
+        `sidecar workflow-child step invoker buildEnv: no InferenceSource pinned for stepId ${JSON.stringify(base)}${scopedNote}; the supervisor must populate frame.workflow.sources for every stepOrder entry`,
       );
     }
     return sources;
