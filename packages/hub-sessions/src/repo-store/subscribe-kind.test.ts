@@ -208,3 +208,118 @@ describe("subscribeKind", () => {
     expect(collected.map((e) => e.timerId)).toEqual(["t0", "t1", "t2"]);
   });
 });
+
+describe("subscribeKind added-blob handling", () => {
+  test("sorts added blobs across runs by run then seq", async () => {
+    const dataDir = await makeTempDir("subscribe-kind-sort-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createPermissiveHandler() },
+      authorize: allowAll,
+    });
+    // A single commit adds events across two runs out of natural order.
+    await store.writeTree(principal, repoId, REF, {
+      files: {
+        "runs/rB/events/1.json": JSON.stringify({
+          type: "TimerFired",
+          data: { timerId: "b1" },
+        }),
+        "runs/rA/events/2.json": JSON.stringify({
+          type: "TimerFired",
+          data: { timerId: "a2" },
+        }),
+        "runs/rA/events/0.json": JSON.stringify({
+          type: "TimerFired",
+          data: { timerId: "a0" },
+        }),
+      },
+      message: "mixed",
+    });
+    const ac = new AbortController();
+    const iter = subscribeKind(store, principal, repoId, REF, RunEvent, {
+      signal: ac.signal,
+      from: { seq: 0 },
+      kinds: ["TimerFired"],
+    });
+    const got: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const n = await iter.next();
+      if (n.done) break;
+      got.push(`${n.value.runId}:${String(n.value.seq)}`);
+    }
+    ac.abort();
+    expect(got).toEqual(["rA:0", "rA:2", "rB:1"]);
+  });
+
+  test("throws on an illegal event filename", async () => {
+    const dataDir = await makeTempDir("subscribe-kind-badname-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createPermissiveHandler() },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: {
+        "runs/r1/events/not-a-seq.json": JSON.stringify({
+          type: "TimerFired",
+          data: { timerId: "x" },
+        }),
+      },
+      message: "bad filename",
+    });
+    const ac = new AbortController();
+    const iter = subscribeKind(store, principal, repoId, REF, RunEvent, {
+      signal: ac.signal,
+      from: { seq: 0 },
+      kinds: ["TimerFired"],
+    });
+    await expect(iter.next()).rejects.toThrow("event_filename_invalid");
+    ac.abort();
+  });
+
+  test("throws on an unparseable added blob", async () => {
+    const dataDir = await makeTempDir("subscribe-kind-badjson-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createPermissiveHandler() },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "{ not json" },
+      message: "bad json",
+    });
+    const ac = new AbortController();
+    const iter = subscribeKind(store, principal, repoId, REF, RunEvent, {
+      signal: ac.signal,
+      from: { seq: 0 },
+      kinds: ["TimerFired"],
+    });
+    await expect(iter.next()).rejects.toThrow("subscribe_kind_invalid_json");
+    ac.abort();
+  });
+
+  test("throws on an added blob missing its type", async () => {
+    const dataDir = await makeTempDir("subscribe-kind-notype-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createPermissiveHandler() },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": JSON.stringify({ data: {} }) },
+      message: "no type",
+    });
+    const ac = new AbortController();
+    const iter = subscribeKind(store, principal, repoId, REF, RunEvent, {
+      signal: ac.signal,
+      from: { seq: 0 },
+      kinds: ["TimerFired"],
+    });
+    await expect(iter.next()).rejects.toThrow("subscribe_kind_missing_type");
+    ac.abort();
+  });
+});

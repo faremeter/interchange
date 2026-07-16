@@ -44,7 +44,7 @@ import type {
   RepoStore,
 } from "@intx/hub-sessions/substrate";
 import {
-  parseEventSeq,
+  requireEventSeq,
   subscribeKind,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
@@ -420,7 +420,9 @@ async function enumerateEventBlobs(
     const blobs = await reads.listDir(eventsDir);
     for (const blob of blobs) {
       if (blob.type !== "blob") continue;
-      if (parseEventSeq(blob.name) === null) continue;
+      // Assert a legal <seq>.json name; an illegal one under the events
+      // prefix is corruption the recovery walk must not silently drop.
+      requireEventSeq(blob.name, `${eventsDir}/${blob.name}`);
       const raw = await reads.readBlobByOid(blob.oid);
       let parsed: unknown;
       try {
@@ -467,8 +469,7 @@ async function commitTimerFired(
         let alreadyFired = false;
         for (const [filepath, contents] of existing) {
           const name = filepath.slice(prefix.length);
-          const seq = parseEventSeq(name);
-          if (seq === null) continue;
+          const seq = requireEventSeq(name, `${prefix}${name}`);
           if (seq > maxSeq) maxSeq = seq;
           try {
             const parsed: unknown = JSON.parse(

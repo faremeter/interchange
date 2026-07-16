@@ -1,6 +1,6 @@
 import { type, type Type } from "arktype";
 import {
-  parseEventSeq,
+  requireEventSeq,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "../workflow-run-kind";
@@ -208,12 +208,7 @@ async function enumerateEventBlobs(
     for (const blob of events) {
       if (blob.type !== "blob") continue;
       const blobPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/${blob.name}`;
-      const seq = parseEventSeq(blob.name);
-      if (seq === null) {
-        throw new Error(
-          `subscribe_kind_unexpected_event_filename: ${blobPath}`,
-        );
-      }
+      const seq = requireEventSeq(blob.name, blobPath);
       out.set(`${runId}/${blob.name}`, {
         seq,
         runId,
