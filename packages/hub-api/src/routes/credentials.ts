@@ -2,7 +2,7 @@ import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { credential, provider } from "@intx/db/schema";
+import { credential, grant as grantTable, provider } from "@intx/db/schema";
 import {
   getAncestorChain,
   resolveCredentialByName,
@@ -201,28 +201,56 @@ export function createCredentialRoutes({
       }
 
       const now = new Date();
-      const row = first(
-        await db
-          .insert(credential)
-          .values({
-            id: generateId("credential"),
+      const credentialId = generateId("credential");
+      const ownerPrincipalId = body.principalId ?? null;
+
+      const row = await db.transaction(async (tx) => {
+        const inserted = first(
+          await tx
+            .insert(credential)
+            .values({
+              id: credentialId,
+              tenantId: tenantCtx.id,
+              providerId: body.providerId,
+              principalId: ownerPrincipalId,
+              oauthClientId: body.oauthClientId ?? null,
+              name: body.name,
+              type: body.type,
+              description: body.description ?? null,
+              secret: body.secret,
+              refreshSecret: body.refreshSecret ?? null,
+              scopes: body.scopes ?? null,
+              expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+              metadata: body.metadata ?? null,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returning(),
+        );
+
+        // A personal credential (principalId set) grants its owner durable
+        // `use` authority on creation so the owner can launch agents with
+        // their own credential without a separate manual grant. Org
+        // credentials (principalId null) are covered by tenant-owner role
+        // inheritance and explicit administrative role grants, so they get
+        // no auto-grant here.
+        if (ownerPrincipalId !== null) {
+          await tx.insert(grantTable).values({
+            id: generateId("grant"),
             tenantId: tenantCtx.id,
-            providerId: body.providerId,
-            principalId: body.principalId ?? null,
-            oauthClientId: body.oauthClientId ?? null,
-            name: body.name,
-            type: body.type,
-            description: body.description ?? null,
-            secret: body.secret,
-            refreshSecret: body.refreshSecret ?? null,
-            scopes: body.scopes ?? null,
-            expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-            metadata: body.metadata ?? null,
+            principalId: ownerPrincipalId,
+            resource: `credential:${credentialId}`,
+            action: "use",
+            effect: "allow",
+            origin: "creator",
+            expiresAt: null,
             createdAt: now,
             updatedAt: now,
-          })
-          .returning(),
-      );
+          });
+        }
+
+        return inserted;
+      });
 
       return c.json(formatCredential(row), 201);
     },
