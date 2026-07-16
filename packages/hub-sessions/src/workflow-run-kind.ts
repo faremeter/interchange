@@ -287,6 +287,24 @@ const CLAIM_CHECK_SUBDIRS = new Set<string>([
 const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 /**
+ * Parse the seq from a per-event log filename `<seq>.json` under
+ * `runs/<runId>/events/`. Returns the non-negative integer seq, or
+ * `null` when the name is not a legal per-event filename. This is the
+ * one place the filename shape is defined; every reader of the event log
+ * narrows names through it rather than re-encoding the regex. Callers
+ * decide what an illegal name means -- a foreign entry to skip, or a
+ * substrate-invariant violation to surface -- since `validatePush` is
+ * the authority that keeps illegal names from landing in the first place.
+ */
+export function parseEventSeq(filename: string): number | null {
+  const match = EVENT_FILENAME_RE.exec(filename);
+  if (match === null) return null;
+  const seqStr = match[1];
+  if (seqStr === undefined) return null;
+  return Number.parseInt(seqStr, 10);
+}
+
+/**
  * Per-blob filename shape for the `runs/<runId>/blobs/` subtree: a
  * lowercase 64-character sha256 hex string. Pins the regex to the key
  * the production `BlobSubstrate` adapter computes via `sha256Hex` so a

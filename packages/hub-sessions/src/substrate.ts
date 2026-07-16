@@ -20,10 +20,13 @@ export {
   dequeueToProcessing,
   enqueueInbox,
   markConsumed,
+  parseEventSeq,
   readOwnedMessageIds,
   readProcessingEntry,
   replayProcessingToInbox,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
+  WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
 export type {
   WorkflowRunSupervisorPrincipal,

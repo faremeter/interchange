@@ -4,6 +4,7 @@ import git from "isomorphic-git";
 import type { RepoId } from "./repo-store/types";
 import type { RepoStore } from "./repo-store/types";
 import {
+  parseEventSeq,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
@@ -23,8 +24,6 @@ export type WorkflowRunEvent = {
   type: string;
   body: Record<string, unknown>;
 };
-
-const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 /**
  * Reader for a workflow-run repo's committed event log. Projects the
@@ -176,9 +175,8 @@ export function createWorkflowRunReader(
     const events: WorkflowRunEvent[] = [];
     for (const entry of tree.tree) {
       if (entry.type !== "blob") continue;
-      const m = EVENT_FILENAME_RE.exec(entry.path);
-      if (m === null || m[1] === undefined) continue;
-      const seq = Number.parseInt(m[1], 10);
+      const seq = parseEventSeq(entry.path);
+      if (seq === null) continue;
       const blob = await git.readBlob({ fs, dir, oid: entry.oid });
       const path = `${eventsDir}/${entry.path}`;
       const parsed = parseEventObject(

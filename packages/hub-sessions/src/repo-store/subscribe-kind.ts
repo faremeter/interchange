@@ -2,18 +2,12 @@ import fs from "node:fs";
 import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 import { hasCode } from "@intx/types";
+import {
+  parseEventSeq,
+  WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_RUNS_PREFIX,
+} from "../workflow-run-kind";
 import type { Principal, RepoId, RepoStore } from "./types";
-
-/**
- * Path-layout constants for the workflow-run repo's event log. The
- * workflow-run kind handler commits one JSON blob per event under
- * `runs/<runId>/events/<seq>.json` (the layout decided in the
- * pre-build interface decisions for the workflow-run repo). The
- * `subscribeKind` helper owns this layout so the substrate `subscribe`
- * stays generic and free of workflow-event vocabulary.
- */
-const RUNS_PREFIX = "runs";
-const EVENTS_DIR = "events";
 
 /**
  * Substrate envelope shape. Imported textually rather than from
@@ -27,12 +21,6 @@ const SubstrateEvent = type({
   "oldSha?": "string | null",
   newSha: "string",
 });
-
-/**
- * Per-event filename shape. Filenames are `<seq>.json` under
- * `runs/<runId>/events/`. `<seq>` is a non-negative decimal integer.
- */
-const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 type EventCandidate = {
   /** Workflow-event seq parsed from the filename. */
@@ -87,9 +75,12 @@ export type SubscribeKindEntry<T> = {
  * kinds filter against the inner `type` discriminator, and yields one
  * `{ seq, event }` entry per matching blob.
  *
- * The path layout is owned here, not in the substrate: the substrate
- * `subscribe` is a generic ref-tail primitive and knows nothing about
- * workflow-runs.
+ * The path-layout vocabulary (the `runs/`/`events/` prefixes and the
+ * `<seq>.json` filename shape) lives in the workflow-run kind handler,
+ * which is the authority for what may land under this prefix; this
+ * helper imports it rather than re-encoding it. The substrate
+ * `subscribe` it wraps is a generic ref-tail primitive and knows
+ * nothing about workflow-runs.
  *
  * Diff scope: the helper enumerates event blobs present in the new
  * commit but absent from the old commit. A commit that does not add
@@ -208,27 +199,32 @@ async function enumerateEventBlobs(
     if (hasCode(err) && err.code === "NotFoundError") return out;
     throw err;
   }
-  const runsOid = await lookupSubtree(dir, commit.commit.tree, RUNS_PREFIX);
+  const runsOid = await lookupSubtree(
+    dir,
+    commit.commit.tree,
+    WORKFLOW_RUN_RUNS_PREFIX,
+  );
   if (runsOid === null) return out;
   const { tree: runs } = await git.readTree({ fs, dir, oid: runsOid });
   for (const runEntry of runs) {
     if (runEntry.type !== "tree") continue;
     const runId = runEntry.path;
-    const eventsOid = await lookupSubtree(dir, runEntry.oid, EVENTS_DIR);
+    const eventsOid = await lookupSubtree(
+      dir,
+      runEntry.oid,
+      WORKFLOW_RUN_EVENTS_DIR,
+    );
     if (eventsOid === null) continue;
     const { tree: events } = await git.readTree({ fs, dir, oid: eventsOid });
     for (const blob of events) {
       if (blob.type !== "blob") continue;
-      const match = EVENT_FILENAME_RE.exec(blob.path);
-      if (match === null) {
+      const blobPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/${blob.path}`;
+      const seq = parseEventSeq(blob.path);
+      if (seq === null) {
         throw new Error(
-          `subscribe_kind_unexpected_event_filename: ${RUNS_PREFIX}/${runId}/${EVENTS_DIR}/${blob.path}`,
+          `subscribe_kind_unexpected_event_filename: ${blobPath}`,
         );
       }
-      const seqStr = match[1];
-      if (seqStr === undefined) throw new Error("unreachable");
-      const seq = Number.parseInt(seqStr, 10);
-      const blobPath = `${RUNS_PREFIX}/${runId}/${EVENTS_DIR}/${blob.path}`;
       out.set(`${runId}/${blob.path}`, { seq, runId, blobPath });
     }
   }

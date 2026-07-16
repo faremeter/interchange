@@ -43,7 +43,12 @@ import type {
   RepoId,
   RepoStore,
 } from "@intx/hub-sessions/substrate";
-import { subscribeKind } from "@intx/hub-sessions/substrate";
+import {
+  parseEventSeq,
+  subscribeKind,
+  WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_RUNS_PREFIX,
+} from "@intx/hub-sessions/substrate";
 
 /**
  * Substrate-shape envelope for the workflow-event blob committed to
@@ -407,21 +412,22 @@ async function enumerateEventBlobs(
   );
   if (reads === null) return [];
   const out: RawEventRecord[] = [];
-  const runEntries = await reads.listDir("runs");
+  const runEntries = await reads.listDir(WORKFLOW_RUN_RUNS_PREFIX);
   for (const runEntry of runEntries) {
     if (runEntry.type !== "tree") continue;
     const runId = runEntry.name;
-    const blobs = await reads.listDir(`runs/${runId}/events`);
+    const eventsDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}`;
+    const blobs = await reads.listDir(eventsDir);
     for (const blob of blobs) {
       if (blob.type !== "blob") continue;
-      if (!/^(0|[1-9][0-9]*)\.json$/.test(blob.name)) continue;
+      if (parseEventSeq(blob.name) === null) continue;
       const raw = await reads.readBlobByOid(blob.oid);
       let parsed: unknown;
       try {
         parsed = JSON.parse(new TextDecoder().decode(raw));
       } catch (cause) {
         throw new Error(
-          `scheduler recovery: cannot parse ${String(repoId.id)}/${runId}/events/${blob.name}: ${String(cause)}`,
+          `scheduler recovery: cannot parse ${String(repoId.id)}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/${blob.name}: ${String(cause)}`,
         );
       }
       out.push({ runId, payload: parsed });
@@ -449,7 +455,7 @@ async function commitTimerFired(
       `scheduler commit: cannot find deployment owning run ${runId}`,
     );
   }
-  const prefix = `runs/${runId}/events/`;
+  const prefix = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/`;
   await opts.repoStore.writeTreePreservingPrefix(
     opts.principal,
     owningRepoId,
@@ -461,11 +467,8 @@ async function commitTimerFired(
         let alreadyFired = false;
         for (const [filepath, contents] of existing) {
           const name = filepath.slice(prefix.length);
-          const match = /^(0|[1-9][0-9]*)\.json$/.exec(name);
-          if (match === null) continue;
-          const seqStr = match[1];
-          if (seqStr === undefined) continue;
-          const seq = Number.parseInt(seqStr, 10);
+          const seq = parseEventSeq(name);
+          if (seq === null) continue;
           if (seq > maxSeq) maxSeq = seq;
           try {
             const parsed: unknown = JSON.parse(
@@ -523,7 +526,9 @@ async function findOwningDeployment(
     // is exactly "this deployment owns the run". Reading committed state
     // rather than the working tree keeps attribution correct when the
     // checkout lags the object store.
-    const events = await reads.listDir(`runs/${runId}/events`);
+    const events = await reads.listDir(
+      `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}`,
+    );
     if (events.length > 0) return repoId;
   }
   return undefined;
