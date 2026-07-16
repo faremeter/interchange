@@ -517,6 +517,27 @@ export interface RepoStore {
     ref: string,
   ): Promise<CommittedReads | null>;
   /**
+   * Open cache-backed reads of the committed tree at an explicit commit,
+   * the by-SHA counterpart of `openCommittedReads`. A consumer that
+   * already holds a commit id — e.g. the `newSha`/`oldSha` of a
+   * ref-update event it is diffing — reads that exact commit through
+   * this, even after the ref has advanced past it. Every read the handle
+   * serves resolves through the git object store, pinned to `commitSha`.
+   *
+   * Gated under the same `resolveRef` action as `openCommittedReads`.
+   * `commitSha` is validated at the boundary: a malformed SHA throws
+   * `commit_sha_invalid`. Returns `null` when the repo does not yet exist
+   * or when `commitSha` names no commit in the object store (a commit a
+   * concurrent GC pruned between the caller learning of it and reading
+   * it), so a caller diffing a possibly-vanished commit gets an empty
+   * view rather than a mid-walk throw.
+   */
+  openCommittedReadsAtCommit(
+    principal: Principal,
+    repoId: RepoId,
+    commitSha: string,
+  ): Promise<CommittedReads | null>;
+  /**
    * Tail a ref's commit log. Returns an async iterator that emits
    * `{ seq, event }` entries: one per commit on the ref. `seq` is
    * zero-indexed at the ref's root commit and counts ancestors

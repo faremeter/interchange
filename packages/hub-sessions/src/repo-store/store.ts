@@ -1848,20 +1848,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return resolveRefSha(repoDir(repoId), ref);
   }
 
-  async function openCommittedReads(
-    principal: Principal,
-    repoId: RepoId,
-    ref: string,
-  ): Promise<CommittedReads | null> {
-    gateAccess(principal, repoId, ref, "resolveRef");
-    const dir = repoDir(repoId);
-    const repoExists = await fs.promises
-      .stat(path.join(dir, ".git"))
-      .then(() => true)
-      .catch(() => false);
-    if (!repoExists) return null;
-    const commitSha = await resolveRefSha(dir, ref);
-    if (commitSha === null) return null;
+  // Build the committed-read closures pinned to a commit. Shared by the
+  // by-ref (`openCommittedReads`) and by-commit
+  // (`openCommittedReadsAtCommit`) entrypoints, which differ only in how
+  // they obtain and validate the commit SHA.
+  function committedReadsAt(dir: string, commitSha: string): CommittedReads {
     const { readBlobByOid } = buildPriorTreeClosures(dir, commitSha);
     const listDir = async (relPath: string): Promise<CommittedTreeEntry[]> => {
       const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
@@ -1875,6 +1866,52 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       return tree.map((e) => ({ name: e.path, oid: e.oid, type: e.type }));
     };
     return { listDir, readBlobByOid };
+  }
+
+  async function repoHasGitDir(dir: string): Promise<boolean> {
+    return fs.promises
+      .stat(path.join(dir, ".git"))
+      .then(() => true)
+      .catch(() => false);
+  }
+
+  async function openCommittedReads(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+  ): Promise<CommittedReads | null> {
+    gateAccess(principal, repoId, ref, "resolveRef");
+    const dir = repoDir(repoId);
+    if (!(await repoHasGitDir(dir))) return null;
+    const commitSha = await resolveRefSha(dir, ref);
+    if (commitSha === null) return null;
+    return committedReadsAt(dir, commitSha);
+  }
+
+  async function openCommittedReadsAtCommit(
+    principal: Principal,
+    repoId: RepoId,
+    commitSha: string,
+  ): Promise<CommittedReads | null> {
+    // No single ref to gate on; use the same `"*"`/`resolveRef` bulk-read
+    // gate that `listRefs` and `resolveHead` use.
+    gateAccess(principal, repoId, "*", "resolveRef");
+    if (!/^[0-9a-f]{40}$/.test(commitSha)) {
+      throw new Error(`commit_sha_invalid: ${commitSha}`);
+    }
+    const dir = repoDir(repoId);
+    if (!(await repoHasGitDir(dir))) return null;
+    // Confirm the commit object is present so a pruned commit reads as a
+    // clean `null` rather than a lazy throw on the first tree walk.
+    const present = await git
+      .readCommit({ fs, dir, cache: cacheFor(dir), oid: commitSha })
+      .then(() => true)
+      .catch((err: unknown) => {
+        if (hasCode(err) && err.code === "NotFoundError") return false;
+        throw err;
+      });
+    if (!present) return null;
+    return committedReadsAt(dir, commitSha);
   }
 
   function subscribe(
@@ -2052,6 +2089,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     resolveHead,
     getRepoDir,
     openCommittedReads,
+    openCommittedReadsAtCommit,
     subscribe,
   };
 }

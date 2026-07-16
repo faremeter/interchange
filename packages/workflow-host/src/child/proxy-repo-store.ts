@@ -51,7 +51,8 @@ export interface CreateProxyWorkflowRunRepoStoreOpts {
    * data dir. Used for the read-only methods that consult the
    * substrate's local state -- `getRepoDir` (path computation, no
    * I/O), `resolveRef`, `listRefs`, `resolveHead`, `openCommittedReads`,
-   * `createPack`. The bare store is never used as a writer here; its
+   * `openCommittedReadsAtCommit`, `createPack`. The bare store is never
+   * used as a writer here; its
    * `writeTreePreservingPrefix` / `writeTree` / `receivePack` are not
    * reachable through this proxy.
    */
@@ -216,6 +217,8 @@ export function createProxyWorkflowRunRepoStore(
     resolveHead: bareStore.resolveHead.bind(bareStore),
     getRepoDir: bareStore.getRepoDir.bind(bareStore),
     openCommittedReads: bareStore.openCommittedReads.bind(bareStore),
+    openCommittedReadsAtCommit:
+      bareStore.openCommittedReadsAtCommit.bind(bareStore),
     subscribe(
       _principal: Principal,
       repoId: RepoId,

@@ -121,6 +121,9 @@ function createStubStore(stub: ReceivePackStub): {
     openCommittedReads: async () => {
       throw new Error("openCommittedReads: not used in this test");
     },
+    openCommittedReadsAtCommit: async () => {
+      throw new Error("openCommittedReadsAtCommit: not used in this test");
+    },
     receivePack: async (
       _principal: Principal,
       _repoId: RepoId,

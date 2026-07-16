@@ -1,13 +1,10 @@
-import fs from "node:fs";
-import git from "isomorphic-git";
 import { type, type Type } from "arktype";
-import { hasCode } from "@intx/types";
 import {
   parseEventSeq,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "../workflow-run-kind";
-import type { Principal, RepoId, RepoStore } from "./types";
+import type { CommittedReads, Principal, RepoId, RepoStore } from "./types";
 
 /**
  * Substrate envelope shape. Imported textually rather than from
@@ -29,6 +26,8 @@ type EventCandidate = {
   runId: string;
   /** Repo-root-relative blob path. */
   blobPath: string;
+  /** Git object id of the event blob, for a direct cache-backed read. */
+  oid: string;
 };
 
 const KindEnvelope = type({
@@ -97,7 +96,6 @@ export async function* subscribeKind<V extends Type>(
   opts: SubscribeKindOpts,
 ): AsyncGenerator<SubscribeKindEntry<V["infer"]>, void, void> {
   const kindsAllowed = new Set<string>(opts.kinds);
-  const dir = store.getRepoDir(repoId);
   const subscribeOpts: {
     signal: AbortSignal;
     from: "head" | { seq: number };
@@ -116,17 +114,25 @@ export async function* subscribeKind<V extends Type>(
     if (envelope instanceof type.errors) {
       throw new Error(`subscribe_kind_envelope_invalid: ${envelope.summary}`);
     }
-    const candidates = await collectAddedEventBlobs(
-      dir,
-      envelope.oldSha ?? null,
+    const newReads = await store.openCommittedReadsAtCommit(
+      principal,
+      repoId,
       envelope.newSha,
     );
+    // A commit a concurrent GC pruned between the ref-update event and
+    // this read yields nothing; the substrate surfaces that as `null`.
+    if (newReads === null) continue;
+    const oldReads =
+      envelope.oldSha === undefined || envelope.oldSha === null
+        ? null
+        : await store.openCommittedReadsAtCommit(
+            principal,
+            repoId,
+            envelope.oldSha,
+          );
+    const candidates = await collectAddedEventBlobs(newReads, oldReads);
     for (const candidate of candidates) {
-      const raw = await readBlobAtCommit(
-        dir,
-        envelope.newSha,
-        candidate.blobPath,
-      );
+      const raw = await newReads.readBlobByOid(candidate.oid);
       let parsedJson: unknown;
       try {
         parsedJson = JSON.parse(new TextDecoder().decode(raw));
@@ -154,24 +160,25 @@ export async function* subscribeKind<V extends Type>(
 }
 
 /**
- * Walk the `runs/<runId>/events/` subtree at `newSha` and at `oldSha`
- * (when present) and return the set of event candidates present in
- * the new commit but not in the old. Filenames that fail the
- * `<seq>.json` shape are surfaced as errors rather than silently
- * skipped — the workflow-run kind handler's validatePush is the
- * authority for what may land under this prefix, so an unexpected
- * shape here is a substrate-side invariant violation.
+ * Diff the `runs/<runId>/events/` subtree between the new and old commit
+ * reads and return the event candidates present in the new commit but
+ * not the old. `oldReads` is `null` for the ref's first commit (no prior
+ * tip) or when the prior commit is no longer in the object store, in
+ * which case every event in the new commit is treated as added.
+ * Filenames that fail the `<seq>.json` shape are surfaced as errors
+ * rather than silently skipped — the workflow-run kind handler's
+ * validatePush is the authority for what may land under this prefix, so
+ * an unexpected shape here is a substrate-side invariant violation.
  */
 async function collectAddedEventBlobs(
-  dir: string,
-  oldSha: string | null,
-  newSha: string,
+  newReads: CommittedReads,
+  oldReads: CommittedReads | null,
 ): Promise<EventCandidate[]> {
-  const newSet = await enumerateEventBlobs(dir, newSha);
-  if (oldSha === null) {
+  const newSet = await enumerateEventBlobs(newReads);
+  if (oldReads === null) {
     return [...newSet.values()].sort(byRunThenSeq);
   }
-  const oldSet = await enumerateEventBlobs(dir, oldSha);
+  const oldSet = await enumerateEventBlobs(oldReads);
   const out: EventCandidate[] = [];
   for (const [key, candidate] of newSet) {
     if (oldSet.has(key)) continue;
@@ -188,66 +195,32 @@ function byRunThenSeq(a: EventCandidate, b: EventCandidate): number {
 }
 
 async function enumerateEventBlobs(
-  dir: string,
-  commitOid: string,
+  reads: CommittedReads,
 ): Promise<Map<string, EventCandidate>> {
   const out = new Map<string, EventCandidate>();
-  let commit: Awaited<ReturnType<typeof git.readCommit>>;
-  try {
-    commit = await git.readCommit({ fs, dir, oid: commitOid });
-  } catch (err) {
-    if (hasCode(err) && err.code === "NotFoundError") return out;
-    throw err;
-  }
-  const runsOid = await lookupSubtree(
-    dir,
-    commit.commit.tree,
-    WORKFLOW_RUN_RUNS_PREFIX,
-  );
-  if (runsOid === null) return out;
-  const { tree: runs } = await git.readTree({ fs, dir, oid: runsOid });
+  const runs = await reads.listDir(WORKFLOW_RUN_RUNS_PREFIX);
   for (const runEntry of runs) {
     if (runEntry.type !== "tree") continue;
-    const runId = runEntry.path;
-    const eventsOid = await lookupSubtree(
-      dir,
-      runEntry.oid,
-      WORKFLOW_RUN_EVENTS_DIR,
+    const runId = runEntry.name;
+    const events = await reads.listDir(
+      `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}`,
     );
-    if (eventsOid === null) continue;
-    const { tree: events } = await git.readTree({ fs, dir, oid: eventsOid });
     for (const blob of events) {
       if (blob.type !== "blob") continue;
-      const blobPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/${blob.path}`;
-      const seq = parseEventSeq(blob.path);
+      const blobPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/${blob.name}`;
+      const seq = parseEventSeq(blob.name);
       if (seq === null) {
         throw new Error(
           `subscribe_kind_unexpected_event_filename: ${blobPath}`,
         );
       }
-      out.set(`${runId}/${blob.path}`, { seq, runId, blobPath });
+      out.set(`${runId}/${blob.name}`, {
+        seq,
+        runId,
+        blobPath,
+        oid: blob.oid,
+      });
     }
   }
   return out;
-}
-
-async function lookupSubtree(
-  dir: string,
-  parentTreeOid: string,
-  name: string,
-): Promise<string | null> {
-  const { tree } = await git.readTree({ fs, dir, oid: parentTreeOid });
-  const entry = tree.find((e) => e.path === name);
-  if (entry === undefined) return null;
-  if (entry.type !== "tree") return null;
-  return entry.oid;
-}
-
-async function readBlobAtCommit(
-  dir: string,
-  commitOid: string,
-  filepath: string,
-): Promise<Uint8Array> {
-  const { blob } = await git.readBlob({ fs, dir, oid: commitOid, filepath });
-  return blob;
 }
