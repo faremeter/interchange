@@ -96,7 +96,7 @@ describe("createAuthzExtension", () => {
 
     const result = await ext.beforeTool(makeCall(), makeState(), signal);
 
-    expect(result).toBeUndefined();
+    expect(result.type).toBe("allow");
     const d = getDecision(decisions);
     expect(d.callId).toBe("call-1");
     expect(d.effect).toBe("allow");
@@ -117,7 +117,9 @@ describe("createAuthzExtension", () => {
 
     const result = await ext.beforeTool(makeCall(), makeState(), signal);
 
-    expect(result).toBe("Denied by policy: tool:bash/invoke");
+    expect(result.type).toBe("block");
+    if (result.type !== "block") throw new Error("expected block");
+    expect(result.reason).toBe("Denied by policy: tool:bash/invoke");
     const d = getDecision(decisions);
     expect(d.effect).toBe("deny");
     expect(d.blocked).toBe(true);
@@ -127,7 +129,7 @@ describe("createAuthzExtension", () => {
     expect(d.resolvedBy.id).toBe("grant-2");
   });
 
-  test("ask effect blocks with approval message", async () => {
+  test("ask effect suspends with a minted correlation and pending operation", async () => {
     const decisions: AuthzDecision[] = [];
 
     const ext = createAuthzExtension({
@@ -137,14 +139,31 @@ describe("createAuthzExtension", () => {
         resolvedBy: null,
       }),
       onDecision: (d) => decisions.push(d),
+      approvalTimeoutMs: 60_000,
     });
 
+    const before = Date.now();
     const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const after = Date.now();
 
-    expect(result).toBe("Requires approval: tool:bash/invoke");
+    expect(result.type).toBe("suspend");
+    if (result.type !== "suspend") throw new Error("expected suspend");
+    expect(result.gate.type).toBe("approval");
+    expect(result.gate.correlationId).toBe(result.pendingOp.correlationId);
+    expect(result.gate.gateId).toBe(`pending-${result.gate.correlationId}`);
+    expect(result.pendingOp.gateId).toBe(result.gate.gateId);
+    expect(result.pendingOp.kind).toBe("approval");
+    expect(result.pendingOp.timeoutAt).toBe(result.gate.timeoutAt);
+    // The deadline is the mint time plus the configured approval timeout.
+    expect(result.gate.timeoutAt).toBeGreaterThanOrEqual(before + 60_000);
+    expect(result.gate.timeoutAt).toBeLessThanOrEqual(after + 60_000);
+
+    // A suspended call is neither cleanly blocked nor allowed: the recorded
+    // decision keeps effect "ask" but is not marked blocked.
     const d = getDecision(decisions);
     expect(d.effect).toBe("ask");
-    expect(d.blocked).toBe(true);
+    expect(d.blocked).toBe(false);
+    expect(d.blockReason).toBeUndefined();
   });
 
   test("null effect (no matching grants) blocks fail-closed", async () => {
@@ -161,7 +180,9 @@ describe("createAuthzExtension", () => {
 
     const result = await ext.beforeTool(makeCall(), makeState(), signal);
 
-    expect(result).toBe("No matching grants for tool:bash/invoke");
+    expect(result.type).toBe("block");
+    if (result.type !== "block") throw new Error("expected block");
+    expect(result.reason).toBe("No matching grants for tool:bash/invoke");
     const d = getDecision(decisions);
     expect(d.effect).toBeNull();
     expect(d.blocked).toBe(true);
@@ -199,7 +220,7 @@ describe("createAuthzExtension", () => {
     });
 
     const result = await ext.beforeTool(makeCall(), makeState(), signal);
-    expect(result).toBeUndefined();
+    expect(result.type).toBe("allow");
   });
 
   test("resource format uses tool:{name}", async () => {
@@ -245,7 +266,7 @@ describe("createAuthzExtension", () => {
     });
 
     const result = await ext.beforeTool(makeCall(), makeState(), signal);
-    expect(result).toBeUndefined();
+    expect(result.type).toBe("allow");
   });
 
   test("onDecision throwing does not mask authorize error", async () => {

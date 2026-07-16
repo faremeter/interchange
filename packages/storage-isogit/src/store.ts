@@ -65,6 +65,7 @@ const PendingOperationSchema = type({
   "expectedFrom?": "string",
   registeredAt: "number",
   gateId: "string",
+  "timeoutAt?": "number",
 });
 
 const MetadataSchema = type({

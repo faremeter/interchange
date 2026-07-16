@@ -221,7 +221,7 @@ function makeRecordingExtension(
   return {
     async beforeTool(_call) {
       trace.push(name);
-      return undefined;
+      return { type: "allow" };
     },
   };
 }
@@ -716,7 +716,7 @@ describe("createReactorAssembly", () => {
     const ext: BeforeToolExtension = {
       async beforeTool() {
         trace.push("caller-ext");
-        return "blocked-by-caller";
+        return { type: "block", reason: "blocked-by-caller" };
       },
     };
 

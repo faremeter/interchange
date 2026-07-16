@@ -1261,7 +1261,7 @@ export const InferenceEvent = type({
   .or({
     type: "'reactor.gate.blocked'",
     seq: "number",
-    data: { reason: GateType, gateId: "string" },
+    data: { reason: GateType, gateId: "string", "correlationId?": "string" },
   })
   .or({
     type: "'reactor.gate.cleared'",
@@ -1511,7 +1511,7 @@ export type InferenceEvent =
   | {
       type: "reactor.gate.blocked";
       seq: number;
-      data: { reason: GateType; gateId: string };
+      data: { reason: GateType; gateId: string; correlationId?: string };
     }
   | {
       type: "reactor.gate.cleared";
@@ -1577,6 +1577,13 @@ export type PendingOperation = {
   expectedFrom?: string;
   registeredAt: number;
   gateId: string;
+  /**
+   * Absolute deadline (epoch ms) for the gate that parks this operation.
+   * Persisted so that rehydration after a restart re-arms the gate with the
+   * remaining time against the original deadline rather than restarting the
+   * countdown. Absent for operations parked with no deadline.
+   */
+  timeoutAt?: number;
 };
 
 /**
@@ -1729,15 +1736,43 @@ export interface ReactorDirector {
 // ---------------------------------------------------------------------------
 
 /**
- * Extension that runs before a tool call is executed. Returning a string
- * blocks the call with that reason. Returning `undefined` allows it.
+ * Decision returned by a `BeforeToolExtension`.
+ *
+ * - `allow` — the tool proceeds.
+ * - `block` — the tool is answered with an error result carrying `reason`;
+ *   the call is done.
+ * - `suspend` — the call is parked awaiting an external decision. The reactor
+ *   registers `gate`, persists `pendingOp`, and does not answer the call: it
+ *   is neither run nor error-completed. `gate.timeoutAt` is the absolute
+ *   deadline (epoch ms) so the reactor can compute the remaining time; the
+ *   `correlationId` on both `gate` and `pendingOp` ties an inbound resolution
+ *   back to the suspension.
+ */
+export type BeforeToolDecision =
+  | { type: "allow" }
+  | { type: "block"; reason: string }
+  | {
+      type: "suspend";
+      gate: {
+        type: GateType;
+        gateId: string;
+        correlationId: string;
+        timeoutAt: number;
+      };
+      pendingOp: PendingOperation;
+    };
+
+/**
+ * Extension that runs before a tool call is executed. Returns a
+ * `BeforeToolDecision`: `allow` lets the call run, `block` answers it with an
+ * error result, `suspend` parks it awaiting an external decision.
  */
 export interface BeforeToolExtension {
   beforeTool(
     call: ToolCall,
     state: ReactorState,
     signal: AbortSignal,
-  ): Promise<string | undefined>;
+  ): Promise<BeforeToolDecision>;
 }
 
 /**
