@@ -6,9 +6,12 @@ import { dirname, join } from "node:path";
 import { checkWorkspace } from "./check-deps";
 
 // Each fixture is a throwaway workspace on disk: a root package.json carrying
-// the catalog, plus members under packages/apps/examples with their manifests,
-// source files, and optional tsconfig. checkWorkspace runs the static checks
-// (phantom imports + catalog convergence) against it.
+// the catalog and a `workspaces` array derived from the members it declares,
+// plus those members with their manifests, source files, and optional
+// tsconfig. checkWorkspace enumerates members through the root `workspaces`
+// globs and runs the static checks (phantom imports + catalog convergence)
+// against them; files under `bin`/`tests` that are not members are checked
+// against the root manifest.
 
 type MemberSpec = {
   manifest: Record<string, unknown>;
@@ -40,11 +43,21 @@ function writeFile(root: string, rel: string, content: string): void {
 function makeWorkspace(spec: WorkspaceSpec): string {
   const root = mkdtempSync(join(tmpdir(), "check-deps-"));
   roots.push(root);
+  // The root manifest declares exactly the members the fixture writes, as
+  // literal `workspaces` entries — the same single source of truth
+  // `checkWorkspace` reads via `readWorkspaceManifestPaths`. Literal entries
+  // (rather than `<dir>/*` globs) mirror how the real root lists `tests/lib`
+  // and let a fixture place a non-member directory beside a member — e.g. a
+  // non-member `tests/db` next to member `tests/lib` — the shape that
+  // matters for the root-scripts exclusion. A memberless fixture gets `[]`,
+  // which the enumerator accepts (it just finds no members).
+  const workspaces = Object.keys(spec.members ?? {});
   writeFile(
     root,
     "package.json",
     JSON.stringify({
       name: "@fixture/root",
+      workspaces,
       catalog: spec.catalog ?? {},
       devDependencies: spec.rootDeps ?? {},
     }),
@@ -346,4 +359,81 @@ test("a bin/ import of the bun runtime module is accepted", async () => {
     extraFiles: { "bin/tool.ts": 'import { Glob } from "bun";\n' },
   });
   expect(v).toEqual([]);
+});
+
+test("a workspace member under tests/ is checked against its own manifest, not twice against root", async () => {
+  const v = await violationsFor({
+    members: {
+      "tests/lib": {
+        manifest: { name: "@x/harness" },
+        files: { "h.ts": 'import { x } from "member-undeclared";\n' },
+      },
+    },
+  });
+  // Exactly one violation, in the member shape. Without the member-subtree
+  // exclusion the root-scripts scan would add a second, root-shaped
+  // violation for the same import.
+  expect(v).toEqual([
+    '@x/harness: imports "member-undeclared" (tests/lib/h.ts) but does not declare it in package.json',
+  ]);
+});
+
+test("a member under tests/ importing an external it declares is not re-flagged against root", async () => {
+  const v = await violationsFor({
+    members: {
+      "tests/lib": {
+        manifest: {
+          name: "@x/harness",
+          dependencies: { "only-in-member": "^1" },
+        },
+        files: { "h.ts": 'import { x } from "only-in-member";\n' },
+      },
+    },
+  });
+  // "only-in-member" is declared in the member's own manifest and absent
+  // from root. As a member it is accepted; without the exclusion the
+  // root-scripts pass would wrongly flag it as undeclared in root.
+  expect(v).toEqual([]);
+});
+
+test("a non-member directory whose name is a prefix of a member is still checked against root", async () => {
+  const v = await violationsFor({
+    members: {
+      "tests/lib": { manifest: { name: "@x/harness" } },
+    },
+    extraFiles: {
+      "tests/library/x.ts": 'import { x } from "undeclared-sibling-dep";\n',
+    },
+  });
+  // tests/library is not tests/lib. A boundary-matched exclusion must not
+  // swallow it, so its import is validated against the root manifest. A
+  // naive prefix check (without the trailing slash) would wrongly exclude it.
+  expect(
+    v.some(
+      (m) =>
+        m.includes("undeclared-sibling-dep") && m.includes("root package.json"),
+    ),
+  ).toBe(true);
+});
+
+test("a non-member directory with its own package.json under tests/ is checked against root", async () => {
+  const v = await violationsFor({
+    members: {
+      "tests/lib": { manifest: { name: "@x/harness" } },
+    },
+    // tests/db has a manifest but is not in `workspaces`, mirroring the real
+    // repo where tests/lib is the only member under tests/. It is a
+    // non-member, so its files resolve against the root manifest.
+    extraFiles: {
+      "tests/db/package.json": JSON.stringify({ name: "@x/db-tests" }),
+      "tests/db/x.test.ts": 'import { x } from "undeclared-nonmember-dep";\n',
+    },
+  });
+  expect(
+    v.some(
+      (m) =>
+        m.includes("undeclared-nonmember-dep") &&
+        m.includes("root package.json"),
+    ),
+  ).toBe(true);
 });
