@@ -279,6 +279,7 @@
       "name": "@intx/db",
       "version": "0.2.2",
       "dependencies": {
+        "@intx/authz": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",

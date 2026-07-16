@@ -1,11 +1,13 @@
 import { and, eq } from "drizzle-orm";
 
+import { evaluateGrants } from "@intx/authz";
 import {
   InvokerModelPreferences,
   ModelRequirements,
   type ModelRequirement,
   type ProviderPreference,
 } from "@intx/types";
+import type { GrantRule } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import {
@@ -14,6 +16,7 @@ import {
 } from "./catalog-resolution";
 import type { DB } from "./client";
 import { resolveCredentialById } from "./credential-resolution";
+import { createGrantStore } from "./grant-store";
 import { agent } from "./schema/agents";
 
 /**
@@ -24,6 +27,7 @@ import { agent } from "./schema/agents";
 export type SourceSkip =
   | { reason: "wallet_backed"; provider: string }
   | { reason: "credential_unresolved"; provider: string }
+  | { reason: "credential_unauthorized"; provider: string }
   | { reason: "provider_misconfigured"; provider: string };
 
 /**
@@ -96,6 +100,7 @@ async function buildSource(
   db: DB["db"],
   tenantId: string,
   resolved: ResolvedOffering,
+  creatorGrants: GrantRule[],
 ): Promise<
   { ok: true; source: InferenceSource } | { ok: false; skip: SourceSkip }
 > {
@@ -119,7 +124,7 @@ async function buildSource(
 
   // Resolve the secret through the tenant-scoped credential resolver so a
   // provider row referencing a credential outside the tenant's ancestor
-  // chain cannot leak that secret (INTR-203: the chain is the authority).
+  // chain cannot leak that secret (the chain is the authority).
   const credential = await resolveCredentialById(
     db,
     tenantId,
@@ -129,6 +134,23 @@ async function buildSource(
     return {
       ok: false,
       skip: { reason: "credential_unresolved", provider: provider.name },
+    };
+  }
+
+  // The tenant chain proves the credential is reachable; it does not prove the
+  // agent's creator is authorized to spend it. Gate the secret on the creator
+  // holding a `credential:{id}` / `use` grant. Fail closed: anything other than
+  // an `allow` effect (including `ask`, `deny`, and no matching grant at all)
+  // withholds the secret so it never enters a launchable source.
+  const authorization = await evaluateGrants(
+    creatorGrants,
+    `credential:${credential.id}`,
+    "use",
+  );
+  if (authorization.effect !== "allow") {
+    return {
+      ok: false,
+      skip: { reason: "credential_unauthorized", provider: provider.name },
     };
   }
 
@@ -156,11 +178,17 @@ async function buildSource(
  * offering is resolved to a credential-backed source; offerings that cannot
  * produce one are skipped. A required model that yields no source makes the
  * agent unlaunchable.
+ *
+ * `creatorGrants` are the agent creator's collected grants. A credential-backed
+ * source is only emitted when the creator holds `credential:{id}` / `use` for
+ * the referenced credential; otherwise the offering is skipped
+ * (`credential_unauthorized`) and its secret is withheld.
  */
 export async function resolveModelSources(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
+  creatorGrants: GrantRule[],
   opts?: { invokerPreferences?: Record<string, ProviderPreference> },
 ): Promise<CatalogSourceResolution> {
   if (requirements.length === 0) {
@@ -191,7 +219,7 @@ export async function resolveModelSources(
     const skips: SourceSkip[] = [];
     const modelSources: InferenceSource[] = [];
     for (const candidate of candidates) {
-      const built = await buildSource(db, tenantId, candidate);
+      const built = await buildSource(db, tenantId, candidate, creatorGrants);
       if (built.ok) {
         modelSources.push(built.source);
       } else {
@@ -250,7 +278,17 @@ export async function resolveInstanceModelSources(
     invokerPreferences[preference.model] = preference.providers;
   }
 
-  return resolveModelSources(db, tenantId, requirements, {
+  // The authorizing party for a credential-backed source is the agent's
+  // creator, recorded on the definition. Re-resolution (rotation, reconnect)
+  // must re-check the creator's `credential:{id}` / `use` grant, so collect
+  // the creator's grants here rather than threading them through the push
+  // callers.
+  const creatorGrants = await createGrantStore(db).collectGrants(
+    agentRow.creatorPrincipalId,
+    tenantId,
+  );
+
+  return resolveModelSources(db, tenantId, requirements, creatorGrants, {
     invokerPreferences,
   });
 }

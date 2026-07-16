@@ -16,6 +16,7 @@
     }
   },
   "dependencies": {
+    "@intx/authz": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:",

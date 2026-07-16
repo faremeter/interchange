@@ -1164,6 +1164,16 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
         resource: "instance:*",
         action: "create",
       }),
+      // The definition's creator holds `credential:{id}` / `use` for the
+      // catalog credential, so model-source resolution authorizes the secret
+      // and the agent is launchable.
+      makeGrant({
+        id: "g-creator-cred-use",
+        resource: `credential:${CREDENTIAL_ID}`,
+        action: "use",
+        origin: "creator",
+        principalId: CREATOR_ID,
+      }),
     ]);
   }
 
