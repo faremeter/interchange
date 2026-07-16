@@ -84,7 +84,7 @@ import type {
   WorkflowRun,
   WorkflowRuntimeEnv,
 } from "@intx/workflow";
-import { emptyState, runtimeRun } from "@intx/workflow";
+import { baseStepId, emptyState, runtimeRun } from "@intx/workflow";
 
 import {
   createWorkflowHostDrainController,
@@ -186,10 +186,19 @@ export function createCredentialsBackedAuthorize(
         "workflow-child authorize: no credentialsSnapshot active; the supervisor must push one before any step runs",
       );
     }
-    const entry = snapshot.steps.find((s) => s.stepId === stepId);
+    // The credentials snapshot is keyed per base step; a map iteration's
+    // scoped id `<base>[<index>]` resolves to its base entry so every
+    // iteration shares the base step's grants. `baseStepId` is the identity
+    // on an unscoped id, so a plain step is unaffected.
+    const lookupStepId = baseStepId(stepId);
+    const entry = snapshot.steps.find((s) => s.stepId === lookupStepId);
     if (entry === undefined) {
+      const scopedNote =
+        lookupStepId === stepId
+          ? ""
+          : ` (normalized from scoped invocation id ${stepId})`;
       throw new Error(
-        `workflow-child authorize: credentialsSnapshot has no entry for stepId ${stepId}`,
+        `workflow-child authorize: credentialsSnapshot has no entry for stepId ${lookupStepId}${scopedNote}`,
       );
     }
     return evaluate({
