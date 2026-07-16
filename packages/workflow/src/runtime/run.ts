@@ -1970,6 +1970,211 @@ function findUnfiredTimerForStep(
   return undefined;
 }
 
+/**
+ * Signal-park core, shared by `runAwaitSignal` and a future step-suspend
+ * arm. Given a step already marked started, it emits the
+ * `SignalAwaited` marker (unless the step is already `awaiting-signal` on
+ * a re-park resume), arms the optional timeout timer, flushes the
+ * segment, parks on the signal channel via `awaitNext`, and on a received
+ * signal commits `SignalReceived` + `StepCompleted`, returning the
+ * payload.
+ *
+ * The seam: this helper owns only the park/flush/awaitNext/resolve block.
+ * The two pieces of resume idempotency that sit ABOVE it stay with the
+ * caller, because a future `step`-origin caller diverges there:
+ *
+ *   - The in-flight-with-logged-`SignalReceived` short-circuit (the
+ *     crash-after-signal-before-`StepCompleted` window) recovers a payload
+ *     bound to an `awaitSignal` gate by signal name, which is not how a
+ *     step-suspend caller would recover.
+ *   - The `StepStarted` emit is owned by the caller: `runAwaitSignal` owns
+ *     its gate's `StepStarted`, whereas an agent step emits its own via
+ *     the normal `runStep` entry.
+ *
+ * `state` is the reduced state as of the `SignalAwaited` decision point;
+ * the caller has already emitted `StepStarted` (and reloaded) when
+ * starting fresh. The re-park guard here reads `state` to skip re-emitting
+ * `SignalAwaited` when the step is already `awaiting-signal`.
+ */
+async function parkOnSignal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  opts: {
+    stepId: string;
+    signalName: string;
+    timeout?: number;
+  },
+  state: ReturnType<typeof resumeFromLog>,
+  abort: AbortSignal,
+): Promise<unknown> {
+  // Re-emit `SignalAwaited` only when the gate is not already awaiting it.
+  // On a re-park resume the gate is already `awaiting-signal` (StepStarted
+  // + SignalAwaited durable), so this is skipped and the tail re-parks on
+  // the signal channel for a signal that has not yet arrived.
+  if (state.steps.get(opts.stepId)?.phase !== "awaiting-signal") {
+    const awaited: WorkflowEvent = {
+      kind: "SignalAwaited",
+      seq: state.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId: opts.stepId,
+      signalName: opts.signalName,
+      ...(opts.timeout !== undefined
+        ? {
+            timeoutAt: new Date(
+              env.clock().getTime() + opts.timeout,
+            ).toISOString(),
+          }
+        : {}),
+    };
+    state = await commit(env, runId, awaited);
+  }
+  // The per-step timeout commits TimerSet before asking the scheduler
+  // to fire, so the pairing with the scheduler-committed `TimerFired`
+  // is explicit in the log. Without TimerSet, a production scheduler
+  // that reads logs at startup to re-arm unfired timers cannot see
+  // signal-await timeouts -- the deadline would be silently lost
+  // across a crash. The scheduler is the single writer of TimerFired
+  // to the log; the runtime body only commits TimerSet here and then
+  // tails the log for TimerFired via `repoStore.subscribe`.
+  let timerId: string | undefined;
+  let fireAtDate: Date | undefined;
+  let subscribeFromSeq: number | undefined;
+  if (opts.timeout !== undefined) {
+    let beforeTimer = await reloadState(env, runId);
+    // On a re-park resume the durable log already carries this step's
+    // TimerSet with its original id in `pendingTimers` (unfired -- a fired
+    // timeout would have moved the step to `in-flight` and been refused).
+    // Re-adopt that timer rather than minting a second one: a duplicate
+    // TimerSet would double-count the deadline and leave two scheduler
+    // entries racing to fire.
+    const existing = findUnfiredTimerForStep(beforeTimer, opts.stepId);
+    if (existing !== undefined) {
+      timerId = existing.timerId;
+      fireAtDate = new Date(existing.fireAt);
+      subscribeFromSeq = beforeTimer.lastSeq + 1;
+    } else {
+      timerId = env.newId("timer");
+      fireAtDate = new Date(env.clock().getTime() + opts.timeout);
+      const timerSet: WorkflowEvent = {
+        kind: "TimerSet",
+        seq: beforeTimer.lastSeq + 1,
+        at: env.clock().toISOString(),
+        timerId,
+        fireAt: fireAtDate.toISOString(),
+        stepId: opts.stepId,
+      };
+      beforeTimer = await commit(env, runId, timerSet);
+      subscribeFromSeq = beforeTimer.lastSeq + 1;
+    }
+  }
+  void state;
+
+  // Segment boundary: the run is about to park on the signal channel
+  // (and, when a timeout is set, tail the durable log for the
+  // scheduler-committed `TimerFired`). Flush the buffered
+  // `SignalAwaited` (+ `TimerSet`) to durable storage BEFORE parking so
+  // (a) the out-of-process scheduler can tail the durable `TimerSet`
+  // and arm the timeout, and (b) a crash-while-suspended leaves a
+  // complete pre-suspension log that resume reconstructs the
+  // awaiting-signal state from. `subscribeFromSeq` above was computed
+  // from the in-memory tip; the flush makes the durable tip match, so
+  // the timer-watch subscription starts exactly past the flushed
+  // markers.
+  await flush(env, runId);
+
+  // Drain observation point #4: signal-park entry. If drain has
+  // fired and the step's behavior is `"cancel"` (an awaitSignal whose
+  // author explicitly opted in to cancel-on-drain), abort
+  // immediately. `awaitSignal` defaults to `"wait"` so the typical
+  // human-in-the-loop pause sits through drain untouched -- the
+  // supervisor's drainTimeout accumulator pauses while this step is
+  // the in-flight work.
+  if (shouldAbortForDrain(env.drain, opts.stepId)) {
+    throw new Error("aborted: drain requested");
+  }
+  const combinedAbort = new AbortController();
+  const onOuterAbort = (): void => {
+    combinedAbort.abort();
+  };
+  abort.addEventListener("abort", onOuterAbort, { once: true });
+  // Listen for drain transitions that land mid-await.
+  const onDrain = (): void => {
+    if (shouldAbortForDrain(env.drain, opts.stepId)) {
+      combinedAbort.abort();
+    }
+  };
+  env.drain.signal.addEventListener("abort", onDrain, { once: true });
+  let timerDispose: (() => void) | undefined;
+  let timerFired = false;
+  let timerWaitAbort: AbortController | undefined;
+  let timerWatch: Promise<void> | undefined;
+  if (
+    opts.timeout !== undefined &&
+    timerId !== undefined &&
+    fireAtDate !== undefined &&
+    subscribeFromSeq !== undefined
+  ) {
+    timerDispose = env.scheduler.scheduleIn(runId, timerId, fireAtDate);
+    timerWaitAbort = new AbortController();
+    const watchedTimerId = timerId;
+    const watchedFromSeq = subscribeFromSeq;
+    const watchAbort = timerWaitAbort;
+    timerWatch = (async (): Promise<void> => {
+      for await (const { event } of env.repoStore.subscribe(runId, {
+        signal: watchAbort.signal,
+        from: { seq: watchedFromSeq },
+      })) {
+        if (event.kind === "TimerFired" && event.timerId === watchedTimerId) {
+          timerFired = true;
+          combinedAbort.abort();
+          return;
+        }
+      }
+    })();
+  }
+  try {
+    const received = await env.signalChannel.awaitNext(
+      opts.signalName,
+      combinedAbort.signal,
+    );
+    let next = await reloadState(env, runId);
+    const signalReceived: WorkflowEvent = {
+      kind: "SignalReceived",
+      seq: next.lastSeq + 1,
+      at: env.clock().toISOString(),
+      signalName: opts.signalName,
+      signalId: received.signalId,
+      payload: received.payload,
+    };
+    next = await commit(env, runId, signalReceived);
+    void next;
+    await emitStepCompletedWithValue(env, runId, opts.stepId, received.payload);
+    return received.payload;
+  } catch (cause) {
+    // Distinguish timeout from outer cancellation: the safe-runner's
+    // catch treats `cancelling` phase specially, but a timeout that
+    // fires while the run is still `running` must surface as
+    // StepFailed. The scheduler has already committed TimerFired by
+    // the time the watch loop set `timerFired = true`; the runtime
+    // body MUST NOT commit a second TimerFired here -- single-writer
+    // is the invariant.
+    if (timerFired) {
+      throw new Error(
+        `signal-await on ${opts.signalName} timed out after ${String(opts.timeout)}ms`,
+      );
+    }
+    throw cause;
+  } finally {
+    abort.removeEventListener("abort", onOuterAbort);
+    env.drain.signal.removeEventListener("abort", onDrain);
+    if (timerDispose !== undefined) timerDispose();
+    if (timerWaitAbort !== undefined) timerWaitAbort.abort();
+    if (timerWatch !== undefined) {
+      await timerWatch.catch(() => undefined);
+    }
+  }
+}
+
 async function runAwaitSignal(
   env: WorkflowRuntimeEnv,
   runId: string,
@@ -2039,177 +2244,26 @@ async function runAwaitSignal(
     });
     state = await reloadState(env, runId);
   }
-  // Re-emit `SignalAwaited` only when the gate is not already awaiting it.
-  // On a re-park resume the gate is already `awaiting-signal` (StepStarted
-  // + SignalAwaited durable), so this is skipped and the tail re-parks on
-  // the signal channel for a signal that has not yet arrived.
-  if (state.steps.get(primitive.id)?.phase !== "awaiting-signal") {
-    const awaited: WorkflowEvent = {
-      kind: "SignalAwaited",
-      seq: state.lastSeq + 1,
-      at: env.clock().toISOString(),
+  // The SignalAwaited emit, timeout plumbing, flush, and awaitNext/resolve
+  // block live in the shared `parkOnSignal` core. The two resume
+  // idempotency pieces ABOVE this call -- the in-flight-received
+  // short-circuit and the `StepStarted` emit -- stay here because
+  // runAwaitSignal owns its gate's `StepStarted` (a future step-suspend
+  // caller emits its own via runStep) and recovers the crash-window
+  // payload by binding it to an awaitSignal gate by name.
+  return parkOnSignal(
+    env,
+    runId,
+    {
       stepId: primitive.id,
       signalName: primitive.name,
       ...(primitive.timeout !== undefined
-        ? {
-            timeoutAt: new Date(
-              env.clock().getTime() + primitive.timeout,
-            ).toISOString(),
-          }
+        ? { timeout: primitive.timeout }
         : {}),
-    };
-    state = await commit(env, runId, awaited);
-  }
-  // The per-step timeout commits TimerSet before asking the scheduler
-  // to fire, so the pairing with the scheduler-committed `TimerFired`
-  // is explicit in the log. Without TimerSet, a production scheduler
-  // that reads logs at startup to re-arm unfired timers cannot see
-  // signal-await timeouts -- the deadline would be silently lost
-  // across a crash. The scheduler is the single writer of TimerFired
-  // to the log; the runtime body only commits TimerSet here and then
-  // tails the log for TimerFired via `repoStore.subscribe`.
-  let timerId: string | undefined;
-  let fireAtDate: Date | undefined;
-  let subscribeFromSeq: number | undefined;
-  if (primitive.timeout !== undefined) {
-    let beforeTimer = await reloadState(env, runId);
-    // On a re-park resume the durable log already carries this step's
-    // TimerSet with its original id in `pendingTimers` (unfired -- a fired
-    // timeout would have moved the step to `in-flight` and been refused).
-    // Re-adopt that timer rather than minting a second one: a duplicate
-    // TimerSet would double-count the deadline and leave two scheduler
-    // entries racing to fire.
-    const existing = findUnfiredTimerForStep(beforeTimer, primitive.id);
-    if (existing !== undefined) {
-      timerId = existing.timerId;
-      fireAtDate = new Date(existing.fireAt);
-      subscribeFromSeq = beforeTimer.lastSeq + 1;
-    } else {
-      timerId = env.newId("timer");
-      fireAtDate = new Date(env.clock().getTime() + primitive.timeout);
-      const timerSet: WorkflowEvent = {
-        kind: "TimerSet",
-        seq: beforeTimer.lastSeq + 1,
-        at: env.clock().toISOString(),
-        timerId,
-        fireAt: fireAtDate.toISOString(),
-        stepId: primitive.id,
-      };
-      beforeTimer = await commit(env, runId, timerSet);
-      subscribeFromSeq = beforeTimer.lastSeq + 1;
-    }
-  }
-  void state;
-
-  // Segment boundary: the run is about to park on the signal channel
-  // (and, when a timeout is set, tail the durable log for the
-  // scheduler-committed `TimerFired`). Flush the buffered
-  // `SignalAwaited` (+ `TimerSet`) to durable storage BEFORE parking so
-  // (a) the out-of-process scheduler can tail the durable `TimerSet`
-  // and arm the timeout, and (b) a crash-while-suspended leaves a
-  // complete pre-suspension log that resume reconstructs the
-  // awaiting-signal state from. `subscribeFromSeq` above was computed
-  // from the in-memory tip; the flush makes the durable tip match, so
-  // the timer-watch subscription starts exactly past the flushed
-  // markers.
-  await flush(env, runId);
-
-  // Drain observation point #4: runAwaitSignal entry. If drain has
-  // fired and the step's behavior is `"cancel"` (an awaitSignal whose
-  // author explicitly opted in to cancel-on-drain), abort
-  // immediately. `awaitSignal` defaults to `"wait"` so the typical
-  // human-in-the-loop pause sits through drain untouched -- the
-  // supervisor's drainTimeout accumulator pauses while this step is
-  // the in-flight work.
-  if (shouldAbortForDrain(env.drain, primitive.id)) {
-    throw new Error("aborted: drain requested");
-  }
-  const combinedAbort = new AbortController();
-  const onOuterAbort = (): void => {
-    combinedAbort.abort();
-  };
-  abort.addEventListener("abort", onOuterAbort, { once: true });
-  // Listen for drain transitions that land mid-await.
-  const onDrain = (): void => {
-    if (shouldAbortForDrain(env.drain, primitive.id)) {
-      combinedAbort.abort();
-    }
-  };
-  env.drain.signal.addEventListener("abort", onDrain, { once: true });
-  let timerDispose: (() => void) | undefined;
-  let timerFired = false;
-  let timerWaitAbort: AbortController | undefined;
-  let timerWatch: Promise<void> | undefined;
-  if (
-    primitive.timeout !== undefined &&
-    timerId !== undefined &&
-    fireAtDate !== undefined &&
-    subscribeFromSeq !== undefined
-  ) {
-    timerDispose = env.scheduler.scheduleIn(runId, timerId, fireAtDate);
-    timerWaitAbort = new AbortController();
-    const watchedTimerId = timerId;
-    const watchedFromSeq = subscribeFromSeq;
-    const watchAbort = timerWaitAbort;
-    timerWatch = (async (): Promise<void> => {
-      for await (const { event } of env.repoStore.subscribe(runId, {
-        signal: watchAbort.signal,
-        from: { seq: watchedFromSeq },
-      })) {
-        if (event.kind === "TimerFired" && event.timerId === watchedTimerId) {
-          timerFired = true;
-          combinedAbort.abort();
-          return;
-        }
-      }
-    })();
-  }
-  try {
-    const received = await env.signalChannel.awaitNext(
-      primitive.name,
-      combinedAbort.signal,
-    );
-    let next = await reloadState(env, runId);
-    const signalReceived: WorkflowEvent = {
-      kind: "SignalReceived",
-      seq: next.lastSeq + 1,
-      at: env.clock().toISOString(),
-      signalName: primitive.name,
-      signalId: received.signalId,
-      payload: received.payload,
-    };
-    next = await commit(env, runId, signalReceived);
-    void next;
-    await emitStepCompletedWithValue(
-      env,
-      runId,
-      primitive.id,
-      received.payload,
-    );
-    return received.payload;
-  } catch (cause) {
-    // Distinguish timeout from outer cancellation: the safe-runner's
-    // catch treats `cancelling` phase specially, but a timeout that
-    // fires while the run is still `running` must surface as
-    // StepFailed. The scheduler has already committed TimerFired by
-    // the time the watch loop set `timerFired = true`; the runtime
-    // body MUST NOT commit a second TimerFired here -- single-writer
-    // is the invariant.
-    if (timerFired) {
-      throw new Error(
-        `signal-await on ${primitive.name} timed out after ${String(primitive.timeout)}ms`,
-      );
-    }
-    throw cause;
-  } finally {
-    abort.removeEventListener("abort", onOuterAbort);
-    env.drain.signal.removeEventListener("abort", onDrain);
-    if (timerDispose !== undefined) timerDispose();
-    if (timerWaitAbort !== undefined) timerWaitAbort.abort();
-    if (timerWatch !== undefined) {
-      await timerWatch.catch(() => undefined);
-    }
-  }
+    },
+    state,
+    abort,
+  );
 }
 
 async function runSleep(
