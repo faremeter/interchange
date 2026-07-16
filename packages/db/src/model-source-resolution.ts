@@ -142,6 +142,10 @@ async function buildSource(
   // holding a `credential:{id}` / `use` grant. Fail closed: anything other than
   // an `allow` effect (including `ask`, `deny`, and no matching grant at all)
   // withholds the secret so it never enters a launchable source.
+  //
+  // No condition registry is passed: credential-use grants are minted and
+  // backfilled unconditionally (conditions: null), so conditional grants are
+  // intentionally not evaluated on this path.
   const authorization = await evaluateGrants(
     creatorGrants,
     `credential:${credential.id}`,
@@ -282,8 +286,12 @@ export async function resolveInstanceModelSources(
   // creator, recorded on the definition. Re-resolution (rotation, reconnect)
   // must re-check the creator's `credential:{id}` / `use` grant, so collect
   // the creator's grants here rather than threading them through the push
-  // callers.
-  const creatorGrants = await createGrantStore(db).collectGrants(
+  // callers. Collect across the tenant ancestor chain: credential resolution
+  // already reaches inherited credentials up the chain, and the authorizing
+  // `use` grant is stamped with the credential's own (ancestor) tenant, so a
+  // single-tenant collection would fail closed on a legitimately inherited
+  // credential.
+  const creatorGrants = await createGrantStore(db).collectGrantsInChain(
     agentRow.creatorPrincipalId,
     tenantId,
   );

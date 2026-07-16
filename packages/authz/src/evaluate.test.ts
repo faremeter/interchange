@@ -664,6 +664,9 @@ function memoryStore(grants: GrantRule[]): GrantStore {
     async collectGrants() {
       return grants;
     },
+    async collectGrantsInChain() {
+      return grants;
+    },
   };
 }
 
@@ -725,6 +728,9 @@ describe("authorize with in-memory store", () => {
       async collectGrants(principalId, tenantId) {
         receivedPrincipalId = principalId;
         receivedTenantId = tenantId;
+        return [grant({ resource: "*", action: "*", effect: "allow" })];
+      },
+      async collectGrantsInChain() {
         return [grant({ resource: "*", action: "*", effect: "allow" })];
       },
     };
