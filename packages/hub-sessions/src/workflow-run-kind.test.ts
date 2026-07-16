@@ -12,6 +12,7 @@ import {
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
+  parseEventSeq,
   readOwnedMessageIds,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
@@ -3820,5 +3821,40 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
         mailAuditRef: { store: "audit", path: "mail/inflight" },
       }),
     ).rejects.toThrow(/claim_check_already_consumed/);
+  });
+});
+
+describe("parseEventSeq", () => {
+  test("accepts canonical <seq>.json names", () => {
+    expect(parseEventSeq("0.json")).toBe(0);
+    expect(parseEventSeq("1.json")).toBe(1);
+    expect(parseEventSeq("42.json")).toBe(42);
+    expect(parseEventSeq("1000000.json")).toBe(1_000_000);
+  });
+
+  test("rejects leading zeros, wrong case, whitespace, and near-misses", () => {
+    // Every reader of the event log narrows filenames through this one
+    // function; these are the boundaries a naive `\d+` rewrite would
+    // silently break, so they are pinned by example.
+    for (const bad of [
+      "00.json",
+      "01.json",
+      "1.JSON",
+      " 1.json",
+      "1.json\n",
+      "-1.json",
+      "+1.json",
+      "1.5.json",
+      "1e3.json",
+      "0x1.json",
+      "1..json",
+      "1.json.bak",
+      "events.jsonl",
+      "1",
+      ".json",
+      "",
+    ]) {
+      expect(parseEventSeq(bad)).toBeNull();
+    }
   });
 });
