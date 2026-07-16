@@ -162,11 +162,25 @@ export interface StepInvokeRequest {
   authzContext: AuthorizeContext;
   /** Cancelled when the step is being torn down (timeout, cancellation). */
   signal: AbortSignal;
+  /**
+   * Present only on a resume re-invocation of a step that previously
+   * suspended. The invoker rebuilds the agent against the same context,
+   * delivers an inbound carrying `correlationId` and a body derived from
+   * `decision`, and drives the resumed reactor to its reply. Absent on the
+   * first invocation, where the invoker drives a plain `agent.send`.
+   */
+  resume?: { correlationId: string; decision: unknown };
 }
 
-export interface StepInvokeResult {
-  output: unknown;
-}
+/**
+ * The outcome of a single `invokeStep`. A step either produces its
+ * `output` (the agent replied) or suspends: the reactor parked on a gate
+ * awaiting an external decision, handing back the `correlationId` the
+ * runtime parks the step on until the correlated decision is delivered.
+ */
+export type StepInvokeResult =
+  | { output: unknown }
+  | { suspend: { correlationId: string } };
 
 /**
  * Per-action deterministic effect handler invocation, the effect analog

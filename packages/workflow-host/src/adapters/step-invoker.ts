@@ -61,7 +61,12 @@ import {
   type SendResult,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
+import { createInboundMessage } from "@intx/mime";
+import type {
+  InboundMessage,
+  InferenceEvent,
+  InferenceSource,
+} from "@intx/types/runtime";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
@@ -245,8 +250,9 @@ async function invokeColdStep(
   const eventForward = subscribeAgentEvents(agent, opts.onEvent);
 
   try {
-    const sendResult = await sendWithAbort(agent, req, { closeOnAbort: true });
-    return stepResultFromSend(sendResult);
+    return stepResultFromSend(
+      await sendWithAbort(agent, req, { closeOnAbort: true }),
+    );
   } finally {
     // `close` is idempotent: a second call after the send already
     // resolved still releases the workdir lock and tears down stream
@@ -328,8 +334,9 @@ async function invokeWarmStep(
     warmCache.setEventSink(key, opts.onEvent);
   }
   try {
-    const sendResult = await sendWithAbort(agent, req, { closeOnAbort: false });
-    return stepResultFromSend(sendResult);
+    return stepResultFromSend(
+      await sendWithAbort(agent, req, { closeOnAbort: false }),
+    );
   } finally {
     // Do NOT close the agent or drain its forwarder: both span
     // messages and are owned by the warm cache, torn down at eviction.
@@ -368,6 +375,16 @@ async function buildStepAgent(
 
 /**
  * Drive one `agent.send`, racing it against the step's abort signal.
+ *
+ * The message sent depends on `req.resume`. A first invocation sends the
+ * synthesized `req.input` content. A resume sends the full correlated
+ * `InboundMessage` built from `req.resume`, whose
+ * `headers.interchangeCorrelationId` routes through the reactor's
+ * `tryCorrelate` to match the rehydrated gate and resume the parked cycle
+ * -- no second inference cycle. Because both paths go through `agent.send`,
+ * the returned `SendResult` carries the reactor's full settle arm set: a
+ * resumed cycle that re-parks on a second gate settles as `"suspended"`
+ * exactly as a first-invocation gate does.
  *
  * `closeOnAbort` selects the abort semantics:
  *   - `true` (cold path): the in-flight send is left to settle via
@@ -413,15 +430,33 @@ async function sendWithAbort(
       };
       abortListener = onAbort;
       req.signal.addEventListener("abort", onAbort, { once: true });
-      let synthesized: string;
+      let message: string | InboundMessage;
       try {
-        synthesized = synthesizeInputContent(req.input);
+        // A resume carries the correlated decision: build the same full
+        // `InboundMessage` a first invocation's synthesis path would, but
+        // stamped with `resume.correlationId` so the header reaches the
+        // reactor's `tryCorrelate` and matches the rehydrated gate. The
+        // object form is load-bearing -- passing the synthesized content as
+        // a plain string would drop the correlation id, and the resumed
+        // cycle would never be matched. A first invocation sends the plain
+        // synthesized content; `agent.send` stamps its own synthetic
+        // addressing.
+        message =
+          req.resume !== undefined
+            ? createInboundMessage({
+                from: "signal@local",
+                to: "agent@local",
+                content: synthesizeInputContent(req.resume.decision),
+                interchangeType: "conversation.message",
+                correlationId: req.resume.correlationId,
+              })
+            : synthesizeInputContent(req.input);
       } catch (cause) {
         reject(cause instanceof Error ? cause : new Error(String(cause)));
         return;
       }
       const sendOpts = cfg.closeOnAbort ? undefined : { signal: req.signal };
-      agent.send(synthesized, sendOpts).then(resolve, (cause: unknown) => {
+      agent.send(message, sendOpts).then(resolve, (cause: unknown) => {
         reject(cause instanceof Error ? cause : new Error(String(cause)));
       });
     });
@@ -495,20 +530,18 @@ function wrapAuthorize(
  * turn, which become the step output so downstream consumers can read
  * either shape.
  *
- * A `"suspended"` outcome throws: the reactor parked on a gate awaiting
- * an external decision, and this invoker has no path to resume a
- * suspended reactor -- it drives a single `agent.send` per step and
- * tears the agent down on exit, with no signal bridge to deliver the
- * correlated decision and no state to resume against. A parked send is
- * therefore not a completable step. Throwing surfaces the gap loudly;
- * fabricating an empty-reply output would swallow the suspension and
- * hand the workflow a bogus completed step.
+ * A `"suspended"` outcome hands the workflow runtime the parked reactor's
+ * `correlationId`: the reactor parked on a gate awaiting an external
+ * decision. The runtime parks the step on the reserved signal channel for
+ * that correlation and, when the decision is delivered, re-invokes with
+ * `resume` so `sendWithAbort` sends the correlated inbound and drives the
+ * resumed reactor to a real reply -- or, when the resumed cycle re-parks
+ * on a second gate, to another `"suspended"` outcome that flows back
+ * through here unchanged.
  */
 function stepResultFromSend(result: SendResult): StepInvokeResult {
   if (result.type === "suspended") {
-    throw new Error(
-      `workflow step invoker: agent send suspended on correlationId ${result.correlationId}; this invoker cannot resume a parked reactor -- it has no signal bridge to deliver the correlated decision and no resume path, so a suspended send is not a completable step`,
-    );
+    return { suspend: { correlationId: result.correlationId } };
   }
   return { output: { reply: result.reply, turn: result.turn } };
 }
