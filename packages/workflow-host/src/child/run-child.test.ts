@@ -1544,6 +1544,7 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
       const reply = `r${String(spy.conversation.length)}:${spy.conversation.join("|")}`;
       spy.replies.push(reply);
       return {
+        type: "reply",
         reply,
         turn: {
           role: "assistant",

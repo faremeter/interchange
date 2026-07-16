@@ -90,8 +90,13 @@ export async function main(
     defaultSource: source.id,
   });
   try {
-    const { reply } = await agent.send(prompt);
-    stdout(`assistant: ${reply}\n\n`);
+    const result = await agent.send(prompt);
+    if (result.type !== "reply") {
+      throw new Error(
+        `agent send suspended on correlationId ${result.correlationId}; this example drives a single prompt and has no resume path`,
+      );
+    }
+    stdout(`assistant: ${result.reply}\n\n`);
 
     const turns = await agent.history();
     const spill = findSpillBlock(turns);

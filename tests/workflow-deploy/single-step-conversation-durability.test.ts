@@ -387,6 +387,7 @@ function buildStorageAwareSpyAgentFactory(): {
         });
         await storage.commit({ message: "spy turn" });
         return {
+          type: "reply",
           reply,
           turn: {
             role: "assistant",

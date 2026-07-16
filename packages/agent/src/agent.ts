@@ -113,15 +113,47 @@ export type SendOptions = {
   from?: string;
 };
 
-export type SendResult = {
-  /** Reply text emitted by the director's `reply` action. */
-  reply: string;
-  /**
-   * Full-fidelity assistant turn that produced the reply. Captured from
-   * the reactor's `inference.done` event preceding `connector.reply`.
-   */
-  turn: ConversationTurn;
-};
+export type SendResult =
+  | {
+      type: "reply";
+      /** Reply text emitted by the director's `reply` action. */
+      reply: string;
+      /**
+       * Full-fidelity assistant turn that produced the reply. Captured from
+       * the reactor's `inference.done` event preceding `connector.reply`.
+       */
+      turn: ConversationTurn;
+    }
+  | {
+      /**
+       * The reactor parked on a gate before producing a reply. The cycle
+       * is not finished -- it will resume when the correlated external
+       * decision is delivered. `correlationId` identifies the pending
+       * operation the caller resumes against.
+       */
+      type: "suspended";
+      correlationId: string;
+    };
+
+/**
+ * A `reactor.gate.blocked` event settled the active send but carried no
+ * `correlationId`, so the resulting suspension has no handle a caller
+ * could resume against. The reactor omits `correlationId` for gates
+ * parked without a correlation (e.g. a director suspend with no
+ * correlated external decision), and `send()` cannot hand back an
+ * unresumable outcome -- it surfaces this instead.
+ */
+export class GateSuspendedWithoutCorrelationError extends Error {
+  readonly gateId: string;
+
+  constructor(gateId: string) {
+    super(
+      `reactor suspended on gate ${gateId} without a correlationId; the send has no handle to resume against`,
+    );
+    this.name = "GateSuspendedWithoutCorrelationError";
+    this.gateId = gateId;
+  }
+}
 
 export type Agent = {
   send(
@@ -563,7 +595,30 @@ export async function createAgent<EnvReq extends BaseEnv>(
             activeCycle.lastAssistantTurn ??
             buildSyntheticTurn(event.data.content);
           activeCycle = null;
-          sendQueue.resolveActive({ reply: event.data.content, turn });
+          sendQueue.resolveActive({
+            type: "reply",
+            reply: event.data.content,
+            turn,
+          });
+        } else if (event.type === "reactor.gate.blocked") {
+          // The reactor parked on a gate before producing a reply. This
+          // is a terminal outcome for the active send: the cycle will not
+          // continue until the correlated external decision is delivered,
+          // and a parked cycle does not emit connector.reply or
+          // reactor.done, so leaving the send unsettled would hang the
+          // caller. Resolve with the suspended outcome so the caller can
+          // resume against the correlationId. A gate parked without a
+          // correlationId is unresumable -- surface it rather than hand
+          // back an outcome with no handle.
+          const { correlationId } = event.data;
+          activeCycle = null;
+          if (correlationId === undefined) {
+            sendQueue.rejectActive(
+              new GateSuspendedWithoutCorrelationError(event.data.gateId),
+            );
+          } else {
+            sendQueue.resolveActive({ type: "suspended", correlationId });
+          }
         } else if (event.type === "reactor.error" && event.data.fatal) {
           // Only fatal reactor errors terminate the active send. Non-fatal
           // errors (e.g. transient write/commit failures the reactor is

@@ -192,6 +192,7 @@ function buildStreamingStubAgent(
   const agent: Agent = {
     async send(): Promise<SendResult> {
       return {
+        type: "reply",
         reply: "ok",
         turn: {
           role: "assistant",
@@ -364,7 +365,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     expect(authzCalls).toHaveLength(1);
     expect(authzCalls[0]?.stepId).toBe("step-1");
 
-    stub.resolveSend({ reply: "pong", turn });
+    stub.resolveSend({ type: "reply", reply: "pong", turn });
     const result = await sendPromise;
     expect(result.output).toEqual({ reply: "pong", turn });
     expect(stub.events[0]).toBe(`send:${JSON.stringify({ goal: "ping" })}`);
@@ -386,6 +387,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     const sendPromise = invoker(buildRequest({ input: "raw-string" }));
     await Promise.resolve();
     stub.resolveSend({
+      type: "reply",
       reply: "ok",
       turn: {
         role: "assistant",
@@ -508,7 +510,7 @@ describe("workflow-host StepInvoker adapter - output shape", () => {
     };
     const settled = invoker(buildRequest({ input: 42 }));
     await Promise.resolve();
-    stub.resolveSend({ reply: "hello", turn });
+    stub.resolveSend({ type: "reply", reply: "hello", turn });
     const result = await settled;
     expect(result.output).toEqual({ reply: "hello", turn });
   });
@@ -583,6 +585,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     const sendPromise = invoker(buildRequest({ input: { goal: "go" } }));
     await Promise.resolve();
     stub.resolveSend({
+      type: "reply",
       reply: "ok",
       turn: {
         role: "assistant",
@@ -643,6 +646,7 @@ function buildWarmStubAgent(): WarmStubControl {
       conversation.push(text);
       const reply = `reply${String(conversation.length)}:${conversation.join("|")}`;
       return {
+        type: "reply",
         reply,
         turn: {
           role: "assistant",
@@ -759,6 +763,7 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
         }
         conversation.push(text);
         return {
+          type: "reply",
           reply: `ok:${conversation.join("|")}`,
           turn: {
             role: "assistant",

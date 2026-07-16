@@ -1,10 +1,26 @@
-import { describe, test, expect } from "bun:test";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { type } from "arktype";
 
-import type { ContextStore, InferenceSource } from "@intx/types/runtime";
+import { createInboundMessage } from "@intx/mime";
+import { createIsogitStore } from "@intx/storage-isogit";
+import type {
+  ContextStore,
+  InferenceSource,
+  ReactorCapabilities,
+  ReactorDirector,
+  ReactorInboundEvent,
+  ReactorState,
+} from "@intx/types/runtime";
 
-import { createAgent } from "./agent";
+import {
+  createAgent,
+  GateSuspendedWithoutCorrelationError,
+  type SendResult,
+} from "./agent";
 import { defineAgent } from "./definition";
 import { defineDirector } from "./director";
 import {
@@ -339,5 +355,198 @@ describe("createAgent tool-rollback dispose handling", () => {
     // The bundle was constructed before the director throw, so it
     // must be disposed.
     expect(disposeCalls).toBe(1);
+  });
+});
+
+describe("createAgent send() on reactor suspend", () => {
+  // A director that parks the reactor on a gate every time it sees an
+  // inbound message. Without a resume path the reactor stays parked, so
+  // send() would hang unless handleEvent settles the active send on
+  // `reactor.gate.blocked`. `correlationId` is threaded through so the
+  // reject-vs-resolve branch is exercised by the same director.
+  //
+  // Each park mints a fresh gateId (`gate-suspend-test-N`) so two
+  // messages against the same agent do not collide on a single gate --
+  // the gate manager rejects a duplicate registration, which would
+  // otherwise brick the reactor loop on the second park.
+  function makeSuspendingDirector(opts: {
+    correlationId: string | undefined;
+    distinctPerPark?: boolean;
+  }): ReactorDirector {
+    let parkCount = 0;
+    return {
+      async decide(
+        event: ReactorInboundEvent,
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received") {
+          parkCount += 1;
+          return caps.suspend({
+            type: "approval",
+            gateId: `gate-suspend-test-${String(parkCount)}`,
+            timeoutMs: 60_000,
+            ...(opts.correlationId !== undefined
+              ? {
+                  correlationId: opts.distinctPerPark
+                    ? `${opts.correlationId}-${String(parkCount)}`
+                    : opts.correlationId,
+                }
+              : {}),
+          });
+        }
+        return caps.done();
+      },
+    };
+  }
+
+  function makeDirectorRegistry(
+    director: ReactorDirector,
+  ): BaseEnv["directors"] {
+    const defined = defineDirector({
+      id: "@intx-test/agent/suspend-probe",
+      configSchema: type({}),
+      factory: () => director,
+    });
+    return createDirectorRegistry({
+      factories: [defined.factory],
+      defaultId: defined.factory.id,
+    });
+  }
+
+  const SUSPEND_SOURCE: InferenceSource = {
+    id: "anthropic:suspend-test",
+    provider: "anthropic",
+    baseURL: "http://localhost:1",
+    apiKey: "test-key",
+    model: "claude-test",
+  };
+
+  async function buildSuspendEnv(
+    workdir: string,
+    director: ReactorDirector,
+  ): Promise<BaseEnv> {
+    const storage = await createIsogitStore(workdir);
+    return {
+      sources: [SUSPEND_SOURCE],
+      defaultSource: SUSPEND_SOURCE.id,
+      storage,
+      workdir,
+      audit: noopAuditStore(),
+      authorize: permissiveAuthorize(),
+      directors: makeDirectorRegistry(director),
+    };
+  }
+
+  function suspendDef() {
+    return defineAgent({
+      id: "suspend-agent",
+      systemPrompt: "test",
+      tools: [],
+      capabilities: [],
+      inference: {
+        sources: [
+          { provider: SUSPEND_SOURCE.provider, model: SUSPEND_SOURCE.model },
+        ],
+      },
+    });
+  }
+
+  function conversationMessage(): ReturnType<typeof createInboundMessage> {
+    return createInboundMessage({
+      from: "user@local",
+      to: "agent@local",
+      content: "trigger",
+      interchangeType: "conversation.message",
+    });
+  }
+
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "agent-suspend-"));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  test("resolves with a suspended outcome when the reactor parks with a correlationId", async () => {
+    const director = makeSuspendingDirector({ correlationId: "corr-123" });
+    const env = await buildSuspendEnv(workDir, director);
+    const agent = await createAgent(suspendDef(), env);
+    try {
+      const result: SendResult = await agent.send(conversationMessage());
+      if (result.type !== "suspended") {
+        throw new Error(`expected suspended outcome, got ${result.type}`);
+      }
+      expect(result.correlationId).toBe("corr-123");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("rejects with GateSuspendedWithoutCorrelationError when the park carries no correlationId", async () => {
+    const director = makeSuspendingDirector({ correlationId: undefined });
+    const env = await buildSuspendEnv(workDir, director);
+    const agent = await createAgent(suspendDef(), env);
+    try {
+      let caught: unknown;
+      try {
+        await agent.send(conversationMessage());
+      } catch (err) {
+        caught = err;
+      }
+      if (!(caught instanceof GateSuspendedWithoutCorrelationError)) {
+        throw new Error(
+          "expected GateSuspendedWithoutCorrelationError from a park without a correlationId",
+        );
+      }
+      expect(caught.gateId).toBe("gate-suspend-test-1");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a send after a prior bare-deliver park resolves against its own park", async () => {
+    // A bare `deliver()` (no active send) parks the reactor and fires
+    // `reactor.gate.blocked` while no send is in flight; a later send()
+    // then parks on its own gate. The send must resolve against ITS OWN
+    // correlation, not the earlier bare park's. Distinct per-park ids
+    // (`corr-N`) make that attribution observable: the bare deliver
+    // parks as `corr-1`, the send parks as `corr-2`, so a result of
+    // `corr-2` proves the send did not ride the first park's stale
+    // event.
+    //
+    // This pins the observable end-to-end attribution, not the
+    // `activeCycle !== null` guard in handleEvent directly: that guard
+    // is belt-and-suspenders, because the send queue sets its active
+    // cycle synchronously with delivery and a settle is a no-op when no
+    // send is active, so a bare park cannot reach a queued send in the
+    // first place.
+    const director = makeSuspendingDirector({
+      correlationId: "corr",
+      distinctPerPark: true,
+    });
+    const env = await buildSuspendEnv(workDir, director);
+    const agent = await createAgent(suspendDef(), env);
+    const stream = agent.stream();
+    try {
+      // Drive a bare deliver and wait for its park to land on the stream
+      // so the gate.blocked event has already been dispatched before the
+      // send is enqueued.
+      agent.deliver(conversationMessage());
+      for await (const event of stream) {
+        if (event.type === "reactor.gate.blocked") break;
+      }
+
+      const result: SendResult = await agent.send(conversationMessage());
+      if (result.type !== "suspended") {
+        throw new Error(`expected suspended outcome, got ${result.type}`);
+      }
+      expect(result.correlationId).toBe("corr-2");
+    } finally {
+      await agent.close();
+    }
   });
 });

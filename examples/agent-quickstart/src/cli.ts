@@ -85,8 +85,13 @@ export async function main(
 
   const agent = await createAgent(def, agentEnv);
   try {
-    const { reply } = await agent.send(prompt);
-    stdout(reply + "\n");
+    const result = await agent.send(prompt);
+    if (result.type !== "reply") {
+      throw new Error(
+        `agent send suspended on correlationId ${result.correlationId}; this example drives a single prompt and has no resume path`,
+      );
+    }
+    stdout(result.reply + "\n");
     return 0;
   } finally {
     await agent.close();
