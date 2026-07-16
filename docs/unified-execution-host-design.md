@@ -28,8 +28,8 @@ do not share an implementation:
    (`createHarness` in `packages/harness/src/harness.ts`) that owns its own
    `MessageTransport` subscription, holds multi-turn conversation state in
    memory, drains an INBOX continuously, and routes `connector.reply` events
-   back to the transport. **This is the only thing in the system that runs a
-   real agent today** — real tool composition, real inference, real multi-turn
+   back to the transport. This is the long-lived, mail-driven real-agent
+   path — real tool composition, real inference, real multi-turn
    conversation.
 
 2. **The spawned workflow-process child.** The supervisor
@@ -38,16 +38,21 @@ do not share an implementation:
    provides durable, resumable, audited multi-step orchestration: an inbox
    claim-check substrate, a FIFO dispatch loop, per-message `runtimeRun`
    invocations, `discoverInFlightRuns` resume, signal/drain/recycle machinery,
-   and a single-writer workflow-run repo. **But its step-invoker is a stub.**
-   `apps/sidecar/src/workflow-substrate-factory.ts` wires `baseInvokeStep` /
-   `childInvokeStep` to return `{ output: { reply: req.agent.id, turn: null } }`
-   — no inference, no tools, the event firehose dropped. The orchestration
-   machinery is real and proven; the work inside each step is placeholder.
+   and a single-writer workflow-run repo. Its step-invoker started as a stub
+   returning `{ output: { reply: req.agent.id, turn: null } }` — no inference,
+   no tools, the event firehose dropped. This design makes it real: the
+   single-agent, multi-step, and top-level `map` fan-out paths now run a real
+   `createAgent` in the child with materialized tools and threaded events. The
+   one path still unbuilt is child-definition per-step execution — a
+   `childWorkflow`'s child steps have no deploy-staged assets, so
+   `childInvokeStep` fails loud with `ChildStepNotImplementedError` (INTR-310)
+   rather than fabricating output.
 
-The net effect: the durable runtime cannot run real agents, and the
-real-agent runtime is not durable. INTR-209's multi-step workflows deploy,
-dispatch, signal, and resume correctly but every step returns placeholder
-output.
+The net effect: the durable runtime now runs real agents for the
+single-agent, multi-step, and `map` paths — INTR-209's workflows deploy,
+dispatch, signal, resume, and produce real per-step output — while
+`childWorkflow` child-definition per-step execution remains placeholder
+(INTR-310).
 
 ### Why unify
 
@@ -201,16 +206,23 @@ address shape — both already handled by the existing derivation
 documents the single-step collapse to the deployment's own address).
 
 **A workflow with a `childWorkflow` / `map` fan-out / per-step isolated node**:
-the rung-0 child's `runtimeRun` reaches the node and consults its declared
-isolation (§3f). If the node declares no stricter boundary, `spawnChild`
-resolves the child definition and runs it **in-process** under the same child
-(today's behavior, `createSidecarRunChild` recursing on itself). If the node
-declares a stricter granularity or sandbox boundary, the same `spawnChild` path
-launches a **sandboxed sub-child** through the `SandboxBoundary` seam (§3d-bis);
-that sub-child is itself a `runtimeRun` host with the same real step-invoker,
-proxies its writes to the rung-0 single writer, and threads its events up to the
-hub timeline. The sub-child can recurse again. Depth is bounded only by the
-definitions' nesting and any operator ceiling (§6).
+a top-level `map` fans out by running its inner step in place through the
+rung-0 child's real step-invoker (`runMap` calls `runStep` directly, not
+`spawnChild`), so each item is a real per-item agent today. A `childWorkflow`
+node instead routes through the spawn seam: the rung-0 child's `runtimeRun`
+reaches it and consults its declared isolation (§3f). If the node declares no
+stricter boundary, `spawnChild` resolves the child definition and runs it
+**in-process** under the same child (`createSidecarRunChild` recursing on
+itself). The spawn, sub-namespace scoping, and recursion are real and
+exercised; the child definition's per-step agent execution is not yet built —
+`childInvokeStep` fails loud with `ChildStepNotImplementedError` (INTR-310)
+because deploy does not stage the child definition's per-step assets. If the
+node declares a stricter granularity or sandbox boundary, the same `spawnChild`
+path launches a **sandboxed sub-child** through the `SandboxBoundary` seam
+(§3d-bis); that sub-child is itself a `runtimeRun` host with the same
+step-invoker, proxies its writes to the rung-0 single writer, and threads its
+events up to the hub timeline. The sub-child can recurse again. Depth is bounded
+only by the definitions' nesting and any operator ceiling (§6).
 
 The workloads converge on one recursive host: one step-invoker, one durability
 model, one spawner shape at every rung. The single agent becomes "a long-lived,
@@ -963,9 +975,13 @@ as the multi-step path already does:
   `packages/workflow-host/src/supervisor/types.ts` and
   `supervisor/supervisor.ts`: with every deploy going through `spawn()` + real
   step execution, the in-process-launch callback is dead.
-- The substrate factory's stub invokers `baseInvokeStep` / `childInvokeStep`
-  and the throwing-Proxy `StepEnvBase` slots in
-  `apps/sidecar/src/workflow-substrate-factory.ts`.
+- The substrate factory's top-level stub invoker `baseInvokeStep` and the
+  throwing-Proxy `StepEnvBase` slots in
+  `apps/sidecar/src/workflow-substrate-factory.ts` — replaced by a real
+  step-invoker over `createSidecarStepBuildEnv`. (`childInvokeStep` survives,
+  but is no longer a fabricating stub: it rejects with
+  `ChildStepNotImplementedError` until child-definition per-step execution is
+  built, INTR-310.)
 
 ### Reused (one implementation, in the child = the sidecar binary)
 
@@ -1501,9 +1517,11 @@ are explicitly **not** a go-live gate for INTR-209.
 - Mail bus: `packages/workflow-host/src/mail-bus/hub-transport-adapter.ts`
   (`routeInbound`, `subscribeMailForAddress`).
 - Substrate factory: `apps/sidecar/src/workflow-substrate-factory.ts`
-  (`createSidecarSubstrateFactory`, `createSidecarStepBuildEnv`,
-  `baseInvokeStep`, `childInvokeStep`, `SIDECAR_SUBSTRATE_CONFIG_KEYS`,
-  `STEP_INFERENCE_SOURCES`, `listActiveDeployments`, sub-namespacing).
+  (`createSidecarSubstrateFactory`, `createSidecarStepBuildEnv`, the real
+  top-level step-invoker, `childInvokeStep` — the fail-loud child-runtime
+  invoker rejecting with `ChildStepNotImplementedError` (INTR-310),
+  `SIDECAR_SUBSTRATE_CONFIG_KEYS`, `STEP_INFERENCE_SOURCES`,
+  `listActiveDeployments`, sub-namespacing).
 - Child binary (the child _is_ the sidecar binary): `apps/sidecar/bin/workflow-child`
   (imports `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS`, runs
   `runWorkflowChildFromProcessEnv`).
