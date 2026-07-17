@@ -7,41 +7,34 @@ import {
   test,
 } from "bun:test";
 
-import {
-  createApprovalStore,
-  createSignalCorrelationStore,
-  parseApprovalRow,
-} from "@intx/db";
+import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
-  seedAgent,
-  seedAgentInstance,
-  seedPrincipal,
+  seedAsset,
   seedTenants,
+  seedWorkflowDeployment,
 } from "@intx/test-harness/seed";
 
 const TENANT = "tnt";
-const PRINCIPAL = "prin";
-const AGENT = "agt";
-const INSTANCE = "inst";
+const ASSET = "ast";
+const DEPLOYMENT = "dep";
 
 async function seedApprovalDeps(h: TestDb): Promise<void> {
   await seedTenants(h.db, [{ id: TENANT }]);
-  await seedPrincipal(h.db, { id: PRINCIPAL, tenantId: TENANT });
-  await seedAgent(h.db, {
-    id: AGENT,
+  await seedAsset(h.db, {
+    id: ASSET,
     tenantId: TENANT,
-    creatorPrincipalId: PRINCIPAL,
+    kind: "workflow",
+    name: ASSET,
   });
-  await seedAgentInstance(h.db, {
-    id: INSTANCE,
+  await seedWorkflowDeployment(h.db, {
+    id: DEPLOYMENT,
     tenantId: TENANT,
-    agentId: AGENT,
-    principalId: PRINCIPAL,
+    definitionAssetId: ASSET,
   });
 }
 
@@ -49,11 +42,10 @@ function approvalRow(correlationId: string) {
   return {
     id: `apr_${correlationId}`,
     tenantId: TENANT,
-    instanceId: INSTANCE,
-    agentId: AGENT,
-    originPrincipalId: PRINCIPAL,
+    deploymentId: DEPLOYMENT,
+    runId: `run_${correlationId}`,
+    agentAddress: `addr_${correlationId}`,
     correlationId,
-    originKind: "creator" as const,
     timeoutAt: new Date(Date.now() + 60_000),
   };
 }
@@ -115,9 +107,9 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
     expect(inserted.toolDefinition).toBeNull();
     expect(inserted.toolArguments).toBeNull();
 
-    const parsed = parseApprovalRow(inserted);
-    expect(parsed.toolDefinition).toBeNull();
-    expect(parsed.toolArguments).toBeNull();
+    const found = await store.findByCorrelationId("corr-null");
+    expect(found?.toolDefinition).toBeNull();
+    expect(found?.toolArguments).toBeNull();
   });
 });
 

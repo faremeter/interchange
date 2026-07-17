@@ -6,7 +6,6 @@ import { parseSignalCorrelationRow } from "./parse-row";
 
 type DBHandle = DB["db"];
 
-type SignalCorrelationRow = typeof signalCorrelation.$inferSelect;
 type SignalCorrelationInsert = typeof signalCorrelation.$inferInsert;
 type ParsedSignalCorrelation = ReturnType<typeof parseSignalCorrelationRow>;
 
@@ -21,7 +20,7 @@ export function createSignalCorrelationStore(db: DBHandle) {
     async register(
       row: SignalCorrelationInsert,
       tx?: DBHandle,
-    ): Promise<SignalCorrelationRow> {
+    ): Promise<ParsedSignalCorrelation> {
       const [inserted] = await (tx ?? db)
         .insert(signalCorrelation)
         .values(row)
@@ -31,7 +30,7 @@ export function createSignalCorrelationStore(db: DBHandle) {
           `signalCorrelationStore.register: insert returned no row for ${row.correlationId}`,
         );
       }
-      return inserted;
+      return parseSignalCorrelationRow(inserted);
     },
 
     async resolveRoute(

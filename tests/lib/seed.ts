@@ -22,6 +22,7 @@ import {
   provider,
   tenant,
   wallet,
+  workflowDeployment,
 } from "@intx/db/schema";
 
 type Db = DB["db"];
@@ -88,6 +89,29 @@ export async function seedAsset(db: Db, a: SeedAsset): Promise<void> {
     name: a.name,
     displayName: a.displayName ?? null,
     creatorPrincipalId: null,
+  });
+}
+
+export type SeedWorkflowDeployment = {
+  id: string;
+  tenantId: string;
+  definitionAssetId: string;
+  address?: string;
+  publicKey?: string | null;
+  status?: "deployed" | "error";
+};
+
+export async function seedWorkflowDeployment(
+  db: Db,
+  d: SeedWorkflowDeployment,
+): Promise<void> {
+  await db.insert(workflowDeployment).values({
+    id: d.id,
+    tenantId: d.tenantId,
+    definitionAssetId: d.definitionAssetId,
+    address: d.address ?? `ins_${d.id}@example.test`,
+    publicKey: d.publicKey ?? null,
+    status: d.status ?? "deployed",
   });
 }
 
