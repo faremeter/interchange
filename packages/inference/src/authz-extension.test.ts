@@ -287,4 +287,56 @@ describe("createAuthzExtension", () => {
     }
     expect(thrown?.message).toBe("DB connection failed");
   });
+
+  function askResult(): AuthzCallResult {
+    return { effect: "ask", matchingGrants: [], resolvedBy: null };
+  }
+
+  test("grantOneShot lets a matching call bypass its ask gate once", async () => {
+    const ext = createAuthzExtension({ authorize: async () => askResult() });
+    if (ext.grantOneShot === undefined)
+      throw new Error("expected grantOneShot");
+
+    ext.grantOneShot("call-1");
+
+    const first = await ext.beforeTool(makeCall(), makeState(), signal);
+    expect(first.type).toBe("allow");
+
+    // The token is consumed on read: the same call re-hits the ask gate.
+    const second = await ext.beforeTool(makeCall(), makeState(), signal);
+    expect(second.type).toBe("suspend");
+  });
+
+  test("grantOneShot is keyed on call id, not the tool", async () => {
+    const ext = createAuthzExtension({ authorize: async () => askResult() });
+    if (ext.grantOneShot === undefined)
+      throw new Error("expected grantOneShot");
+
+    ext.grantOneShot("call-1");
+
+    const other = { id: "call-2", name: "bash", arguments: {} };
+    const result = await ext.beforeTool(other, makeState(), signal);
+    expect(result.type).toBe("suspend");
+  });
+
+  test("a stale one-shot token does not silently allow a denied call", async () => {
+    let effect: "deny" | "ask" = "deny";
+    const ext = createAuthzExtension({
+      authorize: async () => (effect === "deny" ? denyResult() : askResult()),
+    });
+    if (ext.grantOneShot === undefined)
+      throw new Error("expected grantOneShot");
+
+    ext.grantOneShot("call-1");
+
+    // The grant changed underneath the token: the call now resolves to deny,
+    // so the token must be dropped rather than bypassing the block.
+    const blocked = await ext.beforeTool(makeCall(), makeState(), signal);
+    expect(blocked.type).toBe("block");
+
+    // The dropped token must not survive to bypass a later ask on the same id.
+    effect = "ask";
+    const suspended = await ext.beforeTool(makeCall(), makeState(), signal);
+    expect(suspended.type).toBe("suspend");
+  });
 });

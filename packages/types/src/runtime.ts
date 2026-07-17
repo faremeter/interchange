@@ -1773,6 +1773,12 @@ export type BeforeToolDecision =
  * Extension that runs before a tool call is executed. Returns a
  * `BeforeToolDecision`: `allow` lets the call run, `block` answers it with an
  * error result, `suspend` parks it awaiting an external decision.
+ *
+ * `grantOneShot` registers a within-cycle bypass token keyed on a
+ * `ToolCall.id`: the next `beforeTool` for that id skips a suspension it would
+ * otherwise raise, consuming the token as it does so. It is optional because
+ * only extensions that can suspend a call have anything to bypass; extensions
+ * that never suspend omit it.
  */
 export interface BeforeToolExtension {
   beforeTool(
@@ -1780,6 +1786,7 @@ export interface BeforeToolExtension {
     state: ReactorState,
     signal: AbortSignal,
   ): Promise<BeforeToolDecision>;
+  grantOneShot?(id: string): void;
 }
 
 /**
