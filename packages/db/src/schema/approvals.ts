@@ -20,8 +20,13 @@ export const approval = pgTable("approval", {
     .notNull()
     .references(() => principal.id, { onDelete: "cascade" }),
   correlationId: text("correlation_id").notNull().unique(),
-  toolDefinition: jsonb("tool_definition").notNull(),
-  toolArguments: jsonb("tool_arguments").notNull(),
+  // The approver-facing tool snapshot. Nullable because the reactor's
+  // suspend-time event does not carry the snapshot: the tool definition and
+  // arguments are not reachable at the reactor's suspend point without
+  // inference-layer plumbing, so the row is created without them and they are
+  // enriched later once that plumbing exists.
+  toolDefinition: jsonb("tool_definition"),
+  toolArguments: jsonb("tool_arguments"),
   scope: text("scope", { enum: ["once", "always"] }),
   status: text("status", {
     enum: ["pending", "approved", "rejected", "timeout", "expired"],

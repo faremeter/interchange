@@ -274,6 +274,13 @@
       "when": 1784229989017,
       "tag": "0038_chilly_blacklash",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1784262044343,
+      "tag": "0039_quick_carnage",
+      "breakpoints": true
     }
   ]
 }

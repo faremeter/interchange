@@ -7,6 +7,15 @@ export {
 export type { DBConfig } from "./config";
 export { runMigrations, dropSchema } from "./migrate";
 export { createGrantStore } from "./grant-store";
+export {
+  createApprovalStore,
+  type ApprovalStore,
+  type ResolveApprovalArgs,
+} from "./approval-store";
+export {
+  createSignalCorrelationStore,
+  type SignalCorrelationStore,
+} from "./signal-correlation-store";
 export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";
 export { resolveActivePrice, type ModelPricingRow } from "./pricing";
 export {

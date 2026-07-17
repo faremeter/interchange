@@ -10,6 +10,7 @@
 import type { DB } from "@intx/db";
 import {
   agent,
+  agentInstance,
   asset,
   credential,
   grant,
@@ -283,6 +284,27 @@ export async function seedAgent(db: Db, a: SeedAgent): Promise<void> {
     creatorPrincipalId: a.creatorPrincipalId,
     name: a.name ?? a.id,
     modelRequirements: a.modelRequirements ?? null,
+  });
+}
+
+export type SeedAgentInstance = {
+  id: string;
+  tenantId: string;
+  agentId: string;
+  principalId: string;
+  address?: string;
+};
+
+export async function seedAgentInstance(
+  db: Db,
+  i: SeedAgentInstance,
+): Promise<void> {
+  await db.insert(agentInstance).values({
+    id: i.id,
+    tenantId: i.tenantId,
+    agentId: i.agentId,
+    principalId: i.principalId,
+    address: i.address ?? `${i.id}.agent.test`,
   });
 }
 
