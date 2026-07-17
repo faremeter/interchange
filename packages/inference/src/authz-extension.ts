@@ -181,6 +181,7 @@ export function createAuthzExtension<Ctx = unknown>(
           registeredAt: Date.now(),
           gateId,
           timeoutAt,
+          suspendedCall: call,
         };
         return {
           type: "suspend",

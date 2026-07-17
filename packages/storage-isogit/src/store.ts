@@ -4,6 +4,7 @@ import git from "isomorphic-git";
 import {
   ContentBlock,
   TokenUsage,
+  ToolCall,
   TransformRecord,
   type AssistantTurn,
   type TransformRecord as TransformRecordType,
@@ -66,7 +67,20 @@ const PendingOperationSchema = type({
   registeredAt: "number",
   gateId: "string",
   "timeoutAt?": "number",
+  "suspendedCall?": ToolCall,
 });
+
+// The persisted schema and the in-memory PendingOperation type are two
+// separate declarations kept in lockstep. arktype passes undeclared keys
+// through at runtime, so dropping `suspendedCall?` from the schema would not
+// surface as a runtime failure. Projecting the field off the schema's
+// inferred type makes the declaration load-bearing: the indexed access
+// errors under `tsc` if the schema stops carrying the field, and the return
+// annotation pins its persisted type to `ToolCall`.
+const _persistedSuspendedCall = (
+  op: typeof PendingOperationSchema.infer,
+): ToolCall | undefined => op.suspendedCall;
+void _persistedSuspendedCall;
 
 const MetadataSchema = type({
   pendingOperations: PendingOperationSchema.array(),

@@ -1584,6 +1584,13 @@ export type PendingOperation = {
    * countdown. Absent for operations parked with no deadline.
    */
   timeoutAt?: number;
+  /**
+   * The tool call that was suspended when this operation parked. Captured for
+   * `kind: "approval"` operations minted from the ask flow so the approved
+   * call can be re-run on resume. Absent for operations parked by the
+   * director path (async-tool pending markers), which carry no tool call.
+   */
+  suspendedCall?: ToolCall;
 };
 
 /**
