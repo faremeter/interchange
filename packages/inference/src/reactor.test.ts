@@ -3856,6 +3856,277 @@ describe("createReactor — approval resume re-dispatch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Approval resume answers a rejected or timed-out parked call with an error
+// result (the shared resume.tool_result rail)
+// ---------------------------------------------------------------------------
+
+describe("createReactor — approval resume error result", () => {
+  // A two-phase inference runner: the first inference emits the tool_call that
+  // parks on the ask gate; the re-inference after the parked call is answered
+  // with an error result emits a plain text reply that terminates the run.
+  function twoPhaseInferenceRunner() {
+    let call = 0;
+    return async function* (
+      opts: InferenceHarnessOptions,
+    ): AsyncGenerator<InferenceEvent> {
+      call += 1;
+      const turn: AssistantTurn =
+        call === 1
+          ? suspendToolCallTurn
+          : {
+              role: "assistant",
+              content: [{ type: "text", text: "acknowledged" }],
+              model: "test-model",
+              timestamp: 2000,
+            };
+      yield {
+        type: "inference.done",
+        seq: opts.nextSeq(),
+        data: { turn, usage: emptyUsage(), source: TEST_SOURCE },
+      };
+    };
+  }
+
+  function askExtension(approvalTimeoutMs = 60_000) {
+    return createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs,
+    });
+  }
+
+  test("a rejected correlation answers the parked call with an error result and re-infers once", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    // Deliver a rejection carrying an approver reason.
+    reactor.deliver(
+      createInboundMessage({
+        from: "signal@local",
+        to: "agent@example.com",
+        content: JSON.stringify({ outcome: "rejected", message: "too risky" }),
+        correlationId,
+      }),
+    );
+
+    // The reactor answers the parked call with a synthetic error result and
+    // re-infers off it, producing the terminating reply.
+    const reply = await waitForEvent(
+      events,
+      (e) => e.type === "connector.reply",
+    );
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("acknowledged");
+
+    // The tool never ran: rejection does not grant the one-shot bypass.
+    expect(toolsRun).toEqual([]);
+    expect(events.some((e) => e.type === "tool.start")).toBe(false);
+    expect(events.some((e) => e.type === "tool.done")).toBe(false);
+
+    // History carries an error tool_result answering the parked call id, and
+    // the persisted sequence is well-formed.
+    const resultTurn = cell.turns.find((t) =>
+      t.content.some(
+        (b) =>
+          b.type === "tool_result" &&
+          b.callId === "call-ask" &&
+          b.isError === true,
+      ),
+    );
+    expect(resultTurn).toBeDefined();
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    // Exactly one re-inference after the park: the initial tool-call inference
+    // plus one continuation off the error result.
+    const inferenceDones = events.filter((e) => e.type === "inference.done");
+    expect(inferenceDones).toHaveLength(2);
+
+    // The correlation was claimed and the parked op removed.
+    const correlated = getEvent(events, "message.correlated");
+    expect(correlated.data.correlationId).toBe(correlationId);
+    expect(cell.pendingOperations).toHaveLength(0);
+  });
+
+  test("a rejected correlation surfaces the approver reason in the error content", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(
+      createInboundMessage({
+        from: "signal@local",
+        to: "agent@example.com",
+        content: JSON.stringify({ outcome: "rejected", message: "too risky" }),
+        correlationId,
+      }),
+    );
+
+    await waitForEvent(events, (e) => e.type === "connector.reply");
+
+    const resultBlock = cell.turns
+      .flatMap((t) => t.content)
+      .find((b) => b.type === "tool_result" && b.callId === "call-ask");
+    if (resultBlock === undefined || resultBlock.type !== "tool_result") {
+      throw new Error("expected an error tool_result for the parked call");
+    }
+    const text = resultBlock.content
+      .filter((c) => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+    expect(text).toBe("denied by approver: too risky");
+  });
+
+  test("a timed-out parked call answers with an error result and re-infers exactly once", async () => {
+    // The double-infer regression guard. A gate timeout on a parked ask call
+    // must enqueue resume.tool_result INSTEAD OF reactor.gate.cleared. If the
+    // fork ever enqueued both, the parked call would drive two re-inferences
+    // for one timeout. Assert exactly one continuation inference.
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension(80)],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    // No decision is delivered; the gate times out on its own.
+    const reply = await waitForEvent(
+      events,
+      (e) => e.type === "connector.reply",
+    );
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("acknowledged");
+
+    // The tool never ran, and no plain gate-cleared drove a second re-infer.
+    expect(toolsRun).toEqual([]);
+    expect(events.some((e) => e.type === "reactor.gate.cleared")).toBe(false);
+
+    // History carries a timeout error tool_result answering the parked call id.
+    const resultBlock = cell.turns
+      .flatMap((t) => t.content)
+      .find((b) => b.type === "tool_result" && b.callId === "call-ask");
+    if (resultBlock === undefined || resultBlock.type !== "tool_result") {
+      throw new Error("expected an error tool_result for the parked call");
+    }
+    expect(resultBlock.isError).toBe(true);
+    const text = resultBlock.content
+      .filter((c) => c.type === "text")
+      .map((c) => c.text)
+      .join("");
+    expect(text).toBe("approval timed out");
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    // Exactly one continuation inference: the initial tool-call inference plus
+    // one re-inference off the timeout error result — never two.
+    const inferenceDones = events.filter((e) => e.type === "inference.done");
+    expect(inferenceDones).toHaveLength(2);
+
+    // The parked op was removed.
+    expect(cell.pendingOperations).toHaveLength(0);
+  });
+
+  test("a gate with no suspendedCall-bearing op still resumes on a bare gate-cleared timeout", async () => {
+    // The non-ask rail (a director-suspended gate, or an async-marker pending
+    // op that carries no suspendedCall) must keep today's behavior on timeout:
+    // a plain reactor.gate.cleared drives the re-infer, with no synthetic tool
+    // result manufactured. The fork only diverts a gate whose op has a
+    // suspendedCall.
+    let cleared = false;
+    const director = directorFromTable({
+      "message.received": (_e, _s, caps) =>
+        caps.suspend({
+          type: "approval",
+          gateId: "pending-async-marker",
+          timeoutMs: 80,
+          correlationId: "async-marker-corr",
+        }),
+      "reactor.gate.cleared": (_e, _s, caps) => {
+        cleared = true;
+        return caps.done();
+      },
+    });
+
+    const { reactor, waitFor } = createTestReactor({ director });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const gateCleared = await waitFor("reactor.gate.cleared");
+    if (gateCleared.type !== "reactor.gate.cleared") {
+      throw new Error("unreachable");
+    }
+    expect(gateCleared.data.reason).toBe("timeout");
+    await waitFor("reactor.done");
+    expect(cleared).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Corrupt persisted state surfaces loud at startup
 // ---------------------------------------------------------------------------
 

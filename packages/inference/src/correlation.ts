@@ -43,6 +43,13 @@ export function createCorrelationRegistry() {
     return operations.get(correlationId);
   }
 
+  function findByGateId(gateId: string): PendingOperation | undefined {
+    for (const op of operations.values()) {
+      if (op.gateId === gateId) return op;
+    }
+    return undefined;
+  }
+
   function remove(correlationId: string): boolean {
     return operations.delete(correlationId);
   }
@@ -55,7 +62,7 @@ export function createCorrelationRegistry() {
     return operations.size > 0;
   }
 
-  return { register, lookup, remove, all, hasAny };
+  return { register, lookup, findByGateId, remove, all, hasAny };
 }
 
 export type CorrelationRegistry = ReturnType<typeof createCorrelationRegistry>;
