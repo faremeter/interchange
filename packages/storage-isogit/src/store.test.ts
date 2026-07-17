@@ -17,6 +17,7 @@ import { initAgentRepo } from "./init";
 import type {
   AssistantTurn,
   ConversationTurn,
+  PendingOperation,
   TokenUsage,
   TransformRecord,
 } from "@intx/types/runtime";
@@ -756,6 +757,38 @@ describe("connector thread state", () => {
     const loaded = await store.load();
 
     expect(loaded.connectorState).toBeNull();
+  });
+
+  test("a persisted suspendedCall survives commit and reload end-to-end", async () => {
+    // End-to-end persistence check: write, commit, reload, compare. This
+    // does not by itself pin the schema declaration (arktype passes
+    // undeclared keys through), so store.ts carries a compile-time guard
+    // that keeps `PendingOperationSchema.suspendedCall` load-bearing.
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    const pendingOp: PendingOperation = {
+      correlationId: "corr-1",
+      kind: "approval",
+      registeredAt: 0,
+      gateId: "gate-1",
+      timeoutAt: 1_000,
+      suspendedCall: {
+        id: "call-1",
+        name: "deploy",
+        arguments: { target: "prod" },
+      },
+    };
+
+    await store.writeTurns([]);
+    await store.writeMetadata({
+      pendingOperations: [pendingOp],
+      tokenUsage: ZERO_USAGE,
+    });
+    await store.commit({ message: "checkpoint" });
+    const loaded = await store.load();
+
+    expect(loaded.pendingOperations).toEqual([pendingOp]);
   });
 });
 
