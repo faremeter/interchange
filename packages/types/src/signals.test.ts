@@ -4,6 +4,7 @@ import { type } from "arktype";
 import { GateType } from "./runtime";
 import {
   ControlSignal,
+  correlationIdFromSignalName,
   signalKinds,
   signalKindToGateType,
   signalName,
@@ -53,5 +54,27 @@ describe("ControlSignal", () => {
 describe("signalName", () => {
   test("mints the reserved __signal__ namespace for a correlation id", () => {
     expect(signalName("corr-1")).toBe("__signal__:corr-1");
+  });
+});
+
+describe("correlationIdFromSignalName", () => {
+  // Round-trips the writer, including ids that themselves contain the
+  // reserved prefix or a colon: the reader slices a fixed offset rather
+  // than greedily stripping, so a nested prefix survives.
+  for (const id of ["corr-1", "", "a:b:c", "__signal__:nested", "  spaces  "]) {
+    test(`round-trips ${JSON.stringify(id)}`, () => {
+      expect(correlationIdFromSignalName(signalName(id))).toBe(id);
+    });
+  }
+
+  test("returns undefined for a free-form (non-reserved) signal name", () => {
+    expect(correlationIdFromSignalName("approval")).toBeUndefined();
+    expect(correlationIdFromSignalName("")).toBeUndefined();
+    // A single-underscore near-miss is not the reserved prefix.
+    expect(correlationIdFromSignalName("__signal:approval")).toBeUndefined();
+  });
+
+  test("yields an empty correlation id for the prefix alone", () => {
+    expect(correlationIdFromSignalName("__signal__:")).toBe("");
   });
 });

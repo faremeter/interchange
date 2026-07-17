@@ -36,14 +36,26 @@ export function isResumableInFlightLoopStep(
 }
 
 /**
- * An `awaitSignal` step left `awaiting-signal` in a seed log is resumable:
- * a run re-driving the durable log re-offers the gate so `runAwaitSignal`
- * skips its already-emitted `StepStarted`/`SignalAwaited` and RE-PARKS on
- * the signal channel, holding a live awaiter for a signal delivered later
- * (the human-in-the-loop case: the operator signals AFTER the restart, so
- * the signal is not yet on the log at recovery time). Without this the
- * re-driving run would stall the instant it reaches the still-awaiting
- * gate, and a post-recovery signal would find no awaiter. The resume guard
+ * A step left `awaiting-signal` in a seed log is resumable, for both
+ * primitive kinds that park a durable awaiter:
+ *
+ *   - an `awaitSignal` gate: a run re-driving the durable log re-offers it
+ *     so `runAwaitSignal` skips its already-emitted
+ *     `StepStarted`/`SignalAwaited` and RE-PARKS on the signal channel,
+ *     holding a live awaiter for a signal delivered later (the
+ *     human-in-the-loop case: the operator signals AFTER the restart, so
+ *     the signal is not yet on the log at recovery time);
+ *   - an agent `step` suspended on a reactor gate: it parked under the
+ *     reserved `signalName(correlationId)` channel exactly like a gate, so
+ *     the same re-offer lets `runStep` recover that channel from the
+ *     durable `SignalAwaited`, RE-PARK, and re-invoke the agent with the
+ *     delivered decision once the signal arrives -- without re-invoking the
+ *     agent against the original input (which would restart the suspended
+ *     turn from scratch).
+ *
+ * Without this the re-driving run would stall the instant it reaches the
+ * still-awaiting step, and a post-recovery signal would find no awaiter, so
+ * a durable suspension would not actually survive a crash. The resume guard
  * and `nextSchedulable` both key on this predicate so the carve-out lives
  * in exactly one place, mirroring `isResumableInFlightLoopStep`.
  */
@@ -53,7 +65,8 @@ export function isResumableAwaitingSignalStep(
   phase: StepPhase,
 ): boolean {
   if (phase !== "awaiting-signal") return false;
-  return def.steps[stepId]?.kind === "awaitSignal";
+  const kind = def.steps[stepId]?.kind;
+  return kind === "awaitSignal" || kind === "step";
 }
 
 /**
