@@ -3,17 +3,26 @@ import { type } from "arktype";
 export const ApprovalResponse = type({
   id: "string",
   tenantId: "string",
-  principalId: "string",
-  agentId: "string",
-  sessionId: type("string").describe(
-    "Internal FK to the session channel. The approval was created during an instance's execution; the instance ID can be resolved via the session relationship.",
+  deploymentId: type("string").describe(
+    "The workflow deployment the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.",
   ),
-  resource: "string",
-  action: "string",
-  "context?": "Record<string, unknown> | null",
-  status: "'pending' | 'approved' | 'rejected'",
+  runId: "string",
+  agentAddress: "string",
+  correlationId: type("string").describe(
+    "Ties the approval to the suspension it resolves. The parked run awaits the control signal keyed by this id.",
+  ),
+  toolDefinition: type("Record<string, unknown> | null").describe(
+    "The approver-facing tool snapshot. Null until the inference-layer plumbing that captures it at suspend time is in place.",
+  ),
+  toolArguments: "Record<string, unknown> | null",
+  scope: "'once' | 'always' | null",
+  status: "'pending' | 'approved' | 'rejected' | 'timeout' | 'expired'",
+  timeoutAt: type("string | null").describe(
+    "Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.",
+  ),
+  resolvedAt: "string | null",
   createdAt: "string",
-  "resolvedAt?": "string | null",
+  updatedAt: "string",
 });
 
 export const ApproveAction = type({

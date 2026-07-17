@@ -99,6 +99,18 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
     expect(missing).toBeNull();
   });
 
+  test("finds an approval by its primary key", async () => {
+    await seedApprovalDeps(h);
+    const store = createApprovalStore(h.db);
+    await store.create(approvalRow("corr-byid"));
+
+    const found = await store.findById("apr_corr-byid");
+    expect(found?.correlationId).toBe("corr-byid");
+
+    const missing = await store.findById("apr_nope");
+    expect(missing).toBeNull();
+  });
+
   test("round-trips an approval with a null tool snapshot", async () => {
     await seedApprovalDeps(h);
     const store = createApprovalStore(h.db);

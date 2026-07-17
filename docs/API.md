@@ -713,12 +713,15 @@ Returns the proposed action, context, originating agent, and session.
 ### POST /api/tenants/:tenantId/approvals/:approvalId/approve
 Approve an action
 
-Approves the pending action. With scope 'once', the approval is one-time. With scope 'always', a persistent grant is created so the agent won't need to ask again.
+Approves the pending action. With scope 'once', the approval is one-time. Scope 'always' is not yet supported: a standing grant requires the tool identity, which the suspend path does not yet capture.
 
 Body: ApproveAction
 
 200: ApprovalResponse -- Action approved
+400: ErrorResponse -- Unsupported scope
+403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
+409: ErrorResponse -- Approval already resolved
 
 ### POST /api/tenants/:tenantId/approvals/:approvalId/reject
 Reject an action
@@ -728,7 +731,9 @@ Rejects the pending action. An optional message provides feedback to the agent.
 Body: RejectAction
 
 200: ApprovalResponse -- Action rejected
+403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
+409: ErrorResponse -- Approval already resolved
 
 ## Wallets
 
@@ -1291,10 +1296,13 @@ Source: packages/types/src/agents.ts
 **modelRequirements**: Model needs declared by canonical name, with optional per-model capability filters and provider preferences. Resolved against the tenant catalog at launch to build the ordered inference sources; it does not introduce providers the tenant catalog lacks.
 
 ### ApprovalResponse
-`{ action: string, agentId: string, createdAt: string, id: string, principalId: string, resource: string, sessionId: string, status: "approved" | "pending" | "rejected", tenantId: string, context?: { [string]: unknown } | null, resolvedAt?: string | null }`
+`{ agentAddress: string, correlationId: string, createdAt: string, deploymentId: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown } | null, toolDefinition: { [string]: unknown } | null, updatedAt: string }`
 Source: packages/types/src/approvals.ts
 
-**sessionId**: Internal FK to the session channel. The approval was created during an instance's execution; the instance ID can be resolved via the session relationship.
+**correlationId**: Ties the approval to the suspension it resolves. The parked run awaits the control signal keyed by this id.
+**deploymentId**: The workflow deployment the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.
+**timeoutAt**: Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.
+**toolDefinition**: The approver-facing tool snapshot. Null until the inference-layer plumbing that captures it at suspend time is in place.
 
 ### ApprovalSummary
 `{ action: string, agentId: string, agentName: string, createdAt: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`

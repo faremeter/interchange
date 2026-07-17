@@ -4,7 +4,14 @@ import { openAPIRouteHandler } from "hono-openapi";
 
 import { honoLogger, type HonoContext } from "@intx/log/hono";
 import { timeWindowEvaluator } from "@intx/authz";
-import { type DB, createGrantStore } from "@intx/db";
+import {
+  type DB,
+  type ApprovalStore,
+  type SignalCorrelationStore,
+  createGrantStore,
+  createApprovalStore,
+  createSignalCorrelationStore,
+} from "@intx/db";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { AppEnv } from "./context";
@@ -81,6 +88,8 @@ export type MountHubRoutesDeps = {
   eventCollectors: EventCollectorRegistry;
   grantStore?: GrantStore;
   conditionRegistry?: ConditionRegistry;
+  approvalStore?: ApprovalStore;
+  signalCorrelationStore?: SignalCorrelationStore;
   sidecarWsHandler?: Handler<AppEnv>;
   /**
    * The asset REST endpoint and smart-HTTP route group mount under
@@ -136,6 +145,9 @@ export function mountHubRoutes(
     grantStore,
     conditionRegistry,
   });
+  const approvalStore = opts.approvalStore ?? createApprovalStore(db);
+  const signalCorrelationStore =
+    opts.signalCorrelationStore ?? createSignalCorrelationStore(db);
   const resolveTenant = createResolveTenant({ db });
 
   app.get("/status", (c) => c.json({ status: "ok" }));
@@ -266,7 +278,17 @@ export function mountHubRoutes(
     );
   }
 
-  app.route("/api/tenants/:tenantId/approvals", createApprovalRoutes());
+  app.route(
+    "/api/tenants/:tenantId/approvals",
+    createApprovalRoutes({
+      db,
+      sidecarRouter,
+      grantStore,
+      conditionRegistry,
+      approvalStore,
+      signalCorrelationStore,
+    }),
+  );
   app.route(
     "/api/tenants/:tenantId/wallets",
     createWalletRoutes({ db, requireGrant }),
@@ -365,6 +387,8 @@ export type CreateAppOpts = {
   sessionService: SessionService;
   eventCollectors: EventCollectorRegistry;
   grantStore?: GrantStore;
+  approvalStore?: ApprovalStore;
+  signalCorrelationStore?: SignalCorrelationStore;
   sidecarWsHandler?: Handler<AppEnv>;
   assetService: AssetService | null;
   repoStore: RepoStore | null;
@@ -384,6 +408,8 @@ export function createApp({
   sessionService,
   eventCollectors,
   grantStore,
+  approvalStore,
+  signalCorrelationStore,
   sidecarWsHandler,
   assetService,
   repoStore,
@@ -411,6 +437,8 @@ export function createApp({
     repoStore,
     maxTarballBytes,
     ...(grantStore ? { grantStore } : {}),
+    ...(approvalStore ? { approvalStore } : {}),
+    ...(signalCorrelationStore ? { signalCorrelationStore } : {}),
     ...(sidecarWsHandler ? { sidecarWsHandler } : {}),
   });
 
