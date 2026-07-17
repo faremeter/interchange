@@ -1710,6 +1710,12 @@ export type ReactorCapabilities = {
  * seed the count would sit at zero and the first `tool.done` would drive an
  * accidental re-inference off a negative count.
  *
+ * `resume.tool_result` is raised by the reactor when a parked approval ends
+ * without running its tool — a rejected decision or a gate timeout. It carries
+ * a synthetic error tool result that answers the parked call so history stays
+ * well-formed; the director appends it and re-infers exactly once. No tool
+ * runs, so it seeds no outstanding-result count.
+ *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
 export type ReactorInboundEvent =
@@ -1728,6 +1734,7 @@ export type ReactorInboundEvent =
       reason: "resolved" | "timeout" | "shutdown";
     }
   | { type: "resume.execute_tools"; calls: ToolCall[] }
+  | { type: "resume.tool_result"; result: ToolResult }
   | { type: "abort"; reason: AbortReason };
 
 /**

@@ -371,7 +371,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   //     sees the response it was waiting on.
   type ResumeDispatch =
     | { mode: "redispatch"; calls: ToolCall[] }
-    | { mode: "gate-cleared" };
+    | { mode: "gate-cleared" }
+    | { mode: "error_result"; result: ToolResult };
 
   // Decide how a correlated approval-kind pending operation resumes, granting
   // any one-shot bypass synchronously so no delivery can interleave between the
@@ -426,10 +427,19 @@ export function createReactor(config: ReactorConfig): Reactor {
               ext.grantOneShot?.(suspendedCall.id);
             }
             return { mode: "redispatch", calls: [suspendedCall] };
-          case "rejected":
-            throw new Error(
-              `Approval outcome "rejected" for ${op.correlationId} is not yet handled`,
-            );
+          case "rejected": {
+            // The approver denied the call. Answer the parked call with a
+            // synthetic error result rather than re-running it — no one-shot
+            // bypass is granted, so the tool never executes. The approver's
+            // reason, when present, is surfaced to the model verbatim.
+            const content =
+              "denied by approver" +
+              (decision.message !== undefined ? `: ${decision.message}` : "");
+            return {
+              mode: "error_result",
+              result: { callId: suspendedCall.id, content, isError: true },
+            };
+          }
           default:
             return assertNever(decision.outcome);
         }
@@ -478,39 +488,63 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     const gate = gates.findByCorrelationId(correlationId);
-    if (dispatch.mode === "redispatch") {
-      // Clear the gate WITHOUT enqueuing gate.cleared: the re-dispatched call
-      // is the resumption, so a gate.cleared-driven re-infer would double the
-      // continuation. The re-dispatch's own tool.done drives the re-infer.
-      if (gate !== undefined) {
-        gates.clearSilently(gate.gateId);
+    switch (dispatch.mode) {
+      case "redispatch": {
+        // Clear the gate WITHOUT enqueuing gate.cleared: the re-dispatched call
+        // is the resumption, so a gate.cleared-driven re-infer would double the
+        // continuation. The re-dispatch's own tool.done drives the re-infer.
+        if (gate !== undefined) {
+          gates.clearSilently(gate.gateId);
+          if (stateManager !== null) {
+            stateManager.setGatesSnapshot(gates.snapshot());
+          }
+        }
+        correlations.remove(correlationId);
         if (stateManager !== null) {
-          stateManager.setGatesSnapshot(gates.snapshot());
+          stateManager.removePendingOperation(correlationId);
         }
+        // The grant is already recorded (synchronously, in
+        // resumePendingOperation) with no await since; enqueue the re-dispatch
+        // so it runs on the loop with normal event ordering. The director seeds
+        // its outstanding-result count off this event before the call's
+        // tool.done arrives.
+        enqueue({ type: "resume.execute_tools", calls: dispatch.calls });
+        break;
       }
-      correlations.remove(correlationId);
-      if (stateManager !== null) {
-        stateManager.removePendingOperation(correlationId);
-      }
-      // The grant is already recorded (synchronously, in resumePendingOperation)
-      // with no await since; enqueue the re-dispatch so it runs on the loop with
-      // normal event ordering. The director seeds its outstanding-result count
-      // off this event before the call's tool.done arrives.
-      enqueue({ type: "resume.execute_tools", calls: dispatch.calls });
-    } else {
-      // Async-tool resumption: clear the gate normally so the director
-      // re-infers, and append the correlated response to history so the model
-      // sees the content it was waiting on.
-      if (gate !== undefined) {
-        gates.clear(gate.gateId);
-      }
-      correlations.remove(correlationId);
-      if (stateManager !== null) {
-        stateManager.removePendingOperation(correlationId);
-        const msg = createInboundTurn(message);
-        if (msg !== null) {
-          stateManager.appendTurn(msg);
+      case "error_result": {
+        // The approver denied the call. Clear the gate SILENTLY (like the
+        // approved redispatch) so it cannot also trip onGateCleared and enqueue
+        // a second continuation. The synthetic error result answers the parked
+        // call; the director appends it and re-infers once.
+        if (gate !== undefined) {
+          gates.clearSilently(gate.gateId);
+          if (stateManager !== null) {
+            stateManager.setGatesSnapshot(gates.snapshot());
+          }
         }
+        correlations.remove(correlationId);
+        if (stateManager !== null) {
+          stateManager.removePendingOperation(correlationId);
+        }
+        enqueue({ type: "resume.tool_result", result: dispatch.result });
+        break;
+      }
+      case "gate-cleared": {
+        // Async-tool resumption: clear the gate normally so the director
+        // re-infers, and append the correlated response to history so the model
+        // sees the content it was waiting on.
+        if (gate !== undefined) {
+          gates.clear(gate.gateId);
+        }
+        correlations.remove(correlationId);
+        if (stateManager !== null) {
+          stateManager.removePendingOperation(correlationId);
+          const msg = createInboundTurn(message);
+          if (msg !== null) {
+            stateManager.appendTurn(msg);
+          }
+        }
+        break;
       }
     }
 
@@ -814,6 +848,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         const gateId = `pending-${marker.correlationId}`;
         const op: PendingOperation = {
           correlationId: marker.correlationId,
+          // Placeholder: async markers should carry their own SignalKind. The
+          // resume switch keys on suspendedCall presence (absent here) as the
+          // interim discriminator instead of on kind.
           kind: "approval",
           registeredAt: Date.now(),
           gateId,
@@ -993,8 +1030,21 @@ export function createReactor(config: ReactorConfig): Reactor {
   // -------------------------------------------------------------------------
 
   // Callback the gate manager invokes when a gate resolves, times out, or is
-  // shut down. Refreshes the snapshot and enqueues the cleared event so the
-  // loop processes it without blocking in the registrant.
+  // shut down. Refreshes the snapshot and drives the loop's next step.
+  //
+  // A parked ask-flow approval that TIMES OUT ends without running its tool:
+  // it must be answered with a synthetic error result rather than left as a
+  // dangling tool_use. That path enqueues `resume.tool_result` INSTEAD OF
+  // `reactor.gate.cleared` — the two are mutually exclusive, because enqueuing
+  // both would drive two re-inferences for one timeout. Every other case (an
+  // async-marker pending op with no suspendedCall, no pending op at all, a
+  // `resolved`/`shutdown` reason, or a shutting-down reactor) keeps today's
+  // behavior: enqueue `reactor.gate.cleared` and let the director re-infer.
+  //
+  // A delivered `resolved` never reaches here on the ask rail — the redispatch
+  // and reject paths clear the gate silently (no onCleared) — so the timeout
+  // branch is gated on `reason === "timeout"` and shutdown stays on the plain
+  // path: a shutting-down reactor must not manufacture tool results.
   function onGateCleared(
     gateId: string,
     reason: "resolved" | "timeout" | "shutdown",
@@ -1002,6 +1052,26 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (stateManager !== null) {
       stateManager.setGatesSnapshot(gates.snapshot());
     }
+
+    if (reason === "timeout") {
+      const op = correlations.findByGateId(gateId);
+      if (op !== undefined && op.suspendedCall !== undefined) {
+        correlations.remove(op.correlationId);
+        if (stateManager !== null) {
+          stateManager.removePendingOperation(op.correlationId);
+        }
+        enqueue({
+          type: "resume.tool_result",
+          result: {
+            callId: op.suspendedCall.id,
+            content: "approval timed out",
+            isError: true,
+          },
+        });
+        return;
+      }
+    }
+
     emit({
       type: "reactor.gate.cleared",
       seq: nextSeq(),
@@ -1144,6 +1214,18 @@ export function createReactor(config: ReactorConfig): Reactor {
           closeMessageRun("completed");
         }
         openMessageRun(event.message.headers.messageId);
+      }
+
+      // A parked approval that ended without running its tool (rejected or
+      // timed out) carries a synthetic error result answering the parked call.
+      // Land it in history before the director decides so the tool_result turn
+      // closes the dangling tool_use and the re-inference the director returns
+      // sees a well-formed sequence. No tool ran, so no tool.done and no
+      // counter change accompany it.
+      if (event.type === "resume.tool_result") {
+        if (stateManager !== null) {
+          stateManager.appendTurn(createToolResultTurn([event.result]));
+        }
       }
 
       let actions;

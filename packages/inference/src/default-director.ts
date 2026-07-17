@@ -11,6 +11,7 @@
 //   abort                     → done
 //   reactor.gate.cleared      → checkpoint + infer (resume after gate)
 //   resume.execute_tools      → execute_tools (re-run a parked approved call)
+//   resume.tool_result        → checkpoint + infer (parked call denied/timed out)
 //
 // The inference.done branch additionally runs the optional afterInferenceDone
 // policy hook, whose continue/abort/halt decisions route independently of the
@@ -307,6 +308,21 @@ export class DefaultDirector implements ReactorDirector {
         // would decrement to -1 and re-infer off a negative count by accident.
         this.pendingToolResults = event.calls.length;
         return capabilities.executeTools(event.calls, false, true);
+      }
+
+      case "resume.tool_result": {
+        // A parked approval ended without running its tool (rejected or timed
+        // out). The reactor appends the synthetic error result that answers the
+        // parked call, then this re-infers once so the model sees the failure
+        // and continues. No tool ran, so pendingToolResults is untouched — the
+        // counter only gates batches of real executions.
+        return [
+          capabilities.checkpoint("resume-tool-result"),
+          capabilities.infer({
+            systemPrompt: this.systemPrompt,
+            tools: this.toolDefinitions,
+          }),
+        ];
       }
 
       case "tool.done": {
