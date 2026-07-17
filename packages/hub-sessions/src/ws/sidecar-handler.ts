@@ -17,6 +17,7 @@ import {
   type PackPushFrame,
   type PackDoneFrame,
   type RepoId,
+  type SignalCorrelationRegisterFrame,
 } from "@intx/types/sidecar";
 import type {
   ConnectorThreadState,
@@ -531,6 +532,7 @@ export function createSidecarRouter(
       case "mail.outbound":
       case "agent.event":
       case "connector.state.changed":
+      case "signal.correlation.register":
       case "repo.pack.push":
       case "repo.pack.done":
         return false;
@@ -617,6 +619,8 @@ export function createSidecarRouter(
           connectorState: frame.connectorState,
         });
         return;
+      case "signal.correlation.register":
+        return handleSignalCorrelationRegister(ws, frame);
       case "session.ack":
         resolvePending(frame.requestId);
         return;
@@ -1227,6 +1231,42 @@ export function createSidecarRouter(
         instanceId: result.instanceId,
         address: result.address,
       });
+    }
+  }
+
+  async function handleSignalCorrelationRegister(
+    ws: WsHandle,
+    frame: SignalCorrelationRegisterFrame,
+  ): Promise<void> {
+    // Gate the co-write on the sending sidecar actually owning the named
+    // deployment address, mirroring the connector.state.changed and pack
+    // handlers. A workflow deployment routes on the keyless workflow set, so
+    // ownership is the union check, not addressIndex identity alone. Without
+    // it a misbehaving sidecar that knows another deployment's address could
+    // register a spurious correlation against it.
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    if (!connOwnsAddress(conn, frame.agentAddress)) {
+      logger.warn`Dropping signal.correlation.register for ${frame.agentAddress}: not registered to this sidecar`;
+      return;
+    }
+
+    const register = lookups.registerSignalCorrelation;
+    if (register === undefined) {
+      logger.warn`Dropping signal.correlation.register for ${frame.agentAddress}: no registerSignalCorrelation lookup configured`;
+      return;
+    }
+
+    try {
+      await register({
+        correlationId: frame.correlationId,
+        runId: frame.runId,
+        deploymentId: frame.deploymentId,
+        agentAddress: frame.agentAddress,
+        kind: frame.kind,
+      });
+    } catch (err) {
+      logger.error`Failed to register signal correlation ${frame.correlationId} for ${frame.agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 

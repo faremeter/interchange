@@ -8,13 +8,14 @@
 
 import { eq, and, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
+import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
 import {
   agentInstance,
   sessionMail,
   workflowDeployment,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import { parseAgentAddress } from "@intx/types";
+import { parseAgentAddress, signalName } from "@intx/types";
 import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
@@ -32,6 +33,9 @@ export function createHubSessionLookups(
   deps: HubSessionLookupsDeps,
 ): Required<SidecarLookups> {
   const { db, agentRepoStore } = deps;
+
+  const signalCorrelationStore = createSignalCorrelationStore(db);
+  const approvalStore = createApprovalStore(db);
 
   return {
     async lookupPublicKey(agentAddress) {
@@ -162,6 +166,89 @@ export function createHubSessionLookups(
         },
         ...inboundEntries.map((e) => e.result),
       ];
+    },
+
+    async registerSignalCorrelation({
+      correlationId,
+      runId,
+      deploymentId,
+      agentAddress,
+      kind,
+    }) {
+      // Resolve tenancy from the workflow deployment the address names. The
+      // deployment is the origin of every approval (an approval has no
+      // agent_instance/agent/principal referent), so its row is the only place
+      // the tenant is recorded. Filter to a live ("deployed") deployment,
+      // symmetrically with `lookupPublicKey`: a torn-down deployment must not
+      // seed a routing row that can never be resolved. The lookup keys off
+      // `address` rather than `deploymentId` because `address` is the field the
+      // wire layer's ownership gate already authorized; the frame's
+      // `deploymentId` is cross-checked against the resolved row so a mismatch
+      // fails loud instead of silently writing an inconsistent pair.
+      const deployment = await db
+        .select({
+          id: workflowDeployment.id,
+          tenantId: workflowDeployment.tenantId,
+        })
+        .from(workflowDeployment)
+        .where(
+          and(
+            eq(workflowDeployment.address, agentAddress),
+            eq(workflowDeployment.status, "deployed"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (deployment === undefined) {
+        throw new Error(
+          `No deployed workflow deployment for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
+        );
+      }
+      if (deployment.id !== deploymentId) {
+        throw new Error(
+          `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" resolves to "${deployment.id}"`,
+        );
+      }
+      const tenantId = deployment.tenantId;
+
+      // Co-write both rows in one transaction so a resolver never sees a
+      // correlation without its approval or vice versa. Both inserts are
+      // idempotent on their dedup key (the signal_correlation primary key and
+      // the approval's unique correlationId), so a redelivered frame -- sidecar
+      // reconnect, workflow-log replay, supervisor restart re-emitting -- is a
+      // no-op rather than a unique-violation. `timeoutAt` is null: an agent-step
+      // suspend holds indefinitely (`parkOnSignal` is called with no timeout),
+      // so no deadline reaches this co-write.
+      await db.transaction(async (tx) => {
+        await signalCorrelationStore.registerIfAbsent(
+          {
+            correlationId,
+            tenantId,
+            deploymentId,
+            agentAddress,
+            runId,
+            signalName: signalName(correlationId),
+            kind,
+          },
+          tx,
+        );
+        await approvalStore.createIfAbsent(
+          {
+            id: generateId("approval"),
+            tenantId,
+            deploymentId,
+            runId,
+            agentAddress,
+            correlationId,
+            status: "pending",
+            toolDefinition: null,
+            toolArguments: null,
+            scope: null,
+            timeoutAt: null,
+          },
+          tx,
+        );
+      });
     },
 
     async receiveAgentStatePack(repoId, pack, ref, commitSha) {

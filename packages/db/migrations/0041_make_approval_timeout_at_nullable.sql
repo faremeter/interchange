@@ -1,0 +1,1 @@
+ALTER TABLE "approval" ALTER COLUMN "timeout_at" DROP NOT NULL;

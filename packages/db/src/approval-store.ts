@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
-import type { DB } from "./client";
+import type { DB, DBExecutor } from "./client";
 import { approval } from "./schema/approvals";
 import { parseApprovalRow } from "./parse-row";
 
@@ -29,7 +29,10 @@ export type ResolveApprovalArgs = {
  */
 export function createApprovalStore(db: DBHandle) {
   return {
-    async create(row: ApprovalInsert, tx?: DBHandle): Promise<ParsedApproval> {
+    async create(
+      row: ApprovalInsert,
+      tx?: DBExecutor,
+    ): Promise<ParsedApproval> {
       const [inserted] = await (tx ?? db)
         .insert(approval)
         .values(row)
@@ -42,9 +45,31 @@ export function createApprovalStore(db: DBHandle) {
       return parseApprovalRow(inserted);
     },
 
+    /**
+     * Idempotent variant of `create`. On a `correlationId` unique conflict the
+     * insert is a no-op and this returns `null` rather than throwing, so a
+     * redelivered register frame (sidecar reconnect, workflow-log replay,
+     * supervisor restart re-emitting) does not fail the co-write. Conflicts
+     * on `correlationId` -- not the `id` primary key -- because the register
+     * co-write mints a fresh `id` per frame while the correlation is the stable
+     * dedup key. Returns the parsed row only when this call performed the
+     * insert.
+     */
+    async createIfAbsent(
+      row: ApprovalInsert,
+      tx?: DBExecutor,
+    ): Promise<ParsedApproval | null> {
+      const [inserted] = await (tx ?? db)
+        .insert(approval)
+        .values(row)
+        .onConflictDoNothing({ target: approval.correlationId })
+        .returning();
+      return inserted === undefined ? null : parseApprovalRow(inserted);
+    },
+
     async findByCorrelationId(
       correlationId: string,
-      tx?: DBHandle,
+      tx?: DBExecutor,
     ): Promise<ParsedApproval | null> {
       const row = await (tx ?? db).query.approval.findFirst({
         where: eq(approval.correlationId, correlationId),
@@ -62,7 +87,7 @@ export function createApprovalStore(db: DBHandle) {
     async resolve(
       correlationId: string,
       args: ResolveApprovalArgs,
-      tx?: DBHandle,
+      tx?: DBExecutor,
     ): Promise<ParsedApproval | null> {
       const [updated] = await (tx ?? db)
         .update(approval)
