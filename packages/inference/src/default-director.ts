@@ -10,6 +10,7 @@
 //   inference.error           → checkpoint + reply (error message to user)
 //   abort                     → done
 //   reactor.gate.cleared      → checkpoint + infer (resume after gate)
+//   resume.execute_tools      → execute_tools (re-run a parked approved call)
 //
 // The inference.done branch additionally runs the optional afterInferenceDone
 // policy hook, whose continue/abort/halt decisions route independently of the
@@ -295,6 +296,17 @@ export class DefaultDirector implements ReactorDirector {
         // the next inbound message. The reactor only shuts down on explicit
         // stop (abort), never because the model produced an empty turn.
         return [capabilities.checkpoint("inference-done"), capabilities.wait()];
+      }
+
+      case "resume.execute_tools": {
+        // A resumed approval re-runs its parked tool call. The reactor drives
+        // the execution; this director owns the outstanding-result count, so
+        // seed it to the number of calls about to run — exactly as the
+        // inference.done branch seeds it for a fresh tool batch. Without this
+        // seed the count stays zero and the re-dispatched call's tool.done
+        // would decrement to -1 and re-infer off a negative count by accident.
+        this.pendingToolResults = event.calls.length;
+        return capabilities.executeTools(event.calls, false, true);
       }
 
       case "tool.done": {

@@ -7,6 +7,7 @@ import { createCorrelationRegistry } from "./correlation";
 import { createReactor } from "./reactor";
 import { createDefaultDependencies } from "./providers";
 import { createDefaultDirector } from "./default-director";
+import { assertWellFormedToolSequence } from "./turns";
 import { createInboundMessage } from "@intx/mime";
 
 import type {
@@ -177,6 +178,22 @@ function makeInboundMessage(correlationId?: string): InboundMessage {
     to: "agent@example.com",
     content: "hello",
     ...(correlationId !== undefined ? { correlationId } : {}),
+  });
+}
+
+// An approval decision delivered to a parked run, stamped with the
+// correlationId of the suspension it resolves. The body is the JSON-encoded
+// ApprovalDecision the step invoker packs as the message content, which the
+// reactor parses on the correlation path to drive the resume.
+function makeApprovalMessage(
+  correlationId: string,
+  outcome: "approved" | "rejected" = "approved",
+): InboundMessage {
+  return createInboundMessage({
+    from: "signal@local",
+    to: "agent@example.com",
+    content: JSON.stringify({ outcome }),
+    correlationId,
   });
 }
 
@@ -740,6 +757,37 @@ describe("createGateManager", () => {
     const reason = await promise;
     expect(reason).toBe("resolved");
     expect(cleared).toEqual(["gate-1:resolved"]);
+  });
+
+  test("clearSilently resolves and removes the gate without invoking onCleared", async () => {
+    const manager = createGateManager();
+    const cleared: string[] = [];
+
+    const promise = manager.register(
+      "gate-silent",
+      "approval",
+      5000,
+      undefined,
+      (id, reason) => cleared.push(`${id}:${reason}`),
+    );
+
+    const didClear = manager.clearSilently("gate-silent");
+    expect(didClear).toBe(true);
+
+    // The gate's promise still resolves as resolved, so any awaiter unblocks.
+    const reason = await promise;
+    expect(reason).toBe("resolved");
+
+    // The whole point of clearSilently: onCleared is NOT invoked, so no
+    // gate-cleared continuation is enqueued (contrast with clear() above,
+    // which does invoke it).
+    expect(cleared).toEqual([]);
+
+    // The gate is gone: it no longer resolves by correlation and a second
+    // clear finds nothing to clear.
+    expect(manager.has("gate-silent")).toBe(false);
+    expect(manager.clear("gate-silent")).toBe(false);
+    expect(manager.clearSilently("gate-silent")).toBe(false);
   });
 
   test("gate timeout fires with reason=timeout", async () => {
@@ -3413,7 +3461,7 @@ describe("createReactor — before-tool suspension on ask grant", () => {
     await waitFor("reactor.done");
   });
 
-  test("a suspended agent rehydrates a live gate on restart and clears it on correlation delivery", async () => {
+  test("a suspended agent rehydrates a live gate on restart and re-dispatches the parked call on approval delivery", async () => {
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -3460,34 +3508,350 @@ describe("createReactor — before-tool suspension on ask grant", () => {
     first.reactor.abort("admin_kill");
     await first.waitFor("reactor.done");
 
-    // The persisted op survives the teardown.
+    // The persisted op survives the teardown, carrying the parked call so the
+    // resume can re-run it.
     expect(cell.pendingOperations).toHaveLength(1);
+    expect(cell.pendingOperations[0]?.suspendedCall?.id).toBe("call-ask");
 
     // Phase 2: reload from the persisted cell. A restarted reactor with a
-    // rehydrated gate clears it when the correlated signal arrives; without
-    // rehydration the delivered message would not match a live gate and the
-    // reactor would stay wedged (this test times out).
+    // rehydrated gate matches the delivered approval and re-runs the parked
+    // call; without rehydration the delivered message would not match a live
+    // gate and the reactor would stay wedged (this test times out).
+    const toolsRun: string[] = [];
     const second = createTestReactor({
       contextStore: makePersistingContextStore(cell),
-      director: directorFromTable({
-        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      director: directorFromTable(
+        {
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.done(),
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "charged" };
       }),
+      beforeToolExtensions: [askExtension],
     });
 
     second.reactor.start();
     await second.waitFor("reactor.start");
 
-    second.reactor.deliver(makeInboundMessage(correlationId));
+    second.reactor.deliver(makeApprovalMessage(correlationId));
 
-    const cleared = await second.waitFor("reactor.gate.cleared");
-    if (cleared.type !== "reactor.gate.cleared") throw new Error("unreachable");
-    expect(cleared.data.gateId).toBe(`pending-${correlationId}`);
-    expect(cleared.data.reason).toBe("resolved");
+    const toolDone = await second.waitFor("tool.done");
+    if (toolDone.type !== "tool.done") throw new Error("unreachable");
+    expect(toolDone.data.result.callId).toBe("call-ask");
 
     const correlated = getEvent(second.events, "message.correlated");
     expect(correlated.data.correlationId).toBe(correlationId);
 
+    // The one-shot bypass let the re-dispatched call through without
+    // re-parking: it ran exactly once and no second gate was blocked.
+    expect(toolsRun).toEqual(["charge_card"]);
+    expect(second.events.some((e) => e.type === "reactor.gate.blocked")).toBe(
+      false,
+    );
+
     await second.waitFor("reactor.done");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approval resume re-runs the parked tool call (re-dispatch rail)
+// ---------------------------------------------------------------------------
+
+describe("createReactor — approval resume re-dispatch", () => {
+  // A two-phase inference runner: the first inference emits the tool_call that
+  // parks on the ask gate; the re-inference after the re-dispatched call
+  // completes emits a plain text reply that terminates the run. Mirrors how a
+  // real model first calls a tool and then answers with the tool's result.
+  function twoPhaseInferenceRunner() {
+    let call = 0;
+    return async function* (
+      opts: InferenceHarnessOptions,
+    ): AsyncGenerator<InferenceEvent> {
+      call += 1;
+      const turn: AssistantTurn =
+        call === 1
+          ? suspendToolCallTurn
+          : {
+              role: "assistant",
+              content: [{ type: "text", text: "done charging" }],
+              model: "test-model",
+              timestamp: 2000,
+            };
+      yield {
+        type: "inference.done",
+        seq: opts.nextSeq(),
+        data: { turn, usage: emptyUsage(), source: TEST_SOURCE },
+      };
+    };
+  }
+
+  function askExtension() {
+    return createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+  }
+
+  test("an approved correlation re-runs the parked tool exactly once and answers its call id", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    // The parked call has not run yet.
+    expect(toolsRun).toEqual([]);
+
+    reactor.deliver(makeApprovalMessage(correlationId));
+
+    // The resume re-runs the parked tool and the model re-infers to a reply
+    // that carries the tool's real result, terminating the run.
+    const reply = await waitForEvent(
+      events,
+      (e) => e.type === "connector.reply",
+    );
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("done charging");
+
+    // The tool ran exactly once — the re-dispatch, not a fresh re-inference
+    // that re-issued the call.
+    expect(toolsRun).toEqual(["charge_card"]);
+    const toolDones = events.filter((e) => e.type === "tool.done");
+    expect(toolDones).toHaveLength(1);
+
+    // The re-dispatch appended a tool_result answering the parked call id, and
+    // the persisted history is a well-formed tool sequence.
+    const resultTurn = cell.turns.find((t) =>
+      t.content.some(
+        (b) => b.type === "tool_result" && b.callId === "call-ask",
+      ),
+    );
+    expect(resultTurn).toBeDefined();
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    // The correlation was claimed and the parked op removed.
+    const correlated = getEvent(events, "message.correlated");
+    expect(correlated.data.correlationId).toBe(correlationId);
+    expect(cell.pendingOperations).toHaveLength(0);
+  });
+
+  test("the re-dispatched approved call re-infers exactly once and leaves no outstanding results", async () => {
+    // This guards the pendingToolResults counter trap. A re-dispatch driven
+    // from the correlation path never passes through inference.done, so unless
+    // the director seeds its outstanding-result count off resume.execute_tools,
+    // the count sits at zero and the re-dispatched call's tool.done drives an
+    // accidental re-inference off a negative count. The seed makes the
+    // continuation deterministic: exactly one re-inference after exactly one
+    // re-dispatched result.
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeApprovalMessage(correlationId));
+    await waitForEvent(events, (e) => e.type === "connector.reply");
+
+    // Two inferences total: the initial tool-call inference and exactly one
+    // continuation re-inference after the re-dispatched tool completed. A
+    // counter left unseeded would either hang (no re-infer) or, once the
+    // negative-count accident is removed, fail to continue at all.
+    const inferenceDones = events.filter((e) => e.type === "inference.done");
+    expect(inferenceDones).toHaveLength(2);
+
+    // Exactly one tool ran and one result was produced, so the director's
+    // outstanding count returned to zero (a re-infer fires only at zero).
+    const toolDones = events.filter((e) => e.type === "tool.done");
+    expect(toolDones).toHaveLength(1);
+
+    // A conversational reply returns the reactor to idle rather than shutting
+    // it down; abort so the test does not leak the reactor.
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("the one-shot bypass lets the re-dispatched call through without re-parking", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeApprovalMessage(correlationId));
+    await waitForEvent(events, (e) => e.type === "connector.reply");
+
+    // The re-dispatched call re-hit the ask extension but the one-shot bypass
+    // let it through: exactly one gate was ever blocked (the original park),
+    // and no pending op survives — the call did not re-park on a second gate.
+    const gateBlocks = events.filter((e) => e.type === "reactor.gate.blocked");
+    expect(gateBlocks).toHaveLength(1);
+    expect(cell.pendingOperations).toHaveLength(0);
+
+    // A conversational reply returns the reactor to idle rather than shutting
+    // it down; abort so the test does not leak the reactor.
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a non-JSON approval body halts the run with a fatal reactor.error", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    // Deliver a correlated body that is not valid JSON. The parse boundary must
+    // reject it rather than resuming on a value it cannot decode.
+    reactor.deliver(
+      createInboundMessage({
+        from: "signal@local",
+        to: "agent@example.com",
+        content: "not json at all",
+        correlationId,
+      }),
+    );
+
+    const error = await waitFor("reactor.error");
+    if (error.type !== "reactor.error") throw new Error("unreachable");
+    expect(error.data.fatal).toBe(true);
+    expect(error.data.error).toContain("Correlation dispatch failed");
+
+    // A malformed decision halts the run rather than silently proceeding: the
+    // tool never runs and the reactor shuts down.
+    expect(events.some((e) => e.type === "tool.start")).toBe(false);
+    await waitFor("reactor.done");
+  });
+
+  test("a schema-invalid approval body halts the run with a fatal reactor.error", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: twoPhaseInferenceRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    // Valid JSON, but not a valid ApprovalDecision: "maybe" is not an outcome
+    // the schema admits. The arktype boundary must reject it as fatal.
+    reactor.deliver(
+      createInboundMessage({
+        from: "signal@local",
+        to: "agent@example.com",
+        content: JSON.stringify({ outcome: "maybe" }),
+        correlationId,
+      }),
+    );
+
+    const error = await waitFor("reactor.error");
+    if (error.type !== "reactor.error") throw new Error("unreachable");
+    expect(error.data.fatal).toBe(true);
+    expect(error.data.error).toContain("Correlation dispatch failed");
+
+    expect(events.some((e) => e.type === "tool.start")).toBe(false);
+    await waitFor("reactor.done");
   });
 });
 
