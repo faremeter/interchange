@@ -140,7 +140,6 @@ export function parseApprovalRow(row: typeof approval.$inferSelect) {
     ...row,
     scope: row.scope !== null ? ApprovalScopeValidator.assert(row.scope) : null,
     status: ApprovalStatusValidator.assert(row.status),
-    originKind: GrantOriginValidator.assert(row.originKind),
     toolDefinition:
       row.toolDefinition !== null
         ? JSONObject.assert(row.toolDefinition)

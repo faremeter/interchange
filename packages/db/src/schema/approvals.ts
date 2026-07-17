@@ -1,43 +1,46 @@
-import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
-import { agent } from "./agents";
-import { agentInstance } from "./instances";
-import { principal } from "./principals";
 import { tenant } from "./tenants";
+import { workflowDeployment } from "./workflow-deployments";
 
-export const approval = pgTable("approval", {
-  id: text("id").primaryKey(),
-  tenantId: text("tenant_id")
-    .notNull()
-    .references(() => tenant.id, { onDelete: "cascade" }),
-  instanceId: text("instance_id")
-    .notNull()
-    .references(() => agentInstance.id, { onDelete: "cascade" }),
-  agentId: text("agent_id")
-    .notNull()
-    .references(() => agent.id, { onDelete: "cascade" }),
-  originPrincipalId: text("origin_principal_id")
-    .notNull()
-    .references(() => principal.id, { onDelete: "cascade" }),
-  correlationId: text("correlation_id").notNull().unique(),
-  // The approver-facing tool snapshot. Nullable because the reactor's
-  // suspend-time event does not carry the snapshot: the tool definition and
-  // arguments are not reachable at the reactor's suspend point without
-  // inference-layer plumbing, so the row is created without them and they are
-  // enriched later once that plumbing exists.
-  toolDefinition: jsonb("tool_definition"),
-  toolArguments: jsonb("tool_arguments"),
-  scope: text("scope", { enum: ["once", "always"] }),
-  status: text("status", {
-    enum: ["pending", "approved", "rejected", "timeout", "expired"],
-  })
-    .notNull()
-    .default("pending"),
-  originKind: text("origin_kind", {
-    enum: ["system", "role", "creator", "invoker"],
-  }).notNull(),
-  timeoutAt: timestamp("timeout_at").notNull(),
-  resolvedAt: timestamp("resolved_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+// Every approval originates from a workflow deployment, so the origin is
+// modeled as the deployment rather than a launched single agent. A workflow
+// deployment has no `agent_instance` or `agent` row, and the principal its run
+// executes under is a substrate principal, not a `principal`-table row -- so
+// none of those tables can hold a valid referent for an approval's origin.
+export const approval = pgTable(
+  "approval",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenant.id, { onDelete: "cascade" }),
+    deploymentId: text("deployment_id")
+      .notNull()
+      .references(() => workflowDeployment.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    agentAddress: text("agent_address").notNull(),
+    correlationId: text("correlation_id").notNull().unique(),
+    // The approver-facing tool snapshot. Nullable because the reactor's
+    // suspend-time event does not carry the snapshot: the tool definition and
+    // arguments are not reachable at the reactor's suspend point without
+    // inference-layer plumbing, so the row is created without them and they are
+    // enriched later once that plumbing exists.
+    toolDefinition: jsonb("tool_definition"),
+    toolArguments: jsonb("tool_arguments"),
+    scope: text("scope", { enum: ["once", "always"] }),
+    status: text("status", {
+      enum: ["pending", "approved", "rejected", "timeout", "expired"],
+    })
+      .notNull()
+      .default("pending"),
+    timeoutAt: timestamp("timeout_at").notNull(),
+    resolvedAt: timestamp("resolved_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("approval_tenant_status_idx").on(t.tenantId, t.status, t.createdAt),
+    index("approval_deployment_idx").on(t.deploymentId),
+  ],
+);

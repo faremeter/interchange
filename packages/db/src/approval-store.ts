@@ -29,7 +29,7 @@ export type ResolveApprovalArgs = {
  */
 export function createApprovalStore(db: DBHandle) {
   return {
-    async create(row: ApprovalInsert, tx?: DBHandle): Promise<ApprovalRow> {
+    async create(row: ApprovalInsert, tx?: DBHandle): Promise<ParsedApproval> {
       const [inserted] = await (tx ?? db)
         .insert(approval)
         .values(row)
@@ -39,7 +39,7 @@ export function createApprovalStore(db: DBHandle) {
           `approvalStore.create: insert returned no row for ${row.id}`,
         );
       }
-      return inserted;
+      return parseApprovalRow(inserted);
     },
 
     async findByCorrelationId(
