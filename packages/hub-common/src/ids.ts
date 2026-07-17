@@ -28,6 +28,7 @@ const PREFIXES = {
   gitToken: "gtk_",
   deployment: "dep_",
   approval: "apr_",
+  signal: "sig_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;

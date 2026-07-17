@@ -78,6 +78,22 @@ export function createApprovalStore(db: DBHandle) {
     },
 
     /**
+     * Look up an approval by its primary key. The resolve/reject routes key on
+     * the `approvalId` path parameter, which is the row's `id`, so they need a
+     * by-id read distinct from the by-correlation read the register co-write
+     * uses. Returns null when no row carries the id.
+     */
+    async findById(
+      id: string,
+      tx?: DBExecutor,
+    ): Promise<ParsedApproval | null> {
+      const row = await (tx ?? db).query.approval.findFirst({
+        where: eq(approval.id, id),
+      });
+      return row === undefined ? null : parseApprovalRow(row);
+    },
+
+    /**
      * Conditionally resolve a pending approval. The `WHERE status = 'pending'`
      * guard makes resolution terminal at the database: the first caller to
      * resolve a given correlation gets the updated row back; any later caller
