@@ -9,6 +9,7 @@ import type {
   ReactorAction,
   ReactorInboundEvent,
   ReactorState,
+  ToolCall,
   ToolResult,
   TokenUsage,
 } from "@intx/types/runtime";
@@ -305,5 +306,89 @@ describe("DefaultDirector — afterInferenceDone firing boundary", () => {
       reason: "user_disconnect",
     };
     expect(await fireHook(event)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resume.execute_tools seeds the outstanding-result counter
+//
+// The re-dispatch path never passes through inference.done, which is the only
+// place the tool batch's count is seeded. Without a seed off resume.execute_
+// tools the count stays zero and the re-dispatched call's tool.done decrements
+// to -1 and re-infers off a negative count by accident. These tests drive one
+// director instance across the event sequence so the seed-then-decrement math
+// is exercised against real state, not asserted per fresh instance.
+// ---------------------------------------------------------------------------
+
+describe("DefaultDirector — resume.execute_tools counter seeding", () => {
+  function makeToolCall(id: string): ToolCall {
+    return { id, name: "charge_card", arguments: {} };
+  }
+
+  async function decideOn(
+    director: ReturnType<typeof createDefaultDirector>,
+    event: ReactorInboundEvent,
+  ): Promise<ReactorAction[]> {
+    const result = await director.decide(
+      event,
+      makeState(),
+      createCapabilities(),
+    );
+    return Array.isArray(result) ? result : [result];
+  }
+
+  test("seeds the count to the number of re-dispatched calls and re-infers only at zero", async () => {
+    const director = createDefaultDirector("test agent", []);
+
+    // Two calls are about to run. The director must return the execute_tools
+    // action and seed its outstanding count to two.
+    const dispatch = await decideOn(director, {
+      type: "resume.execute_tools",
+      calls: [makeToolCall("a"), makeToolCall("b")],
+    });
+    expect(dispatch).toEqual([
+      {
+        type: "execute_tools",
+        calls: [makeToolCall("a"), makeToolCall("b")],
+        parallel: false,
+        addToHistory: true,
+      },
+    ]);
+
+    // First result: count 2 -> 1, no re-inference yet. An unseeded count would
+    // have gone 0 -> -1 and re-inferred here.
+    const afterFirst = await decideOn(director, {
+      type: "tool.done",
+      result: { callId: "a", content: "ok" },
+    });
+    expect(afterFirst).toEqual([]);
+
+    // Second result: count 1 -> 0, re-infer exactly once.
+    const afterSecond = await decideOn(director, {
+      type: "tool.done",
+      result: { callId: "b", content: "ok" },
+    });
+    expect(afterSecond.map((action) => action.type)).toEqual([
+      "checkpoint",
+      "infer",
+    ]);
+  });
+
+  test("a single re-dispatched call re-infers exactly once", async () => {
+    const director = createDefaultDirector("test agent", []);
+
+    await decideOn(director, {
+      type: "resume.execute_tools",
+      calls: [makeToolCall("a")],
+    });
+
+    const afterResult = await decideOn(director, {
+      type: "tool.done",
+      result: { callId: "a", content: "ok" },
+    });
+    expect(afterResult.map((action) => action.type)).toEqual([
+      "checkpoint",
+      "infer",
+    ]);
   });
 });

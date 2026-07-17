@@ -1702,6 +1702,14 @@ export type ReactorCapabilities = {
 /**
  * The inbound events delivered to the director decision function.
  *
+ * `resume.execute_tools` is raised by the reactor when an approval resolves
+ * and a parked tool call must be re-run on resume. It carries the calls the
+ * reactor is about to dispatch so the director can seed its outstanding
+ * tool-result count before those calls' `tool.done` events arrive — the
+ * reactor drives the execution, the director counts the results. Without this
+ * seed the count would sit at zero and the first `tool.done` would drive an
+ * accidental re-inference off a negative count.
+ *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
 export type ReactorInboundEvent =
@@ -1719,6 +1727,7 @@ export type ReactorInboundEvent =
       gateId: string;
       reason: "resolved" | "timeout" | "shutdown";
     }
+  | { type: "resume.execute_tools"; calls: ToolCall[] }
   | { type: "abort"; reason: AbortReason };
 
 /**

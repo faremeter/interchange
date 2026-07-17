@@ -93,6 +93,21 @@ export function createGateManager() {
     return true;
   }
 
+  // Clear a gate without invoking its onCleared callback. The caller has
+  // already decided how the reactor resumes and does not want the standard
+  // cleared-event enqueue that onCleared drives. Used by the approval
+  // re-dispatch path, which resumes by re-running the parked tool call rather
+  // than by re-inferring off a gate-cleared event: firing onCleared there
+  // would enqueue a second, spurious continuation.
+  function clearSilently(gateId: string): boolean {
+    const gate = gates.get(gateId);
+    if (gate === undefined) return false;
+    clearTimeout(gate.timer);
+    gates.delete(gateId);
+    gate.resolve("resolved");
+    return true;
+  }
+
   function shutdown(): void {
     const entries = Array.from(gates.values());
     gates.clear();
@@ -122,7 +137,15 @@ export function createGateManager() {
     return gates.has(gateId);
   }
 
-  return { register, clear, shutdown, findByCorrelationId, snapshot, has };
+  return {
+    register,
+    clear,
+    clearSilently,
+    shutdown,
+    findByCorrelationId,
+    snapshot,
+    has,
+  };
 }
 
 export type GateManager = ReturnType<typeof createGateManager>;

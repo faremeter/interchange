@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 
+import { ApprovalDecision } from "@intx/types";
 import {
   defineAgent,
   type Agent,
@@ -912,6 +914,20 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     expect(sentContent.headers.interchangeCorrelationId).toBe("corr-1");
     expect(sentContent.content).toBe(JSON.stringify({ outcome: "approved" }));
 
+    // The message body must be a well-formed ApprovalDecision: the reactor's
+    // re-dispatch path parses it from the content at the correlation boundary
+    // and re-runs the parked tool call on an "approved" outcome. A body that
+    // does not validate would fail loud there, so the invoker's job is to
+    // deliver exactly that shape.
+    if (sentContent.content === undefined) {
+      throw new Error("resume message carried no decision body");
+    }
+    const decision = ApprovalDecision(JSON.parse(sentContent.content));
+    if (decision instanceof type.errors) {
+      throw new Error(`resume decision body is malformed: ${decision.summary}`);
+    }
+    expect(decision.outcome).toBe("approved");
+
     // The step output is the resumed reply paired with the reactor's turn.
     expect(expectOutput(result)).toEqual({
       reply: "resumed reply",
@@ -953,6 +969,14 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       );
     }
     expect(sentContent.headers.interchangeCorrelationId).toBe("corr-A");
+    if (sentContent.content === undefined) {
+      throw new Error("resume message carried no decision body");
+    }
+    const decision = ApprovalDecision(JSON.parse(sentContent.content));
+    if (decision instanceof type.errors) {
+      throw new Error(`resume decision body is malformed: ${decision.summary}`);
+    }
+    expect(decision.outcome).toBe("approved");
 
     if (!("suspend" in result)) {
       throw new Error(

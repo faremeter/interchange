@@ -320,6 +320,7 @@ Event arrives → Director decides → Reactor executes → Next event
 - `inference.error` — A model call failed (with error classification)
 - `tool.done` — A tool execution completed (with result)
 - `reactor.gate.cleared` — A suspension condition resolved (with gate result)
+- `resume.execute_tools` — An approval resolved and a parked tool call is being re-run (carries the calls the reactor is about to dispatch)
 - `abort` — The reactor should shut down (with reason)
 
 **Actions** (things the reactor can do, as directed by the director):
@@ -410,7 +411,9 @@ Correlation connects outbound async tool calls to inbound responses. The reactor
 
 For message correlation specifically, the validator enforces sender identity and cryptographic signature verification. See MESSAGE.md for the full security model.
 
-**On match.** The reactor clears the corresponding gate, injects the response as a resolution into the message history, and emits a `message.correlated` event. The director sees the correlated event and decides the next action (infer, done, fork) but does not participate in the matching itself.
+**On match.** The reactor clears the corresponding gate, resumes the operation, and emits a `message.correlated` event. How it resumes depends on what parked. A pending marker awaiting an inbound response (the async-tool path) resumes by injecting the response as a resolution into the message history and letting the gate-cleared event drive the director to re-infer. An approval ask that parked a specific tool call carries that call on its pending operation; an `approved` decision resumes by re-running that exact call — the reactor grants a one-shot bypass so the re-run skips the ask gate, dispatches the call, and answers it with a real tool result. The parked call, not a fresh re-inference, is the authorized unit that runs. In both cases the director sees the correlated event flow but does not participate in the matching itself.
+
+For the approval re-run, the reactor raises a `resume.execute_tools` event carrying the re-dispatched call so the director seeds its outstanding-tool-result count before the call's `tool.done` arrives. The reactor drives the execution; the director counts the results, so the count returns to zero after the single re-run and the director re-infers exactly once with the real result in history.
 
 **Duplicate responses** (same correlation ID, already resolved) are delivered to the director as regular uncorrelated events. The reactor does not deduplicate — the director decides whether to process or ignore.
 
@@ -586,6 +589,7 @@ The core director is a decision function. It receives an event and returns actio
 - On `inference.error` — Decide: retry, compact, switch model, or fail.
 - On `tool.done` — Decide: infer again, execute more tools, wait, or done.
 - On `reactor.gate.cleared` — Resume the suspended action, or take a different action based on the gate result.
+- On `resume.execute_tools` — Seed the outstanding-tool-result count and execute the re-dispatched calls the reactor supplies (an approved approval re-running its parked call).
 - On `message.received` while suspended — Decide: queue, fork, or ignore.
 
 The director also provides:

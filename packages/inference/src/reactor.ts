@@ -41,7 +41,8 @@ import type {
 } from "@intx/types/runtime";
 
 import { getLogger } from "@intx/log";
-import { signalKindToGateType } from "@intx/types";
+import { ApprovalDecision, signalKindToGateType } from "@intx/types";
+import { type } from "arktype";
 import { runInference } from "./harness";
 import type { Dependencies, InferenceHarnessOptions } from "./harness";
 import { createCapabilities } from "./director";
@@ -62,6 +63,13 @@ const logger = getLogger(["interchange", "reactor"]);
 // the call on a gate. Distinct from every ToolResult so a suspended call is
 // excluded from the tool-result history append and from tool.done continuation.
 const SUSPENDED = Symbol("suspended");
+
+// Exhaustiveness guard for the resume-dispatch switch. A newly added
+// SignalKind or approval outcome that is not classified fails to type-check
+// here, so the switch cannot silently drop an unhandled case.
+function assertNever(x: never): never {
+  throw new Error(`Unhandled resume case: ${JSON.stringify(x)}`);
+}
 
 function buildHarnessOpts(
   turns: ConversationTurn[],
@@ -350,6 +358,86 @@ export function createReactor(config: ReactorConfig): Reactor {
   // across an await boundary in the validator, causing double-correlation.
   const correlatingIds = new Set<string>();
 
+  // How the reactor resumes a correlated pending operation.
+  //
+  //   redispatch — an approved approval re-runs its parked tool call. The
+  //     reactor grants a one-shot bypass for the call and re-dispatches it;
+  //     the resumed run answers the parked call with a real tool result. The
+  //     correlated message body is the decision, not conversation content, so
+  //     it is NOT appended to history.
+  //   gate-cleared — the async-tool path (a pending marker awaiting an inbound
+  //     response). The gate clears normally, driving the director to re-infer,
+  //     and the correlated message body IS appended to history so the model
+  //     sees the response it was waiting on.
+  type ResumeDispatch =
+    | { mode: "redispatch"; calls: ToolCall[] }
+    | { mode: "gate-cleared" };
+
+  // Decide how a correlated approval-kind pending operation resumes, granting
+  // any one-shot bypass synchronously so no delivery can interleave between the
+  // grant and the re-dispatch enqueued by the caller. An operation that carries
+  // a `suspendedCall` is an ask-flow suspension: the approver's decision routes
+  // it down the re-dispatch rail. An operation without one is an async-tool
+  // pending marker, which resumes on the normal gate-cleared rail.
+  //
+  // The nested switch is total: the outer `assertNever(op.kind)` rejects a
+  // future SignalKind at compile time, and the inner `assertNever` rejects a
+  // future decision outcome. A malformed decision body fails loud at the parse
+  // boundary before the switch.
+  function resumePendingOperation(
+    op: PendingOperation,
+    message: InboundMessage,
+  ): ResumeDispatch {
+    if (op.suspendedCall === undefined) {
+      return { mode: "gate-cleared" };
+    }
+    const suspendedCall = op.suspendedCall;
+
+    if (message.content === undefined) {
+      throw new Error(
+        `Correlated approval decision for ${op.correlationId} has no body to parse`,
+      );
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(message.content);
+    } catch (cause) {
+      throw new Error(
+        `Correlated approval decision for ${op.correlationId} is not valid JSON`,
+        { cause },
+      );
+    }
+    const decision = ApprovalDecision(raw);
+    if (decision instanceof type.errors) {
+      throw new Error(
+        `Correlated approval decision for ${op.correlationId} is malformed: ${decision.summary}`,
+      );
+    }
+
+    switch (op.kind) {
+      case "approval":
+        switch (decision.outcome) {
+          case "approved":
+            // Authorize the exact parked call to run once, then re-dispatch it.
+            // Grant on every before-tool extension: only the authz extension
+            // responds, but referencing it directly would re-couple the reactor
+            // to authz and break a deployment that runs without it.
+            for (const ext of beforeToolExtensions) {
+              ext.grantOneShot?.(suspendedCall.id);
+            }
+            return { mode: "redispatch", calls: [suspendedCall] };
+          case "rejected":
+            throw new Error(
+              `Approval outcome "rejected" for ${op.correlationId} is not yet handled`,
+            );
+          default:
+            return assertNever(decision.outcome);
+        }
+      default:
+        return assertNever(op.kind);
+    }
+  }
+
   async function tryCorrelate(message: InboundMessage): Promise<boolean> {
     const correlationId = message.headers.interchangeCorrelationId;
     if (correlationId === undefined) return false;
@@ -375,22 +463,54 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
     }
 
-    // Clear the gate associated with this correlation, if any.
-    const gate = gates.findByCorrelationId(correlationId);
-    if (gate !== undefined) {
-      gates.clear(gate.gateId);
+    // Capture the operation before removal so the resume dispatch can read its
+    // kind and suspended call. Removal happens only after the dispatch is
+    // decided, all inside this correlatingIds-guarded critical section so a
+    // double-deliver early-returns rather than double-dispatching.
+    const op = pending;
+
+    let dispatch: ResumeDispatch;
+    try {
+      dispatch = resumePendingOperation(op, message);
+    } catch (cause) {
+      correlatingIds.delete(correlationId);
+      throw cause;
     }
 
-    correlations.remove(correlationId);
-
-    if (stateManager !== null) {
-      stateManager.removePendingOperation(correlationId);
-
-      // Append the correlated message to conversation history so the model
-      // sees the response content when it re-infers after the gate clears.
-      const msg = createInboundTurn(message);
-      if (msg !== null) {
-        stateManager.appendTurn(msg);
+    const gate = gates.findByCorrelationId(correlationId);
+    if (dispatch.mode === "redispatch") {
+      // Clear the gate WITHOUT enqueuing gate.cleared: the re-dispatched call
+      // is the resumption, so a gate.cleared-driven re-infer would double the
+      // continuation. The re-dispatch's own tool.done drives the re-infer.
+      if (gate !== undefined) {
+        gates.clearSilently(gate.gateId);
+        if (stateManager !== null) {
+          stateManager.setGatesSnapshot(gates.snapshot());
+        }
+      }
+      correlations.remove(correlationId);
+      if (stateManager !== null) {
+        stateManager.removePendingOperation(correlationId);
+      }
+      // The grant is already recorded (synchronously, in resumePendingOperation)
+      // with no await since; enqueue the re-dispatch so it runs on the loop with
+      // normal event ordering. The director seeds its outstanding-result count
+      // off this event before the call's tool.done arrives.
+      enqueue({ type: "resume.execute_tools", calls: dispatch.calls });
+    } else {
+      // Async-tool resumption: clear the gate normally so the director
+      // re-infers, and append the correlated response to history so the model
+      // sees the content it was waiting on.
+      if (gate !== undefined) {
+        gates.clear(gate.gateId);
+      }
+      correlations.remove(correlationId);
+      if (stateManager !== null) {
+        stateManager.removePendingOperation(correlationId);
+        const msg = createInboundTurn(message);
+        if (msg !== null) {
+          stateManager.appendTurn(msg);
+        }
       }
     }
 
@@ -1318,7 +1438,27 @@ export function createReactor(config: ReactorConfig): Reactor {
   function deliver(message: InboundMessage): void {
     if (done) return;
     void (async () => {
-      const correlated = await tryCorrelate(message);
+      let correlated: boolean;
+      try {
+        correlated = await tryCorrelate(message);
+      } catch (cause) {
+        // A correlation-path invariant failed (e.g. a malformed approval
+        // decision). Surface it as a fatal reactor error rather than a silent
+        // unhandled rejection, and stop the run — the resume cannot proceed on
+        // a decision the reactor cannot trust.
+        const msg = cause instanceof Error ? cause.message : String(cause);
+        logger.error`Correlation dispatch failed: ${cause}`;
+        emitError(`Correlation dispatch failed: ${msg}`, true);
+        closeMessageRun("failed", {
+          message: `Correlation dispatch failed: ${msg}`,
+          kind: "reactor_fatal",
+        });
+        done = true;
+        if (!shutdownStarted) {
+          await initiateShutdown();
+        }
+        return;
+      }
       if (!correlated) {
         emit({
           type: "message.received",
