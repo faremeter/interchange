@@ -141,8 +141,12 @@ export function parseApprovalRow(row: typeof approval.$inferSelect) {
     scope: row.scope !== null ? ApprovalScopeValidator.assert(row.scope) : null,
     status: ApprovalStatusValidator.assert(row.status),
     originKind: GrantOriginValidator.assert(row.originKind),
-    toolDefinition: JSONObject.assert(row.toolDefinition),
-    toolArguments: JSONObject.assert(row.toolArguments),
+    toolDefinition:
+      row.toolDefinition !== null
+        ? JSONObject.assert(row.toolDefinition)
+        : null,
+    toolArguments:
+      row.toolArguments !== null ? JSONObject.assert(row.toolArguments) : null,
   };
 }
 
