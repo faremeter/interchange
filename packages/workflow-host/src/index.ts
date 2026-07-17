@@ -66,6 +66,7 @@ export {
   type SpawnResult,
   type SubprocessHandle,
   type SubprocessSpawner,
+  type SuspensionRegistration,
   type TerminalEventSource,
   type TerminalRunEvent,
   type TriggerRecycleOpts,

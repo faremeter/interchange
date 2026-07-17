@@ -25,10 +25,12 @@ import {
   type PackRejectFrame,
   RepoId,
   type SignalDeliverFrame,
+  type SignalCorrelationRegisterFrame,
   type DrainDeliverFrame,
   type SourcesUpdateFrame,
   type SyncRequestFrame,
 } from "@intx/types/sidecar";
+import type { SignalKind } from "@intx/types";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 import type { InferenceEvent } from "@intx/types/runtime";
@@ -454,6 +456,22 @@ export type HubLink = {
   connect(): void;
   close(): void;
   sendEvent: SessionEventSink;
+  /**
+   * Register a control-plane suspension with the hub. Sends a
+   * `signal.correlation.register` frame so the hub co-writes the parked run's
+   * routing + approval rows. Fired by the sidecar's supervisor when a workflow
+   * agent step parks on a reserved correlation channel; the fields converge at
+   * this seam (`correlationId`/`runId`/`kind` from the child, `deploymentId`/
+   * `agentAddress` stamped by the supervisor). Mirrors `sendEvent`: a
+   * fire-and-forget hub-bound send that queues while disconnected.
+   */
+  sendSignalCorrelationRegister: (registration: {
+    correlationId: string;
+    runId: string;
+    deploymentId: string;
+    agentAddress: string;
+    kind: SignalKind;
+  }) => void;
   /**
    * Ship a workflow-run pack to the hub. Streams the supplied pack as
    * `repo.pack.push` chunks followed by a `repo.pack.done`, then
@@ -1335,10 +1353,24 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
   };
 
+  const sendSignalCorrelationRegister: HubLink["sendSignalCorrelationRegister"] =
+    (registration) => {
+      const frame: SignalCorrelationRegisterFrame = {
+        type: "signal.correlation.register",
+        correlationId: registration.correlationId,
+        runId: registration.runId,
+        deploymentId: registration.deploymentId,
+        agentAddress: registration.agentAddress,
+        kind: registration.kind,
+      };
+      send(frame);
+    };
+
   return {
     connect,
     close,
     sendEvent,
+    sendSignalCorrelationRegister,
     pushWorkflowRunPack,
   };
 }

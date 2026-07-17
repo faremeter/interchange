@@ -43,8 +43,8 @@ import {
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
 } from "./index";
-import { emitTerminalEvent } from "./run-child";
-import type { RunResult } from "@intx/workflow";
+import { emitParkNotify, emitTerminalEvent } from "./run-child";
+import type { RunResult, WorkflowPark } from "@intx/workflow";
 import {
   createControlChannelSender,
   generateChannelId,
@@ -2231,5 +2231,57 @@ describe("emitTerminalEvent", () => {
       /committed terminal event is RunFailed/,
     );
     expect(sent).toEqual([]);
+  });
+});
+
+describe("emitParkNotify", () => {
+  function capturingSender(): {
+    sender: ControlChannelSender;
+    sent: ControlPayload[];
+  } {
+    const sent: ControlPayload[] = [];
+    const sender: ControlChannelSender = {
+      seq: 0,
+      send: (payload) => {
+        sent.push(payload);
+        return Promise.resolve();
+      },
+    };
+    return { sender, sent };
+  }
+
+  test("forwards a control-plane suspension as a park.notify frame", async () => {
+    const { sender, sent } = capturingSender();
+    const park: WorkflowPark = {
+      runId: "run-park",
+      correlationId: "corr-42",
+      kind: "approval",
+    };
+    await emitParkNotify(sender, park);
+    expect(sent).toEqual([
+      {
+        type: "park.notify",
+        data: {
+          runId: "run-park",
+          correlationId: "corr-42",
+          kind: "approval",
+        },
+      },
+    ]);
+  });
+
+  test("swallows a send failure so a lost frame does not crash the caller", async () => {
+    const sender: ControlChannelSender = {
+      seq: 0,
+      send: () => Promise.reject(new Error("hub link down")),
+    };
+    // Best-effort like emitTerminalEvent's send: the failure is logged, not
+    // rethrown, so the run's park path is not torn down by a transient
+    // upstream send error. The correlation goes unregistered until re-emitted.
+    await emitParkNotify(sender, {
+      runId: "run-park",
+      correlationId: "corr-42",
+      kind: "approval",
+    });
   });
 });

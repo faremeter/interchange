@@ -69,6 +69,7 @@ export type {
   SignedPayload,
   SubprocessHandle,
   SubprocessSpawner,
+  SuspensionRegistration,
   TerminalEventSource,
   TerminalRunEvent,
   WorkflowSupervisorBindings,

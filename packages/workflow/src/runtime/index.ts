@@ -17,6 +17,7 @@ export type {
   StepInvokeRequest,
   StepInvokeResult,
   StepInvoker,
+  WorkflowPark,
   WorkflowRun,
   WorkflowRuntimeEnv,
 } from "./env";

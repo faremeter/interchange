@@ -20,6 +20,7 @@ import type {
   ReplayProcessingToInboxOpts,
   ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions/substrate";
+import type { SignalKind } from "@intx/types";
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 
@@ -253,6 +254,23 @@ export interface InboxPrimitives {
 }
 
 /**
+ * A control-plane suspension the supervisor forwards to the host after a
+ * workflow-process child reports a park. The child supplies `runId`,
+ * `correlationId`, and `kind`; the supervisor stamps `deploymentId` and
+ * `agentAddress` from its own bindings before invoking the host's
+ * `onSuspensionRegister`. The host (production: the sidecar) turns this into
+ * a `signal.correlation.register` frame the hub co-writes the run's routing +
+ * approval rows from.
+ */
+export interface SuspensionRegistration {
+  runId: string;
+  correlationId: string;
+  kind: SignalKind;
+  deploymentId: string;
+  agentAddress: string;
+}
+
+/**
  * Constructor arguments for `createWorkflowSupervisor`. One
  * `RepoStore` handle plus a `signAsPrincipal` callback that mints
  * signatures on demand per principal, rather than pre-minting
@@ -267,6 +285,17 @@ export interface WorkflowSupervisorBindings {
   signAsPrincipal: PrincipalSigner;
   /** Mail-bus surface for address registration and inbound subscription. */
   mailBus: MailBusBindings;
+  /**
+   * Optional control-plane suspension sink. The supervisor invokes it from
+   * its upstream-control pump's `park.notify` arm, stamping `deploymentId`
+   * and `deploymentMailAddress` (as `agentAddress`) onto the child-supplied
+   * `runId`/`correlationId`/`kind`. Production wires this to the sidecar's
+   * hub link so a `signal.correlation.register` frame reaches the hub; a host
+   * that does not wire it does not register suspensions (tests, single-process
+   * deployments). Best-effort: the pump logs a throwing sink and keeps
+   * draining, so one bad register cannot wedge the control pump.
+   */
+  onSuspensionRegister?: (registration: SuspensionRegistration) => void;
   /** Subprocess spawner the supervisor invokes per spawn. */
   subprocessSpawner: SubprocessSpawner;
   /**
