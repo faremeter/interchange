@@ -8,7 +8,7 @@
 // us swap the env implementations underneath without re-validating the
 // body.
 
-import { signalName } from "@intx/types";
+import { correlationIdFromSignalName, signalName } from "@intx/types";
 
 import type {
   ActionPrimitive,
@@ -1041,6 +1041,41 @@ async function runStep(
   // The state machine's handleStepStarted rejects a re-emit, so the
   // runtime mirrors the invariant here.
   let stepStartedEmitted = false;
+
+  // Crash-resume re-entry. A run re-driving the durable log re-offers a
+  // `step` left `awaiting-signal` (its `StepStarted` + `SignalAwaited` are
+  // durable, no `StepCompleted`) via `isResumableAwaitingSignalStep`. The
+  // agent already parked on a reactor gate before the crash; re-invoking
+  // it with the original input here would build a fresh agent and start a
+  // NEW turn, silently re-running the suspended work. Instead recover the
+  // channel it parked on from the reduced state (the runtime-minted
+  // `signalName(correlationId)` lives only on the durable `SignalAwaited`,
+  // not in the definition), RE-PARK on it -- `parkOnSignal`'s guard skips
+  // re-emitting `SignalAwaited` since the step is already
+  // `awaiting-signal` -- and, once the signal arrives, seed the
+  // suspend/resume bridge with the recovered `resume` so the first
+  // `invokeStep` re-invokes the agent against the delivered decision.
+  const entryState = await reloadState(env, runId);
+  let resumeFromPark: { signalName: string; correlationId: string } | undefined;
+  if (entryState.steps.get(step.id)?.phase === "awaiting-signal") {
+    const parkedSignalName = findAwaitedSignalNameForStep(entryState, step.id);
+    if (parkedSignalName === undefined) {
+      throw new Error(
+        `runStep resume: step ${step.id} is awaiting-signal but no awaited signal name is in the reduced state`,
+      );
+    }
+    const correlationId = correlationIdFromSignalName(parkedSignalName);
+    if (correlationId === undefined) {
+      throw new Error(
+        `runStep resume: step ${step.id} is parked on ${parkedSignalName}, which is not a reserved control-plane signal name; an agent step suspends only on a signalName(correlationId) channel`,
+      );
+    }
+    resumeFromPark = { signalName: parkedSignalName, correlationId };
+    // The durable log already carries this step's StepStarted, so the
+    // fresh-attempt emit below must be skipped: re-emitting throws.
+    stepStartedEmitted = true;
+  }
+
   while (true) {
     // Materialize the input first so the StepStarted event carries
     // the substrate-resolvable ref the audit reader expects.
@@ -1106,6 +1141,28 @@ async function runStep(
       // runAwaitSignal's re-park.
       let output: unknown;
       let resume: { correlationId: string; decision: unknown } | undefined;
+      // A crash-resume re-entry re-parks on the recovered channel FIRST,
+      // before any `invokeStep`, so the agent is never re-sent the original
+      // input. The delivered decision seeds `resume` so the bridge loop's
+      // first `invokeStep` re-invokes the agent against it, exactly as a
+      // same-process resume would. `resumeFromPark` is consumed once per
+      // step; a resume that suspends AGAIN re-parks through the normal
+      // `{ suspend }` arm below.
+      if (resumeFromPark !== undefined) {
+        const parkState = await reloadState(env, runId);
+        const decision = await parkOnSignal(
+          env,
+          runId,
+          {
+            stepId: step.id,
+            signalName: resumeFromPark.signalName,
+          },
+          parkState,
+          stepAbort.signal,
+        );
+        resume = { correlationId: resumeFromPark.correlationId, decision };
+        resumeFromPark = undefined;
+      }
       while (true) {
         const result = await env.invokeStep({
           agent: step.agent,
@@ -2008,6 +2065,25 @@ function findUnfiredTimerForStep(
     }
   }
   return undefined;
+}
+
+/**
+ * Recover the signal name a step is parked on from the reduced state. A
+ * step in `awaiting-signal` carries its channel in `awaitingSignal.name`,
+ * reduced from the step's durable `SignalAwaited`. On a crash-resume the
+ * agent `step`-suspend arm re-enters `runStep` with only the definition's
+ * `StepPrimitive`, which does NOT carry the runtime-minted
+ * `signalName(correlationId)` channel (that name lives only on the log);
+ * this recovers it so the resume can re-park on the same channel. Mirrors
+ * `findUnfiredTimerForStep`: a per-step lookup from reduced state.
+ */
+function findAwaitedSignalNameForStep(
+  state: RunState,
+  stepId: string,
+): string | undefined {
+  const step = state.steps.get(stepId);
+  if (step?.phase !== "awaiting-signal") return undefined;
+  return step.awaitingSignal?.name;
 }
 
 /**

@@ -45,6 +45,14 @@ function assertNever(x: never): never {
 }
 
 /**
+ * The reserved prefix that marks a signal name as an internal
+ * control-plane channel rather than a free-form `awaitSignal` gate name.
+ * The writer (`signalName`) and the reader (`correlationIdFromSignalName`)
+ * share this one constant so the two cannot drift.
+ */
+const SIGNAL_NAME_PREFIX = "__signal__:";
+
+/**
  * Construct the reserved, `__signal__:`-prefixed name under which a control
  * signal for `correlationId` is delivered. This reserves a name namespace
  * distinct from the user-authored workflow-signal names that flow through
@@ -53,5 +61,18 @@ function assertNever(x: never): never {
  * mints an internal name the control plane owns, so the two cannot collide.
  */
 export function signalName(correlationId: string): string {
-  return `__signal__:${correlationId}`;
+  return `${SIGNAL_NAME_PREFIX}${correlationId}`;
+}
+
+/**
+ * Recover the `correlationId` from a reserved control-plane signal name
+ * minted by `signalName`. Returns `undefined` for a name that does not
+ * carry the reserved prefix (a free-form `awaitSignal` gate name), so a
+ * caller can tell a control-plane channel apart from an author-chosen one.
+ * Symmetric with `signalName`: `correlationIdFromSignalName(signalName(id))
+ * === id`.
+ */
+export function correlationIdFromSignalName(name: string): string | undefined {
+  if (!name.startsWith(SIGNAL_NAME_PREFIX)) return undefined;
+  return name.slice(SIGNAL_NAME_PREFIX.length);
 }
