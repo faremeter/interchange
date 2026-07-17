@@ -396,6 +396,21 @@ function createStepStorageSigner(signingKey: {
  * a dedicated `workflow-step-state/` sibling subtree keyed by the
  * workflow-run repo id keeps every step's storage isolated per run and
  * per step while never touching the run-event tree.
+ *
+ * Resume-attempt invariant: a suspended agent step commits its pending-op
+ * + turns under the `attempt-N` directory where N is the step's attempt
+ * at suspend time. On crash-resume the runtime (`runStep` in
+ * `packages/workflow`) recovers that attempt from the reduced state's
+ * `currentAttempt` and re-invokes with it, so this function reopens the
+ * SAME `attempt-N` store and the reactor's `rehydrateGates` finds the
+ * pending-op the delivered decision correlates against. This is why the
+ * resume path recovers `currentAttempt` rather than assuming attempt 1:
+ * attempt 1 is correct only for a step that never retried before
+ * suspending; a retried-then-suspended step lives under `attempt-2`+, and
+ * reopening `attempt-1` would rehydrate an empty store and hang on a
+ * decision that correlates nothing. `createSidecarStepBuildEnv` asserts
+ * this invariant loudly on the cold path (a resume opening a store that
+ * lacks the resumed correlationId's pending-op throws).
  */
 function stepStorageRoot(args: {
   dataDir: string;
@@ -630,6 +645,34 @@ export function createSidecarStepBuildEnv(
       deps.durableConversation !== undefined
         ? (await deps.durableConversation.acquire(stepId)).storage
         : await createIsogitStore(storeDir, deps.signer);
+
+    // Cold-path resume keying assertion (correct-by-construction guard for
+    // the resume-attempt invariant documented on `stepStorageRoot`). A
+    // resume re-invocation (`req.resume` present) delivers the correlated
+    // decision to the reactor, which rehydrates its gate from THIS store's
+    // pending operations. The store the runtime reopened is keyed by
+    // `attempt` (`stepStorageRoot` above); if that attempt does not match
+    // the attempt the step suspended on, the store carries no pending-op
+    // for the resumed correlationId, the reactor comes up gateless, and the
+    // delivered decision correlates against nothing -- a silent forever-hang.
+    // Make that keying violation loud here, at the single seam that both
+    // opened the store AND knows a resume must find its gate, rather than
+    // letting it surface as a hang. The warm path keys its durable store per
+    // agent (not per attempt) and rehydrates from a different lifecycle, so
+    // this assertion is cold-path only.
+    if (deps.durableConversation === undefined && req.resume !== undefined) {
+      const resumeCorrelationId = req.resume.correlationId;
+      const loaded = await storage.load();
+      const hasPendingOp = loaded.pendingOperations.some(
+        (op) => op.correlationId === resumeCorrelationId,
+      );
+      if (!hasPendingOp) {
+        throw new Error(
+          `sidecar workflow-child step invoker buildEnv: resume of step ${JSON.stringify(stepId)} (run ${JSON.stringify(runId)}, attempt ${String(attempt)}) reopened a ContextStore with no pending operation for correlationId ${JSON.stringify(resumeCorrelationId)}. The cold-path store is keyed by attempt (${storeDir}); a resume that finds no gate here means it reopened the wrong attempt's store -- the reactor would rehydrate no gate and the delivered decision would correlate against nothing. This is a keying violation, not a recoverable state.`,
+        );
+      }
+    }
+
     const workdir = path.join(storeDir, "workspace");
     await fs.promises.mkdir(workdir, { recursive: true });
 
@@ -1236,7 +1279,19 @@ export function createSidecarSubstrateFactory(
     // drops the run's whole `workflow-step-state/<repoId>/runs/<runId>/`
     // subtree (every step/attempt the run produced), which nothing
     // reopens after terminal (resume reads the substrate run log, not
-    // local step state). Built only for the cold path: a warm deploy
+    // local step state).
+    //
+    // Parked-step safety: reclamation keys on the RUN's terminal status,
+    // and a step parked on a signal (`awaiting-signal`) keeps the run
+    // non-terminal, so this never fires while a suspended step's
+    // `attempt-N` store still holds a live pending-op the resume path must
+    // reopen. Any future per-STEP reclamation must preserve that invariant
+    // -- it MUST exclude an `awaiting-signal` step, whose `attempt-N` store
+    // is the exact store a later crash-resume reopens to rehydrate the
+    // gate; dropping it would reproduce the empty-store hang the
+    // resume-attempt recovery closes.
+    //
+    // Built only for the cold path: a warm deploy
     // roots its single agent's scratch per agent under the disjoint
     // `warm/` sub-root (reclaimed on undeploy), and the run-loop's own
     // `warmKeep` gate already suppresses the per-run call there, so

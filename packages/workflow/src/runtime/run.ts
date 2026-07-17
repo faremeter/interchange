@@ -1056,8 +1056,9 @@ async function runStep(
   // suspend/resume bridge with the recovered `resume` so the first
   // `invokeStep` re-invokes the agent against the delivered decision.
   const entryState = await reloadState(env, runId);
+  const entryStepState = entryState.steps.get(step.id);
   let resumeFromPark: { signalName: string; correlationId: string } | undefined;
-  if (entryState.steps.get(step.id)?.phase === "awaiting-signal") {
+  if (entryStepState?.phase === "awaiting-signal") {
     const parkedSignalName = findAwaitedSignalNameForStep(entryState, step.id);
     if (parkedSignalName === undefined) {
       throw new Error(
@@ -1071,6 +1072,19 @@ async function runStep(
       );
     }
     resumeFromPark = { signalName: parkedSignalName, correlationId };
+    // Recover the attempt the step suspended on. The suspend committed its
+    // pending-op + turns under the cold-path ContextStore keyed by this
+    // attempt (`stepStorageRoot({runId, stepId, attempt})`); the resume
+    // re-invoke must reopen that SAME `attempt-N` store so `rehydrateGates`
+    // finds the pending-op and the delivered decision correlates. A step
+    // that suspended on its first attempt reduces `currentAttempt` to 1 (the
+    // hardcoded default was correct only by coincidence there); a step that
+    // RETRIED before suspending reduces to >=2, and leaving `attempt` at 1
+    // would reopen the wrong `attempt-1` store, rehydrate no gate, and hang
+    // on a decision that correlates nothing. Recovering it also continues
+    // the outer retry lineage from the suspended attempt: a resumed step
+    // that later fails schedules attempt N+1, not attempt 2.
+    attempt = entryStepState.currentAttempt;
     // The durable log already carries this step's StepStarted, so the
     // fresh-attempt emit below must be skipped: re-emitting throws.
     stepStartedEmitted = true;
