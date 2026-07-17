@@ -408,6 +408,7 @@ const orchestrator = createSidecarOrchestrator({
     sessions,
     keyStore,
     publishWorkflowInferenceEvent,
+    publishWorkflowSuspension,
   }) => {
     const router = createSidecarDeployRouter({
       sessions,
@@ -429,6 +430,7 @@ const orchestrator = createSidecarOrchestrator({
       multistepSourcesRouter,
       multistepSubstrateEnv,
       publishWorkflowInferenceEvent,
+      publishWorkflowSuspension,
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),
       ...(repackEveryMessages !== undefined ? { repackEveryMessages } : {}),
       ...(consumedRetentionMs !== undefined ? { consumedRetentionMs } : {}),

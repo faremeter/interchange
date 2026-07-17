@@ -36,7 +36,7 @@
 
 import { type } from "arktype";
 
-import { hexDecode, hexEncode } from "@intx/types";
+import { hexDecode, hexEncode, SignalKind } from "@intx/types";
 import { InferenceSource, InterchangeType } from "@intx/types/runtime";
 
 import {
@@ -412,6 +412,28 @@ export const ControlPayload = type(
       "error?": {
         message: "string",
       },
+    },
+  })
+  .or({
+    // Child-initiated control-plane suspension notification. The
+    // workflow-process child emits this when a workflow agent step parks
+    // on a reserved `signalName(correlationId)` channel (`env.onPark`),
+    // so the supervisor can register the correlation out-of-band before
+    // the parked run can be resumed. The supervisor stamps the
+    // deployment identity it owns (`deploymentId` + `agentAddress`) and
+    // forwards a `signal.correlation.register` frame to the hub, which
+    // co-writes the run's routing + approval rows. Mirrors
+    // `terminal.event`: a peer-channel notification the supervisor fans
+    // out, distinct from the substrate commit the run also produces.
+    //
+    // `signalName` is deliberately NOT carried: it is a pure function of
+    // `correlationId` (`signalName(correlationId)`), recomputed by every
+    // consumer that needs it, so the two cannot drift.
+    type: "'park.notify'",
+    data: {
+      runId: "string > 0",
+      correlationId: "string > 0",
+      kind: SignalKind,
     },
   });
 

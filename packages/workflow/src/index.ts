@@ -33,6 +33,7 @@ export {
   type StepInvokeRequest,
   type StepInvokeResult,
   type StepInvoker,
+  type WorkflowPark,
   type WorkflowRun,
   type WorkflowRuntimeEnv,
 } from "./runtime/index";

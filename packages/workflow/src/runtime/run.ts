@@ -2161,6 +2161,27 @@ async function parkOnSignal(
         : {}),
     };
     state = await commit(env, runId, awaited);
+    // Notify the host of a fresh control-plane suspension. Only a park on
+    // a reserved `signalName(correlationId)` channel (the agent-step
+    // suspend arm) carries a correlation the resolver routes a decision
+    // back on; a plain `awaitSignal` gate parked on an author-chosen name
+    // is not a control-plane suspension, so `correlationIdFromSignalName`
+    // returns `undefined` and no notify fires. Gated on the fresh-emit
+    // branch so a re-park resume (which skips the SignalAwaited re-emit)
+    // does not re-notify on every scheduler pass; the initial park fires
+    // it exactly once. A crash-resume that re-emits `SignalAwaited` from
+    // the fresh branch re-notifies, which the host's idempotent register
+    // absorbs.
+    const correlationId = correlationIdFromSignalName(opts.signalName);
+    if (correlationId !== undefined) {
+      // `approval` is currently the only `SignalKind`, and a reserved
+      // control-plane channel carries no kind of its own, so the park is
+      // always an approval. If a second `SignalKind` is ever added this
+      // literal would silently mis-stamp a non-approval park -- the type
+      // checker will not catch it (unlike `signalKindToGateType`'s
+      // assertNever), so the kind must become derived here at that point.
+      env.onPark?.({ runId, correlationId, kind: "approval" });
+    }
   }
   // The per-step timeout commits TimerSet before asking the scheduler
   // to fire, so the pairing with the scheduler-committed `TimerFired`

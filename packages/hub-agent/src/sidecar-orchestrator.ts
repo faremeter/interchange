@@ -13,6 +13,7 @@
 
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
+import type { SignalKind } from "@intx/types";
 import type { InferenceEvent, KeyPair } from "@intx/types/runtime";
 
 import { createAgentKeyStore, type AgentKeyStore } from "./agent-key-store";
@@ -67,6 +68,21 @@ export type CreateDeployRouter = (deps: {
     event: InferenceEvent,
     sessionId: string | undefined,
   ) => void;
+  /**
+   * Control-plane suspension sink the multi-step branch routes a
+   * supervisor's `park.notify` registration through. Wired to the hub-link's
+   * `sendSignalCorrelationRegister` so a parked run's correlation is
+   * registered at the hub (routing + approval rows). Mirrors
+   * `publishWorkflowInferenceEvent`: a no-op until HubLink is constructed,
+   * then swapped to the link's sink.
+   */
+  publishWorkflowSuspension: (registration: {
+    correlationId: string;
+    runId: string;
+    deploymentId: string;
+    agentAddress: string;
+    kind: SignalKind;
+  }) => void;
 }) => DeployRouter;
 
 export type SidecarOrchestratorConfig = {
@@ -202,6 +218,20 @@ export function createSidecarOrchestrator(
     /* replaced after HubLink construction */
   };
 
+  // Sink the multi-step deploy path routes a supervisor's `park.notify`
+  // suspension registration through. Points at a no-op until HubLink is
+  // constructed below, at which point it is swapped to the link's
+  // sendSignalCorrelationRegister method.
+  let dispatchSuspension: (registration: {
+    correlationId: string;
+    runId: string;
+    deploymentId: string;
+    agentAddress: string;
+    kind: SignalKind;
+  }) => void = () => {
+    /* replaced after HubLink construction */
+  };
+
   const sessions = createSessionManager({ repoStore });
 
   const deployRouter = createDeployRouter({
@@ -224,6 +254,13 @@ export function createSidecarOrchestrator(
         return;
       }
       dispatchEvent(agentAddress, sessionId, event);
+    },
+    // Route a supervisor's suspension registration up the hub-link so the
+    // hub co-writes the parked run's routing + approval rows.
+    // `dispatchSuspension` is a no-op until HubLink is constructed below; the
+    // closure reads it lazily so the post-construction swap is observed.
+    publishWorkflowSuspension: (registration) => {
+      dispatchSuspension(registration);
     },
   });
 
@@ -252,6 +289,7 @@ export function createSidecarOrchestrator(
   });
 
   dispatchEvent = hubLink.sendEvent;
+  dispatchSuspension = hubLink.sendSignalCorrelationRegister;
 
   function start(): void {
     hubLink.connect();

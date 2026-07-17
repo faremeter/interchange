@@ -748,6 +748,37 @@ export function createWorkflowSupervisor(
         cohortBroadcaster.notify(payload.data.runId, event);
         continue;
       }
+      if (payload.type === "park.notify") {
+        // The workflow-process child reported a control-plane suspension:
+        // an agent step parked on a reserved `signalName(correlationId)`
+        // channel. Stamp the deployment identity the supervisor owns
+        // (`deploymentId` + the deployment's mail address) onto the
+        // child-supplied `runId`/`correlationId`/`kind` and hand it to the
+        // host's suspension-register sink, which (production: the sidecar)
+        // sends a `signal.correlation.register` frame to the hub so the run's
+        // routing + approval rows are co-written. Best-effort: a throwing
+        // sink is logged, not rethrown, so it cannot tear the pump down and
+        // stop draining every other upstream frame for the cohort. A host
+        // that wires no sink registers nothing.
+        if (bindings.onSuspensionRegister !== undefined) {
+          try {
+            bindings.onSuspensionRegister({
+              runId: payload.data.runId,
+              correlationId: payload.data.correlationId,
+              kind: payload.data.kind,
+              deploymentId: bindings.deploymentId,
+              agentAddress: bindings.deploymentMailAddress,
+            });
+          } catch (cause) {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`onSuspensionRegister sink threw for runId=${payload.data.runId} correlationId=${payload.data.correlationId}: ${message}`;
+          }
+        } else {
+          logger.warn`park.notify received for runId=${payload.data.runId} but no onSuspensionRegister sink is wired; correlation ${payload.data.correlationId} not registered`;
+        }
+        continue;
+      }
       logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
     }
   }

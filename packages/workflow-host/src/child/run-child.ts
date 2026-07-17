@@ -81,6 +81,7 @@ import type {
   SpawnChildWorkflow,
   WorkflowAuthorizeFn,
   WorkflowDefinition,
+  WorkflowPark,
   WorkflowRun,
   WorkflowRuntimeEnv,
 } from "@intx/workflow";
@@ -558,6 +559,7 @@ export async function runWorkflowChild(
           logger.error`event-channel send failed during resume run ${run.runId}: ${String(cause)}`;
         });
       },
+      upstreamSender,
     });
     const handle = runtimeRun(definition, env, {
       runId: run.runId,
@@ -773,6 +775,7 @@ async function handleControlPayload(
             logger.error`event-channel send failed during run ${payload.data.runId}: ${String(cause)}`;
           });
         },
+        upstreamSender: ctx.upstreamSender,
       });
       const handle: WorkflowRun = runtimeRun(ctx.definition, env, {
         runId: payload.data.runId,
@@ -992,6 +995,15 @@ async function handleControlPayload(
         "workflow-child received a `terminal.event` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
+    case "park.notify": {
+      // `park.notify` is the child->supervisor suspension-notification
+      // frame; receiving one on the child's downstream side is a
+      // protocol violation in the same shape as a downstream
+      // `terminal.event`.
+      throw new Error(
+        "workflow-child received a `park.notify` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
     case "outbound.message": {
       // `outbound.message` is the child->supervisor outbound-mail
       // request frame; receiving one on the child's downstream side is a
@@ -1058,6 +1070,7 @@ function buildRuntimeEnv(args: {
   warmCache: WarmAgentCache | undefined;
   sourcesRef: SourcesSnapshotRef;
   onEvent: (event: EventPayload) => void;
+  upstreamSender: ControlChannelSender;
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
     repoStore: args.bindings.substrate,
@@ -1104,7 +1117,48 @@ function buildRuntimeEnv(args: {
     clock: args.clock,
     newId: args.newId,
     drain: args.drainController,
+    // Forward a control-plane suspension up the same upstream control
+    // channel `terminal.event` rides, so the supervisor can stamp the
+    // deployment identity and register the correlation at the hub. The
+    // runtime body fires this once per fresh park on a reserved
+    // `signalName(correlationId)` channel.
+    onPark: (park) => {
+      void emitParkNotify(args.upstreamSender, park);
+    },
   };
+}
+
+/**
+ * Forward a control-plane suspension to the supervisor over the upstream
+ * control channel. Fired from `env.onPark` each time a workflow agent step
+ * parks on a reserved `signalName(correlationId)` channel. The supervisor's
+ * `park.notify` arm stamps the deployment identity it owns and sends a
+ * `signal.correlation.register` frame to the hub.
+ *
+ * Best-effort like `emitTerminalEvent`'s send: a transport failure is logged,
+ * not rethrown. A lost frame means the correlation is not registered and the
+ * parked run cannot be resumed until it is re-registered; the failure surfaces
+ * structurally as a run that never resumes rather than a silent lifecycle
+ * corruption. The register at the hub is idempotent, so a re-park resume's
+ * re-emit is safe.
+ */
+export function emitParkNotify(
+  upstreamSender: ControlChannelSender,
+  park: WorkflowPark,
+): Promise<void> {
+  return upstreamSender
+    .send({
+      type: "park.notify",
+      data: {
+        runId: park.runId,
+        correlationId: park.correlationId,
+        kind: park.kind,
+      },
+    })
+    .catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`park.notify upstream send failed for runId=${park.runId} correlationId=${park.correlationId}: ${message}`;
+    });
 }
 
 /**

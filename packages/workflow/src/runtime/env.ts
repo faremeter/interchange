@@ -8,6 +8,7 @@
 // source-level test in `run.test.ts` asserts the discipline.
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
+import type { SignalKind } from "@intx/types";
 
 import type {
   AuthorizeContext,
@@ -342,6 +343,21 @@ export type LoopFn = (childOutput: unknown, carryState: unknown) => unknown;
 export type LoopFnRegistry = (ref: string) => LoopFn;
 
 /**
+ * A control-plane suspension the runtime body notifies the host of when a
+ * step parks on a reserved `signalName(correlationId)` channel. Distinct
+ * from the `awaitNext` signal-channel park: it carries the correlation the
+ * eventual resolver routes a decision back on, so the host can register the
+ * suspension out-of-band (the sidecar co-writes a routing + approval row at
+ * the hub). A plain `awaitSignal` gate parked on an author-chosen name does
+ * NOT produce one -- only the reserved control-plane channel does.
+ */
+export interface WorkflowPark {
+  runId: string;
+  correlationId: string;
+  kind: SignalKind;
+}
+
+/**
  * The runtime body's full env surface. The two implementations
  * (`runLocal` and the production child-process entry point) construct
  * differently-flavoured concrete values for each field but the body
@@ -402,6 +418,18 @@ export interface WorkflowRuntimeEnv {
    * controller whose signal never fires.
    */
   drain: DrainController;
+  /**
+   * Optional suspension-notify sink. Fired once each time a step commits a
+   * `SignalAwaited` on a reserved `signalName(correlationId)` channel -- the
+   * agent-step suspend path, not a plain `awaitSignal` gate. The host uses it
+   * to register the correlation out-of-band (production: the sidecar sends a
+   * `signal.correlation.register` frame to the hub, which co-writes the run's
+   * routing + approval rows so the resolver can route a delivered decision
+   * back to the parked run). A re-park resume re-fires it; the host-side write
+   * is idempotent, so a duplicate register is harmless. A host that does not
+   * wire it does not register suspensions -- runLocal leaves it unset.
+   */
+  onPark?: (park: WorkflowPark) => void;
 }
 
 /**
