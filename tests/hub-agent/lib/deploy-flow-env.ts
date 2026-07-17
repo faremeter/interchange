@@ -57,6 +57,7 @@ import {
   type AgentRepoStore,
   type AssetService,
   type RepoId,
+  type SidecarLookups,
   type SidecarRouter,
   type SessionService,
   type WorkflowRunEvent,
@@ -115,6 +116,15 @@ export type InferenceTool = {
 export type InferenceMessageBlock = {
   type?: string;
   text?: string;
+  // Present on assistant `tool_use` blocks (the id the model minted) and on
+  // user `tool_result` blocks (`tool_use_id`, the id being answered). The mock
+  // reads these to detect whether a request already carries the tool's result.
+  id?: string;
+  tool_use_id?: string;
+  // A `tool_result` block's payload. The Anthropic adapter serializes it as an
+  // array of `{ type: "text", text }` blocks; the mock flattens their text so a
+  // test can assert the resumed reply reflects the real tool output.
+  content?: string | InferenceMessageBlock[];
 };
 
 export type InferenceMessage = {
@@ -158,6 +168,27 @@ export type StartMockInferenceOpts = {
    * drives a different reply shape.
    */
   echoUserMessage?: boolean;
+  /**
+   * Persistent tool-call behavior for the approval capstone. Unlike
+   * `toolCall`, which emits its `tool_use` once and then falls back to a
+   * text turn, this re-issues the `tool_use` on EVERY request whose history
+   * does not yet carry a `tool_result` answering the named tool, and only
+   * replies once it sees that result -- the reply being `${resultPrefix}<the
+   * tool_result content>` so a test can assert the resumed reply reflects the
+   * real tool output.
+   *
+   * This distinguishes the fixed re-dispatch rail from the old broken one. On
+   * the broken rail the approval decision arrives as a bare user turn (no
+   * tool_result) and re-inference re-issues the call -> re-suspends on the ask
+   * grant -> loops forever. On the fixed rail the approved call is
+   * re-dispatched and RUNS, appending a real tool_result, so the next
+   * inference sees it and the mock replies -> the run completes.
+   */
+  approvalToolCall?: {
+    toolName: string;
+    input: Record<string, unknown>;
+    resultPrefix: string;
+  };
 };
 
 /**
@@ -181,6 +212,33 @@ function lastUserText(req: InferenceRequest): string {
     }
   }
   return "";
+}
+
+/**
+ * Find the text of the first `tool_result` block in the request's history, or
+ * `null` if none is present. The Anthropic adapter serializes a tool result as
+ * a user-turn content block `{ type: "tool_result", tool_use_id, content: [{
+ * type: "text", text }] }`; the mock flattens that inner text and uses the
+ * block's presence to decide it has already seen the tool run and may now reply.
+ */
+function firstToolResultText(req: InferenceRequest): string | null {
+  for (const message of req.messages ?? []) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type !== "tool_result") continue;
+      const inner = block.content;
+      if (typeof inner === "string") return inner;
+      if (Array.isArray(inner)) {
+        return inner
+          .filter((b) => b.type === "text" && b.text !== undefined)
+          .map((b) => b.text ?? "")
+          .join("");
+      }
+      return "";
+    }
+  }
+  return null;
 }
 
 // Mock inference server
@@ -298,7 +356,22 @@ export function startMockInference(
         toolNames.includes(opts.toolCall.toolName);
 
       let events: string[];
-      if (wantsToolCall && opts.toolCall !== undefined) {
+      const approval = opts.approvalToolCall;
+      if (approval !== undefined && toolNames.includes(approval.toolName)) {
+        // Re-issue the call until the history carries its result; then reply
+        // with the result content. Persistent (no latch): under the broken
+        // resume rail no result ever arrives and this loops (the test times
+        // out); under the fixed re-dispatch rail the approved call runs, its
+        // result lands in history, and this reply completes the run.
+        const result = firstToolResultText(body);
+        events =
+          result === null
+            ? toolUseTurn({
+                toolName: approval.toolName,
+                input: approval.input,
+              })
+            : textTurnText(`${approval.resultPrefix}${result}`);
+      } else if (wantsToolCall && opts.toolCall !== undefined) {
         toolCallEmitted = true;
         events = toolUseTurn(opts.toolCall);
       } else if (opts.echoUserMessage === true) {
@@ -520,7 +593,10 @@ export type HubEnv = {
 // resolver path exercises the real registry walker end-to-end.
 export async function startHub(
   registerTempDir: (dir: string) => void,
-  opts: { transportBackedMailTool?: boolean } = {},
+  opts: {
+    transportBackedMailTool?: boolean;
+    registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
+  } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
   const deployAcks = new Map<string, string>();
@@ -675,6 +751,15 @@ export async function startHub(
         outboundMail.push({ senderAddress, recipients });
         return Promise.resolve([]);
       },
+      // Co-write the signal_correlation + approval rows when a suspending
+      // agent step's `signal.correlation.register` frame arrives. Only the
+      // approval capstone wires this (against a real DB); every other test
+      // omits it, and the wire handler drops the frame with a warning when
+      // it is absent. Threaded through so the capstone can drive the real
+      // hub co-write without standing up a second hub.
+      ...(opts.registerSignalCorrelation !== undefined
+        ? { registerSignalCorrelation: opts.registerSignalCorrelation }
+        : {}),
     },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
@@ -973,6 +1058,14 @@ export type StartDeployFlowEnvOpts = {
    */
   inferenceToolCall?: MockToolCall;
   /**
+   * Persistent tool-call behavior for the approval capstone: the mock
+   * re-issues the named tool until the history carries its result, then
+   * replies with `${resultPrefix}<result>`. See
+   * `StartMockInferenceOpts.approvalToolCall` for why this loops under the
+   * broken resume rail and completes under the fixed one.
+   */
+  inferenceApprovalToolCall?: StartMockInferenceOpts["approvalToolCall"];
+  /**
    * When true, the mock inference server echoes the last user message's
    * text as `echo:<text>` so a test can assert the inbound mail body
    * reached the agent's `agent.send` as the step input. See
@@ -991,6 +1084,15 @@ export type StartDeployFlowEnvOpts = {
    * execution.
    */
   transportBackedMailTool?: boolean;
+  /**
+   * Co-write hook for the `signal.correlation.register` frame a suspending
+   * agent step emits. When set, the mock hub's sidecar router wires it as
+   * the `registerSignalCorrelation` lookup, so a parked run's correlation +
+   * approval rows are written through the same wire handler production runs.
+   * Only the approval capstone supplies it (backed by a real DB); every
+   * other test leaves it unset and the frame is dropped with a warning.
+   */
+  registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
 };
 
 /**
@@ -1035,10 +1137,16 @@ export async function startDeployFlowEnv(
     ...(opts.transportBackedMailTool === true
       ? { transportBackedMailTool: true }
       : {}),
+    ...(opts.registerSignalCorrelation !== undefined
+      ? { registerSignalCorrelation: opts.registerSignalCorrelation }
+      : {}),
   });
   const inference = startMockInference({
     ...(opts.inferenceToolCall !== undefined
       ? { toolCall: opts.inferenceToolCall }
+      : {}),
+    ...(opts.inferenceApprovalToolCall !== undefined
+      ? { approvalToolCall: opts.inferenceApprovalToolCall }
       : {}),
     ...(opts.inferenceEchoUserMessage === true
       ? { echoUserMessage: true }

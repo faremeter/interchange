@@ -45,7 +45,7 @@ export type {
   UploadedGoogleGenAIFile,
 } from "./providers/google-genai-files";
 
-export { createInboundTurn } from "./turns";
+export { createInboundTurn, assertWellFormedToolSequence } from "./turns";
 export { createReactor } from "./reactor";
 export type { Reactor, ReactorConfig, ReactorEmittedEvent } from "./reactor";
 export { validateActions } from "./actions";
