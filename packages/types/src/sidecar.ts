@@ -14,6 +14,7 @@ import {
   InferenceEvent,
   InferenceSource,
 } from "./runtime";
+import { SignalKind } from "./signals";
 
 // ---------------------------------------------------------------------------
 // Sidecar → Hub
@@ -169,6 +170,30 @@ export const AgentUndeployAckFrame = type({
   statePushed: "boolean",
 });
 export type AgentUndeployAckFrame = typeof AgentUndeployAckFrame.infer;
+
+/**
+ * Registers a control-signal correlation as a workflow agent step suspends.
+ * The fields on this frame all converge at the sidecar's suspend emit point;
+ * the hub uses them to co-write the `signal_correlation` routing row and the
+ * `approval` row in one transaction, so the eventual resolver can route a
+ * delivered decision back to the parked run and flip its approval.
+ *
+ * `signalName` is deliberately NOT on the wire: it is a pure function of
+ * `correlationId` (`signalName(correlationId)` in `./signals`), so the hub
+ * computes it rather than trusting a value the sidecar could disagree on.
+ * `deploymentId` is the workflow deployment the run belongs to; `agentAddress`
+ * is the deployment's routable address the hub resolves tenancy from.
+ */
+export const SignalCorrelationRegisterFrame = type({
+  type: "'signal.correlation.register'",
+  correlationId: "string",
+  runId: "string",
+  deploymentId: "string",
+  agentAddress: "string",
+  kind: SignalKind,
+});
+export type SignalCorrelationRegisterFrame =
+  typeof SignalCorrelationRegisterFrame.infer;
 
 // ---------------------------------------------------------------------------
 // Hub → Sidecar
@@ -647,6 +672,7 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(SessionAckFrame)
   .or(SessionErrorFrame)
   .or(AgentUndeployAckFrame)
+  .or(SignalCorrelationRegisterFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)

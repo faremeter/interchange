@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 
-import type { DB } from "./client";
+import type { DB, DBExecutor } from "./client";
 import { signalCorrelation } from "./schema/signal-correlations";
 import { parseSignalCorrelationRow } from "./parse-row";
 
@@ -19,7 +19,7 @@ export function createSignalCorrelationStore(db: DBHandle) {
   return {
     async register(
       row: SignalCorrelationInsert,
-      tx?: DBHandle,
+      tx?: DBExecutor,
     ): Promise<ParsedSignalCorrelation> {
       const [inserted] = await (tx ?? db)
         .insert(signalCorrelation)
@@ -33,9 +33,31 @@ export function createSignalCorrelationStore(db: DBHandle) {
       return parseSignalCorrelationRow(inserted);
     },
 
+    /**
+     * Idempotent variant of `register`. On a `correlationId` primary-key
+     * conflict the insert is a no-op and this returns `null` rather than
+     * throwing, so a redelivered register frame (sidecar reconnect,
+     * workflow-log replay, supervisor restart re-emitting) does not fail the
+     * co-write. Returns the parsed row only when this call performed the
+     * insert.
+     */
+    async registerIfAbsent(
+      row: SignalCorrelationInsert,
+      tx?: DBExecutor,
+    ): Promise<ParsedSignalCorrelation | null> {
+      const [inserted] = await (tx ?? db)
+        .insert(signalCorrelation)
+        .values(row)
+        .onConflictDoNothing({ target: signalCorrelation.correlationId })
+        .returning();
+      return inserted === undefined
+        ? null
+        : parseSignalCorrelationRow(inserted);
+    },
+
     async resolveRoute(
       correlationId: string,
-      tx?: DBHandle,
+      tx?: DBExecutor,
     ): Promise<ParsedSignalCorrelation | null> {
       const row = await (tx ?? db).query.signalCorrelation.findFirst({
         where: eq(signalCorrelation.correlationId, correlationId),
@@ -55,7 +77,7 @@ export function createSignalCorrelationStore(db: DBHandle) {
       correlationId: string,
       resolvedAt: Date,
       signalId: string | null,
-      tx?: DBHandle,
+      tx?: DBExecutor,
     ): Promise<ParsedSignalCorrelation | null> {
       const [claimed] = await (tx ?? db)
         .update(signalCorrelation)

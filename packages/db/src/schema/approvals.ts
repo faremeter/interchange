@@ -34,7 +34,15 @@ export const approval = pgTable(
     })
       .notNull()
       .default("pending"),
-    timeoutAt: timestamp("timeout_at").notNull(),
+    // Nullable so an approval that holds indefinitely can be recorded with no
+    // deadline. An agent-step suspend parks on its correlation's signal with no
+    // timeout (`parkOnSignal` is called without a `timeout`), so no `timeoutAt`
+    // reaches the sidecar frame that co-writes this row -- the deadline lives in
+    // the reactor's gate, which the hold-indefinitely suspend path never sets.
+    // A null `timeoutAt` is the hold-indefinitely case; a resolver that adds
+    // per-workflow expiry populates it when a deadline is configured. Parallels
+    // the tool-snapshot columns above, which are likewise deferred.
+    timeoutAt: timestamp("timeout_at"),
     resolvedAt: timestamp("resolved_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

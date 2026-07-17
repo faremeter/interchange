@@ -21,6 +21,7 @@
 
 import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
 import type { ConnectorThreadState } from "@intx/types/runtime";
+import type { SignalKind } from "@intx/types";
 import { getLogger } from "@intx/log";
 
 const logger = getLogger(["hub", "ws", "sidecar", "events"]);
@@ -216,6 +217,22 @@ export type SidecarLookups = {
     recipients: string[];
     raw: Uint8Array;
   }) => Promise<SidecarMailPersistedRow[]>;
+
+  /** Co-writes the `signal_correlation` routing row and the `approval` row
+   * for a suspending workflow agent step, in one transaction. Called from
+   * the `signal.correlation.register` frame handler after the wire layer has
+   * confirmed the sending sidecar owns `agentAddress`. Idempotent: a
+   * redelivered frame (reconnect, workflow-log replay, supervisor restart
+   * re-emitting) is a no-op, not an error. The wire layer does not carry
+   * `signalName`; the host derives it from `correlationId`. Resolves the
+   * tenancy from the workflow deployment the address names. */
+  registerSignalCorrelation?: (args: {
+    correlationId: string;
+    runId: string;
+    deploymentId: string;
+    agentAddress: string;
+    kind: SignalKind;
+  }) => Promise<void>;
 
   /** Ingests a received agent-state pack and returns whether the wire
    * layer should ack or reject the pack to the sidecar. `repoId.kind`
