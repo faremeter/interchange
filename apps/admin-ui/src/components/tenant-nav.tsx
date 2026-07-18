@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { label: "Agent Definitions", path: "/agents" },
   { label: "Agents", path: "/instances" },
   { label: "Workflows", path: "/workflows" },
+  { label: "Approvals", path: "/approvals" },
   { label: "Members", path: "/principals" },
   { label: "Roles", path: "/roles" },
   { label: "Grants", path: "/grants" },
