@@ -1110,6 +1110,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         reason: gateType,
         gateId,
         ...(correlationId !== undefined ? { correlationId } : {}),
+        ...(pendingOp?.approvalSnapshot !== undefined
+          ? { approvalSnapshot: pendingOp.approvalSnapshot }
+          : {}),
       },
     });
 

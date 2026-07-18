@@ -3398,6 +3398,74 @@ describe("createReactor — before-tool suspension on ask grant", () => {
     await waitFor("reactor.done");
   });
 
+  test("gate.blocked and the persisted op carry the approval snapshot when tools are wired", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const askExtension = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+      toolDefinitions: [
+        {
+          name: "charge_card",
+          description: "Charge the customer's card",
+          inputSchema: { type: "object" },
+        },
+      ],
+    });
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: "call-ask", name: "charge_card", arguments: {} },
+            ]),
+          "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+        },
+        "wait",
+      ),
+      inferenceRunner: makeInferenceRunner({
+        type: "done",
+        turn: suspendToolCallTurn,
+        usage: emptyUsage(),
+      }),
+      beforeToolExtensions: [askExtension],
+    });
+
+    const expectedSnapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: {},
+    };
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    expect(blocked.data.approvalSnapshot).toEqual(expectedSnapshot);
+
+    // The snapshot rides the persisted pending op too, so a rehydrated op
+    // still carries it.
+    const op = cell.pendingOperations[0];
+    if (op === undefined) throw new Error("unreachable");
+    expect(op.approvalSnapshot).toEqual(expectedSnapshot);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
   test("a before-tool suspension in a cycle with no inference and no completed tool call still persists the pending op", async () => {
     // The suspension is raised from a message.received handler that dispatches
     // executeTools directly, so the cycle runs no inference and completes no

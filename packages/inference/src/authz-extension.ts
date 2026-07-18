@@ -22,8 +22,10 @@
 // decision or mask the original error.
 
 import type {
+  ApprovalSnapshot,
   BeforeToolExtension,
   PendingOperation,
+  ToolDefinition,
 } from "@intx/types/runtime";
 import type { Effect } from "@intx/types/authz";
 
@@ -73,6 +75,15 @@ export type AuthzExtensionOptions<Ctx = unknown> = {
    * moment the `ask` effect is hit. Defaults to `DEFAULT_APPROVAL_TIMEOUT_MS`.
    */
   approvalTimeoutMs?: number;
+  /**
+   * Tool definitions the extension can be asked to authorize, used to build the
+   * approver-facing snapshot at the `ask` branch. Presence is a contract: when
+   * supplied, every tool this extension authorizes must appear here, and an
+   * `ask` for a tool that does not is a wiring defect that throws. Omitted
+   * entirely, the extension produces no snapshot — a mode for callers that
+   * never register a suspension with the hub.
+   */
+  toolDefinitions?: readonly ToolDefinition[];
 };
 
 type BlockEffect = "deny" | null;
@@ -122,6 +133,16 @@ export function createAuthzExtension<Ctx = unknown>(
   // defeat the one-shot intent, and a crash between grant and consume simply
   // re-drives from the durable log and re-grants.
   const approvedOnce = new Set<string>();
+
+  // Name → definition lookup for building the approval snapshot at the `ask`
+  // branch. `undefined` (not merely empty) means the caller wired no tool
+  // definitions and wants no snapshot; a defined map means every authorizable
+  // tool must be present, so a lookup miss is a wiring defect that throws. The
+  // sentinel keeps those two contracts distinguishable at the lookup site.
+  const toolDefinitionsByName =
+    opts.toolDefinitions !== undefined
+      ? new Map(opts.toolDefinitions.map((def) => [def.name, def]))
+      : undefined;
 
   return {
     grantOneShot(id) {
@@ -203,6 +224,33 @@ export function createAuthzExtension<Ctx = unknown>(
         const timeoutAt =
           Date.now() + (opts.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS);
         const gateId = `pending-${correlationId}`;
+
+        // Build the approver-facing snapshot when tool definitions are wired.
+        // A wired extension must have a definition for every tool it can
+        // authorize, so a miss is a wiring defect rather than a fallback. An
+        // unwired extension produces no snapshot: such callers never register
+        // the suspension with the hub, so the downstream required-snapshot
+        // validator never sees them.
+        let approvalSnapshot: ApprovalSnapshot | undefined;
+        if (toolDefinitionsByName !== undefined) {
+          const def = toolDefinitionsByName.get(call.name);
+          if (def === undefined) {
+            throw new Error(
+              `Tool "${call.name}" was authorized with effect "ask" but has ` +
+                `no definition in the resolved tool set; the approval ` +
+                `snapshot cannot be built. This is a wiring defect: every ` +
+                `tool the authz extension can authorize must be present in ` +
+                `toolDefinitions.`,
+            );
+          }
+          approvalSnapshot = {
+            name: call.name,
+            description: def.description,
+            inputSchema: def.inputSchema,
+            arguments: call.arguments,
+          };
+        }
+
         const pendingOp: PendingOperation = {
           correlationId,
           kind: "approval",
@@ -210,6 +258,7 @@ export function createAuthzExtension<Ctx = unknown>(
           gateId,
           timeoutAt,
           suspendedCall: call,
+          ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
         };
         return {
           type: "suspend",
