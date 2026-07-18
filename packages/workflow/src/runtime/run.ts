@@ -9,6 +9,7 @@
 // body.
 
 import { correlationIdFromSignalName, signalName } from "@intx/types";
+import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import type {
   ActionPrimitive,
@@ -1207,6 +1208,9 @@ async function runStep(
           {
             stepId: step.id,
             signalName: signalName(result.suspend.correlationId),
+            ...(result.suspend.approvalSnapshot !== undefined
+              ? { approvalSnapshot: result.suspend.approvalSnapshot }
+              : {}),
           },
           parkState,
           stepAbort.signal,
@@ -2137,6 +2141,7 @@ async function parkOnSignal(
     stepId: string;
     signalName: string;
     timeout?: number;
+    approvalSnapshot?: ApprovalSnapshot;
   },
   state: ReturnType<typeof resumeFromLog>,
   abort: AbortSignal,
@@ -2180,7 +2185,14 @@ async function parkOnSignal(
       // literal would silently mis-stamp a non-approval park -- the type
       // checker will not catch it (unlike `signalKindToGateType`'s
       // assertNever), so the kind must become derived here at that point.
-      env.onPark?.({ runId, correlationId, kind: "approval" });
+      env.onPark?.({
+        runId,
+        correlationId,
+        kind: "approval",
+        ...(opts.approvalSnapshot !== undefined
+          ? { approvalSnapshot: opts.approvalSnapshot }
+          : {}),
+      });
     }
   }
   // The per-step timeout commits TimerSet before asking the scheduler
