@@ -21,7 +21,11 @@ import type {
   ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions/substrate";
 import type { SignalKind } from "@intx/types";
-import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  OutboundMessage,
+  SendReceipt,
+} from "@intx/types/runtime";
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
@@ -268,6 +272,12 @@ export interface SuspensionRegistration {
   kind: SignalKind;
   deploymentId: string;
   agentAddress: string;
+  /**
+   * Approver-facing snapshot of the parked tool call, forwarded from the
+   * child's `park.notify`. Present only for an ask-rail suspension; the host
+   * turns it into the register frame's snapshot.
+   */
+  approvalSnapshot?: ApprovalSnapshot;
 }
 
 /**

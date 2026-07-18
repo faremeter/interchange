@@ -37,7 +37,11 @@
 import { type } from "arktype";
 
 import { hexDecode, hexEncode, SignalKind } from "@intx/types";
-import { InferenceSource, InterchangeType } from "@intx/types/runtime";
+import {
+  BoundedApprovalSnapshot,
+  InferenceSource,
+  InterchangeType,
+} from "@intx/types/runtime";
 
 import {
   decodeEnvelope,
@@ -434,6 +438,9 @@ export const ControlPayload = type(
       runId: "string > 0",
       correlationId: "string > 0",
       kind: SignalKind,
+      // Approver-facing snapshot of the parked tool call, size-capped at this
+      // process boundary. Optional: only an ask-rail suspension carries one.
+      "snapshot?": BoundedApprovalSnapshot,
     },
   });
 

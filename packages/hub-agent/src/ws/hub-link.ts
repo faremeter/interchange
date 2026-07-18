@@ -33,7 +33,7 @@ import {
 import type { SignalKind } from "@intx/types";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
-import type { InferenceEvent } from "@intx/types/runtime";
+import type { ApprovalSnapshot, InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -471,6 +471,7 @@ export type HubLink = {
     deploymentId: string;
     agentAddress: string;
     kind: SignalKind;
+    approvalSnapshot?: ApprovalSnapshot;
   }) => void;
   /**
    * Ship a workflow-run pack to the hub. Streams the supplied pack as
@@ -1362,6 +1363,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         deploymentId: registration.deploymentId,
         agentAddress: registration.agentAddress,
         kind: registration.kind,
+        ...(registration.approvalSnapshot !== undefined
+          ? { snapshot: registration.approvalSnapshot }
+          : {}),
       };
       send(frame);
     };

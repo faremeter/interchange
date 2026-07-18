@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexDecode, hexEncode } from "@intx/types";
+import { APPROVAL_SNAPSHOT_MAX_BYTES } from "@intx/types/runtime";
 
 import {
   ControlPayload,
@@ -1392,6 +1393,52 @@ describe("Payload union disjointness", () => {
       data: { deadlineMs: 1000 },
     };
     const validated = EventPayload(controlShape);
+    expect(validated instanceof type.errors).toBe(true);
+  });
+});
+
+describe("park.notify snapshot validation", () => {
+  const validSnapshot = {
+    name: "charge_card",
+    description: "Charge the customer's card",
+    inputSchema: { type: "object" },
+    arguments: { amount: 100 },
+  };
+
+  test("accepts a park.notify carrying an approval snapshot", () => {
+    const validated = ControlPayload({
+      type: "park.notify",
+      data: {
+        runId: "run-1",
+        correlationId: "corr-1",
+        kind: "approval",
+        snapshot: validSnapshot,
+      },
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a park.notify with no snapshot", () => {
+    const validated = ControlPayload({
+      type: "park.notify",
+      data: { runId: "run-1", correlationId: "corr-1", kind: "approval" },
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a park.notify whose snapshot exceeds the size cap", () => {
+    const validated = ControlPayload({
+      type: "park.notify",
+      data: {
+        runId: "run-1",
+        correlationId: "corr-1",
+        kind: "approval",
+        snapshot: {
+          ...validSnapshot,
+          inputSchema: { pad: "a".repeat(APPROVAL_SNAPSHOT_MAX_BYTES) },
+        },
+      },
+    });
     expect(validated instanceof type.errors).toBe(true);
   });
 });
