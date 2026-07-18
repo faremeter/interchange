@@ -13,10 +13,15 @@ export const SignalKind = type.enumerated(...signalKinds);
 export type SignalKind = typeof SignalKind.infer;
 
 /**
- * A resolved external control signal delivered to a suspended agent. The
- * `kind` discriminant selects the arm; today `approval` is the only arm.
- * `correlationId` ties the signal back to the suspension it resolves;
- * `payload` carries kind-specific data the resolver hands through opaquely.
+ * The internal resumption taxonomy: how a parked run resumes, keyed by
+ * (`kind`, `outcome`). This is NOT the approver's wire decision -- that is
+ * `ApprovalDecision`, which the delivery path parses. `ControlSignal` is the
+ * `kind`-discriminated union the resumption dispatch is designed around;
+ * `correlationId` ties an entry back to the suspension it resolves and
+ * `payload` carries kind-specific data opaquely. It is intentionally ahead of
+ * its consumers: the `approval` arm is the only one wired today, and its
+ * `timeout` outcome arrives via the gate-timeout path, not as a delivered
+ * decision. Each remaining signal flow activates its own arm as it lands.
  */
 export const ControlSignal = type({
   correlationId: "string",
