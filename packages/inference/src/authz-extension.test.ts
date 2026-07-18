@@ -6,7 +6,12 @@ import {
   type AuthzDecision,
 } from "./authz-extension";
 
-import type { ToolCall, ReactorState, TokenUsage } from "@intx/types/runtime";
+import type {
+  ToolCall,
+  ToolDefinition,
+  ReactorState,
+  TokenUsage,
+} from "@intx/types/runtime";
 
 function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
@@ -164,6 +169,113 @@ describe("createAuthzExtension", () => {
     expect(d.effect).toBe("ask");
     expect(d.blocked).toBe(false);
     expect(d.blockReason).toBeUndefined();
+  });
+
+  const bashToolDef: ToolDefinition = {
+    name: "bash",
+    description: "Run a shell command",
+    inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+  };
+
+  test("ask builds an approval snapshot from the wired tool definition", async () => {
+    const ext = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      toolDefinitions: [bashToolDef],
+    });
+
+    const call: ToolCall = {
+      id: "call-1",
+      name: "bash",
+      arguments: { cmd: "ls" },
+    };
+    const result = await ext.beforeTool(call, makeState(), signal);
+
+    expect(result.type).toBe("suspend");
+    if (result.type !== "suspend") throw new Error("expected suspend");
+    expect(result.pendingOp.approvalSnapshot).toEqual({
+      name: "bash",
+      description: "Run a shell command",
+      inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+      arguments: { cmd: "ls" },
+    });
+  });
+
+  test("ask throws when a wired extension lacks the tool's definition", async () => {
+    const ext = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      toolDefinitions: [bashToolDef],
+    });
+
+    await expect(
+      ext.beforeTool(makeCall("stripe_charge"), makeState(), signal),
+    ).rejects.toThrow(/stripe_charge.*wiring defect/s);
+  });
+
+  test("ask omits the snapshot when no tool definitions are wired", async () => {
+    const ext = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+    });
+
+    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    expect(result.type).toBe("suspend");
+    if (result.type !== "suspend") throw new Error("expected suspend");
+    expect(result.pendingOp.approvalSnapshot).toBeUndefined();
+  });
+
+  test("ask throws for every tool when wired with an empty definition set", async () => {
+    // An empty (but present) toolDefinitions array is the "wired" regime, not
+    // the "unwired" one: the extension promised a definition for every tool it
+    // authorizes and has none, so any ask is a wiring defect. This is the
+    // sentinel distinction between a defined-but-empty map and no map at all.
+    const ext = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      toolDefinitions: [],
+    });
+
+    await expect(
+      ext.beforeTool(makeCall(), makeState(), signal),
+    ).rejects.toThrow(/bash.*wiring defect/s);
+  });
+
+  test("a one-shot bypass allows a missing-definition call without throwing", async () => {
+    const ext = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      toolDefinitions: [bashToolDef],
+    });
+    if (ext.grantOneShot === undefined)
+      throw new Error("expected grantOneShot");
+
+    // A tool absent from the wired set throws at the ask branch, but the
+    // one-shot bypass returns allow before the snapshot is built, so a
+    // re-dispatched approved call is never blocked by the snapshot contract.
+    ext.grantOneShot("call-9");
+    const call: ToolCall = {
+      id: "call-9",
+      name: "stripe_charge",
+      arguments: {},
+    };
+    const result = await ext.beforeTool(call, makeState(), signal);
+    expect(result.type).toBe("allow");
   });
 
   test("null effect (no matching grants) blocks fail-closed", async () => {

@@ -19,6 +19,7 @@ import {
   type ContextTransform,
   type InferenceSource,
   type ReactorDirector,
+  type ToolDefinition,
   type ToolResultTransform,
   type ToolRunner,
 } from "@intx/types/runtime";
@@ -70,6 +71,13 @@ export type ReactorAssemblyConfig = {
   onEvent: (event: ReactorEmittedEvent) => void;
 
   authorize?: AuthzExtensionOptions["authorize"];
+  /**
+   * Tool definitions forwarded to the authz extension so it can build the
+   * approver-facing snapshot at an `ask` suspension. Only consumed when
+   * `authorize` is also supplied. Omitting it puts the authz extension in its
+   * no-snapshot mode; the production edge always supplies the resolved set.
+   */
+  toolDefinitions?: readonly ToolDefinition[];
   auditStore?: AuditStore;
   beforeToolExtensions?: BeforeToolExtension[];
   toolResultTransforms?: ToolResultTransform[];
@@ -121,6 +129,7 @@ export function createReactorAssembly(
     contextStore,
     onEvent,
     authorize,
+    toolDefinitions,
     auditStore,
     beforeToolExtensions: callerBeforeToolExtensions,
     toolResultTransforms: callerToolResultTransforms,
@@ -167,6 +176,7 @@ export function createReactorAssembly(
           ...(auditCollector !== undefined
             ? { onDecision: (d) => auditCollector.onDecision(d) }
             : {}),
+          ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
         })
       : undefined;
 

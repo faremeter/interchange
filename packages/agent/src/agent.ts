@@ -682,6 +682,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
       onEvent: handleEvent,
       auditStore,
       authorize,
+      toolDefinitions: resolvedTools.definitions,
       onShutdown: async () => {
         try {
           await flushErrors();
