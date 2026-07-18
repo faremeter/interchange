@@ -1541,6 +1541,72 @@ describe("register + reconnect frames on connect", () => {
       await server.stop(true);
     }
   });
+
+  test("sendSignalCorrelationRegister ships a register frame carrying the approval snapshot", async () => {
+    const frames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-snapshot",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [],
+    });
+
+    const snapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: { amount: 100 },
+    };
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        frames.some((s) => JSON.parse(s).type === "register"),
+      );
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-1",
+        runId: "run-1",
+        deploymentId: "dep-1",
+        agentAddress: "ins_dep_reg2@integration.interchange",
+        kind: "approval",
+        approvalSnapshot: snapshot,
+      });
+      await waitFor(() =>
+        frames.some(
+          (s) => JSON.parse(s).type === "signal.correlation.register",
+        ),
+      );
+      const frame = frames
+        .map((s) => JSON.parse(s))
+        .find(
+          (f: { type: string }) => f.type === "signal.correlation.register",
+        );
+      expect(frame.correlationId).toBe("corr-1");
+      expect(frame.snapshot).toEqual(snapshot);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
 });
 
 describe("answerMalformedRequestFrame", () => {

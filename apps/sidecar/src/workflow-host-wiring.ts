@@ -49,6 +49,7 @@ import {
 import { hexEncode, type SignalKind } from "@intx/types";
 import {
   parseInferenceEvent,
+  type ApprovalSnapshot,
   type CryptoProvider,
   type InferenceEvent,
   type InferenceSource,
@@ -806,6 +807,7 @@ export function createSidecarDeployRouter(deps: {
     deploymentId: string;
     agentAddress: string;
     kind: SignalKind;
+    approvalSnapshot?: ApprovalSnapshot;
   }) => void;
   /**
    * Optional override for the multi-step branch's per-step mail-address
@@ -947,6 +949,7 @@ export function createSidecarDeployRouter(deps: {
       deploymentId: string;
       agentAddress: string;
       kind: SignalKind;
+      approvalSnapshot?: ApprovalSnapshot;
     }): void => {
       /* no-op default: tests and production-without-a-publisher
          deployments do not register suspensions. */

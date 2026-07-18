@@ -14,7 +14,11 @@
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
-import type { InferenceEvent, KeyPair } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  InferenceEvent,
+  KeyPair,
+} from "@intx/types/runtime";
 
 import { createAgentKeyStore, type AgentKeyStore } from "./agent-key-store";
 import { createAgentRepoStore, type AgentRepoStore } from "./agent-repo-store";
@@ -82,6 +86,7 @@ export type CreateDeployRouter = (deps: {
     deploymentId: string;
     agentAddress: string;
     kind: SignalKind;
+    approvalSnapshot?: ApprovalSnapshot;
   }) => void;
 }) => DeployRouter;
 
@@ -228,6 +233,7 @@ export function createSidecarOrchestrator(
     deploymentId: string;
     agentAddress: string;
     kind: SignalKind;
+    approvalSnapshot?: ApprovalSnapshot;
   }) => void = () => {
     /* replaced after HubLink construction */
   };

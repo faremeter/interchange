@@ -768,6 +768,9 @@ export function createWorkflowSupervisor(
               kind: payload.data.kind,
               deploymentId: bindings.deploymentId,
               agentAddress: bindings.deploymentMailAddress,
+              ...(payload.data.snapshot !== undefined
+                ? { approvalSnapshot: payload.data.snapshot }
+                : {}),
             });
           } catch (cause) {
             const message =

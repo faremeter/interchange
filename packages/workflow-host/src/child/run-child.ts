@@ -1153,6 +1153,9 @@ export function emitParkNotify(
         runId: park.runId,
         correlationId: park.correlationId,
         kind: park.kind,
+        ...(park.approvalSnapshot !== undefined
+          ? { snapshot: park.approvalSnapshot }
+          : {}),
       },
     })
     .catch((cause) => {

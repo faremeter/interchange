@@ -159,7 +159,7 @@ function createNoopInboxPrimitives(): InboxPrimitives {
 }
 
 describe("supervisor park.notify arm", () => {
-  test("stamps deploymentId + agentAddress and hands the registration to the sink", async () => {
+  test("stamps identity onto the registration and forwards an approval snapshot when present", async () => {
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "park-notify-"));
 
     const hostTransport = createInMemoryTransport();
@@ -277,13 +277,51 @@ describe("supervisor park.notify arm", () => {
     const registration = await waitForRegistration();
 
     // The child-supplied fields ride through verbatim; the supervisor stamped
-    // its own deployment identity onto them.
-    expect(registration).toEqual({
+    // its own deployment identity onto them. A park with no snapshot forwards
+    // no `approvalSnapshot` key at all (the omit idiom, not a present
+    // `undefined`) -- `toStrictEqual` distinguishes the two, `toEqual` does not.
+    expect(registration).toStrictEqual({
       runId: "run-parked",
       correlationId: "corr-99",
       kind: "approval",
       deploymentId: DEPLOYMENT_ID,
       agentAddress: AGENT_ADDRESS,
+    });
+
+    // A second park carrying an approval snapshot forwards it onto the
+    // registration as `approvalSnapshot`, alongside the stamped identity.
+    const snapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: { amount: 100 },
+    };
+    await childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run-parked-2",
+        correlationId: "corr-100",
+        kind: "approval",
+        snapshot,
+      },
+    });
+    const waitForSecond = async (): Promise<SuspensionRegistration> => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const found = registrations[1];
+        if (found !== undefined) return found;
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      throw new Error("supervisor did not forward the second registration");
+    };
+    const withSnapshot = await waitForSecond();
+    expect(withSnapshot).toEqual({
+      runId: "run-parked-2",
+      correlationId: "corr-100",
+      kind: "approval",
+      deploymentId: DEPLOYMENT_ID,
+      agentAddress: AGENT_ADDRESS,
+      approvalSnapshot: snapshot,
     });
 
     await supervisor.shutdown();
