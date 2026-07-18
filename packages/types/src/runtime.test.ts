@@ -1,6 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
+  ApprovalSnapshot,
+  APPROVAL_SNAPSHOT_MAX_BYTES,
+  BoundedApprovalSnapshot,
   ContentBlock,
   InferenceEvent,
   MediaSource,
@@ -1101,6 +1104,108 @@ describe("inference.image_output event", () => {
         },
       },
     });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ApprovalSnapshot validator
+// ---------------------------------------------------------------------------
+
+describe("ApprovalSnapshot", () => {
+  const validSnapshot = {
+    name: "delete_file",
+    description: "Delete a file at the given path",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+    arguments: { path: "/tmp/x" },
+  };
+
+  test("accepts a well-formed snapshot", () => {
+    const result = ApprovalSnapshot(validSnapshot);
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a snapshot missing its description", () => {
+    const { description: _omitted, ...withoutDescription } = validSnapshot;
+    const result = ApprovalSnapshot(withoutDescription);
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a snapshot whose name is not a string", () => {
+    const result = ApprovalSnapshot({ ...validSnapshot, name: 42 });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BoundedApprovalSnapshot cap
+// ---------------------------------------------------------------------------
+
+describe("BoundedApprovalSnapshot", () => {
+  // Build a snapshot whose serialized form is exactly `targetBytes`. The
+  // padding is ASCII, so one character is one UTF-8 byte and one unescaped
+  // serialized character, letting us land on an exact byte count and pin the
+  // cap's boundary (a `<=` vs `<` off-by-one is the likeliest bug).
+  const snapshotOfSize = (targetBytes: number) => {
+    const base = {
+      name: "t",
+      description: "d",
+      inputSchema: { pad: "" },
+      arguments: {},
+    };
+    const baseBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
+    base.inputSchema.pad = "a".repeat(targetBytes - baseBytes);
+    return base;
+  };
+
+  test("accepts a snapshot at exactly the cap", () => {
+    const atCap = snapshotOfSize(APPROVAL_SNAPSHOT_MAX_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(atCap), "utf8")).toBe(
+      APPROVAL_SNAPSHOT_MAX_BYTES,
+    );
+    const result = BoundedApprovalSnapshot(atCap);
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a snapshot one byte over the cap", () => {
+    const overCap = snapshotOfSize(APPROVAL_SNAPSHOT_MAX_BYTES + 1);
+    expect(Buffer.byteLength(JSON.stringify(overCap), "utf8")).toBe(
+      APPROVAL_SNAPSHOT_MAX_BYTES + 1,
+    );
+    const result = BoundedApprovalSnapshot(overCap);
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("caps on UTF-8 bytes, not UTF-16 code units", () => {
+    // A snapshot padded with a 3-byte character is under the cap counted in
+    // code units (String.length) but over it counted in UTF-8 bytes. The cap
+    // must measure bytes, so it rejects this; a `.length`-based cap would
+    // wrongly accept it. Guards the byte semantics against a refactor that
+    // drops the explicit "utf8" byte measure.
+    const base = {
+      name: "t",
+      description: "d",
+      inputSchema: { pad: "" },
+      arguments: {},
+    };
+    const baseBytes = Buffer.byteLength(JSON.stringify(base), "utf8");
+    // Each "€" is 3 UTF-8 bytes but 1 UTF-16 code unit. Choose a count that
+    // pushes bytes just over the cap while code units stay well under it. The
+    // "+ 1" keeps the byte total strictly above the cap when the remainder
+    // divides evenly.
+    const euroCount =
+      Math.ceil((APPROVAL_SNAPSHOT_MAX_BYTES - baseBytes) / 3) + 1;
+    base.inputSchema.pad = "€".repeat(euroCount);
+    const serialized = JSON.stringify(base);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeGreaterThan(
+      APPROVAL_SNAPSHOT_MAX_BYTES,
+    );
+    expect(serialized.length).toBeLessThan(APPROVAL_SNAPSHOT_MAX_BYTES);
+    const result = BoundedApprovalSnapshot(base);
     expect(result instanceof type.errors).toBe(true);
   });
 });

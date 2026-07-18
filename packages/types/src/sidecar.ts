@@ -9,6 +9,7 @@
 
 import { type } from "arktype";
 import {
+  BoundedApprovalSnapshot,
   ConnectorThreadState,
   HarnessConfig,
   InferenceEvent,
@@ -191,6 +192,9 @@ export const SignalCorrelationRegisterFrame = type({
   deploymentId: "string",
   agentAddress: "string",
   kind: SignalKind,
+  // Approver-facing snapshot of the suspended tool call, size-capped at this
+  // trust boundary. Optional: only an ask-rail suspension carries a snapshot.
+  "snapshot?": BoundedApprovalSnapshot,
 });
 export type SignalCorrelationRegisterFrame =
   typeof SignalCorrelationRegisterFrame.infer;

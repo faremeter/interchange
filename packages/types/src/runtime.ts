@@ -532,6 +532,52 @@ export const ToolCall = type({
 export type ToolCall = typeof ToolCall.infer;
 
 /**
+ * Approver-facing snapshot of the tool call awaiting approval. Built at the
+ * authz `ask` branch from the tool's definition and the live call, then
+ * threaded unchanged from the reactor's pending operation through every
+ * suspend hop to the hub co-write that records it on the approval row.
+ *
+ * `name`, `description`, and `inputSchema` mirror the {@link ToolDefinition};
+ * `arguments` is the live call's arguments. Carried as a sibling of the pending
+ * operation's `suspendedCall`, never folded into {@link ToolCall}, so the
+ * re-dispatch artifact and the approval snapshot stay separate concerns.
+ */
+export const ApprovalSnapshot = type({
+  name: "string",
+  description: "string",
+  inputSchema: "Record<string, unknown>",
+  arguments: "Record<string, unknown>",
+});
+export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
+
+/**
+ * Maximum serialized size, in UTF-8 bytes, of an {@link ApprovalSnapshot} that
+ * crosses a trust boundary. A tool `inputSchema` is normally single-digit KB;
+ * a snapshot approaching this bound is malformed or hostile and is rejected at
+ * the parse boundary rather than co-written onto an approval row.
+ */
+export const APPROVAL_SNAPSHOT_MAX_BYTES = 131072;
+
+/**
+ * {@link ApprovalSnapshot} bounded to {@link APPROVAL_SNAPSHOT_MAX_BYTES}.
+ * Parse the snapshot through this validator where it crosses a trust boundary
+ * (the `park.notify` IPC frame and the sidecar→hub register frame); internal
+ * hops use the unbounded {@link ApprovalSnapshot}. `.narrow` bounds the runtime
+ * check only — its inferred type is identical to {@link ApprovalSnapshot} — so
+ * the cap holds only where a frame is actually parsed, not merely typed.
+ */
+export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
+  (snapshot, ctx) => {
+    const bytes = Buffer.byteLength(JSON.stringify(snapshot), "utf8");
+    return (
+      bytes <= APPROVAL_SNAPSHOT_MAX_BYTES ||
+      ctx.mustBe(`at most ${APPROVAL_SNAPSHOT_MAX_BYTES} bytes when serialized`)
+    );
+  },
+);
+export type BoundedApprovalSnapshot = typeof BoundedApprovalSnapshot.infer;
+
+/**
  * Result of a tool execution. `content` is text or structured data the model
  * sees as the tool result. `detail` is additional data that the harness may
  * use (e.g., for validation or audit) but that is not shown to the model.
@@ -1261,7 +1307,12 @@ export const InferenceEvent = type({
   .or({
     type: "'reactor.gate.blocked'",
     seq: "number",
-    data: { reason: GateType, gateId: "string", "correlationId?": "string" },
+    data: {
+      reason: GateType,
+      gateId: "string",
+      "correlationId?": "string",
+      "approvalSnapshot?": ApprovalSnapshot,
+    },
   })
   .or({
     type: "'reactor.gate.cleared'",
@@ -1511,7 +1562,12 @@ export type InferenceEvent =
   | {
       type: "reactor.gate.blocked";
       seq: number;
-      data: { reason: GateType; gateId: string; correlationId?: string };
+      data: {
+        reason: GateType;
+        gateId: string;
+        correlationId?: string;
+        approvalSnapshot?: ApprovalSnapshot;
+      };
     }
   | {
       type: "reactor.gate.cleared";
@@ -1548,6 +1604,27 @@ export type InferenceEvent =
       seq: number;
       data: Record<string, unknown>;
     };
+
+// Load-bearing drift guards for the dual-maintained `reactor.gate.blocked`
+// event. The arktype `InferenceEvent` validator and the hand-written
+// `InferenceEvent` type are kept in lockstep by hand (the `custom.*` regex
+// variant forces the manual mirror). arktype passes undeclared keys through at
+// runtime, so a schema that dropped `approvalSnapshot` would not fail at
+// runtime. Projecting the field off each inferred shape makes it load-bearing:
+// `tsc` errors if either mirror stops carrying it, mirroring the
+// `_persistedSuspendedCall` guard in storage-isogit.
+const _arkGateBlockedApprovalSnapshot = (
+  data: Extract<
+    typeof InferenceEvent.infer,
+    { type: "reactor.gate.blocked" }
+  >["data"],
+): ApprovalSnapshot | undefined => data.approvalSnapshot;
+void _arkGateBlockedApprovalSnapshot;
+
+const _tsGateBlockedApprovalSnapshot = (
+  data: Extract<InferenceEvent, { type: "reactor.gate.blocked" }>["data"],
+): ApprovalSnapshot | undefined => data.approvalSnapshot;
+void _tsGateBlockedApprovalSnapshot;
 
 /**
  * Validate unknown data as an InferenceEvent. ArkType's regex-based validator
@@ -1591,6 +1668,15 @@ export type PendingOperation = {
    * director path (async-tool pending markers), which carry no tool call.
    */
   suspendedCall?: ToolCall;
+  /**
+   * Approver-facing snapshot of `suspendedCall`, built at the authz `ask`
+   * branch from the tool definition and the live arguments. A sibling of
+   * `suspendedCall`, not a widening of it: `suspendedCall` is the re-dispatch
+   * artifact, this is what the approver decides on. Present only for ask-rail
+   * operations that carry a `suspendedCall`; absent for async-tool pending
+   * markers. Threaded through the suspend hops to the hub co-write.
+   */
+  approvalSnapshot?: ApprovalSnapshot;
 };
 
 /**
