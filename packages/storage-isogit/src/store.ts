@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
 import {
+  ApprovalSnapshot,
   ContentBlock,
   TokenUsage,
   ToolCall,
@@ -68,6 +69,7 @@ const PendingOperationSchema = type({
   gateId: "string",
   "timeoutAt?": "number",
   "suspendedCall?": ToolCall,
+  "approvalSnapshot?": ApprovalSnapshot,
 });
 
 // The persisted schema and the in-memory PendingOperation type are two
@@ -81,6 +83,14 @@ const _persistedSuspendedCall = (
   op: typeof PendingOperationSchema.infer,
 ): ToolCall | undefined => op.suspendedCall;
 void _persistedSuspendedCall;
+
+// Same lockstep guard for the approval snapshot: the persisted schema must
+// keep carrying `approvalSnapshot` so a rehydrated pending operation still
+// exposes it. The projection errors under `tsc` if the schema drops the field.
+const _persistedApprovalSnapshot = (
+  op: typeof PendingOperationSchema.infer,
+): ApprovalSnapshot | undefined => op.approvalSnapshot;
+void _persistedApprovalSnapshot;
 
 const MetadataSchema = type({
   pendingOperations: PendingOperationSchema.array(),
