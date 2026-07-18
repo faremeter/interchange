@@ -11,10 +11,10 @@ export const ApprovalResponse = type({
   correlationId: type("string").describe(
     "Ties the approval to the suspension it resolves. The parked run awaits the control signal keyed by this id.",
   ),
-  toolDefinition: type("Record<string, unknown> | null").describe(
-    "The approver-facing tool snapshot. Null until the inference-layer plumbing that captures it at suspend time is in place.",
+  toolDefinition: type("Record<string, unknown>").describe(
+    "The approver-facing tool snapshot (name, description, input schema) captured at suspend time.",
   ),
-  toolArguments: "Record<string, unknown> | null",
+  toolArguments: "Record<string, unknown>",
   scope: "'once' | 'always' | null",
   status: "'pending' | 'approved' | 'rejected' | 'timeout' | 'expired'",
   timeoutAt: type("string | null").describe(

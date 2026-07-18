@@ -2417,7 +2417,7 @@ describe("createReactor — state snapshot inspection", () => {
     const CORR_ID = "corr-snapshot-check";
     let capturedOps: PendingOperation[] = [];
 
-    const { reactor, waitFor } = createTestReactor({
+    const { reactor, events, waitFor } = createTestReactor({
       director: directorFromTable({
         "message.received": (_e, _s, caps) =>
           caps.executeTools([{ id: "tc1", name: "send_msg", arguments: {} }]),
@@ -2448,6 +2448,15 @@ describe("createReactor — state snapshot inspection", () => {
     const op = capturedOps[0];
     if (op === undefined) throw new Error("unreachable");
     expect(op.correlationId).toBe(CORR_ID);
+    // An async-tool pending marker is not an ask-rail suspension: it carries no
+    // suspended call and no approval snapshot.
+    expect(op.suspendedCall).toBeUndefined();
+    expect(op.approvalSnapshot).toBeUndefined();
+    // It emits no `reactor.gate.blocked` -- the event that drives the hub's
+    // approval co-write -- so a marker never writes an approval row. This keeps
+    // the snapshot columns non-null: only the ask rail co-writes, and it always
+    // carries a snapshot.
+    expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
   });
 
   test("state.activeGates reflects registered gates during suspend", async () => {

@@ -501,8 +501,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: WF_ADDR,
         correlationId: "corr-1",
         status: "pending" as const,
-        toolDefinition: null,
-        toolArguments: null,
+        toolDefinition: {
+          name: SNAPSHOT.name,
+          description: SNAPSHOT.description,
+          inputSchema: SNAPSHOT.inputSchema,
+        },
+        toolArguments: SNAPSHOT.arguments,
         scope: null,
         timeoutAt: null,
       };
