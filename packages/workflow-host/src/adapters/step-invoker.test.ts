@@ -375,6 +375,43 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     expect(stub.events).toContain("close");
   });
 
+  test("forwards the approval snapshot from a suspended send result", async () => {
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+    });
+
+    const sendPromise = invoker(buildRequest({ input: { goal: "ping" } }));
+    await Promise.resolve();
+
+    const approvalSnapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: { amount: 100 },
+    };
+    stub.resolveSend({
+      type: "suspended",
+      correlationId: "corr-1",
+      approvalSnapshot,
+    });
+
+    const result = await sendPromise;
+    if (!("suspend" in result)) {
+      throw new Error(
+        `expected a suspend result, got ${JSON.stringify(result)}`,
+      );
+    }
+    expect(result.suspend.correlationId).toBe("corr-1");
+    expect(result.suspend.approvalSnapshot).toEqual(approvalSnapshot);
+  });
+
   test("passes a string input through verbatim instead of double-JSON-encoding", async () => {
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({

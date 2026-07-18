@@ -9,6 +9,7 @@
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
 import type { SignalKind } from "@intx/types";
+import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import type {
   AuthorizeContext,
@@ -181,7 +182,7 @@ export interface StepInvokeRequest {
  */
 export type StepInvokeResult =
   | { output: unknown }
-  | { suspend: { correlationId: string } };
+  | { suspend: { correlationId: string; approvalSnapshot?: ApprovalSnapshot } };
 
 /**
  * Per-action deterministic effect handler invocation, the effect analog
@@ -355,6 +356,13 @@ export interface WorkflowPark {
   runId: string;
   correlationId: string;
   kind: SignalKind;
+  /**
+   * Approver-facing snapshot of the parked tool call, forwarded from the
+   * reactor so the host can register it alongside the correlation. Present only
+   * on a fresh park that carries one; a resume-from-park does not re-fire the
+   * notify, and a park with no snapshot (unwired authz extension) omits it.
+   */
+  approvalSnapshot?: ApprovalSnapshot;
 }
 
 /**

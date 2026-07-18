@@ -486,6 +486,83 @@ describe("createAgent send() on reactor suspend", () => {
     }
   });
 
+  test("forwards the approval snapshot from an ask suspension into the SendResult", async () => {
+    const chargeTool = defineTool<BaseEnv>({
+      id: "@intx-test/agent/charge_card",
+      factory: () => ({
+        definitions: [
+          {
+            name: "charge_card",
+            description: "Charge the customer's card",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+        async run(call) {
+          return { callId: call.id, content: "charged", isError: false };
+        },
+      }),
+    });
+
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          return caps.executeTools([
+            {
+              id: "call-charge",
+              name: "charge_card",
+              arguments: { amount: 100 },
+            },
+          ]);
+        }
+        return caps.done();
+      },
+    };
+
+    const storage = await createIsogitStore(workDir);
+    const env: BaseEnv = {
+      sources: [SUSPEND_SOURCE],
+      defaultSource: SUSPEND_SOURCE.id,
+      storage,
+      workdir: workDir,
+      audit: noopAuditStore(),
+      // Ask for the wired tool so the authz extension builds and parks a
+      // snapshot; allow anything else.
+      authorize: async (resource) =>
+        resource === "tool:charge_card"
+          ? { effect: "ask", matchingGrants: [], resolvedBy: null }
+          : { effect: "allow", matchingGrants: [], resolvedBy: null },
+      directors: makeDirectorRegistry(director),
+    };
+
+    const def = defineAgent({
+      id: "ask-snapshot-agent",
+      systemPrompt: "test",
+      tools: [chargeTool],
+      capabilities: [],
+      inference: {
+        sources: [
+          { provider: SUSPEND_SOURCE.provider, model: SUSPEND_SOURCE.model },
+        ],
+      },
+    });
+
+    const agent = await createAgent(def, env);
+    try {
+      const result: SendResult = await agent.send(conversationMessage());
+      if (result.type !== "suspended") {
+        throw new Error(`expected suspended outcome, got ${result.type}`);
+      }
+      expect(result.approvalSnapshot).toEqual({
+        name: "charge_card",
+        description: "Charge the customer's card",
+        inputSchema: { type: "object", properties: {} },
+        arguments: { amount: 100 },
+      });
+    } finally {
+      await agent.close();
+    }
+  });
+
   test("rejects with GateSuspendedWithoutCorrelationError when the park carries no correlationId", async () => {
     const director = makeSuspendingDirector({ correlationId: undefined });
     const env = await buildSuspendEnv(workDir, director);

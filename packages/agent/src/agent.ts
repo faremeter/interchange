@@ -51,6 +51,7 @@ import { getLogger } from "@intx/log";
 import { createInboundMessage } from "@intx/mime";
 import type { ErrorRecord } from "@intx/types/audit";
 import type {
+  ApprovalSnapshot,
   AssistantTurn,
   BlobReader,
   ContextCommit,
@@ -133,6 +134,13 @@ export type SendResult =
        */
       type: "suspended";
       correlationId: string;
+      /**
+       * Approver-facing snapshot of the parked tool call, when the reactor
+       * carried one on the gate-blocked event. Forwarded so the runtime can
+       * register it with the suspension. Absent for suspensions with no
+       * snapshot (an authz extension wired with no tool definitions).
+       */
+      approvalSnapshot?: ApprovalSnapshot;
     };
 
 /**
@@ -610,14 +618,18 @@ export async function createAgent<EnvReq extends BaseEnv>(
           // resume against the correlationId. A gate parked without a
           // correlationId is unresumable -- surface it rather than hand
           // back an outcome with no handle.
-          const { correlationId } = event.data;
+          const { correlationId, approvalSnapshot } = event.data;
           activeCycle = null;
           if (correlationId === undefined) {
             sendQueue.rejectActive(
               new GateSuspendedWithoutCorrelationError(event.data.gateId),
             );
           } else {
-            sendQueue.resolveActive({ type: "suspended", correlationId });
+            sendQueue.resolveActive({
+              type: "suspended",
+              correlationId,
+              ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
+            });
           }
         } else if (event.type === "reactor.error" && event.data.fatal) {
           // Only fatal reactor errors terminate the active send. Non-fatal

@@ -541,7 +541,14 @@ function wrapAuthorize(
  */
 function stepResultFromSend(result: SendResult): StepInvokeResult {
   if (result.type === "suspended") {
-    return { suspend: { correlationId: result.correlationId } };
+    return {
+      suspend: {
+        correlationId: result.correlationId,
+        ...(result.approvalSnapshot !== undefined
+          ? { approvalSnapshot: result.approvalSnapshot }
+          : {}),
+      },
+    };
   }
   return { output: { reply: result.reply, turn: result.turn } };
 }
