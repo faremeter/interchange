@@ -21,13 +21,10 @@ export const approval = pgTable(
     runId: text("run_id").notNull(),
     agentAddress: text("agent_address").notNull(),
     correlationId: text("correlation_id").notNull().unique(),
-    // The approver-facing tool snapshot. Nullable because the reactor's
-    // suspend-time event does not carry the snapshot: the tool definition and
-    // arguments are not reachable at the reactor's suspend point without
-    // inference-layer plumbing, so the row is created without them and they are
-    // enriched later once that plumbing exists.
-    toolDefinition: jsonb("tool_definition"),
-    toolArguments: jsonb("tool_arguments"),
+    // Always populated: the ask rail is the sole co-writer and the register
+    // frame's required snapshot guarantees both fields at insert time.
+    toolDefinition: jsonb("tool_definition").notNull(),
+    toolArguments: jsonb("tool_arguments").notNull(),
     scope: text("scope", { enum: ["once", "always"] }),
     status: text("status", {
       enum: ["pending", "approved", "rejected", "timeout", "expired"],

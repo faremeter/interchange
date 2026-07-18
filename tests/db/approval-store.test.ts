@@ -46,6 +46,12 @@ function approvalRow(correlationId: string) {
     runId: `run_${correlationId}`,
     agentAddress: `addr_${correlationId}`,
     correlationId,
+    toolDefinition: {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+    },
+    toolArguments: { amount: 100 },
     timeoutAt: new Date(Date.now() + 60_000),
   };
 }
@@ -111,17 +117,18 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
     expect(missing).toBeNull();
   });
 
-  test("round-trips an approval with a null tool snapshot", async () => {
+  test("round-trips an approval's tool snapshot", async () => {
     await seedApprovalDeps(h);
     const store = createApprovalStore(h.db);
 
-    const inserted = await store.create(approvalRow("corr-null"));
-    expect(inserted.toolDefinition).toBeNull();
-    expect(inserted.toolArguments).toBeNull();
+    const row = approvalRow("corr-snap");
+    const inserted = await store.create(row);
+    expect(inserted.toolDefinition).toEqual(row.toolDefinition);
+    expect(inserted.toolArguments).toEqual(row.toolArguments);
 
-    const found = await store.findByCorrelationId("corr-null");
-    expect(found?.toolDefinition).toBeNull();
-    expect(found?.toolArguments).toBeNull();
+    const found = await store.findByCorrelationId("corr-snap");
+    expect(found?.toolDefinition).toEqual(row.toolDefinition);
+    expect(found?.toolArguments).toEqual(row.toolArguments);
   });
 });
 

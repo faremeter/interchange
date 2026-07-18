@@ -108,7 +108,11 @@ import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversati
 import { signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import { WireGrantRule } from "@intx/types/grant-wire";
-import type { ConversationTurn, HarnessConfig } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  ConversationTurn,
+  HarnessConfig,
+} from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   createTestDb,
@@ -304,12 +308,14 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
     deploymentId,
     agentAddress,
     kind,
+    approvalSnapshot,
   }: {
     correlationId: string;
     runId: string;
     deploymentId: string;
     agentAddress: string;
     kind: "approval";
+    approvalSnapshot: ApprovalSnapshot;
   }): Promise<void> => {
     const deployment = await db
       .select({
@@ -358,8 +364,12 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
           agentAddress,
           correlationId,
           status: "pending",
-          toolDefinition: null,
-          toolArguments: null,
+          toolDefinition: {
+            name: approvalSnapshot.name,
+            description: approvalSnapshot.description,
+            inputSchema: approvalSnapshot.inputSchema,
+          },
+          toolArguments: approvalSnapshot.arguments,
           scope: null,
           timeoutAt: null,
         },

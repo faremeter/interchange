@@ -1296,13 +1296,13 @@ Source: packages/types/src/agents.ts
 **modelRequirements**: Model needs declared by canonical name, with optional per-model capability filters and provider preferences. Resolved against the tenant catalog at launch to build the ordered inference sources; it does not introduce providers the tenant catalog lacks.
 
 ### ApprovalResponse
-`{ agentAddress: string, correlationId: string, createdAt: string, deploymentId: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown } | null, toolDefinition: { [string]: unknown } | null, updatedAt: string }`
+`{ agentAddress: string, correlationId: string, createdAt: string, deploymentId: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown }, toolDefinition: { [string]: unknown }, updatedAt: string }`
 Source: packages/types/src/approvals.ts
 
 **correlationId**: Ties the approval to the suspension it resolves. The parked run awaits the control signal keyed by this id.
 **deploymentId**: The workflow deployment the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.
 **timeoutAt**: Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.
-**toolDefinition**: The approver-facing tool snapshot. Null until the inference-layer plumbing that captures it at suspend time is in place.
+**toolDefinition**: The approver-facing tool snapshot (name, description, input schema) captured at suspend time.
 
 ### ApprovalSummary
 `{ action: string, agentId: string, agentName: string, createdAt: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`
