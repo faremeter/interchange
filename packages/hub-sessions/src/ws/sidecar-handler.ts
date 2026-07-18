@@ -1264,6 +1264,7 @@ export function createSidecarRouter(
         deploymentId: frame.deploymentId,
         agentAddress: frame.agentAddress,
         kind: frame.kind,
+        approvalSnapshot: frame.snapshot,
       });
     } catch (err) {
       logger.error`Failed to register signal correlation ${frame.correlationId} for ${frame.agentAddress}: ${err instanceof Error ? err.message : String(err)}`;

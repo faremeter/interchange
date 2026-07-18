@@ -20,7 +20,10 @@
 // would silently change failure handling.
 
 import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
-import type { ConnectorThreadState } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  ConnectorThreadState,
+} from "@intx/types/runtime";
 import type { SignalKind } from "@intx/types";
 import { getLogger } from "@intx/log";
 
@@ -232,6 +235,7 @@ export type SidecarLookups = {
     deploymentId: string;
     agentAddress: string;
     kind: SignalKind;
+    approvalSnapshot: ApprovalSnapshot;
   }) => Promise<void>;
 
   /** Ingests a received agent-state pack and returns whether the wire

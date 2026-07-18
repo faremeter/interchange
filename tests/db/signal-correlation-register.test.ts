@@ -92,6 +92,16 @@ const ASSET = "asset1";
 const DEPLOYMENT = "dep1";
 const WF_ADDR = "ins_dep_abc@wf.example";
 
+// The register frame requires an approver-facing snapshot: the ask rail is its
+// only producer and always carries one. Frames built without it fail the union
+// parse at the receiver, so every frame these tests send carries this snapshot.
+const SNAPSHOT = {
+  name: "charge_card",
+  description: "Charge the customer's card",
+  inputSchema: { type: "object" },
+  arguments: { amount: 100 },
+};
+
 // A second live deployment on the same tenant, so a connection can own an
 // address OTHER than WF_ADDR for the ownership-gate rejection case.
 const DEPLOYMENT_2 = "dep2";
@@ -235,6 +245,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentId: DEPLOYMENT,
         agentAddress: WF_ADDR,
         kind: "approval",
+        snapshot: SNAPSHOT,
       });
     }
 
@@ -278,8 +289,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(appr?.runId).toBe("run-1");
       expect(appr?.agentAddress).toBe(WF_ADDR);
       expect(appr?.status).toBe("pending");
-      expect(appr?.toolDefinition).toBeNull();
-      expect(appr?.toolArguments).toBeNull();
+      // The register frame's snapshot is co-written verbatim: the tool
+      // definition (name/description/inputSchema) and the live arguments.
+      expect(appr?.toolDefinition).toEqual({
+        name: SNAPSHOT.name,
+        description: SNAPSHOT.description,
+        inputSchema: SNAPSHOT.inputSchema,
+      });
+      expect(appr?.toolArguments).toEqual(SNAPSHOT.arguments);
       expect(appr?.scope).toBeNull();
       // hold-indefinitely: no deadline reaches the co-write.
       expect(appr?.timeoutAt).toBeNull();
@@ -388,6 +405,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           deploymentId: DEPLOYMENT_2,
           agentAddress: WF_ADDR,
           kind: "approval",
+          // Carry a snapshot so this frame passes the parse and the test
+          // exercises tenancy rejection, not accidental parse-drop.
+          snapshot: SNAPSHOT,
         }),
       );
       await drain();
