@@ -174,6 +174,7 @@ export function createHubSessionLookups(
       deploymentId,
       agentAddress,
       kind,
+      approvalSnapshot,
     }) {
       // Resolve tenancy from the workflow deployment the address names. The
       // deployment is the origin of every approval (an approval has no
@@ -241,8 +242,15 @@ export function createHubSessionLookups(
             agentAddress,
             correlationId,
             status: "pending",
-            toolDefinition: null,
-            toolArguments: null,
+            // The register frame guarantees the snapshot (the ask rail is its
+            // only producer), so the approver-facing columns are always
+            // populated -- never null on this path.
+            toolDefinition: {
+              name: approvalSnapshot.name,
+              description: approvalSnapshot.description,
+              inputSchema: approvalSnapshot.inputSchema,
+            },
+            toolArguments: approvalSnapshot.arguments,
             scope: null,
             timeoutAt: null,
           },

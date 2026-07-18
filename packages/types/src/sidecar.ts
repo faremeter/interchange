@@ -193,8 +193,10 @@ export const SignalCorrelationRegisterFrame = type({
   agentAddress: "string",
   kind: SignalKind,
   // Approver-facing snapshot of the suspended tool call, size-capped at this
-  // trust boundary. Optional: only an ask-rail suspension carries a snapshot.
-  "snapshot?": BoundedApprovalSnapshot,
+  // trust boundary. Required: the ask rail is the only producer of this frame
+  // and always carries a snapshot, so a snapshot-absent frame fails this parse
+  // at the receiver (logged and dropped, never co-written as a null row).
+  snapshot: BoundedApprovalSnapshot,
 });
 export type SignalCorrelationRegisterFrame =
   typeof SignalCorrelationRegisterFrame.infer;

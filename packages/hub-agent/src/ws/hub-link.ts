@@ -1356,6 +1356,15 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
   const sendSignalCorrelationRegister: HubLink["sendSignalCorrelationRegister"] =
     (registration) => {
+      // The ask rail is the only producer of this frame, and every ask-rail
+      // suspension carries a snapshot. A registration without one is an
+      // in-process wiring defect, not a wire condition: fail loud here rather
+      // than send a snapshot-less frame the receiver would reject.
+      if (registration.approvalSnapshot === undefined) {
+        throw new Error(
+          `signal.correlation.register built with no approval snapshot for ${registration.correlationId}; ask-rail suspensions always carry one`,
+        );
+      }
       const frame: SignalCorrelationRegisterFrame = {
         type: "signal.correlation.register",
         correlationId: registration.correlationId,
@@ -1363,9 +1372,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         deploymentId: registration.deploymentId,
         agentAddress: registration.agentAddress,
         kind: registration.kind,
-        ...(registration.approvalSnapshot !== undefined
-          ? { snapshot: registration.approvalSnapshot }
-          : {}),
+        snapshot: registration.approvalSnapshot,
       };
       send(frame);
     };

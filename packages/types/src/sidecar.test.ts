@@ -3,6 +3,8 @@ import { type } from "arktype";
 import {
   AgentDeployFrame,
   DeployApplyErrorCategory,
+  SidecarFrame,
+  SignalCorrelationRegisterFrame,
   SourcesUpdateFrame,
 } from "./sidecar";
 
@@ -173,5 +175,40 @@ describe("SourcesUpdateFrame", () => {
     // agent could not swap to any live source.
     const result = SourcesUpdateFrame({ ...base, sources: [] });
     expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
+  const base = {
+    type: "signal.correlation.register",
+    correlationId: "corr-1",
+    runId: "run-1",
+    deploymentId: "dep-1",
+    agentAddress: "ins_dep@integration.interchange",
+    kind: "approval",
+  };
+  const snapshot = {
+    name: "charge_card",
+    description: "Charge the customer's card",
+    inputSchema: { type: "object" },
+    arguments: { amount: 100 },
+  };
+
+  test("accepts a register frame carrying a snapshot", () => {
+    const frame = { ...base, snapshot };
+    expect(SignalCorrelationRegisterFrame(frame) instanceof type.errors).toBe(
+      false,
+    );
+    expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a register frame with no snapshot", () => {
+    // The ask rail is the only producer and always carries a snapshot, so a
+    // snapshot-absent frame is malformed at the receive boundary -- it fails
+    // the union parse and is logged and dropped, never co-written as null.
+    expect(SignalCorrelationRegisterFrame(base) instanceof type.errors).toBe(
+      true,
+    );
+    expect(SidecarFrame(base) instanceof type.errors).toBe(true);
   });
 });
