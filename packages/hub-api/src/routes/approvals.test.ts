@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import { ErrorResponse } from "@intx/types";
+import { ApprovalResponse, ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ApprovalStore, SignalCorrelationStore, DB } from "@intx/db";
 
@@ -90,14 +90,20 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
   };
 }
 
-function createMockDB(): DB["db"] {
+function createMockDB(
+  approvalList: NonNullable<ParsedApproval>[] = [],
+): DB["db"] {
   // The resolver only touches the db through `db.transaction`; the stores it
-  // uses are injected as mocks, so the tx handle is never read here.
+  // uses are injected as mocks, so the tx handle is never read here. The list
+  // route reads `db.query.approval.findMany`; the mock ignores the where/order
+  // (tenant scoping and keyset ordering are exercised by the real-DB tests) and
+  // returns the supplied rows, which the route parses and formats.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
       tenant: { findFirst: async () => testTenant },
       principal: { findFirst: async () => testPrincipal },
+      approval: { findMany: async () => approvalList },
     },
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
   } as unknown as DB["db"];
@@ -265,6 +271,7 @@ function createMockEventCollectors(): EventCollectorRegistry {
 
 type TestAppOpts = {
   approval?: NonNullable<ParsedApproval> | null;
+  approvalList?: NonNullable<ParsedApproval>[];
   resolveResult?: NonNullable<ParsedApproval> | null;
   claimResult?: { agentAddress: string; runId: string } | null;
   grants?: GrantRule[];
@@ -284,7 +291,7 @@ function createTestApp(opts: TestAppOpts = {}) {
   return createApp({
     getSession: createMockGetSession(),
     authHandler: () => new Response("", { status: 404 }),
-    db: createMockDB(),
+    db: createMockDB(opts.approvalList ?? []),
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
     approvalStore: createMockApprovalStore({
       approval,
@@ -321,12 +328,29 @@ function authedPost(path: string, body: unknown): Request {
   });
 }
 
+function authedGet(path: string): Request {
+  return new Request(`http://localhost${path}`, { method: "GET" });
+}
+
 async function errorCode(res: Response): Promise<string> {
   const parsed = ErrorResponse(await res.json());
   if (parsed instanceof type.errors) {
     throw new Error(`unexpected error body: ${parsed.summary}`);
   }
   return parsed.error.code;
+}
+
+const ApprovalListBody = type({
+  data: ApprovalResponse.array(),
+  nextCursor: "string | null",
+});
+
+async function listBody(res: Response): Promise<typeof ApprovalListBody.infer> {
+  const parsed = ApprovalListBody(await res.json());
+  if (parsed instanceof type.errors) {
+    throw new Error(`unexpected list body: ${parsed.summary}`);
+  }
+  return parsed;
 }
 
 describe("POST /approvals/:approvalId/approve", () => {
@@ -485,5 +509,114 @@ describe("POST /approvals/:approvalId/reject", () => {
     const call = signalCalls[0];
     if (call === undefined) throw new Error("missing signal call");
     expect(call.payload).toEqual({ outcome: "rejected" });
+  });
+});
+
+describe("GET /approvals/:approvalId", () => {
+  test("returns the approval with its tool snapshot for a holder of the resolve grant", async () => {
+    // The default grant is `approval:<deployment>` / `resolve` -- the same
+    // capability the approve/reject routes require. Reading must accept it; a
+    // regression to action `read` would 403 the approver on the page they need.
+    const app = createTestApp();
+    const res = await app.fetch(authedGet(`${base()}/${APPROVAL_ID}`));
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({
+      id: APPROVAL_ID,
+      status: "pending",
+      toolDefinition: {
+        name: "charge_card",
+        description: "Charge the customer's card",
+        inputSchema: { type: "object" },
+      },
+      toolArguments: { amount: 100 },
+    });
+  });
+
+  test("returns a resolved approval with its terminal status", async () => {
+    const app = createTestApp({
+      approval: pendingApproval({
+        status: "approved",
+        resolvedAt: new Date("2025-01-03"),
+      }),
+    });
+    const res = await app.fetch(authedGet(`${base()}/${APPROVAL_ID}`));
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({ id: APPROVAL_ID, status: "approved" });
+  });
+
+  test("masks a cross-tenant approval as 404", async () => {
+    const app = createTestApp({
+      approval: pendingApproval({ tenantId: OTHER_TENANT_ID }),
+    });
+    const res = await app.fetch(authedGet(`${base()}/${APPROVAL_ID}`));
+
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe("not_found");
+  });
+
+  test("returns 404 for an unknown approval id", async () => {
+    const app = createTestApp({ approval: null });
+    const res = await app.fetch(authedGet(`${base()}/apr_missing`));
+
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe("not_found");
+  });
+
+  test("returns 403 when the caller holds no grant", async () => {
+    const app = createTestApp({ grants: [] });
+    const res = await app.fetch(authedGet(`${base()}/${APPROVAL_ID}`));
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("forbidden");
+  });
+});
+
+describe("GET /approvals", () => {
+  test("lists pending approvals with their snapshots for a tenant-wide grant", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "approval:*" })],
+      approvalList: [pendingApproval()],
+    });
+    const res = await app.fetch(authedGet(base()));
+
+    expect(res.status).toBe(200);
+    const body = await listBody(res);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({
+      id: APPROVAL_ID,
+      status: "pending",
+      toolDefinition: { name: "charge_card" },
+      toolArguments: { amount: 100 },
+    });
+    // Short page: no further cursor.
+    expect(body.nextCursor).toBeNull();
+  });
+
+  test("returns an empty page when the tenant has no pending approvals", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "approval:*" })],
+      approvalList: [],
+    });
+    const res = await app.fetch(authedGet(base()));
+
+    expect(res.status).toBe(200);
+    const body = await listBody(res);
+    expect(body.data).toEqual([]);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  test("forbids a per-deployment approver: listing is a tenant-wide capability", async () => {
+    // The default grant is `approval:<deployment>`, which does not match the
+    // tenant-wide `approval:*` the list gate demands. Per-deployment approvers
+    // read individual approvals by id, not the whole tenant's list.
+    const app = createTestApp({ approvalList: [pendingApproval()] });
+    const res = await app.fetch(authedGet(base()));
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("forbidden");
   });
 });

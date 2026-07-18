@@ -698,16 +698,20 @@ Returns the seq-ordered event projection (RunStarted, StepStarted, StepCompleted
 ### GET /api/tenants/:tenantId/approvals
 List pending approvals in the tenant
 
-Returns pending approval requests for the authenticated user within this tenant.
+Returns pending approval requests within this tenant, newest first.
 
-200: ApprovalResponse[] -- List of approvals
+Query: cursor?, limit?
+
+200: unknown -- List of pending approvals
+403: ErrorResponse -- Caller lacks the tenant-wide approval grant
 
 ### GET /api/tenants/:tenantId/approvals/:approvalId
 Get approval details
 
-Returns the proposed action, context, originating agent, and session.
+Returns the approver-facing tool snapshot, status, and originating deployment for one approval.
 
 200: ApprovalResponse -- Approval details
+403: ErrorResponse -- Caller lacks the approval grant
 404: ErrorResponse -- Approval not found
 
 ### POST /api/tenants/:tenantId/approvals/:approvalId/approve
