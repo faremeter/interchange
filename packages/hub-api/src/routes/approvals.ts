@@ -1,9 +1,11 @@
+import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { authorize } from "@intx/authz";
 import type { DB, ApprovalStore, SignalCorrelationStore } from "@intx/db";
+import { approval } from "@intx/db/schema";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { generateId } from "@intx/hub-common";
 import { parseApprovalRow } from "@intx/db";
@@ -14,11 +16,19 @@ import {
   ApproveAction,
   RejectAction,
   ErrorResponse,
+  paginatedSchema,
   signalName,
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { ts } from "../format";
+import {
+  cursorCondition,
+  pageOrder,
+  pageParameters,
+  paginatedResponse,
+  parsePageParams,
+} from "../pagination";
 
 type ParsedApproval = ReturnType<typeof parseApprovalRow>;
 
@@ -175,23 +185,81 @@ export function createApprovalRoutes(
       tags: ["Approvals"],
       summary: "List pending approvals in the tenant",
       description:
-        "Returns pending approval requests for the authenticated user within this tenant.",
+        "Returns pending approval requests within this tenant, newest first.",
+      parameters: [...pageParameters],
       responses: {
         200: {
-          description: "List of approvals",
+          description: "List of pending approvals",
           content: {
             "application/json": {
-              schema: resolver(ApprovalResponse.array()),
+              schema: resolver(paginatedSchema(ApprovalResponse)),
             },
+          },
+        },
+        403: {
+          description: "Caller lacks the tenant-wide approval grant",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
           },
         },
       },
     }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
+    async (c) => {
+      const tenant = c.get("tenant");
+      const principal = c.get("principal");
+
+      // Listing spans the whole tenant, so it needs a tenant-wide grant
+      // (`approval:*`), not a per-deployment one: a per-deployment approver
+      // holds only `approval:<their deployment>` and reads individual
+      // approvals by id via the detail route. The action is `resolve`, the
+      // same capability the approve/reject routes gate on -- reading an
+      // approval is part of being able to resolve it.
+      const authz = await authorize(
+        deps.grantStore,
+        principal.id,
+        tenant.id,
+        "approval:*",
+        "resolve",
+        deps.conditionRegistry,
+      );
+      if (authz.effect !== "allow") {
+        return c.json(
+          {
+            error: {
+              code: "forbidden",
+              message: "You do not have permission to list approvals",
+            },
+          },
+          403,
+        );
+      }
+
+      const { limit, cursor } = parsePageParams({
+        cursor: c.req.query("cursor"),
+        limit: c.req.query("limit"),
+      });
+
+      const conditions = [
+        eq(approval.tenantId, tenant.id),
+        eq(approval.status, "pending"),
+      ];
+      if (cursor) {
+        conditions.push(
+          cursorCondition(approval.createdAt, approval.id, cursor),
+        );
+      }
+
+      const rows = await deps.db.query.approval.findMany({
+        where: and(...conditions),
+        orderBy: pageOrder(approval.createdAt, approval.id),
+        limit,
+      });
+
+      const parsed = rows.map(parseApprovalRow);
+      return c.json(
+        paginatedResponse(parsed.map(formatApproval), parsed, limit),
+      );
+    },
   );
 
   app.get(
@@ -200,12 +268,18 @@ export function createApprovalRoutes(
       tags: ["Approvals"],
       summary: "Get approval details",
       description:
-        "Returns the proposed action, context, originating agent, and session.",
+        "Returns the approver-facing tool snapshot, status, and originating deployment for one approval.",
       responses: {
         200: {
           description: "Approval details",
           content: {
             "application/json": { schema: resolver(ApprovalResponse) },
+          },
+        },
+        403: {
+          description: "Caller lacks the approval grant",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         404: {
@@ -216,11 +290,47 @@ export function createApprovalRoutes(
         },
       },
     }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
+    async (c) => {
+      const tenant = c.get("tenant");
+      const principal = c.get("principal");
+      const approvalId = c.req.param("approvalId");
+
+      const row = await deps.approvalStore.findById(approvalId);
+      // Mask cross-tenant existence as 404 -- a caller in one tenant must not
+      // learn that an approval id exists in another. Checked before authz so
+      // the 403 below never leaks a foreign id.
+      if (row === null || row.tenantId !== tenant.id) {
+        return c.json(
+          { error: { code: "not_found", message: "Approval not found" } },
+          404,
+        );
+      }
+
+      // Same grant the approve/reject routes require: whoever can resolve this
+      // approval can read it. No status filter -- a resolved approval is still
+      // fetchable so the UI can show its terminal state.
+      const authz = await authorize(
+        deps.grantStore,
+        principal.id,
+        tenant.id,
+        `approval:${row.deploymentId}`,
+        "resolve",
+        deps.conditionRegistry,
+      );
+      if (authz.effect !== "allow") {
+        return c.json(
+          {
+            error: {
+              code: "forbidden",
+              message: "You do not have permission to read this approval",
+            },
+          },
+          403,
+        );
+      }
+
+      return c.json(formatApproval(row));
+    },
   );
 
   app.post(
