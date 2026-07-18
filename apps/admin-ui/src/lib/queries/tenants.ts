@@ -306,6 +306,52 @@ export function agentDetailQuery(tenantId: string, agentId: string) {
   });
 }
 
+export type ApprovalResponse = {
+  id: string;
+  tenantId: string;
+  deploymentId: string;
+  runId: string;
+  agentAddress: string;
+  correlationId: string;
+  // Opaque records on the wire: the API validates them as `Record<string,
+  // unknown>`, not a structured shape. Narrow before reading fields.
+  toolDefinition: Record<string, unknown>;
+  toolArguments: Record<string, unknown>;
+  scope: "once" | "always" | null;
+  status: "pending" | "approved" | "rejected" | "timeout" | "expired";
+  timeoutAt: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function tenantApprovalsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "approvals"],
+    queryFn: async () => {
+      // The endpoint is keyset-paginated; the panel renders the first page and
+      // deliberately drops `nextCursor`, matching the other admin list views.
+      // The type mirrors the wire envelope so the discarded field is explicit.
+      const res = await api<{
+        data: ApprovalResponse[];
+        nextCursor: string | null;
+      }>("GET", `/api/tenants/${tenantId}/approvals`);
+      return res.data;
+    },
+  });
+}
+
+export function approvalDetailQuery(tenantId: string, approvalId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "approvals", approvalId],
+    queryFn: () =>
+      api<ApprovalResponse>(
+        "GET",
+        `/api/tenants/${tenantId}/approvals/${approvalId}`,
+      ),
+  });
+}
+
 export function tenantInstancesQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "instances", { status: "running" }],
