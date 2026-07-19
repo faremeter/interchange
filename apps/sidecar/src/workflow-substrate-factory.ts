@@ -29,9 +29,11 @@ import { type } from "arktype";
 
 import { InferenceSource } from "@intx/types/runtime";
 import type {
+  ApprovalSnapshot,
   AuditStore,
   ContextStore,
   MessageTransport,
+  PendingOperation,
 } from "@intx/types/runtime";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
@@ -46,6 +48,7 @@ import { createDefaultDirectorRegistry } from "@intx/agent";
 import { createSSHSignature } from "@intx/crypto";
 import {
   createAgentRepoStore,
+  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   type Principal,
   type RepoId,
   type RepoStore,
@@ -64,6 +67,7 @@ import {
   createWorkflowStepInvoker,
   type ChildOutboundMailBridge,
   type GrantEvaluator,
+  type LoadParkedApproval,
   type RunChildWorkflow,
   type RunWorkflowChildBindings,
   type SourcesSnapshotRef,
@@ -91,6 +95,8 @@ import {
 } from "./step-agent-tools";
 import {
   createDurableConversationRegistry,
+  isErrnoNotFound,
+  reconstructDurableConversation,
   type DurableConversationRegistry,
 } from "./conversation-state";
 
@@ -412,7 +418,7 @@ function createStepStorageSigner(signingKey: {
  * this invariant loudly on the cold path (a resume opening a store that
  * lacks the resumed correlationId's pending-op throws).
  */
-function stepStorageRoot(args: {
+export function stepStorageRoot(args: {
   dataDir: string;
   workflowRunRepoId: RepoId;
   runId: string;
@@ -480,6 +486,94 @@ function warmStepStorageRoot(args: {
     args.workflowRunRepoId.id,
     "warm",
     encodeURIComponent(args.stepId),
+  );
+}
+
+async function directoryExists(dir: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(dir)).isDirectory();
+  } catch (cause) {
+    if (isErrnoNotFound(cause)) return false;
+    throw cause;
+  }
+}
+
+function findApprovalSnapshot(
+  pendingOperations: readonly PendingOperation[],
+  correlationId: string,
+): ApprovalSnapshot | undefined {
+  return pendingOperations.find((op) => op.correlationId === correlationId)
+    ?.approvalSnapshot;
+}
+
+/**
+ * Read a cold (multi-step) parked step's approval snapshot from its on-disk
+ * per-attempt isogit store. The store is written at suspend and survives while
+ * the run is non-terminal -- a parked step keeps the run in-flight, so the
+ * run-completion reclamation (`cleanupRunStorage`) never fires against it.
+ *
+ * Returns undefined when the store directory is absent, surfacing a missing
+ * store as the absence the caller treats as an inconsistency rather than
+ * manufacturing an empty repo on the read path: `createIsogitStore` calls
+ * `initAgentRepo`, which would `mkdir` and init a fresh repo for a
+ * non-existent dir. The `directoryExists` guard keeps the read a read -- on an
+ * existing store `initAgentRepo` finds a repo and commits nothing, so no
+ * signer is needed (`load()` never signs).
+ */
+export async function readColdParkedApprovalSnapshot(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  runId: string;
+  stepId: string;
+  attempt: number;
+  correlationId: string;
+}): Promise<ApprovalSnapshot | undefined> {
+  const storeDir = stepStorageRoot({
+    dataDir: args.dataDir,
+    workflowRunRepoId: args.workflowRunRepoId,
+    runId: args.runId,
+    stepId: args.stepId,
+    attempt: args.attempt,
+  });
+  if (!(await directoryExists(storeDir))) return undefined;
+  const store = await createIsogitStore(storeDir);
+  const { pendingOperations } = await store.load();
+  return findApprovalSnapshot(pendingOperations, args.correlationId);
+}
+
+/**
+ * Read a warm (single-step) parked agent's approval snapshot from durable
+ * substrate state. A warm agent's pending operations live in its durable
+ * conversation store, mirrored to the workflow-run substrate under
+ * `agent-state/<stepId>/`.
+ *
+ * Reconstructs that state read-only -- deliberately NOT through
+ * `DurableConversationRegistry.acquire`, whose first acquire writes and
+ * commits a substrate restore into the live store and would front-run the warm
+ * agent's own restore ordering. A respawned child has not rebuilt the live
+ * store when re-registration runs (resume re-parks without re-invoking the
+ * step), so the substrate is the only place the snapshot lives at that moment.
+ * Returns undefined when no durable state exists for the agent.
+ */
+export async function readWarmParkedApprovalSnapshot(args: {
+  substrate: RepoStore;
+  workflowRunRepoId: RepoId;
+  stepId: string;
+  correlationId: string;
+}): Promise<ApprovalSnapshot | undefined> {
+  const agentStateDir = path.join(
+    args.substrate.getRepoDir(args.workflowRunRepoId),
+    WORKFLOW_RUN_AGENT_STATE_PREFIX,
+    encodeURIComponent(args.stepId),
+  );
+  const reconstructed = await reconstructDurableConversation(
+    agentStateDir,
+    args.stepId,
+  );
+  if (reconstructed === null) return undefined;
+  return findApprovalSnapshot(
+    reconstructed.pendingOperations,
+    args.correlationId,
   );
 }
 
@@ -1312,6 +1406,34 @@ export function createSidecarSubstrateFactory(
               { recursive: true, force: true },
             );
 
+    // Recover a parked correlation's approval snapshot for the child's
+    // re-registration enumeration. Wired unconditionally (unlike
+    // `cleanupRunStorage`, which is cold-only): a warm agent parks on approval
+    // just as a cold one does, and the branch on `warmKeep` selects the durable
+    // read -- cold reads the per-attempt isogit store, warm reconstructs the
+    // agent's durable conversation state from the substrate.
+    const loadParkedApproval: LoadParkedApproval = ({
+      runId,
+      stepId,
+      attempt,
+      correlationId,
+    }) =>
+      env.spawn.warmKeep
+        ? readWarmParkedApprovalSnapshot({
+            substrate,
+            workflowRunRepoId,
+            stepId,
+            correlationId,
+          })
+        : readColdParkedApprovalSnapshot({
+            dataDir: validated.SIDECAR_DATA_DIR,
+            workflowRunRepoId,
+            runId,
+            stepId,
+            attempt,
+            correlationId,
+          });
+
     const bindings: RunWorkflowChildBindings = {
       substrate,
       workflowRunRepoId,
@@ -1324,6 +1446,7 @@ export function createSidecarSubstrateFactory(
       spawnChild,
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,
+      loadParkedApproval,
       ...(cleanupRunStorage !== undefined ? { cleanupRunStorage } : {}),
     };
     return bindings;
