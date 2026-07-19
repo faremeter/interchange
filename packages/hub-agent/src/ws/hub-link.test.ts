@@ -1542,6 +1542,38 @@ describe("register + reconnect frames on connect", () => {
     }
   });
 
+  test("sendSignalCorrelationRegister throws on a registration with no snapshot", () => {
+    // Regression cover for the existing fail-loud guard in the producer: the
+    // ask rail always carries a snapshot, so a registration without one is a
+    // wiring defect the producer refuses to send. The guard fires
+    // synchronously before the frame is built, so no connection is needed.
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createHubLink({
+      hubURL: "ws://localhost:1/ws",
+      sidecarId: "sc-throw",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [],
+    });
+
+    try {
+      expect(() =>
+        client.sendSignalCorrelationRegister({
+          correlationId: "corr-throw",
+          runId: "run-1",
+          deploymentId: "dep-1",
+          agentAddress: "ins_dep@integration.interchange",
+          kind: "approval",
+        }),
+      ).toThrow(/corr-throw/);
+    } finally {
+      client.close();
+    }
+  });
+
   test("sendSignalCorrelationRegister ships a register frame carrying the approval snapshot", async () => {
     const frames: string[] = [];
     const app = new Hono();
