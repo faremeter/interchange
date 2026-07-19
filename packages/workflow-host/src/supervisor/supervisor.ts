@@ -64,8 +64,13 @@ import {
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
 import { base64Decode, base64Encode, hexEncode } from "@intx/types";
+import type { SignalKind } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
-import type { InferenceSource, OutboundMessage } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  InferenceSource,
+  OutboundMessage,
+} from "@intx/types/runtime";
 import type { CancelOrigin } from "@intx/workflow";
 
 import {
@@ -143,6 +148,15 @@ const logger = getLogger(["workflow-host", "supervisor"]);
 export const DEFAULT_TERMINAL_WRITE_WATCHDOG_MS = 30_000;
 
 /**
+ * Default watchdog for `reEmitParkedCorrelations`' wait on the child's
+ * `parked-correlations.response`. Shares the terminal-write watchdog's 30s
+ * budget: generous enough for a healthy child to enumerate its in-flight runs
+ * and load each parked snapshot, tight enough that a wedged-but-alive child
+ * does not hang the reconnect caller until some coarser timeout intervenes.
+ */
+export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
+
+/**
  * Public surface returned by `createWorkflowSupervisor`. Each method
  * advances the supervisor through one lifecycle transition; the
  * supervisor's internal state is encapsulated.
@@ -212,6 +226,21 @@ export interface WorkflowSupervisor {
    * closing pipe. Throws otherwise.
    */
   deliverSources(opts: DeliverSourcesOpts): Promise<void>;
+  /**
+   * Re-register every correlation the child is currently parked on by
+   * querying it for its parked correlations and re-emitting each through
+   * `onSuspensionRegister`. Recovers a `park.notify` register the hub may have
+   * missed while it was down at suspend time.
+   *
+   * Best-effort and safe to call at any time, including concurrently. Unlike
+   * `deliverSignal`/`deliverSources`, which throw when the child is not
+   * addressable, this NO-OPS on a non-addressable phase (idle / stopping /
+   * stopped / recycling): a re-establishment landing mid-recycle must not
+   * crash, and the next spawn re-drives it. A query that fails or times out is
+   * logged and dropped; the hub co-write is idempotent, so the next
+   * re-establishment re-drives it. The caller need not guard the call site.
+   */
+  reEmitParkedCorrelations(): Promise<void>;
   /**
    * Current snapshot of the credentials pushed to the child. Surfaced
    * so the host can audit the per-step contentHash without
@@ -385,6 +414,8 @@ export function createWorkflowSupervisor(
   const drainTimeoutMs = bindings.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
   const terminalWriteWatchdogMs =
     bindings.terminalWriteWatchdogMs ?? DEFAULT_TERMINAL_WRITE_WATCHDOG_MS;
+  const parkedQueryWatchdogMs =
+    bindings.parkedQueryWatchdogMs ?? DEFAULT_PARKED_QUERY_WATCHDOG_MS;
 
   // Pure observability: invoke the dispatch-timing hook (when wired) at
   // the two per-message boundaries the 4.7 latency gate brackets. A
@@ -749,37 +780,26 @@ export function createWorkflowSupervisor(
         continue;
       }
       if (payload.type === "park.notify") {
-        // The workflow-process child reported a control-plane suspension:
-        // an agent step parked on a reserved `signalName(correlationId)`
-        // channel. Stamp the deployment identity the supervisor owns
-        // (`deploymentId` + the deployment's mail address) onto the
-        // child-supplied `runId`/`correlationId`/`kind` and hand it to the
-        // host's suspension-register sink, which (production: the sidecar)
-        // sends a `signal.correlation.register` frame to the hub so the run's
-        // routing + approval rows are co-written. Best-effort: a throwing
-        // sink is logged, not rethrown, so it cannot tear the pump down and
-        // stop draining every other upstream frame for the cohort. A host
-        // that wires no sink registers nothing.
-        if (bindings.onSuspensionRegister !== undefined) {
-          try {
-            bindings.onSuspensionRegister({
-              runId: payload.data.runId,
-              correlationId: payload.data.correlationId,
-              kind: payload.data.kind,
-              deploymentId: bindings.deploymentId,
-              agentAddress: bindings.deploymentMailAddress,
-              ...(payload.data.snapshot !== undefined
-                ? { approvalSnapshot: payload.data.snapshot }
-                : {}),
-            });
-          } catch (cause) {
-            const message =
-              cause instanceof Error ? cause.message : String(cause);
-            logger.error`onSuspensionRegister sink threw for runId=${payload.data.runId} correlationId=${payload.data.correlationId}: ${message}`;
-          }
-        } else {
-          logger.warn`park.notify received for runId=${payload.data.runId} but no onSuspensionRegister sink is wired; correlation ${payload.data.correlationId} not registered`;
-        }
+        // The workflow-process child reported a control-plane suspension: an
+        // agent step parked on a reserved `signalName(correlationId)` channel.
+        // Register it the same way the reconnect re-emit driver does, through
+        // the shared `registerSuspension` transform.
+        registerSuspension({
+          runId: payload.data.runId,
+          correlationId: payload.data.correlationId,
+          kind: payload.data.kind,
+          ...(payload.data.snapshot !== undefined
+            ? { snapshot: payload.data.snapshot }
+            : {}),
+        });
+        continue;
+      }
+      if (payload.type === "parked-correlations.response") {
+        // The child answered a `reEmitParkedCorrelations` query. Resolve the
+        // awaiting driver; a response with no pending entry (the query already
+        // timed out and dropped it) is logged and dropped, never thrown, so it
+        // cannot tear the pump down.
+        resolveParkedResponse(payload.data);
         continue;
       }
       logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
@@ -816,6 +836,10 @@ export function createWorkflowSupervisor(
     for (const [requestId, entry] of pendingMerges) {
       pendingMerges.delete(requestId);
       entry.resolve({ ok: false, reason: `cohort aborted: ${reason}` });
+    }
+    for (const [requestId, entry] of pendingParkedQueries) {
+      pendingParkedQueries.delete(requestId);
+      entry.reject(new Error(`cohort aborted: ${reason}`));
     }
     for (const [runId, waiter] of markConsumedCompletionWaiters.entries()) {
       markConsumedCompletionWaiters.delete(runId);
@@ -859,6 +883,128 @@ export function createWorkflowSupervisor(
       return;
     }
     entry.resolve({ ok: false, reason: data.result.reason });
+  }
+
+  // Stamp the deployment identity the supervisor owns onto a child-supplied
+  // park and hand it to the host's suspension-register sink. Shared by the
+  // `park.notify` arm (the happy-path emit) and `reEmitParkedCorrelations`
+  // (the re-establishment re-emit). Best-effort: a throwing sink is logged,
+  // not rethrown, so it cannot tear the upstream pump down or abort a re-emit
+  // partway through the parked set. The sink (production: the sidecar) turns
+  // the stamped registration into a `signal.correlation.register` frame the
+  // hub co-writes the run's routing + approval rows from.
+  function registerSuspension(park: {
+    runId: string;
+    correlationId: string;
+    kind: SignalKind;
+    snapshot?: ApprovalSnapshot;
+  }): void {
+    if (bindings.onSuspensionRegister === undefined) {
+      logger.warn`suspension register for runId=${park.runId} but no onSuspensionRegister sink is wired; correlation ${park.correlationId} not registered`;
+      return;
+    }
+    try {
+      bindings.onSuspensionRegister({
+        runId: park.runId,
+        correlationId: park.correlationId,
+        kind: park.kind,
+        deploymentId: bindings.deploymentId,
+        agentAddress: bindings.deploymentMailAddress,
+        ...(park.snapshot !== undefined
+          ? { approvalSnapshot: park.snapshot }
+          : {}),
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`onSuspensionRegister sink threw for runId=${park.runId} correlationId=${park.correlationId}: ${message}`;
+    }
+  }
+
+  // Pending `reEmitParkedCorrelations` queries keyed by the supervisor-minted
+  // `requestId`. The driver installs an entry, sends `parked-correlations.
+  // request`, and awaits; the matching `parked-correlations.response` resolves
+  // it. Supervisor-minted (not child-echoed like `pendingMerges`) because the
+  // supervisor originates this request; the counter lives in the factory
+  // closure so a recycle does not reset it and let a late old-child response
+  // resolve a new query.
+  type ParkedCorrelations = Extract<
+    ControlPayload,
+    { type: "parked-correlations.response" }
+  >["data"]["parked"];
+  type PendingParkedQuery = {
+    resolve: (parked: ParkedCorrelations) => void;
+    reject: (cause: Error) => void;
+  };
+  const pendingParkedQueries = new Map<string, PendingParkedQuery>();
+  let parkedQuerySeq = 0;
+
+  function resolveParkedResponse(
+    data: Extract<
+      ControlPayload,
+      { type: "parked-correlations.response" }
+    >["data"],
+  ): void {
+    const entry = pendingParkedQueries.get(data.requestId);
+    if (entry === undefined) {
+      logger.warn`parked-correlations.response landed with no pending entry; requestId=${data.requestId} dropped`;
+      return;
+    }
+    pendingParkedQueries.delete(data.requestId);
+    entry.resolve(data.parked);
+  }
+
+  async function reEmitParkedCorrelations(): Promise<void> {
+    // No-op (NOT throw) when the child is not addressable. `deliverSignal`
+    // throws on non-running/starting (including recycling) because it points a
+    // write at the dying child's closing pipe and wants the caller to retry;
+    // this driver's contract is the opposite -- the next re-establishment
+    // re-drives it -- so skipping recycling and letting the next spawn's
+    // re-emit cover it is correct here, not a missed guard.
+    if (state.phase !== "running" && state.phase !== "starting") {
+      logger.info`reEmitParkedCorrelations: child not addressable (phase=${state.phase}); skipping`;
+      return;
+    }
+    const controlSender = state.controlSender;
+    const requestId = `pc-${String((parkedQuerySeq += 1))}`;
+    const responded = new Promise<ParkedCorrelations>((resolve, reject) => {
+      pendingParkedQueries.set(requestId, { resolve, reject });
+    });
+    // Watchdog: a wedged-but-alive child never tears its cohort down, so
+    // `rejectCohortAwaiters` would never fire and this await would hang the
+    // re-establishment caller. On expiry, drop the pending entry and return;
+    // the next re-establishment re-drives (the hub co-write is idempotent).
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const watchdog = new Promise<"timeout">((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        timeoutHandle = null;
+        if (pendingParkedQueries.delete(requestId)) {
+          logger.warn`reEmitParkedCorrelations: requestId=${requestId} did not respond within ${String(parkedQueryWatchdogMs)}ms; re-registration retries on the next re-establishment`;
+        }
+        resolve("timeout");
+      }, parkedQueryWatchdogMs);
+    });
+    let outcome: ParkedCorrelations | "timeout";
+    try {
+      await controlSender.send({
+        type: "parked-correlations.request",
+        data: { requestId },
+      });
+      outcome = await Promise.race([responded, watchdog]);
+    } catch (cause) {
+      // The send failed, or `rejectCohortAwaiters` rejected the pending query
+      // on cohort teardown. Best-effort: log and return; the next
+      // re-establishment re-drives.
+      pendingParkedQueries.delete(requestId);
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`reEmitParkedCorrelations query failed: ${message}; re-registration retries on the next re-establishment`;
+      return;
+    }
+    if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    if (outcome === "timeout") return;
+    for (const parked of outcome) {
+      registerSuspension(parked);
+    }
   }
 
   /**
@@ -2579,6 +2725,7 @@ export function createWorkflowSupervisor(
     recycle,
     deliverSignal,
     deliverSources,
+    reEmitParkedCorrelations,
     getCredentialsSnapshot,
   };
 }
