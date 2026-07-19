@@ -86,44 +86,38 @@ function buildEnv(
 }
 
 describe("env.onPark at a control-plane suspension", () => {
-  test("an agent-step suspend fires onPark once with the correlation and approval kind", async () => {
+  test("a snapshot-less correlated suspend fails the run", async () => {
     const oneStep = defineWorkflow({
       id: "park-suspend",
       trigger: { type: "manual" },
       steps: { s: step({ agent }) },
     });
-    const channel = createInMemorySignalChannel();
     const parks: WorkflowPark[] = [];
-    const invokeStep: StepInvoker = async (req) => {
-      if (req.resume === undefined) {
-        return { suspend: { correlationId: "corr-1" } };
-      }
-      return { output: { reply: "done", turn: replyTurn } };
-    };
+    // A correlated suspend that carries no approval snapshot -- the shape a
+    // director `caps.suspend` produces. The park boundary owns the "an
+    // approval park carries a snapshot" invariant, so the runtime fails the
+    // run here rather than emit a snapshot-less approval park that would crash
+    // the sidecar->hub co-write downstream.
+    const invokeStep: StepInvoker = async () => ({
+      suspend: { correlationId: "corr-1" },
+    });
     const env = buildEnv(oneStep, {
       invokeStep,
-      signalChannel: channel,
+      signalChannel: createInMemorySignalChannel(),
       onPark: (park) => parks.push(park),
     });
 
-    const handle = runtimeRun(oneStep, env, { runId: "run-1" });
+    const result = await runtimeRun(oneStep, env, { runId: "run-1" }).complete;
 
-    // Let the first invocation land and the step park before delivering.
-    await new Promise((r) => setTimeout(r, 50));
-
-    // The park fired exactly once, carrying the correlation the suspend
-    // returned and the approval kind (the only control-plane signal kind).
-    expect(parks).toEqual([
-      { runId: "run-1", correlationId: "corr-1", kind: "approval" },
-    ]);
-
-    await channel.deliver(signalName("corr-1"), { outcome: "approved" }, "s-1");
-
-    const result = await handle.complete;
-    expect(result.terminalStatus).toBe("completed");
-
-    // The completed run did not re-fire onPark for the same park.
-    expect(parks).toHaveLength(1);
+    // The throw fires before onPark, so no park escaped.
+    expect(parks).toEqual([]);
+    expect(result.terminalStatus).toBe("failed");
+    const failures = result.events.filter((e) => e.kind === "StepFailed");
+    expect(failures.length).toBeGreaterThan(0);
+    for (const f of failures) {
+      if (f.kind !== "StepFailed") throw new Error("unreachable");
+      expect(f.error.message).toContain("carries no approval snapshot");
+    }
   });
 
   test("a plain awaitSignal gate on an author-chosen name fires no onPark", async () => {

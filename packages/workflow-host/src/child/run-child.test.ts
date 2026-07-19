@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
-import type { KeyPair } from "@intx/types/runtime";
+import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import type {
   AuthorizeFn,
   Principal,
@@ -2250,12 +2250,20 @@ describe("emitParkNotify", () => {
     return { sender, sent };
   }
 
+  const parkSnapshot: ApprovalSnapshot = {
+    name: "charge_card",
+    description: "Charge the customer's card",
+    inputSchema: { type: "object" },
+    arguments: { amount: 100 },
+  };
+
   test("forwards a control-plane suspension as a park.notify frame", async () => {
     const { sender, sent } = capturingSender();
     const park: WorkflowPark = {
       runId: "run-park",
       correlationId: "corr-42",
       kind: "approval",
+      approvalSnapshot: parkSnapshot,
     };
     await emitParkNotify(sender, park);
     expect(sent).toEqual([
@@ -2265,6 +2273,7 @@ describe("emitParkNotify", () => {
           runId: "run-park",
           correlationId: "corr-42",
           kind: "approval",
+          snapshot: parkSnapshot,
         },
       },
     ]);
@@ -2282,6 +2291,7 @@ describe("emitParkNotify", () => {
       runId: "run-park",
       correlationId: "corr-42",
       kind: "approval",
+      approvalSnapshot: parkSnapshot,
     });
   });
 });

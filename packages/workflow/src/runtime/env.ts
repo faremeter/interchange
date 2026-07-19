@@ -8,7 +8,6 @@
 // source-level test in `run.test.ts` asserts the discipline.
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
-import type { SignalKind } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import type {
@@ -352,18 +351,25 @@ export type LoopFnRegistry = (ref: string) => LoopFn;
  * the hub). A plain `awaitSignal` gate parked on an author-chosen name does
  * NOT produce one -- only the reserved control-plane channel does.
  */
-export interface WorkflowPark {
+export type WorkflowPark = {
   runId: string;
   correlationId: string;
-  kind: SignalKind;
+  // A one-arm discriminated union, not `kind: SignalKind`: `approval` is the
+  // only control-plane kind today and it REQUIRES an `approvalSnapshot`. A
+  // second `SignalKind` must add its own arm here and declare its own snapshot
+  // policy rather than silently inheriting approval's -- the same discipline
+  // `signalKindToGateType`'s `assertNever` enforces at the gate switch.
+  kind: "approval";
   /**
    * Approver-facing snapshot of the parked tool call, forwarded from the
-   * reactor so the host can register it alongside the correlation. Present only
-   * on a fresh park that carries one; a resume-from-park does not re-fire the
-   * notify, and a park with no snapshot (unwired authz extension) omits it.
+   * reactor so the host can register it alongside the correlation. Required on
+   * every approval park: the runtime throws at the emit site rather than fire a
+   * snapshot-less one, because the sidecar->hub co-write treats the snapshot as
+   * mandatory (the register frame requires it and the approval columns are NOT
+   * NULL). A resume-from-park does not re-fire the notify.
    */
-  approvalSnapshot?: ApprovalSnapshot;
-}
+  approvalSnapshot: ApprovalSnapshot;
+};
 
 /**
  * The runtime body's full env surface. The two implementations
