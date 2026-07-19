@@ -113,6 +113,10 @@ import { hashGrants } from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
 import { discoverInFlightRuns } from "./self-discovery";
+import {
+  collectParkedApprovalCorrelations,
+  type LoadParkedApproval,
+} from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 
@@ -315,6 +319,21 @@ export interface RunWorkflowChildBindings {
    * adapter (which roots no per-run scratch of its own) can omit it.
    */
   cleanupRunStorage?: (runId: string) => Promise<void>;
+  /**
+   * Recover the durable approval snapshot for a parked control-plane
+   * correlation, so the child can answer a supervisor
+   * `parked-correlations.request` (the supervisor's re-registration path
+   * after a re-establishment). The child owns enumeration -- it walks its
+   * own reduced run state for `awaiting-signal` steps on control-plane
+   * channels -- but the snapshot lives in per-step durable storage whose
+   * on-disk layout (cold vs warm) the host owns, so the read is a host
+   * binding next to `cleanupRunStorage`. Optional so tests inject a stub and
+   * the recursive child-workflow adapter (which roots no per-step approval
+   * storage) can omit it; a production child that enumerates a parked
+   * control-plane step with no binding wired throws rather than silently
+   * dropping the correlation the hub is waiting to register.
+   */
+  loadParkedApproval?: LoadParkedApproval;
   /** Optional director registry; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
@@ -1048,6 +1067,38 @@ async function handleControlPayload(
       }
       ctx.substrateWriteBridge.handleWriteResponse(payload.data);
       return false;
+    }
+    case "parked-correlations.request": {
+      // Answer the supervisor's re-registration enumeration from durable
+      // state. Awaiting inline is safe -- unlike `signal.deliver`, this
+      // reads (self-discovery + the snapshot binding) and sends one upstream
+      // reply without awaiting any downstream frame, so it cannot deadlock
+      // the iterator against a response it is itself blocking. A store
+      // inconsistency (an enumerated park with no durable snapshot, or no
+      // binding to recover one) throws out of the loop like the other
+      // invariant-violation arms rather than dropping a correlation the hub
+      // is waiting to register.
+      const parked = await collectParkedApprovalCorrelations({
+        substrate: ctx.bindings.substrate,
+        repoId: ctx.bindings.workflowRunRepoId,
+        runtimeRepoStore: ctx.runtimeRepoStore,
+        ...(ctx.bindings.loadParkedApproval !== undefined
+          ? { loadParkedApproval: ctx.bindings.loadParkedApproval }
+          : {}),
+      });
+      await ctx.upstreamSender.send({
+        type: "parked-correlations.response",
+        data: { requestId: payload.data.requestId, parked },
+      });
+      return false;
+    }
+    case "parked-correlations.response": {
+      // `parked-correlations.response` is the child->supervisor reply frame;
+      // receiving one on the child's downstream side is a protocol violation
+      // in the same shape as a downstream `substrate.merge.response`.
+      throw new Error(
+        "workflow-child received a `parked-correlations.response` frame on its inbound control channel; this is a child-only upstream payload",
+      );
     }
   }
 }
