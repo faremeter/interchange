@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
+import { APPROVAL_SNAPSHOT_MAX_BYTES } from "./runtime";
 import {
   AgentDeployFrame,
   DeployApplyErrorCategory,
@@ -210,5 +211,25 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
       true,
     );
     expect(SidecarFrame(base) instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a register frame whose snapshot exceeds the size cap", () => {
+    // The snapshot crosses the sidecar->hub boundary as a
+    // `BoundedApprovalSnapshot`, so an oversized one -- here an inputSchema
+    // padded past the byte cap -- fails the frame parse and is dropped rather
+    // than co-written onto an approval row. Only the pad pushes it over; every
+    // other field is the valid baseline, so the cap is the sole reason for
+    // rejection.
+    const frame = {
+      ...base,
+      snapshot: {
+        ...snapshot,
+        inputSchema: { pad: "a".repeat(APPROVAL_SNAPSHOT_MAX_BYTES) },
+      },
+    };
+    expect(SignalCorrelationRegisterFrame(frame) instanceof type.errors).toBe(
+      true,
+    );
+    expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
   });
 });
