@@ -147,6 +147,7 @@ export {
   type DiscoveredRun,
   type DrainController,
   type GrantEvaluator,
+  type LoadParkedApproval,
   type RunWorkflowChildBindings,
   type RunWorkflowChildFromProcessEnvOpts,
   type RunWorkflowChildOpts,

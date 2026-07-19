@@ -41,6 +41,8 @@ export {
   type DiscoveredRun,
 } from "./self-discovery";
 
+export type { LoadParkedApproval } from "./parked-correlations";
+
 export {
   createWarmAgentCache,
   type WarmAgentCache,
