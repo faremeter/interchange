@@ -666,6 +666,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(approvalRow.runId).toBe(runId);
       expect(approvalRow.agentAddress).toBe(deploymentMailAddress);
       expect(approvalRow.resolvedAt).toBeNull();
+
+      // The approval snapshot content survived the real cross-process path
+      // (child -> sidecar -> hub -> co-write) intact. Every field the snapshot
+      // carries is pinned verbatim: the name and arguments the model issued,
+      // and the description and inputSchema of the resolved tool definition.
+      // All four are test-owned -- the tool is the synthetic `@intx/tools-mail`
+      // harness bundle whose `mail_send` definition is fixed in
+      // `deploy-flow-env.ts` (the loader namespaces its name to TOOL_NAME) --
+      // so a hop that dropped or mangled any field between the park and the
+      // co-write fails this assertion.
+      expect(approvalRow.toolDefinition).toEqual({
+        name: TOOL_NAME,
+        description: "Send a mail message",
+        inputSchema: {
+          type: "object",
+          properties: { to: { type: "string" }, body: { type: "string" } },
+          required: ["to", "body"],
+        },
+      });
+      expect(approvalRow.toolArguments).toEqual({
+        to: SENTINEL_CONTENT,
+        body: SENTINEL_FILENAME,
+      });
+
       const correlationId = approvalRow.correlationId;
       const approvalId = approvalRow.id;
 
