@@ -11,7 +11,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
-import { signalName } from "@intx/types";
+import { correlationIdFromSignalName, signalName } from "@intx/types";
 import type { ApprovalSnapshot, ConversationTurn } from "@intx/types/runtime";
 
 import {
@@ -22,6 +22,7 @@ import {
   createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
+  resumeFromLog,
   runtimeRun,
   step,
   type SignalChannel,
@@ -118,6 +119,44 @@ describe("env.onPark at a control-plane suspension", () => {
       if (f.kind !== "StepFailed") throw new Error("unreachable");
       expect(f.error.message).toContain("carries no approval snapshot");
     }
+  });
+
+  test("a snapshot-less correlated suspend commits a durable control-plane SignalAwaited but reduces to failed", async () => {
+    // Pins the invariant re-registration enumeration rests on: `parkOnSignal`
+    // commits `SignalAwaited` to the durable log BEFORE it checks for the
+    // approval snapshot, so a snapshot-less correlated suspend leaves a
+    // control-plane `SignalAwaited` in the log -- yet the run fails and the
+    // step reduces to `failed`, not `awaiting-signal`. Enumeration keys on the
+    // reduced phase, so such a park never surfaces; a consumer that scanned
+    // raw `SignalAwaited` events instead would wrongly surface it.
+    const oneStep = defineWorkflow({
+      id: "park-suspend-durable",
+      trigger: { type: "manual" },
+      steps: { s: step({ agent }) },
+    });
+    const invokeStep: StepInvoker = async () => ({
+      suspend: { correlationId: "corr-durable" },
+    });
+    const env = buildEnv(oneStep, {
+      invokeStep,
+      signalChannel: createInMemorySignalChannel(),
+      onPark: () => undefined,
+    });
+    const runId = "run-durable-fail";
+
+    const result = await runtimeRun(oneStep, env, { runId }).complete;
+    expect(result.terminalStatus).toBe("failed");
+
+    const events = await env.repoStore.read(runId);
+    const controlPlaneAwaited = events.filter(
+      (e) =>
+        e.kind === "SignalAwaited" &&
+        correlationIdFromSignalName(e.signalName) !== undefined,
+    );
+    expect(controlPlaneAwaited.length).toBeGreaterThan(0);
+
+    const state = resumeFromLog(runId, events);
+    expect(state.steps.get("s")?.phase).toBe("failed");
   });
 
   test("a plain awaitSignal gate on an author-chosen name fires no onPark", async () => {

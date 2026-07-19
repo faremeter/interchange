@@ -442,6 +442,44 @@ export const ControlPayload = type(
       // process boundary. Optional: only an ask-rail suspension carries one.
       "snapshot?": BoundedApprovalSnapshot,
     },
+  })
+  .or({
+    // Supervisor-initiated request: enumerate the child's currently-parked
+    // approval correlations. The supervisor fires this after a
+    // re-establishment (child respawn, or hub-link reconnect fanned out to
+    // this deployment) so it can re-register at the hub every correlation
+    // whose original `park.notify`-driven register may have been lost while
+    // the hub was down. Modeled on `substrate.merge.request`: a
+    // supervisor->child request the child answers on `parked-correlations.
+    // response`, correlated by `requestId`. Carries no filter -- one child
+    // owns one deployment, so the child enumerates everything parked and the
+    // supervisor re-emits all; the hub co-write is idempotent.
+    type: "'parked-correlations.request'",
+    data: {
+      requestId: "string > 0",
+    },
+  })
+  .or({
+    // Child's reply to `parked-correlations.request`. Each entry mirrors
+    // `park.notify`'s data -- the child-supplied half of a
+    // `SuspensionRegistration` the supervisor stamps its deployment identity
+    // onto -- so the supervisor's re-emit path shares one transform with the
+    // `park.notify` arm. Only reduced-state approval parks appear here: the
+    // child enumerates steps whose reduced phase is `awaiting-signal` on a
+    // control-plane `signalName(correlationId)` channel, each of which carries
+    // a durable snapshot by construction (a snapshot-less correlated suspend
+    // reduces to `failed`, not `awaiting-signal`). `snapshot` is therefore
+    // required, and size-capped at this process boundary like `park.notify`.
+    type: "'parked-correlations.response'",
+    data: {
+      requestId: "string > 0",
+      parked: type({
+        runId: "string > 0",
+        correlationId: "string > 0",
+        kind: SignalKind,
+        snapshot: BoundedApprovalSnapshot,
+      }).array(),
+    },
   });
 
 export type ControlPayload = typeof ControlPayload.infer;

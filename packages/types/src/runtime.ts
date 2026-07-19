@@ -561,10 +561,11 @@ export const APPROVAL_SNAPSHOT_MAX_BYTES = 131072;
 /**
  * {@link ApprovalSnapshot} bounded to {@link APPROVAL_SNAPSHOT_MAX_BYTES}.
  * Parse the snapshot through this validator where it crosses a trust boundary
- * (the `park.notify` IPC frame and the sidecar→hub register frame); internal
- * hops use the unbounded {@link ApprovalSnapshot}. `.narrow` bounds the runtime
- * check only — its inferred type is identical to {@link ApprovalSnapshot} — so
- * the cap holds only where a frame is actually parsed, not merely typed.
+ * (the `park.notify` IPC frame, the `parked-correlations.response` IPC frame,
+ * and the sidecar→hub register frame); internal hops use the unbounded
+ * {@link ApprovalSnapshot}. `.narrow` bounds the runtime check only — its
+ * inferred type is identical to {@link ApprovalSnapshot} — so the cap holds only
+ * where a frame is actually parsed, not merely typed.
  */
 export const BoundedApprovalSnapshot = ApprovalSnapshot.narrow(
   (snapshot, ctx) => {

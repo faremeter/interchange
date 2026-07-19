@@ -1443,6 +1443,145 @@ describe("park.notify snapshot validation", () => {
   });
 });
 
+describe("parked-correlations frames", () => {
+  const validSnapshot = {
+    name: "charge_card",
+    description: "Charge the customer's card",
+    inputSchema: { type: "object" },
+    arguments: { amount: 100 },
+  };
+
+  test("round-trips a request and a response through Ed25519", async () => {
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const stream = createMemoryNdjsonStream();
+    const sender = createControlChannelSender({
+      privateKeySeed: kp.privateKey,
+      channelId,
+      writer: stream.writer,
+    });
+    const crashes: string[] = [];
+    const received: ControlPayload[] = [];
+
+    const consumer = (async () => {
+      for await (const payload of receiveControlChannel({
+        publicKey: kp.publicKey,
+        channelId,
+        reader: stream.reader,
+        onCrash: (reason) => crashes.push(reason),
+      })) {
+        received.push(payload);
+        if (received.length === 2) return;
+      }
+    })();
+
+    await sender.send({
+      type: "parked-correlations.request",
+      data: { requestId: "pc-1" },
+    });
+    await sender.send({
+      type: "parked-correlations.response",
+      data: {
+        requestId: "pc-1",
+        parked: [
+          {
+            runId: "run-1",
+            correlationId: "corr-1",
+            kind: "approval",
+            snapshot: validSnapshot,
+          },
+        ],
+      },
+    });
+
+    await consumer;
+    stream.close();
+
+    expect(crashes).toEqual([]);
+    expect(received).toEqual([
+      { type: "parked-correlations.request", data: { requestId: "pc-1" } },
+      {
+        type: "parked-correlations.response",
+        data: {
+          requestId: "pc-1",
+          parked: [
+            {
+              runId: "run-1",
+              correlationId: "corr-1",
+              kind: "approval",
+              snapshot: validSnapshot,
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
+  test("accepts a well-formed request", () => {
+    const validated = ControlPayload({
+      type: "parked-correlations.request",
+      data: { requestId: "pc-1" },
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a request missing requestId", () => {
+    const validated = ControlPayload({
+      type: "parked-correlations.request",
+      data: {},
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("accepts a response with an empty parked list", () => {
+    const validated = ControlPayload({
+      type: "parked-correlations.response",
+      data: { requestId: "pc-1", parked: [] },
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a response missing requestId", () => {
+    const validated = ControlPayload({
+      type: "parked-correlations.response",
+      data: { parked: [] },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a response entry with no snapshot", () => {
+    const validated = ControlPayload({
+      type: "parked-correlations.response",
+      data: {
+        requestId: "pc-1",
+        parked: [{ runId: "run-1", correlationId: "corr-1", kind: "approval" }],
+      },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a response entry whose snapshot exceeds the size cap", () => {
+    const validated = ControlPayload({
+      type: "parked-correlations.response",
+      data: {
+        requestId: "pc-1",
+        parked: [
+          {
+            runId: "run-1",
+            correlationId: "corr-1",
+            kind: "approval",
+            snapshot: {
+              ...validSnapshot,
+              inputSchema: { pad: "a".repeat(APPROVAL_SNAPSHOT_MAX_BYTES) },
+            },
+          },
+        ],
+      },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+});
+
 describe("substrate.write.request payload validation", () => {
   test("accepts a well-formed substrate.write.request", () => {
     const payload = {
