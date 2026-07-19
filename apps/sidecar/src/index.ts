@@ -391,8 +391,37 @@ const orchestrator = createSidecarOrchestrator({
   // pack was interrupted mid-transfer never re-ships, because it has no later
   // local write to re-arm the coalescing loop.
   onWorkflowAddressesRoutable: (addresses) => {
+    // The deploy router is captured synchronously during orchestrator
+    // construction, before the link ever connects, so a routable callback can
+    // only fire once it exists; assert (like `getWorkflowAddresses`) rather
+    // than optional-chain so a wiring regression fails loud.
+    if (sidecarDeployRouter === undefined) {
+      throw new Error(
+        "sidecar boot: deploy router was not constructed before a reconnect made workflow addresses routable",
+      );
+    }
     for (const address of addresses) {
       wrappedRepoStore.notifyAddressRoutable(address);
+      // Trigger B: re-register the deployment's parked correlations. A long hub
+      // outage can evict a `signal.correlation.register` frame from the link's
+      // bounded send queue; re-driving it on reconnect recovers the parked
+      // run's approvability. Two independent facts make this safe:
+      //   - The hub-side co-write's `registerSignalCorrelation` throws only when
+      //     the deployment has no `status = "deployed"` row. That row is written
+      //     at DEPLOY time and persists across the outage -- the reconnect
+      //     challenge re-routes the address in the hub's in-memory index but
+      //     writes no DB status, so the lookup already resolves. (The frame
+      //     also lands after the address is wire-routable: the link fires this
+      //     after `challenge.response`, and both frames queue on the hub's
+      //     per-connection chain -- see the pack re-ship note above.)
+      //   - A sidecar restart re-emits the parked set twice (child
+      //     re-establishment fires Trigger A too), but the co-write dedups on
+      //     the `correlationId` PK/unique constraints via `onConflictDoNothing`,
+      //     so the duplicate is a no-op. The pre-existing non-transactional
+      //     status-check window in `registerSignalCorrelation` that this
+      //     widened concurrency exercises is tracked in INTR-338, out of scope
+      //     here.
+      sidecarDeployRouter.reEmitParkedCorrelations(address);
     }
   },
   // On disconnect, block the deployment addresses' workflow-run pushes until
