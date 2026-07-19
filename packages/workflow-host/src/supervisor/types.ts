@@ -296,14 +296,17 @@ export interface WorkflowSupervisorBindings {
   /** Mail-bus surface for address registration and inbound subscription. */
   mailBus: MailBusBindings;
   /**
-   * Optional control-plane suspension sink. The supervisor invokes it from
-   * its upstream-control pump's `park.notify` arm, stamping `deploymentId`
-   * and `deploymentMailAddress` (as `agentAddress`) onto the child-supplied
-   * `runId`/`correlationId`/`kind`. Production wires this to the sidecar's
-   * hub link so a `signal.correlation.register` frame reaches the hub; a host
-   * that does not wire it does not register suspensions (tests, single-process
-   * deployments). Best-effort: the pump logs a throwing sink and keeps
-   * draining, so one bad register cannot wedge the control pump.
+   * Optional control-plane suspension sink. Two callers invoke it, both
+   * stamping `deploymentId` and `deploymentMailAddress` (as `agentAddress`)
+   * onto the child-supplied `runId`/`correlationId`/`kind`: the upstream-control
+   * pump's `park.notify` arm (the happy-path emit at suspend), and
+   * `reEmitParkedCorrelations` (the re-establishment re-emit that recovers a
+   * register the hub missed while it was down). Production wires this to the
+   * sidecar's hub link so a `signal.correlation.register` frame reaches the hub;
+   * a host that does not wire it does not register suspensions (tests,
+   * single-process deployments). Best-effort: a throwing sink is logged and
+   * both callers keep going, so one bad register cannot wedge the control pump
+   * or abort a re-emit partway through the parked set.
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
   /** Subprocess spawner the supervisor invokes per spawn. */
@@ -526,6 +529,18 @@ export interface WorkflowSupervisorBindings {
    * for the production duration.
    */
   terminalWriteWatchdogMs?: number;
+  /**
+   * Watchdog timeout (ms) for `reEmitParkedCorrelations`' wait on the
+   * child's `parked-correlations.response`. Caps the wait so a
+   * wedged-but-alive child (whose cohort never tears down, so the
+   * cohort-abort rejection never fires) cannot hang the re-registration
+   * driver -- and therefore the reconnect/re-establishment caller that
+   * awaits it. On expiry the pending query is dropped and the driver
+   * returns; the next re-establishment re-drives it. Defaults to
+   * `DEFAULT_PARKED_QUERY_WATCHDOG_MS`. Tests inject a small value so the
+   * timeout path is observable.
+   */
+  parkedQueryWatchdogMs?: number;
   /**
    * Optional per-message dispatch-timing observer. When supplied, the
    * dispatch loop invokes it twice per dispatched inbox entry: once with
