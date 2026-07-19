@@ -689,6 +689,17 @@ export interface SidecarDeployRouter extends DeployRouter {
    * and boot-time restore live, so a caller re-reads it per connect.
    */
   activeAddresses(): string[];
+  /**
+   * Trigger B: re-register every correlation the deployment at `address` is
+   * currently parked on, by asking its live supervisor to re-emit them to the
+   * hub. The boot edge calls this per address the hub link re-routes on a
+   * reconnect challenge (`onWorkflowAddressesRoutable`), so a register frame
+   * the hub dropped from its bounded send queue during the outage is recovered.
+   * The address-dispatch wrapper around the supervisor's own no-arg
+   * `reEmitParkedCorrelations`; fire-and-forget (the driver is best-effort and
+   * watchdog-bounded inside the supervisor).
+   */
+  reEmitParkedCorrelations(address: string): void;
 }
 
 export function createSidecarDeployRouter(deps: {
@@ -1927,6 +1938,27 @@ export function createSidecarDeployRouter(deps: {
       // add; undeploy and spawn-unwind remove), so its keys are the addresses
       // this sidecar can currently route mail to.
       return [...activeSupervisors.keys()];
+    },
+    reEmitParkedCorrelations(address: string): void {
+      const wired = activeSupervisors.get(address);
+      if (wired === undefined) {
+        // Edge boundary: the hub reports this address routable but no live
+        // supervisor owns it -- a deployment torn down, or not yet respawned.
+        // Re-registering a torn-down deployment would be wrong, so skipping is
+        // correct. Logged at debug (not warn) so a supervisor unexpectedly
+        // missing for a live deployment is still traceable without crying wolf
+        // on the ordinary torn-down case.
+        logger.debug`re-emit on reconnect: no active supervisor for ${address}; skipping`;
+        return;
+      }
+      // Fire-and-forget: the driver is best-effort and watchdog-bounded inside
+      // the supervisor, so the reconnect fan-out never awaits it. The promise
+      // is dropped deliberately; the `.catch` is defense-in-depth since the
+      // driver already swallows its own query failures.
+      void wired.supervisor.reEmitParkedCorrelations().catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`re-emit of parked correlations on hub reconnect failed for ${address}: ${message}`;
+      });
     },
   };
 }

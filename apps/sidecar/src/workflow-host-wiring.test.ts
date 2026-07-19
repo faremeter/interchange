@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { type } from "arktype";
+
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -312,6 +314,35 @@ function createMemoryFrameStream() {
 
 function createTempBaseDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+// The supervisor's `parked-correlations.request` control-frame discriminator.
+// The re-emit-parked-correlations tests assert this reaches the downstream
+// (supervisor -> child) stream when Trigger B fires.
+const PARKED_REQUEST_TYPE = "parked-correlations.request";
+
+// One downstream control line is the JSON serialization of a signed envelope:
+// `{ envelope: { seq, channelId, payload }, sig }`. The re-emit tests inspect
+// `envelope.payload.type` to detect a `parked-correlations.request` without
+// verifying the signature (the supervisor's IPC public key is not exposed to
+// the test). Structurally validate the envelope-carrying shape and return the
+// payload discriminator, or `undefined` when the line is not a typed frame.
+const DownstreamFrameShape = type({
+  envelope: {
+    payload: {
+      "type?": "string",
+      "+": "ignore",
+    },
+    "+": "ignore",
+  },
+  "+": "ignore",
+});
+
+function downstreamPayloadType(line: string): string | undefined {
+  const parsed: unknown = JSON.parse(line);
+  const validated = DownstreamFrameShape(parsed);
+  if (validated instanceof type.errors) return undefined;
+  return validated.envelope.payload.type;
 }
 
 /**
@@ -2522,5 +2553,219 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       router.deploy(singleStepFrame("ins_col-a@example.com", "wf-collide")),
     ).rejects.toThrow(/deriveDeploymentId collision/);
     expect(spawner.spawnCount()).toBe(1);
+  });
+
+  test("reEmitParkedCorrelations reaches the live supervisor and sends a parked-correlations.request downstream", async () => {
+    // Trigger B: the hub-reconnect fan-out. After a deploy populates
+    // `activeSupervisors` for the deployment address, the router's
+    // address-dispatch wrapper must reach the live supervisor's own no-arg
+    // `reEmitParkedCorrelations`, which the supervisor implements by sending a
+    // `parked-correlations.request` control frame down to the child. The mock
+    // child never answers, so the supervisor's watchdog eventually fires; the
+    // router's fire-and-forget contract means the request frame lands on the
+    // downstream stream regardless, which is the observable evidence here.
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 10500,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const dataDir = await createTempBaseDir("sidecar-reemit-data-");
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-reemit",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+
+    const deployPromise = router.deploy(frame);
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 10500,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+      },
+    });
+    await deployPromise;
+
+    // `activeSupervisors` is keyed by the frame's agent address; the router
+    // routes the re-emit through that same key.
+    expect(router.activeAddresses()).toEqual([frame.agentAddress]);
+
+    // Each downstream line is a signed envelope `{ envelope: { seq, channelId,
+    // payload }, sig }`; read `envelope.payload.type` without verifying the
+    // signature (the supervisor's IPC public key is not exposed to the test).
+    // The supervisor emits its own `parked-correlations.request` on spawn (a
+    // fresh child becoming addressable), so the trigger is observed as an
+    // increase in the downstream request count, not its first appearance.
+    function parkedRequestCount(): number {
+      return supervisorToChild
+        .flushed()
+        .filter((line) => downstreamPayloadType(line) === PARKED_REQUEST_TYPE)
+        .length;
+    }
+
+    // Let the spawn-time Trigger A re-emit settle so the baseline captures it;
+    // the assertion below then proves the Trigger B call adds a request on top.
+    await new Promise((r) => setTimeout(r, 50));
+    const baseline = parkedRequestCount();
+
+    router.reEmitParkedCorrelations(frame.agentAddress);
+
+    // Fire-and-forget: poll the downstream stream until the router's request
+    // frame lands on top of the spawn-time baseline, bounded so a wiring break
+    // fails the test instead of hanging.
+    const deadline = Date.now() + 2000;
+    while (parkedRequestCount() <= baseline) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          "reEmitParkedCorrelations did not add a parked-correlations.request to the downstream control stream",
+        );
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(parkedRequestCount()).toBeGreaterThan(baseline);
+  });
+
+  test("reEmitParkedCorrelations for an address with no active supervisor is a no-op", async () => {
+    // The edge boundary: the hub reports an address routable, but no live
+    // supervisor owns it (a torn-down or not-yet-respawned deployment). The
+    // router must skip it -- neither throw nor drive any downstream frame.
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 10600,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const dataDir = await createTempBaseDir("sidecar-reemit-miss-data-");
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-reemit-miss",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+
+    const deployPromise = router.deploy(frame);
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 10600,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+      },
+    });
+    await deployPromise;
+
+    const missAddress = "ins_dep_nonexistent@wf.example";
+    expect(router.activeAddresses()).not.toContain(missAddress);
+
+    // The deployed supervisor emits its own `parked-correlations.request` on
+    // spawn; the miss-address re-emit must add nothing on top of that
+    // baseline. Count downstream requests before and after the no-op call.
+    function parkedRequestCount(): number {
+      return supervisorToChild
+        .flushed()
+        .filter((line) => downstreamPayloadType(line) === PARKED_REQUEST_TYPE)
+        .length;
+    }
+    // Settle the spawn-time Trigger A re-emit so it is folded into the baseline
+    // rather than racing the post-call window below.
+    await new Promise((r) => setTimeout(r, 50));
+    const baseline = parkedRequestCount();
+
+    // The no-op skip must not throw for an address with no live supervisor.
+    expect(() => router.reEmitParkedCorrelations(missAddress)).not.toThrow();
+
+    // Give any errant fire-and-forget a chance to land, then confirm the miss
+    // added no downstream request for the missing address.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(parkedRequestCount()).toBe(baseline);
   });
 });
