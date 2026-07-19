@@ -1153,9 +1153,9 @@ export function emitParkNotify(
         runId: park.runId,
         correlationId: park.correlationId,
         kind: park.kind,
-        ...(park.approvalSnapshot !== undefined
-          ? { snapshot: park.approvalSnapshot }
-          : {}),
+        // An approval park always carries its snapshot (the `WorkflowPark`
+        // type requires it), so the frame always forwards one.
+        snapshot: park.approvalSnapshot,
       },
     })
     .catch((cause) => {

@@ -11,7 +11,7 @@ import { describe, test, expect } from "bun:test";
 
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { signalName } from "@intx/types";
-import type { ConversationTurn } from "@intx/types/runtime";
+import type { ApprovalSnapshot, ConversationTurn } from "@intx/types/runtime";
 
 import {
   createInMemoryBlobSubstrate,
@@ -49,6 +49,15 @@ const replyTurn: ConversationTurn = {
   timestamp: 0,
 };
 
+// A control-plane approval suspend always carries a snapshot; the bridge
+// mechanics under test are indifferent to its contents.
+const suspendSnapshot: ApprovalSnapshot = {
+  name: "charge_card",
+  description: "Charge the customer's card",
+  inputSchema: { type: "object" },
+  arguments: { amount: 100 },
+};
+
 function buildEnv(
   def: WorkflowDefinition,
   opts: { invokeStep: StepInvoker; signalChannel: SignalChannel },
@@ -81,7 +90,12 @@ describe("step suspend/resume bridge", () => {
     const invokeStep: StepInvoker = async (req) => {
       invocations.push(req);
       if (req.resume === undefined) {
-        return { suspend: { correlationId: "corr-1" } };
+        return {
+          suspend: {
+            correlationId: "corr-1",
+            approvalSnapshot: suspendSnapshot,
+          },
+        };
       }
       return { output: { reply: "done", turn: replyTurn } };
     };
@@ -146,12 +160,22 @@ describe("step suspend/resume bridge", () => {
     const decisions: unknown[] = [];
     const invokeStep: StepInvoker = async (req) => {
       if (req.resume === undefined) {
-        return { suspend: { correlationId: "corr-A" } };
+        return {
+          suspend: {
+            correlationId: "corr-A",
+            approvalSnapshot: suspendSnapshot,
+          },
+        };
       }
       decisions.push(req.resume.decision);
       if (req.resume.correlationId === "corr-A") {
         // The agent parked a second time on a different correlation.
-        return { suspend: { correlationId: "corr-B" } };
+        return {
+          suspend: {
+            correlationId: "corr-B",
+            approvalSnapshot: suspendSnapshot,
+          },
+        };
       }
       return { output: { reply: "finished", turn: replyTurn } };
     };

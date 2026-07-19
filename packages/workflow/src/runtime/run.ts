@@ -2179,19 +2179,30 @@ async function parkOnSignal(
     // absorbs.
     const correlationId = correlationIdFromSignalName(opts.signalName);
     if (correlationId !== undefined) {
-      // `approval` is currently the only `SignalKind`, and a reserved
-      // control-plane channel carries no kind of its own, so the park is
-      // always an approval. If a second `SignalKind` is ever added this
-      // literal would silently mis-stamp a non-approval park -- the type
-      // checker will not catch it (unlike `signalKindToGateType`'s
-      // assertNever), so the kind must become derived here at that point.
+      // A reserved control-plane channel is always an approval today. The
+      // `WorkflowPark` type carries a single `kind: "approval"` arm, so a
+      // second `SignalKind` cannot be emitted here without adding an arm and
+      // deciding whether this site produces it -- the mis-stamp risk is now
+      // partly compiler-visible rather than resting on reviewer vigilance.
+      //
+      // An approval park REQUIRES its snapshot (the sidecar->hub co-write
+      // treats it as mandatory). This is the layer that owns the park, so it
+      // is where the invariant is enforced: a correlated suspend that carries
+      // no snapshot -- e.g. a director `caps.suspend` -- fails loud here rather
+      // than mislabelling a snapshot-less park and crashing the co-write three
+      // hops downstream.
+      if (opts.approvalSnapshot === undefined) {
+        throw new Error(
+          `control-plane approval park for ${correlationId} carries no ` +
+            `approval snapshot; a snapshot-less correlated suspend (e.g. a ` +
+            `director caps.suspend) is not a supported approval`,
+        );
+      }
       env.onPark?.({
         runId,
         correlationId,
         kind: "approval",
-        ...(opts.approvalSnapshot !== undefined
-          ? { approvalSnapshot: opts.approvalSnapshot }
-          : {}),
+        approvalSnapshot: opts.approvalSnapshot,
       });
     }
   }
