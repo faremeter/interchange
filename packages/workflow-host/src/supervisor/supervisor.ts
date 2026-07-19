@@ -839,7 +839,7 @@ export function createWorkflowSupervisor(
     }
     for (const [requestId, entry] of pendingParkedQueries) {
       pendingParkedQueries.delete(requestId);
-      entry.reject(new Error(`cohort aborted: ${reason}`));
+      entry.settle(null);
     }
     for (const [runId, waiter] of markConsumedCompletionWaiters.entries()) {
       markConsumedCompletionWaiters.delete(runId);
@@ -931,9 +931,14 @@ export function createWorkflowSupervisor(
     ControlPayload,
     { type: "parked-correlations.response" }
   >["data"]["parked"];
+  // Settle with the child's `parked` list, or `null` when the cohort is torn
+  // down before it answers. Mirrors `pendingMerges`: a settle-with-sentinel,
+  // never a reject, because a cohort abort is an ordinary outcome the driver
+  // handles -- and Trigger A fires the driver concurrently with arbitrary
+  // shutdown/recycle, so a rejection here would surface as an unhandled
+  // rejection the moment a teardown aborts an in-flight auto-emit.
   type PendingParkedQuery = {
-    resolve: (parked: ParkedCorrelations) => void;
-    reject: (cause: Error) => void;
+    settle: (parked: ParkedCorrelations | null) => void;
   };
   const pendingParkedQueries = new Map<string, PendingParkedQuery>();
   let parkedQuerySeq = 0;
@@ -950,7 +955,7 @@ export function createWorkflowSupervisor(
       return;
     }
     pendingParkedQueries.delete(data.requestId);
-    entry.resolve(data.parked);
+    entry.settle(data.parked);
   }
 
   async function reEmitParkedCorrelations(): Promise<void> {
@@ -966,11 +971,11 @@ export function createWorkflowSupervisor(
     }
     const controlSender = state.controlSender;
     const requestId = `pc-${String((parkedQuerySeq += 1))}`;
-    const responded = new Promise<ParkedCorrelations>((resolve, reject) => {
-      pendingParkedQueries.set(requestId, { resolve, reject });
+    const responded = new Promise<ParkedCorrelations | null>((resolve) => {
+      pendingParkedQueries.set(requestId, { settle: resolve });
     });
-    // Watchdog: a wedged-but-alive child never tears its cohort down, so
-    // `rejectCohortAwaiters` would never fire and this await would hang the
+    // Watchdog: a wedged-but-alive child never tears its cohort down, so the
+    // cohort-abort settle would never fire and this await would hang the
     // re-establishment caller. On expiry, drop the pending entry and return;
     // the next re-establishment re-drives (the hub co-write is idempotent).
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -983,7 +988,7 @@ export function createWorkflowSupervisor(
         resolve("timeout");
       }, parkedQueryWatchdogMs);
     });
-    let outcome: ParkedCorrelations | "timeout";
+    let outcome: ParkedCorrelations | null | "timeout";
     try {
       await controlSender.send({
         type: "parked-correlations.request",
@@ -991,9 +996,8 @@ export function createWorkflowSupervisor(
       });
       outcome = await Promise.race([responded, watchdog]);
     } catch (cause) {
-      // The send failed, or `rejectCohortAwaiters` rejected the pending query
-      // on cohort teardown. Best-effort: log and return; the next
-      // re-establishment re-drives.
+      // The downstream send failed (a closing pipe). Best-effort: drop the
+      // pending entry, log, and return; the next re-establishment re-drives.
       pendingParkedQueries.delete(requestId);
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -1001,7 +1005,9 @@ export function createWorkflowSupervisor(
       return;
     }
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
-    if (outcome === "timeout") return;
+    // `timeout` (watchdog fired) or `null` (cohort torn down before the child
+    // answered): nothing to re-emit; the next re-establishment re-drives.
+    if (outcome === "timeout" || outcome === null) return;
     for (const parked of outcome) {
       registerSuspension(parked);
     }
@@ -1792,6 +1798,19 @@ export function createWorkflowSupervisor(
       ).catch((cause) => {
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.error`upstream control pump failed: ${message}`;
+      });
+
+      // Trigger A: re-register every correlation the freshly-ready child is
+      // parked on. A `park.notify` register can be lost while the hub is down
+      // at the original suspend; a child that resumes such a parked run (a
+      // sidecar restart re-spawning this deployment, or a recycle -- see the
+      // matching call in `installNewChild`) re-parks without re-emitting, so
+      // the supervisor re-drives it from every re-establishment. Fire-and-
+      // forget after the pump is armed to route the response: best-effort,
+      // watchdog-bounded, and an empty round-trip when nothing is parked.
+      void reEmitParkedCorrelations().catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`re-emit of parked correlations on re-establishment failed: ${message}`;
       });
 
       // Arm the recycle policy. The policy is a no-op when all bounds
@@ -2610,6 +2629,18 @@ export function createWorkflowSupervisor(
             // entries the previous cohort's replayProcessingToInbox
             // just moved back.
             wakeDispatch();
+
+            // Trigger A on the recycle seam: the respawned child re-parks any
+            // surviving parked run without re-emitting, and a recycle leaves
+            // the hub link untouched so the reconnect trigger never fires --
+            // so re-drive the re-registration here too. Same fire-and-forget
+            // contract as the spawn seam; the fresh cohort's controlSender is
+            // in `state` now, and its pump (armed above) routes the response.
+            void reEmitParkedCorrelations().catch((cause) => {
+              const message =
+                cause instanceof Error ? cause.message : String(cause);
+              logger.warn`re-emit of parked correlations on re-establishment failed: ${message}`;
+            });
           },
           onCrash: onChildCrash,
           // Edge-resolved once at the supervisor factory; recycle bounds
