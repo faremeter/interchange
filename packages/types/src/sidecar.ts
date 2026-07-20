@@ -206,6 +206,25 @@ export type SignalCorrelationRegisterFrame =
 // ---------------------------------------------------------------------------
 
 /**
+ * Hub acknowledges a `signal.correlation.register`: the routing + approval
+ * co-write for this correlationId is durable (whether this frame inserted the
+ * rows or found them already present). It lets the sidecar's link stop
+ * retrying a register whose frame may have been lost on an open socket or
+ * evicted from the bounded send queue. Keyed on correlationId alone -- every
+ * producer of the register (the initial park, the respawn/reconnect re-emit, a
+ * link retry) carries the same correlationId and drives the same idempotent
+ * co-write, so the ack asserts the one fact that matters: a row exists for this
+ * correlation.
+ */
+export const SignalCorrelationRegisterAckFrame = type({
+  type: "'signal.correlation.register.ack'",
+  agentAddress: "string",
+  correlationId: "string",
+});
+export type SignalCorrelationRegisterAckFrame =
+  typeof SignalCorrelationRegisterAckFrame.infer;
+
+/**
  * A message to deliver to a local agent's INBOX. The hub routes inbound
  * mail (from UI users, from agents on other sidecars) to the correct
  * sidecar connection.
@@ -698,6 +717,7 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(PackRejectFrame)
   .or(SyncRequestFrame)
   .or(SignalDeliverFrame)
+  .or(SignalCorrelationRegisterAckFrame)
   .or(DrainDeliverFrame);
 export type HubFrame = typeof HubFrame.infer;
 

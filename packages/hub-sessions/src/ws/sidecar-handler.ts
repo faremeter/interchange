@@ -1266,6 +1266,17 @@ export function createSidecarRouter(
         kind: frame.kind,
         approvalSnapshot: frame.snapshot,
       });
+      // The co-write resolves only when a row exists -- freshly inserted or
+      // already present (both stores are idempotent on the correlationId). Ack
+      // so the sidecar's link stops retrying a register whose frame may have
+      // been lost on an open socket. A thrown co-write (undeployed deployment,
+      // id mismatch) means no row, so no ack: the sidecar keeps retrying and
+      // the reconnect re-emit remains the ultimate backstop.
+      conn.send({
+        type: "signal.correlation.register.ack",
+        agentAddress: frame.agentAddress,
+        correlationId: frame.correlationId,
+      });
     } catch (err) {
       logger.error`Failed to register signal correlation ${frame.correlationId} for ${frame.agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
     }

@@ -4289,4 +4289,99 @@ describe("SidecarRouter", () => {
       ).toThrow(/No sidecar connected/);
     });
   });
+
+  describe("signal.correlation.register ack", () => {
+    const snapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: { amount: 100 },
+    };
+
+    async function ownAddress(
+      router: ReturnType<typeof createTestRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      address: string,
+    ): Promise<void> {
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [address],
+        }),
+      );
+      await tick();
+    }
+
+    test("acks the sender after the co-write resolves", async () => {
+      const registered: string[] = [];
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          registerSignalCorrelation: async (reg) => {
+            registered.push(reg.correlationId);
+          },
+        },
+      });
+      const ws = createMockWs();
+      await ownAddress(router, ws, "agent-a@local");
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "signal.correlation.register",
+          correlationId: "corr-1",
+          runId: "run-1",
+          deploymentId: "dep-1",
+          agentAddress: "agent-a@local",
+          kind: "approval",
+          snapshot,
+        }),
+      );
+      await tick();
+
+      expect(registered).toEqual(["corr-1"]);
+      const ack = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "signal.correlation.register.ack");
+      expect(ack).toBeDefined();
+      expect(ack.correlationId).toBe("corr-1");
+      expect(ack.agentAddress).toBe("agent-a@local");
+    });
+
+    test("does not ack when the co-write throws", async () => {
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          registerSignalCorrelation: async () => {
+            throw new Error("no deployed deployment for address");
+          },
+        },
+      });
+      const ws = createMockWs();
+      await ownAddress(router, ws, "agent-a@local");
+
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "signal.correlation.register",
+          correlationId: "corr-1",
+          runId: "run-1",
+          deploymentId: "dep-1",
+          agentAddress: "agent-a@local",
+          kind: "approval",
+          snapshot,
+        }),
+      );
+      await tick();
+
+      const ack = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "signal.correlation.register.ack");
+      expect(ack).toBeUndefined();
+    });
+  });
 });
