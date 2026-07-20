@@ -176,51 +176,63 @@ export function createHubSessionLookups(
       kind,
       approvalSnapshot,
     }) {
-      // Resolve tenancy from the workflow deployment the address names. The
-      // deployment is the origin of every approval (an approval has no
-      // agent_instance/agent/principal referent), so its row is the only place
-      // the tenant is recorded. Filter to a live ("deployed") deployment,
-      // symmetrically with `lookupPublicKey`: a torn-down deployment must not
-      // seed a routing row that can never be resolved. The lookup keys off
-      // `address` rather than `deploymentId` because `address` is the field the
-      // wire layer's ownership gate already authorized; the frame's
-      // `deploymentId` is cross-checked against the resolved row so a mismatch
-      // fails loud instead of silently writing an inconsistent pair.
-      const deployment = await db
-        .select({
-          id: workflowDeployment.id,
-          tenantId: workflowDeployment.tenantId,
-        })
-        .from(workflowDeployment)
-        .where(
-          and(
-            eq(workflowDeployment.address, agentAddress),
-            eq(workflowDeployment.status, "deployed"),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0]);
-      if (deployment === undefined) {
-        throw new Error(
-          `No deployed workflow deployment for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
-        );
-      }
-      if (deployment.id !== deploymentId) {
-        throw new Error(
-          `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" resolves to "${deployment.id}"`,
-        );
-      }
-      const tenantId = deployment.tenantId;
-
-      // Co-write both rows in one transaction so a resolver never sees a
-      // correlation without its approval or vice versa. Both inserts are
-      // idempotent on their dedup key (the signal_correlation primary key and
-      // the approval's unique correlationId), so a redelivered frame -- sidecar
-      // reconnect, workflow-log replay, supervisor restart re-emitting -- is a
-      // no-op rather than a unique-violation. `timeoutAt` is null: an agent-step
-      // suspend holds indefinitely (`parkOnSignal` is called with no timeout),
-      // so no deadline reaches this co-write.
+      // Resolve tenancy and co-write both rows in one transaction so a resolver
+      // never sees a correlation without its approval or vice versa. Both
+      // inserts are idempotent on their dedup key (the signal_correlation
+      // primary key and the approval's unique correlationId), so a redelivered
+      // frame -- sidecar reconnect, workflow-log replay, supervisor restart
+      // re-emitting -- is a no-op rather than a unique-violation. `timeoutAt` is
+      // null: an agent-step suspend holds indefinitely (`parkOnSignal` is called
+      // with no timeout), so no deadline reaches this co-write.
       await db.transaction(async (tx) => {
+        // Resolve tenancy from the workflow deployment the address names. The
+        // deployment is the origin of every approval (an approval has no
+        // agent_instance/agent/principal referent), so its row is the only place
+        // the tenant is recorded. Filter to a live ("deployed") deployment,
+        // symmetrically with `lookupPublicKey`: a torn-down deployment must not
+        // seed a routing row that can never be resolved. The lookup keys off
+        // `address` rather than `deploymentId` because `address` is the field
+        // the wire layer's ownership gate already authorized; the frame's
+        // `deploymentId` is cross-checked against the resolved row so a mismatch
+        // fails loud instead of silently writing an inconsistent pair.
+        //
+        // The resolution takes a `FOR UPDATE` row lock and runs inside the
+        // co-write transaction, so the "deployed" check and the inserts are
+        // atomic against a concurrent deployment teardown. A teardown that flips
+        // the row off "deployed" either commits after this lock is taken (its
+        // flip cannot retroactively orphan a pair written under the lock) or
+        // locks the row first, in which case this select waits, then re-checks
+        // the committed row, finds it no longer deployed, and throws. The lock
+        // order is workflow_deployment before signal_correlation and approval;
+        // a teardown path must take the deployment lock before touching those
+        // rows to keep the ordering acyclic.
+        const deployment = await tx
+          .select({
+            id: workflowDeployment.id,
+            tenantId: workflowDeployment.tenantId,
+          })
+          .from(workflowDeployment)
+          .where(
+            and(
+              eq(workflowDeployment.address, agentAddress),
+              eq(workflowDeployment.status, "deployed"),
+            ),
+          )
+          .for("update")
+          .limit(1)
+          .then((rows) => rows[0]);
+        if (deployment === undefined) {
+          throw new Error(
+            `No deployed workflow deployment for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
+          );
+        }
+        if (deployment.id !== deploymentId) {
+          throw new Error(
+            `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" resolves to "${deployment.id}"`,
+          );
+        }
+        const tenantId = deployment.tenantId;
+
         await signalCorrelationStore.registerIfAbsent(
           {
             correlationId,
