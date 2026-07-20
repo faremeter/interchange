@@ -1,0 +1,1 @@
+ALTER TABLE "signal_correlation" ADD CONSTRAINT "signal_correlation_deployment_id_workflow_deployment_id_fk" FOREIGN KEY ("deployment_id") REFERENCES "public"."workflow_deployment"("id") ON DELETE cascade ON UPDATE no action;

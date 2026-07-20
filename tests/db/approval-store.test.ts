@@ -23,7 +23,7 @@ const TENANT = "tnt";
 const ASSET = "ast";
 const DEPLOYMENT = "dep";
 
-async function seedApprovalDeps(h: TestDb): Promise<void> {
+async function seedDeploymentDeps(h: TestDb): Promise<void> {
   await seedTenants(h.db, [{ id: TENANT }]);
   await seedAsset(h.db, {
     id: ASSET,
@@ -72,7 +72,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
   });
 
   test("resolves a pending approval exactly once", async () => {
-    await seedApprovalDeps(h);
+    await seedDeploymentDeps(h);
     const store = createApprovalStore(h.db);
     await store.create(approvalRow("corr-1"));
 
@@ -94,7 +94,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
   });
 
   test("finds an approval by correlation id", async () => {
-    await seedApprovalDeps(h);
+    await seedDeploymentDeps(h);
     const store = createApprovalStore(h.db);
     await store.create(approvalRow("corr-find"));
 
@@ -106,7 +106,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
   });
 
   test("finds an approval by its primary key", async () => {
-    await seedApprovalDeps(h);
+    await seedDeploymentDeps(h);
     const store = createApprovalStore(h.db);
     await store.create(approvalRow("corr-byid"));
 
@@ -118,7 +118,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
   });
 
   test("round-trips an approval's tool snapshot", async () => {
-    await seedApprovalDeps(h);
+    await seedDeploymentDeps(h);
     const store = createApprovalStore(h.db);
 
     const row = approvalRow("corr-snap");
@@ -136,7 +136,7 @@ function correlationRow(correlationId: string) {
   return {
     correlationId,
     tenantId: TENANT,
-    deploymentId: "dep-1",
+    deploymentId: DEPLOYMENT,
     agentAddress: "addr-1",
     runId: "run-1",
     signalName: "sig-1",
@@ -162,7 +162,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("claims a correlation for terminal delivery exactly once", async () => {
-      await seedTenants(h.db, [{ id: TENANT }]);
+      await seedDeploymentDeps(h);
       const store = createSignalCorrelationStore(h.db);
       await store.register(correlationRow("c-1"));
 
