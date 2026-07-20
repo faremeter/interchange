@@ -7,11 +7,15 @@ import {
   test,
 } from "bun:test";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, signalName } from "@intx/types";
-import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
+import {
+  createApprovalStore,
+  createDB,
+  createSignalCorrelationStore,
+} from "@intx/db";
 import {
   approval,
   signalCorrelation,
@@ -28,6 +32,7 @@ import {
 import {
   createTestDb,
   harnessDbEnvAvailable,
+  loadHarnessDbConfig,
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
@@ -85,6 +90,20 @@ async function signChallenge(
   payload.set(addressBytes, nonceBytes.length);
   const sig = await signEd25519(privateKey, payload);
   return hexEncode(new Uint8Array(sig));
+}
+
+// The backend pid of a handle's single connection. Only meaningful for a
+// `max: 1` handle, where every query reuses the one physical connection, so the
+// pid stays stable for later `pg_blocking_pids` checks.
+async function backendPid(
+  handle: ReturnType<typeof createDB>,
+): Promise<number> {
+  const rows = await handle.db.execute(sql`SELECT pg_backend_pid() AS pid`);
+  const row = rows[0];
+  if (row === undefined) {
+    throw new Error("pg_backend_pid returned no row");
+  }
+  return Number(row["pid"]);
 }
 
 const TENANT = "t1";
@@ -446,6 +465,114 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(correlations).toHaveLength(0);
       const approvals = await h.db.select().from(approval);
       expect(approvals).toHaveLength(0);
+    });
+
+    test("a teardown interleaved mid-register never orphans a correlation pair", async () => {
+      // The window the row lock closes: a deployment teardown that flips the
+      // row off "deployed" while a register is in flight. The register resolves
+      // the deployment and co-writes both rows in one transaction, taking a
+      // `SELECT ... FOR UPDATE` on the deployment row; a concurrent teardown
+      // that has locked the same row makes the register block, and once the
+      // teardown commits the register's in-transaction re-check finds no
+      // deployed row and throws -- so the pair is never written against a
+      // torn-down deployment.
+      //
+      // Two dedicated single-connection handles drive the interleave
+      // deterministically: one holds an uncommitted teardown UPDATE (the row's
+      // FOR NO KEY UPDATE lock), the other runs the register whose FOR UPDATE
+      // must wait on it. `h.db` stays free to observe the block.
+      const kp = await generateKeyPair();
+      await seedDeployment(hexEncode(kp.publicKey));
+
+      const config = loadHarnessDbConfig();
+      const registerHandle = createDB({ ...config, schema: h.schema, max: 1 });
+      const teardownHandle = createDB({ ...config, schema: h.schema, max: 1 });
+      try {
+        const registerPid = await backendPid(registerHandle);
+        const teardownPid = await backendPid(teardownHandle);
+
+        const lookups = createHubSessionLookups({
+          db: registerHandle.db,
+          agentRepoStore: stubRepoStore,
+        });
+
+        let outcome: unknown;
+        let settled = false;
+        let sawBlock = false;
+        let registerPromise: Promise<unknown> = Promise.resolve();
+
+        await teardownHandle.transaction(async (txT) => {
+          // Lock the deployment row and flip it off "deployed", held
+          // uncommitted for the duration of the register attempt.
+          await txT
+            .update(workflowDeployment)
+            .set({ status: "error" })
+            .where(eq(workflowDeployment.id, DEPLOYMENT));
+
+          // Fire the register on its own backend without awaiting: it blocks on
+          // the row lock, and awaiting it here would deadlock against the
+          // teardown transaction that must commit to release the lock.
+          registerPromise = lookups
+            .registerSignalCorrelation({
+              correlationId: "corr-1",
+              runId: "run-1",
+              deploymentId: DEPLOYMENT,
+              agentAddress: WF_ADDR,
+              kind: "approval",
+              approvalSnapshot: SNAPSHOT,
+            })
+            .then(() => null)
+            .catch((err: unknown) => err)
+            .then((res) => {
+              settled = true;
+              outcome = res;
+              return res;
+            });
+
+          // Wait until the register backend is blocked specifically by the
+          // teardown backend, or has already settled without blocking (the
+          // pre-lock behavior, which writes the orphan). The cap stays well
+          // under bun's 5s default per-test timeout for tests/db.
+          for (let i = 0; i < 150 && !settled; i++) {
+            const blocked = await h.db.execute(
+              sql`SELECT pg_blocking_pids(${registerPid}) @> ARRAY[${teardownPid}]::int[] AS blocked`,
+            );
+            if (blocked[0]?.["blocked"] === true) {
+              sawBlock = true;
+              break;
+            }
+            await new Promise((res) => setTimeout(res, 12));
+          }
+          // Returning commits the teardown (status = "error") and releases the
+          // lock; a blocked register then re-checks and finds no deployed row.
+        });
+
+        await registerPromise;
+
+        // The register waited on the teardown rather than racing past it, then
+        // threw once the deployment was no longer deployed.
+        expect(sawBlock).toBe(true);
+        expect(outcome).toBeInstanceOf(Error);
+        if (outcome instanceof Error) {
+          expect(outcome.message).toContain("No deployed workflow deployment");
+        }
+
+        // The invariant: no orphaned pair pointing at the torn-down deployment.
+        expect(
+          await registerHandle.db.select().from(signalCorrelation),
+        ).toHaveLength(0);
+        expect(await registerHandle.db.select().from(approval)).toHaveLength(0);
+
+        // The deployment row survived the teardown (flipped, not deleted).
+        const deployments = await registerHandle.db
+          .select()
+          .from(workflowDeployment);
+        expect(deployments).toHaveLength(1);
+        expect(deployments[0]?.status).toBe("error");
+      } finally {
+        await registerHandle.close();
+        await teardownHandle.close();
+      }
     });
 
     test("store inserts are idempotent: second call returns null, not a throw", async () => {
