@@ -26,8 +26,11 @@ import { createIsogitStore } from "@intx/storage-isogit";
 
 import {
   readColdParkedApprovalSnapshot,
+  readColdParkedPendingOperations,
   readWarmParkedApprovalSnapshot,
+  readWarmParkedPendingOperations,
   stepStorageRoot,
+  toParkedApprovalOps,
 } from "./workflow-substrate-factory";
 import { createDurableConversationStore } from "./conversation-state";
 
@@ -300,5 +303,116 @@ describe("readWarmParkedApprovalSnapshot", () => {
       correlationId: "corr-1",
     });
     expect(got).toBeUndefined();
+  });
+});
+
+// The pending-operations readers back the resume classifier's `readParkedApprovalOps`
+// binding (the crash-mid-park recovery hook), where the snapshot readers back the
+// re-registration enumeration. Both project the same durable store; these pin the
+// enumeration variant returns every parked op, not just one matched by correlationId.
+describe("readColdParkedPendingOperations", () => {
+  test("returns every pending operation from a parked step's on-disk store", async () => {
+    const dataDir = await makeTempDir();
+    const coordinate = {
+      dataDir,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: "run-1",
+      stepId: "s",
+      attempt: 1,
+    };
+    const store = await createIsogitStore(
+      stepStorageRoot(coordinate),
+      testSigner,
+    );
+    await store.writeMetadata({
+      pendingOperations: [pendingApproval("corr-1", snapshot)],
+      tokenUsage: EMPTY_USAGE,
+    });
+
+    const got = await readColdParkedPendingOperations(coordinate);
+    expect(got).toEqual([pendingApproval("corr-1", snapshot)]);
+  });
+
+  test("returns an empty list without creating a repo when the store is absent", async () => {
+    const dataDir = await makeTempDir();
+    const coordinate = {
+      dataDir,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: "missing",
+      stepId: "s",
+      attempt: 1,
+    };
+
+    const got = await readColdParkedPendingOperations(coordinate);
+    expect(got).toEqual([]);
+    await expect(fs.stat(stepStorageRoot(coordinate))).rejects.toThrow();
+  });
+});
+
+describe("readWarmParkedPendingOperations", () => {
+  test("reconstructs the pending operations from the durable substrate mirror", async () => {
+    const substrate = createStubSubstrate(await makeTempDir());
+    const store = await createDurableConversationStore({
+      localStoreDir: await makeTempDir(),
+      signer: testSigner,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      agentKey: "s",
+    });
+    await store.storage.writeMetadata({
+      pendingOperations: [pendingApproval("corr-1", snapshot)],
+      tokenUsage: EMPTY_USAGE,
+    });
+    await store.mirrorToSubstrate();
+
+    const got = await readWarmParkedPendingOperations({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      stepId: "s",
+    });
+    expect(got).toEqual([pendingApproval("corr-1", snapshot)]);
+  });
+
+  test("returns an empty list when no durable state exists for the agent", async () => {
+    const substrate = createStubSubstrate(await makeTempDir());
+
+    const got = await readWarmParkedPendingOperations({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      stepId: "never-ran",
+    });
+    expect(got).toEqual([]);
+  });
+});
+
+describe("toParkedApprovalOps", () => {
+  test("projects approval ops to correlationId plus the epoch-ms deadline", async () => {
+    const withDeadline: PendingOperation = {
+      correlationId: "corr-timeout",
+      kind: "approval",
+      registeredAt: 0,
+      gateId: "gate-corr-timeout",
+      timeoutAt: 1_700_000_000_000,
+    };
+
+    const got = toParkedApprovalOps([
+      pendingApproval("corr-1", snapshot),
+      withDeadline,
+    ]);
+
+    expect(got).toEqual([
+      { correlationId: "corr-1" },
+      { correlationId: "corr-timeout", timeoutAtMs: 1_700_000_000_000 },
+    ]);
+  });
+
+  test("omits timeoutAtMs for an indefinite-hold park", async () => {
+    const got = toParkedApprovalOps([pendingApproval("corr-1")]);
+    expect(got).toEqual([{ correlationId: "corr-1" }]);
+    const first = got[0];
+    if (first === undefined) throw new Error("unreachable");
+    expect("timeoutAtMs" in first).toBe(false);
   });
 });

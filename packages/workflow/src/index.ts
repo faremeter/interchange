@@ -23,6 +23,8 @@ export {
   type EffectLedger,
   type LoopFn,
   type LoopFnRegistry,
+  type ParkedApprovalOp,
+  type ReadParkedApprovalOps,
   type RepoStore,
   type RunLoopIteration,
   type RunResult,
