@@ -1029,6 +1029,22 @@ export function createReactor(config: ReactorConfig): Reactor {
   // Gate suspension critical section
   // -------------------------------------------------------------------------
 
+  // While a suspend is committing (the `await commitCycle()` in
+  // `suspendOnGate`), its gate is already armed but `reactor.gate.blocked` has
+  // not been emitted yet. If the gate's timeout timer elapses inside that
+  // window, `onGateCleared` would take effect ahead of the `blocked` it belongs
+  // to — emitting `reactor.gate.cleared` on the plain path, or enqueuing the
+  // synthetic `resume.tool_result` and removing the pending operation on the
+  // ask rail — before the suspension has been announced. `deriveStatus` and the
+  // send-awaiter both assume a gate's `blocked` precedes any effect of its
+  // clearing, so the in-flight suspend is tracked here and such a clear is
+  // deferred until `blocked` has fired.
+  type InFlightSuspend = {
+    gateId: string;
+    deferredClear: { reason: "resolved" | "timeout" | "shutdown" } | null;
+  };
+  let suspendingGate: InFlightSuspend | null = null;
+
   // Callback the gate manager invokes when a gate resolves, times out, or is
   // shut down. Refreshes the snapshot and drives the loop's next step.
   //
@@ -1049,6 +1065,18 @@ export function createReactor(config: ReactorConfig): Reactor {
     gateId: string,
     reason: "resolved" | "timeout" | "shutdown",
   ): void {
+    // A clear that fires while this gate's suspend is still committing must not
+    // take effect before `reactor.gate.blocked` is emitted. Record it and let
+    // suspendOnGate replay the full handler once the block is announced.
+    if (
+      suspendingGate !== null &&
+      suspendingGate.gateId === gateId &&
+      suspendingGate.deferredClear === null
+    ) {
+      suspendingGate.deferredClear = { reason };
+      return;
+    }
+
     if (stateManager !== null) {
       stateManager.setGatesSnapshot(gates.snapshot());
     }
@@ -1103,18 +1131,10 @@ export function createReactor(config: ReactorConfig): Reactor {
       }
     }
 
-    emit({
-      type: "reactor.gate.blocked",
-      seq: nextSeq(),
-      data: {
-        reason: gateType,
-        gateId,
-        ...(correlationId !== undefined ? { correlationId } : {}),
-        ...(pendingOp?.approvalSnapshot !== undefined
-          ? { approvalSnapshot: pendingOp.approvalSnapshot }
-          : {}),
-      },
-    });
+    // Track this suspend as in flight so a clear racing the commit below is
+    // deferred until `reactor.gate.blocked` has been emitted.
+    const inFlightSuspend: InFlightSuspend = { gateId, deferredClear: null };
+    suspendingGate = inFlightSuspend;
 
     // Register the gate. onGateCleared enqueues the cleared event so the loop
     // processes it normally without blocking here.
@@ -1137,6 +1157,38 @@ export function createReactor(config: ReactorConfig): Reactor {
     // Commit before the loop continues so the suspended state is durable
     // across restart.
     await commitCycle();
+
+    // Emit `reactor.gate.blocked` only AFTER the commit. This event resolves
+    // the `send()` awaiter as "suspended", and a downstream consumer (the warm
+    // agent's run-boundary durability mirror) reads the pending operation back
+    // out of the just-committed context store the instant `send()` settles.
+    // Emitting before the commit would resolve `send()` first, letting that
+    // mirror read a store that has not yet persisted the pending op -- it would
+    // durably mirror an empty pending-operation set and lose the approval
+    // snapshot, so a parked correlation could not be re-registered after a hub
+    // reconnect. This upholds persist-before-settle: the durable commit the
+    // header promises before returning to the loop lands before the suspension
+    // settles.
+    emit({
+      type: "reactor.gate.blocked",
+      seq: nextSeq(),
+      data: {
+        reason: gateType,
+        gateId,
+        ...(correlationId !== undefined ? { correlationId } : {}),
+        ...(pendingOp?.approvalSnapshot !== undefined
+          ? { approvalSnapshot: pendingOp.approvalSnapshot }
+          : {}),
+      },
+    });
+
+    // The suspension is announced. If the gate cleared while the commit was in
+    // flight, its handler was deferred to keep it after `blocked`; replay it
+    // now, in order.
+    suspendingGate = null;
+    if (inFlightSuspend.deferredClear !== null) {
+      onGateCleared(gateId, inFlightSuspend.deferredClear.reason);
+    }
   }
 
   // Re-registers a live gate and correlation for each pending operation loaded
