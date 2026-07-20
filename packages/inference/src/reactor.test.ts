@@ -1060,6 +1060,115 @@ describe("createReactor — gate lifecycle", () => {
     expect(cleared.data.reason).toBe("shutdown");
   });
 
+  test("does not emit reactor.gate.blocked until the suspend is durably committed", async () => {
+    // Persist-before-settle. The `reactor.gate.blocked` event resolves the
+    // `send()` awaiter as "suspended", and a downstream consumer (the warm
+    // agent's run-boundary durability mirror) reads the pending operation back
+    // out of the context store the instant `send()` settles. So the durable
+    // commit must land BEFORE the event is emitted -- otherwise the mirror
+    // reads an uncommitted store and durably loses the approval snapshot. This
+    // test gates the commit's `writeMetadata`: `blocked` must not appear while
+    // the commit is pending, and must appear once it is released. A regression
+    // that emits before committing would fire `blocked` while the gate is held.
+    let releaseCommit: (() => void) | undefined;
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const base = makeContextStore();
+    const contextStore: ContextStore = {
+      ...base,
+      async writeMetadata(metadata, signal) {
+        await commitGate;
+        return base.writeMetadata(metadata, signal);
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore,
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.suspend({
+            type: "approval",
+            gateId: "commit-order-gate",
+            timeoutMs: 5000,
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // The commit is held, so a correctly-ordered reactor has not emitted
+    // `blocked` yet; a reactor that emits before committing would have.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
+
+    // Release the durable commit; only now may `blocked` be emitted.
+    releaseCommit?.();
+    await waitFor("reactor.gate.blocked");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("defers a gate clear racing the commit until after blocked", async () => {
+    // blocked-before-cleared. A gate whose timeout timer elapses while the
+    // suspend's durable commit is still in flight must not have its clear take
+    // effect before `reactor.gate.blocked` is emitted: downstream status
+    // derivation and the send-awaiter assume a gate's `blocked` precedes any
+    // effect of its clearing. This holds the commit's `writeMetadata` open long
+    // enough for a short gate timeout to fire inside the window, then asserts
+    // `blocked` is emitted before the `reactor.gate.cleared` it belongs to.
+    let releaseCommit: (() => void) | undefined;
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const base = makeContextStore();
+    const contextStore: ContextStore = {
+      ...base,
+      async writeMetadata(metadata, signal) {
+        await commitGate;
+        return base.writeMetadata(metadata, signal);
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore,
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) =>
+          caps.suspend({
+            type: "approval",
+            gateId: "race-gate",
+            timeoutMs: 30,
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.done(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // Let the gate's timeout elapse while the commit is still held. Neither the
+    // block nor the clear may surface until the commit is released.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
+    expect(events.some((e) => e.type === "reactor.gate.cleared")).toBe(false);
+
+    releaseCommit?.();
+    await waitFor("reactor.done");
+
+    const blockedIndex = events.findIndex(
+      (e) => e.type === "reactor.gate.blocked",
+    );
+    const clearedIndex = events.findIndex(
+      (e) => e.type === "reactor.gate.cleared",
+    );
+    expect(blockedIndex).toBeGreaterThanOrEqual(0);
+    expect(clearedIndex).toBeGreaterThan(blockedIndex);
+    expect(getEvent(events, "reactor.gate.cleared").data.reason).toBe(
+      "timeout",
+    );
+  });
+
   test("gate timeout fires reactor.gate.cleared with reason=timeout", async () => {
     const { reactor, events, waitFor } = createTestReactor({
       shutdownTimeoutMs: 500,
