@@ -1,5 +1,6 @@
-// Acceptance test for INTR-333: a hub reconnect re-emits a parked run's
-// correlation so the run becomes approvable again.
+// Acceptance test: a hub reconnect re-emits a parked run's correlation so the
+// run becomes approvable again, and an approver can then resolve the recovered
+// correlation to drive the parked run to completion.
 //
 // The scenario the ticket names is "suspend with the hub down -> hub comes up
 // -> the correlation is registered and the run is approvable". The load-bearing
@@ -12,7 +13,10 @@
 // supervisor to re-query its child's durably-parked approval correlations and
 // re-emit each through the suspension sink -> a fresh
 // `signal.correlation.register` frame reaches the hub -> the co-write lands the
-// rows -> the run is approvable.
+// rows -> the run is approvable. The test then approves the recovered
+// correlation through the real resolve route and asserts the parked run resumes
+// to RunCompleted, so the re-emitted registration is proven to be a live route
+// the resolver can drive, not merely a row that reappeared.
 //
 // Making "the register did not co-write" deterministic
 // ----------------------------------------------------
@@ -71,15 +75,23 @@ import {
 import { and, eq } from "drizzle-orm";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { createInMemoryGrantStore } from "@intx/authz";
 import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
 import {
   approval,
   signalCorrelation,
   workflowDeployment,
 } from "@intx/db/schema";
+import { createApp, type GetSession } from "@intx/hub-api";
 import { generateId } from "@intx/hub-common";
-import { type RepoId, type WorkflowRunHubPrincipal } from "@intx/hub-sessions";
+import {
+  type EventCollectorRegistry,
+  type RepoId,
+  type SessionService,
+  type WorkflowRunHubPrincipal,
+} from "@intx/hub-sessions";
 import { signalName } from "@intx/types";
+import type { GrantRule } from "@intx/types/authz";
 import type { ApprovalSnapshot, HarnessConfig } from "@intx/types/runtime";
 import { WireGrantRule } from "@intx/types/grant-wire";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
@@ -116,6 +128,7 @@ import {
   waitFor,
   waitForFirstRunId,
   waitForReconnect,
+  waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { toLaunchDeployContent } from "./launch-session-bridge";
@@ -178,6 +191,73 @@ const deploymentMailAddress = deriveDeploymentAddress({
   deploymentDomain: DEPLOYMENT_DOMAIN,
 });
 const deploymentSlug = deriveDeploymentId(deploymentMailAddress);
+
+// Approve-route scaffolding: a mock approver session plus the
+// `approval:<slug>`/`resolve` grant that authorizes the real approve route,
+// pointed at the same DB and fixture sidecar router. Mirrors the capstone
+// approval test's setup so the re-emitted, recovered correlation can be
+// resolved through the real resolver, not just observed as approvable.
+function createMockGetSession(userId: string): GetSession {
+  const now = new Date("2025-01-01");
+  return async () => ({
+    user: {
+      id: userId,
+      email: "approver@example.com",
+      emailVerified: true,
+      name: "Approver",
+      createdAt: now,
+      updatedAt: now,
+    },
+    session: {
+      id: "session_reconnect_reemit",
+      userId,
+      token: "tok_reconnect_reemit",
+      expiresAt: new Date("2999-01-01"),
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+}
+
+function notImpl(name: string): never {
+  throw new Error(`reconnect re-emit approve mock: ${name} not implemented`);
+}
+
+function createMockSessionService(): SessionService {
+  return {
+    stageWorkflowStep: () => notImpl("stageWorkflowStep"),
+    deployInstanceAtHead: () => notImpl("deployInstanceAtHead"),
+    deployWorkflowDefinition: () => notImpl("deployWorkflowDefinition"),
+    deploySingleStepAtHead: () => notImpl("deploySingleStepAtHead"),
+    sendUserMessage: () => notImpl("sendUserMessage"),
+    endSession: () => notImpl("endSession"),
+  };
+}
+
+function createMockEventCollectors(): EventCollectorRegistry {
+  return {
+    create: () => notImpl("create"),
+    dispatch: () => notImpl("dispatch"),
+    abandon: () => notImpl("abandon"),
+    has: () => false,
+    getStatus: () => undefined,
+    getAccumulatedText: () => undefined,
+    getCurrentTurnId: () => undefined,
+    getLastTurnId: () => undefined,
+  };
+}
+
+const approverGrant: GrantRule = {
+  id: "grant-approver-resolve",
+  resource: `approval:${deploymentSlug}`,
+  action: "resolve",
+  effect: "allow",
+  origin: "system",
+  conditions: null,
+  expiresAt: null,
+  roleId: null,
+  principalId: APPROVER_PRINCIPAL_ID,
+};
 
 /**
  * The real hub co-write, mirroring `createHubSessionLookups`'s
@@ -270,7 +350,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "a hub reconnect re-emits a parked run's correlation so it is approvable",
+  "a hub reconnect re-emits a parked run's correlation and resolves it to completion",
   () => {
     // Run-once guard. The env (sidecar subprocess + on-disk warm step-state +
     // the live parked run) is shared across the describe block, so a second
@@ -284,9 +364,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       h = await createTestDb();
       env = await startDeployFlowEnv({
         // Persistent tool-call mock: re-issue the ask-granted call until its
-        // result is in history, then reply. The run parks on the first call and
-        // is never approved in this test, so it stays parked -- exactly the
-        // durable state Trigger B re-emits on reconnect.
+        // result is in history, then reply. The run parks on the first call --
+        // exactly the durable state Trigger B re-emits on reconnect -- and only
+        // completes once the recovered correlation is approved at the end.
         inferenceApprovalToolCall: {
           toolName: TOOL_NAME,
           input: { to: CALL_TO, body: CALL_BODY },
@@ -307,7 +387,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
     });
 
-    test("re-registers the parked correlation on reconnect", async () => {
+    test("re-registers the parked correlation on reconnect and resolves it to completion", async () => {
       if (hasRun) {
         throw new Error(
           "reconnect re-emit acceptance test assumes a single test per shared " +
@@ -669,8 +749,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(reemittedApprovals).toHaveLength(1);
       const reemittedApproval = reemittedApprovals[0];
       if (reemittedApproval === undefined) throw new Error("unreachable");
-      // Pending + unresolved: the run is approvable, which is the whole point of
-      // the recovery.
+      // Pending + unresolved: the recovered run is approvable. The approve step
+      // below then proves it is actually resolvable end-to-end.
       expect(reemittedApproval.status).toBe("pending");
       expect(reemittedApproval.runId).toBe(runId);
       expect(reemittedApproval.agentAddress).toBe(deploymentMailAddress);
@@ -690,6 +770,85 @@ describe.skipIf(!harnessDbEnvAvailable())(
         to: CALL_TO,
         body: CALL_BODY,
       });
+
+      // The recovered registration is not just approvable -- it is functionally
+      // routable. Approve through the real resolve route (same DB, same fixture
+      // sidecar router): the resolver claims the re-emitted correlation and
+      // delivers the decision to the parked run in the real subprocess. If the
+      // re-emitted row were a dead record rather than a live route, the resume
+      // would never arrive and this would time out.
+      const approveApp = createApp({
+        getSession: createMockGetSession(APPROVER_USER_ID),
+        authHandler: () => new Response("", { status: 404 }),
+        db: h.db,
+        grantStore: createInMemoryGrantStore([approverGrant]),
+        sidecarRouter: env.hub.router,
+        sessionService: createMockSessionService(),
+        eventCollectors: createMockEventCollectors(),
+        assetService: null,
+        repoStore: null,
+        maxTarballBytes: 10_000_000,
+      });
+
+      const approveRes = await approveApp.request(
+        `/api/tenants/${TENANT_ID}/approvals/${reemittedApproval.id}/approve`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ scope: "once" }),
+        },
+      );
+      expect(approveRes.status).toBe(200);
+
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+        {
+          timeoutMs: 30_000,
+          diagnostics: env.sidecarDiagnostics,
+        },
+      );
+      expect(terminal.type).toBe("RunCompleted");
+
+      // The delivered decision landed on the parked correlation channel, and the
+      // approval + correlation rows are now resolved/claimed -- still exactly one
+      // of each, so the recovery did not strand or duplicate a row.
+      const finalEvents = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+      );
+      const signalReceived = finalEvents.find(
+        (e) =>
+          e.type === "SignalReceived" &&
+          e.body["signalName"] === signalName(correlationId),
+      );
+      if (signalReceived === undefined) {
+        throw new Error(
+          `no SignalReceived for the recovered correlation ${correlationId}`,
+        );
+      }
+
+      const resolvedApprovals = await h.db
+        .select()
+        .from(approval)
+        .where(eq(approval.correlationId, correlationId));
+      expect(resolvedApprovals).toHaveLength(1);
+      const resolvedApproval = resolvedApprovals[0];
+      if (resolvedApproval === undefined) throw new Error("unreachable");
+      expect(resolvedApproval.status).toBe("approved");
+      expect(resolvedApproval.resolvedAt).not.toBeNull();
+
+      const claimedCorrelations = await h.db
+        .select()
+        .from(signalCorrelation)
+        .where(eq(signalCorrelation.correlationId, correlationId));
+      expect(claimedCorrelations).toHaveLength(1);
+      const claimedCorrelation = claimedCorrelations[0];
+      if (claimedCorrelation === undefined) throw new Error("unreachable");
+      expect(claimedCorrelation.resolvedAt).not.toBeNull();
+      expect(claimedCorrelation.signalId).not.toBeNull();
     }, 240_000);
   },
 );
