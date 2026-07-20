@@ -26,12 +26,18 @@ import {
   RepoId,
   type SignalDeliverFrame,
   type SignalCorrelationRegisterFrame,
+  type SignalCorrelationRegisterAckFrame,
   type DrainDeliverFrame,
   type SourcesUpdateFrame,
   type SyncRequestFrame,
 } from "@intx/types/sidecar";
 import type { SignalKind } from "@intx/types";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
+import {
+  createRegisterAcker,
+  DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
+  DEFAULT_REGISTER_ACK_TIMEOUT_MS,
+} from "./register-acker";
 import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
 import type { ApprovalSnapshot, InferenceEvent } from "@intx/types/runtime";
 
@@ -445,6 +451,10 @@ export type HubLinkConfig = {
   onWorkflowAddressesUnroutable?: (addresses: string[]) => void;
   pingIntervalMs?: number;
   reconnectDelayMs?: number;
+  /** Per-attempt watchdog before re-sending an unacked correlation register. */
+  registerAckTimeoutMs?: number;
+  /** Total register sends (initial + retries) before giving up. */
+  registerAckMaxAttempts?: number;
   scheduleReconnect?: ReconnectScheduler;
 };
 
@@ -508,6 +518,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     onWorkflowAddressesUnroutable,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
+    registerAckTimeoutMs = DEFAULT_REGISTER_ACK_TIMEOUT_MS,
+    registerAckMaxAttempts = DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
     scheduleReconnect = defaultScheduleReconnect,
   } = config;
 
@@ -525,6 +537,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // so a single pending-id map is unambiguous; the protocol logic
   // (chunking, ack-handshake) lives once in `@intx/pack-transport`.
   const packSender = createPackSender({ sendFrame: (frame) => send(frame) });
+
+  // Retry `signal.correlation.register` until the hub acks it. A register is
+  // fire-and-forget on the wire and can be lost on an open socket or evicted
+  // from the bounded queue below; the acker re-sends on a tight watchdog while
+  // the link is open and gives up on disconnect, leaving the reconnect re-emit
+  // as the backstop. `isOpen` mirrors `send`'s OPEN check so a retry never
+  // fires onto a dead or not-yet-challenged socket.
+  const registerAcker = createRegisterAcker({
+    sendFrame: (frame) => send(frame),
+    isOpen: () => ws !== null && ws.readyState === WebSocket.OPEN,
+    timeoutMs: registerAckTimeoutMs,
+    maxAttempts: registerAckMaxAttempts,
+  });
 
   // Serialize frame processing so async handlers (deploy, undeploy, abort)
   // cannot race against each other.
@@ -922,6 +947,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  function handleSignalCorrelationRegisterAck(
+    frame: SignalCorrelationRegisterAckFrame,
+  ): void {
+    // A no-match is normal: the retry may have already been acked, exhausted,
+    // or abandoned on a disconnect. The ack still truthfully asserts the row
+    // exists, so there is nothing to recover -- log at debug, not warn.
+    if (!registerAcker.handleAck(frame.correlationId)) {
+      logger.debug`Received signal.correlation.register.ack for uncorrelated ${frame.correlationId}`;
+    }
+  }
+
   async function handleSignalDeliver(frame: SignalDeliverFrame): Promise<void> {
     if (signalInboundRouter === undefined) {
       logger.warn`Received signal.deliver for ${frame.agentAddress} but no signalInboundRouter is wired; dropping`;
@@ -1168,6 +1204,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       case "repo.pack.reject":
         handlePackReject(frame);
         break;
+      case "signal.correlation.register.ack":
+        handleSignalCorrelationRegisterAck(frame);
+        break;
       default:
         logger.warn`Unknown frame type from hub: ${(frame as { type: string }).type}`;
     }
@@ -1202,6 +1241,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
       packReceiver.reset();
       packSender.cancelAll(CONNECTION_LOST_REASON);
+      // Abandon register retries armed against the prior connection. Any still
+      // parked correlation is re-registered by the reconnect re-emit once the
+      // challenge below re-routes the addresses, so a stale retry firing onto
+      // this fresh, not-yet-challenged socket would only land unrouted.
+      registerAcker.cancelAll();
 
       // Announce this sidecar to the hub for routing. The hub learns of a
       // sidecar only from a register frame; `connections` is the map
@@ -1298,6 +1342,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         clearInterval(pingTimer);
         pingTimer = null;
       }
+      // Abandon in-flight register retries: the link is down, so recovery
+      // belongs to the reconnect re-emit, and a lingering watchdog would only
+      // fire onto a closed socket.
+      registerAcker.cancelAll();
       // The hub dropped every route this link held. Block workflow-run pushes
       // for the deployments it hosts until the reconnect challenge re-routes
       // them, so the coalescing pusher does not re-ship onto the fresh,
@@ -1339,6 +1387,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       clearInterval(pingTimer);
       pingTimer = null;
     }
+    registerAcker.cancelAll();
     if (ws !== null) {
       ws.close();
       ws = null;
@@ -1374,7 +1423,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         kind: registration.kind,
         snapshot: registration.approvalSnapshot,
       };
-      send(frame);
+      // Send through the acker, which retries until the hub acks the co-write.
+      registerAcker.send(frame);
     };
 
   return {

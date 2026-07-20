@@ -1639,6 +1639,154 @@ describe("register + reconnect frames on connect", () => {
       await server.stop(true);
     }
   });
+
+  test("an ack from the hub settles the register retry", async () => {
+    const allFrames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, ws) {
+          if (typeof evt.data !== "string") return;
+          allFrames.push(evt.data);
+          const frame: { type: string; correlationId?: string } = JSON.parse(
+            evt.data,
+          );
+          if (
+            frame.type === "signal.correlation.register" &&
+            frame.correlationId !== undefined
+          ) {
+            ws.send(
+              JSON.stringify({
+                type: "signal.correlation.register.ack",
+                agentAddress: "ins_dep_reg_ack@integration.interchange",
+                correlationId: frame.correlationId,
+              }),
+            );
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-ack",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [],
+      // A tight watchdog against a generous cap: an unacked register would
+      // climb toward the cap, so a count that stabilizes far below it is the
+      // ack having stopped the retry -- robust against a round-trip that races
+      // one retry rather than asserting an exact timing-gated count.
+      registerAckTimeoutMs: 30,
+      registerAckMaxAttempts: 10,
+    });
+
+    const registers = (): string[] =>
+      allFrames.filter(
+        (s) => JSON.parse(s).type === "signal.correlation.register",
+      );
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        allFrames.some((s) => JSON.parse(s).type === "register"),
+      );
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-ack",
+        runId: "run-1",
+        deploymentId: "dep-1",
+        agentAddress: "ins_dep_reg_ack@integration.interchange",
+        kind: "approval",
+        approvalSnapshot: {
+          name: "charge_card",
+          description: "Charge the customer's card",
+          inputSchema: { type: "object" },
+          arguments: { amount: 100 },
+        },
+      });
+      await waitFor(() => registers().length >= 1);
+      // Let the ack settle and several watchdog windows pass, then confirm the
+      // register count has stopped growing and stayed far below the cap -- the
+      // ack settled the retry rather than the loop running to exhaustion.
+      await new Promise((r) => setTimeout(r, 200));
+      const settledCount = registers().length;
+      await new Promise((r) => setTimeout(r, 120));
+      expect(registers().length).toBe(settledCount);
+      expect(settledCount).toBeLessThan(5);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("an unacked register is retried on the watchdog up to the cap", async () => {
+    const allFrames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        // Deliberately never ack the register, so the client's watchdog fires.
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") allFrames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-retry",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [],
+      registerAckTimeoutMs: 40,
+      registerAckMaxAttempts: 3,
+    });
+
+    const registers = (): string[] =>
+      allFrames.filter(
+        (s) => JSON.parse(s).type === "signal.correlation.register",
+      );
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        allFrames.some((s) => JSON.parse(s).type === "register"),
+      );
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-retry",
+        runId: "run-1",
+        deploymentId: "dep-1",
+        agentAddress: "ins_dep_reg_retry@integration.interchange",
+        kind: "approval",
+        approvalSnapshot: {
+          name: "charge_card",
+          description: "Charge the customer's card",
+          inputSchema: { type: "object" },
+          arguments: { amount: 100 },
+        },
+      });
+      // Three sends total (initial + two retries), then the acker gives up.
+      await waitFor(() => registers().length >= 3);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(registers()).toHaveLength(3);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
 });
 
 describe("answerMalformedRequestFrame", () => {
