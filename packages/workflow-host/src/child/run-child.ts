@@ -75,6 +75,7 @@ import type { AuthzCallResult } from "@intx/inference";
 import type {
   RunResult,
   Scheduler,
+  ReadParkedApprovalOps,
   StepInvokeRequest,
   StepInvokeResult,
   StepInvoker,
@@ -334,6 +335,17 @@ export interface RunWorkflowChildBindings {
    * dropping the correlation the hub is waiting to register.
    */
   loadParkedApproval?: LoadParkedApproval;
+  /**
+   * Enumerate the durable pending approval operations a crashed-mid-invocation
+   * step left behind, so the resume classifier can recover a step that crashed
+   * across the park boundary (durable `StepStarted`, unflushed `SignalAwaited`)
+   * as `awaiting-signal` rather than failing the run. Reads the same per-step
+   * durable storage as `loadParkedApproval` (cold isogit / warm substrate), so
+   * it is a host binding for the same reason. Optional so tests inject a stub
+   * and the recursive child-workflow adapter can omit it; absent, a crashed
+   * invocation step settles as a terminal failure, the pre-recovery behavior.
+   */
+  readParkedApprovalOps?: ReadParkedApprovalOps;
   /** Optional director registry; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
@@ -1176,6 +1188,12 @@ function buildRuntimeEnv(args: {
     onPark: (park) => {
       void emitParkNotify(args.upstreamSender, park);
     },
+    // Let the resume classifier recover a step that crashed across the park
+    // boundary. Absent (tests, the recursive child-workflow adapter) leaves a
+    // crashed invocation a terminal failure.
+    ...(args.bindings.readParkedApprovalOps !== undefined
+      ? { readParkedApprovalOps: args.bindings.readParkedApprovalOps }
+      : {}),
   };
 }
 

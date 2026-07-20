@@ -372,6 +372,38 @@ export type WorkflowPark = {
 };
 
 /**
+ * The minimal durable record of a control-plane approval suspension the resume
+ * classifier needs to recover a step that crashed mid-park -- one whose
+ * `StepStarted` flushed but whose `SignalAwaited` did not. The reactor commits
+ * its pending operation to durable storage before the park flush, so this
+ * record survives the crash even when the workflow log does not carry the
+ * `SignalAwaited`. Deliberately narrow: the runtime reconstructs the missing
+ * `SignalAwaited` from the correlationId (and optional timeout) alone and must
+ * not learn the reactor's pending-operation internals (`gateId`,
+ * `suspendedCall`, the snapshot), which stay the host's concern.
+ */
+export type ParkedApprovalOp = {
+  correlationId: string;
+  /**
+   * Absolute deadline in epoch milliseconds, as the reactor's pending operation
+   * stores it. Absent for the indefinite-hold approval parks that are the norm.
+   * The runtime converts it to the ISO string a `SignalAwaited` carries.
+   */
+  timeoutAtMs?: number;
+};
+
+/**
+ * Read-only recovery hook the resume classifier consults: enumerate the durable
+ * pending approval operations a step left behind, keyed by
+ * `{ runId, stepId, attempt }`. See `WorkflowRuntimeEnv.readParkedApprovalOps`.
+ */
+export type ReadParkedApprovalOps = (args: {
+  runId: string;
+  stepId: string;
+  attempt: number;
+}) => Promise<ParkedApprovalOp[]>;
+
+/**
  * The runtime body's full env surface. The two implementations
  * (`runLocal` and the production child-process entry point) construct
  * differently-flavoured concrete values for each field but the body
@@ -439,11 +471,30 @@ export interface WorkflowRuntimeEnv {
    * to register the correlation out-of-band (production: the sidecar sends a
    * `signal.correlation.register` frame to the hub, which co-writes the run's
    * routing + approval rows so the resolver can route a delivered decision
-   * back to the parked run). A re-park resume re-fires it; the host-side write
-   * is idempotent, so a duplicate register is harmless. A host that does not
-   * wire it does not register suspensions -- runLocal leaves it unset.
+   * back to the parked run). It fires exactly once per suspension, on the
+   * initial park: a resume that finds the step already `awaiting-signal`
+   * (including a crash-mid-park step the classifier recovers to
+   * `awaiting-signal` via `readParkedApprovalOps`) skips the fresh-emit branch
+   * and does not re-fire. Recovering a registration lost across a crash is
+   * driven from durable state on a later re-establishment (the supervisor's
+   * re-emit), whose hub write is idempotent on the correlationId. A host that
+   * does not wire it does not register suspensions -- runLocal leaves it unset.
    */
   onPark?: (park: WorkflowPark) => void;
+  /**
+   * Optional read-only recovery hook: enumerate the durable pending approval
+   * operations a step left behind, keyed by `{ runId, stepId, attempt }`. The
+   * resume classifier consults it for a step that crashed mid-invocation (a
+   * durable `StepStarted` with no `StepCompleted`) to distinguish a step that
+   * crashed AFTER the reactor durably recorded an approval suspension but
+   * BEFORE the `SignalAwaited` flushed -- resumable, by reconstructing the
+   * missing `SignalAwaited` and re-parking -- from a genuine crash mid-agent
+   * turn, which stays a terminal failure. Production wires it to the sidecar's
+   * durable step store (cold isogit / warm substrate). A host that does not
+   * wire it -- runLocal -- leaves every crashed invocation a terminal failure,
+   * the pre-recovery behavior.
+   */
+  readParkedApprovalOps?: ReadParkedApprovalOps;
 }
 
 /**

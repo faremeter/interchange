@@ -395,6 +395,11 @@ async function executeRunBody(
   // RunStarted emit below is skipped in that case because the canonical
   // phase is already `running`.
   const crashedInFlight: { stepId: string; attempt: number }[] = [];
+  const recoverableParks: {
+    stepId: string;
+    correlationId: string;
+    timeoutAtMs?: number;
+  }[] = [];
   if (state.phase === "running") {
     for (const [stepId, stepState] of state.steps) {
       // Resumable carve-outs, each re-offered by `nextSchedulable` on the
@@ -415,15 +420,52 @@ async function executeRunBody(
       ) {
         continue;
       }
-      // A crashed-mid-invocation step (agent step or action). Collect it
-      // for terminal settling AFTER this loop -- committing StepFailed
-      // inline would leave `state` stale and merely relocate the stall to
-      // the main loop.
+      // A crashed-mid-invocation step (agent step or action). Before settling
+      // it as a terminal failure, check whether the reactor durably recorded an
+      // approval suspension for this step-attempt that never reached the log as
+      // a flushed `SignalAwaited` -- the crash-mid-park window: `StepStarted`
+      // durable, `SignalAwaited` buffered but not flushed, so the reduced phase
+      // is `in-flight` rather than `awaiting-signal`. If so the step is
+      // recoverable: the suspension decision is durable in the reactor's
+      // pending-operation store even though the workflow log lost it, so the
+      // reconstruction loop below re-commits the missing `SignalAwaited` rather
+      // than failing the run. Otherwise (no binding, or no pending approval op)
+      // it is a genuine crash mid-agent-turn and settles terminal, the
+      // pre-recovery behavior. Both settlings happen AFTER this loop --
+      // committing inline would leave `state` stale and merely relocate the
+      // stall to the main loop.
       if (isCrashedInvocationStep(definition, stepId, stepState.phase)) {
-        crashedInFlight.push({
-          stepId,
-          attempt: stepState.currentAttempt,
-        });
+        const parkedOps =
+          env.readParkedApprovalOps !== undefined
+            ? await env.readParkedApprovalOps({
+                runId,
+                stepId,
+                attempt: stepState.currentAttempt,
+              })
+            : [];
+        // A step-attempt parks on at most one control-plane suspension. More
+        // than one durable pending approval op is a corrupt store, not a state
+        // the runtime can reconcile by picking one -- fail loud.
+        if (parkedOps.length > 1) {
+          throw new Error(
+            `crashed step ${stepId} (attempt ${String(stepState.currentAttempt)}) has ${String(parkedOps.length)} durable pending approval operations; a step-attempt parks on at most one control-plane suspension`,
+          );
+        }
+        const parked = parkedOps[0];
+        if (parked !== undefined) {
+          recoverableParks.push({
+            stepId,
+            correlationId: parked.correlationId,
+            ...(parked.timeoutAtMs !== undefined
+              ? { timeoutAtMs: parked.timeoutAtMs }
+              : {}),
+          });
+        } else {
+          crashedInFlight.push({
+            stepId,
+            attempt: stepState.currentAttempt,
+          });
+        }
         continue;
       }
       // Every other non-terminal residual keeps declining: the host owns
@@ -440,6 +482,33 @@ async function executeRunBody(
         );
       }
     }
+  }
+
+  // Recover each crash-mid-park approval step by committing the `SignalAwaited`
+  // the crash prevented from flushing, reconstructed from the reactor's durable
+  // pending operation. This advances the step to `awaiting-signal`, converting
+  // the crash-mid-park residual into the ordinary crash-after-park residual the
+  // resume machinery already handles: `nextSchedulable` re-offers the
+  // awaiting-signal step, `runStep`'s resume-from-park re-parks on the recovered
+  // channel reusing the original correlationId, and -- because the re-park finds
+  // the step already `awaiting-signal` -- it does not re-fire `onPark`; the
+  // correlation re-registers exactly once through the durable-state re-emit. The
+  // agent turn is never re-invoked, preserving at-most-once. The reactor stores
+  // `timeoutAt` as epoch ms; `SignalAwaited` carries it as an ISO string, so
+  // convert, and omit the field entirely for the indefinite-hold parks that are
+  // the norm.
+  for (const { stepId, correlationId, timeoutAtMs } of recoverableParks) {
+    const awaited: WorkflowEvent = {
+      kind: "SignalAwaited",
+      seq: state.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId,
+      signalName: signalName(correlationId),
+      ...(timeoutAtMs !== undefined
+        ? { timeoutAt: new Date(timeoutAtMs).toISOString() }
+        : {}),
+    };
+    state = await commitDurable(env, runId, awaited);
   }
 
   // Settle each crashed-mid-invocation step as a terminal `StepFailed`
