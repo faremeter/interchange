@@ -240,6 +240,81 @@ describe("env.onPark at a control-plane suspension", () => {
     expect(parks).toHaveLength(1);
   });
 
+  test("a fresh control-plane park notifies the host only after the suspension is durable", async () => {
+    // The durable-before-transmit invariant: parkOnSignal flushes the
+    // SignalAwaited to durable storage BEFORE calling env.onPark, so the
+    // correlationId reaches the host (and the hub) only once the workflow log
+    // can reconstruct it on resume. `commit` buffers and `flush` persists, so
+    // a read of the durable log inside the onPark callback observes the
+    // control-plane SignalAwaited only when the notify fired after the flush.
+    // Were the notify to fire before the flush, this read would find the
+    // marker still buffered and absent from the durable log.
+    const oneStep = defineWorkflow({
+      id: "park-durable-before-notify",
+      trigger: { type: "manual" },
+      steps: { s: step({ agent }) },
+    });
+    const runId = "run-durable-notify";
+    const channel = createInMemorySignalChannel();
+    const parks: WorkflowPark[] = [];
+    let durableAtNotify: Promise<boolean> | undefined;
+    const invokeStep: StepInvoker = async (req) => {
+      if (req.resume === undefined) {
+        return {
+          suspend: {
+            correlationId: "corr-durable-notify",
+            approvalSnapshot: snapshot,
+          },
+        };
+      }
+      return { output: { reply: "done", turn: replyTurn } };
+    };
+    // The onPark callback needs the env's repoStore, but the callback is
+    // constructed before buildEnv returns, so read the store through a holder
+    // assigned immediately after. onPark only fires during the run, well after
+    // the assignment; a fire before then is a bug, so fail loud rather than
+    // paper over it.
+    const holder: { env?: WorkflowRuntimeEnv } = {};
+    const env = buildEnv(oneStep, {
+      invokeStep,
+      signalChannel: channel,
+      onPark: (park) => {
+        parks.push(park);
+        if (holder.env === undefined) {
+          throw new Error("onPark fired before env was assigned");
+        }
+        durableAtNotify = holder.env.repoStore
+          .read(runId)
+          .then((events) =>
+            events.some(
+              (e) =>
+                e.kind === "SignalAwaited" &&
+                correlationIdFromSignalName(e.signalName) !== undefined,
+            ),
+          );
+      },
+    });
+    holder.env = env;
+
+    const handle = runtimeRun(oneStep, env, { runId });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The host was notified exactly once, and the control-plane SignalAwaited
+    // was already durable at that instant.
+    expect(parks).toHaveLength(1);
+    expect(durableAtNotify).toBeDefined();
+    expect(await durableAtNotify).toBe(true);
+
+    await channel.deliver(
+      signalName("corr-durable-notify"),
+      { outcome: "approved" },
+      "sig-durable",
+    );
+    const result = await handle.complete;
+    expect(result.terminalStatus).toBe("completed");
+    expect(parks).toHaveLength(1);
+  });
+
   test("resuming a durable park re-parks without re-firing onPark", async () => {
     const oneStep = defineWorkflow({
       id: "park-resume",

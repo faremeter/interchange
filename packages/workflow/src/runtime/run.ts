@@ -42,7 +42,12 @@ import {
   flushChain,
   reloadState as reloadStateInChain,
 } from "./commit-chain";
-import type { RunResult, WorkflowRun, WorkflowRuntimeEnv } from "./env";
+import type {
+  RunResult,
+  WorkflowPark,
+  WorkflowRun,
+  WorkflowRuntimeEnv,
+} from "./env";
 import { shouldAbortForDrain } from "./drain";
 import { RuntimeResumeUnsupportedError } from "./errors";
 import { scopedStepId } from "./step-scope";
@@ -2150,6 +2155,21 @@ async function parkOnSignal(
   // On a re-park resume the gate is already `awaiting-signal` (StepStarted
   // + SignalAwaited durable), so this is skipped and the tail re-parks on
   // the signal channel for a signal that has not yet arrived.
+  //
+  // A fresh control-plane suspension also notifies the host so the hub can
+  // co-write the approval/correlation rows, but that notify is DEFERRED to
+  // after the durable flush below (see the `env.onPark` call past the
+  // flush). The correlationId must be recorded in the workflow log (this
+  // `SignalAwaited` event) before it is transmitted to the hub: a crash
+  // between the notify and the flush would otherwise strand a hub row for a
+  // correlation the log cannot reconstruct on resume. Capturing the park
+  // here but transmitting after the flush keeps identity durable-before-
+  // transmit. The park is captured only on the fresh-emit branch, so a
+  // re-park resume (which skips the SignalAwaited re-emit) does not
+  // re-notify on every scheduler pass; the initial park notifies exactly
+  // once, and the host's idempotent register absorbs the re-emit driven
+  // from durable state on a later re-establishment.
+  let parkToNotify: WorkflowPark | undefined;
   if (state.steps.get(opts.stepId)?.phase !== "awaiting-signal") {
     const awaited: WorkflowEvent = {
       kind: "SignalAwaited",
@@ -2166,17 +2186,11 @@ async function parkOnSignal(
         : {}),
     };
     state = await commit(env, runId, awaited);
-    // Notify the host of a fresh control-plane suspension. Only a park on
-    // a reserved `signalName(correlationId)` channel (the agent-step
-    // suspend arm) carries a correlation the resolver routes a decision
-    // back on; a plain `awaitSignal` gate parked on an author-chosen name
-    // is not a control-plane suspension, so `correlationIdFromSignalName`
-    // returns `undefined` and no notify fires. Gated on the fresh-emit
-    // branch so a re-park resume (which skips the SignalAwaited re-emit)
-    // does not re-notify on every scheduler pass; the initial park fires
-    // it exactly once. A crash-resume that re-emits `SignalAwaited` from
-    // the fresh branch re-notifies, which the host's idempotent register
-    // absorbs.
+    // Only a park on a reserved `signalName(correlationId)` channel (the
+    // agent-step suspend arm) carries a correlation the resolver routes a
+    // decision back on; a plain `awaitSignal` gate parked on an
+    // author-chosen name is not a control-plane suspension, so
+    // `correlationIdFromSignalName` returns `undefined` and no notify fires.
     const correlationId = correlationIdFromSignalName(opts.signalName);
     if (correlationId !== undefined) {
       // A reserved control-plane channel is always an approval today. The
@@ -2190,7 +2204,8 @@ async function parkOnSignal(
       // is where the invariant is enforced: a correlated suspend that carries
       // no snapshot -- e.g. a director `caps.suspend` -- fails loud here rather
       // than mislabelling a snapshot-less park and crashing the co-write three
-      // hops downstream.
+      // hops downstream. Failing before the flush is correct: nothing has been
+      // transmitted yet, so a snapshot-less park leaves no durable or hub trace.
       if (opts.approvalSnapshot === undefined) {
         throw new Error(
           `control-plane approval park for ${correlationId} carries no ` +
@@ -2198,12 +2213,12 @@ async function parkOnSignal(
             `director caps.suspend) is not a supported approval`,
         );
       }
-      env.onPark?.({
+      parkToNotify = {
         runId,
         correlationId,
         kind: "approval",
         approvalSnapshot: opts.approvalSnapshot,
-      });
+      };
     }
   }
   // The per-step timeout commits TimerSet before asking the scheduler
@@ -2252,13 +2267,26 @@ async function parkOnSignal(
   // scheduler-committed `TimerFired`). Flush the buffered
   // `SignalAwaited` (+ `TimerSet`) to durable storage BEFORE parking so
   // (a) the out-of-process scheduler can tail the durable `TimerSet`
-  // and arm the timeout, and (b) a crash-while-suspended leaves a
+  // and arm the timeout, (b) a crash-while-suspended leaves a
   // complete pre-suspension log that resume reconstructs the
-  // awaiting-signal state from. `subscribeFromSeq` above was computed
-  // from the in-memory tip; the flush makes the durable tip match, so
-  // the timer-watch subscription starts exactly past the flushed
-  // markers.
+  // awaiting-signal state from, and (c) the control-plane suspension is
+  // durable in the log before the host is notified below, so the hub is
+  // never told about a correlation the log cannot reconstruct on resume.
+  // `subscribeFromSeq` above was computed from the in-memory tip; the
+  // flush makes the durable tip match, so the timer-watch subscription
+  // starts exactly past the flushed markers.
   await flush(env, runId);
+
+  // Notify the host of the fresh control-plane suspension only now that it
+  // is durable in the log. Transmitting the correlationId after the flush
+  // is the invariant that closes the crash-across-park boundary: a crash
+  // before this point leaves no hub row (the notify never fired) and the
+  // log has no `SignalAwaited`, so resume re-parks cleanly; a crash after
+  // it leaves both the durable `SignalAwaited` and (possibly) the hub row,
+  // which the re-emit driven from durable state reconciles idempotently.
+  if (parkToNotify !== undefined) {
+    env.onPark?.(parkToNotify);
+  }
 
   // Drain observation point #4: signal-park entry. If drain has
   // fired and the step's behavior is `"cancel"` (an awaitSignal whose
