@@ -329,6 +329,7 @@
       "version": "0.2.2",
       "dependencies": {
         "@hono/standard-validator": "^0.2.2",
+        "@intx/agent": "workspace:*",
         "@intx/authz": "workspace:*",
         "@intx/crypto": "workspace:*",
         "@intx/db": "workspace:*",

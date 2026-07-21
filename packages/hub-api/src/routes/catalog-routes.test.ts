@@ -212,6 +212,7 @@ function createMockSidecarRouter(): SidecarRouter {
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
     routeMail: () => notImpl("routeMail"),
+    sendRunGrants: () => notImpl("sendRunGrants"),
     sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     // Mutations fire a fire-and-forget source push; resolve so it is a no-op.

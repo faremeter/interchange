@@ -234,6 +234,9 @@ function createMockSidecarRouter(
     routeMail(_addr, _msg) {
       return notImpl("routeMail");
     },
+    sendRunGrants(_addr, _runId, _stepGrants) {
+      return notImpl("sendRunGrants");
+    },
     sendAgentDeploy(_addr, _config) {
       return notImpl("sendAgentDeploy");
     },
