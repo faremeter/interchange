@@ -40,6 +40,38 @@ describe("createAdapterRegistry", () => {
     expect(seen).toEqual([source]);
   });
 
+  test("forwards the quirks bag to the factory untouched", () => {
+    const seen: unknown[] = [];
+    const registry = createAdapterRegistry({
+      test: (_source, quirks) => {
+        seen.push(quirks);
+        return createStubAdapter();
+      },
+    });
+
+    const quirks = { some: "bag" };
+    registry.resolve(createSource("test"), quirks);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(quirks);
+  });
+
+  test("passes undefined to the factory when the quirks bag is omitted", () => {
+    const seen = { called: false, quirks: "sentinel" as unknown };
+    const registry = createAdapterRegistry({
+      test: (_source, quirks) => {
+        seen.called = true;
+        seen.quirks = quirks;
+        return createStubAdapter();
+      },
+    });
+
+    registry.resolve(createSource("test"));
+
+    expect(seen.called).toBe(true);
+    expect(seen.quirks).toBeUndefined();
+  });
+
   test("invokes the factory fresh on every resolve", () => {
     let calls = 0;
     const registry = createAdapterRegistry({

@@ -59,14 +59,25 @@ export type ProviderAdapter = {
 
 // Builds a fresh adapter for one inference call. Invoked per call so the
 // returned adapter's per-request parser state never leaks across calls.
-export type AdapterFactory = (source: LastCycleSource) => ProviderAdapter;
+//
+// `quirks` is an opaque per-source bag of provider-specific accommodations,
+// passed as a sibling of `source` rather than a field on it: `source` is the
+// slim `LastCycleSource` descriptor that rides on every usage event, whereas
+// quirks are deployment configuration supplied at instantiation. The bag is
+// opaque to everything above the factory; interpreting and validating it is
+// the factory's own responsibility. It is optional: an absent bag means the
+// adapter's default behavior, so callers that have no quirks omit it.
+export type AdapterFactory = (
+  source: LastCycleSource,
+  quirks?: unknown,
+) => ProviderAdapter;
 
 // Resolves an inference source to a provider adapter. Membership is keyed by
 // the source's `provider` identifier; resolution mints a fresh adapter so the
 // per-instance stateful parser is isolated per call and per failover attempt.
 export type AdapterRegistry = {
   has(provider: string): boolean;
-  resolve(source: LastCycleSource): ProviderAdapter;
+  resolve(source: LastCycleSource, quirks?: unknown): ProviderAdapter;
 };
 
 /**
@@ -94,12 +105,12 @@ export function createAdapterRegistry(
     has(provider: string): boolean {
       return byProvider.has(provider);
     },
-    resolve(source: LastCycleSource): ProviderAdapter {
+    resolve(source: LastCycleSource, quirks?: unknown): ProviderAdapter {
       const factory = byProvider.get(source.provider);
       if (factory === undefined) {
         throw new Error(`Unknown inference provider: ${source.provider}`);
       }
-      return factory(source);
+      return factory(source, quirks);
     },
   };
 }
