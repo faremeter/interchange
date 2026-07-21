@@ -9,6 +9,7 @@ import { createInMemoryGrantStore } from "@intx/authz";
 import { base64Decode, ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
+  asset as assetTable,
   grant as grantTable,
   principal as principalTable,
 } from "@intx/db/schema";
@@ -75,7 +76,7 @@ const testPrincipal = {
   updatedAt: new Date("2025-01-01"),
 };
 
-const workflowAssetRow = {
+const workflowAssetRow: typeof assetTable.$inferSelect = {
   id: ASSET_ID,
   tenantId: TENANT_ID,
   kind: "workflow",
@@ -167,6 +168,61 @@ const WORKFLOW_JSON_WITH_EFFECT = JSON.stringify({
     },
   },
 });
+
+// A workflow declaring one invoker-sourced grant requirement. At trigger
+// time the requirement resolves against the run's triggerer, so a triggerer
+// who holds `secret:vault`/`use` gets a materialized run grant and one who
+// lacks it is rejected fail-closed -- two runs by principals of differing
+// authority produce different run.grants.
+const WORKFLOW_JSON_WITH_INVOKER_GRANT = JSON.stringify({
+  id: "wf_invoker_grant",
+  triggers: [{ type: "manual" }],
+  stepOrder: ["work"],
+  steps: {
+    work: {
+      kind: "step",
+      id: "work",
+      agent: {
+        id: "worker",
+        systemPrompt: "do work",
+        toolFactories: [],
+        capabilities: [],
+        inference: { sources: [{ provider: "anthropic", model: "m" }] },
+      },
+      after: [],
+    },
+  },
+  grantRequirements: [
+    { resource: "secret:vault", action: "use", source: "invoker" },
+  ],
+});
+
+// A workflow declaring one creator-sourced grant requirement. It resolves
+// against the workflow asset's creator principal, not the triggerer.
+const WORKFLOW_JSON_WITH_CREATOR_GRANT = JSON.stringify({
+  id: "wf_creator_grant",
+  triggers: [{ type: "manual" }],
+  stepOrder: ["work"],
+  steps: {
+    work: {
+      kind: "step",
+      id: "work",
+      agent: {
+        id: "worker",
+        systemPrompt: "do work",
+        toolFactories: [],
+        capabilities: [],
+        inference: { sources: [{ provider: "anthropic", model: "m" }] },
+      },
+      after: [],
+    },
+  },
+  grantRequirements: [
+    { resource: "secret:vault", action: "use", source: "creator" },
+  ],
+});
+
+const CREATOR_PRINCIPAL_ID = "prn_creator";
 
 function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
   return {
@@ -809,7 +865,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     const app = createTestApp({
       grants: [manageGrant()],
       routeMailCalls,
-      db: { deploymentRow },
+      db: { deploymentRow, assetRow: workflowAssetRow },
     });
 
     const res = await app.fetch(
@@ -840,7 +896,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
       grants: [manageGrant()],
       routeMailCalls,
       routeMailResult: false,
-      db: { deploymentRow },
+      db: { deploymentRow, assetRow: workflowAssetRow },
     });
 
     const res = await app.fetch(
@@ -894,7 +950,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
       runGrantsCalls,
       routeMailCalls,
       sendOrder,
-      db: { deploymentRow, inserts },
+      db: { deploymentRow, assetRow: workflowAssetRow, inserts },
       workflowJson: WORKFLOW_JSON_WITH_TOOLS,
     });
 
@@ -964,7 +1020,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     const app = createTestApp({
       grants: [manageGrant()],
       runGrantsCalls,
-      db: { deploymentRow, inserts },
+      db: { deploymentRow, assetRow: workflowAssetRow, inserts },
       workflowJson: WORKFLOW_JSON_WITH_EFFECT,
     });
 
@@ -1011,7 +1067,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
       runGrantsCalls,
       routeMailCalls,
       routeMailResult: false,
-      db: { deploymentRow, inserts },
+      db: { deploymentRow, assetRow: workflowAssetRow, inserts },
       workflowJson: WORKFLOW_JSON_WITH_TOOLS,
     });
 
@@ -1026,6 +1082,146 @@ describe("POST /workflows/:deploymentId/mail", () => {
     // run never starts -- so no run principal and no grant rows are written.
     expect(routeMailCalls).toHaveLength(1);
     expect(inserts.filter((i) => i.table === principalTable)).toHaveLength(0);
+    expect(inserts.filter((i) => i.table === grantTable)).toHaveLength(0);
+  });
+
+  test("triggerers of differing authority get different declared run grants", async () => {
+    // Run 1: the triggerer holds the delegatable `secret:vault`/`use`, so the
+    // invoker-sourced requirement materializes onto the run.
+    const authorizedGrants = runGrantsForTrigger([
+      manageGrant(),
+      makeGrant({ resource: "secret:vault", action: "use", origin: "system" }),
+    ]);
+    // Run 2: a triggerer lacking that authority. Same requirement, but nothing
+    // to delegate, so the requirement fails closed and no run starts.
+    const unauthorizedRunGrantsCalls: RunGrantsCall[] = [];
+    const unauthorizedInserts: InsertRecord[] = [];
+    const unauthorizedApp = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls: unauthorizedRunGrantsCalls,
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        inserts: unauthorizedInserts,
+      },
+      workflowJson: WORKFLOW_JSON_WITH_INVOKER_GRANT,
+    });
+
+    const authorized = await authorizedGrants;
+    expect(authorized.status).toBe(202);
+    const authorizedVault = authorized.runGrantsCalls[0]?.stepGrants.find(
+      (g) => g.resource === "secret:vault",
+    );
+    expect(authorizedVault).toBeDefined();
+    expect(authorizedVault?.action).toBe("use");
+    expect(authorizedVault?.origin).toBe("invoker");
+
+    const unauthorizedRes = await unauthorizedApp.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+    expect(unauthorizedRes.status).toBe(403);
+    expect(await errorCode(unauthorizedRes)).toBe("insufficient_grants");
+    // The two runs' materialized grants differ: one carries the vault grant,
+    // the other never gets sent because the run is rejected.
+    expect(unauthorizedRunGrantsCalls).toHaveLength(0);
+    expect(
+      unauthorizedInserts.filter((i) => i.table === grantTable),
+    ).toHaveLength(0);
+  });
+
+  async function runGrantsForTrigger(grants: GrantRule[]): Promise<{
+    status: number;
+    runGrantsCalls: RunGrantsCall[];
+  }> {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const app = createTestApp({
+      grants,
+      runGrantsCalls,
+      db: { deploymentRow, assetRow: workflowAssetRow, inserts: [] },
+      workflowJson: WORKFLOW_JSON_WITH_INVOKER_GRANT,
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+    return { status: res.status, runGrantsCalls };
+  }
+
+  test("resolves a creator-sourced requirement against the asset creator", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const app = createTestApp({
+      grants: [
+        manageGrant(),
+        // The creator (not the triggerer) holds the authority. The route
+        // collects the creator's grants keyed on the asset's creatorPrincipalId.
+        makeGrant({
+          resource: "secret:vault",
+          action: "use",
+          origin: "system",
+          principalId: CREATOR_PRINCIPAL_ID,
+        }),
+      ],
+      runGrantsCalls,
+      db: {
+        deploymentRow,
+        assetRow: {
+          ...workflowAssetRow,
+          creatorPrincipalId: CREATOR_PRINCIPAL_ID,
+        },
+        inserts: [],
+      },
+      workflowJson: WORKFLOW_JSON_WITH_CREATOR_GRANT,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(202);
+    const vault = runGrantsCalls[0]?.stepGrants.find(
+      (g) => g.resource === "secret:vault",
+    );
+    expect(vault).toBeDefined();
+    expect(vault?.action).toBe("use");
+    expect(vault?.origin).toBe("creator");
+  });
+
+  test("fails closed when a creator-sourced requirement has a null-creator asset", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const inserts: InsertRecord[] = [];
+    const app = createTestApp({
+      grants: [
+        manageGrant(),
+        // The TRIGGERER holds the creator-source resource. A creator-sourced
+        // requirement must resolve against the asset creator alone; with a
+        // null creator there is nothing to resolve against, and the route
+        // must NOT fall back to the triggerer's own authority. This grant is
+        // the bait: if the route ever collected the triggerer's grants as a
+        // creator fallback, this run would satisfy the requirement and start.
+        makeGrant({
+          resource: "secret:vault",
+          action: "use",
+          origin: "system",
+        }),
+      ],
+      runGrantsCalls,
+      db: {
+        deploymentRow,
+        // A creator-sourced requirement against an asset with no recorded
+        // creator (the FK is `set null` on principal deletion). No fallback
+        // principal is invented; the requirement cannot be satisfied.
+        assetRow: { ...workflowAssetRow, creatorPrincipalId: null },
+        inserts,
+      },
+      workflowJson: WORKFLOW_JSON_WITH_CREATOR_GRANT,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("insufficient_grants");
+    expect(runGrantsCalls).toHaveLength(0);
     expect(inserts.filter((i) => i.table === grantTable)).toHaveLength(0);
   });
 });

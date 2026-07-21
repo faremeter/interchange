@@ -557,6 +557,28 @@ export function createWorkflowRoutes({
         );
       }
 
+      // Load the workflow asset row for its `creatorPrincipalId`: the CREATOR
+      // whose authority creator-sourced grant requirements resolve against.
+      // The deployment row alone does not carry the creator identity.
+      const assetRow = await db.query.asset.findFirst({
+        where: and(
+          eq(asset.id, row.definitionAssetId),
+          eq(asset.tenantId, tenant.id),
+          eq(asset.kind, "workflow"),
+        ),
+      });
+      if (!assetRow) {
+        return c.json(
+          {
+            error: {
+              code: "invalid_workflow",
+              message: `Workflow asset ${row.definitionAssetId} not found`,
+            },
+          },
+          409,
+        );
+      }
+
       const runPrincipalId = generateId("principal");
       const now = new Date();
 
@@ -581,14 +603,13 @@ export function createWorkflowRoutes({
       );
 
       // Declared grantRequirements resolve through the shared creator/invoker
-      // delegation path. A workflow definition carries no grantRequirements
-      // surface today, so the requirement set is empty and the resolver adds
-      // no rows on top of the walk's tool grants. The call is wired against
-      // the invoker's collected grants so the moment the definition grows a
-      // grantRequirements field the caller passes it here with no further
-      // plumbing -- creator-sourced requirements would additionally collect
-      // the workflow asset creator's grants.
-      const declaredGrantRequirements = GrantRequirements([]);
+      // delegation path. Invoker-sourced requirements resolve against this
+      // trigger's caller and creator-sourced requirements against the
+      // workflow asset's creator, so two runs triggered by principals with
+      // different authority materialize different grants.
+      const declaredGrantRequirements = GrantRequirements(
+        definition.grantRequirements ?? [],
+      );
       if (declaredGrantRequirements instanceof type.errors) {
         return c.json(
           {
@@ -604,19 +625,43 @@ export function createWorkflowRoutes({
         principal.id,
         tenant.id,
       );
+
+      // Creator-sourced requirements resolve against the workflow ASSET's
+      // creator (`asset.creatorPrincipalId`), mirroring the agent-instance
+      // path's creator resolution. Only collect the creator's grants when a
+      // creator-sourced requirement actually exists and the asset records a
+      // creator. `creatorPrincipalId` is nullable (the FK is `set null` on
+      // principal deletion); when a creator-sourced requirement exists but
+      // the creator is null, we intentionally leave `creatorGrants` empty and
+      // let `resolveGrantMaterialization` fail closed with its 403
+      // `insufficient_grants` rather than inventing a fallback principal.
+      const hasCreatorReqs = declaredGrantRequirements.some(
+        (r) => r.source === "creator",
+      );
+      const creatorPrincipalId = assetRow.creatorPrincipalId;
+      const creatorGrants =
+        hasCreatorReqs && creatorPrincipalId !== null
+          ? await grantStore.collectGrants(creatorPrincipalId, tenant.id)
+          : [];
+
       const materialization = await resolveGrantMaterialization({
         tenantId: tenant.id,
         targetPrincipalId: runPrincipalId,
         grantRequirements: declaredGrantRequirements,
         adHocInvokerGrants: [],
         invokerGrants,
-        creatorGrants: [],
+        creatorGrants,
         now,
       });
       if (!materialization.ok) {
         const { status, code, message } = materialization.rejection;
         return c.json({ error: { code, message } }, status);
       }
+      // The walk's `tool:`/`effect:` grants and the resolved declared
+      // requirements share the run principal's grant namespace with no unique
+      // constraint on (resource, action). An overlap on the same
+      // (resource, action) is resolved by effect precedence at authz time
+      // (`deny > ask > allow`, strongest wins), NOT by union of the rows here.
       const stagedGrantRows = [
         ...runtimeGrantRows,
         ...materialization.grantRows,
