@@ -1525,9 +1525,24 @@ function parseResponse(
   return out;
 }
 
+// The google-genai adapter carries no per-source accommodations today, so its
+// quirks shape is empty. A quirks bag is deployment configuration crossing
+// into the system at this boundary; rejecting unknown keys makes a
+// misconfigured bag fail loudly here rather than run silently ignored.
+export const GoogleGenAIQuirks = type({ "+": "reject" });
+export type GoogleGenAIQuirks = typeof GoogleGenAIQuirks.infer;
+
 export function createGoogleGenAIAdapter(
   source: LastCycleSource,
+  quirks?: unknown,
 ): ProviderAdapter {
+  const parsedQuirks = GoogleGenAIQuirks(quirks ?? {});
+  if (parsedQuirks instanceof type.errors) {
+    throw new Error(
+      `google-genai adapter: invalid quirks: ${parsedQuirks.summary}`,
+    );
+  }
+
   // Per-request state lives in the closure: block-index allocation
   // and signature-anchor pairing both need to span SSE events.
   // `buildRequest` does not touch state; only `parseResponse` does.

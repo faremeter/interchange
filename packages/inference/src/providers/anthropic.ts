@@ -808,9 +808,25 @@ function extractPacingDelayMs(headers: Headers): number | undefined {
   return delays.length > 0 ? Math.max(...delays) : undefined;
 }
 
+// The anthropic adapter carries no per-source accommodations today, so its
+// quirks shape is empty. A quirks bag is deployment configuration crossing
+// into the system at this boundary; rejecting unknown keys makes a
+// misconfigured bag — for example an openai quirk pasted onto an anthropic
+// source — fail loudly here rather than run silently ignored.
+export const AnthropicQuirks = type({ "+": "reject" });
+export type AnthropicQuirks = typeof AnthropicQuirks.infer;
+
 export function createAnthropicAdapter(
   source: LastCycleSource,
+  quirks?: unknown,
 ): ProviderAdapter {
+  const parsedQuirks = AnthropicQuirks(quirks ?? {});
+  if (parsedQuirks instanceof type.errors) {
+    throw new Error(
+      `anthropic adapter: invalid quirks: ${parsedQuirks.summary}`,
+    );
+  }
+
   const blockIndexToCallId = new Map<number, string>();
 
   return {

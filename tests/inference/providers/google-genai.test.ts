@@ -4203,3 +4203,25 @@ describe("Google GenAI adapter: tool-name codec round-trip", () => {
     expect(start.data.name).toBe(PREFIXED);
   });
 });
+
+describe("Google GenAI adapter: quirks", () => {
+  test("constructs with an absent quirks bag", () => {
+    expect(() => createGoogleGenAIAdapter(TEST_SOURCE)).not.toThrow();
+  });
+
+  test("constructs with an explicit undefined quirks bag", () => {
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE, undefined),
+    ).not.toThrow();
+  });
+
+  test("constructs with an empty quirks bag", () => {
+    expect(() => createGoogleGenAIAdapter(TEST_SOURCE, {})).not.toThrow();
+  });
+
+  test("rejects a populated quirks bag since it declares no quirks", () => {
+    expect(() =>
+      createGoogleGenAIAdapter(TEST_SOURCE, { anything: true }),
+    ).toThrow(/invalid quirks/);
+  });
+});
