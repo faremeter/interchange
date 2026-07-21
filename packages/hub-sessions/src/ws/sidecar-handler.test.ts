@@ -3,7 +3,11 @@ import { configureSync, getConfig, resetSync } from "@intx/log";
 import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
-import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
+import type {
+  PackRejectReason,
+  RepoId,
+  RunGrantsFrame,
+} from "@intx/types/sidecar";
 import {
   createSidecarRouter,
   type SidecarAuthenticator,
@@ -3202,6 +3206,110 @@ describe("SidecarRouter", () => {
         .filter((f: { type: string }) => f.type === "mail.inbound");
       expect(flushed).toHaveLength(1);
       expect(flushed[0].rawMessage).toBe("queued-message");
+    });
+
+    test("run.grants queued during a pre-first-reconnect disconnect flushes on reconnect", async () => {
+      // Phase-1 shared-fate with the trigger mail: a freshly deployed workflow
+      // address enters `agentAddresses` via the keyless register path (no
+      // stored key yet), so a disconnect BEFORE its first challenged reconnect
+      // queues it exactly as routeMail's does. A run.grants issued in that
+      // window must ride the same queue (return true, not false) and flush on
+      // reconnect. This pins the enqueueForDisconnected fallback: deleting it
+      // makes sendRunGrants return false here and drops the grants.
+      const kp = await generateKeyPair();
+      // The address has no stored key until the deployment acks, so the first
+      // register routes it keyless; the reconnect challenge then resolves the
+      // key. Flip the flag once the register has landed.
+      let keyStored = false;
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        lookups: {
+          async lookupPublicKey() {
+            return keyStored ? hexEncode(kp.publicKey) : null;
+          },
+        },
+      });
+
+      const WF_ADDR = "ins_dep_phase1@local";
+
+      // First deploy: register the keyless workflow address onto agentAddresses.
+      const ws1 = createMockWs();
+      router.handleOpen(ws1);
+      router.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [WF_ADDR],
+        }),
+      );
+      await tick();
+      expect(router.getRoutableAddresses()).toContain(WF_ADDR);
+
+      // The deployment's key is now known; a later reconnect is challenged.
+      keyStored = true;
+
+      // Disconnect before any reconnect -- the address is still on
+      // agentAddresses, so handleClose queues it.
+      router.handleClose(ws1);
+
+      // A run.grants in this window must queue (ride the fallback), not drop.
+      const stepGrants: RunGrantsFrame["stepGrants"] = [
+        {
+          id: "grant-phase1",
+          resource: "tool:send-mail",
+          action: "invoke",
+          effect: "allow",
+          origin: "creator",
+          conditions: null,
+          expiresAt: null,
+          roleId: null,
+          principalId: "prn_deployment",
+        },
+      ];
+      expect(router.sendRunGrants(WF_ADDR, "run-phase1", stepGrants)).toBe(
+        true,
+      );
+
+      // Reconnect with challenge/response to flush the queued frame.
+      const ws2 = createMockWs();
+      router.handleOpen(ws2);
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [WF_ADDR],
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      const challengeFrame = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, kp.privateKey),
+          }),
+        ),
+      );
+      router.handleMessage(
+        ws2,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      // The queued run.grants was flushed to the reconnected sidecar.
+      const flushed = ws2.sent
+        .map((s) => JSON.parse(s))
+        .filter((f: { type: string }) => f.type === "run.grants");
+      expect(flushed).toHaveLength(1);
+      expect(flushed[0].runId).toBe("run-phase1");
+      expect(flushed[0].stepGrants).toEqual(stepGrants);
     });
 
     test("mail to unknown address returns false", () => {
