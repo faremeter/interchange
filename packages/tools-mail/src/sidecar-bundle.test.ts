@@ -196,4 +196,14 @@ describe("mail sidecar-bundle static declaration", () => {
     const emitted = new Set(bundle.definitions.map((d) => d.name));
     expect(emitted).toEqual(declared);
   });
+
+  test("no mail tool is gated behind per-invocation approval", () => {
+    // Mail is ungated: every declaration must omit the approval marker so
+    // the capability walk emits no approval gate for these tools. Guard
+    // against a vacuous pass on an empty declaration set.
+    expect(mail.definitions.length).toBeGreaterThan(0);
+    for (const def of mail.definitions) {
+      expect(def.approval).toBeUndefined();
+    }
+  });
 });

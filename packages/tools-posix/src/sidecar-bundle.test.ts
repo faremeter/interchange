@@ -20,6 +20,7 @@ import { createIsogitStore } from "@intx/storage-isogit";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import { posix } from "./sidecar-bundle";
+import { TOOL_NAMES } from "./registry";
 
 const SOURCE: InferenceSource = {
   id: "anthropic:mock-model",
@@ -58,5 +59,26 @@ describe("posix sidecar-bundle static declaration", () => {
     const declared = new Set(posix.definitions.map((d) => d.name));
     const emitted = new Set(bundle.definitions.map((d) => d.name));
     expect(emitted).toEqual(declared);
+  });
+
+  test("every posix tool is gated behind per-invocation approval", () => {
+    // Pin the exact name -> approval partition the capability walk will
+    // consume. Normalize an absent marker to "allow" so an ungated tool
+    // stays a visible key: `toEqual` drops keys whose value is
+    // `undefined`, so a raw `d.approval` would let a future ungated tool
+    // vanish from the comparison and pass silently. With the normalized
+    // value, a newly-added ungated tool surfaces as an extra "allow" key
+    // and fails this comparison.
+    const partition = Object.fromEntries(
+      posix.definitions.map((d) => [d.name, d.approval ?? "allow"]),
+    );
+    expect(partition).toEqual({
+      [TOOL_NAMES.READ_FILE]: "ask",
+      [TOOL_NAMES.WRITE_FILE]: "ask",
+      [TOOL_NAMES.EDIT_FILE]: "ask",
+      [TOOL_NAMES.RUN_SHELL]: "ask",
+      [TOOL_NAMES.SEARCH_FILES]: "ask",
+      [TOOL_NAMES.GREP]: "ask",
+    });
   });
 });
