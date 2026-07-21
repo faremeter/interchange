@@ -558,19 +558,6 @@ export function tenantGrantsInfiniteQuery(tenantId: string) {
   );
 }
 
-export function principalGrantsQuery(tenantId: string, principalId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "grants", { principalId }],
-    queryFn: async () => {
-      const res = await api<{ data: GrantResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/grants?principalId=${principalId}`,
-      );
-      return res.data;
-    },
-  });
-}
-
 export function tenantCredentialsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "credentials"],
