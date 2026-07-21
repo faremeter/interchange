@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -88,6 +89,12 @@ export const modelOffering = pgTable(
     // Curated-capability tags. This issue creates the column; the values are
     // populated by the discovery-support-matrix seeding work.
     capabilities: text("capabilities").array().notNull().default([]),
+    // Opaque per-deployment bag of provider-specific adapter accommodations
+    // (e.g. OpenAI's forceAssistantReasoningContent). Interpreted and
+    // validated only at the adapter factory, which alone knows the provider
+    // shape. NULL means the factory receives no bag and applies its default
+    // behavior.
+    quirks: jsonb("quirks"),
     // Own-row disable. Inherited-row suppression is resolved separately.
     disabled: boolean("disabled").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),

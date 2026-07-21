@@ -1,0 +1,1 @@
+ALTER TABLE "model_offering" ADD COLUMN "quirks" jsonb;

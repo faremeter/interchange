@@ -189,6 +189,7 @@ export function parseModelOfferingRow(row: typeof modelOffering.$inferSelect) {
   return {
     ...row,
     capabilities: Capability.array().assert(row.capabilities),
+    quirks: row.quirks !== null ? JSONObject.assert(row.quirks) : null,
   };
 }
 
