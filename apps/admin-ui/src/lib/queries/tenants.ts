@@ -1,5 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { queryOptions } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  type InfiniteData,
+} from "@tanstack/react-query";
 import {
   createBrowserTransport,
   deliverWorkflowSignal,
@@ -325,19 +329,43 @@ export type ApprovalResponse = {
   updatedAt: string;
 };
 
-export function tenantApprovalsQuery(tenantId: string) {
-  return queryOptions({
+// One keyset-paginated page of the approvals list, mirroring the wire envelope
+// the endpoint returns. `nextCursor` is null once the tail is reached.
+export type ApprovalPage = {
+  data: ApprovalResponse[];
+  nextCursor: string | null;
+};
+
+// Builds the request path for one page. The first page carries no cursor; a
+// cursor is opaque and may contain URL-reserved characters, so it is encoded
+// through URLSearchParams rather than interpolated directly.
+export function approvalsRequestPath(
+  tenantId: string,
+  cursor: string | undefined,
+): string {
+  const base = `/api/tenants/${tenantId}/approvals`;
+  if (cursor === undefined) return base;
+  return `${base}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+export function tenantApprovalsInfiniteQuery(tenantId: string) {
+  // The page param is the cursor, `undefined` on the first page. It is spelled
+  // out as an explicit type argument so `initialPageParam: undefined` and the
+  // `string` cursor from `getNextPageParam` unify to `string | undefined`;
+  // inference alone narrows the seed to `undefined` and rejects the cursor.
+  return infiniteQueryOptions<
+    ApprovalPage,
+    Error,
+    InfiniteData<ApprovalPage>,
+    string[],
+    string | undefined
+  >({
     queryKey: ["tenants", tenantId, "approvals"],
-    queryFn: async () => {
-      // The endpoint is keyset-paginated; the panel renders the first page and
-      // deliberately drops `nextCursor`, matching the other admin list views.
-      // The type mirrors the wire envelope so the discarded field is explicit.
-      const res = await api<{
-        data: ApprovalResponse[];
-        nextCursor: string | null;
-      }>("GET", `/api/tenants/${tenantId}/approvals`);
-      return res.data;
-    },
+    queryFn: ({ pageParam }) =>
+      api<ApprovalPage>("GET", approvalsRequestPath(tenantId, pageParam)),
+    initialPageParam: undefined,
+    // TanStack signals "no more pages" with `undefined`; the wire uses `null`.
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 }
 
