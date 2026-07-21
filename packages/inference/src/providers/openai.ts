@@ -26,6 +26,38 @@ const OPENAI_TOOL_NAME_LIMIT: ToolNameLimit = {
   maxLength: 64,
 };
 
+// Per-source accommodations for the OpenAI-compatible backends this adapter
+// serves. Every field is optional; an absent field resolves to today's
+// universal behavior, so a source that supplies no quirks is unchanged.
+export const OpenAIQuirks = type({
+  // Emit `reasoning_content` on every assistant message even when the turn
+  // carried no thinking (kimi requires it whenever thinking is enabled). When
+  // false, the field is emitted only on turns that actually have thinking.
+  "forceAssistantReasoningContent?": "boolean",
+  // Which delta fields to read reasoning tokens from, in precedence order.
+  // Constrained to the fields the chunk schema declares so the type cannot
+  // promise a field the parser would drop before reading.
+  "reasoningFieldNames?": "('reasoning_content' | 'reasoning')[]",
+  // Reject unknown keys so a mistyped quirk name fails loudly at construction
+  // rather than being silently ignored and running with default behavior.
+  "+": "reject",
+});
+export type OpenAIQuirks = typeof OpenAIQuirks.infer;
+
+type ReasoningField = "reasoning_content" | "reasoning";
+
+const DEFAULT_REASONING_FIELDS: readonly ReasoningField[] = [
+  "reasoning_content",
+  "reasoning",
+];
+
+// Quirks resolved to concrete values at the factory edge, so interior code
+// never re-decides a default.
+type ResolvedOpenAIQuirks = {
+  forceAssistantReasoningContent: boolean;
+  reasoningFieldNames: readonly ReasoningField[];
+};
+
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
@@ -34,8 +66,11 @@ function buildRequest(
   messages: ConversationTurn[],
   model: string,
   options: InferenceOptions,
+  quirks: ResolvedOpenAIQuirks,
 ): BuiltRequest {
-  const convertedMessages: unknown[] = messages.flatMap(toOpenAIMessage);
+  const convertedMessages: unknown[] = messages.flatMap((msg) =>
+    toOpenAIMessage(msg, quirks.forceAssistantReasoningContent),
+  );
 
   const body: Record<string, unknown> = {
     model,
@@ -108,7 +143,10 @@ function toOpenAIResponseFormat(
   }
 }
 
-function toOpenAIMessage(msg: ConversationTurn): unknown[] {
+function toOpenAIMessage(
+  msg: ConversationTurn,
+  forceAssistantReasoningContent: boolean,
+): unknown[] {
   if (msg.role === "system") {
     const text = msg.content
       .filter((b): b is { type: "text"; text: string } => b.type === "text")
@@ -188,14 +226,23 @@ function toOpenAIMessage(msg: ConversationTurn): unknown[] {
       result["content"] = null;
     }
 
-    // Some providers (e.g. kimi) require reasoning_content on ALL assistant
-    // messages when thinking is enabled. If thinking blocks exist anywhere in
-    // the conversation, every assistant message must carry reasoning_content —
-    // even if empty for that particular turn.
-    result["reasoning_content"] =
-      thinkingBlocks.length > 0
-        ? thinkingBlocks.map((b) => b.thinking).join("")
-        : "";
+    // kimi requires reasoning_content on every assistant message once thinking
+    // is enabled anywhere in the conversation, even on turns that carried no
+    // thinking of their own. forceAssistantReasoningContent (the universal
+    // default, true) satisfies that: the field is always present, empty on a
+    // turn with no thinking. A source whose backend does not share that
+    // requirement sets the quirk false, and the field is emitted only on turns
+    // that actually have thinking.
+    if (forceAssistantReasoningContent) {
+      result["reasoning_content"] =
+        thinkingBlocks.length > 0
+          ? thinkingBlocks.map((b) => b.thinking).join("")
+          : "";
+    } else if (thinkingBlocks.length > 0) {
+      result["reasoning_content"] = thinkingBlocks
+        .map((b) => b.thinking)
+        .join("");
+    }
 
     if (toolCalls.length > 0) {
       result["tool_calls"] = toolCalls.map((tc) => ({
@@ -442,6 +489,7 @@ function parseResponse(
   sseData: string,
   indexer: OpenAIBlockIndexer,
   source: LastCycleSource,
+  reasoningFieldNames: readonly ReasoningField[],
 ): InferenceEvent[] {
   // parseSSE strips the `[DONE]` sentinel before yielding payloads, so
   // anything that reaches us here is supposed to be a JSON chunk. A
@@ -500,19 +548,30 @@ function parseResponse(
   const events: InferenceEvent[] = [];
 
   // Providers stream reasoning tokens under different field names:
-  //   - kimi (via OpenRouter): delta.reasoning
-  //   - kimi (direct): delta.reasoning_content
-  //   - DeepSeek / others: delta.reasoning_content
+  // reasoning_content (kimi direct, DeepSeek) or reasoning (kimi via
+  // OpenRouter). `reasoningFieldNames` gives the fields to read and their
+  // precedence; the first field carrying a non-null value wins. An
+  // empty-string value still claims its slot (matching the prior
+  // `reasoning_content ?? reasoning` short-circuit) and is filtered by the
+  // length gate below.
   //
-  // OpenAI's Chat Completions ships reasoning_content and content as
-  // separate logical content blocks without a wire-level block index.
-  // The parser assigns indices on first observation in arrival order
-  // via the per-request `indexer`: whichever kind streams first lands
-  // at 0, the other (if it appears) at 1. This satisfies the harness's
-  // per-index routing contract — distinct kinds get distinct indices
-  // and the harness's collision detection between block kinds at the
-  // same index never fires from a normal OpenAI response.
-  const reasoning = delta.reasoning_content ?? delta.reasoning;
+  // OpenAI's Chat Completions ships reasoning and content as separate
+  // logical content blocks without a wire-level block index. The parser
+  // assigns indices on first observation in arrival order via the
+  // per-request `indexer`: whichever kind streams first lands at 0, the
+  // other (if it appears) at 1. This satisfies the harness's per-index
+  // routing contract — distinct kinds get distinct indices and the
+  // harness's collision detection between block kinds at the same index
+  // never fires from a normal OpenAI response.
+  let reasoning: string | null | undefined;
+  for (const field of reasoningFieldNames) {
+    const value =
+      field === "reasoning_content" ? delta.reasoning_content : delta.reasoning;
+    if (value !== undefined && value !== null) {
+      reasoning = value;
+      break;
+    }
+  }
   if (typeof reasoning === "string" && reasoning.length > 0) {
     events.push({
       type: "inference.thinking.delta",
@@ -713,7 +772,21 @@ function parseDuration(value: string): number | undefined {
   return total > 0 ? Math.ceil(total) : undefined;
 }
 
-export function createOpenAIAdapter(source: LastCycleSource): ProviderAdapter {
+export function createOpenAIAdapter(
+  source: LastCycleSource,
+  quirks?: unknown,
+): ProviderAdapter {
+  const parsedQuirks = OpenAIQuirks(quirks ?? {});
+  if (parsedQuirks instanceof type.errors) {
+    throw new Error(`openai adapter: invalid quirks: ${parsedQuirks.summary}`);
+  }
+  const resolvedQuirks: ResolvedOpenAIQuirks = {
+    forceAssistantReasoningContent:
+      parsedQuirks.forceAssistantReasoningContent ?? true,
+    reasoningFieldNames:
+      parsedQuirks.reasoningFieldNames ?? DEFAULT_REASONING_FIELDS,
+  };
+
   // Per-request indexer state. Adapter instances are created per
   // request (see `adapter.ts`), so each call to `createOpenAIAdapter`
   // gets a fresh counter for assigning block indices to reasoning vs.
@@ -726,8 +799,15 @@ export function createOpenAIAdapter(source: LastCycleSource): ProviderAdapter {
     toolCallBlockIndex: new Map<number, number>(),
   };
   return {
-    buildRequest,
-    parseResponse: (sseData) => parseResponse(sseData, indexer, source),
+    buildRequest: (messages, model, options) =>
+      buildRequest(messages, model, options, resolvedQuirks),
+    parseResponse: (sseData) =>
+      parseResponse(
+        sseData,
+        indexer,
+        source,
+        resolvedQuirks.reasoningFieldNames,
+      ),
     extractRetryAfterMs,
     extractPacingDelayMs,
   };
