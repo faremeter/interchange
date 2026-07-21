@@ -9,7 +9,7 @@ import { createOpenAIAdapter } from "./openai";
 
 export { createAnthropicAdapter } from "./anthropic";
 export { createGoogleGenAIAdapter } from "./google-genai";
-export { createOpenAIAdapter } from "./openai";
+export { createOpenAIAdapter, OpenAIQuirks } from "./openai";
 
 function builtinFactories(): Record<string, AdapterFactory> {
   return {

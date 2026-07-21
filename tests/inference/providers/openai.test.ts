@@ -1011,3 +1011,191 @@ describe("OpenAI adapter: responseFormat translation", () => {
     });
   });
 });
+
+describe("OpenAI adapter: quirks", () => {
+  const ReasoningContentView = type({ "reasoning_content?": "string" });
+
+  const assistantWithText: ConversationTurn[] = [
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      timestamp: 1000,
+    },
+  ];
+  const assistantWithThinking: ConversationTurn[] = [
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "pondering" },
+        { type: "text", text: "hello" },
+      ],
+      timestamp: 1000,
+    },
+  ];
+
+  function assistantMessage(
+    adapterInstance: ProviderAdapter,
+    turns: ConversationTurn[],
+  ) {
+    const req = adapterInstance.buildRequest(turns, "gpt-4o", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const message = body.messages[0];
+    if (message === undefined) throw new Error("expected an assistant message");
+    return message;
+  }
+
+  test("absent quirks emit reasoning_content on assistant turns without thinking", () => {
+    const message = assistantMessage(
+      createOpenAIAdapter(TEST_SOURCE),
+      assistantWithText,
+    );
+    expect(ReasoningContentView.assert(message).reasoning_content).toBe("");
+  });
+
+  test("forceAssistantReasoningContent false omits reasoning_content on turns without thinking", () => {
+    const message = assistantMessage(
+      createOpenAIAdapter(TEST_SOURCE, {
+        forceAssistantReasoningContent: false,
+      }),
+      assistantWithText,
+    );
+    expect("reasoning_content" in message).toBe(false);
+  });
+
+  test("forceAssistantReasoningContent false still emits reasoning_content on turns with thinking", () => {
+    const message = assistantMessage(
+      createOpenAIAdapter(TEST_SOURCE, {
+        forceAssistantReasoningContent: false,
+      }),
+      assistantWithThinking,
+    );
+    expect(ReasoningContentView.assert(message).reasoning_content).toBe(
+      "pondering",
+    );
+  });
+
+  test("absent quirks read reasoning from reasoning_content, then reasoning", async () => {
+    const fromContent = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
+      wire.openai.chunk({ reasoningContent: "abc" }),
+    ]);
+    expect(fromContent).toHaveLength(1);
+    expect(fromContent[0]?.type).toBe("inference.thinking.delta");
+    if (fromContent[0]?.type === "inference.thinking.delta") {
+      expect(fromContent[0].data.token).toBe("abc");
+    }
+
+    const fromReasoning = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
+      wire.openai.chunk({ reasoning: "xyz" }),
+    ]);
+    expect(fromReasoning).toHaveLength(1);
+    if (fromReasoning[0]?.type === "inference.thinking.delta") {
+      expect(fromReasoning[0].data.token).toBe("xyz");
+    }
+  });
+
+  test("reasoningFieldNames [reasoning] reads only delta.reasoning", async () => {
+    const ignored = await parseWire(
+      createOpenAIAdapter(TEST_SOURCE, { reasoningFieldNames: ["reasoning"] }),
+      [wire.openai.chunk({ reasoningContent: "abc" })],
+    );
+    expect(ignored).toEqual([]);
+
+    const read = await parseWire(
+      createOpenAIAdapter(TEST_SOURCE, { reasoningFieldNames: ["reasoning"] }),
+      [wire.openai.chunk({ reasoning: "xyz" })],
+    );
+    expect(read).toHaveLength(1);
+    if (read[0]?.type === "inference.thinking.delta") {
+      expect(read[0].data.token).toBe("xyz");
+    }
+  });
+
+  test("reasoningFieldNames [] reads no reasoning", async () => {
+    const events = await parseWire(
+      createOpenAIAdapter(TEST_SOURCE, { reasoningFieldNames: [] }),
+      [wire.openai.chunk({ reasoningContent: "abc" })],
+    );
+    expect(events).toEqual([]);
+  });
+
+  test("reasoning precedence follows configured order, not wire order", async () => {
+    const reasoningFirst = await parseWire(
+      createOpenAIAdapter(TEST_SOURCE, {
+        reasoningFieldNames: ["reasoning", "reasoning_content"],
+      }),
+      [wire.openai.chunk({ reasoningContent: "cc", reasoning: "rr" })],
+    );
+    expect(reasoningFirst).toHaveLength(1);
+    if (reasoningFirst[0]?.type === "inference.thinking.delta") {
+      expect(reasoningFirst[0].data.token).toBe("rr");
+    }
+
+    const contentFirst = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
+      wire.openai.chunk({ reasoningContent: "cc", reasoning: "rr" }),
+    ]);
+    expect(contentFirst).toHaveLength(1);
+    if (contentFirst[0]?.type === "inference.thinking.delta") {
+      expect(contentFirst[0].data.token).toBe("cc");
+    }
+  });
+
+  test("rejects a quirks bag with a wrong field type at construction", () => {
+    expect(() =>
+      createOpenAIAdapter(TEST_SOURCE, {
+        forceAssistantReasoningContent: "yes",
+      }),
+    ).toThrow(/invalid quirks/);
+  });
+
+  test("rejects a reasoning field name the adapter cannot read", () => {
+    expect(() =>
+      createOpenAIAdapter(TEST_SOURCE, { reasoningFieldNames: ["thinking"] }),
+    ).toThrow(/invalid quirks/);
+  });
+
+  test("rejects an unknown quirk key so a typo fails loudly", () => {
+    expect(() =>
+      createOpenAIAdapter(TEST_SOURCE, {
+        forceAssistantReasoningContnt: false,
+      }),
+    ).toThrow(/invalid quirks/);
+  });
+
+  test("an empty-string reasoning field claims its slot and suppresses lower precedence", async () => {
+    // Matches the prior `reasoning_content ?? reasoning` short-circuit: an
+    // empty string is a present value, so it wins its precedence slot and the
+    // length gate then drops it — the lower-precedence `reasoning` is never
+    // read. "First non-empty wins" would instead surface "xyz"; it must not.
+    const events = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
+      wire.openai.chunk({ reasoningContent: "", reasoning: "xyz" }),
+    ]);
+    expect(events).toEqual([]);
+  });
+
+  test("a null reasoning field is skipped so a lower-precedence field is read", async () => {
+    // `reasoning_content` is declared `string | null` on the wire; a null
+    // value falls through to the next configured field, matching the prior
+    // `??` null-skip. The wire DSL cannot emit an explicit null, so this drives
+    // a raw chunk.
+    const events = await parseWire(createOpenAIAdapter(TEST_SOURCE), [
+      wire.openai.raw(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion.chunk",
+          choices: [
+            {
+              index: 0,
+              delta: { reasoning_content: null, reasoning: "xyz" },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+      ),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("inference.thinking.delta");
+    if (events[0]?.type === "inference.thinking.delta") {
+      expect(events[0].data.token).toBe("xyz");
+    }
+  });
+});
