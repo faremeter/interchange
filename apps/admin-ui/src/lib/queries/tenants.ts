@@ -535,17 +535,11 @@ export function walletDetailQuery(tenantId: string, walletId: string) {
   });
 }
 
-export function tenantGrantsQuery(tenantId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "grants"],
-    queryFn: async () => {
-      const res = await api<{ data: GrantResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/grants`,
-      );
-      return res.data;
-    },
-  });
+export function tenantGrantsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<GrantResponse>(
+    ["tenants", tenantId, "grants"],
+    `/api/tenants/${tenantId}/grants`,
+  );
 }
 
 export function principalGrantsQuery(tenantId: string, principalId: string) {
@@ -574,17 +568,18 @@ export function tenantCredentialsQuery(tenantId: string) {
   });
 }
 
-export function tenantWalletsQuery(tenantId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "wallets"],
-    queryFn: async () => {
-      const res = await api<{ data: WalletResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/wallets`,
-      );
-      return res.data;
-    },
-  });
+export function tenantCredentialsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<CredentialResponse>(
+    ["tenants", tenantId, "credentials", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/credentials`,
+  );
+}
+
+export function tenantWalletsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<WalletResponse>(
+    ["tenants", tenantId, "wallets"],
+    `/api/tenants/${tenantId}/wallets`,
+  );
 }
 
 export function tenantOfferingsQuery(tenantId: string) {

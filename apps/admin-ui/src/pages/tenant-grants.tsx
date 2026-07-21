@@ -11,10 +11,12 @@ import {
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createGrantMutation,
   tenantCredentialsQuery,
-  tenantGrantsQuery,
+  tenantGrantsInfiniteQuery,
   tenantPrincipalsQuery,
   tenantRolesQuery,
 } from "@/lib/queries/tenants";
@@ -67,7 +69,13 @@ export function TenantGrantsPage() {
   const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/grants" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: grants, isLoading } = useQuery(tenantGrantsQuery(tenantId));
+  const {
+    items: grants,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantGrantsInfiniteQuery(tenantId));
   const { data: roles } = useQuery(tenantRolesQuery(tenantId));
   const { data: principals } = useQuery(tenantPrincipalsQuery(tenantId));
   const { data: credentials } = useQuery(tenantCredentialsQuery(tenantId));
@@ -114,7 +122,7 @@ export function TenantGrantsPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : grants?.length === 0 ? (
+      ) : grants.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">No grants yet.</p>
       ) : (
         <div className="mt-4 rounded-lg border">
@@ -129,7 +137,7 @@ export function TenantGrantsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {grants?.map((g) => (
+              {grants.map((g) => (
                 <TableRow
                   key={g.id}
                   className="cursor-pointer"
@@ -183,6 +191,11 @@ export function TenantGrantsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 
