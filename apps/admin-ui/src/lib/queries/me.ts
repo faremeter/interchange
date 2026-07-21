@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
+import { infiniteListQuery } from "@/lib/queries/pagination";
 
 type UserProfile = {
   id: string;
@@ -36,16 +37,10 @@ export const meProfileQuery = queryOptions({
   queryFn: () => api<UserProfile>("GET", "/api/me"),
 });
 
-export const mePrincipalsQuery = queryOptions({
-  queryKey: ["me", "principals"],
-  queryFn: async () => {
-    const res = await api<{ data: PrincipalSummary[] }>(
-      "GET",
-      "/api/me/principals",
-    );
-    return res.data;
-  },
-});
+export const mePrincipalsInfiniteQuery = infiniteListQuery<PrincipalSummary>(
+  ["me", "principals"],
+  "/api/me/principals",
+);
 
 export const meAgentsQuery = queryOptions({
   queryKey: ["me", "agents"],
@@ -66,13 +61,7 @@ type InstanceSummary = {
   createdAt: string;
 };
 
-export const meInstancesQuery = queryOptions({
-  queryKey: ["me", "instances"],
-  queryFn: async () => {
-    const res = await api<{ data: InstanceSummary[] }>(
-      "GET",
-      "/api/me/instances",
-    );
-    return res.data;
-  },
-});
+export const meInstancesInfiniteQuery = infiniteListQuery<InstanceSummary>(
+  ["me", "instances"],
+  "/api/me/instances",
+);
