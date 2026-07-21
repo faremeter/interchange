@@ -216,6 +216,57 @@ describe("compactRunEvents", () => {
     expect(blob).toBe("payload-bytes");
   });
 
+  test("a sibling grants.json survives a seal", async () => {
+    // A run's per-run grants live at `runs/<runId>/grants.json` -- a sibling
+    // of the run's `events/` subtree, NOT under it. Compaction clears and
+    // rebuilds only the `events/` prefix (`writeTreePreservingPrefix` passes
+    // paths outside the prefix through unchanged), so the grants file must
+    // survive the seal and remain readable alongside the folded
+    // `events.jsonl`. The `runs/<runId>/` subtree is never pruned, so
+    // grants.json lives and is reclaimed on exactly the same schedule as the
+    // run's own retained event log.
+    const { repoId, substrate, supervisor, deploymentId } =
+      await setup("dep-grants");
+    const grantsContents = JSON.stringify({
+      grants: [
+        { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
+      ],
+    });
+    await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
+      preservePrefix: "runs/run-1/events/",
+      merge: async () => ({
+        "runs/run-1/events/0.json": ev(0, "RunStarted"),
+        "runs/run-1/events/1.json": ev(1, "RunCompleted"),
+        "runs/run-1/grants.json": grantsContents,
+      }),
+      message: "seed events and grants",
+    });
+
+    expect(
+      (
+        await compactRunEvents({
+          substrate,
+          repoId,
+          ref: REF,
+          deploymentId,
+          runId: "run-1",
+        })
+      ).compacted,
+    ).toBe(true);
+
+    // The per-event directory is gone, but the sibling grants file remains.
+    const grants = await fs.promises.readFile(
+      path.join(substrate.getRepoDir(repoId), "runs", "run-1", "grants.json"),
+      "utf8",
+    );
+    expect(grants).toBe(grantsContents);
+    const combined = await fs.promises.readFile(
+      path.join(substrate.getRepoDir(repoId), "runs", "run-1", "events.jsonl"),
+      "utf8",
+    );
+    expect(combined).toBe(`${ev(0, "RunStarted")}\n${ev(1, "RunCompleted")}\n`);
+  });
+
   test("folds multi-digit seqs in numeric, not lexical, order", async () => {
     const { repoId, substrate, supervisor, deploymentId } =
       await setup("dep-multidigit");

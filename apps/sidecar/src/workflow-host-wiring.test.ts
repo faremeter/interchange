@@ -3146,4 +3146,62 @@ describe("assembleRunCredentialsSnapshot", () => {
       }),
     ).rejects.toThrow(/failed validation/);
   });
+
+  test("a re-dispatched run re-reads the durable per-run grants, not the deploy-time fallback", async () => {
+    // On a child respawn the supervisor's `replayProcessingToInbox` moves an
+    // already-consumed run's orphaned `processing/` entry back to `inbox/`,
+    // so the fresh dispatch loop re-dequeues it and the `onRunStart` grants
+    // barrier fires AGAIN for the same runId. The per-run grants file is a
+    // durable commit -- `readRunGrants` never deletes it -- so this second
+    // resolution must still read `runs/<runId>/grants.json` and win over the
+    // deploy-time fallback, rather than inheriting the deployment's grants as
+    // if the run had never carried its own.
+    const tempBase = await createTempBaseDir("sidecar-run-grants-");
+    const repoStore = createReadStubRepoStore(tempBase);
+
+    const runGrants = [
+      { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
+    ];
+    await writeRunGrantsFile(tempBase, JSON.stringify({ grants: runGrants }));
+    // A deploy-time file is present so a spurious fallback (a deleted or
+    // missed per-run file on the second read) would surface as the wrong
+    // grants rather than an empty set.
+    await writeDeployTimeStepGrants(
+      tempBase,
+      "step-1",
+      JSON.stringify({ grants: [{ id: "deploy-grant" }] }),
+    );
+
+    const first = await assembleRunCredentialsSnapshot({
+      repoStore,
+      principal,
+      deploymentId,
+      runId,
+      stepOrder,
+      deriveStepAddress,
+    });
+
+    // The re-dispatch: resolve the same run a second time with no rewrite of
+    // the grants file in between.
+    const second = await assembleRunCredentialsSnapshot({
+      repoStore,
+      principal,
+      deploymentId,
+      runId,
+      stepOrder,
+      deriveStepAddress,
+    });
+
+    for (const snapshot of [first, second]) {
+      expect(snapshot.steps).toHaveLength(2);
+      for (const step of snapshot.steps) {
+        expect(step.grants).toEqual(runGrants);
+      }
+    }
+    // The second resolution is byte-identical to the first: same flat grant
+    // set, same content hash across every step.
+    expect(second.steps.map((s) => s.contentHash)).toEqual(
+      first.steps.map((s) => s.contentHash),
+    );
+  });
 });
