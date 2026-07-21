@@ -22,6 +22,7 @@ import {
   WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_BLOBS_DIR,
+  WORKFLOW_RUN_GRANTS_FILE,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_WATERMARK_FILE,
 } from "./workflow-run-kind";
@@ -192,6 +193,50 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
         1,
         "RunCompleted",
       ),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a run carrying a per-run grants.json alongside its events", async () => {
+    // The hub's `run.grants` frame writes `runs/<runId>/grants.json` -- a
+    // sibling of the run's `events/` subtree -- ahead of the trigger. The
+    // handler must accept the grants file as a permitted run-dir child, not
+    // reject it as an unexpected entry, or the whole per-run grants channel
+    // fails at the substrate boundary.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
+        JSON.stringify({ grants: [] }),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a grants-only run directory in the pre-first-event window", async () => {
+    // The grants frame lands BEFORE the child emits its first event, so
+    // there is a window where the run directory holds only `grants.json`
+    // with no `events/` subtree yet. The handler must carry that transient
+    // shape forward rather than reject it for a missing events subdirectory.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
+        JSON.stringify({ grants: [] }),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a run whose grants.json survives alongside a sealed events.jsonl", async () => {
+    // Compaction folds a terminated run's `events/` into `events.jsonl` and
+    // leaves the sibling `grants.json` untouched. The resulting sealed shape
+    // -- combined events file plus grants file -- must validate.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
+        JSON.stringify({ grants: [] }),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events.jsonl`]: `${eventBody(0, "RunStarted")}\n${eventBody(1, "RunCompleted")}\n`,
     });
     expect(r.ok).toBe(true);
   });
@@ -664,6 +709,41 @@ describe("workflowRunKindHandler.validatePush — rejects event shape", () => {
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/contains unexpected entry/);
+  });
+
+  test("rejects a stray run-dir file and names grants.json in the allowed list", async () => {
+    // Permitting grants.json must not widen the run-dir allow-list to
+    // arbitrary files: a stray entry alongside grants.json is still
+    // rejected, and the rejection message enumerates grants.json among the
+    // accepted children.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]:
+        JSON.stringify({ grants: [] }),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/stray.txt`]: "nope",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/contains unexpected entry/);
+    expect(r.reason).toContain(WORKFLOW_RUN_GRANTS_FILE);
+  });
+
+  test("rejects a run directory with a blobs subtree but no events and no grants", async () => {
+    // The grants-only carve-out is narrow: only a run dir whose SOLE child
+    // is grants.json skips the events requirement. A blobs-only run dir
+    // (no events, no grants) is still missing its required event log.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_BLOBS_DIR}/${"a".repeat(64)}`]:
+        "payload",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/missing required "events" subdirectory/);
   });
 
   test("rejects an event file whose name is not <seq>.json", async () => {

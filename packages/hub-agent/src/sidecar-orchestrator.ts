@@ -30,6 +30,7 @@ import {
   type MailInboundRouter,
   type SignalInboundRouter,
   type DrainInboundRouter,
+  type GrantsInboundRouter,
   type SourcesInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
@@ -130,6 +131,15 @@ export type SidecarOrchestratorConfig = {
    */
   drainInboundRouter?: DrainInboundRouter;
   /**
+   * Optional inbound grants dispatcher the link consults on every inbound
+   * `run.grants` frame. Production wires this against the sidecar's
+   * multi-step deployment grants handler registry so a deployment-address
+   * grants frame flows into the deployment's wiring, which writes the
+   * run's grants to its `workflow-run` repo. The orchestrator forwards
+   * the binding unchanged to `createHubLink`.
+   */
+  grantsInboundRouter?: GrantsInboundRouter;
+  /**
    * Optional inbound sources-rotation dispatcher the link consults on
    * every inbound `sources.update` frame. Production wires this against
    * the sidecar's single-step deployment sources handler registry so a
@@ -194,6 +204,7 @@ export function createSidecarOrchestrator(
     mailInboundRouter,
     signalInboundRouter,
     drainInboundRouter,
+    grantsInboundRouter,
     sourcesInboundRouter,
     getWorkflowAddresses,
     onWorkflowAddressesRoutable,
@@ -281,6 +292,7 @@ export function createSidecarOrchestrator(
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
     ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
     ...(drainInboundRouter !== undefined ? { drainInboundRouter } : {}),
+    ...(grantsInboundRouter !== undefined ? { grantsInboundRouter } : {}),
     ...(sourcesInboundRouter !== undefined ? { sourcesInboundRouter } : {}),
     ...(getWorkflowAddresses !== undefined ? { getWorkflowAddresses } : {}),
     ...(onWorkflowAddressesRoutable !== undefined

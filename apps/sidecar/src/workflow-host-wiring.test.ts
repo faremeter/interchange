@@ -29,8 +29,10 @@ import {
   validateWorkflowProjection,
 } from "./workflow-host-wiring";
 import {
+  createMultistepGrantsRouter,
   createMultistepMailRouter,
   createMultistepSourcesRouter,
+  type MultistepGrantsRouter,
   type MultistepMailRouter,
   type MultistepSourcesRouter,
 } from "./workflow-run-pack-client";
@@ -558,6 +560,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     multistepBinaryPath?: string;
     multistepSubstrateEnv?: Record<string, string>;
     multistepMailRouter?: MultistepMailRouter;
+    multistepGrantsRouter?: MultistepGrantsRouter;
     multistepSourcesRouter?: MultistepSourcesRouter;
     registerDeployment?: (args: {
       deploymentId: string;
@@ -662,6 +665,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         : {}),
       ...(opts.multistepMailRouter !== undefined
         ? { multistepMailRouter: opts.multistepMailRouter }
+        : {}),
+      ...(opts.multistepGrantsRouter !== undefined
+        ? { multistepGrantsRouter: opts.multistepGrantsRouter }
         : {}),
       ...(opts.multistepSourcesRouter !== undefined
         ? { multistepSourcesRouter: opts.multistepSourcesRouter }
@@ -1006,6 +1012,125 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       new Uint8Array([1, 2, 3]),
     );
     expect(claimed).toBe(true);
+
+    // Teardown.
+    void supervisorToChild;
+  });
+
+  test("a run.grants frame writes the run's grants to runs/<runId>/grants.json in the workflow-run repo", async () => {
+    // Drives the same spawn handshake as the mail-router test, then routes
+    // a `run.grants` frame through the injected `multistepGrantsRouter` and
+    // asserts the handler the deploy router installed wrote the run's
+    // grants to `runs/<runId>/grants.json` inside the deployment's
+    // `workflow-run` repo -- sibling to the run's `runs/<runId>/events/`
+    // subtree. Nothing reads the grants back yet; the assertion is on the
+    // on-disk write (right repo, right path, right content).
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 9124,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const grantsRouter = createMultistepGrantsRouter();
+    const { router, tempBase } = await buildMultistepFixture({
+      spawner,
+      multistepGrantsRouter: grantsRouter,
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-grants-router-test",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const frame = makeMultistepFrame({ definition, sources });
+
+    const deployPromise = router.deploy(frame);
+
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 9124,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+      },
+    });
+
+    await deployPromise;
+
+    const runId = "run-abc";
+    const stepGrants = [
+      {
+        id: "grant-1",
+        resource: "tool:send-mail",
+        action: "invoke",
+        effect: "allow",
+        origin: "creator",
+        conditions: null,
+        expiresAt: null,
+        roleId: null,
+        principalId: "prn_deployment",
+      },
+    ];
+    const routed = await grantsRouter.tryRoute({
+      type: "run.grants",
+      agentAddress: frame.agentAddress,
+      runId,
+      stepGrants,
+    });
+    expect(routed).toBe(true);
+
+    // The write lands in the deployment's workflow-run repo at
+    // `runs/<runId>/grants.json`, the run-owned sibling of `events/`.
+    const deploymentId = deriveDeploymentId(frame.agentAddress);
+    const grantsFile = path.join(
+      tempBase,
+      "workflow-run",
+      deploymentId,
+      "runs",
+      runId,
+      "grants.json",
+    );
+    const onDisk: unknown = JSON.parse(await fs.readFile(grantsFile, "utf8"));
+    expect(onDisk).toEqual({ grants: stepGrants });
 
     // Teardown.
     void supervisorToChild;

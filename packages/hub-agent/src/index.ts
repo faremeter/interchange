@@ -23,6 +23,7 @@ export {
   type MailInboundRouter,
   type SignalInboundRouter,
   type DrainInboundRouter,
+  type GrantsInboundRouter,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 export {

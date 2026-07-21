@@ -25,6 +25,7 @@ import {
   type PackRejectFrame,
   RepoId,
   type SignalDeliverFrame,
+  type RunGrantsFrame,
   type SignalCorrelationRegisterFrame,
   type SignalCorrelationRegisterAckFrame,
   type DrainDeliverFrame,
@@ -330,6 +331,31 @@ export interface DrainInboundRouter {
 }
 
 /**
+ * Per-deployment-address grants registry the link consults on every
+ * inbound `run.grants` frame. Production wires this against the sidecar's
+ * multi-step deploy registry so the frame flows into the deployment's
+ * wiring, which writes the run's grants to its `workflow-run` repo. The
+ * link logs and drops a frame whose `agentAddress` matches no registered
+ * handler so the wire surface fails loudly rather than silently absorbing
+ * a misrouted delivery.
+ *
+ * The shape lives on hub-agent so the link does not import the sidecar
+ * host's wiring module, and so tests can substitute a stub.
+ */
+export interface GrantsInboundRouter {
+  /**
+   * Attempt to dispatch `frame` to the deployment registered against
+   * `frame.agentAddress`. Returns a promise that resolves to `true` when
+   * a handler accepted the frame, `false` when no handler is registered;
+   * the promise rejects when the handler is registered but the durable
+   * grants write itself throws. The link surfaces a rejection through a
+   * logged warning -- a structured failure-reply frame for run grants
+   * does not exist on the wire today.
+   */
+  tryRoute(frame: RunGrantsFrame): Promise<boolean>;
+}
+
+/**
  * Per-deployment-address sources-rotation registry the link consults on
  * every inbound `sources.update` frame. Unlike signal/drain, `sources.update`
  * is a REQUEST/ACK frame, so the link answers `session.ack` / `session.error`
@@ -401,6 +427,16 @@ export type HubLinkConfig = {
    * silent.
    */
   drainInboundRouter?: DrainInboundRouter;
+  /**
+   * Optional inbound grants dispatcher. When present, the link routes
+   * every inbound `run.grants` frame through this router. Production wires
+   * this against the sidecar's multi-step deploy registry so a
+   * deployment-address grants frame flows into the deployment's wiring,
+   * which writes the run's grants to its `workflow-run` repo. Absent (or a
+   * `false` return) causes inbound grants frames to be logged-and-dropped
+   * so a misrouted delivery is observable rather than silent.
+   */
+  grantsInboundRouter?: GrantsInboundRouter;
   /**
    * Optional inbound sources-rotation dispatcher. When present, the link
    * routes every inbound `sources.update` frame through this router and
@@ -512,6 +548,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     mailInboundRouter,
     signalInboundRouter,
     drainInboundRouter,
+    grantsInboundRouter,
     sourcesInboundRouter,
     getWorkflowAddresses = () => [],
     onWorkflowAddressesRoutable,
@@ -990,6 +1027,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleRunGrants(frame: RunGrantsFrame): Promise<void> {
+    if (grantsInboundRouter === undefined) {
+      logger.warn`Received run.grants for ${frame.agentAddress} but no grantsInboundRouter is wired; dropping`;
+      return;
+    }
+    try {
+      const routed = await grantsInboundRouter.tryRoute(frame);
+      if (!routed) {
+        logger.warn`run.grants for ${frame.agentAddress} did not match any registered deployment; dropping`;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error`run.grants write failed for ${frame.agentAddress}: ${msg}`;
+    }
+  }
+
   async function handleSourcesUpdate(frame: SourcesUpdateFrame): Promise<void> {
     // `sources.update` is request/ack (the hub awaits a reply within its
     // request timeout), so every path answers `session.ack` or
@@ -1191,6 +1244,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "signal.deliver":
         await handleSignalDeliver(frame);
+        break;
+      case "run.grants":
+        await handleRunGrants(frame);
         break;
       case "drain.deliver":
         await handleDrainDeliver(frame);

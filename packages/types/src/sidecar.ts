@@ -8,6 +8,7 @@
 // efficient but JSON is simpler to debug and inspect.
 
 import { type } from "arktype";
+import { WireGrantRule } from "./grant-wire";
 import {
   BoundedApprovalSnapshot,
   ConnectorThreadState,
@@ -262,6 +263,28 @@ export const SignalDeliverFrame = type({
   payload: "unknown",
 });
 export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
+
+/**
+ * Deliver a run's authorization grants to a multi-step deployment's
+ * supervisor. The hub forwards the frame to the sidecar that hosts the
+ * deployment named by `agentAddress` (the deployment-level mail
+ * address). The sidecar's hub-link routes the frame into the matching
+ * deployment's wiring, which writes the grants to `runs/<runId>/grants.json`
+ * inside the deployment's `workflow-run` repo -- sibling to the run's
+ * `runs/<runId>/events/` subtree.
+ *
+ * `stepGrants` carries the same `WireGrantRule` shape the `agent.deploy`
+ * frame's `config.grants` ships, so the run's grants ride the same
+ * validated grant encoding as the deploy-time step grants rather than a
+ * new one.
+ */
+export const RunGrantsFrame = type({
+  type: "'run.grants'",
+  agentAddress: "string",
+  runId: "string",
+  stepGrants: WireGrantRule.array(),
+});
+export type RunGrantsFrame = typeof RunGrantsFrame.infer;
 
 /**
  * Deliver a workflow-host drain control payload to a multi-step
@@ -717,6 +740,7 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(PackRejectFrame)
   .or(SyncRequestFrame)
   .or(SignalDeliverFrame)
+  .or(RunGrantsFrame)
   .or(SignalCorrelationRegisterAckFrame)
   .or(DrainDeliverFrame);
 export type HubFrame = typeof HubFrame.infer;
