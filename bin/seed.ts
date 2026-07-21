@@ -35,6 +35,7 @@ import {
   WORKFLOW_JSON_PATH,
 } from "@intx/hub-sessions";
 import { extractTarballPackageJSON } from "@intx/tool-packaging";
+import { catalogCapabilitiesFor } from "@intx/inference-discovery/catalog";
 
 import {
   buildWorkflowJson,
@@ -43,7 +44,26 @@ import {
   WORKFLOW_RUN_GRANT_ACTION,
   WORKFLOW_RUN_GRANT_RESOURCE,
 } from "./workflow-fixture";
-import { catalogModels, catalogProviders } from "./lib/catalog-seed-data";
+import {
+  catalogModels,
+  catalogProviders,
+  type CatalogOfferingSpec,
+} from "./lib/catalog-seed-data";
+
+// Resolve an offering's advertised capabilities: the wire capabilities the
+// discovery matrix proved for its `discoverySource` tuple (empty when the tuple
+// has not been probed), plus the hand-curated model capabilities the matrix
+// cannot prove. Reading the matrix through the helper here keeps the wire set
+// from ever drifting from what discovery captured.
+function offeringCapabilities(offering: CatalogOfferingSpec): string[] {
+  const wire = offering.discoverySource
+    ? catalogCapabilitiesFor(
+        offering.discoverySource.provider,
+        offering.discoverySource.model,
+      )
+    : [];
+  return [...wire, ...offering.curatedCapabilities];
+}
 
 const AuthResponse = type({ "user?": { id: "string" } });
 
@@ -1254,7 +1274,7 @@ for (const p of catalogProviders) {
         modelId,
         providerId: catalogProviderRow.id,
         priority: o.priority,
-        capabilities: o.capabilities,
+        capabilities: offeringCapabilities(o),
         quirks: o.quirks,
       },
       aliceCookies,

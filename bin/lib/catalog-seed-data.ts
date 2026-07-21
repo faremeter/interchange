@@ -9,6 +9,8 @@
 // This module is pure data and types — no HTTP, no side effects — so the
 // guard test can import it without pulling in the seed's network machinery.
 
+import type { Capability } from "@intx/types";
+
 export type CatalogPlugin =
   | "anthropic"
   | "openai"
@@ -20,12 +22,28 @@ export type CatalogModelSpec = {
   displayName: string;
 };
 
+export type DiscoverySource = {
+  // The discovery support-matrix provider name (e.g. "opencode-zen"), not the
+  // catalog provider name or the plugin.
+  provider: string;
+  // The exact wire model id the matrix probed (e.g. "kimi-k2.6").
+  model: string;
+};
+
 export type CatalogOfferingSpec = {
   // References a CatalogModelSpec.canonicalName.
   model: string;
   // Lower is preferred first when several deployments serve one model.
   priority: number;
-  capabilities: string[];
+  // The (provider, model) the offering's wire capabilities are drawn from in the
+  // discovery support matrix, or null when this exact tuple has not been probed.
+  // Wire capabilities are never hand-authored: bin/seed.ts derives them from this
+  // key through the discovery helper, so a row cannot claim a capability the
+  // matrix has not proven.
+  discoverySource: DiscoverySource | null;
+  // Model capabilities the matrix cannot prove (long-context, prompt-caching),
+  // curated by hand. Explicit on every offering even when empty, matching quirks.
+  curatedCapabilities: Capability[];
   // Per-deployment adapter accommodations, explicit on every offering (the
   // guard enforces it) even when empty. See OPENAI_REASONING_QUIRKS for why
   // the openai-plugin deployments spell out today's universal defaults.
@@ -83,14 +101,16 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "claude-sonnet-4",
         priority: 0,
-        capabilities: ["function-calling-multi-turn", "long-context"],
+        discoverySource: null,
+        curatedCapabilities: ["long-context"],
         quirks: {},
         price: { input: "0.000003", output: "0.000015" },
       },
       {
         model: "claude-haiku-4",
         priority: 10,
-        capabilities: ["function-calling-multi-turn"],
+        discoverySource: null,
+        curatedCapabilities: [],
         quirks: {},
         price: { input: "0.0000008", output: "0.000004" },
       },
@@ -106,7 +126,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "gpt-4o",
         priority: 0,
-        capabilities: ["function-calling-multi-turn", "structured-output"],
+        discoverySource: null,
+        curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000025", output: "0.00001" },
       },
@@ -122,7 +143,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "gemini-2.5-pro",
         priority: 0,
-        capabilities: ["function-calling-multi-turn", "long-context"],
+        discoverySource: null,
+        curatedCapabilities: ["long-context"],
         quirks: {},
         price: { input: "0.00000125", output: "0.00001" },
       },
@@ -138,7 +160,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2",
         priority: 0,
-        capabilities: ["function-calling-multi-turn"],
+        discoverySource: null,
+        curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -154,7 +177,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2",
         priority: 10,
-        capabilities: ["function-calling-multi-turn"],
+        discoverySource: null,
+        curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -170,7 +194,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2",
         priority: 20,
-        capabilities: ["function-calling-multi-turn"],
+        discoverySource: null,
+        curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -186,7 +211,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2.6",
         priority: 0,
-        capabilities: ["function-calling-multi-turn"],
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -202,7 +228,8 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2.6",
         priority: 10,
-        capabilities: ["function-calling-multi-turn"],
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
