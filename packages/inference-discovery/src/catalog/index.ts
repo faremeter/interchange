@@ -6,5 +6,11 @@ export {
   ToolDecl,
   resolveMediaPath,
 } from "./intent";
-export { SUPPORT_MATRIX, SupportEntry, getFixtureDir } from "./support-matrix";
+export {
+  SUPPORT_MATRIX,
+  SupportEntry,
+  getFixtureDir,
+  isFixtureBearing,
+} from "./support-matrix";
+export { catalogCapabilitiesFor } from "./catalog-capabilities";
 export { FixtureManifest } from "./manifest";
