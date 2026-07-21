@@ -71,6 +71,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function seedBase(opts?: {
       offeringPriority?: number;
       offeringCapabilities?: string[];
+      offeringQuirks?: Record<string, unknown>;
     }): Promise<void> {
       await seedTenants(h.db, [{ id: "tnt_root" }]);
       await seedProvider(h.db, {
@@ -103,6 +104,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         providerId: "mpv_anthropic",
         priority: opts?.offeringPriority ?? 0,
         capabilities: opts?.offeringCapabilities ?? [],
+        ...(opts?.offeringQuirks !== undefined
+          ? { quirks: opts.offeringQuirks }
+          : {}),
       });
     }
 
@@ -162,6 +166,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
             capabilities: [],
           },
         ]);
+      });
+
+      test("carries the offering row's quirks bag on the resolved source", async () => {
+        await seedBase({
+          offeringQuirks: { forceAssistantReasoningContent: true },
+        });
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const [source] = result.sources;
+        expect(source?.quirks).toEqual({
+          forceAssistantReasoningContent: true,
+        });
+      });
+
+      test("omits quirks on the resolved source when the row has none", async () => {
+        await seedBase();
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const [source] = result.sources;
+        if (source === undefined) throw new Error("expected one source");
+        expect("quirks" in source).toBe(false);
       });
 
       test("orders sources by ascending priority", async () => {

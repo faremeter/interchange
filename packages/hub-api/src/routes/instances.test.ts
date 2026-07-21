@@ -1241,6 +1241,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       priority: 0,
       deploymentTags: [],
       capabilities: [],
+      quirks: null,
       disabled: false,
       createdAt: new Date("2025-01-01"),
       updatedAt: new Date("2025-01-01"),

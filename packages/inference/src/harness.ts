@@ -275,7 +275,7 @@ async function* runSingleAttempt(
 
   let adapter;
   try {
-    adapter = deps.adapters.resolve(lastCycleSource);
+    adapter = deps.adapters.resolve(lastCycleSource, source.quirks);
   } catch (cause) {
     yield {
       type: "inference.error",

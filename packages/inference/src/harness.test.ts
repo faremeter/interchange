@@ -12,7 +12,7 @@ import {
   createDefaultDependencies,
   loadAdapterRegistry,
 } from "./providers";
-import type { AdapterFactory } from "./adapter";
+import type { AdapterFactory, AdapterRegistry } from "./adapter";
 import type {
   ConversationTurn,
   InferenceEvent,
@@ -668,5 +668,74 @@ describe("runInference — source-identity stamping", () => {
       provider: "anthropic",
       model: "claude-pre",
     });
+  });
+});
+
+describe("runInference — source quirks reach the adapter registry", () => {
+  // A registry that records the quirks argument every resolve receives and
+  // returns a do-nothing adapter, so the test observes exactly what the
+  // harness forwards without depending on any real provider.
+  function spyRegistry(): {
+    registry: AdapterRegistry;
+    quirksCalls: unknown[];
+  } {
+    const quirksCalls: unknown[] = [];
+    const registry: AdapterRegistry = {
+      has: () => true,
+      resolve: (_source, quirks) => {
+        quirksCalls.push(quirks);
+        return {
+          buildRequest: () => ({
+            url: "/v1/messages",
+            headers: {},
+            body: "{}",
+          }),
+          parseResponse: () => [],
+        };
+      },
+    };
+    return { registry, quirksCalls };
+  }
+
+  function depsWith(registry: AdapterRegistry): Dependencies {
+    return {
+      fetch: () =>
+        Promise.resolve(
+          new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        ),
+      scheduler: createDefaultScheduler(),
+      adapters: registry,
+    };
+  }
+
+  test("forwards the source's quirks bag to resolve", async () => {
+    const { registry, quirksCalls } = spyRegistry();
+    let seq = 0;
+    await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: { ...SOURCE, quirks: { forceAssistantReasoningContent: true } },
+        nextSeq: () => ++seq,
+        deps: depsWith(registry),
+      }),
+    );
+    expect(quirksCalls).toEqual([{ forceAssistantReasoningContent: true }]);
+  });
+
+  test("resolves with undefined quirks when the source has none", async () => {
+    const { registry, quirksCalls } = spyRegistry();
+    let seq = 0;
+    await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: SOURCE,
+        nextSeq: () => ++seq,
+        deps: depsWith(registry),
+      }),
+    );
+    expect(quirksCalls).toEqual([undefined]);
   });
 });

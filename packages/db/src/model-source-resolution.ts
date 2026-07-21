@@ -17,6 +17,7 @@ import {
 import type { DB } from "./client";
 import { resolveCredentialById } from "./credential-resolution";
 import { createGrantStore } from "./grant-store";
+import { parseModelOfferingRow } from "./parse-row";
 import { agent } from "./schema/agents";
 
 /**
@@ -165,6 +166,15 @@ async function buildSource(
     };
   }
 
+  // Validate the row once at this DB-to-runtime boundary. This narrows the
+  // jsonb `quirks` from `unknown` to a `Record | null` and checks
+  // `capabilities` against the curated enum. `quirks` is spread in only when
+  // non-null so a source with no accommodations omits the key entirely
+  // (InferenceSource.quirks is present-or-absent, never null). The capability
+  // filter in resolveModelSources still reads the raw row's `capabilities`
+  // for its `.includes` check; that read-only comparison cannot be corrupted
+  // into a wrong routing decision, so it is left as-is.
+  const parsed = parseModelOfferingRow(offering);
   return {
     ok: true,
     source: {
@@ -173,7 +183,8 @@ async function buildSource(
       baseURL: provider.baseURL,
       apiKey: credential.secret,
       model: model.canonicalName,
-      capabilities: offering.capabilities,
+      capabilities: parsed.capabilities,
+      ...(parsed.quirks !== null ? { quirks: parsed.quirks } : {}),
     },
   };
 }
