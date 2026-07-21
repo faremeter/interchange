@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   tenantApprovalsInfiniteQuery,
   type ApprovalResponse,
@@ -62,28 +62,13 @@ export function TenantApprovalsPage() {
   const { tenantId } = useParams({
     from: "/authed/tenants/$tenantId/approvals",
   });
-  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
-    useInfiniteQuery(tenantApprovalsInfiniteQuery(tenantId));
-
-  const approvals = data?.pages.flatMap((page) => page.data) ?? [];
-
-  // Auto-load the next page when the sentinel below the table scrolls into
-  // view. The guard keeps a single fetch in flight; the observer re-attaches
-  // whenever `hasNextPage`/`fetchNextPage` change and disconnects on cleanup,
-  // so the callback never closes over a stale `isFetchingNextPage`.
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel || !hasNextPage) return;
-
-    const observer = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && !isFetchingNextPage) {
-        void fetchNextPage();
-      }
-    });
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  const {
+    items: approvals,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantApprovalsInfiniteQuery(tenantId));
 
   return (
     <div>
@@ -115,10 +100,11 @@ export function TenantApprovalsPage() {
               ))}
             </TableBody>
           </Table>
-          <div ref={sentinelRef} />
-          {isFetchingNextPage ? (
-            <p className="p-3 text-sm text-muted-foreground">Loading more...</p>
-          ) : null}
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
     </div>

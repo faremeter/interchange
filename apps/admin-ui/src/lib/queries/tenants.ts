@@ -1,9 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import {
-  infiniteQueryOptions,
-  queryOptions,
-  type InfiniteData,
-} from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
 import {
   createBrowserTransport,
   deliverWorkflowSignal,
@@ -21,6 +17,7 @@ import {
 } from "@intx/hub-client";
 
 import { api } from "@/lib/api";
+import { infiniteListQuery } from "@/lib/queries/pagination";
 
 const transport = createBrowserTransport();
 
@@ -329,44 +326,11 @@ export type ApprovalResponse = {
   updatedAt: string;
 };
 
-// One keyset-paginated page of the approvals list, mirroring the wire envelope
-// the endpoint returns. `nextCursor` is null once the tail is reached.
-export type ApprovalPage = {
-  data: ApprovalResponse[];
-  nextCursor: string | null;
-};
-
-// Builds the request path for one page. The first page carries no cursor; a
-// cursor is opaque and may contain URL-reserved characters, so it is encoded
-// through URLSearchParams rather than interpolated directly.
-export function approvalsRequestPath(
-  tenantId: string,
-  cursor: string | undefined,
-): string {
-  const base = `/api/tenants/${tenantId}/approvals`;
-  if (cursor === undefined) return base;
-  return `${base}?${new URLSearchParams({ cursor }).toString()}`;
-}
-
 export function tenantApprovalsInfiniteQuery(tenantId: string) {
-  // The page param is the cursor, `undefined` on the first page. It is spelled
-  // out as an explicit type argument so `initialPageParam: undefined` and the
-  // `string` cursor from `getNextPageParam` unify to `string | undefined`;
-  // inference alone narrows the seed to `undefined` and rejects the cursor.
-  return infiniteQueryOptions<
-    ApprovalPage,
-    Error,
-    InfiniteData<ApprovalPage>,
-    string[],
-    string | undefined
-  >({
-    queryKey: ["tenants", tenantId, "approvals"],
-    queryFn: ({ pageParam }) =>
-      api<ApprovalPage>("GET", approvalsRequestPath(tenantId, pageParam)),
-    initialPageParam: undefined,
-    // TanStack signals "no more pages" with `undefined`; the wire uses `null`.
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-  });
+  return infiniteListQuery<ApprovalResponse>(
+    ["tenants", tenantId, "approvals"],
+    `/api/tenants/${tenantId}/approvals`,
+  );
 }
 
 export function approvalDetailQuery(tenantId: string, approvalId: string) {
