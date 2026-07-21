@@ -8,7 +8,7 @@ import { type } from "arktype";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createControlChannelSender,
   type EventPayload,
@@ -21,6 +21,7 @@ import {
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 
 import {
+  assembleRunCredentialsSnapshot,
   computeWireDefinitionHash,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
@@ -140,6 +141,77 @@ describe("createSidecarWorkflowSupervisor", () => {
     expect(() =>
       wired.routeInbound(new TextEncoder().encode("hello")),
     ).not.toThrow();
+  });
+
+  test("onRunStart fails a poisoned run and passes an unpoisoned one", async () => {
+    // A poisoned run (its `run.grants` write failed) must be rejected at the
+    // barrier rather than started under the deploy-time grant set. An
+    // unpoisoned run with a per-run grants file on disk resolves normally.
+    const tempBase = await createTempBaseDir("sidecar-poison-barrier-");
+    const deploymentId = "dep-poison";
+    const cleanRunId = "run-clean";
+    const grantsDir = path.join(
+      tempBase,
+      "workflow-run",
+      deploymentId,
+      "runs",
+      cleanRunId,
+    );
+    await fs.mkdir(grantsDir, { recursive: true });
+    const runGrants = [
+      { id: "g1", resource: "tool:send-mail", effect: "allow" },
+    ];
+    await fs.writeFile(
+      path.join(grantsDir, "grants.json"),
+      JSON.stringify({ grants: runGrants }),
+    );
+
+    const readStub: Partial<RepoStore> = {
+      getRepoDir(repoId: RepoId): string {
+        return path.join(tempBase, repoId.kind, repoId.id);
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; onRunStart reads only via getRepoDir working-tree reads
+    const repoStore = new Proxy(readStub as RepoStore, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (value !== undefined) return value;
+        return () => {
+          throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
+        };
+      },
+    });
+
+    const wired = createSidecarWorkflowSupervisor({
+      transport: createInMemoryTransport(),
+      repoStore,
+      signingKeySeed: new Uint8Array(32),
+      workflowRunRepoId: { kind: "workflow-run", id: deploymentId },
+      workflowRunRef: "refs/heads/main",
+      deploymentId,
+      stepCount: 1,
+      stepOrder: ["step-1"],
+      deploymentMailAddress: `${deploymentId}@example.com`,
+      deriveStepAddress: ({ deploymentId: dep, stepId }) =>
+        `${dep}-${stepId}@example.com`,
+      substrateEnv: {},
+      dynamicSpawnEnv: () => ({}),
+      subprocessSpawner: () => {
+        throw new Error("spawner not invoked in this test");
+      },
+      isRunPoisoned: (runId) => runId === "run-poisoned",
+    });
+
+    await expect(
+      wired.onRunStart({ runId: "run-poisoned", deploymentId }),
+    ).rejects.toThrow(/grants write failed/);
+
+    const snapshot = await wired.onRunStart({
+      runId: cleanRunId,
+      deploymentId,
+    });
+    expect(snapshot.steps).toHaveLength(1);
+    expect(snapshot.steps[0]?.grants).toEqual(runGrants);
   });
 });
 
@@ -2894,5 +2966,184 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // added no downstream request for the missing address.
     await new Promise((r) => setTimeout(r, 50));
     expect(parkedRequestCount()).toBe(baseline);
+  });
+});
+
+describe("assembleRunCredentialsSnapshot", () => {
+  // getRepoDir mirrors the production `<base>/<kind>/<id>` layout that
+  // `createSpawnTestRepoStore` uses, so a file written at
+  // `<base>/workflow-run/<deploymentId>/runs/<runId>/grants.json` lands where
+  // the sink's working-tree read looks, and a step's deploy-time grants land
+  // at `<base>/agent-state/<repoId>/state/grants.json`.
+  function createReadStubRepoStore(tempBase: string): RepoStore {
+    const stub: Partial<RepoStore> = {
+      getRepoDir(repoId: RepoId): string {
+        return path.join(tempBase, repoId.kind, repoId.id);
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the sink reads only via getRepoDir working-tree reads
+    return new Proxy(stub as RepoStore, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (value !== undefined) return value;
+        return () => {
+          throw new Error(
+            `stub RepoStore: ${String(prop)} not implemented for this test`,
+          );
+        };
+      },
+    });
+  }
+
+  const principal: Principal = { kind: "hub" };
+  const deploymentId = "dep-run-grants";
+  const runId = "run-xyz";
+  const stepOrder = ["step-1", "step-2"];
+  const deriveStepAddress = ({
+    deploymentId: dep,
+    stepId,
+  }: {
+    deploymentId: string;
+    stepId: string;
+  }) => `${dep}-${stepId}@example.com`;
+
+  async function writeRunGrantsFile(
+    tempBase: string,
+    contents: string,
+  ): Promise<void> {
+    const dir = path.join(
+      tempBase,
+      "workflow-run",
+      deploymentId,
+      "runs",
+      runId,
+    );
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "grants.json"), contents);
+  }
+
+  async function writeDeployTimeStepGrants(
+    tempBase: string,
+    stepId: string,
+    contents: string,
+  ): Promise<void> {
+    const dir = path.join(
+      tempBase,
+      "agent-state",
+      `${deploymentId}-${stepId}`,
+      "state",
+    );
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "grants.json"), contents);
+  }
+
+  test("a run with a per-run grants file reads those grants over deploy-time", async () => {
+    const tempBase = await createTempBaseDir("sidecar-run-grants-");
+    const repoStore = createReadStubRepoStore(tempBase);
+
+    const runGrants = [
+      { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
+    ];
+    await writeRunGrantsFile(tempBase, JSON.stringify({ grants: runGrants }));
+    // Deploy-time grants differ; the per-run read must win, so these are
+    // never surfaced.
+    await writeDeployTimeStepGrants(
+      tempBase,
+      "step-1",
+      JSON.stringify({ grants: [{ id: "deploy-grant" }] }),
+    );
+
+    const snapshot = await assembleRunCredentialsSnapshot({
+      repoStore,
+      principal,
+      deploymentId,
+      runId,
+      stepOrder,
+      deriveStepAddress,
+    });
+
+    // Every step carries the single flat per-run grant set, keyed on the
+    // deploy-time per-step address, with a shared content hash.
+    expect(snapshot.steps).toHaveLength(2);
+    for (const step of snapshot.steps) {
+      expect(step.grants).toEqual(runGrants);
+      expect(step.address).toBe(`${deploymentId}-${step.stepId}@example.com`);
+    }
+    expect(snapshot.steps[0]?.stepId).toBe("step-1");
+    expect(snapshot.steps[1]?.stepId).toBe("step-2");
+    expect(snapshot.steps[0]?.contentHash).toBe(
+      snapshot.steps[1]?.contentHash ?? "",
+    );
+  });
+
+  test("a run without a per-run grants file falls back to deploy-time grants", async () => {
+    const tempBase = await createTempBaseDir("sidecar-run-grants-");
+    const repoStore = createReadStubRepoStore(tempBase);
+
+    // No per-run file: the internal-run inherit path. Each step's grants come
+    // from its own agent-state repo instead.
+    const step1Grants = [{ id: "deploy-grant-1" }];
+    await writeDeployTimeStepGrants(
+      tempBase,
+      "step-1",
+      JSON.stringify({ grants: step1Grants }),
+    );
+    // step-2 carries no deploy-time file either, which resolves to an empty
+    // grant set rather than throwing.
+
+    const snapshot = await assembleRunCredentialsSnapshot({
+      repoStore,
+      principal,
+      deploymentId,
+      runId,
+      stepOrder,
+      deriveStepAddress,
+    });
+
+    expect(snapshot.steps).toHaveLength(2);
+    expect(snapshot.steps[0]?.stepId).toBe("step-1");
+    expect(snapshot.steps[0]?.grants).toEqual(step1Grants);
+    expect(snapshot.steps[1]?.stepId).toBe("step-2");
+    expect(snapshot.steps[1]?.grants).toEqual([]);
+  });
+
+  test("a run with a malformed per-run grants file throws", async () => {
+    const tempBase = await createTempBaseDir("sidecar-run-grants-");
+    const repoStore = createReadStubRepoStore(tempBase);
+
+    // The file exists but is not valid JSON. A deploy-time file is present so
+    // a swallowed error would silently fall back rather than surface.
+    await writeRunGrantsFile(tempBase, "{ not valid json");
+    await writeDeployTimeStepGrants(
+      tempBase,
+      "step-1",
+      JSON.stringify({ grants: [{ id: "deploy-grant" }] }),
+    );
+
+    await expect(
+      assembleRunCredentialsSnapshot({
+        repoStore,
+        principal,
+        deploymentId,
+        runId,
+        stepOrder,
+        deriveStepAddress,
+      }),
+    ).rejects.toThrow(/is not valid JSON/);
+
+    // A file that is valid JSON but violates the `{ grants: [] }` envelope
+    // also throws, rather than falling back -- the presence of the file
+    // implies a grants frame was delivered.
+    await writeRunGrantsFile(tempBase, JSON.stringify({ grants: "not-array" }));
+    await expect(
+      assembleRunCredentialsSnapshot({
+        repoStore,
+        principal,
+        deploymentId,
+        runId,
+        stepOrder,
+        deriveStepAddress,
+      }),
+    ).rejects.toThrow(/failed validation/);
   });
 });

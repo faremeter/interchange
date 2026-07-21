@@ -236,7 +236,7 @@ export async function assembleCredentialsSnapshot(
   return { steps };
 }
 
-function isErrnoNotFound(cause: unknown): boolean {
+export function isErrnoNotFound(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
   const code = (cause as { code?: unknown }).code;
   return code === "ENOENT";
