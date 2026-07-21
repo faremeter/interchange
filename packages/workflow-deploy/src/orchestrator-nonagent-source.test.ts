@@ -50,7 +50,9 @@ function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   return Object.assign(factory, {
     id: "@intx/tools-mail/sidecar-bundle",
     requires: [] as readonly string[],
-    definitions: [],
+    // The walk keys `tool:` grants per declared definition name; declare
+    // a real tool so the fixture contributes a `tool:mail_send` grant.
+    definitions: [{ name: "mail_send" }],
   });
 }
 
@@ -186,7 +188,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     // for the sleep step, so the gate accepts the deploy; the source
     // pin is the only place the unapproved fallback can be caught.
     const approvals = new Set<string>([
-      "tool:@intx/tools-mail/sidecar-bundle",
+      "tool:mail_send",
       `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:worker-model",
     ]);
@@ -294,7 +296,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     // The operator approved the (provider, model) of the source the
     // non-agent step would be pinned to, so the deploy proceeds.
     const approvals = new Set<string>([
-      "tool:@intx/tools-mail/sidecar-bundle",
+      "tool:mail_send",
       `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:worker-model",
     ]);

@@ -14,7 +14,12 @@
 // check for that claim.
 //
 // Grant shapes (v1):
-//   - `tool:<factory.id>`            -- every `toolFactories[i].id`
+//   - `tool:<def.name>`              -- every tool name a factory
+//                                        declares via `definitions[i].name`
+//                                        (per definition, NOT per factory
+//                                        id, so the grant matches the
+//                                        runtime `tool:<call.name>` the
+//                                        gate authorizes against)
 //   - `director:<ref.id>`            -- resolved director ref
 //   - `capability:<name>`            -- `AgentDefinition.capabilities`
 //   - `inference.source:<id>`        -- `inference.sources[i].provider`
@@ -47,16 +52,25 @@
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
 import { effectiveDirectorRef, UnknownDirectorIdError } from "@intx/agent";
+import type { GrantEffect } from "@intx/types";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 /**
  * Grant declarations produced for a single workflow step. `grants`
  * carries the grant-shape strings the operator-approval gate consumes.
+ *
+ * `grantEffects` maps each TOOL grant string (`tool:<def.name>`) to the
+ * effect the tool's static declaration requested: `"ask"` for a tool
+ * gated behind per-invocation approval, `"allow"` otherwise. It covers
+ * TOOL grants only -- director/capability/inference.source/mail.* grants
+ * live in `grants` and are absent from `grantEffects`.
+ *
  * Frozen so downstream consumers cannot mutate the walk output in
  * place.
  */
 export interface GrantDeclarations {
   readonly grants: readonly string[];
+  readonly grantEffects: ReadonlyMap<string, GrantEffect>;
 }
 
 /**
@@ -73,6 +87,36 @@ export interface GrantDeclarations {
 export interface CapabilityWalkResult {
   readonly perStep: ReadonlyMap<string, GrantDeclarations>;
   readonly unresolvedDirectors: readonly string[];
+}
+
+/**
+ * Mutable accumulator threaded through the collectors while a single
+ * step is walked. `grants` is the deduplicated grant-string set;
+ * `effects` maps each TOOL grant string to its effect. The two are
+ * frozen into a `GrantDeclarations` once the step is fully walked.
+ */
+interface GrantSet {
+  readonly grants: Set<string>;
+  readonly effects: Map<string, GrantEffect>;
+}
+
+/**
+ * Fold the deployment-wide trigger grants into a step's collected
+ * agent/action/loop grants and freeze the result. Trigger grants are
+ * never TOOL grants, so they add to `grants` without touching `effects`.
+ */
+function freezeDeclarations(
+  collected: GrantSet,
+  triggerGrants: readonly string[],
+): GrantDeclarations {
+  const grants = new Set<string>(collected.grants);
+  for (const grant of triggerGrants) {
+    grants.add(grant);
+  }
+  return Object.freeze({
+    grants: Object.freeze([...grants]),
+    grantEffects: Object.freeze(new Map(collected.effects)),
+  });
 }
 
 /**
@@ -106,17 +150,23 @@ export function walkCapabilities(
       // a `loop` contributes the union of its body's grants (so the
       // approval gate sees every agent/action the loop can run); every
       // other non-agent primitive gets only the trigger-derived grants.
-      const nonAgentGrants = [
-        ...collectActionGrants(primitive),
-        ...collectLoopBodyGrants(primitive, registry, unresolved),
-      ];
-      const merged = mergeGrants(nonAgentGrants, triggerGrants);
-      perStep.set(stepId, Object.freeze({ grants: merged }));
+      const collected: GrantSet = {
+        grants: new Set<string>(),
+        effects: new Map(),
+      };
+      for (const grant of collectActionGrants(primitive)) {
+        collected.grants.add(grant);
+      }
+      collectLoopBodyGrants(primitive, registry, unresolved, collected);
+      perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
       continue;
     }
-    const agentGrants = collectAgentGrants(agent, registry, unresolved);
-    const merged = mergeGrants(agentGrants, triggerGrants);
-    perStep.set(stepId, Object.freeze({ grants: merged }));
+    const collected: GrantSet = {
+      grants: new Set<string>(),
+      effects: new Map(),
+    };
+    collectAgentGrants(agent, registry, unresolved, collected);
+    perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
   }
 
   return Object.freeze({
@@ -162,19 +212,25 @@ function collectActionGrants(
 
 /**
  * Collect the union of a loop body's grants (agent grants for its step /
- * map steps, effect grants for its action steps) so the loop node's
- * approval covers every agent and effect the loop can run. The body-ban
- * forbids a nested loop, so this does not recurse further.
+ * map steps, effect grants for its action steps) into `collected` so the
+ * loop node's approval covers every agent and effect the loop can run.
+ * The body-ban forbids a nested loop, so this does not recurse further.
+ *
+ * Duplicate-name handling is scoped per body step: `collectAgentGrants`
+ * throws on a duplicate within a single agent, but two DIFFERENT body
+ * steps that each mint the same `tool:<name>` are distinct runtime
+ * agents (the runtime builds one agent per step), so the union across
+ * body steps is not a duplicate-name error.
  */
 function collectLoopBodyGrants(
   primitive: WorkflowDefinition["steps"][string],
   registry: DirectorRegistry,
   unresolved: Set<string>,
-): string[] {
+  collected: GrantSet,
+): void {
   if (primitive.kind !== "loop") {
-    return [];
+    return;
   }
-  const grants = new Set<string>();
   for (const bodyStepId of primitive.body.stepOrder) {
     const bodyPrimitive = primitive.body.steps[bodyStepId];
     if (bodyPrimitive === undefined) {
@@ -184,41 +240,72 @@ function collectLoopBodyGrants(
     }
     const bodyAgent = extractAgent(bodyPrimitive);
     if (bodyAgent !== null) {
-      for (const grant of collectAgentGrants(bodyAgent, registry, unresolved)) {
-        grants.add(grant);
-      }
+      collectAgentGrants(bodyAgent, registry, unresolved, collected);
     }
     for (const grant of collectActionGrants(bodyPrimitive)) {
-      grants.add(grant);
+      collected.grants.add(grant);
     }
   }
-  return [...grants];
 }
 
 function collectAgentGrants(
   agent: AgentDefinition<BaseEnv>,
   registry: DirectorRegistry,
   unresolved: Set<string>,
-): string[] {
-  const grants = new Set<string>();
+  collected: GrantSet,
+): void {
+  // Track the final tool names this agent has minted so a collision
+  // across the agent's factories throws here rather than surfacing as a
+  // runtime DuplicateToolError (see resolveTools in
+  // packages/agent/src/agent.ts) after the deploy has already gone out.
+  const seenToolNames = new Set<string>();
   for (const factory of agent.toolFactories) {
-    grants.add(`tool:${factory.id}`);
+    // Intra-factory: a repeated name within one factory's declarations
+    // is a declaration bug; the runtime would collapse the two into one
+    // dispatch entry, leaving one tool unreachable. Surface it at walk
+    // time.
+    const seenInFactory = new Set<string>();
+    for (const definition of factory.definitions) {
+      if (seenInFactory.has(definition.name)) {
+        throw new DuplicateWalkToolError(definition.name, factory.id);
+      }
+      seenInFactory.add(definition.name);
+      if (seenToolNames.has(definition.name)) {
+        throw new DuplicateWalkToolError(definition.name, factory.id);
+      }
+      seenToolNames.add(definition.name);
+      const grant = `tool:${definition.name}`;
+      collected.grants.add(grant);
+      // Ask-wins merge. `collected` is one GrantSet shared across every
+      // body step of a loop, so two body steps declaring the same bare
+      // tool name write the same `tool:<name>` key here. A plain overwrite
+      // would let a later unmarked declaration downgrade an earlier `ask`
+      // to `allow`; keep `ask` if either the existing or the incoming
+      // effect asks, so a same-named sibling can never silently drop the
+      // approval gate.
+      const incoming: GrantEffect =
+        definition.approval === "ask" ? "ask" : "allow";
+      const existing = collected.effects.get(grant);
+      collected.effects.set(
+        grant,
+        existing === "ask" || incoming === "ask" ? "ask" : incoming,
+      );
+    }
   }
   for (const capability of agent.capabilities) {
-    grants.add(`capability:${capability}`);
+    collected.grants.add(`capability:${capability}`);
   }
   for (const source of agent.inference.sources) {
-    grants.add(`inference.source:${source.provider}:${source.model}`);
+    collected.grants.add(`inference.source:${source.provider}:${source.model}`);
   }
   const ref = effectiveDirectorRef(agent, registry);
   try {
     const directorFactory = registry.resolve(ref);
-    grants.add(`director:${directorFactory.id}`);
+    collected.grants.add(`director:${directorFactory.id}`);
   } catch (cause) {
     if (!(cause instanceof UnknownDirectorIdError)) throw cause;
     unresolved.add(ref.id);
   }
-  return [...grants];
 }
 
 function collectTriggerGrants(workflow: WorkflowDefinition): string[] {
@@ -242,13 +329,26 @@ function extractDomain(address: string): string | null {
   return address.slice(at + 1);
 }
 
-function mergeGrants(
-  agentGrants: readonly string[],
-  triggerGrants: readonly string[],
-): readonly string[] {
-  const merged = new Set<string>(agentGrants);
-  for (const grant of triggerGrants) {
-    merged.add(grant);
+/**
+ * Thrown when the walk finds two tool definitions that mint the same
+ * final `tool:<name>` grant within a single agent -- whether from a
+ * repeated name inside one factory or a collision across two of the
+ * agent's factories. Mirrors the runtime `DuplicateToolError` (see
+ * `resolveTools` in `packages/agent/src/agent.ts`), surfacing the
+ * collision at deploy time so a broken agent fails the walk instead of
+ * deploying and then crashing when `createAgent` builds it.
+ */
+export class DuplicateWalkToolError extends Error {
+  readonly toolName: string;
+  readonly factoryId: string;
+
+  constructor(toolName: string, factoryId: string) {
+    super(
+      `capability walk: duplicate tool name ${JSON.stringify(toolName)} ` +
+        `(factory ${JSON.stringify(factoryId)})`,
+    );
+    this.name = "DuplicateWalkToolError";
+    this.toolName = toolName;
+    this.factoryId = factoryId;
   }
-  return Object.freeze([...merged]);
 }

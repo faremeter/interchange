@@ -46,7 +46,9 @@ function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   return Object.assign(factory, {
     id: "@intx/tools-mail/sidecar-bundle",
     requires: [] as readonly string[],
-    definitions: [],
+    // The walk keys `tool:` grants per declared definition name; declare
+    // a real tool so the fixture contributes a `tool:mail_send` grant.
+    definitions: [{ name: "mail_send" }],
   });
 }
 
@@ -168,7 +170,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     // capability-walk-bypass shape: the operator approved one
     // (provider, model), the orchestrator silently pins a different one.
     const approvals = new Set<string>([
-      "tool:@intx/tools-mail/sidecar-bundle",
+      "tool:mail_send",
       `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:preferred-model",
     ]);
@@ -221,7 +223,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     // so the orchestrator legitimately falls back to the default --
     // which is approved, so the deploy proceeds.
     const approvals = new Set<string>([
-      "tool:@intx/tools-mail/sidecar-bundle",
+      "tool:mail_send",
       `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:preferred-model",
       "inference.source:openai:default-model",
@@ -290,7 +292,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     // against the deploy's HarnessConfig.sources -- the orchestrator
     // pins it directly without consulting the default.
     const approvals = new Set<string>([
-      "tool:@intx/tools-mail/sidecar-bundle",
+      "tool:mail_send",
       `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:preferred-model",
     ]);

@@ -47,7 +47,10 @@ function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   return Object.assign(factory, {
     id: "@intx/tools-mail/sidecar-bundle",
     requires: [] as readonly string[],
-    definitions: [],
+    // The walk keys `tool:` grants on each declared definition name, so
+    // the fixture must declare a real tool or it contributes no tool
+    // grant and the approval assertions pass vacuously.
+    definitions: [{ name: "mail_send" }],
   });
 }
 
@@ -122,7 +125,9 @@ function approvedGrantsForWorkflow(
   const approvals = new Set<string>();
   for (const agent of agents) {
     for (const factory of agent.toolFactories) {
-      approvals.add(`tool:${factory.id}`);
+      for (const definition of factory.definitions) {
+        approvals.add(`tool:${definition.name}`);
+      }
     }
     for (const capability of agent.capabilities) {
       approvals.add(`capability:${capability}`);
@@ -711,7 +716,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       });
 
       const incompleteApprovals = approvedGrantsForWorkflow(workflow, [agent]);
-      incompleteApprovals.delete("tool:@intx/tools-mail/sidecar-bundle");
+      incompleteApprovals.delete("tool:mail_send");
 
       let captured: CapabilityApprovalDeniedError | undefined;
       try {
@@ -731,9 +736,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(captured?.pending.size).toBe(1);
       const stepId = workflow.stepOrder[0];
       if (stepId === undefined) throw new Error("missing step id");
-      expect(captured?.pending.get(stepId)).toEqual([
-        "tool:@intx/tools-mail/sidecar-bundle",
-      ]);
+      expect(captured?.pending.get(stepId)).toEqual(["tool:mail_send"]);
       expect(launch.launches).toHaveLength(0);
       expect(workflowRepo.writes).toHaveLength(0);
     });
@@ -802,7 +805,7 @@ describe("createWorkflowDeployOrchestrator", () => {
         launchSession: launch.fn,
       });
       const broad = new Set<string>([
-        "tool:@intx/tools-mail/sidecar-bundle",
+        "tool:mail_send",
         "inference.source:anthropic:mock-model",
       ]);
 

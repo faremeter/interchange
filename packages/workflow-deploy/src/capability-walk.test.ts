@@ -9,6 +9,7 @@ import {
   type AgentDefinition,
   type AnnotatedToolFactory,
   type BaseEnv,
+  type ToolDeclaration,
 } from "@intx/agent";
 import {
   action,
@@ -18,8 +19,12 @@ import {
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
 
-import { walkCapabilities } from "./capability-walk";
+import { DuplicateWalkToolError, walkCapabilities } from "./capability-walk";
 
+// A synthetic mail factory that declares one tool, `mail_send`. The walk
+// keys `tool:` grants on each declared definition name (not on the
+// factory id), so the fixture must carry a real definition or the walk
+// emits zero tool grants and every `tool:` assertion passes vacuously.
 function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   const factory = (_env: BaseEnv) => ({
     definitions: [],
@@ -29,7 +34,26 @@ function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   return Object.assign(factory, {
     id: "@intx/tools-mail/sidecar-bundle",
     requires: [] as readonly string[],
+    definitions: [{ name: "mail_send" }],
+  });
+}
+
+// A synthetic factory whose declared definitions are supplied by the
+// caller, so a test can exercise gated tools, ungated tools, and
+// intra-factory duplicate names.
+function makeFactory(
+  id: string,
+  definitions: readonly ToolDeclaration[],
+): AnnotatedToolFactory<BaseEnv> {
+  const factory = (_env: BaseEnv) => ({
     definitions: [],
+    run: () =>
+      Promise.resolve({ callId: "", content: "", isError: false as const }),
+  });
+  return Object.assign(factory, {
+    id,
+    requires: [] as readonly string[],
+    definitions,
   });
 }
 
@@ -61,8 +85,12 @@ function computeImplicitGrants(
   registry: ReturnType<typeof createDefaultDirectorRegistry>,
 ): Set<string> {
   const grants = new Set<string>();
+  // Mirror the real walk: one `tool:<def.name>` per declared definition,
+  // NOT one per factory id.
   for (const factory of agent.toolFactories) {
-    grants.add(`tool:${factory.id}`);
+    for (const definition of factory.definitions) {
+      grants.add(`tool:${definition.name}`);
+    }
   }
   for (const capability of agent.capabilities) {
     grants.add(`capability:${capability}`);
@@ -137,7 +165,7 @@ describe("walkCapabilities", () => {
     if (declarations === undefined) throw new Error("missing declarations");
     const grants = new Set(declarations.grants);
 
-    expect(grants.has("tool:@intx/tools-mail/sidecar-bundle")).toBe(true);
+    expect(grants.has("tool:mail_send")).toBe(true);
     expect(grants.has(`director:${defaultDirectorFactory.id}`)).toBe(true);
     expect(grants.has("capability:reply")).toBe(true);
     expect(grants.has("capability:summarize")).toBe(true);
@@ -193,9 +221,7 @@ describe("walkCapabilities", () => {
     if (stepId === undefined) throw new Error("missing step");
     const declarations = walk.perStep.get(stepId);
     if (declarations === undefined) throw new Error("missing declarations");
-    expect(declarations.grants).toContain(
-      "tool:@intx/tools-mail/sidecar-bundle",
-    );
+    expect(declarations.grants).toContain("tool:mail_send");
     expect(declarations.grants.some((g) => g.startsWith("director:"))).toBe(
       false,
     );
@@ -286,7 +312,7 @@ describe("walkCapabilities", () => {
 
     // The body agent's tool grant and the body action's effect grant both
     // surface on the loop node so the approval gate sees them.
-    expect(grants.has("tool:@intx/tools-mail/sidecar-bundle")).toBe(true);
+    expect(grants.has("tool:mail_send")).toBe(true);
     expect(grants.has("effect:git:commit")).toBe(true);
   });
 
@@ -319,5 +345,142 @@ describe("walkCapabilities", () => {
     // The action carries its effect grant but no agent grants.
     expect(commitGrants.grants).toContain("effect:git:commit");
     expect(commitGrants.grants.some((g) => g.startsWith("tool:"))).toBe(false);
+  });
+
+  test("carries per-tool effects: gated -> ask, ungated -> allow", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_effects",
+      systemPrompt: "gated + ungated tools",
+      tools: [
+        makeFactory("@intx/tools-posix/sidecar-bundle", [
+          { name: "run_shell", approval: "ask" },
+          { name: "list_dir" },
+        ]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_effects",
+      agent,
+      trigger: { type: "manual" },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const stepId = workflow.stepOrder[0];
+    if (stepId === undefined) throw new Error("missing step");
+    const declarations = walk.perStep.get(stepId);
+    if (declarations === undefined) throw new Error("missing declarations");
+
+    expect(declarations.grants).toContain("tool:run_shell");
+    expect(declarations.grants).toContain("tool:list_dir");
+    expect(declarations.grantEffects.get("tool:run_shell")).toBe("ask");
+    expect(declarations.grantEffects.get("tool:list_dir")).toBe("allow");
+    // grantEffects covers TOOL grants only: no director/capability/etc.
+    // key leaks in.
+    for (const key of declarations.grantEffects.keys()) {
+      expect(key.startsWith("tool:")).toBe(true);
+    }
+  });
+
+  test("ask wins when loop body siblings share a tool name", () => {
+    // Two agent steps in one loop body declare the same bare tool name:
+    // the first gates it (`approval: "ask"`), the second (later in order)
+    // leaves it ungated. The loop threads one GrantSet across its body, so
+    // the two write the same `tool:run_shell` key; the ask mark must not be
+    // downgraded to `allow` by the later sibling.
+    const registry = createDefaultDirectorRegistry();
+    const gatedAgent = defineAgent({
+      id: "ag_gated",
+      systemPrompt: "gates run_shell",
+      tools: [
+        makeFactory("@vendor/a/main", [{ name: "run_shell", approval: "ask" }]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const ungatedAgent = defineAgent({
+      id: "ag_ungated",
+      systemPrompt: "leaves run_shell ungated",
+      tools: [makeFactory("@vendor/b/main", [{ name: "run_shell" }])],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const body = defineWorkflow({
+      id: "loop-body",
+      trigger: { type: "manual" },
+      steps: {
+        gate: step({ agent: gatedAgent }),
+        pass: step({ agent: ungatedAgent, after: ["gate"] }),
+      },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_ask_wins",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body,
+          while: "w",
+          carry: "c",
+          maxIterations: 3,
+          onExhausted: "esc",
+        }),
+        esc: step({ agent: makeTrivialAgent(), after: ["rework"] }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("rework");
+    if (declarations === undefined) throw new Error("missing declarations");
+    expect(declarations.grantEffects.get("tool:run_shell")).toBe("ask");
+  });
+
+  test("throws on a duplicate tool name within a single factory", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_intra_dup",
+      systemPrompt: "duplicate names in one factory",
+      tools: [
+        makeFactory("@vendor/dup/main", [
+          { name: "search" },
+          { name: "search" },
+        ]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_intra_dup",
+      agent,
+      trigger: { type: "manual" },
+    });
+
+    expect(() => walkCapabilities(workflow, registry)).toThrow(
+      DuplicateWalkToolError,
+    );
+  });
+
+  test("throws when two factories in one agent mint the same tool name", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_cross_dup",
+      systemPrompt: "same final tool name across two factories",
+      tools: [
+        makeFactory("@vendor/a/main", [{ name: "search" }]),
+        makeFactory("@vendor/b/main", [{ name: "search" }]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_cross_dup",
+      agent,
+      trigger: { type: "manual" },
+    });
+
+    expect(() => walkCapabilities(workflow, registry)).toThrow(
+      DuplicateWalkToolError,
+    );
   });
 });
