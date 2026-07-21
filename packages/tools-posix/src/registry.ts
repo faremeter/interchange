@@ -23,6 +23,21 @@ export const TOOL_NAMES = {
   GREP: "grep",
 } as const;
 
+/**
+ * Posix tools gated behind per-invocation approval. run_shell executes
+ * arbitrary commands; read/write/edit/search/grep all touch the
+ * filesystem — every posix tool requires an approver's decision before
+ * it runs.
+ */
+export const GATED_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  TOOL_NAMES.READ_FILE,
+  TOOL_NAMES.WRITE_FILE,
+  TOOL_NAMES.RUN_SHELL,
+  TOOL_NAMES.EDIT_FILE,
+  TOOL_NAMES.SEARCH_FILES,
+  TOOL_NAMES.GREP,
+]);
+
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_NAMES.READ_FILE,
