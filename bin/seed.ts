@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 
 import { type, type Type } from "arktype";
 import {
+  type Capability,
   TenantResponse,
   AgentResponse,
   AssetResponse,
@@ -55,7 +56,7 @@ import {
 // has not been probed), plus the hand-curated model capabilities the matrix
 // cannot prove. Reading the matrix through the helper here keeps the wire set
 // from ever drifting from what discovery captured.
-function offeringCapabilities(offering: CatalogOfferingSpec): string[] {
+function offeringCapabilities(offering: CatalogOfferingSpec): Capability[] {
   const wire = offering.discoverySource
     ? catalogCapabilitiesFor(
         offering.discoverySource.provider,
