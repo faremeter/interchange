@@ -303,12 +303,34 @@ export interface WorkflowSupervisorBindings {
    * `reEmitParkedCorrelations` (the re-establishment re-emit that recovers a
    * register the hub missed while it was down). Production wires this to the
    * sidecar's hub link so a `signal.correlation.register` frame reaches the hub;
-   * a host that does not wire it does not register suspensions (tests,
-   * single-process deployments). Best-effort: a throwing sink is logged and
+   * a host that does not wire it does not register suspensions (today, the
+   * tests). Best-effort: a throwing sink is logged and
    * both callers keep going, so one bad register cannot wedge the control pump
    * or abort a re-emit partway through the parked set.
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
+  /**
+   * Per-run grants source the dispatch loop consults before it forwards a
+   * `trigger.fire`. Unlike `onSuspensionRegister` (best-effort, fire-and-
+   * forget), this is a request/response contract: the supervisor awaits the
+   * returned `CredentialsSnapshot` and pushes it to the child over the
+   * control channel BEFORE firing the run's trigger, so the child's
+   * authorize closure binds to the run's grants rather than a stale
+   * spawn-time snapshot. A throwing sink is NOT swallowed -- the dispatch
+   * loop fails that run (a synthesized `RunFailed`) rather than firing the
+   * trigger against absent grants.
+   *
+   * When this binding is wired, it is the SOLE grants push: `spawn` does not
+   * push a spawn-time snapshot, so the per-run push is the only thing that
+   * satisfies the child's throw-on-null authorize guard. A caller that
+   * injects no per-run sink -- today, the supervisor's own tests -- keeps the
+   * spawn-time push instead. Production (the sidecar) wires it to the
+   * walk-derived per-step credentials assembly.
+   */
+  onRunStart?: (args: {
+    runId: string;
+    deploymentId: string;
+  }) => Promise<import("./credentials").CredentialsSnapshot>;
   /** Subprocess spawner the supervisor invokes per spawn. */
   subprocessSpawner: SubprocessSpawner;
   /**

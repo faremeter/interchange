@@ -63,6 +63,24 @@ function parseTriggerFireRunIds(lines: readonly string[]): string[] {
   return ids;
 }
 
+/**
+ * The frame `type`s the supervisor writes to the child control stream, in
+ * write order. Used to assert the per-run grants barrier orders a
+ * `grants-updated` push STRICTLY before the run's `trigger.fire`.
+ */
+function parseControlFrameTypes(lines: readonly string[]): string[] {
+  const types: string[] = [];
+  for (const line of lines) {
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    types.push(payload.type);
+  }
+  return types;
+}
+
 function parseSourcesUpdatedFrames(
   lines: readonly string[],
 ): { sources: InferenceSource[]; defaultSource: string }[] {
@@ -731,6 +749,215 @@ describe("createWorkflowSupervisor", () => {
     await supervisor.shutdown();
     expect(killed).toBe(true);
     expect(mailBus.registered()).not.toContain("deployment-x@example.com");
+  });
+
+  // Stand up a spawned supervisor against a synthetic child, drive the
+  // `ready` handshake, and return the pieces a per-run barrier test needs:
+  // the child-side control sender (to inject `ready` / `terminal.event`),
+  // the supervisor-to-child stream (to observe the frames the supervisor
+  // wrote), the mock mail bus (to deliver inbound mail), and the inbox
+  // primitives (to observe claim-check state). `onRunStart` is threaded
+  // through the bindings so the dispatch loop runs the per-run barrier.
+  async function spawnWithRunStart(opts: {
+    baseDir: string;
+    onRunStart: WorkflowSupervisorBindings["onRunStart"];
+  }) {
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      return {
+        pid: 7777,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
+
+    const mailBus = createMockMailBus();
+    const inboxPrimitives = createMemoryInboxPrimitives();
+    const baseBindings = await buildBindings({
+      baseDir: opts.baseDir,
+      spawner,
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus,
+      inboxPrimitives,
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      ...(opts.onRunStart !== undefined ? { onRunStart: opts.onRunStart } : {}),
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-barrier",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    while (!mailBus.registered().includes("deployment-x@example.com")) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 7777,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+      },
+    });
+    await spawnPromise;
+    return {
+      supervisor,
+      childSender,
+      supervisorToChild,
+      mailBus,
+      inboxPrimitives,
+    };
+  }
+
+  test("dispatch pushes a per-run grants-updated before the run's trigger.fire", async () => {
+    const baseDir = await makeTempDir("supervisor-barrier-ok-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    // The per-run sink reads the step's grants exactly as `spawn` does, but
+    // per run rather than once per spawn. When `onRunStart` is wired the
+    // spawn-time push is suppressed, so a `grants-updated` on the child
+    // stream can only come from this per-run barrier.
+    const runStartCalls: { runId: string; deploymentId: string }[] = [];
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async (
+      args,
+    ) => {
+      runStartCalls.push(args);
+      return assembleCredentialsSnapshot({
+        repoStore: createStubRepoStore({ baseDir }),
+        principal: { kind: "supervisor" },
+        stepOrder: ["step-1"],
+        deploymentId: "deployment-x",
+        deriveStepAddress: ({ deploymentId, stepId }) =>
+          `${deploymentId}-${stepId}@example.com`,
+      });
+    };
+
+    const wired = await spawnWithRunStart({ baseDir, onRunStart });
+
+    // No grants-updated is pushed at spawn time when onRunStart is wired.
+    expect(
+      parseControlFrameTypes(wired.supervisorToChild.flushed()),
+    ).not.toContain("grants-updated");
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("barrier-m1"),
+    );
+
+    const deadline = Date.now() + 1000;
+    let firedRunId: string | undefined;
+    while (Date.now() < deadline) {
+      const ids = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+      if (ids.length >= 1) {
+        firedRunId = ids[0];
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    if (firedRunId === undefined) {
+      throw new Error("no trigger.fire observed within deadline");
+    }
+
+    // The barrier is load-bearing on ordering: the run's grants-updated
+    // must appear on the child stream STRICTLY before its trigger.fire.
+    const frameTypes = parseControlFrameTypes(
+      wired.supervisorToChild.flushed(),
+    );
+    const grantsIdx = frameTypes.indexOf("grants-updated");
+    const triggerIdx = frameTypes.indexOf("trigger.fire");
+    expect(grantsIdx).toBeGreaterThanOrEqual(0);
+    expect(triggerIdx).toBeGreaterThanOrEqual(0);
+    expect(grantsIdx).toBeLessThan(triggerIdx);
+
+    // The sink was consulted once for this run with the supervisor's
+    // deployment id stamped on.
+    expect(runStartCalls).toEqual([
+      { runId: firedRunId, deploymentId: "deployment-x" },
+    ]);
+
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: firedRunId, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+    await wired.supervisor.shutdown();
+  });
+
+  test("a throwing onRunStart fails the run and never fires its trigger", async () => {
+    const baseDir = await makeTempDir("supervisor-barrier-fail-");
+    // No seedStepGrants: the sink throws regardless, standing in for any
+    // barrier failure (a broken read, an unauthorized run). The run must
+    // fail LOUDLY -- the trigger is never fired against absent grants.
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () => {
+      throw new Error("synthetic grants-barrier failure");
+    };
+
+    const wired = await spawnWithRunStart({ baseDir, onRunStart });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("barrier-fail-m1"),
+    );
+
+    // The failed run is settled through the claim-check pipeline: the
+    // message moves to `consumed`. Wait on that observable settle.
+    const address = "deployment-x@example.com";
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    // The barrier suppressed the trigger: NO trigger.fire and NO
+    // grants-updated ever reached the child for the failed run.
+    const frameTypes = parseControlFrameTypes(
+      wired.supervisorToChild.flushed(),
+    );
+    expect(frameTypes).not.toContain("trigger.fire");
+    expect(frameTypes).not.toContain("grants-updated");
+
+    await wired.supervisor.shutdown();
   });
 
   // Harness for the ready-timeout tests: an injected FakeTimer registry
