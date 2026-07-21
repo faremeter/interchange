@@ -273,6 +273,7 @@ export function mountHubRoutes(
         sidecarRouter,
         assetService,
         repoStore,
+        grantStore,
         requireGrant,
       }),
     );

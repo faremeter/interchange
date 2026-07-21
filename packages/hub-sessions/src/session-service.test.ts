@@ -56,6 +56,17 @@ function createMockRouter(): SidecarRouter & {
       calls.push({ method: "routeMail", args: [agentAddress, rawMessage] });
       return mock.routeMailResult;
     },
+    sendRunGrants: ((
+      agentAddress: string,
+      runId: string,
+      stepGrants: Parameters<SidecarRouter["sendRunGrants"]>[2],
+    ): boolean => {
+      calls.push({
+        method: "sendRunGrants",
+        args: [agentAddress, runId, stepGrants],
+      });
+      return mock.routeMailResult;
+    }) as SidecarRouter["sendRunGrants"],
     sendAgentDeploy: ((
       agentAddress: string,
       config: HarnessConfig,

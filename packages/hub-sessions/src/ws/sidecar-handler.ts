@@ -17,6 +17,7 @@ import {
   type PackPushFrame,
   type PackDoneFrame,
   type RepoId,
+  type RunGrantsFrame,
   type SignalCorrelationRegisterFrame,
 } from "@intx/types/sidecar";
 import type {
@@ -97,6 +98,26 @@ export type SidecarRouter = {
   handleClose(ws: WsHandle): void;
 
   routeMail(agentAddress: string, rawMessage: string): boolean;
+  /**
+   * Deliver a run's authorization grants to the sidecar hosting the named
+   * deployment-level mail address, ahead of the trigger mail that starts the
+   * run. Routes through the same per-address channel as `routeMail`: over the
+   * live connection when the deployment is connected, and into the disconnect
+   * queue when the deployment dropped in the window before its first
+   * reconnect (while its address is still on `agentAddresses`) -- so grants
+   * are queued for a disconnected deployment exactly when the trigger mail is,
+   * and ride the same reconnect flush. After a challenged reconnect the
+   * address moves to `workflowAddresses`, which carries no queue (that
+   * generation's in-flight state is reconstructed sidecar-locally); a
+   * `run.grants` then has no queue to ride and this returns `false`. Returns
+   * `false` whenever the address is unroutable, so the caller can abandon the
+   * run without leaving orphaned grant state behind.
+   */
+  sendRunGrants(
+    agentAddress: string,
+    runId: string,
+    stepGrants: RunGrantsFrame["stepGrants"],
+  ): boolean;
   /**
    * Returns the current connector-thread state for the named agent, or
    * `null` if the agent has no active connector thread (or if the
@@ -1789,6 +1810,39 @@ export function createSidecarRouter(
     return enqueueForDisconnected(agentAddress, frame);
   }
 
+  function sendRunGrants(
+    agentAddress: string,
+    runId: string,
+    stepGrants: RunGrantsFrame["stepGrants"],
+  ): boolean {
+    const frame: HubFrame = {
+      type: "run.grants",
+      agentAddress,
+      runId,
+      stepGrants,
+    };
+
+    const ws = addressIndex.get(agentAddress);
+    if (ws !== undefined) {
+      const conn = connections.get(ws);
+      if (conn !== undefined) {
+        conn.send(frame);
+        return true;
+      }
+    }
+
+    // Mirror routeMail: if the address has a live disconnect queue, ride it
+    // so a run.grants issued in the window between deploy and the first
+    // reconnect survives the same way the dispatching trigger mail does.
+    // A queue exists only while the deployment address is still on
+    // agentAddresses (pre-first-reconnect); after a challenged reconnect it
+    // moves to workflowAddresses, which handleClose leaves unqueued because
+    // that generation's in-flight run state is reconstructed sidecar-locally.
+    // Returning without enqueueing there is correct; enqueueing is what keeps
+    // grants and mail from diverging in the pre-reconnect window.
+    return enqueueForDisconnected(agentAddress, frame);
+  }
+
   async function handleDeployAck(
     agentAddress: string,
     publicKey: string,
@@ -2192,6 +2246,7 @@ export function createSidecarRouter(
     handleMessage,
     handleClose,
     routeMail,
+    sendRunGrants,
     sendAgentDeploy,
     sendAgentUndeploy,
     sendSourcesUpdate,

@@ -9,6 +9,10 @@ import { createInMemoryGrantStore } from "@intx/authz";
 import { base64Decode, ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
+  grant as grantTable,
+  principal as principalTable,
+} from "@intx/db/schema";
+import {
   deriveDeploymentAddress,
   deriveWorkflowRunRepoId,
 } from "@intx/workflow-deploy";
@@ -111,6 +115,59 @@ const WORKFLOW_JSON = JSON.stringify({
   },
 });
 
+// A workflow whose sole step declares two tools, one approval-gated. The
+// capability walk lifts these into the run's tool grants: the trigger route
+// materializes one `tool:<name>` grant row per declared tool, carrying the
+// effect the tool's static declaration requested.
+const WORKFLOW_JSON_WITH_TOOLS = JSON.stringify({
+  id: "wf_tools",
+  triggers: [{ type: "manual" }],
+  stepOrder: ["work"],
+  steps: {
+    work: {
+      kind: "step",
+      id: "work",
+      agent: {
+        id: "worker",
+        systemPrompt: "do work",
+        toolFactories: [
+          {
+            id: "fac",
+            definitions: [
+              { name: "read_file" },
+              { name: "run_shell", approval: "ask" },
+            ],
+          },
+        ],
+        capabilities: [],
+        inference: { sources: [{ provider: "anthropic", model: "m" }] },
+      },
+      after: [],
+    },
+  },
+});
+
+// A workflow whose sole step is an ACTION declaring an effect requirement.
+// The capability walk lifts `effect.requires` into `effect:<cap>` grant
+// strings (see `collectActionGrants` in `@intx/workflow-deploy`), which the
+// trigger route must materialize as run grant rows: the action EffectContext
+// authorizes `effect:<cap>`/`invoke` fail-closed at runtime, so a missing row
+// makes the action throw.
+const WORKFLOW_JSON_WITH_EFFECT = JSON.stringify({
+  id: "wf_effect",
+  triggers: [{ type: "manual" }],
+  stepOrder: ["commit"],
+  steps: {
+    commit: {
+      kind: "action",
+      id: "commit",
+      handler: "commit",
+      effect: { requires: ["git:commit"] },
+      after: [],
+    },
+  },
+});
+
 function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
   return {
     id: "grant-test",
@@ -126,14 +183,28 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
   };
 }
 
+// An insert the mock DB records: the drizzle table object it targeted and
+// the row values. Tests inspect `inserts` to assert what was (or was not)
+// committed. Insert order is preserved so a transaction body's writes are
+// visible in the order they ran.
+type InsertRecord = { table: unknown; values: unknown };
+
 type MockDBOpts = {
   assetRow?: typeof workflowAssetRow | undefined;
   deploymentRow?: typeof deploymentRow | undefined;
   deploymentList?: (typeof deploymentRow)[];
+  inserts?: InsertRecord[];
 };
 
 function createMockDB(opts: MockDBOpts) {
   const list = opts.deploymentList ?? [];
+  const inserts = opts.inserts ?? [];
+  const insert = (table: unknown) => ({
+    values: (values: unknown) => {
+      inserts.push({ table, values });
+      return Promise.resolve();
+    },
+  });
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
@@ -149,7 +220,12 @@ function createMockDB(opts: MockDBOpts) {
         }),
       }),
     }),
-    insert: () => ({ values: () => Promise.resolve() }),
+    insert,
+    transaction: async (
+      fn: (tx: { insert: typeof insert }) => Promise<void>,
+    ) => {
+      await fn({ insert });
+    },
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }
 
@@ -177,11 +253,22 @@ function createMockGetSession(): GetSession {
 
 type SignalCall = Parameters<SidecarRouter["sendSignalDeliver"]>[0];
 type RouteMailCall = { address: string; rawMessage: string };
+type RunGrantsCall = {
+  address: string;
+  runId: string;
+  stepGrants: Parameters<SidecarRouter["sendRunGrants"]>[2];
+};
+// Every send the mock records, in call order, so tests can assert that a
+// `run.grants` send precedes the trigger `mail`.
+type SendCall = { kind: "run.grants" | "mail"; address: string };
 
 function createMockSidecarRouter(
   signalCalls: SignalCall[],
   routeMailCalls: RouteMailCall[] = [],
   routeMailResult = true,
+  runGrantsCalls: RunGrantsCall[] = [],
+  sendOrder: SendCall[] = [],
+  runGrantsResult = true,
 ): SidecarRouter {
   function notImpl(name: string): never {
     throw new Error(`mock: sidecarRouter.${name} not implemented`);
@@ -192,7 +279,13 @@ function createMockSidecarRouter(
     handleClose: () => notImpl("handleClose"),
     routeMail: (address, rawMessage) => {
       routeMailCalls.push({ address, rawMessage });
+      sendOrder.push({ kind: "mail", address });
       return routeMailResult;
+    },
+    sendRunGrants: (address, runId, stepGrants) => {
+      runGrantsCalls.push({ address, runId, stepGrants });
+      sendOrder.push({ kind: "run.grants", address });
+      return runGrantsResult;
     },
     sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
@@ -317,6 +410,9 @@ type TestAppOpts = {
   signalCalls?: SignalCall[];
   routeMailCalls?: RouteMailCall[];
   routeMailResult?: boolean;
+  runGrantsCalls?: RunGrantsCall[];
+  sendOrder?: SendCall[];
+  runGrantsResult?: boolean;
   deployCalls?: DeployWorkflowDefinitionParams[];
   deployResult?: DeployWorkflowDefinitionResult;
   workflowJson?: string | null;
@@ -336,6 +432,9 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.signalCalls ?? [],
       opts.routeMailCalls ?? [],
       opts.routeMailResult ?? true,
+      opts.runGrantsCalls ?? [],
+      opts.sendOrder ?? [],
+      opts.runGrantsResult ?? true,
     ),
     sessionService: createMockSessionService(
       opts.deployCalls ?? [],
@@ -381,6 +480,27 @@ const RunListBody = type({ runIds: "string[]" });
 const RunEventsBody = type({
   runId: "string",
   events: type({ seq: "number", type: "string", body: "object" }).array(),
+});
+
+// Shapes the trigger route inserts. Validated at the test boundary rather
+// than cast so the mock DB's `unknown` insert values are narrowed safely.
+const PrincipalInsert = type({
+  id: "string",
+  kind: "string",
+  refId: "string",
+  tenantId: "string",
+  status: "string",
+  "+": "ignore",
+});
+
+const GrantInsert = type({
+  id: "string",
+  principalId: "string",
+  resource: "string",
+  action: "string",
+  effect: "string",
+  origin: "string",
+  "+": "ignore",
 });
 
 function assertBody<T extends Type>(schema: T, raw: unknown): T["infer"] {
@@ -762,6 +882,151 @@ describe("POST /workflows/:deploymentId/mail", () => {
 
     expect(res.status).toBe(404);
     expect(routeMailCalls).toHaveLength(0);
+  });
+
+  test("mints a run principal and sends run.grants before the mail", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const routeMailCalls: RouteMailCall[] = [];
+    const sendOrder: SendCall[] = [];
+    const inserts: InsertRecord[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls,
+      routeMailCalls,
+      sendOrder,
+      db: { deploymentRow, inserts },
+      workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(202);
+    const json = assertBody(TriggerBody, await res.json());
+
+    // The grants ride the wire ahead of the trigger mail, so FIFO ordering
+    // lands them at the sidecar before the run dispatches.
+    expect(sendOrder.map((s) => s.kind)).toEqual(["run.grants", "mail"]);
+
+    // The run.grants frame carries the run id (= the mail's Message-ID) and
+    // the definition-pure tool grants the capability walk lifted.
+    expect(runGrantsCalls).toHaveLength(1);
+    const grantsCall = runGrantsCalls[0];
+    if (grantsCall === undefined) throw new Error("missing run.grants call");
+    expect(grantsCall.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
+    expect(grantsCall.runId).toBe(json.messageId);
+
+    const byResource = new Map(
+      grantsCall.stepGrants.map((g) => [g.resource, g]),
+    );
+    expect([...byResource.keys()].sort()).toEqual([
+      "tool:read_file",
+      "tool:run_shell",
+    ]);
+    for (const g of grantsCall.stepGrants) {
+      expect(g.action).toBe("invoke");
+      expect(g.origin).toBe("creator");
+      expect(g.principalId).not.toBeNull();
+    }
+    // The approval-gated tool keeps its `ask` effect; the plain tool is
+    // `allow`.
+    expect(byResource.get("tool:read_file")?.effect).toBe("allow");
+    expect(byResource.get("tool:run_shell")?.effect).toBe("ask");
+
+    // A `kind: "workflow"` run principal keyed on the runId is committed,
+    // alongside its grant rows.
+    const principalInserts = inserts.filter((i) => i.table === principalTable);
+    expect(principalInserts).toHaveLength(1);
+    const principalRow = assertBody(
+      PrincipalInsert,
+      principalInserts[0]?.values,
+    );
+    expect(principalRow).toMatchObject({
+      kind: "workflow",
+      refId: json.messageId,
+      tenantId: TENANT_ID,
+      status: "active",
+    });
+
+    const grantInserts = inserts.filter((i) => i.table === grantTable);
+    expect(grantInserts).toHaveLength(2);
+    // The committed grant principal matches the minted run principal.
+    for (const gi of grantInserts) {
+      const grantRow = assertBody(GrantInsert, gi.values);
+      expect(grantRow.principalId).toBe(principalRow.id);
+    }
+  });
+
+  test("materializes action effect grants in the frame and DB", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const inserts: InsertRecord[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls,
+      db: { deploymentRow, inserts },
+      workflowJson: WORKFLOW_JSON_WITH_EFFECT,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(202);
+
+    // The action's `effect.requires` capability rides the run.grants frame as
+    // an `effect:git:commit` / invoke / allow grant. This is the row the
+    // action EffectContext authorizes fail-closed at runtime; without it the
+    // action throws.
+    expect(runGrantsCalls).toHaveLength(1);
+    const grantsCall = runGrantsCalls[0];
+    if (grantsCall === undefined) throw new Error("missing run.grants call");
+    const framed = grantsCall.stepGrants.find(
+      (g) => g.resource === "effect:git:commit",
+    );
+    expect(framed).toBeDefined();
+    expect(framed?.action).toBe("invoke");
+    expect(framed?.effect).toBe("allow");
+    expect(framed?.origin).toBe("creator");
+
+    // The same grant is committed to the DB alongside the run principal.
+    const effectInserts = inserts
+      .filter((i) => i.table === grantTable)
+      .map((i) => assertBody(GrantInsert, i.values))
+      .filter((g) => g.resource === "effect:git:commit");
+    expect(effectInserts).toHaveLength(1);
+    const committed = effectInserts[0];
+    if (committed === undefined) throw new Error("missing effect grant insert");
+    expect(committed.action).toBe("invoke");
+    expect(committed.effect).toBe("allow");
+    expect(committed.origin).toBe("creator");
+  });
+
+  test("leaves no orphaned run principal or grants on a 409", async () => {
+    const runGrantsCalls: RunGrantsCall[] = [];
+    const routeMailCalls: RouteMailCall[] = [];
+    const inserts: InsertRecord[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      runGrantsCalls,
+      routeMailCalls,
+      routeMailResult: false,
+      db: { deploymentRow, inserts },
+      workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("deployment_unreachable");
+
+    // The run.grants frame was attempted, but the unroutable mail means the
+    // run never starts -- so no run principal and no grant rows are written.
+    expect(routeMailCalls).toHaveLength(1);
+    expect(inserts.filter((i) => i.table === principalTable)).toHaveLength(0);
+    expect(inserts.filter((i) => i.table === grantTable)).toHaveLength(0);
   });
 });
 

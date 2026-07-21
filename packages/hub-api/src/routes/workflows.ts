@@ -4,8 +4,14 @@ import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import { asset, workflowDeployment } from "@intx/db/schema";
+import {
+  asset,
+  grant as grantTable,
+  principal as principalTable,
+  workflowDeployment,
+} from "@intx/db/schema";
 import type { DB } from "@intx/db";
+import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -32,12 +38,23 @@ import { generateId } from "@intx/hub-common";
 import {
   deriveDeploymentAddress,
   deriveWorkflowRunRepoId,
+  walkCapabilities,
+  type CapabilityWalkResult,
 } from "@intx/workflow-deploy";
+import { createDefaultDirectorRegistry } from "@intx/agent";
+import { GrantRequirement, type GrantEffect } from "@intx/types";
+import type { RunGrantsFrame } from "@intx/types/sidecar";
 
 import type { TenantEnv } from "../context";
 import { idResource, type RequireGrant } from "../middleware/grant";
 import { validateAttachments } from "../attachment-validation";
+import {
+  resolveGrantMaterialization,
+  type MaterializedGrantRow,
+} from "../grant-materialization";
 import { ts } from "../format";
+
+const GrantRequirements = GrantRequirement.array();
 
 // DoS guard on the trigger route body. Sized identically to the agent
 // mail route: above the legitimate ceiling (the 30 MB per-message
@@ -148,6 +165,7 @@ export type CreateWorkflowRoutesDeps = {
   sidecarRouter: SidecarRouter;
   assetService: AssetService;
   repoStore: RepoStore;
+  grantStore: GrantStore;
   requireGrant: RequireGrant;
 };
 
@@ -157,6 +175,7 @@ export function createWorkflowRoutes({
   sidecarRouter,
   assetService,
   repoStore,
+  grantStore,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -506,6 +525,103 @@ export function createWorkflowRoutes({
       const user = c.get("user");
       const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
 
+      // The runId the supervisor mints for this trigger is the mail's
+      // Message-ID header verbatim (see `deriveMessageId` in
+      // `@intx/workflow-host`), so it equals `messageId` byte-identically.
+      // The run principal and its grants key off it.
+      const runId = messageId;
+
+      // Derive the run's authorization grants from the deployment's workflow
+      // definition and stage them on a fresh run principal. Nothing is
+      // written to the database until the trigger is accepted for delivery:
+      // an unroutable deployment (409 below) must not leave an orphaned
+      // principal or grant rows behind.
+      let definition: WorkflowDefinition;
+      try {
+        definition = await hydrateDefinition(
+          assetService,
+          row.definitionAssetId,
+        );
+      } catch (err) {
+        return c.json(
+          {
+            error: {
+              code: "invalid_workflow",
+              message:
+                err instanceof Error
+                  ? err.message
+                  : "Failed to hydrate workflow definition",
+            },
+          },
+          409,
+        );
+      }
+
+      const runPrincipalId = generateId("principal");
+      const now = new Date();
+
+      // The runtime-enforced grant surface is the run's definition-pure grant
+      // content. The walk yields `tool:<name>` grants (one per tool a step's
+      // agent declares, carrying the tool's static effect) and `effect:<cap>`
+      // grants (one per capability an action step's `effect.requires`
+      // declares). Both are authorized fail-closed at runtime -- the agent
+      // harness gates `tool:` use and the action EffectContext gates
+      // `effect:` use, each throwing on a non-allow decision. They materialize
+      // DIRECTLY as creator-origin `grant` rows (`action: invoke`) -- unlike
+      // declared grantRequirements, they are not gated on creator authority.
+      // The walk's capability:/director:/inference.source:/mail.* strings are
+      // deploy-time approval concerns, not runtime authority, and are excluded.
+      const directorRegistry = createDefaultDirectorRegistry();
+      const walk = walkCapabilities(definition, directorRegistry);
+      const runtimeGrantRows = deriveRunRuntimeGrantRows(
+        walk,
+        tenant.id,
+        runPrincipalId,
+        now,
+      );
+
+      // Declared grantRequirements resolve through the shared creator/invoker
+      // delegation path. A workflow definition carries no grantRequirements
+      // surface today, so the requirement set is empty and the resolver adds
+      // no rows on top of the walk's tool grants. The call is wired against
+      // the invoker's collected grants so the moment the definition grows a
+      // grantRequirements field the caller passes it here with no further
+      // plumbing -- creator-sourced requirements would additionally collect
+      // the workflow asset creator's grants.
+      const declaredGrantRequirements = GrantRequirements([]);
+      if (declaredGrantRequirements instanceof type.errors) {
+        return c.json(
+          {
+            error: {
+              code: "invalid_workflow",
+              message: `Invalid grant requirements: ${declaredGrantRequirements.summary}`,
+            },
+          },
+          409,
+        );
+      }
+      const invokerGrants = await grantStore.collectGrants(
+        principal.id,
+        tenant.id,
+      );
+      const materialization = await resolveGrantMaterialization({
+        tenantId: tenant.id,
+        targetPrincipalId: runPrincipalId,
+        grantRequirements: declaredGrantRequirements,
+        adHocInvokerGrants: [],
+        invokerGrants,
+        creatorGrants: [],
+        now,
+      });
+      if (!materialization.ok) {
+        const { status, code, message } = materialization.rejection;
+        return c.json({ error: { code, message } }, status);
+      }
+      const stagedGrantRows = [
+        ...runtimeGrantRows,
+        ...materialization.grantRows,
+      ];
+
       // A run trigger is threading-less by construction: it starts a new
       // run rather than continuing a conversation, so no inReplyTo or
       // references are stamped. This is the same fresh-signed-message
@@ -550,6 +666,36 @@ export function createWorkflowRoutes({
       const rawMessage = assembleMessage(headers, signedContent, signature);
       const base64 = base64Encode(rawMessage);
 
+      // The run's grants ride the wire in the same validated encoding the
+      // agent.deploy frame's `config.grants` uses. Project the staged rows
+      // directly rather than reading them back through `collectGrants`: the
+      // DB write is deferred until delivery is accepted (below), so the frame
+      // carries exactly the rows that will be committed.
+      const stepGrants = stagedGrantRows.map((g) => runGrantToWire(g));
+
+      // Send the run's grants BEFORE the trigger mail. Both frames route
+      // through the same per-address channel, so same-websocket FIFO
+      // ordering guarantees the grants land at the sidecar before the mail
+      // that dispatches the run -- no ack round-trip is needed. A `false`
+      // here means the deployment is unroutable; abandon the run without
+      // committing any authz state (no orphaned principal or grant rows).
+      const grantsDelivered = sidecarRouter.sendRunGrants(
+        address,
+        runId,
+        stepGrants,
+      );
+      if (!grantsDelivered) {
+        return c.json(
+          {
+            error: {
+              code: "deployment_unreachable",
+              message: `Deployment address ${address} is not routable`,
+            },
+          },
+          409,
+        );
+      }
+
       const delivered = sidecarRouter.routeMail(address, base64);
       if (!delivered) {
         return c.json(
@@ -562,6 +708,25 @@ export function createWorkflowRoutes({
           409,
         );
       }
+
+      // Delivery accepted. Commit the run principal and its grants now, so
+      // the 409 path above never leaves orphaned authz state behind. The
+      // principal is a bare `workflow`-kind row keyed on the runId, mirroring
+      // the per-instance principal the agent.deploy path mints.
+      await db.transaction(async (tx) => {
+        await tx.insert(principalTable).values({
+          id: runPrincipalId,
+          tenantId: tenant.id,
+          kind: "workflow",
+          refId: runId,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        });
+        for (const g of stagedGrantRows) {
+          await tx.insert(grantTable).values(g);
+        }
+      });
 
       return c.json({ deploymentId, address, messageId }, 202);
     },
@@ -676,6 +841,104 @@ export function createWorkflowRoutes({
   );
 
   return app;
+}
+
+// Grant-string prefixes the capability walk emits that carry RUNTIME
+// authority, each authorized fail-closed at run time:
+//   - `tool:<name>`  -- gated by the agent harness before a tool call.
+//   - `effect:<cap>` -- gated by the action EffectContext before an effect
+//                       (`authorize("effect:<cap>", "invoke")`, throws unless
+//                       the decision is allow).
+// The walk's other strings (capability:/director:/inference.source:/mail.*)
+// are deploy-time approval concerns, not runtime authority, so they do not
+// materialize as run grant rows.
+const TOOL_GRANT_PREFIX = "tool:";
+const EFFECT_GRANT_PREFIX = "effect:";
+
+/**
+ * Project the capability walk into the run's runtime grant rows -- the
+ * `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
+ * Every distinct grant string across all steps becomes one creator-origin
+ * `grant` row with `action: invoke`. The run's runtime authority is
+ * definition-pure: identical across every run of the deployment, so the walk
+ * output alone determines it.
+ *
+ * Tool grants carry the effect the tool's static declaration requested (`ask`
+ * for approval-gated tools, `allow` otherwise) via the walk's `grantEffects`
+ * map. A tool in more than one step is emitted once; when two steps disagree
+ * on its effect, `ask` wins over `allow` so an approval-gated declaration is
+ * never silently downgraded.
+ *
+ * Effect grants are always `allow` -- the `effect.requires` set names the
+ * capability floor an action needs, with no per-effect ask/allow distinction,
+ * so they are NOT routed through the `grantEffects` map (which covers tool
+ * grants only). An `effect:<cap>` in more than one step is emitted once.
+ */
+function deriveRunRuntimeGrantRows(
+  walk: CapabilityWalkResult,
+  tenantId: string,
+  runPrincipalId: string,
+  now: Date,
+): MaterializedGrantRow[] {
+  const effectByResource = new Map<string, GrantEffect>();
+  for (const declarations of walk.perStep.values()) {
+    for (const grant of declarations.grants) {
+      if (grant.startsWith(TOOL_GRANT_PREFIX)) {
+        const effect = declarations.grantEffects.get(grant) ?? "allow";
+        const existing = effectByResource.get(grant);
+        if (existing === "ask" || effect === "ask") {
+          effectByResource.set(grant, "ask");
+        } else if (existing === undefined) {
+          effectByResource.set(grant, effect);
+        }
+      } else if (grant.startsWith(EFFECT_GRANT_PREFIX)) {
+        // Effect grants are always allow; a repeat across steps is idempotent.
+        if (!effectByResource.has(grant)) {
+          effectByResource.set(grant, "allow");
+        }
+      }
+    }
+  }
+
+  const rows: MaterializedGrantRow[] = [];
+  for (const [resource, effect] of effectByResource) {
+    rows.push({
+      id: generateId("grant"),
+      tenantId,
+      principalId: runPrincipalId,
+      resource,
+      action: "invoke",
+      effect,
+      conditions: null,
+      origin: "creator",
+      expiresAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Project a materialized run grant row into the `run.grants` wire shape --
+ * the same `WireGrantRule` encoding the `agent.deploy` frame's
+ * `config.grants` ships. A run grant is always principal-scoped and never
+ * role-scoped, so `roleId` is null and `principalId` is the run principal.
+ */
+function runGrantToWire(
+  row: MaterializedGrantRow,
+): RunGrantsFrame["stepGrants"][number] {
+  return {
+    id: row.id,
+    resource: row.resource,
+    action: row.action,
+    effect: row.effect,
+    origin: row.origin,
+    conditions: row.conditions,
+    expiresAt: row.expiresAt,
+    roleId: null,
+    principalId: row.principalId,
+  };
 }
 
 /**
