@@ -23,6 +23,7 @@
 
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { GrantRequirement } from "@intx/types";
 import { glob, repoActionToGrantVerb } from "@intx/hub-common";
 import {
   UserPrincipal,
@@ -85,6 +86,16 @@ export const workflowDefinitionEnvelopeSchema = type({
   steps: StepsObject,
   stepOrder: "string[]",
   "state?": StateObject,
+  // `grantRequirements` passes through the envelope whether or not it is
+  // declared here: arktype's `.onUndeclaredKey("ignore")` below is
+  // passthrough, not stripping (only `"delete"` strips), so the hydrate read
+  // sees the field either way. Declaring it here VALIDATES declared
+  // requirements at the deploy boundary — a malformed `source` is rejected
+  // rather than passed through unchecked — as defense in depth alongside the
+  // trigger route's own `GrantRequirements` re-validation. Compose the
+  // exported `GrantRequirement` arktype rather than restating its shape so the
+  // envelope and the definition stay in lockstep.
+  "grantRequirements?": GrantRequirement.array(),
 }).onUndeclaredKey("ignore");
 
 /**
