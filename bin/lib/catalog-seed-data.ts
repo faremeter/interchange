@@ -41,9 +41,9 @@ export type CatalogOfferingSpec = {
   priority: number;
   // The (provider, model) the offering's wire capabilities are drawn from in the
   // discovery support matrix, or null when this exact tuple has not been probed.
-  // Wire capabilities are never hand-authored: bin/seed.ts derives them from this
-  // key through the discovery helper, so a row cannot claim a capability the
-  // matrix has not proven.
+  // Wire capabilities are never hand-authored: the seed derives them from this
+  // key through the discovery helper (see offeringCapabilities), so a row cannot
+  // claim a capability the matrix has not proven.
   discoverySource: DiscoverySource | null;
   // Model capabilities the matrix cannot prove (long-context, prompt-caching),
   // curated by hand. Explicit on every offering even when empty, matching quirks.
