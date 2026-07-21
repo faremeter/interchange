@@ -57,6 +57,7 @@ export {
   parseApprovalRow,
   parseSignalCorrelationRow,
   parseOfferingRow,
+  parseModelOfferingRow,
   parseCredentialRow,
   parseProviderRow,
   parseTenantRow,

@@ -62,6 +62,7 @@ const ALL_CATALOG_GRANTS = [
 ];
 
 type InsertCapture = { table: string; rows: Record<string, unknown>[] };
+type UpdateCapture = { table: string; set: Record<string, unknown> };
 
 function tableName(table: unknown): string {
   if (table && typeof table === "object") {
@@ -84,6 +85,7 @@ type CatalogDBOpts = {
   modelPricing?: Record<string, unknown>;
   credential?: Record<string, unknown>;
   inserts: InsertCapture[];
+  updates?: UpdateCapture[];
 };
 
 function notImplemented(path: string) {
@@ -102,6 +104,29 @@ function createMockDB(opts: CatalogDBOpts) {
         const rows = Array.isArray(rowsOrRow) ? rowsOrRow : [rowsOrRow];
         opts.inserts.push({ table: name, rows });
         return { returning: () => Promise.resolve(rows) };
+      },
+    };
+  }
+
+  function updateChain(table: unknown) {
+    const name = tableName(table);
+    const base =
+      name === "model_offering"
+        ? opts.modelOffering
+        : name === "model_provider"
+          ? opts.modelProvider
+          : undefined;
+    return {
+      set: (values: Record<string, unknown>) => {
+        opts.updates?.push({ table: name, set: values });
+        // A real `.returning()` yields the full post-update row, not just the
+        // changed columns, so merge the set values onto the seeded base row.
+        return {
+          where: () => ({
+            returning: () =>
+              Promise.resolve(base ? [{ ...base, ...values }] : []),
+          }),
+        };
       },
     };
   }
@@ -152,6 +177,7 @@ function createMockDB(opts: CatalogDBOpts) {
       },
     },
     insert: insertChain,
+    update: updateChain,
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }
 
@@ -466,6 +492,55 @@ describe("POST /catalog/offerings", () => {
     expect(res.status).toBe(409);
     expect(inserts.filter((i) => i.table === "model_offering")).toHaveLength(0);
   });
+
+  test("persists an explicit quirks bag and echoes it in the response", async () => {
+    const inserts: InsertCapture[] = [];
+    const app = createTestApp({
+      db: { inserts, model: { id: "mdl_1" }, modelProvider: { id: "mpv_1" } },
+    });
+    const res = await postJSON(app, offeringsURL, {
+      modelId: "mdl_1",
+      providerId: "mpv_1",
+      quirks: { forceAssistantReasoningContent: true },
+    });
+    expect(res.status).toBe(201);
+    const captured = inserts.filter((i) => i.table === "model_offering");
+    expect(captured[0]?.rows[0]).toMatchObject({
+      quirks: { forceAssistantReasoningContent: true },
+    });
+    const json = await res.json();
+    expect(json).toMatchObject({
+      quirks: { forceAssistantReasoningContent: true },
+    });
+  });
+
+  test("stores null quirks when the request omits the bag", async () => {
+    const inserts: InsertCapture[] = [];
+    const app = createTestApp({
+      db: { inserts, model: { id: "mdl_1" }, modelProvider: { id: "mpv_1" } },
+    });
+    const res = await postJSON(app, offeringsURL, {
+      modelId: "mdl_1",
+      providerId: "mpv_1",
+    });
+    expect(res.status).toBe(201);
+    const captured = inserts.filter((i) => i.table === "model_offering");
+    expect(captured[0]?.rows[0]?.quirks).toBeNull();
+  });
+
+  test("rejects a non-object quirks value", async () => {
+    const inserts: InsertCapture[] = [];
+    const app = createTestApp({
+      db: { inserts, model: { id: "mdl_1" }, modelProvider: { id: "mpv_1" } },
+    });
+    const res = await postJSON(app, offeringsURL, {
+      modelId: "mdl_1",
+      providerId: "mpv_1",
+      quirks: "not-an-object",
+    });
+    expect(res.status).toBe(400);
+    expect(inserts.filter((i) => i.table === "model_offering")).toHaveLength(0);
+  });
 });
 
 describe("PATCH /catalog/providers/:id", () => {
@@ -479,6 +554,63 @@ describe("PATCH /catalog/providers/:id", () => {
       name: "taken",
     });
     expect(res.status).toBe(409);
+  });
+});
+
+describe("PATCH /catalog/offerings/:id", () => {
+  const baseOffering = {
+    id: "mof_1",
+    tenantId: TENANT_ID,
+    modelId: "mdl_1",
+    providerId: "mpv_1",
+    priority: 0,
+    deploymentTags: [],
+    capabilities: [],
+    quirks: null,
+    disabled: false,
+    createdAt: new Date("2025-01-01"),
+    updatedAt: new Date("2025-01-01"),
+  };
+
+  test("sets a quirks bag on the offering", async () => {
+    const inserts: InsertCapture[] = [];
+    const updates: UpdateCapture[] = [];
+    const app = createTestApp({
+      db: { inserts, updates, modelOffering: baseOffering },
+    });
+    const res = await patchJSON(app, `${offeringsURL}/mof_1`, {
+      quirks: { reasoningFieldNames: ["reasoning"] },
+    });
+    expect(res.status).toBe(200);
+    const captured = updates.filter((u) => u.table === "model_offering");
+    expect(captured[0]?.set).toMatchObject({
+      quirks: { reasoningFieldNames: ["reasoning"] },
+    });
+    const json = await res.json();
+    expect(json).toMatchObject({
+      quirks: { reasoningFieldNames: ["reasoning"] },
+    });
+  });
+
+  test("clears the quirks bag when the patch sets it to null", async () => {
+    const inserts: InsertCapture[] = [];
+    const updates: UpdateCapture[] = [];
+    const app = createTestApp({
+      db: {
+        inserts,
+        updates,
+        modelOffering: {
+          ...baseOffering,
+          quirks: { forceAssistantReasoningContent: true },
+        },
+      },
+    });
+    const res = await patchJSON(app, `${offeringsURL}/mof_1`, { quirks: null });
+    expect(res.status).toBe(200);
+    const captured = updates.filter((u) => u.table === "model_offering");
+    expect(captured[0]?.set.quirks).toBeNull();
+    const json = await res.json();
+    expect(json).toMatchObject({ quirks: null });
   });
 });
 

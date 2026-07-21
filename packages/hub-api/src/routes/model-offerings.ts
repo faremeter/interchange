@@ -9,6 +9,7 @@ import {
   modelPricing,
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
+import { parseModelOfferingRow } from "@intx/db";
 import {
   CreateModelOffering,
   UpdateModelOffering,
@@ -37,17 +38,22 @@ import {
 } from "../pagination";
 
 export function formatModelOffering(row: typeof modelOffering.$inferSelect) {
+  // Validate the row once so the jsonb `quirks` is narrowed from `unknown`
+  // to a `Record | null` and `capabilities` is checked against the curated
+  // enum, mirroring how formatApproval formats a parsed row.
+  const parsed = parseModelOfferingRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    modelId: row.modelId,
-    providerId: row.providerId,
-    priority: row.priority,
-    deploymentTags: row.deploymentTags,
-    capabilities: row.capabilities,
-    disabled: row.disabled,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    modelId: parsed.modelId,
+    providerId: parsed.providerId,
+    priority: parsed.priority,
+    deploymentTags: parsed.deploymentTags,
+    capabilities: parsed.capabilities,
+    quirks: parsed.quirks,
+    disabled: parsed.disabled,
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 
@@ -229,6 +235,7 @@ export function createModelOfferingRoutes({
             priority: body.priority ?? 0,
             deploymentTags: body.deploymentTags ?? [],
             capabilities: body.capabilities ?? [],
+            quirks: body.quirks ?? null,
             createdAt: now,
             updatedAt: now,
           })
@@ -313,6 +320,7 @@ export function createModelOfferingRoutes({
         updates["deploymentTags"] = body.deploymentTags;
       if (body.capabilities !== undefined)
         updates["capabilities"] = body.capabilities;
+      if (body.quirks !== undefined) updates["quirks"] = body.quirks;
       if (body.disabled !== undefined) updates["disabled"] = body.disabled;
 
       const [updated] = await db

@@ -130,12 +130,18 @@ export const CreateModelOffering = type({
   ),
   "deploymentTags?": "string[]",
   "capabilities?": Capability.array(),
+  "quirks?": type("Record<string, unknown>").describe(
+    "Opaque per-deployment adapter accommodations for this offering; the adapter factory validates the provider-specific shape. Omit when the deployment needs none.",
+  ),
 });
 
 export const UpdateModelOffering = type({
   "priority?": "number",
   "deploymentTags?": "string[]",
   "capabilities?": Capability.array(),
+  "quirks?": type("Record<string, unknown> | null").describe(
+    "Replacement quirks bag, or null to clear it back to the adapter's default behavior. Omit to leave unchanged.",
+  ),
   "disabled?": "boolean",
 });
 
@@ -212,6 +218,9 @@ export const ModelOfferingResponse = type({
   deploymentTags: "string[]",
   capabilities: Capability.array().describe(
     "Curated capability tags this provider advertises for this model.",
+  ),
+  quirks: type("Record<string, unknown> | null").describe(
+    "Opaque per-deployment adapter accommodations, or null when the deployment needs none.",
   ),
   disabled: "boolean",
   createdAt: "string",
