@@ -274,6 +274,7 @@ export type SeedModelOffering = {
   priority?: number;
   capabilities?: string[];
   deploymentTags?: string[];
+  quirks?: Record<string, unknown>;
   disabled?: boolean;
 };
 
@@ -289,6 +290,7 @@ export async function seedModelOffering(
     priority: o.priority ?? 0,
     capabilities: o.capabilities ?? [],
     deploymentTags: o.deploymentTags ?? [],
+    quirks: o.quirks ?? null,
     disabled: o.disabled ?? false,
   });
 }
