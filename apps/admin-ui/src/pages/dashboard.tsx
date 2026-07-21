@@ -1,7 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 
-import { mePrincipalsQuery, meInstancesQuery } from "@/lib/queries/me";
+import {
+  mePrincipalsInfiniteQuery,
+  meInstancesInfiniteQuery,
+} from "@/lib/queries/me";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -24,10 +28,20 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function DashboardPage() {
-  const { data: principals, isLoading: loadingPrincipals } =
-    useQuery(mePrincipalsQuery);
-  const { data: instances, isLoading: loadingInstances } =
-    useQuery(meInstancesQuery);
+  const {
+    items: principals,
+    isLoading: loadingPrincipals,
+    hasNextPage: hasMorePrincipals,
+    isFetchingNextPage: fetchingMorePrincipals,
+    fetchNextPage: fetchMorePrincipals,
+  } = usePaginatedList(mePrincipalsInfiniteQuery);
+  const {
+    items: instances,
+    isLoading: loadingInstances,
+    hasNextPage: hasMoreInstances,
+    isFetchingNextPage: fetchingMoreInstances,
+    fetchNextPage: fetchMoreInstances,
+  } = usePaginatedList(meInstancesInfiniteQuery);
 
   return (
     <div className="space-y-8">
@@ -41,36 +55,45 @@ export function DashboardPage() {
       {loadingPrincipals ? (
         <p className="text-sm text-muted-foreground">Loading...</p>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {principals?.map((p) => (
-            <Link
-              key={p.principalId}
-              to="/tenants/$tenantId"
-              params={{ tenantId: p.tenantId }}
-            >
-              <Card className="transition hover:border-primary/50 hover:shadow-sm">
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">{p.tenantName}</CardTitle>
-                    <StatusBadge status={p.status} />
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {p.tenantSlug}
-                  </p>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="flex flex-wrap gap-1">
-                    {p.roles.map((r) => (
-                      <Badge key={r.id} variant="outline">
-                        {r.name}
-                      </Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {principals.map((p) => (
+              <Link
+                key={p.principalId}
+                to="/tenants/$tenantId"
+                params={{ tenantId: p.tenantId }}
+              >
+                <Card className="transition hover:border-primary/50 hover:shadow-sm">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base">
+                        {p.tenantName}
+                      </CardTitle>
+                      <StatusBadge status={p.status} />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {p.tenantSlug}
+                    </p>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <div className="flex flex-wrap gap-1">
+                      {p.roles.map((r) => (
+                        <Badge key={r.id} variant="outline">
+                          {r.name}
+                        </Badge>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+            ))}
+          </div>
+          <PaginatedListSentinel
+            hasNextPage={hasMorePrincipals}
+            isFetchingNextPage={fetchingMorePrincipals}
+            fetchNextPage={fetchMorePrincipals}
+          />
+        </>
       )}
 
       <div>
@@ -82,7 +105,7 @@ export function DashboardPage() {
 
       {loadingInstances ? (
         <p className="text-sm text-muted-foreground">Loading...</p>
-      ) : instances?.length === 0 ? (
+      ) : instances.length === 0 ? (
         <p className="text-sm text-muted-foreground">No running agents.</p>
       ) : (
         <div className="rounded-lg border">
@@ -96,7 +119,7 @@ export function DashboardPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {instances?.map((inst) => (
+              {instances.map((inst) => (
                 <TableRow key={inst.id}>
                   <TableCell>
                     <Link
@@ -120,6 +143,11 @@ export function DashboardPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasMoreInstances}
+            isFetchingNextPage={fetchingMoreInstances}
+            fetchNextPage={fetchMoreInstances}
+          />
         </div>
       )}
     </div>
