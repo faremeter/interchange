@@ -21,6 +21,14 @@ import { infiniteListQuery } from "@/lib/queries/pagination";
 
 const transport = createBrowserTransport();
 
+// Fourth query-key segment marking the infinite (paginated) cache entry for a
+// resource, kept distinct from the flat single-fetch query that shares the same
+// prefix and still backs dropdowns/lookups. The shared prefix lets the existing
+// prefix-based mutation invalidations refresh both entries; the value must never
+// collide with an entity ID occupying the same slot (those are UUIDs, so it
+// cannot).
+const INFINITE_LIST_KEY = "infinite";
+
 type TenantResponse = {
   id: string;
   name: string;
@@ -270,6 +278,13 @@ export function tenantPrincipalsQuery(tenantId: string) {
   });
 }
 
+export function tenantPrincipalsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<PrincipalResponse>(
+    ["tenants", tenantId, "principals", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/principals`,
+  );
+}
+
 export function tenantRolesQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "roles"],
@@ -281,6 +296,13 @@ export function tenantRolesQuery(tenantId: string) {
       return res.data;
     },
   });
+}
+
+export function tenantRolesInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<RoleResponse>(
+    ["tenants", tenantId, "roles", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/roles`,
+  );
 }
 
 export function tenantAgentsQuery(tenantId: string) {

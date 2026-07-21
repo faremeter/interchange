@@ -1,11 +1,16 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 
 import { MutationError } from "@/components/mutation-error";
 import { TenantNav } from "@/components/tenant-nav";
-import { createRoleMutation, tenantRolesQuery } from "@/lib/queries/tenants";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
+import {
+  createRoleMutation,
+  tenantRolesInfiniteQuery,
+} from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +35,13 @@ export function TenantRolesPage() {
   const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/roles" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: roles, isLoading } = useQuery(tenantRolesQuery(tenantId));
+  const {
+    items: roles,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantRolesInfiniteQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
@@ -64,7 +75,7 @@ export function TenantRolesPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : roles?.length === 0 ? (
+      ) : roles.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">No roles yet.</p>
       ) : (
         <div className="mt-4 rounded-lg border">
@@ -78,7 +89,7 @@ export function TenantRolesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {roles?.map((r) => (
+              {roles.map((r) => (
                 <TableRow
                   key={r.id}
                   className="cursor-pointer"
@@ -105,6 +116,11 @@ export function TenantRolesPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 
