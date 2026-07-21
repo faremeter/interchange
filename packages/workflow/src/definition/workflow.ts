@@ -9,6 +9,7 @@
 
 import { canonicalizeForHash } from "@intx/agent";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
+import type { GrantRequirement } from "@intx/types";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -31,6 +32,14 @@ export interface WorkflowDefinition {
    */
   stepOrder: readonly string[];
   state?: { schema?: StateSchema };
+  /**
+   * The grant requirements a run resolves against the creator's and
+   * invoker's authority at trigger time. Each entry declares a resource,
+   * action, and source (`creator` or `invoker`); the trigger route
+   * materializes the satisfied ones as grants on the run principal.
+   * Mirrors an agent definition's `grantRequirements`.
+   */
+  grantRequirements?: readonly GrantRequirement[];
 }
 
 export interface WorkflowConfig {
@@ -39,6 +48,7 @@ export interface WorkflowConfig {
   triggers?: readonly Trigger[];
   steps: Record<string, Primitive>;
   state?: { schema?: StateSchema };
+  grantRequirements?: readonly GrantRequirement[];
 }
 
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
@@ -47,6 +57,7 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   trigger?: Trigger;
   triggers?: readonly Trigger[];
   state?: { schema?: StateSchema };
+  grantRequirements?: readonly GrantRequirement[];
 }
 
 /**
@@ -136,6 +147,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     steps,
     stepOrder,
     ...(config.state !== undefined ? { state: config.state } : {}),
+    ...(config.grantRequirements !== undefined
+      ? { grantRequirements: config.grantRequirements }
+      : {}),
   };
   return definition;
 }
@@ -423,6 +437,9 @@ function projectForHash(definition: WorkflowDefinition): unknown {
     id: definition.id,
     triggers: definition.triggers,
     ...(definition.state !== undefined ? { state: definition.state } : {}),
+    ...(definition.grantRequirements !== undefined
+      ? { grantRequirements: definition.grantRequirements }
+      : {}),
     steps: Object.fromEntries(
       Object.entries(definition.steps).map(([id, primitive]) => [
         id,
