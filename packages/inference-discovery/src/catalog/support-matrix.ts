@@ -335,10 +335,21 @@ export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;
 
 const FIXTURE_ROOT = "packages/inference-testing/wire";
 
+const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
+  "captured",
+  "misled",
+]);
+
+// captured and misled rows both point to a captured wire flow on disk that the
+// smoke tests replay, so both are empirical proof the capability works; refused,
+// http-error, and unsupported rows carry no fixture. This is the single owner of
+// "which outcomes are fixture-bearing" — getFixtureDir and the catalog capability
+// expansion both read it rather than re-deciding the outcome set.
+export function isFixtureBearing(entry: SupportEntry): boolean {
+  return FIXTURE_BEARING_OUTCOMES.has(entry.outcome);
+}
+
 export function getFixtureDir(entry: SupportEntry): string | null {
-  // captured and misled rows both carry fixtures on disk; the smoke
-  // test validates either flavor for file presence. refused / http-
-  // error / unsupported rows do not.
-  if (entry.outcome !== "captured" && entry.outcome !== "misled") return null;
+  if (!isFixtureBearing(entry)) return null;
   return `${FIXTURE_ROOT}/${entry.provider}/${entry.model}/${entry.capability}`;
 }
