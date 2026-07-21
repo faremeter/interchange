@@ -16,7 +16,10 @@ import {
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
 import { parseAgentAddress, signalName } from "@intx/types";
-import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
+import {
+  deriveWorkflowRunRepoId,
+  isWorkflowDerivedAddress,
+} from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
@@ -193,8 +196,14 @@ export function createHubSessionLookups(
         // seed a routing row that can never be resolved. The lookup keys off
         // `address` rather than `deploymentId` because `address` is the field
         // the wire layer's ownership gate already authorized; the frame's
-        // `deploymentId` is cross-checked against the resolved row so a mismatch
-        // fails loud instead of silently writing an inconsistent pair.
+        // `deploymentId` is the workflow-run repo slug the supervisor derives
+        // from the address (`deriveWorkflowRunRepoId`), not the deployment's raw
+        // row id, so it is cross-checked against the slug re-derived from the
+        // resolved row's address (which equals `agentAddress`) rather than
+        // against `deployment.id`. A mismatch fails loud instead of silently
+        // writing an inconsistent pair. The FK columns still take the raw row id
+        // (`deployment.id`), which is what `signal_correlation.deployment_id` and
+        // `approval.deployment_id` reference.
         //
         // The resolution takes a `FOR UPDATE` row lock and runs inside the
         // co-write transaction, so the "deployed" check and the inserts are
@@ -226,9 +235,10 @@ export function createHubSessionLookups(
             `No deployed workflow deployment for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
           );
         }
-        if (deployment.id !== deploymentId) {
+        const addressSlug = deriveWorkflowRunRepoId(agentAddress);
+        if (addressSlug !== deploymentId) {
           throw new Error(
-            `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" resolves to "${deployment.id}"`,
+            `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,
           );
         }
         const tenantId = deployment.tenantId;
@@ -237,7 +247,7 @@ export function createHubSessionLookups(
           {
             correlationId,
             tenantId,
-            deploymentId,
+            deploymentId: deployment.id,
             agentAddress,
             runId,
             signalName: signalName(correlationId),
@@ -249,7 +259,7 @@ export function createHubSessionLookups(
           {
             id: generateId("approval"),
             tenantId,
-            deploymentId,
+            deploymentId: deployment.id,
             runId,
             agentAddress,
             correlationId,
