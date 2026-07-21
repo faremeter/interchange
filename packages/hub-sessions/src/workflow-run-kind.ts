@@ -214,6 +214,7 @@ export const WORKFLOW_RUN_GITIGNORE_PATH = ".gitignore";
 export const WORKFLOW_RUN_RUNS_PREFIX = "runs";
 export const WORKFLOW_RUN_EVENTS_DIR = "events";
 export const WORKFLOW_RUN_BLOBS_DIR = "blobs";
+export const WORKFLOW_RUN_GRANTS_FILE = "grants.json";
 export const WORKFLOW_RUN_ADDRESSES_PREFIX = "addresses";
 export const WORKFLOW_RUN_CONTROL_PREFIX = "control";
 export const WORKFLOW_RUN_INBOX_DIR = "inbox";
@@ -333,11 +334,15 @@ export function requireEventSeq(filename: string, context: string): number {
 const BLOB_FILENAME_RE = /^[0-9a-f]{64}$/;
 
 /**
- * Subdirectories the kind handler accepts under `runs/<runId>/`. The
- * `events/` subtree carries the append-only event log; the `blobs/`
- * subtree carries opaque, content-addressed step outputs the
- * `BlobSubstrate` adapter spills there when a value exceeds the
- * inline-encoding threshold.
+ * Entries the kind handler accepts under `runs/<runId>/`. The `events/`
+ * subtree carries the append-only event log; the `blobs/` subtree carries
+ * opaque, content-addressed step outputs the `BlobSubstrate` adapter spills
+ * there when a value exceeds the inline-encoding threshold; `grants.json`
+ * carries the run's authorization grants, delivered by the hub's
+ * `run.grants` frame ahead of the trigger and read back by the sidecar's
+ * `onRunStart` barrier. The grants file is a run-dir sibling of `events/`,
+ * not part of the event log, so the event-shape and blob-immutability walks
+ * treat it as inert.
  */
 const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   WORKFLOW_RUN_EVENTS_DIR,
@@ -345,6 +350,7 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   // A terminated run's event log, sealed from the per-event `events/`
   // files into one combined file by a compaction commit.
   WORKFLOW_RUN_EVENTS_FILE,
+  WORKFLOW_RUN_GRANTS_FILE,
 ]);
 
 /**
@@ -600,7 +606,7 @@ async function enumerateEventBlobs(
     if (offender !== undefined) {
       return {
         ok: false,
-        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", and "${WORKFLOW_RUN_EVENTS_FILE}" are allowed`,
+        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", "${WORKFLOW_RUN_EVENTS_FILE}", and "${WORKFLOW_RUN_GRANTS_FILE}" are allowed`,
       };
     }
     const hasCombined = runChildren.includes(WORKFLOW_RUN_EVENTS_FILE);
@@ -615,6 +621,18 @@ async function enumerateEventBlobs(
     // by the combined-form path, not this per-event enumeration.
     if (hasCombined) continue;
     if (!hasPerEvent) {
+      // A run dir whose only child is `grants.json` is the legitimate
+      // pre-first-event window: the hub's `run.grants` frame writes the
+      // grants ahead of the trigger, so the grants file lands before the
+      // child emits its first event. Carry it forward untouched -- there is
+      // no event log to enumerate yet. Any other events-less shape (e.g. a
+      // bare `blobs/` with no events) remains rejected below.
+      if (
+        runChildren.length === 1 &&
+        runChildren[0] === WORKFLOW_RUN_GRANTS_FILE
+      ) {
+        continue;
+      }
       return {
         ok: false,
         reason: `run directory ${runDirPath} is missing required "${WORKFLOW_RUN_EVENTS_DIR}" subdirectory`,

@@ -263,6 +263,64 @@ export function createMultistepSignalRouter(): MultistepSignalRouter {
 }
 
 /**
+ * Per-deployment grants-write handler the deploy router installs against
+ * the `MultistepGrantsRouter` after a supervisor's `spawn` succeeds. The
+ * handler writes the run's grants to `runs/<runId>/grants.json` inside the
+ * deployment's `workflow-run` repo -- sibling to the run's
+ * `runs/<runId>/events/` subtree. The write is awaited so the frame's FIFO
+ * completion means the grants are durable on disk before the next frame is
+ * processed.
+ */
+export type MultistepGrantsHandler = (args: {
+  runId: string;
+  stepGrants: readonly unknown[];
+}) => Promise<void>;
+
+/**
+ * Per-deployment-address grants handler registry the sidecar hub-link
+ * consults on every inbound `run.grants` frame. The deploy router
+ * registers a handler against the deployment's mail address after
+ * `wired.supervisor.spawn` succeeds, for single-step and multi-step
+ * deployments alike; the handler writes the run's grants into the
+ * deployment's workflow-run repo.
+ *
+ * The registry lives at the sidecar's host layer (not inside the
+ * workflow-host library) for the same boundary reason as
+ * `MultistepMailRouter` / `MultistepSignalRouter`: the routing decision
+ * is a concrete sidecar host concern, and the workflow-host package
+ * stays agnostic to which transport surface its supervisor handle rides
+ * on.
+ */
+export type MultistepGrantsRouter = {
+  register(address: string, handler: MultistepGrantsHandler): void;
+  unregister(address: string): void;
+  tryRoute(frame: {
+    type: "run.grants";
+    agentAddress: string;
+    runId: string;
+    stepGrants: readonly unknown[];
+  }): Promise<boolean>;
+};
+
+export function createMultistepGrantsRouter(): MultistepGrantsRouter {
+  const handlers = new Map<string, MultistepGrantsHandler>();
+  return {
+    register(address, handler) {
+      handlers.set(address, handler);
+    },
+    unregister(address) {
+      handlers.delete(address);
+    },
+    async tryRoute(frame) {
+      const handler = handlers.get(frame.agentAddress);
+      if (handler === undefined) return false;
+      await handler({ runId: frame.runId, stepGrants: frame.stepGrants });
+      return true;
+    },
+  };
+}
+
+/**
  * Per-deployment drain handler the multi-step deploy router installs
  * against the `MultistepDrainRouter` after a supervisor's `spawn`
  * succeeds. The handler hands the drain opts off to the supervisor's

@@ -65,6 +65,7 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type {
   MultistepDrainRouter,
+  MultistepGrantsRouter,
   MultistepMailRouter,
   MultistepSignalRouter,
   MultistepSourcesRouter,
@@ -102,6 +103,16 @@ export function deriveDeploymentId(agentAddress: string): string {
  * not authorize-gated.
  */
 const GRANTS_WRITE_PRINCIPAL: Principal = { kind: "hub" };
+
+/**
+ * Path inside a deployment's `workflow-run` repo that carries a single
+ * run's grants. It sits under the run's own `runs/<runId>/` subtree --
+ * sibling to that run's `events/` blobs -- so a run's grants live and are
+ * reclaimed with the rest of the run's state.
+ */
+function runGrantsPath(runId: string): string {
+  return `runs/${runId}/grants.json`;
+}
 
 /**
  * Per-deploy address/repo strategy. The single-step launched-agent
@@ -173,18 +184,31 @@ function createStepStrategy(args: {
 }
 
 /**
- * Write every step's grants into its agent-state repo so the
- * supervisor's `assembleCredentialsSnapshot` (invoked inside `spawn()`)
- * reads them off the working tree at `STEP_GRANTS_PATH`. The on-disk
- * shape is `{ grants: WireGrantRule[] }` -- the envelope
+ * Write a grant set into the sidecar's substrate as the canonical
+ * `{ grants: WireGrantRule[] }` envelope -- the shape
  * `assembleCredentialsSnapshot` validates (`{ grants: unknown[] }`) and
  * the child's `evaluateGrants` adapter narrows to `GrantRule[]`.
  *
- * The same `deriveStepRepoId` the supervisor reads with keys the write,
- * so read and write address the same repo. The write is on the spawn
- * critical path: a failure rejects the deploy (the caller's `finally`
- * unwinds the partial state) rather than spawning a child that would
- * fail every authorize closed against an empty grant set.
+ * Two destinations share this write machinery, selected by `runId`:
+ *
+ *   - `runId` absent (deploy time): write every step's grants into its
+ *     own `agent-state` repo at `STEP_GRANTS_PATH`, keyed by the same
+ *     `deriveStepRepoId` the supervisor reads with, so read and write
+ *     address the same repo. The write is on the spawn critical path: a
+ *     failure rejects the deploy (the caller's `finally` unwinds the
+ *     partial state) rather than spawning a child that would fail every
+ *     authorize closed against an empty grant set.
+ *
+ *   - `runId` present (per-run delivery): write a single
+ *     `runs/<runId>/grants.json` into the deployment's `workflow-run`
+ *     repo, sibling to that run's `runs/<runId>/events/` subtree. The
+ *     `stepOrder` / `deriveStepRepoId` fields are unused in this mode --
+ *     the destination is the one workflow-run repo keyed by
+ *     `deploymentId`, not a per-step fan-out.
+ *
+ * Both destinations use the same hub principal and `refs/heads/main`
+ * ref: the agent-state kind handler gates `writeTree` as hub-only, and
+ * the workflow-run repo pins its run subtree under the same moving ref.
  */
 async function writeStepGrants(args: {
   repoStore: RepoStore;
@@ -192,6 +216,7 @@ async function writeStepGrants(args: {
   stepOrder: readonly string[];
   deriveStepRepoId: DeriveStepRepoId;
   grants: readonly unknown[] | undefined;
+  runId?: string;
 }): Promise<void> {
   // The deploy frame's validated HarnessConfig always carries a `grants`
   // array (possibly empty); an absent array means "no grants", which
@@ -200,6 +225,18 @@ async function writeStepGrants(args: {
   // rather than `{}` (which the snapshot's validator rejects).
   const grants = args.grants ?? [];
   const serialized = JSON.stringify({ grants }, null, 2);
+  if (args.runId !== undefined) {
+    await args.repoStore.writeTree(
+      GRANTS_WRITE_PRINCIPAL,
+      { kind: "workflow-run", id: args.deploymentId },
+      STEP_GRANTS_REF,
+      {
+        files: { [runGrantsPath(args.runId)]: serialized },
+        message: `Write run grants for ${args.runId}`,
+      },
+    );
+    return;
+  }
   for (const stepId of args.stepOrder) {
     const repoId = args.deriveStepRepoId({
       deploymentId: args.deploymentId,
@@ -886,6 +923,22 @@ export function createSidecarDeployRouter(deps: {
    */
   multistepDrainRouter?: MultistepDrainRouter;
   /**
+   * Per-deployment-address grants handler registry the sidecar
+   * hub-link's `run.grants` path consults. The deploy router registers a
+   * handler against the deployment's mail address once `supervisor.spawn`
+   * succeeds, for single-step and multi-step deployments alike, so a
+   * hub-side `run.grants` frame writes the run's grants to
+   * `runs/<runId>/grants.json` inside the deployment's `workflow-run`
+   * repo. The write is awaited in `tryRoute` so the frame's FIFO
+   * completion means the grants are durable on disk.
+   *
+   * Optional so tests that exercise the multi-step branch without an
+   * end-to-end grants loop can omit the binding; an absent registry
+   * means hub-side grants frames cannot route through the hub-link until
+   * the wiring is plumbed.
+   */
+  multistepGrantsRouter?: MultistepGrantsRouter;
+  /**
    * Per-deployment-address sources-rotation handler registry. Only a
    * single-step warm deployment registers a handler (against the
    * deployment's mail address once `supervisor.spawn` succeeds) so a
@@ -1420,6 +1473,21 @@ export function createSidecarDeployRouter(deps: {
       deps.multistepDrainRouter?.register(spec.agentAddress, async (args) => {
         await wired.supervisor.drain({ deadlineMs: args.deadlineMs });
       });
+      // Register the grants handler so a hub `run.grants` frame writes the
+      // run's grants to `runs/<runId>/grants.json` in the deployment's
+      // workflow-run repo. The `runId` selects the per-run destination; the
+      // step-fan-out fields are inert in that mode but the shared write
+      // machinery still takes them.
+      deps.multistepGrantsRouter?.register(spec.agentAddress, async (args) => {
+        await writeStepGrants({
+          repoStore: deps.repoStore,
+          deploymentId,
+          stepOrder: spec.definition.stepOrder,
+          deriveStepRepoId: stepStrategy.deriveStepRepoId,
+          grants: args.stepGrants,
+          runId: args.runId,
+        });
+      });
       // Register the sources-rotation handler ONLY for a single-step warm
       // deployment: it has one long-lived agent whose sources can be
       // swapped in place. A multi-step deployment has no single warm agent,
@@ -1509,6 +1577,7 @@ export function createSidecarDeployRouter(deps: {
           deps.multistepMailRouter?.unregister(spec.agentAddress);
           deps.multistepSignalRouter?.unregister(spec.agentAddress);
           deps.multistepDrainRouter?.unregister(spec.agentAddress);
+          deps.multistepGrantsRouter?.unregister(spec.agentAddress);
           // Unregister unconditionally: the sources handler was registered
           // only for a single-step deploy, but `unregister` is a no-op for
           // an address that never registered one, so a multi-step unwind
@@ -1787,6 +1856,7 @@ export function createSidecarDeployRouter(deps: {
       deps.multistepMailRouter?.unregister(frame.agentAddress);
       deps.multistepSignalRouter?.unregister(frame.agentAddress);
       deps.multistepDrainRouter?.unregister(frame.agentAddress);
+      deps.multistepGrantsRouter?.unregister(frame.agentAddress);
       // Unregister unconditionally (a no-op for a multi-step address that
       // registered no sources handler), matching the sibling routers.
       deps.multistepSourcesRouter?.unregister(frame.agentAddress);

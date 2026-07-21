@@ -37,6 +37,7 @@ import {
 import {
   createDeploymentAddressRegistry,
   createMultistepDrainRouter,
+  createMultistepGrantsRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
   createMultistepSourcesRouter,
@@ -249,6 +250,15 @@ const multistepSignalRouter = createMultistepSignalRouter();
 // workflow-run repo when the deadline expires.
 const multistepDrainRouter = createMultistepDrainRouter();
 
+// Per-deployment-address grants handler registry the hub-link consults
+// on every inbound `run.grants` frame. The deploy router registers a
+// handler against the deployment's mail address once its supervisor
+// spawns; the handler writes the run's grants to `runs/<runId>/grants.json`
+// inside the deployment's workflow-run repo, sibling to that run's
+// `runs/<runId>/events/` subtree. The write is awaited so the frame's
+// FIFO completion means the grants are durable on disk.
+const multistepGrantsRouter = createMultistepGrantsRouter();
+
 // Per-deployment-address sources-rotation handler registry. Only a
 // single-step warm deployment registers a handler once its supervisor
 // spawns; the handler forwards the rotated list into the supervisor's
@@ -367,6 +377,7 @@ const orchestrator = createSidecarOrchestrator({
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,
+  grantsInboundRouter: multistepGrantsRouter,
   sourcesInboundRouter: multistepSourcesRouter,
   // The hub link calls this on every (re)connect to announce the workflow
   // deployments this sidecar hosts so the hub re-registers their routes.
@@ -456,6 +467,7 @@ const orchestrator = createSidecarOrchestrator({
       multistepMailRouter,
       multistepSignalRouter,
       multistepDrainRouter,
+      multistepGrantsRouter,
       multistepSourcesRouter,
       multistepSubstrateEnv,
       publishWorkflowInferenceEvent,
