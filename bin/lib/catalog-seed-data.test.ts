@@ -25,6 +25,10 @@ function isPlainObject(value: unknown): boolean {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// The curated (non-probeable) capabilities, as a string set for membership
+// checks against an arbitrary Capability without a type assertion.
+const curatedCapabilityNames = new Set<string>(CURATED_CAPABILITIES);
+
 describe("catalog seed offering quirks", () => {
   for (const provider of catalogProviders) {
     for (const offering of provider.offerings) {
@@ -54,9 +58,7 @@ describe("catalog seed offering capabilities", () => {
       // edit that smuggles a wire capability into the curated list.)
       test(`${label} curated capabilities are all non-probeable`, () => {
         for (const capability of offering.curatedCapabilities) {
-          expect(
-            (CURATED_CAPABILITIES as readonly string[]).includes(capability),
-          ).toBe(true);
+          expect(curatedCapabilityNames.has(capability)).toBe(true);
         }
       });
 
