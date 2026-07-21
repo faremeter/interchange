@@ -110,6 +110,7 @@ describe("createAgent env validation", () => {
     const sendFactory = defineTool<MailEnv>({
       id: "@intx/tools-mail/send",
       requires: ["transport"],
+      definitions: [],
       factory: () => ({
         definitions: [],
         async run(call) {
@@ -161,6 +162,7 @@ describe("createAgent lock release on construction failure", () => {
   function failingToolFactory() {
     return defineTool({
       id: "@intx-test/agent/failing",
+      definitions: [],
       factory: () => {
         throw new Error("tool construction failed");
       },
@@ -228,6 +230,7 @@ describe("createAgent tool-rollback dispose handling", () => {
       // rollback through the first's dispose.
       const firstFactory = defineTool({
         id: "@intx-test/agent/first",
+        definitions: [{ name: "dup" }],
         factory: () => ({
           definitions: [
             {
@@ -247,6 +250,7 @@ describe("createAgent tool-rollback dispose handling", () => {
       });
       const secondFactory = defineTool({
         id: "@intx-test/agent/second",
+        definitions: [{ name: "dup" }],
         factory: () => ({
           definitions: [
             {
@@ -304,6 +308,7 @@ describe("createAgent tool-rollback dispose handling", () => {
     let disposeCalls = 0;
     const probingFactory = defineTool({
       id: "@intx-test/agent/probing",
+      definitions: [{ name: "probe" }],
       factory: () => ({
         definitions: [
           {
@@ -489,6 +494,7 @@ describe("createAgent send() on reactor suspend", () => {
   test("forwards the approval snapshot from an ask suspension into the SendResult", async () => {
     const chargeTool = defineTool<BaseEnv>({
       id: "@intx-test/agent/charge_card",
+      definitions: [{ name: "charge_card" }],
       factory: () => ({
         definitions: [
           {

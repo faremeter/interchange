@@ -25,7 +25,7 @@ The path resolves against the package root. The module it names is the
 ### Tool entry module shape
 
 The tool entry module's **named exports** are `AnnotatedToolFactory`
-values, built via `defineTool({ id, requires?, factory })`:
+values, built via `defineTool({ id, requires?, definitions, factory })`:
 
 ```ts
 import { defineTool } from "@intx/agent";
@@ -33,6 +33,7 @@ import { defineTool } from "@intx/agent";
 export const search = defineTool({
   id: "@vendor/my-tools/search",
   requires: ["mail.transport"],
+  definitions: [{ name: SEARCH_DEFINITION.name }],
   factory: (env) => ({
     definitions: [SEARCH_DEFINITION],
     run: makeSearchRunner(env),
@@ -41,12 +42,17 @@ export const search = defineTool({
 
 export const fetch = defineTool({
   id: "@vendor/my-tools/fetch",
+  definitions: [{ name: FETCH_DEFINITION.name }],
   factory: (env) => ({
     definitions: [FETCH_DEFINITION],
     run: makeFetchRunner(env),
   }),
 });
 ```
+
+`definitions` statically declares the tool names the factory
+contributes so callers (e.g. the deploy-time capability walk) can
+enumerate them without instantiating the factory.
 
 A package may export one or many factories. Each factory's `id` must be
 package-namespaced (`@vendor/pkg/name` or `pkg/name`); `defineTool`

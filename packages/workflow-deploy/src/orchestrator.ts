@@ -969,5 +969,6 @@ function synthesizeWalkToolFactory(
   return Object.assign(factory, {
     id: tool.name,
     requires: Object.freeze([]) as readonly string[],
+    definitions: [{ name: tool.name }],
   });
 }

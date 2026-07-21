@@ -48,6 +48,7 @@ export interface FixtureMailEnv extends BaseEnv {
 export const fixtureMailFactory = defineTool<FixtureMailEnv>({
   id: "@intx-fixtures/mail/bundle",
   requires: ["transport", "address"],
+  definitions: [],
   factory: () => ({
     definitions: [],
     async run(call) {

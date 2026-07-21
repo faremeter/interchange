@@ -17,6 +17,7 @@ export {
   type PluginFactory,
   type StringToolHandler,
   type ToolBundle,
+  type ToolDeclaration,
   type ToolFactory,
   type ToolFactoryMeta,
   type ToolHandler,

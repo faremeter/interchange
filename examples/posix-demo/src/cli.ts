@@ -185,6 +185,7 @@ const toolsBetaPosix = createPosixTools({ cwd: process.cwd() });
 function posixFactoryFor(posixTools: typeof toolsAlphaPosix) {
   return defineTool({
     id: "@interchange-demo/posix-demo/posix",
+    definitions: posixTools.definitions.map((def) => ({ name: def.name })),
     factory: () => ({
       definitions: posixTools.definitions,
       run: (call, signal) => posixTools.run(call, signal),
@@ -193,10 +194,13 @@ function posixFactoryFor(posixTools: typeof toolsAlphaPosix) {
 }
 
 function mailFactoryFor(mailTools: typeof toolsAlphaMail) {
-  return defineMailTools(() => ({
-    definitions: mailTools.definitions,
-    run: (call, signal) => mailTools.run(call, signal),
-  }));
+  return defineMailTools(
+    () => ({
+      definitions: mailTools.definitions,
+      run: (call, signal) => mailTools.run(call, signal),
+    }),
+    mailTools.definitions.map((def) => ({ name: def.name })),
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -42,6 +42,7 @@ import type { InferenceSource } from "@intx/types/runtime";
 import {
   attachStepTools,
   createToolBearingAgentFactory,
+  rewrapStepToolFactory,
   stepDeployTreeDir,
   type StepToolMaterialization,
 } from "./step-agent-tools";
@@ -140,6 +141,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     const noopTool = defineTool({
       id: "@intx/test-tool/sidecar-bundle",
       requires: [],
+      definitions: [],
       factory: (): ToolBundle => ({
         definitions: [],
         run: (call) => Promise.resolve({ callId: call.id, content: "" }),
@@ -301,5 +303,30 @@ describe("stepDeployTreeDir base-step resolution", () => {
       stepCount: 2,
     });
     expect(a).not.toBe(b);
+  });
+});
+
+describe("rewrapStepToolFactory", () => {
+  test("preserves the source factory's static definitions on the re-wrap", () => {
+    const source = defineTool({
+      id: "@intx/test-tool/sidecar-bundle",
+      requires: ["transport"],
+      definitions: [{ name: "alpha" }, { name: "beta" }],
+      factory: (): ToolBundle => ({
+        definitions: [],
+        run: (call) => Promise.resolve({ callId: call.id, content: "" }),
+      }),
+    });
+
+    // This test only inspects the re-wrapped factory's static metadata;
+    // it never invokes the factory, so the disposer-capture callback
+    // must not fire.
+    const rewrapped = rewrapStepToolFactory(source, () => {
+      throw new Error("onDispose must not be called: factory is not invoked");
+    });
+
+    expect(rewrapped.definitions).toEqual(source.definitions);
+    expect(rewrapped.id).toBe(source.id);
+    expect(rewrapped.requires).toEqual(source.requires);
   });
 });

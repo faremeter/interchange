@@ -99,6 +99,7 @@ export async function createCodingAgent(
   // close()) since the env contract treats disposers as caller-owned.
   const posixFactory = defineTool({
     id: "@interchange-demo/coding-agent/posix",
+    definitions: posixTools.definitions.map((def) => ({ name: def.name })),
     factory: () => ({
       definitions: posixTools.definitions,
       run: (call, signal) => posixTools.run(call, signal),

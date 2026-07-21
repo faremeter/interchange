@@ -489,6 +489,7 @@ const factory = (env) => ({
 export const mail = Object.assign(factory, {
   id: "@intx/tools-mail/sidecar-bundle",
   requires: ["transport", "address"],
+  definitions: [{ name: "mail_send" }],
 });
 `.trimStart()
     : `
@@ -518,6 +519,7 @@ const factory = (env) => ({
 export const mail = Object.assign(factory, {
   id: "@intx/tools-mail/sidecar-bundle",
   requires: [],
+  definitions: [{ name: "mail_send" }],
 });
 `.trimStart();
   await fs.promises.writeFile(

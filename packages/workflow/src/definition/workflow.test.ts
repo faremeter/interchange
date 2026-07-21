@@ -544,6 +544,7 @@ describe("hashDefinition", () => {
     // crash `RunStarted` emission inside `runtimeRun`.
     const tool = defineTool({
       id: "@x/y/echo",
+      definitions: [],
       factory: () => ({
         definitions: [],
         run: async (call) => ({ callId: call.id, content: "" }),

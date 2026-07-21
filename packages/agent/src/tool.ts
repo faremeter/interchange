@@ -138,13 +138,29 @@ export type ToolFactory<EnvReq extends BaseEnv = BaseEnv> = (
 ) => ToolBundle;
 
 /**
+ * Static, per-definition declaration a tool factory carries so callers
+ * (e.g. the deploy-time capability walk) can enumerate the tool names a
+ * factory contributes WITHOUT instantiating it. `approval` marks a tool
+ * as requiring per-invocation approval; it is a deliberate subset of
+ * GrantEffect (only "ask" is expressible here — a declaration can request
+ * a gate, never a pre-deny).
+ */
+export interface ToolDeclaration {
+  readonly name: string;
+  readonly approval?: "ask";
+}
+
+/**
  * Runtime metadata attached to a `ToolFactory` by `defineTool`. `id` is
  * package-namespaced; `requires` enumerates env keys the factory touches
- * beyond `BaseEnv`'s six core fields.
+ * beyond `BaseEnv`'s six core fields; `definitions` statically declares
+ * the tool names the factory contributes so callers can enumerate them
+ * without instantiating the factory.
  */
 export interface ToolFactoryMeta {
   readonly id: string;
   readonly requires: readonly string[];
+  readonly definitions: readonly ToolDeclaration[];
 }
 
 /**
@@ -167,21 +183,29 @@ export type AnnotatedToolFactory<EnvReq extends BaseEnv = BaseEnv> =
  *     `BaseEnv`'s six core fields. The runtime `validateEnv` checks
  *     presence; the factory itself may also fail loud at construction
  *     if the env contents are structurally wrong.
+ *   - `definitions` statically declares the tool names this factory
+ *     contributes so callers (e.g. the deploy-time capability walk) can
+ *     enumerate them without instantiating the factory.
  *   - `factory(env)` returns a `ToolBundle`. Invoked once per agent
  *     instantiation; the bundle's lifetime is tied to that agent.
  *
  * The returned object is the same callable as the supplied `factory`
- * with `id` and a frozen `requires` array attached.
+ * with `id`, a frozen `requires` array, and a frozen `definitions`
+ * array attached.
  */
 export function defineTool<EnvReq extends BaseEnv = BaseEnv>(opts: {
   id: string;
   requires?: readonly string[];
+  definitions: readonly ToolDeclaration[];
   factory: ToolFactory<EnvReq>;
 }): AnnotatedToolFactory<EnvReq> {
   validateNamespacedId(opts.id);
   const requires = Object.freeze([
     ...(opts.requires ?? []),
   ]) as readonly string[];
+  const definitions = Object.freeze([
+    ...opts.definitions,
+  ]) as readonly ToolDeclaration[];
   // Wrap the caller's factory rather than mutating it. A caller that
   // shares a factory function across multiple `defineTool` calls
   // (e.g. registering the same constructor under two ids in different
@@ -193,6 +217,7 @@ export function defineTool<EnvReq extends BaseEnv = BaseEnv>(opts: {
   return Object.assign(wrapped, {
     id: opts.id,
     requires,
+    definitions,
   });
 }
 

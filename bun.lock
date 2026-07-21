@@ -543,6 +543,9 @@
         "@intx/types": "workspace:*",
         "arktype": "catalog:",
       },
+      "devDependencies": {
+        "@intx/storage-isogit": "workspace:*",
+      },
     },
     "packages/tools-posix": {
       "name": "@intx/tools-posix",
@@ -550,6 +553,9 @@
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/types": "workspace:*",
+      },
+      "devDependencies": {
+        "@intx/storage-isogit": "workspace:*",
       },
     },
     "packages/types": {

@@ -13,6 +13,7 @@ import { createBlobReader } from "@intx/types/runtime";
 
 import { createPosixTools } from "./index";
 import type { ToolPlugin } from "./plugin";
+import { TOOL_DEFINITIONS } from "./registry";
 
 function isToolPlugin(value: unknown): value is ToolPlugin {
   // Require the `kind: "tool-plugin"` marker minted by definePlugin
@@ -35,6 +36,7 @@ function isToolPlugin(value: unknown): value is ToolPlugin {
  */
 export const posix = defineTool({
   id: "@intx/tools-posix/sidecar-bundle",
+  definitions: TOOL_DEFINITIONS.map((def) => ({ name: def.name })),
   factory: (env) => {
     const blobReader = createBlobReader(env.storage);
     const plugins = (env.plugins ?? []).filter(isToolPlugin);

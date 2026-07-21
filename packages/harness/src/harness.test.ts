@@ -192,12 +192,15 @@ function mailEnv(opts: {
 // providing actual mail tools. These tests do not exercise mail-tool
 // invocation; they only verify the composition layer's transport-side
 // pipeline.
-const emptyMailFactory = defineMailTools(() => ({
-  definitions: [],
-  async run(call) {
-    return { callId: call.id, content: "" };
-  },
-}));
+const emptyMailFactory = defineMailTools(
+  () => ({
+    definitions: [],
+    async run(call) {
+      return { callId: call.id, content: "" };
+    },
+  }),
+  [],
+);
 
 function emptyDef() {
   return defineAgent({
@@ -631,12 +634,15 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
 
 describe("defineMailTools", () => {
   test("produces a factory declaring transport and address requirements", () => {
-    const factory = defineMailTools(() => ({
-      definitions: [],
-      async run(call) {
-        return { callId: call.id, content: "" };
-      },
-    }));
+    const factory = defineMailTools(
+      () => ({
+        definitions: [],
+        async run(call) {
+          return { callId: call.id, content: "" };
+        },
+      }),
+      [],
+    );
     expect(factory.id).toBe("@intx/harness/mail");
     expect(factory.requires).toContain("transport");
     expect(factory.requires).toContain("address");

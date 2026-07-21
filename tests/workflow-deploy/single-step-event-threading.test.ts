@@ -82,6 +82,7 @@ const TOOL_ID = "@intx-test/event-threading/record_value";
 function recordValueTool(sentinelWritten: { value: boolean }) {
   return defineTool<BaseEnv>({
     id: TOOL_ID,
+    definitions: [{ name: TOOL_NAME }],
     factory: (env: BaseEnv): ToolBundle => ({
       definitions: [
         {

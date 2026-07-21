@@ -116,6 +116,7 @@ export async function openExampleAgent<T extends CommonMainOptions>(
   // dispatches "unknown tool" responses if the model invokes anything.
   const exampleToolsFactory = defineTool({
     id: `@intx/example-agent-common/${spec.exampleName}-tools`,
+    definitions: spec.tools.map((t) => ({ name: t.definition.name })),
     factory: () => {
       const runner = createToolRunner([...spec.tools]);
       return {

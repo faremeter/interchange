@@ -106,6 +106,7 @@ function makeFixedResultTool(opts: {
 }): ReturnType<typeof defineTool<BaseEnv>> {
   return defineTool<BaseEnv>({
     id: `@intx-test/audit/${opts.name}`,
+    definitions: [{ name: opts.name }],
     factory: () => ({
       definitions: [
         {

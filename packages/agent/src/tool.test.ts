@@ -234,28 +234,33 @@ describe("defineTool", () => {
     const factory = defineTool({
       id: "@vendor/pkg/name",
       requires: ["transport", "address"],
+      definitions: [],
       factory: () => emptyBundle(),
     });
 
     expect(factory.id).toBe("@vendor/pkg/name");
     expect(factory.requires).toEqual(["transport", "address"]);
     expect(Object.isFrozen(factory.requires)).toBe(true);
+    expect(Object.isFrozen(factory.definitions)).toBe(true);
   });
 
   test("defaults requires to an empty frozen array when omitted", () => {
     const factory = defineTool({
       id: "@vendor/pkg/name",
+      definitions: [],
       factory: () => emptyBundle(),
     });
 
     expect(factory.requires).toEqual([]);
     expect(Object.isFrozen(factory.requires)).toBe(true);
+    expect(Object.isFrozen(factory.definitions)).toBe(true);
   });
 
   test("rejects bare ids", () => {
     expect(() =>
       defineTool({
         id: "bareName",
+        definitions: [],
         factory: () => emptyBundle(),
       }),
     ).toThrow(/must be package-namespaced/);
@@ -265,6 +270,7 @@ describe("defineTool", () => {
     let envSeen: BaseEnv | undefined;
     const factory = defineTool({
       id: "pkg/probe",
+      definitions: [{ name: "probe" }],
       factory: (env) => {
         envSeen = env;
         return {
@@ -301,6 +307,7 @@ describe("defineTool", () => {
     const factory = defineTool({
       id: "pkg/name",
       requires,
+      definitions: [],
       factory: () => emptyBundle(),
     });
 
@@ -317,11 +324,13 @@ describe("defineTool", () => {
     const sharedFactory: ToolFactory = () => emptyBundle();
     const a = defineTool({
       id: "pkg/tool-a",
+      definitions: [],
       factory: sharedFactory,
     });
     const b = defineTool({
       id: "pkg/tool-b",
       requires: ["transport"],
+      definitions: [],
       factory: sharedFactory,
     });
 
