@@ -85,6 +85,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRef: "refs/heads/main",
       deploymentId: "wire-test",
       stepCount: 1,
+      stepOrder: ["step1"],
       deploymentMailAddress: "wire-test@example.com",
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
@@ -121,6 +122,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRef: "refs/heads/main",
       deploymentId: "inbound",
       stepCount: 1,
+      stepOrder: ["step1"],
       deploymentMailAddress: "inbound@example.com",
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,

@@ -1710,19 +1710,27 @@ export function createWorkflowSupervisor(
       // same control channel `trigger.fire` uses, so the ordering
       // guarantee (`grants-updated` lands before `trigger.fire`) holds
       // for buffered and post-ready inbound mail alike.
-      await wired.wiring.controlSender.send({
-        type: "grants-updated",
-        data: {
-          snapshot: {
-            steps: credentialsSnapshot.steps.map((s) => ({
-              stepId: s.stepId,
-              address: s.address,
-              grants: [...s.grants],
-              contentHash: s.contentHash,
-            })),
+      //
+      // Suppressed when `onRunStart` is wired: that binding makes the
+      // dispatch loop push a per-run snapshot before each `trigger.fire`,
+      // so the spawn-time push would only mask a broken per-run barrier
+      // (the child would already hold grants and never hit its throw-on-
+      // null guard). The per-run push is then the sole grants source.
+      if (bindings.onRunStart === undefined) {
+        await wired.wiring.controlSender.send({
+          type: "grants-updated",
+          data: {
+            snapshot: {
+              steps: credentialsSnapshot.steps.map((s) => ({
+                stepId: s.stepId,
+                address: s.address,
+                grants: [...s.grants],
+                contentHash: s.contentHash,
+              })),
+            },
           },
-        },
-      });
+        });
+      }
 
       // Transition to running. The dispatch loop (started below)
       // picks up any pre-ready buffered mail through the FIFO inbox
@@ -1962,6 +1970,61 @@ export function createWorkflowSupervisor(
   }
 
   /**
+   * Push the run's grants snapshot to the child ahead of its
+   * `trigger.fire`. Returns `true` if the barrier FAILED (the caller must
+   * skip the fire; the run has already been settled as `RunFailed`) and
+   * `false` if the barrier passed or is not armed (`onRunStart` unwired,
+   * where `spawn` supplied the snapshot instead).
+   *
+   * The sink is a request/response contract: the supervisor awaits the
+   * returned snapshot and awaits the `grants-updated` send so both land on
+   * the child's control channel before the trigger. A throw from either --
+   * the sink itself or the control send -- is surfaced as a synthesized
+   * `RunFailed` fanned out to this run's broadcaster watcher, never
+   * swallowed, so the run fails deterministically instead of the child
+   * authorizing against a stale or absent snapshot.
+   */
+  async function pushRunGrants(
+    sender: ControlChannelSender,
+    runId: string,
+    broadcaster: TerminalBroadcaster,
+  ): Promise<boolean> {
+    if (bindings.onRunStart === undefined) return false;
+    try {
+      const snapshot = await bindings.onRunStart({
+        runId,
+        deploymentId: bindings.deploymentId,
+      });
+      await sender.send({
+        type: "grants-updated",
+        data: {
+          snapshot: {
+            steps: snapshot.steps.map((s) => ({
+              stepId: s.stepId,
+              address: s.address,
+              grants: [...s.grants],
+              contentHash: s.contentHash,
+            })),
+          },
+        },
+      });
+      return false;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`onRunStart grants barrier failed for run ${runId}; failing the run: ${message}`;
+      broadcaster.notify(runId, {
+        kind: "RunFailed",
+        seq: 0,
+        at: new Date().toISOString(),
+        error: {
+          message: `workflow-host supervisor: run ${runId} not authorized; grants barrier failed before trigger.fire: ${message}`,
+        },
+      });
+      return true;
+    }
+  }
+
+  /**
    * One iteration of the dispatch loop: dequeue the FIFO-first inbox
    * entry, forward it as a `trigger.fire`, wait for the corresponding
    * run's terminal event (or for the cohort to abort), then
@@ -2017,11 +2080,22 @@ export function createWorkflowSupervisor(
     legMarkEnd(runId, "dequeue");
     const iterable = broadcaster.source(runId);
     const iter = iterable[Symbol.asyncIterator]();
-    await forwardDispatchedEntry(
-      sender,
-      envelope.messageId,
-      envelope.receivedAt,
-    );
+    // Per-run grants barrier. When `onRunStart` is wired, push this run's
+    // grants snapshot BEFORE the `trigger.fire` so the child's authorize
+    // closure binds to it rather than throwing on a null snapshot. The push
+    // and the fire share the child's control channel, so a `grants-updated`
+    // awaited here is observed by the child ahead of the trigger. A barrier
+    // failure (the sink throws, or the push fails) fails the run loudly --
+    // a synthesized `RunFailed` fanned out to this run's watcher -- and the
+    // trigger is NOT fired, so no step ever runs against absent grants.
+    const barrierFailed = await pushRunGrants(sender, runId, broadcaster);
+    if (!barrierFailed) {
+      await forwardDispatchedEntry(
+        sender,
+        envelope.messageId,
+        envelope.receivedAt,
+      );
+    }
     await waitForRunTerminal(iter, cohortAbort.signal);
     emitDispatchTiming(runId, "reply-produced", performance.now());
     inFlightRuns.delete(runId);

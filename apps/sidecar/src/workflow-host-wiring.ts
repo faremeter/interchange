@@ -28,6 +28,7 @@ import type {
   SessionManager,
 } from "@intx/hub-agent";
 import {
+  assembleCredentialsSnapshot,
   createWorkflowSupervisor,
   STEP_GRANTS_PATH,
   STEP_GRANTS_REF,
@@ -416,6 +417,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * collapses onto the head for a single-step deployment.
    */
   stepCount: number;
+  /**
+   * Step ids in the deployed `WorkflowDefinition`'s `stepOrder`. The
+   * `onRunStart` grants sink walks these to assemble the per-run
+   * credentialsSnapshot from each step's `agent-state` repo, so the sink
+   * needs the ordered ids rather than the bare count.
+   */
+  stepOrder: readonly string[];
   /** Deployment's mail address. */
   deploymentMailAddress: string;
   /** Per-step mail-address derivation. */
@@ -1249,6 +1257,7 @@ export function createSidecarDeployRouter(deps: {
         workflowRunRef: "refs/heads/main",
         deploymentId,
         stepCount: spec.definition.stepOrder.length,
+        stepOrder: spec.definition.stepOrder,
         deploymentMailAddress: spec.agentAddress,
         deriveStepAddress: stepStrategy.deriveStepAddress,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
@@ -2001,6 +2010,24 @@ export function createSidecarWorkflowSupervisor(
     kind: "supervisor",
     deploymentId: opts.deploymentId,
   };
+  // Per-run grants sink: assemble the deployment's per-step
+  // credentialsSnapshot from each step's `agent-state` repo on demand, the
+  // same read `spawn` performs, but per run rather than once per spawn. The
+  // supervisor awaits this and pushes the result to the child before the
+  // run's `trigger.fire`. A read failure propagates: the supervisor's
+  // dispatch barrier turns the throw into a failed run rather than firing
+  // the trigger against absent grants.
+  const onRunStart = async (): Promise<CredentialsSnapshot> =>
+    assembleCredentialsSnapshot({
+      repoStore: opts.repoStore,
+      principal: supervisorPrincipal,
+      stepOrder: opts.stepOrder,
+      deploymentId: opts.deploymentId,
+      deriveStepAddress: opts.deriveStepAddress,
+      ...(opts.deriveStepRepoId !== undefined
+        ? { deriveStepRepoId: opts.deriveStepRepoId }
+        : {}),
+    });
   const supervisor = createWorkflowSupervisor({
     repoStore: opts.repoStore,
     signAsPrincipal: async (kind, payload) => {
@@ -2019,6 +2046,7 @@ export function createSidecarWorkflowSupervisor(
     deploymentMailAddress: opts.deploymentMailAddress,
     readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,
+    onRunStart,
     ...(opts.onSuspensionRegister !== undefined
       ? { onSuspensionRegister: opts.onSuspensionRegister }
       : {}),
