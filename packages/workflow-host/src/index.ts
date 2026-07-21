@@ -20,6 +20,7 @@ export {
 export {
   createWorkflowSupervisor,
   assembleCredentialsSnapshot,
+  isErrnoNotFound,
   commitCancelRequested,
   createDrainTimeoutAccumulator,
   createRecyclePolicy,

@@ -14,6 +14,7 @@ export {
 
 export {
   assembleCredentialsSnapshot,
+  isErrnoNotFound,
   defaultStepRepoId,
   hashGrants,
   STEP_GRANTS_PATH,

@@ -30,10 +30,13 @@ import type {
 import {
   assembleCredentialsSnapshot,
   createWorkflowSupervisor,
+  hashGrants,
   STEP_GRANTS_PATH,
   STEP_GRANTS_REF,
   wrapHubTransportAsMailBus,
+  isErrnoNotFound,
   type CredentialsSnapshot,
+  type CredentialsSnapshotStep,
   type DeriveStepAddress,
   type DeriveStepRepoId,
   type DispatchTimingMark,
@@ -252,6 +255,142 @@ async function writeStepGrants(args: {
       },
     );
   }
+}
+
+/**
+ * Envelope the per-run grants file carries: the same `{ grants: [] }`
+ * shape `writeStepGrants` serializes and `assembleCredentialsSnapshot`
+ * validates on the deploy-time read. The inner entries stay `unknown` --
+ * the child's authorize layer narrows each against its own grant-rule
+ * validator, exactly as the deploy-time snapshot's grants are surfaced
+ * untyped.
+ */
+const RunGrantsFile = type({
+  grants: "unknown[]",
+}).onUndeclaredKey("ignore");
+
+/**
+ * Read a single run's grants from `runs/<runId>/grants.json` inside the
+ * deployment's `workflow-run` repo -- the exact repo, ref, and path
+ * `writeStepGrants` commits in its `runId` branch. The read is a
+ * working-tree read via `getRepoDir` (the same substrate access pattern
+ * the deploy-time `readStepGrants` uses), so it observes the tip the
+ * grants handler wrote under `STEP_GRANTS_REF`.
+ *
+ * Returns the run's grants when the file exists. Returns `undefined`
+ * -- distinct from an empty grants array -- when the file is ABSENT
+ * (ENOENT), so the caller can distinguish "this run got no per-run
+ * grants frame" (an internal run that inherits the deployment's grants)
+ * from "this run's grants are the empty set". A file that exists but is
+ * malformed (invalid JSON or a shape the envelope rejects) THROWS, the
+ * same fail-loud posture the deploy-time `readStepGrants` takes: the
+ * file's presence implies a grants frame was delivered, and a
+ * structural failure is a boundary bug, not a default.
+ */
+async function readRunGrants(args: {
+  repoStore: RepoStore;
+  deploymentId: string;
+  runId: string;
+}): Promise<readonly unknown[] | undefined> {
+  const dir = args.repoStore.getRepoDir({
+    kind: "workflow-run",
+    id: args.deploymentId,
+  });
+  const filePath = pathJoin(dir, runGrantsPath(args.runId));
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch (cause) {
+    if (isErrnoNotFound(cause)) return undefined;
+    throw cause;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(
+      `sidecar onRunStart: workflow-run/${args.deploymentId}:${runGrantsPath(args.runId)} is not valid JSON`,
+      { cause },
+    );
+  }
+  const validated = RunGrantsFile(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `sidecar onRunStart: workflow-run/${args.deploymentId}:${runGrantsPath(args.runId)} failed validation: ${validated.summary}`,
+    );
+  }
+  return validated.grants;
+}
+
+export type AssembleRunCredentialsSnapshotOpts = {
+  /** Substrate handle the sink reads the per-run and deploy-time grants from. */
+  repoStore: RepoStore;
+  /** Principal presented for the deploy-time per-step read. */
+  principal: Principal;
+  /** Deployment id keying the workflow-run repo and the deploy-time read. */
+  deploymentId: string;
+  /** Run whose per-run grants are read, when present. */
+  runId: string;
+  /** Step ids in `stepOrder`; the per-run grants apply uniformly across them. */
+  stepOrder: readonly string[];
+  /** Per-step mail-address derivation. */
+  deriveStepAddress: DeriveStepAddress;
+  /** Optional override of the deploy-time per-step `agent-state` repo id. */
+  deriveStepRepoId?: DeriveStepRepoId;
+};
+
+/**
+ * Resolve a run's credentials snapshot for the `onRunStart` grants
+ * barrier, per-run read first with a graceful deploy-time fallback.
+ *
+ * A run resolved on the hub carries its own grants, shipped over a
+ * `run.grants` frame and written to `runs/<runId>/grants.json` in the
+ * deployment's workflow-run repo. When that per-run file is present it IS
+ * the run's snapshot: the run's single flat grant set is applied
+ * uniformly across every step, keyed on the same per-step addresses the
+ * deploy-time assembly uses.
+ *
+ * When the per-run file is ABSENT (ENOENT), the run inherited the
+ * deployment's grants without a `run.grants` frame -- a child spawn or a
+ * co-located internal run. This is a requirements-driven default:
+ * internal runs inherit the deployment's grants, so fall back to the
+ * deploy-time per-step read (`assembleCredentialsSnapshot`) from each
+ * step's `agent-state` repo. The fallback is keyed on file-absent
+ * SPECIFICALLY -- `readRunGrants` returns `undefined` only on ENOENT and
+ * THROWS on a malformed per-run file, so a corrupt run grants file fails
+ * the run rather than silently inheriting the deployment's.
+ */
+export async function assembleRunCredentialsSnapshot(
+  opts: AssembleRunCredentialsSnapshotOpts,
+): Promise<CredentialsSnapshot> {
+  const runGrants = await readRunGrants({
+    repoStore: opts.repoStore,
+    deploymentId: opts.deploymentId,
+    runId: opts.runId,
+  });
+  if (runGrants === undefined) {
+    return assembleCredentialsSnapshot({
+      repoStore: opts.repoStore,
+      principal: opts.principal,
+      stepOrder: opts.stepOrder,
+      deploymentId: opts.deploymentId,
+      deriveStepAddress: opts.deriveStepAddress,
+      ...(opts.deriveStepRepoId !== undefined
+        ? { deriveStepRepoId: opts.deriveStepRepoId }
+        : {}),
+    });
+  }
+  const contentHash = await hashGrants(runGrants);
+  const steps: CredentialsSnapshotStep[] = opts.stepOrder.map((stepId) => ({
+    stepId,
+    address: opts.deriveStepAddress({
+      deploymentId: opts.deploymentId,
+      stepId,
+    }),
+    grants: runGrants,
+    contentHash,
+  }));
+  return { steps };
 }
 
 // The supervisor's `binaryPath` binding resolves to the sidecar's
@@ -529,6 +668,17 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * deployment registers no suspensions.
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
+  /**
+   * Predicate consulted at the `onRunStart` grants barrier: returns `true`
+   * for a runId whose `run.grants` write was attempted and FAILED, so the
+   * per-run grants file the run needs never landed. The barrier fails such a
+   * run loudly rather than falling through to the deploy-time read (empty for
+   * a workflow deploy), which would silently run it under-authorized. Absent
+   * means no run is poisoned; a run that never had a `run.grants` frame (an
+   * internal run inheriting the deployment's grants) is never poisoned and
+   * falls through normally.
+   */
+  isRunPoisoned?: (runId: string) => boolean;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -537,6 +687,16 @@ export type SidecarWorkflowSupervisor = {
   routeInbound(message: Uint8Array): void;
   /** Snapshot accessor that proxies the supervisor's credentials view. */
   getCredentialsSnapshot(): CredentialsSnapshot | null;
+  /**
+   * The per-run grants barrier the supervisor awaits before firing a run's
+   * trigger. Rejects for a poisoned run (its `run.grants` write failed) and
+   * otherwise resolves the run's credentials snapshot. Exposed so the barrier
+   * can be exercised without driving a full spawn.
+   */
+  onRunStart(args: {
+    runId: string;
+    deploymentId: string;
+  }): Promise<CredentialsSnapshot>;
 };
 
 /**
@@ -1299,6 +1459,14 @@ export function createSidecarDeployRouter(deps: {
       // reverting to the deploy-time list.
       let currentSources = spec.sources;
 
+      // RunIds whose `run.grants` write was attempted and failed. The grants
+      // handler below records a runId here on a write failure; the grants
+      // barrier reads it through `isRunPoisoned` and fails the run rather than
+      // starting it under the empty deploy-time grant set. Scoped to this
+      // deployment's supervisor; a run that never had a `run.grants` frame is
+      // never added, so internal runs inherit the deployment's grants normally.
+      const poisonedRunIds = new Set<string>();
+
       const wired = createSidecarWorkflowSupervisor({
         transport: deps.transport,
         repoStore: deps.repoStore,
@@ -1314,6 +1482,7 @@ export function createSidecarDeployRouter(deps: {
         deploymentMailAddress: spec.agentAddress,
         deriveStepAddress: stepStrategy.deriveStepAddress,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
+        isRunPoisoned: (runId) => poisonedRunIds.has(runId),
         // The supervisor stamps `deploymentId` + `agentAddress` before
         // invoking this; forward the fully-stamped registration to the
         // hub-link-backed publisher so a `signal.correlation.register` frame
@@ -1479,14 +1648,23 @@ export function createSidecarDeployRouter(deps: {
       // step-fan-out fields are inert in that mode but the shared write
       // machinery still takes them.
       deps.multistepGrantsRouter?.register(spec.agentAddress, async (args) => {
-        await writeStepGrants({
-          repoStore: deps.repoStore,
-          deploymentId,
-          stepOrder: spec.definition.stepOrder,
-          deriveStepRepoId: stepStrategy.deriveStepRepoId,
-          grants: args.stepGrants,
-          runId: args.runId,
-        });
+        try {
+          await writeStepGrants({
+            repoStore: deps.repoStore,
+            deploymentId,
+            stepOrder: spec.definition.stepOrder,
+            deriveStepRepoId: stepStrategy.deriveStepRepoId,
+            grants: args.stepGrants,
+            runId: args.runId,
+          });
+        } catch (cause) {
+          // The per-run grants file did not land. Poison the runId so the
+          // grants barrier fails the run instead of starting it under the
+          // deploy-time grant set, then re-throw so the hub-link logs the
+          // durable-write failure loudly.
+          poisonedRunIds.add(args.runId);
+          throw cause;
+        }
       });
       // Register the sources-rotation handler ONLY for a single-step warm
       // deployment: it has one long-lived agent whose sources can be
@@ -2080,24 +2258,41 @@ export function createSidecarWorkflowSupervisor(
     kind: "supervisor",
     deploymentId: opts.deploymentId,
   };
-  // Per-run grants sink: assemble the deployment's per-step
-  // credentialsSnapshot from each step's `agent-state` repo on demand, the
-  // same read `spawn` performs, but per run rather than once per spawn. The
-  // supervisor awaits this and pushes the result to the child before the
-  // run's `trigger.fire`. A read failure propagates: the supervisor's
-  // dispatch barrier turns the throw into a failed run rather than firing
-  // the trigger against absent grants.
-  const onRunStart = async (): Promise<CredentialsSnapshot> =>
-    assembleCredentialsSnapshot({
+  // Per-run grants sink. The supervisor awaits this and pushes the
+  // resulting snapshot to the child before the run's `trigger.fire`; a
+  // throw propagates and the dispatch barrier fails the run rather than
+  // firing the trigger against absent grants. The per-run read wins when
+  // the run carries its own `run.grants` frame; an internal run whose
+  // per-run file is absent inherits the deployment's deploy-time grants
+  // (see `assembleRunCredentialsSnapshot`).
+  const onRunStart = (args: {
+    runId: string;
+    deploymentId: string;
+  }): Promise<CredentialsSnapshot> => {
+    // Fail closed on a run whose `run.grants` write was attempted and failed:
+    // its per-run grants file never landed, so assembling the snapshot would
+    // fall through to the deploy-time read (empty for a workflow deploy) and
+    // run the child under-authorized. Reject at the barrier instead, so the
+    // dispatch loop fails the run rather than firing its trigger.
+    if (opts.isRunPoisoned?.(args.runId) === true) {
+      return Promise.reject(
+        new Error(
+          `sidecar onRunStart: run ${args.runId} grants write failed; refusing to start the run under-authorized`,
+        ),
+      );
+    }
+    return assembleRunCredentialsSnapshot({
       repoStore: opts.repoStore,
       principal: supervisorPrincipal,
+      deploymentId: args.deploymentId,
+      runId: args.runId,
       stepOrder: opts.stepOrder,
-      deploymentId: opts.deploymentId,
       deriveStepAddress: opts.deriveStepAddress,
       ...(opts.deriveStepRepoId !== undefined
         ? { deriveStepRepoId: opts.deriveStepRepoId }
         : {}),
     });
+  };
   const supervisor = createWorkflowSupervisor({
     repoStore: opts.repoStore,
     signAsPrincipal: async (kind, payload) => {
@@ -2143,5 +2338,6 @@ export function createSidecarWorkflowSupervisor(
       mailBus.routeInbound(opts.deploymentMailAddress, message);
     },
     getCredentialsSnapshot: () => supervisor.getCredentialsSnapshot(),
+    onRunStart,
   };
 }
