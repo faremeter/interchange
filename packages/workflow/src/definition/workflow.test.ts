@@ -58,6 +58,32 @@ describe("defineWorkflow", () => {
     expect(def.steps.plan?.id).toBe("plan");
   });
 
+  test("round-trips declared grant requirements", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "manual" },
+      steps: { plan: step({ agent: makeAgent("planner") }) },
+      grantRequirements: [
+        { resource: "credential:openai", action: "use", source: "creator" },
+        {
+          resource: "tool:search",
+          action: "invoke",
+          effect: "ask",
+          source: "invoker",
+        },
+      ],
+    });
+    expect(def.grantRequirements).toEqual([
+      { resource: "credential:openai", action: "use", source: "creator" },
+      {
+        resource: "tool:search",
+        action: "invoke",
+        effect: "ask",
+        source: "invoker",
+      },
+    ]);
+  });
+
   test("applies the default-input convention", () => {
     const planner = makeAgent("planner");
     const impl = makeAgent("impl");
@@ -563,5 +589,23 @@ describe("hashDefinition", () => {
       steps: { a: step({ agent: a }) },
     });
     expect(() => hashDefinition(def)).not.toThrow();
+  });
+
+  test("declared grant requirements change the content hash", () => {
+    const a = makeAgent("a");
+    const base: WorkflowDefinition = defineWorkflow({
+      id: "w",
+      trigger: { type: "manual" },
+      steps: { a: step({ agent: a }) },
+    });
+    const withGrants: WorkflowDefinition = defineWorkflow({
+      id: "w",
+      trigger: { type: "manual" },
+      steps: { a: step({ agent: a }) },
+      grantRequirements: [
+        { resource: "tool:search", action: "invoke", source: "invoker" },
+      ],
+    });
+    expect(hashDefinition(withGrants)).not.toEqual(hashDefinition(base));
   });
 });
