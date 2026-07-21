@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { type WalletBackendType, walletBackendTypes } from "@intx/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createWalletMutation,
-  tenantWalletsQuery,
+  tenantWalletsInfiniteQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,7 +63,13 @@ export function TenantWalletsPage() {
   const { tenantId } = useParams({ from: "/authed/tenants/$tenantId/wallets" });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: wallets, isLoading } = useQuery(tenantWalletsQuery(tenantId));
+  const {
+    items: wallets,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantWalletsInfiniteQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
@@ -97,7 +105,7 @@ export function TenantWalletsPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : wallets?.length === 0 ? (
+      ) : wallets.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">No wallets yet.</p>
       ) : (
         <div className="mt-4 rounded-lg border">
@@ -112,7 +120,7 @@ export function TenantWalletsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {wallets?.map((w) => (
+              {wallets.map((w) => (
                 <TableRow
                   key={w.id}
                   className="cursor-pointer"
@@ -140,6 +148,11 @@ export function TenantWalletsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 

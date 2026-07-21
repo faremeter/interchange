@@ -6,11 +6,13 @@ import { type CredentialType, credentialTypes } from "@intx/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createCredentialMutation,
   type CreateCredentialBody,
   tenantProvidersQuery,
-  tenantCredentialsQuery,
+  tenantCredentialsInfiniteQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -66,9 +68,13 @@ export function TenantCredentialsPage() {
   });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: credentials, isLoading } = useQuery(
-    tenantCredentialsQuery(tenantId),
-  );
+  const {
+    items: credentials,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantCredentialsInfiniteQuery(tenantId));
   const { data: providers, isLoading: providersLoading } = useQuery(
     tenantProvidersQuery(tenantId),
   );
@@ -118,7 +124,7 @@ export function TenantCredentialsPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : credentials?.length === 0 ? (
+      ) : credentials.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">
           No credentials stored.
         </p>
@@ -134,7 +140,7 @@ export function TenantCredentialsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {credentials?.map((cred) => (
+              {credentials.map((cred) => (
                 <TableRow
                   key={cred.id}
                   className="cursor-pointer"
@@ -159,6 +165,11 @@ export function TenantCredentialsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 
