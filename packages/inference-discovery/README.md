@@ -24,9 +24,11 @@ The package exports two entry points:
   capture runner, CLI parser, manifest builder, content-type
   detection, CI guard, env validation, write-capture.
 - `@intx/inference-discovery/catalog` — the data: the `Capability`
-  enum, the `INTENTS` table, the `SUPPORT_MATRIX` listing every
-  (provider, model, capability) tuple the rig knows about, and the
-  `FixtureManifest` schema.
+  enum (the shared `@intx/types` capability vocabulary extended with
+  the probe-only capabilities this rig records), the `INTENTS` table,
+  the `SUPPORT_MATRIX` listing every (provider, model, capability)
+  tuple the rig knows about, `catalogCapabilitiesFor` (which seeds the
+  tenant catalog from the matrix), and the `FixtureManifest` schema.
 
 ## Driving one capture
 
@@ -66,19 +68,40 @@ extractor and writes the result alongside the response.
 ## Catalog
 
 `SUPPORT_MATRIX` is the canonical list of what the rig captures.
-Each entry carries an outcome of `captured`, `refused`,
-`http-error`, or `unsupported`. Only `captured` entries produce
-fixtures; the others are negative documentation recording why no
-fixture exists — a deliberate refusal, an observed upstream error,
-or a capability the provider does not implement (see the `glm-5.1`
-refusal and `deepseek-v4-pro` HTTP-error vision entries for
-examples).
+Each entry carries an outcome of `captured`, `misled`, `refused`,
+`http-error`, or `unsupported`. `captured` and `misled` entries
+produce fixtures; the others are negative documentation recording
+why no fixture exists — a deliberate refusal, an observed upstream
+error, or a capability the provider does not implement (see the
+`glm-5.1` refusal and `deepseek-v4-pro` HTTP-error vision entries
+for examples). A `misled` entry is an HTTP 200 whose body did not
+carry the documented shape the capability implies — the model
+responded but the contract did not fire — so its fixture records
+what the wire actually returned (see the `gemini-2.5-flash`
+safety-classification entry).
 
 `INTENTS` maps each capability to the prompt, tools, follow-up
 turns, and media references the plug-in uses to assemble the
 request body. Intents are deliberately single-sentence and
 low-token so the captured responses stay focused on shape rather
 than substance.
+
+## Seeding the catalog
+
+The tenant catalog's per-offering capability set is seeded one way
+from this matrix. `catalogCapabilitiesFor(provider, model)` reads the
+fixture-bearing rows for a `(provider, model)` tuple and returns the
+capabilities that tuple has proven. A `-streaming` capture also lights
+up its buffered base — a streaming flow can be collected into a
+buffered one — while a buffered capture does not imply the streaming
+variant. The result is projected onto the shared `@intx/types`
+capability vocabulary, so the probe-only capabilities this rig records
+never reach a catalog row.
+
+The direction is one way: the matrix is authoritative and the catalog
+mirrors it. A catalog-side CI guard rejects any seeded offering that
+claims a wire capability without a fixture-bearing row, so the catalog
+cannot drift from what discovery observed.
 
 ## The `discover` CLI
 
