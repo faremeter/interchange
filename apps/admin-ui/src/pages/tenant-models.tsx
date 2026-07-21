@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createCatalogModelMutation,
   type CreateModelBody,
-  tenantCatalogModelsQuery,
+  tenantCatalogModelsInfiniteQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,9 +38,13 @@ export function TenantModelsPage() {
   });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: models, isLoading } = useQuery(
-    tenantCatalogModelsQuery(tenantId),
-  );
+  const {
+    items: models,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantCatalogModelsInfiniteQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
@@ -74,7 +80,7 @@ export function TenantModelsPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : models?.length === 0 ? (
+      ) : models.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">
           No models defined on this tenant.
         </p>
@@ -90,7 +96,7 @@ export function TenantModelsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {models?.map((m) => (
+              {models.map((m) => (
                 <TableRow
                   key={m.id}
                   className="cursor-pointer"
@@ -121,6 +127,11 @@ export function TenantModelsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 

@@ -1177,6 +1177,13 @@ export function tenantCatalogModelsQuery(tenantId: string) {
   });
 }
 
+export function tenantCatalogModelsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<CatalogModelResponse>(
+    ["tenants", tenantId, "catalog-models", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/catalog/models`,
+  );
+}
+
 export function catalogModelDetailQuery(tenantId: string, modelId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "catalog-models", modelId],
@@ -1201,6 +1208,13 @@ export function tenantModelProvidersQuery(tenantId: string) {
   });
 }
 
+export function tenantModelProvidersInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<CatalogModelProviderResponse>(
+    ["tenants", tenantId, "model-providers", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/catalog/providers`,
+  );
+}
+
 export function modelProviderDetailQuery(tenantId: string, providerId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "model-providers", providerId],
@@ -1212,17 +1226,11 @@ export function modelProviderDetailQuery(tenantId: string, providerId: string) {
   });
 }
 
-export function tenantModelOfferingsQuery(tenantId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "model-offerings"],
-    queryFn: async () => {
-      const res = await api<{ data: CatalogModelOfferingResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/catalog/offerings`,
-      );
-      return res.data;
-    },
-  });
+export function tenantModelOfferingsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<CatalogModelOfferingResponse>(
+    ["tenants", tenantId, "model-offerings"],
+    `/api/tenants/${tenantId}/catalog/offerings`,
+  );
 }
 
 export function modelOfferingDetailQuery(tenantId: string, offeringId: string) {
