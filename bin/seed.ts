@@ -43,6 +43,7 @@ import {
   WORKFLOW_RUN_GRANT_ACTION,
   WORKFLOW_RUN_GRANT_RESOURCE,
 } from "./workflow-fixture";
+import { catalogModels, catalogProviders } from "./lib/catalog-seed-data";
 
 const AuthResponse = type({ "user?": { id: "string" } });
 
@@ -197,6 +198,15 @@ function checkOrSkip(
     `[seed] FAIL ${label}: expected ${expected}, got ${status}\n`,
   );
   process.stderr.write(`[seed]   ${JSON.stringify(data)}\n`);
+  process.exit(1);
+}
+
+// A row that a create returned 201 or 409 for must appear in the subsequent
+// list. When it does not, the seed is in an inconsistent state (a create that
+// did not persist, a list that truncated), so fail loudly rather than skip
+// and leave dangling rows behind.
+function fatalMissing(label: string): never {
+  process.stderr.write(`[seed] FAIL ${label}: not found after create\n`);
   process.exit(1);
 }
 
@@ -1106,146 +1116,186 @@ if (supportBot) {
 }
 
 // -- Create model catalog --
+//
+// The declarative deployment set lives in ./lib/catalog-seed-data; this driver
+// walks it. Each catalog provider gets a dedicated old-system provider (so its
+// credential has a provider FK) and a credential, then the catalog provider,
+// its offerings (carrying explicit quirks), and pricing. Ids are resolved by
+// listing after each create so the seed stays idempotent across re-runs where
+// a POST returns 409.
 
 log("Creating model catalog...");
 
 const CredentialIdName = type({ id: "string", name: "string" });
 
-// The model provider authenticates with a tenant credential. Reuse the
-// Anthropic API key created above; list and find it so the seed is
-// idempotent across re-runs.
-const { data: acmeCredsData } = await api(
+for (const m of catalogModels) {
+  const { status, data } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/catalog/models`,
+    { canonicalName: m.canonicalName, displayName: m.displayName },
+    aliceCookies,
+  );
+  checkOrSkip(`create model ${m.canonicalName}`, status, 201, data);
+}
+
+const { data: catalogModelListData } = await api(
   "GET",
-  `/api/tenants/${acmeTenantId}/credentials`,
+  `/api/tenants/${acmeTenantId}/catalog/models`,
   undefined,
   aliceCookies,
 );
-const anthropicCredential = parse(
-  paginatedSchema(CredentialIdName),
-  acmeCredsData,
-  "acme credentials response",
-).data.find((c) => c.name === "Anthropic API Key");
+const modelIdByName = new Map(
+  parse(
+    paginatedSchema(ModelResponse),
+    catalogModelListData,
+    "catalog models response",
+  ).data.map((m) => [m.canonicalName, m.id]),
+);
 
-if (anthropicCredential) {
-  const modelsToSeed = [
-    { canonicalName: "claude-sonnet-4", displayName: "Claude Sonnet 4" },
-    { canonicalName: "claude-haiku-4", displayName: "Claude Haiku 4" },
-  ];
-  for (const m of modelsToSeed) {
-    const { status, data } = await api(
-      "POST",
-      `/api/tenants/${acmeTenantId}/catalog/models`,
-      m,
-      aliceCookies,
-    );
-    checkOrSkip(`create model ${m.canonicalName}`, status, 201, data);
-  }
+for (const p of catalogProviders) {
+  // Old-system provider that owns the credential. Its plugin mirrors the
+  // catalog plugin (the old provider's plugin is free-form) and the metadata
+  // baseURL matches the catalog endpoint.
+  const { status: intgStatus, data: intgData } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/providers`,
+    { name: p.name, plugin: p.plugin, metadata: { baseURL: p.baseURL } },
+    aliceCookies,
+  );
+  checkOrSkip(
+    `create integration provider ${p.name}`,
+    intgStatus,
+    201,
+    intgData,
+  );
+
+  const { data: intgListData } = await api(
+    "GET",
+    `/api/tenants/${acmeTenantId}/providers`,
+    undefined,
+    aliceCookies,
+  );
+  const integrationProvider = parse(
+    paginatedSchema(ProviderResponse),
+    intgListData,
+    "integration providers response",
+  ).data.find((x) => x.name === p.name);
+  if (!integrationProvider) fatalMissing(`integration provider ${p.name}`);
+
+  // Every dev deployment authenticates with an API key.
+  const { status: credStatus, data: credData } = await api(
+    "POST",
+    `/api/tenants/${acmeTenantId}/credentials`,
+    {
+      name: p.credentialName,
+      type: "api_key",
+      providerId: integrationProvider.id,
+      secret: p.credentialSecret,
+      scopes: ["chat"],
+    },
+    aliceCookies,
+  );
+  checkOrSkip(
+    `create credential ${p.credentialName}`,
+    credStatus,
+    201,
+    credData,
+  );
+
+  const { data: credListData } = await api(
+    "GET",
+    `/api/tenants/${acmeTenantId}/credentials`,
+    undefined,
+    aliceCookies,
+  );
+  const credential = parse(
+    paginatedSchema(CredentialIdName),
+    credListData,
+    "credentials response",
+  ).data.find((c) => c.name === p.credentialName);
+  if (!credential) fatalMissing(`credential ${p.credentialName}`);
 
   const { status: provStatus, data: provData } = await api(
     "POST",
     `/api/tenants/${acmeTenantId}/catalog/providers`,
     {
-      name: "Anthropic Direct",
-      plugin: "anthropic",
-      baseURL: "https://api.anthropic.com",
-      credentialId: anthropicCredential.id,
+      name: p.name,
+      plugin: p.plugin,
+      baseURL: p.baseURL,
+      credentialId: credential.id,
     },
     aliceCookies,
   );
-  checkOrSkip("create provider Anthropic Direct", provStatus, 201, provData);
+  checkOrSkip(`create catalog provider ${p.name}`, provStatus, 201, provData);
 
-  // Resolve catalog ids by listing, so offering/pricing creation works on a
-  // re-run where the create calls above returned 409.
-  const { data: modelListData } = await api(
-    "GET",
-    `/api/tenants/${acmeTenantId}/catalog/models`,
-    undefined,
-    aliceCookies,
-  );
-  const catalogModels = parse(
-    paginatedSchema(ModelResponse),
-    modelListData,
-    "catalog models response",
-  ).data;
   const { data: provListData } = await api(
     "GET",
     `/api/tenants/${acmeTenantId}/catalog/providers`,
     undefined,
     aliceCookies,
   );
-  const anthropicProviderRow = parse(
+  const catalogProviderRow = parse(
     paginatedSchema(ModelProviderResponse),
     provListData,
     "catalog providers response",
-  ).data.find((p) => p.name === "Anthropic Direct");
+  ).data.find((x) => x.name === p.name);
+  if (!catalogProviderRow) fatalMissing(`catalog provider ${p.name}`);
 
-  const sonnet = catalogModels.find(
-    (m) => m.canonicalName === "claude-sonnet-4",
-  );
-  const haiku = catalogModels.find((m) => m.canonicalName === "claude-haiku-4");
-
-  if (anthropicProviderRow && sonnet && haiku) {
-    const offeringSpecs = [
-      {
-        model: sonnet,
-        priority: 0,
-        capabilities: ["tool-use", "long-context"],
-      },
-      { model: haiku, priority: 10, capabilities: ["tool-use"] },
-    ];
-    for (const spec of offeringSpecs) {
-      const { status, data } = await api(
-        "POST",
-        `/api/tenants/${acmeTenantId}/catalog/offerings`,
-        {
-          modelId: spec.model.id,
-          providerId: anthropicProviderRow.id,
-          priority: spec.priority,
-          capabilities: spec.capabilities,
-        },
-        aliceCookies,
-      );
-      checkOrSkip(
-        `create offering ${spec.model.canonicalName}`,
-        status,
-        201,
-        data,
-      );
+  for (const o of p.offerings) {
+    const modelId = modelIdByName.get(o.model);
+    if (modelId === undefined) {
+      log(`  SKIP offering ${p.name}/${o.model} (model not seeded)`);
+      continue;
     }
-
-    const { data: offeringListData } = await api(
-      "GET",
+    const { status, data } = await api(
+      "POST",
       `/api/tenants/${acmeTenantId}/catalog/offerings`,
-      undefined,
+      {
+        modelId,
+        providerId: catalogProviderRow.id,
+        priority: o.priority,
+        capabilities: o.capabilities,
+        quirks: o.quirks,
+      },
       aliceCookies,
     );
-    const catalogOfferings = parse(
-      paginatedSchema(ModelOfferingResponse),
-      offeringListData,
-      "catalog offerings response",
-    ).data;
-    const priceByModel: Record<string, { input: string; output: string }> = {
-      [sonnet.id]: { input: "0.000003", output: "0.000015" },
-      [haiku.id]: { input: "0.0000008", output: "0.000004" },
-    };
-    for (const offering of catalogOfferings) {
-      const price = priceByModel[offering.modelId];
-      if (!price) continue;
-      const { status, data } = await api(
-        "POST",
-        `/api/tenants/${acmeTenantId}/catalog/offerings/${offering.id}/pricing`,
-        {
-          currency: "USD",
-          // Pinned so a seed re-run collides on (offering, currency,
-          // effectiveFrom) and skips rather than appending a duplicate.
-          effectiveFrom: "2024-01-01T00:00:00.000Z",
-          inputTokenPrice: price.input,
-          outputTokenPrice: price.output,
-        },
-        aliceCookies,
-      );
-      checkOrSkip(`create pricing for ${offering.id}`, status, 201, data);
-    }
+    checkOrSkip(`create offering ${p.name}/${o.model}`, status, 201, data);
+  }
+
+  const { data: offeringListData } = await api(
+    "GET",
+    `/api/tenants/${acmeTenantId}/catalog/offerings`,
+    undefined,
+    aliceCookies,
+  );
+  const catalogOfferings = parse(
+    paginatedSchema(ModelOfferingResponse),
+    offeringListData,
+    "catalog offerings response",
+  ).data;
+  for (const o of p.offerings) {
+    const modelId = modelIdByName.get(o.model);
+    // The create loop already logged and skipped an offering whose model was
+    // not seeded; skip pricing for it too rather than treating it as missing.
+    if (modelId === undefined) continue;
+    const offering = catalogOfferings.find(
+      (x) => x.providerId === catalogProviderRow.id && x.modelId === modelId,
+    );
+    if (!offering) fatalMissing(`offering ${p.name}/${o.model}`);
+    const { status, data } = await api(
+      "POST",
+      `/api/tenants/${acmeTenantId}/catalog/offerings/${offering.id}/pricing`,
+      {
+        currency: "USD",
+        // Pinned so a seed re-run collides on (offering, currency,
+        // effectiveFrom) and skips rather than appending a duplicate.
+        effectiveFrom: "2024-01-01T00:00:00.000Z",
+        inputTokenPrice: o.price.input,
+        outputTokenPrice: o.price.output,
+      },
+      aliceCookies,
+    );
+    checkOrSkip(`create pricing for ${p.name}/${o.model}`, status, 201, data);
   }
 }
 
