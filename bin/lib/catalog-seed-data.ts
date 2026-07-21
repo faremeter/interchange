@@ -1,10 +1,14 @@
 // Declarative catalog seed data for the local development database.
 //
 // bin/seed.ts drives these specs through the catalog HTTP API. The colocated
-// catalog-seed-data.test.ts is the CI guard: it asserts every offering's
-// quirks bag is a plain object that validates against its adapter's quirk
-// schema, so a seeded deployment can never ship an accommodation the adapter
-// would reject.
+// catalog-seed-data.test.ts is the CI guard. It asserts every offering's quirks
+// bag is a plain object that validates against its adapter's quirk schema; that
+// every hand-authored curated capability is genuinely non-probeable, so a wire
+// capability can only enter a row through the discovery matrix and never the
+// curated list; and that a declared discovery source expands to a non-empty
+// matrix capability set rather than a stale or mistyped tuple. A seeded
+// deployment therefore cannot ship an accommodation the adapter would reject or
+// claim a wire capability the matrix has not proven.
 //
 // This module is pure data and types — no HTTP, no side effects — so the
 // guard test can import it without pulling in the seed's network machinery.
