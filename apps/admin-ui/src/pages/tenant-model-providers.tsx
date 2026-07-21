@@ -5,11 +5,13 @@ import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createModelProviderMutation,
   type CreateModelProviderBody,
   type ModelProviderPluginValue,
-  tenantModelProvidersQuery,
+  tenantModelProvidersInfiniteQuery,
   tenantCredentialsQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
@@ -56,9 +58,13 @@ export function TenantModelProvidersPage() {
   });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: providers, isLoading } = useQuery(
-    tenantModelProvidersQuery(tenantId),
-  );
+  const {
+    items: providers,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantModelProvidersInfiniteQuery(tenantId));
   const { data: credentials, isLoading: credsLoading } = useQuery(
     tenantCredentialsQuery(tenantId),
   );
@@ -107,7 +113,7 @@ export function TenantModelProvidersPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : providers?.length === 0 ? (
+      ) : providers.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">
           No model providers defined on this tenant.
         </p>
@@ -123,7 +129,7 @@ export function TenantModelProvidersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {providers?.map((p) => (
+              {providers.map((p) => (
                 <TableRow
                   key={p.id}
                   className="cursor-pointer"
@@ -152,6 +158,11 @@ export function TenantModelProvidersPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 
