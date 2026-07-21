@@ -18,7 +18,7 @@ type PrincipalSummary = {
   tenantId: string;
   tenantName: string;
   tenantSlug: string;
-  kind: "user" | "agent";
+  kind: "user" | "agent" | "workflow";
   status: "active" | "suspended" | "invited" | "deactivated";
   roles: { id: string; name: string }[];
 };

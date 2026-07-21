@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { principal, principalRole, role, user } from "@intx/db/schema";
+import { parsePrincipalRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   PrincipalResponse,
@@ -32,17 +33,18 @@ function formatPrincipal(
   roles: { id: string; name: string }[],
   identity?: ResolvedIdentity,
 ) {
+  const parsed = parsePrincipalRow(row);
   return {
-    id: row.id,
-    tenantId: row.tenantId,
-    kind: row.kind as "user" | "agent",
-    refId: row.refId,
-    displayName: identity?.displayName ?? row.refId,
+    id: parsed.id,
+    tenantId: parsed.tenantId,
+    kind: parsed.kind,
+    refId: parsed.refId,
+    displayName: identity?.displayName ?? parsed.refId,
     ...(identity?.email ? { email: identity.email } : {}),
-    status: row.status as "active" | "suspended" | "invited" | "deactivated",
+    status: parsed.status,
     roles,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
+    createdAt: ts(parsed.createdAt),
+    updatedAt: ts(parsed.updatedAt),
   };
 }
 
@@ -57,6 +59,9 @@ async function resolveIdentities(
     .map((p) => p.refId);
   const agentRefIds = principals
     .filter((p) => p.kind === "agent")
+    .map((p) => p.refId);
+  const workflowRefIds = principals
+    .filter((p) => p.kind === "workflow")
     .map((p) => p.refId);
 
   if (userRefIds.length > 0) {
@@ -100,6 +105,17 @@ async function resolveIdentities(
     }
   }
 
+  if (workflowRefIds.length > 0) {
+    // A workflow principal's refId is its workflow_deployment id; the
+    // deployment's routable address is the only human-facing label it has.
+    const deployments = await db.query.workflowDeployment.findMany({
+      where: (d, { inArray }) => inArray(d.id, workflowRefIds),
+    });
+    for (const d of deployments) {
+      identities.set(d.id, { displayName: `Workflow (${d.address})` });
+    }
+  }
+
   return identities;
 }
 
@@ -134,12 +150,12 @@ export function createPrincipalRoutes({
       tags: ["Principals"],
       summary: "List principals in the tenant",
       description:
-        "Lists all principals (users and agents) in the tenant. Filterable by kind and status.",
+        "Lists all principals (users, agents, and workflow deployments) in the tenant. Filterable by kind and status.",
       parameters: [
         {
           name: "kind",
           in: "query",
-          schema: { type: "string", enum: ["user", "agent"] },
+          schema: { type: "string", enum: ["user", "agent", "workflow"] },
         },
         {
           name: "status",
@@ -172,7 +188,7 @@ export function createPrincipalRoutes({
       });
 
       const conditions = [eq(principal.tenantId, tenantCtx.id)];
-      if (kind === "user" || kind === "agent") {
+      if (kind === "user" || kind === "agent" || kind === "workflow") {
         conditions.push(eq(principal.kind, kind));
       }
       if (

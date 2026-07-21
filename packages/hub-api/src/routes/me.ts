@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
 import { agent, agentInstance, principal } from "@intx/db/schema";
+import { parsePrincipalRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   UserProfile,
@@ -168,19 +169,16 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
         assignmentsByPrincipal.set(a.principalId, list);
       }
 
-      const items = rows.map((p) => {
+      const items = rows.map((row) => {
+        const p = parsePrincipalRow(row);
         const t = tenantMap.get(p.tenantId);
         return {
           principalId: p.id,
           tenantId: p.tenantId,
           tenantName: t?.name ?? "Unknown",
           tenantSlug: t?.slug ?? "unknown",
-          kind: p.kind as "user" | "agent",
-          status: p.status as
-            | "active"
-            | "suspended"
-            | "invited"
-            | "deactivated",
+          kind: p.kind,
+          status: p.status,
           roles: assignmentsByPrincipal.get(p.id) ?? [],
         };
       });

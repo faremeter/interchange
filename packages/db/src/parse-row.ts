@@ -8,6 +8,8 @@ import {
   grantOrigins,
   ModelProviderPlugin,
   ModelRequirements,
+  principalKinds,
+  principalStatuses,
   signalKinds,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
@@ -24,6 +26,7 @@ import type {
   modelProvider,
   oauthClient,
   offering,
+  principal,
   provider,
   signalCorrelation,
   tenant,
@@ -50,6 +53,9 @@ const approvalStatuses = [
 const ApprovalStatusValidator = type.enumerated(...approvalStatuses);
 
 const SignalKindValidator = type.enumerated(...signalKinds);
+
+const PrincipalKindValidator = type.enumerated(...principalKinds);
+const PrincipalStatusValidator = type.enumerated(...principalStatuses);
 
 const agentVersionStatuses = ["active", "inactive", "failed"] as const;
 const AgentVersionStatusValidator = type.enumerated(...agentVersionStatuses);
@@ -142,6 +148,14 @@ export function parseApprovalRow(row: typeof approval.$inferSelect) {
     status: ApprovalStatusValidator.assert(row.status),
     toolDefinition: JSONObject.assert(row.toolDefinition),
     toolArguments: JSONObject.assert(row.toolArguments),
+  };
+}
+
+export function parsePrincipalRow(row: typeof principal.$inferSelect) {
+  return {
+    ...row,
+    kind: PrincipalKindValidator.assert(row.kind),
+    status: PrincipalStatusValidator.assert(row.status),
   };
 }
 

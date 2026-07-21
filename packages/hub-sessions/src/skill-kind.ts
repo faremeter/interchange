@@ -366,6 +366,10 @@ export const skillAuthorize: AuthorizeFn = (
     };
   }
 
+  // Fail closed on any kind not handled above. The tenant-level
+  // `workflow` principal kind (`@intx/types` principalKinds) is a
+  // grant owner, not a skill bearer, and never carries a skill repo
+  // push here -- so it is intentionally left denied.
   return {
     allowed: false,
     reason: `unknown principal kind: ${principal.kind}`,

@@ -10,7 +10,7 @@ export const principal = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["user", "agent"] }).notNull(),
+    kind: text("kind", { enum: ["user", "agent", "workflow"] }).notNull(),
     refId: text("ref_id").notNull(),
     status: text("status", {
       enum: ["active", "suspended", "invited", "deactivated"],

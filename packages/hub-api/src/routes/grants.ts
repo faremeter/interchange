@@ -96,6 +96,9 @@ async function resolveGrantNames(
     const agentRefIds = principals
       .filter((p) => p.kind === "agent")
       .map((p) => p.refId);
+    const workflowRefIds = principals
+      .filter((p) => p.kind === "workflow")
+      .map((p) => p.refId);
 
     const refToName = new Map<string, string>();
 
@@ -136,6 +139,17 @@ async function resolveGrantNames(
             refToName.set(inst.id, `${name} (instance)`);
           }
         }
+      }
+    }
+
+    if (workflowRefIds.length > 0) {
+      // A workflow principal's refId is its workflow_deployment id; the
+      // deployment's routable address is the only human-facing label it has.
+      const deployments = await db.query.workflowDeployment.findMany({
+        where: (d, { inArray }) => inArray(d.id, workflowRefIds),
+      });
+      for (const d of deployments) {
+        refToName.set(d.id, `Workflow (${d.address})`);
       }
     }
 

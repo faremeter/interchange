@@ -118,7 +118,7 @@ export async function seedWorkflowDeployment(
 export type SeedPrincipal = {
   id: string;
   tenantId: string;
-  kind?: "user" | "agent";
+  kind?: "user" | "agent" | "workflow";
   refId?: string;
   status?: "active" | "suspended" | "invited" | "deactivated";
 };
