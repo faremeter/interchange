@@ -24,9 +24,11 @@ const transport = createBrowserTransport();
 // Fourth query-key segment marking the infinite (paginated) cache entry for a
 // resource, kept distinct from the flat single-fetch query that shares the same
 // prefix and still backs dropdowns/lookups. The shared prefix lets the existing
-// prefix-based mutation invalidations refresh both entries; the value must never
-// collide with an entity ID occupying the same slot (those are UUIDs, so it
-// cannot).
+// prefix-based mutation invalidations refresh both entries. The value must stay
+// a string that nothing else places in this slot: detail queries hold an entity
+// ID (a UUID) here and filtered lists hold a descriptor object, so "infinite"
+// can equal neither. A list later filtered by a bare string in this slot would
+// have to avoid this value.
 const INFINITE_LIST_KEY = "infinite";
 
 type TenantResponse = {
@@ -318,6 +320,13 @@ export function tenantAgentsQuery(tenantId: string) {
   });
 }
 
+export function tenantAgentsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<AgentResponse>(
+    ["tenants", tenantId, "agents", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/agents/definitions`,
+  );
+}
+
 export function agentDetailQuery(tenantId: string, agentId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "agents", agentId],
@@ -377,6 +386,13 @@ export function tenantInstancesQuery(tenantId: string) {
       return res.data;
     },
   });
+}
+
+export function tenantInstancesInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<AgentInstanceResponse>(
+    ["tenants", tenantId, "instances", INFINITE_LIST_KEY],
+    `/api/tenants/${tenantId}/agents/instances?status=running`,
+  );
 }
 
 export function agentAllInstancesQuery(tenantId: string, agentId: string) {
@@ -582,17 +598,11 @@ export function tenantWalletsInfiniteQuery(tenantId: string) {
   );
 }
 
-export function tenantOfferingsQuery(tenantId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "offerings"],
-    queryFn: async () => {
-      const res = await api<{ data: OfferingResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/offerings`,
-      );
-      return res.data;
-    },
-  });
+export function tenantOfferingsInfiniteQuery(tenantId: string) {
+  return infiniteListQuery<OfferingResponse>(
+    ["tenants", tenantId, "offerings"],
+    `/api/tenants/${tenantId}/offerings`,
+  );
 }
 
 // ---------------------------------------------------------------------------
