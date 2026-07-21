@@ -1385,12 +1385,13 @@ Source: packages/types/src/catalog.ts
 **canonicalName**: Tenant-unique canonical model name agents match their requirements against.
 
 ### CreateModelOffering
-`{ modelId: string, providerId: string, capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags?: string[], priority?: number }`
+`{ modelId: string, providerId: string, capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags?: string[], priority?: number, quirks?: { [string]: unknown } }`
 Source: packages/types/src/catalog.ts
 
 **modelId**: Catalog id of a model owned by this tenant.
 **providerId**: Catalog id of a model-provider owned by this tenant.
 **priority**: Ordering hint for source resolution; lower values are preferred first. Defaults to 0.
+**quirks**: Opaque per-deployment adapter accommodations for this offering; the adapter factory validates the provider-specific shape. Omit when the deployment needs none.
 
 ### CreateModelProvider
 `{ baseURL: string, name: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", credentialId?: string | null, walletId?: string | null }`
@@ -1525,11 +1526,12 @@ Source: packages/types/src/models.ts
 **offerings**: One entry per provider that offers this model in the tenant's resolved catalog, ordered by resolution priority.
 
 ### ModelOfferingResponse
-`{ capabilities: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], createdAt: string, deploymentTags: string[], disabled: boolean, id: string, modelId: string, priority: number, providerId: string, tenantId: string, updatedAt: string }`
+`{ capabilities: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], createdAt: string, deploymentTags: string[], disabled: boolean, id: string, modelId: string, priority: number, providerId: string, quirks: { [string]: unknown } | null, tenantId: string, updatedAt: string }`
 Source: packages/types/src/catalog.ts
 
 **capabilities**: Curated capability tags this provider advertises for this model.
 **priority**: Ordering hint for source resolution; lower values are preferred first.
+**quirks**: Opaque per-deployment adapter accommodations, or null when the deployment needs none.
 
 ### ModelProviderResponse
 `{ baseURL: string, createdAt: string, disabled: boolean, id: string, name: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", tenantId: string, updatedAt: string, credentialId?: string | null, walletId?: string | null }`
@@ -1642,8 +1644,10 @@ Source: packages/types/src/grants.ts
 Source: packages/types/src/catalog.ts
 
 ### UpdateModelOffering
-`{ capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags?: string[], disabled?: boolean, priority?: number }`
+`{ capabilities?: ("audio-input" | "extended-thinking" | "long-context" | "prompt-caching" | "structured-output" | "tool-use" | "vision")[], deploymentTags?: string[], disabled?: boolean, priority?: number, quirks?: { [string]: unknown } | null }`
 Source: packages/types/src/catalog.ts
+
+**quirks**: Replacement quirks bag, or null to clear it back to the adapter's default behavior. Omit to leave unchanged.
 
 ### UpdateModelProvider
 `{ baseURL?: string, disabled?: boolean, name?: string }`

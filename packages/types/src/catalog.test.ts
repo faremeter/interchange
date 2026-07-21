@@ -58,6 +58,7 @@ describe("ModelOfferingResponse", () => {
     priority: 0,
     deploymentTags: [],
     capabilities: ["vision", "tool-use"],
+    quirks: null,
     disabled: false,
     createdAt: "2026-06-18T00:00:00Z",
     updatedAt: "2026-06-18T00:00:00Z",
@@ -70,6 +71,16 @@ describe("ModelOfferingResponse", () => {
   test("rejects a non-curated capability", () => {
     const bad = { ...base, capabilities: ["telepathy"] };
     expect(ModelOfferingResponse(bad) instanceof type.errors).toBe(true);
+  });
+
+  test("accepts a populated quirks bag", () => {
+    const withQuirks = {
+      ...base,
+      quirks: { forceAssistantReasoningContent: true },
+    };
+    expect(ModelOfferingResponse(withQuirks) instanceof type.errors).toBe(
+      false,
+    );
   });
 });
 
