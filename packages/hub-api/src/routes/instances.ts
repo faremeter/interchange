@@ -20,7 +20,7 @@ import {
 } from "@intx/db/schema";
 import { parseAgentRow, resolveModelSources } from "@intx/db";
 import type { DB } from "@intx/db";
-import { evaluateGrants, authorize } from "@intx/authz";
+import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
@@ -39,7 +39,7 @@ import {
   formatAgentAddress,
   paginatedSchema,
 } from "@intx/types";
-import type { GrantEffect, GrantOrigin, ProviderPreference } from "@intx/types";
+import type { ProviderPreference } from "@intx/types";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   SessionLaunchError,
@@ -49,6 +49,7 @@ import {
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
 import { validateAttachments } from "../attachment-validation";
+import { resolveGrantMaterialization } from "../grant-materialization";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
@@ -263,36 +264,7 @@ export function createInstanceRoutes({
 
       const instancePrincipalId = generateId("principal");
 
-      // Collect invoker's grants once — used for both creator and invoker resolution.
-      const invokerGrants = await grantStore.collectGrants(
-        principal.id,
-        tenant.id,
-      );
-      // Only system/role/creator grants can be delegated. Invoker-sourced
-      // grants cannot be transitively re-delegated.
-      const delegatableInvokerGrants = invokerGrants.filter(
-        (g) => g.origin !== "invoker",
-      );
-
-      // Accumulate grant rows in memory; write to DB only after all
-      // requirements resolve. This avoids orphaned rows on partial failure.
-      const grantRows: {
-        id: string;
-        tenantId: string;
-        principalId: string;
-        resource: string;
-        action: string;
-        effect: GrantEffect;
-        conditions: Record<string, unknown> | null;
-        origin: GrantOrigin;
-        expiresAt: Date | null;
-        createdAt: Date;
-        updatedAt: Date;
-      }[] = [];
-
       const now = new Date();
-      const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
-      const invokerExpiresAt = new Date(now.getTime() + INVOKER_GRANT_TTL_MS);
 
       const parsedGrantReqs = GrantRequirements(row.grantRequirements ?? []);
       if (parsedGrantReqs instanceof type.errors) {
@@ -307,6 +279,12 @@ export function createInstanceRoutes({
         );
       }
 
+      // Collect invoker's grants once — used for both creator and invoker resolution.
+      const invokerGrants = await grantStore.collectGrants(
+        principal.id,
+        tenant.id,
+      );
+
       // Collect creator's grants once for all creator-sourced requirements.
       const hasCreatorReqs = parsedGrantReqs.some(
         (r) => r.source === "creator",
@@ -315,117 +293,20 @@ export function createInstanceRoutes({
         ? await grantStore.collectGrants(creatorPrincipalId, tenant.id)
         : [];
 
-      for (const req of parsedGrantReqs) {
-        const effect = req.effect ?? "allow";
-
-        if (req.source === "creator") {
-          const result = await evaluateGrants(
-            creatorGrants,
-            req.resource,
-            req.action,
-          );
-          if (result.effect !== "allow") {
-            return c.json(
-              {
-                error: {
-                  code: "insufficient_grants",
-                  message: `Creator lacks authority to delegate ${req.resource}/${req.action}`,
-                },
-              },
-              403,
-            );
-          }
-          grantRows.push({
-            id: generateId("grant"),
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            resource: req.resource,
-            action: req.action,
-            effect,
-            conditions: req.conditions ?? null,
-            origin: "creator",
-            expiresAt: null,
-            createdAt: now,
-            updatedAt: now,
-          });
-        } else if (req.source === "invoker") {
-          const result = await evaluateGrants(
-            delegatableInvokerGrants,
-            req.resource,
-            req.action,
-          );
-          if (result.effect !== "allow") {
-            return c.json(
-              {
-                error: {
-                  code: "insufficient_grants",
-                  message: `Invoker lacks authority for ${req.resource}/${req.action}`,
-                },
-              },
-              403,
-            );
-          }
-          grantRows.push({
-            id: generateId("grant"),
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            resource: req.resource,
-            action: req.action,
-            effect,
-            conditions: req.conditions ?? null,
-            origin: "invoker",
-            expiresAt: invokerExpiresAt,
-            createdAt: now,
-            updatedAt: now,
-          });
-        } else {
-          return c.json(
-            {
-              error: {
-                code: "not_launchable",
-                message: `Unknown grant requirement source: ${req.source}`,
-              },
-            },
-            409,
-          );
-        }
+      const materialization = await resolveGrantMaterialization({
+        tenantId: tenant.id,
+        targetPrincipalId: instancePrincipalId,
+        grantRequirements: parsedGrantReqs,
+        adHocInvokerGrants: body.invokerGrants ?? [],
+        invokerGrants,
+        creatorGrants,
+        now,
+      });
+      if (!materialization.ok) {
+        const { status, code, message } = materialization.rejection;
+        return c.json({ error: { code, message } }, status);
       }
-
-      // Process ad-hoc invoker grants from the launch request.
-      if (body.invokerGrants) {
-        for (const ig of body.invokerGrants) {
-          const effect = ig.effect ?? "allow";
-          const result = await evaluateGrants(
-            delegatableInvokerGrants,
-            ig.resource,
-            ig.action,
-          );
-          if (result.effect !== "allow") {
-            return c.json(
-              {
-                error: {
-                  code: "insufficient_grants",
-                  message: `Invoker lacks authority for ${ig.resource}/${ig.action}`,
-                },
-              },
-              403,
-            );
-          }
-          grantRows.push({
-            id: generateId("grant"),
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            resource: ig.resource,
-            action: ig.action,
-            effect,
-            conditions: ig.conditions ?? null,
-            origin: "invoker",
-            expiresAt: invokerExpiresAt,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-      }
+      const grantRows = materialization.grantRows;
 
       // --- Resolve agent role assignments for the instance principal ---
 
