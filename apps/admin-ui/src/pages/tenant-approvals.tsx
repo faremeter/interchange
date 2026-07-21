@@ -1,9 +1,10 @@
+import { useEffect, useRef } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { TenantNav } from "@/components/tenant-nav";
 import {
-  tenantApprovalsQuery,
+  tenantApprovalsInfiniteQuery,
   type ApprovalResponse,
 } from "@/lib/queries/tenants";
 import { parseApprovalSnapshot } from "@/lib/approval-snapshot";
@@ -61,9 +62,28 @@ export function TenantApprovalsPage() {
   const { tenantId } = useParams({
     from: "/authed/tenants/$tenantId/approvals",
   });
-  const { data: approvals, isLoading } = useQuery(
-    tenantApprovalsQuery(tenantId),
-  );
+  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
+    useInfiniteQuery(tenantApprovalsInfiniteQuery(tenantId));
+
+  const approvals = data?.pages.flatMap((page) => page.data) ?? [];
+
+  // Auto-load the next page when the sentinel below the table scrolls into
+  // view. The guard keeps a single fetch in flight; the observer re-attaches
+  // whenever `hasNextPage`/`fetchNextPage` change and disconnects on cleanup,
+  // so the callback never closes over a stale `isFetchingNextPage`.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasNextPage) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && !isFetchingNextPage) {
+        void fetchNextPage();
+      }
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   return (
     <div>
@@ -74,7 +94,7 @@ export function TenantApprovalsPage() {
       </p>
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : !approvals || approvals.length === 0 ? (
+      ) : approvals.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">
           No pending approvals.
         </p>
@@ -95,6 +115,10 @@ export function TenantApprovalsPage() {
               ))}
             </TableBody>
           </Table>
+          <div ref={sentinelRef} />
+          {isFetchingNextPage ? (
+            <p className="p-3 text-sm text-muted-foreground">Loading more...</p>
+          ) : null}
         </div>
       )}
     </div>
