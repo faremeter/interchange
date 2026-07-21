@@ -405,6 +405,7 @@
       "name": "@intx/inference-discovery",
       "version": "0.2.2",
       "dependencies": {
+        "@intx/types": "workspace:*",
         "arktype": "catalog:",
       },
     },

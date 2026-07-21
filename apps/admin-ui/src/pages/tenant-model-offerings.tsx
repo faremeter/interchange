@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
+import { CAPABILITIES } from "@intx/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
@@ -40,16 +41,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-export const CAPABILITIES = [
-  "vision",
-  "audio-input",
-  "tool-use",
-  "extended-thinking",
-  "structured-output",
-  "long-context",
-  "prompt-caching",
-] as const;
 
 export function TenantModelOfferingsPage() {
   const { tenantId } = useParams({

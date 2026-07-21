@@ -1,37 +1,17 @@
 import { type } from "arktype";
+import { WIRE_CAPABILITIES } from "@intx/types";
 
+// The discovery probe vocabulary is the production wire vocabulary
+// (@intx/types owns it, so production code never depends on this package) plus
+// the capabilities the rig probes for but production does not yet support.
+// `safety-classification` is the sole such extension today: the runtime models
+// no safety-classification content block or event, and the matrix only ever
+// records it as `misled`. It lives here, not in @intx/types, precisely because
+// no production offering can advertise it.
 export const CAPABILITIES = [
-  "plain-text",
-  "plain-text-streaming",
-  "function-calling",
-  "function-calling-multi-turn",
-  "function-calling-multi-turn-streaming",
-  "function-calling-with-thinking",
-  "function-calling-with-thinking-streaming",
-  "vision-input",
-  "vision-input-streaming",
-  "audio-input",
-  "audio-input-streaming",
-  "video-input",
-  "video-input-streaming",
-  "document-input",
-  "document-input-streaming",
-  "image-output",
-  "image-output-streaming",
-  "code-execution",
-  "code-execution-streaming",
-  "reasoning-content",
-  "reasoning-content-streaming",
-  "grounding",
-  "grounding-streaming",
-  "files-api-reference",
-  "files-api-reference-streaming",
-  "redacted-thinking",
-  "redacted-thinking-streaming",
+  ...WIRE_CAPABILITIES,
   "safety-classification",
   "safety-classification-streaming",
-  "structured-output",
-  "structured-output-streaming",
 ] as const;
 
 export const Capability = type.enumerated(...CAPABILITIES);

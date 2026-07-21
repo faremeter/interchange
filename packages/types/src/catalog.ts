@@ -1,20 +1,6 @@
 import { type } from "arktype";
 
-export const capabilities = [
-  "vision",
-  "audio-input",
-  "tool-use",
-  "extended-thinking",
-  "structured-output",
-  "long-context",
-  "prompt-caching",
-] as const;
-export type Capability = (typeof capabilities)[number];
-export const Capability = type
-  .enumerated(...capabilities)
-  .describe(
-    "A curated platform capability tag. `long-context` denotes models advertising a context window of at least ~200k tokens; the threshold is a curation criterion, not a stored limit.",
-  );
+import { Capability } from "./capabilities";
 
 export const modelProviderPlugins = [
   "anthropic",

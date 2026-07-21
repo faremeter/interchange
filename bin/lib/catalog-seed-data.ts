@@ -83,14 +83,14 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "claude-sonnet-4",
         priority: 0,
-        capabilities: ["tool-use", "long-context"],
+        capabilities: ["function-calling-multi-turn", "long-context"],
         quirks: {},
         price: { input: "0.000003", output: "0.000015" },
       },
       {
         model: "claude-haiku-4",
         priority: 10,
-        capabilities: ["tool-use"],
+        capabilities: ["function-calling-multi-turn"],
         quirks: {},
         price: { input: "0.0000008", output: "0.000004" },
       },
@@ -106,7 +106,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "gpt-4o",
         priority: 0,
-        capabilities: ["tool-use", "structured-output"],
+        capabilities: ["function-calling-multi-turn", "structured-output"],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000025", output: "0.00001" },
       },
@@ -122,7 +122,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "gemini-2.5-pro",
         priority: 0,
-        capabilities: ["tool-use", "long-context"],
+        capabilities: ["function-calling-multi-turn", "long-context"],
         quirks: {},
         price: { input: "0.00000125", output: "0.00001" },
       },
@@ -138,7 +138,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2",
         priority: 0,
-        capabilities: ["tool-use"],
+        capabilities: ["function-calling-multi-turn"],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -154,7 +154,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2",
         priority: 10,
-        capabilities: ["tool-use"],
+        capabilities: ["function-calling-multi-turn"],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -170,7 +170,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2",
         priority: 20,
-        capabilities: ["tool-use"],
+        capabilities: ["function-calling-multi-turn"],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -186,7 +186,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2.6",
         priority: 0,
-        capabilities: ["tool-use"],
+        capabilities: ["function-calling-multi-turn"],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
@@ -202,7 +202,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "kimi-k2.6",
         priority: 10,
-        capabilities: ["tool-use"],
+        capabilities: ["function-calling-multi-turn"],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
       },
