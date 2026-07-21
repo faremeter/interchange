@@ -1,9 +1,10 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 
 import { TenantNav } from "@/components/tenant-nav";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
-  tenantInstancesQuery,
+  tenantInstancesInfiniteQuery,
   type AgentInstanceResponse,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
@@ -63,9 +64,13 @@ export function TenantInstancesPage() {
   const { tenantId } = useParams({
     from: "/authed/tenants/$tenantId/instances",
   });
-  const { data: instances, isLoading } = useQuery(
-    tenantInstancesQuery(tenantId),
-  );
+  const {
+    items: instances,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantInstancesInfiniteQuery(tenantId));
 
   return (
     <div>
@@ -77,7 +82,7 @@ export function TenantInstancesPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : !instances || instances.length === 0 ? (
+      ) : instances.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">No agents found.</p>
       ) : (
         <div className="mt-4 rounded-lg border">
@@ -91,7 +96,7 @@ export function TenantInstancesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {instances?.map((inst) => (
+              {instances.map((inst) => (
                 <InstanceRow
                   key={inst.id}
                   instance={inst}
@@ -100,6 +105,11 @@ export function TenantInstancesPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
     </div>

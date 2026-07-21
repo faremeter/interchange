@@ -5,10 +5,12 @@ import { Plus } from "lucide-react";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
+import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
+import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createOfferingMutation,
   tenantAgentsQuery,
-  tenantOfferingsQuery,
+  tenantOfferingsInfiniteQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,9 +45,13 @@ export function TenantOfferingsPage() {
   });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: offerings, isLoading } = useQuery(
-    tenantOfferingsQuery(tenantId),
-  );
+  const {
+    items: offerings,
+    isLoading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = usePaginatedList(tenantOfferingsInfiniteQuery(tenantId));
   const { data: agents } = useQuery(tenantAgentsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -82,7 +88,7 @@ export function TenantOfferingsPage() {
 
       {isLoading ? (
         <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
-      ) : offerings?.length === 0 ? (
+      ) : offerings.length === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground">
           No offerings registered.
         </p>
@@ -98,7 +104,7 @@ export function TenantOfferingsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {offerings?.map((ofr) => (
+              {offerings.map((ofr) => (
                 <TableRow
                   key={ofr.id}
                   className="cursor-pointer"
@@ -136,6 +142,11 @@ export function TenantOfferingsPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginatedListSentinel
+            hasNextPage={hasNextPage}
+            isFetchingNextPage={isFetchingNextPage}
+            fetchNextPage={fetchNextPage}
+          />
         </div>
       )}
 
