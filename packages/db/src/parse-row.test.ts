@@ -159,6 +159,7 @@ function makeOfferingRow(
     priority: 0,
     deploymentTags: [],
     capabilities: ["vision", "tool-use"],
+    quirks: null,
     disabled: false,
     createdAt: now,
     updatedAt: now,
@@ -180,6 +181,28 @@ describe("parseModelOfferingRow", () => {
   test("rejects a non-curated capability", () => {
     expect(() =>
       parseModelOfferingRow(makeOfferingRow({ capabilities: ["telepathy"] })),
+    ).toThrow();
+  });
+
+  test("passes a null quirks bag through unchanged", () => {
+    const parsed = parseModelOfferingRow(makeOfferingRow({ quirks: null }));
+    expect(parsed.quirks).toBeNull();
+  });
+
+  test("preserves an empty quirks object", () => {
+    const parsed = parseModelOfferingRow(makeOfferingRow({ quirks: {} }));
+    expect(parsed.quirks).toEqual({});
+  });
+
+  test("preserves a populated quirks bag", () => {
+    const quirks = { forceAssistantReasoningContent: true };
+    const parsed = parseModelOfferingRow(makeOfferingRow({ quirks }));
+    expect(parsed.quirks).toEqual(quirks);
+  });
+
+  test("rejects a scalar quirks value", () => {
+    expect(() =>
+      parseModelOfferingRow(makeOfferingRow({ quirks: "not-an-object" })),
     ).toThrow();
   });
 });

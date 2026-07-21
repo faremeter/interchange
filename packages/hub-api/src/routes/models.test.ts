@@ -54,6 +54,7 @@ function offering(
     priority,
     deploymentTags: [],
     capabilities: [],
+    quirks: null,
     disabled: false,
     createdAt: D,
     updatedAt: D,
