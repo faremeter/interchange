@@ -116,13 +116,14 @@ describe("createSourceRegistry", () => {
     expect(reg.active.model).toBe("claude-3-5-haiku");
   });
 
-  test("setSource overwrites defaults and capabilities, including deletion", () => {
+  test("setSource overwrites defaults, capabilities, and quirks, including deletion", () => {
     const reg = createSourceRegistry({
       sources: [
         {
           ...S_ANTHROPIC,
           defaults: { maxTokens: 1024 },
           capabilities: ["text"],
+          quirks: { forceAssistantReasoningContent: true },
         },
       ],
       defaultSource: S_ANTHROPIC.id,
@@ -132,13 +133,16 @@ describe("createSourceRegistry", () => {
       ...S_ANTHROPIC,
       defaults: { maxTokens: 4096 },
       capabilities: ["text", "vision"],
+      quirks: { reasoningFieldNames: ["reasoning"] },
     });
     expect(reg.active.defaults).toEqual({ maxTokens: 4096 });
     expect(reg.active.capabilities).toEqual(["text", "vision"]);
+    expect(reg.active.quirks).toEqual({ reasoningFieldNames: ["reasoning"] });
 
     reg.setSource(S_ANTHROPIC);
     expect(reg.active.defaults).toBeUndefined();
     expect(reg.active.capabilities).toBeUndefined();
+    expect(reg.active.quirks).toBeUndefined();
   });
 
   test("setSource throws InvalidInferenceSourceError on invalid input", () => {

@@ -2180,6 +2180,15 @@ export type InferenceSourceDefaults = typeof InferenceSourceDefaults.infer;
  * selector consumes it). The runtime ignores it; populating the field
  * later is not a wire-format change.
  *
+ * `quirks` is the opaque per-deployment bag of provider-specific adapter
+ * accommodations. The harness reads it once, at adapter instantiation, and
+ * passes it to `AdapterRegistry.resolve` as a sibling of the slim
+ * `LastCycleSource` — quirks are deliberately kept off `LastCycleSource`,
+ * which rides on every usage event. The field is present-and-populated or
+ * absent; it is never `null`. A source row with no quirks stores SQL `NULL`,
+ * and the catalog resolver translates that absence into an omitted key here,
+ * so downstream code sees `undefined`, never `null`.
+ *
  * (INFERENCE.md § Providers)
  */
 export const InferenceSource = type({
@@ -2190,14 +2199,15 @@ export const InferenceSource = type({
   model: "string",
   "defaults?": InferenceSourceDefaults,
   "capabilities?": "string[]",
+  "quirks?": "Record<string, unknown>",
 });
 export type InferenceSource = typeof InferenceSource.infer;
 
 /**
  * Replace every field on `active` with the corresponding field from
- * `next`, in place. Optional fields (`defaults`, `capabilities`) are
- * `delete`d from `active` when absent on `next` so the swap is exact —
- * no stale value from a previous rotation can survive.
+ * `next`, in place. Optional fields (`defaults`, `capabilities`,
+ * `quirks`) are `delete`d from `active` when absent on `next` so the
+ * swap is exact — no stale value from a previous rotation can survive.
  *
  * Used by both the agent's source registry and the harness's source
  * hot-swap path to mutate the single shared `InferenceSource` object the
@@ -2224,6 +2234,11 @@ export function applyInferenceSourceFields(
   } else {
     delete active.capabilities;
   }
+  if (next.quirks !== undefined) {
+    active.quirks = next.quirks;
+  } else {
+    delete active.quirks;
+  }
 
   // Compile-time exhaustiveness check. `Required<>` forces optional
   // keys to also be required in the guard — so a future optional field
@@ -2237,6 +2252,7 @@ export function applyInferenceSourceFields(
     model: true,
     defaults: true,
     capabilities: true,
+    quirks: true,
   };
   void _handled;
 }
