@@ -1056,3 +1056,23 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 });
+
+describe("Anthropic adapter: quirks", () => {
+  test("constructs with an absent quirks bag", () => {
+    expect(() => createAnthropicAdapter(TEST_SOURCE)).not.toThrow();
+  });
+
+  test("constructs with an explicit undefined quirks bag", () => {
+    expect(() => createAnthropicAdapter(TEST_SOURCE, undefined)).not.toThrow();
+  });
+
+  test("constructs with an empty quirks bag", () => {
+    expect(() => createAnthropicAdapter(TEST_SOURCE, {})).not.toThrow();
+  });
+
+  test("rejects a populated quirks bag since it declares no quirks", () => {
+    expect(() =>
+      createAnthropicAdapter(TEST_SOURCE, { anything: true }),
+    ).toThrow(/invalid quirks/);
+  });
+});

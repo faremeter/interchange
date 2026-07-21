@@ -7,8 +7,8 @@ import { createAnthropicAdapter } from "./anthropic";
 import { createGoogleGenAIAdapter } from "./google-genai";
 import { createOpenAIAdapter } from "./openai";
 
-export { createAnthropicAdapter } from "./anthropic";
-export { createGoogleGenAIAdapter } from "./google-genai";
+export { createAnthropicAdapter, AnthropicQuirks } from "./anthropic";
+export { createGoogleGenAIAdapter, GoogleGenAIQuirks } from "./google-genai";
 export { createOpenAIAdapter, OpenAIQuirks } from "./openai";
 
 function builtinFactories(): Record<string, AdapterFactory> {
