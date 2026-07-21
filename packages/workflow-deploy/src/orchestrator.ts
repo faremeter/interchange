@@ -47,11 +47,7 @@ import {
   type ApprovalSet,
   type CapabilityApprovalGate,
 } from "./capability-approval";
-import {
-  walkCapabilities,
-  type CapabilityWalkResult,
-  type GrantDeclarations,
-} from "./capability-walk";
+import { walkCapabilities, type CapabilityWalkResult } from "./capability-walk";
 
 /**
  * Minimal `DeployContent` shape the orchestrator passes through to
@@ -894,9 +890,16 @@ async function writeWorkflowRepoTree(args: {
 }
 
 function serializeWalk(walk: CapabilityWalkResult): unknown {
-  const perStep: Record<string, GrantDeclarations> = {};
+  // `GrantDeclarations.grantEffects` is a `Map`, which `JSON.stringify`
+  // would silently emit as `{}` -- corrupting capability-declarations.json
+  // into effect-less noise. Convert each Map to a plain object explicitly
+  // so the audited declaration carries real per-tool effect data.
+  const perStep: Record<string, unknown> = {};
   for (const [stepId, declarations] of walk.perStep) {
-    perStep[stepId] = declarations;
+    perStep[stepId] = {
+      grants: declarations.grants,
+      grantEffects: Object.fromEntries(declarations.grantEffects),
+    };
   }
   return {
     perStep,
