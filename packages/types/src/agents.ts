@@ -55,6 +55,7 @@ export const GrantRequirement = type({
   ),
   "conditions?": "Record<string, unknown> | null",
 });
+export type GrantRequirement = typeof GrantRequirement.infer;
 
 export const CreateAgent = type({
   name: "string",
