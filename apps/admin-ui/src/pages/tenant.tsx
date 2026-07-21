@@ -60,6 +60,8 @@ export function TenantPage() {
           </CardHeader>
           <CardContent className="pt-0">
             <p className="text-2xl font-semibold">
+              {/* Only human `user` principals are members; `agent` and
+                  `workflow` principals are internal actors, not members. */}
               {principals?.filter((p) => p.kind === "user").length ?? 0}
             </p>
           </CardContent>

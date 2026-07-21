@@ -299,9 +299,9 @@ Revoke federation trust
 ### GET /api/tenants/:tenantId/principals
 List principals in the tenant
 
-Lists all principals (users and agents) in the tenant. Filterable by kind and status.
+Lists all principals (users, agents, and workflow deployments) in the tenant. Filterable by kind and status.
 
-Query: kind?: user|agent, status?: active|suspended|invited|deactivated, cursor?, limit?
+Query: kind?: user|agent|workflow, status?: active|suspended|invited|deactivated, cursor?, limit?
 
 200: unknown -- List of principals
 
@@ -1571,11 +1571,11 @@ Source: packages/types/src/catalog.ts
 **thinkingTokenPrice**: Cost per thinking token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
 
 ### PrincipalResponse
-`{ createdAt: string, displayName: string, id: string, kind: "agent" | "user", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
+`{ createdAt: string, displayName: string, id: string, kind: "agent" | "user" | "workflow", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
 Source: packages/types/src/principals.ts
 
-**kind**: Whether this principal represents a `user` (a human account) or an `agent`.
-**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, or the agent id when `kind` is `agent`. Unique per tenant and kind.
+**kind**: Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow deployment).
+**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, the agent id when `kind` is `agent`, or the deployment id when `kind` is `workflow`. Unique per tenant and kind.
 **status**: Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.
 
 ### ProviderResponse

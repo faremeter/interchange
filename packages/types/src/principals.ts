@@ -1,6 +1,6 @@
 import { type } from "arktype";
 
-export const principalKinds = ["user", "agent"] as const;
+export const principalKinds = ["user", "agent", "workflow"] as const;
 export type PrincipalKind = (typeof principalKinds)[number];
 
 export const principalStatuses = [
@@ -27,10 +27,10 @@ export const PrincipalResponse = type({
   id: "string",
   tenantId: "string",
   kind: Kind.describe(
-    "Whether this principal represents a `user` (a human account) or an `agent`.",
+    "Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow deployment).",
   ),
   refId: type("string").describe(
-    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, or the agent id when `kind` is `agent`. Unique per tenant and kind.",
+    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, the agent id when `kind` is `agent`, or the deployment id when `kind` is `workflow`. Unique per tenant and kind.",
   ),
   displayName: "string",
   "email?": "string",

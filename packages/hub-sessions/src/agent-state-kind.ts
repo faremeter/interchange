@@ -210,6 +210,10 @@ export const agentStateAuthorize: AuthorizeFn = (
     };
   }
 
+  // Fail closed on any kind not handled above. The tenant-level
+  // `workflow` principal kind (`@intx/types` principalKinds) is a
+  // grant owner, not an agent-state bearer, and never carries an
+  // agent-state repo push here -- so it is intentionally left denied.
   return {
     allowed: false,
     reason: `unknown principal kind: ${principal.kind}`,

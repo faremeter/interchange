@@ -45,7 +45,7 @@ type TenantResponse = {
 type PrincipalResponse = {
   id: string;
   tenantId: string;
-  kind: "user" | "agent";
+  kind: "user" | "agent" | "workflow";
   refId: string;
   displayName: string;
   email?: string;

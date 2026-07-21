@@ -7,8 +7,14 @@ import {
   parseGitTokenRow,
   parseModelOfferingRow,
   parseModelProviderRow,
+  parsePrincipalRow,
 } from "./parse-row";
-import type { gitToken, modelOffering, modelProvider } from "./schema";
+import type {
+  gitToken,
+  modelOffering,
+  modelProvider,
+  principal,
+} from "./schema";
 
 type GitTokenRow = typeof gitToken.$inferSelect;
 
@@ -114,6 +120,35 @@ describe("parseGitTokenRow", () => {
     const row = makeRow({ actions: [] });
     const parsed = parseGitTokenRow(row);
     expect(parsed.actions).toEqual([]);
+  });
+});
+
+type PrincipalRow = typeof principal.$inferSelect;
+
+function makePrincipalRow(overrides: Partial<PrincipalRow> = {}): PrincipalRow {
+  const now = new Date();
+  return {
+    id: "prn_0123456789abcdef",
+    tenantId: "tnt_acme",
+    kind: "user",
+    refId: "usr_alice",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+describe("parsePrincipalRow", () => {
+  test("accepts a user principal", () => {
+    const parsed = parsePrincipalRow(makePrincipalRow());
+    expect(parsed.kind).toBe("user");
+    expect(parsed.status).toBe("active");
+  });
+
+  test("accepts a workflow principal", () => {
+    const parsed = parsePrincipalRow(makePrincipalRow({ kind: "workflow" }));
+    expect(parsed.kind).toBe("workflow");
   });
 });
 

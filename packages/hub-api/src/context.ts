@@ -16,7 +16,7 @@ export type TenantRow = {
 export type PrincipalRow = {
   id: string;
   tenantId: string;
-  kind: "user" | "agent";
+  kind: "user" | "agent" | "workflow";
   refId: string;
   status: "active" | "suspended" | "invited" | "deactivated";
   createdAt: Date;
