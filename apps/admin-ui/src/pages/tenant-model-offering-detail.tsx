@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Pencil, Plus, Trash2, X } from "lucide-react";
+import { CAPABILITIES } from "@intx/types";
 
 import { MutationError } from "@/components/mutation-error";
 import {
@@ -51,7 +52,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { CAPABILITIES } from "@/pages/tenant-model-offerings";
 
 function Row({
   label,

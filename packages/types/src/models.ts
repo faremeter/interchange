@@ -1,6 +1,7 @@
 import { type } from "arktype";
 
-import { Capability, ModelProviderPlugin, PricingRowResponse } from "./catalog";
+import { Capability } from "./capabilities";
+import { ModelProviderPlugin, PricingRowResponse } from "./catalog";
 
 export const ModelOfferingInfo = type({
   offeringId: type("string").describe(

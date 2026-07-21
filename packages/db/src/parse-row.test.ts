@@ -158,7 +158,7 @@ function makeOfferingRow(
     providerId: "mpv_anthropic",
     priority: 0,
     deploymentTags: [],
-    capabilities: ["vision", "tool-use"],
+    capabilities: ["vision-input", "function-calling-multi-turn"],
     quirks: null,
     disabled: false,
     createdAt: now,
@@ -170,7 +170,10 @@ function makeOfferingRow(
 describe("parseModelOfferingRow", () => {
   test("accepts curated capabilities", () => {
     const parsed = parseModelOfferingRow(makeOfferingRow());
-    expect(parsed.capabilities).toEqual(["vision", "tool-use"]);
+    expect(parsed.capabilities).toEqual([
+      "vision-input",
+      "function-calling-multi-turn",
+    ]);
   });
 
   test("accepts an empty capabilities array", () => {

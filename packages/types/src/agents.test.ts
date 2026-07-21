@@ -208,7 +208,7 @@ describe("CreateAgent", () => {
       modelRequirements: [
         {
           model: "opus",
-          capabilities: ["tool-use"],
+          capabilities: ["function-calling-multi-turn"],
           providers: { mode: "prefer", order: ["anthropic"] },
         },
       ],
@@ -222,8 +222,8 @@ describe("CreateAgent", () => {
     const result = CreateAgent({
       name: "My Agent",
       modelRequirements: [
-        { model: "opus", capabilities: ["vision"] },
-        { model: "opus", capabilities: ["tool-use"] },
+        { model: "opus", capabilities: ["vision-input"] },
+        { model: "opus", capabilities: ["function-calling-multi-turn"] },
       ],
     });
     expect(result instanceof type.errors).toBe(true);

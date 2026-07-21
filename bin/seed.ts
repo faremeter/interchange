@@ -582,7 +582,7 @@ const { status: a1Status, data: a1Data } = await api(
       "You are a research assistant. Find and summarize information. When you receive a mail message, reply to it immediately with a helpful response. Do not wait for further instructions.",
     modelConfig: { defaultModel: "kimi-k2.6" },
     modelRequirements: [
-      { model: "claude-sonnet-4", capabilities: ["tool-use"] },
+      { model: "claude-sonnet-4", capabilities: ["long-context"] },
     ],
     toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { research: true, summarize: true },

@@ -216,11 +216,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("matches when an offering carries the required capability", async () => {
-        await seedBase({ offeringCapabilities: ["vision"] });
+        await seedBase({ offeringCapabilities: ["vision-input"] });
         const result = await resolveModelSources(
           h.db,
           "tnt_root",
-          [{ model: "opus", capabilities: ["vision"] }],
+          [{ model: "opus", capabilities: ["vision-input"] }],
           AUTHORIZED_CREATOR_GRANTS,
         );
         expect(result.ok).toBe(true);
@@ -231,7 +231,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const result = await resolveModelSources(
           h.db,
           "tnt_root",
-          [{ model: "opus", capabilities: ["vision"] }],
+          [{ model: "opus", capabilities: ["vision-input"] }],
           AUTHORIZED_CREATOR_GRANTS,
         );
         expect(result).toMatchObject({

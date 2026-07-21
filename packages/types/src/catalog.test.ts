@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import {
-  Capability,
-  capabilities,
   ModelOfferingResponse,
   ModelProviderPlugin,
   modelProviderPlugins,
@@ -12,30 +10,6 @@ import {
   ModelRequirements,
   PricingRowResponse,
 } from "./catalog";
-
-describe("Capability enum", () => {
-  test("curated vocabulary is the v1 set", () => {
-    expect([...capabilities]).toEqual([
-      "vision",
-      "audio-input",
-      "tool-use",
-      "extended-thinking",
-      "structured-output",
-      "long-context",
-      "prompt-caching",
-    ]);
-  });
-
-  test("accepts each curated term", () => {
-    for (const cap of capabilities) {
-      expect(Capability(cap)).toBe(cap);
-    }
-  });
-
-  test("rejects a term outside the curated vocabulary", () => {
-    expect(Capability("streaming") instanceof type.errors).toBe(true);
-  });
-});
 
 describe("ModelProviderPlugin enum", () => {
   test("accepts each adapter key", () => {
@@ -57,7 +31,7 @@ describe("ModelOfferingResponse", () => {
     providerId: "mpv_1",
     priority: 0,
     deploymentTags: [],
-    capabilities: ["vision", "tool-use"],
+    capabilities: ["vision-input", "function-calling-multi-turn"],
     quirks: null,
     disabled: false,
     createdAt: "2026-06-18T00:00:00Z",
@@ -117,7 +91,7 @@ describe("ModelRequirement", () => {
   test("accepts a capability filter and a provider preference", () => {
     const req = {
       model: "opus",
-      capabilities: ["vision", "tool-use"],
+      capabilities: ["vision-input", "function-calling-multi-turn"],
       providers: { mode: "pin", order: ["anthropic"] },
     };
     expect(ModelRequirement(req) instanceof type.errors).toBe(false);
@@ -146,8 +120,8 @@ describe("ModelRequirements", () => {
 
   test("rejects two requirements for the same model", () => {
     const reqs = [
-      { model: "opus", capabilities: ["vision"] },
-      { model: "opus", capabilities: ["tool-use"] },
+      { model: "opus", capabilities: ["vision-input"] },
+      { model: "opus", capabilities: ["function-calling-multi-turn"] },
     ];
     expect(ModelRequirements(reqs) instanceof type.errors).toBe(true);
   });
