@@ -69,6 +69,7 @@ let toolRunCount = 0;
 
 const chargeTool = defineTool<BaseEnv>({
   id: "@intx-test/e2e/charge_card",
+  definitions: [{ name: TOOL_NAME }],
   factory: () => ({
     definitions: [
       {

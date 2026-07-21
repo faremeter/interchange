@@ -29,6 +29,7 @@ function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
   return Object.assign(factory, {
     id: "@intx/tools-mail/sidecar-bundle",
     requires: [] as readonly string[],
+    definitions: [],
   });
 }
 

@@ -161,6 +161,7 @@ type ArkSchema = (data: unknown) => unknown;
 function terminalTool(id: string, name: string, schema: ArkSchema) {
   return defineTool<BaseEnv>({
     id,
+    definitions: [{ name }],
     factory: (): ToolBundle => ({
       definitions: [
         {

@@ -87,6 +87,7 @@ describe("validateEnv", () => {
     const factory = defineTool<MailEnv>({
       id: "@intx/tools-mail/send",
       requires: ["transport"],
+      definitions: [],
       factory: () => ({
         definitions: [],
         async run(call) {
@@ -121,6 +122,7 @@ describe("validateEnv", () => {
     const factory = defineTool<MailEnv>({
       id: "@intx/tools-mail/send",
       requires: ["transport"],
+      definitions: [],
       factory: () => ({
         definitions: [],
         async run(call) {
@@ -212,6 +214,7 @@ describe("validateEnv", () => {
     const factory = defineTool<MailEnv>({
       id: "@intx/tools-mail/send",
       requires: ["transport"],
+      definitions: [],
       factory: () => ({
         definitions: [],
         async run(call) {
@@ -307,6 +310,7 @@ describe("getRequiredEnvKeys", () => {
     const factory = defineTool<MailEnv>({
       id: "pkg/mail",
       requires: ["transport", "address"],
+      definitions: [],
       factory: () => ({
         definitions: [],
         async run(call) {
@@ -343,6 +347,7 @@ describe("getRequiredEnvKeys", () => {
     const factory = defineTool<MailEnv>({
       id: "pkg/mail",
       requires: ["transport"],
+      definitions: [],
       factory: () => ({
         definitions: [],
         async run(call) {

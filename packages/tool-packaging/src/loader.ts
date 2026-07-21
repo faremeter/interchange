@@ -1494,6 +1494,16 @@ function applyNamespacePrefix(
   // as a side-effect) blocks the `push` / `splice` mutations that
   // would otherwise grow the surface in place.
   const frozenRequires = Object.freeze([...factory.requires]);
+  // The wrapped factory contributes prefixed tool names at runtime, so
+  // its static declaration must carry the same prefixed names to stay
+  // truthful for callers that enumerate `definitions` without invoking
+  // the factory.
+  const frozenDefinitions = Object.freeze(
+    factory.definitions.map((def) => ({
+      ...def,
+      name: `${prefix}${def.name}`,
+    })),
+  );
   const wrapped: LoadedToolFactory = Object.freeze(
     Object.assign(
       (env: BaseEnv) => {
@@ -1583,7 +1593,11 @@ function applyNamespacePrefix(
           ...(bundle.dispose !== undefined ? { dispose: bundle.dispose } : {}),
         };
       },
-      { id: factory.id, requires: frozenRequires },
+      {
+        id: factory.id,
+        requires: frozenRequires,
+        definitions: frozenDefinitions,
+      },
     ),
   );
   return wrapped;

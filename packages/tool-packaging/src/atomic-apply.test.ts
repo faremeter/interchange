@@ -48,7 +48,11 @@ function fakeFactory(id: string): LoadedToolFactory {
     definitions: [],
     run: async () => ({ callId: "stub", content: "ok" }),
   });
-  return Object.assign(fn, { id, requires: [] as readonly string[] });
+  return Object.assign(fn, {
+    id,
+    requires: [] as readonly string[],
+    definitions: [],
+  });
 }
 
 function fakePlugin(id: string): AnnotatedPluginFactory {

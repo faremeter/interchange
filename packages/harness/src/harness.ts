@@ -20,6 +20,7 @@ import {
   type AnnotatedToolFactory,
   type BaseEnv,
   type ToolBundle,
+  type ToolDeclaration,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
 import type {
@@ -246,13 +247,21 @@ export function createWrappedStorageOverrides(
  * the "what does the harness need vs. what does the tool runner
  * need" partition onto the caller, which is exactly the partition
  * this helper exists to hide.
+ *
+ * `definitions` is the static declaration `defineTool` requires: the
+ * tool names this factory contributes, enumerable without invoking the
+ * wrapper. The caller supplies it because the wrapper binds `transport`
+ * from env and cannot run at declaration time; the caller already holds
+ * the mail-tool runner whose `definitions` name the same tools.
  */
 export function defineMailTools(
   wrapper: MailToolWrapper,
+  definitions: readonly ToolDeclaration[],
 ): AnnotatedToolFactory<MailEnv> {
   return defineTool<MailEnv>({
     id: "@intx/harness/mail",
     requires: ["transport", "address"],
+    definitions,
     factory: (env) => {
       const bundle = wrapper(env.transport);
       return {

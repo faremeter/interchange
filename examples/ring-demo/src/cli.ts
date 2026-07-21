@@ -363,12 +363,16 @@ for (const [i, name] of AGENT_NAMES.entries()) {
   const posix = createPosixTools({ cwd: process.cwd() });
   toolRunners.push({ mail, posix });
 
-  const mailFactory = defineMailTools(() => ({
-    definitions: mail.definitions,
-    run: (call, signal) => mail.run(call, signal),
-  }));
+  const mailFactory = defineMailTools(
+    () => ({
+      definitions: mail.definitions,
+      run: (call, signal) => mail.run(call, signal),
+    }),
+    mail.definitions.map((def) => ({ name: def.name })),
+  );
   const posixFactory = defineTool({
     id: `@interchange-demo/ring-demo/posix-${name}`,
+    definitions: posix.definitions.map((def) => ({ name: def.name })),
     factory: () => ({
       definitions: posix.definitions,
       run: (call, signal) => posix.run(call, signal),

@@ -24,6 +24,9 @@
     "@intx/types": "workspace:*",
     "arktype": "catalog:"
   },
+  "devDependencies": {
+    "@intx/storage-isogit": "workspace:*"
+  },
   "files": [
     "dist",
     "README.md",

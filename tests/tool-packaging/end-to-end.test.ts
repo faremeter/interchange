@@ -138,7 +138,11 @@ function fakeFactory(id: string) {
     definitions: [],
     run: async () => ({ callId: "stub", content: "ok" }),
   });
-  return Object.assign(fn, { id, requires: [] as readonly string[] });
+  return Object.assign(fn, {
+    id,
+    requires: [] as readonly string[],
+    definitions: [],
+  });
 }
 
 describe("hub→sidecar pipeline (happy path)", () => {

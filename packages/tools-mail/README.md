@@ -14,7 +14,11 @@ its definitions alongside other bundles.
 import { createMailTools } from "@intx/tools-mail";
 import { defineMailTools } from "@intx/harness";
 
-const mailFactory = defineMailTools(() => createMailTools({ capabilities }));
+const mailTools = createMailTools({ capabilities });
+const mailFactory = defineMailTools(
+  () => mailTools,
+  mailTools.definitions.map((def) => ({ name: def.name })),
+);
 const def = defineAgent({ ..., tools: [mailFactory, posixFactory] });
 ```
 

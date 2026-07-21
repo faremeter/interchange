@@ -11,6 +11,7 @@ import type { MessageTransport } from "@intx/types/runtime";
 import { createRuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 import { createMailTools } from "./index";
+import { TOOL_DEFINITIONS } from "./definitions";
 
 /**
  * Env contract for the mail tool bundle. Extends `BaseEnv` with the
@@ -31,6 +32,7 @@ export interface MailToolEnv extends BaseEnv {
 export const mail = defineTool<MailToolEnv>({
   id: "@intx/tools-mail/sidecar-bundle",
   requires: ["transport", "address"],
+  definitions: TOOL_DEFINITIONS.map((def) => ({ name: def.name })),
   factory: (env) => {
     const capabilities = createRuntimeCapabilities({
       "mail.transport": env.transport,

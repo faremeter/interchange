@@ -19,13 +19,17 @@ import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { createHarness, defineMailTools } from "@intx/harness";
 import { createIsogitStore } from "@intx/storage-isogit";
 
-const mailFactory = defineMailTools(() => ({
-  definitions: myMailTools.definitions,
-  run: (call, signal) => myMailTools.run(call, signal),
-}));
+const mailFactory = defineMailTools(
+  () => ({
+    definitions: myMailTools.definitions,
+    run: (call, signal) => myMailTools.run(call, signal),
+  }),
+  myMailTools.definitions.map((def) => ({ name: def.name })),
+);
 
 const posixFactory = defineTool({
   id: "@my-org/agent/posix",
+  definitions: myPosixTools.definitions.map((def) => ({ name: def.name })),
   factory: () => ({
     definitions: myPosixTools.definitions,
     run: (call, signal) => myPosixTools.run(call, signal),

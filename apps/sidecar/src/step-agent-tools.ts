@@ -34,6 +34,7 @@ import {
   type Agent,
   type AgentDefinition,
   type AnnotatedPluginFactory,
+  type AnnotatedToolFactory,
   type BaseEnv,
   type ToolBundle,
 } from "@intx/agent";
@@ -259,6 +260,36 @@ export function attachStepTools(
 }
 
 /**
+ * Re-wrap a loaded tool factory so its bundle's `dispose` (when present)
+ * is captured via `onDispose`, forwarding the loader's `id`, `requires`,
+ * and `definitions` so the result is a real `AnnotatedToolFactory`, not a
+ * hand-shaped lookalike. The static `definitions` declaration is
+ * forwarded verbatim: this wrapper does not rename tools, so the names
+ * the deploy-time walk enumerates must survive the re-wrap unchanged.
+ *
+ * Exported so the definitions-preservation contract is testable in
+ * isolation; the production path calls it from
+ * `createToolBearingAgentFactory`.
+ */
+export function rewrapStepToolFactory(
+  annotated: AnnotatedToolFactory<BaseEnv>,
+  onDispose: (dispose: () => unknown) => void,
+): AnnotatedToolFactory<BaseEnv> {
+  return defineTool({
+    id: annotated.id,
+    requires: annotated.requires,
+    definitions: annotated.definitions,
+    factory: (factoryEnv: BaseEnv): ToolBundle => {
+      const bundle = annotated(factoryEnv);
+      if (bundle.dispose !== undefined) {
+        onDispose(bundle.dispose);
+      }
+      return bundle;
+    },
+  });
+}
+
+/**
  * Build the `agentFactory` the workflow step-invoker uses. The returned
  * factory reads the materialized tool runtime off the env (set by
  * `buildEnv` via `attachStepTools`), augments the step's
@@ -288,22 +319,11 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     // Wrap each loaded tool factory so its bundle's `dispose` (when
     // present) is captured. Dedupe by closure identity: a factory whose
     // bundle returns the same `dispose` on every invocation must not be
-    // torn down once per
-    // push. `defineTool` re-annotates the wrapper with the loader's
-    // `id`/`requires` so the resulting factory is a real
-    // `AnnotatedToolFactory<BaseEnv>`, not a hand-shaped lookalike.
+    // torn down once per push.
     const capturedDisposers = new Set<() => unknown>();
     const factoriesWithCapture = materialization.factories.map((annotated) =>
-      defineTool({
-        id: annotated.id,
-        requires: annotated.requires,
-        factory: (factoryEnv: BaseEnv): ToolBundle => {
-          const bundle = annotated(factoryEnv);
-          if (bundle.dispose !== undefined) {
-            capturedDisposers.add(bundle.dispose);
-          }
-          return bundle;
-        },
+      rewrapStepToolFactory(annotated, (dispose) => {
+        capturedDisposers.add(dispose);
       }),
     );
 

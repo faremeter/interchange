@@ -152,7 +152,7 @@ function makeFakeFactory(
       content: "ok",
     }),
   });
-  return Object.assign(fn, { id, requires });
+  return Object.assign(fn, { id, requires, definitions: [] });
 }
 
 /**
@@ -560,7 +560,11 @@ describe("createToolLoader", () => {
           content: `ran ${call.name}`,
         }),
       }),
-      { id: "@vendor/prefix/main", requires: [] as readonly string[] },
+      {
+        id: "@vendor/prefix/main",
+        requires: [] as readonly string[],
+        definitions: [{ name: "search" }],
+      },
     );
     const loader = createToolLoader({
       cache,
@@ -634,7 +638,11 @@ describe("createToolLoader", () => {
           content: `ran ${call.name}`,
         }),
       }),
-      { id: "@vendor/dup/main", requires: [] as readonly string[] },
+      {
+        id: "@vendor/dup/main",
+        requires: [] as readonly string[],
+        definitions: [{ name: "search" }, { name: "search" }],
+      },
     );
     const loader = createToolLoader({
       cache,
@@ -707,7 +715,11 @@ describe("createToolLoader", () => {
           content: `ran ${call.name}`,
         }),
       }),
-      { id: "@vendor/malformed/main", requires: [] as readonly string[] },
+      {
+        id: "@vendor/malformed/main",
+        requires: [] as readonly string[],
+        definitions: [{ name: "search" }],
+      },
     );
     const loader = createToolLoader({
       cache,
@@ -1484,7 +1496,7 @@ export const factory = Object.assign(
     definitions: [{ name: "echo", description: "", inputSchema: {} }],
     run: async (call) => ({ callId: call.id, content: greeting }),
   }),
-  { id: "closure/top", requires: [] },
+  { id: "closure/top", requires: [], definitions: [{ name: "echo" }] },
 );
 `;
     const topPkg = await packFixture({
@@ -1561,7 +1573,7 @@ export const factory = Object.assign(
       entryModuleSource: `
 export const factory = Object.assign(
   () => ({ definitions: [], run: async () => ({ callId: "x", content: "" }) }),
-  { id: "@scope/only", requires: [] },
+  { id: "@scope/only", requires: [], definitions: [] },
 );
 `,
     });
@@ -1666,7 +1678,7 @@ export const factory = Object.assign(
       content: JSON.stringify({ top: topSawLodash, libA: seenLodash }),
     }),
   }),
-  { id: "vt/main", requires: [] },
+  { id: "vt/main", requires: [], definitions: [{ name: "echo" }] },
 );
 `,
       dependencies: { lodash: "^3.0.0", "lib-a": "^1.0.0" },
@@ -1848,7 +1860,7 @@ export const factory = Object.assign(
     definitions: [{ name: "echo", description: "", inputSchema: {} }],
     run: async (call) => ({ callId: call.id, content: "" }),
   }),
-  { id: "fa/top", requires: [] },
+  { id: "fa/top", requires: [], definitions: [{ name: "echo" }] },
 );
 `,
       dependencies: {
@@ -1972,7 +1984,7 @@ describe("entry-path containment", () => {
       `export const mod = Object.assign(() => ({
         definitions: [],
         run: async () => ({ callId: "x", content: "ok" }),
-      }), { id: "external/sink", requires: [] });`,
+      }), { id: "external/sink", requires: [], definitions: [] });`,
     );
 
     const stagingDir = path.join(scratchRoot, "evil-staging");
@@ -2205,7 +2217,7 @@ describe("entry-path containment", () => {
       entryModuleSource: `
 export const main = Object.assign(
   () => ({ definitions: [], run: async () => ({ callId: "x", content: "" }) }),
-  { id: "ok-dangling/main", requires: [] },
+  { id: "ok-dangling/main", requires: [], definitions: [] },
 );
 `,
     });
@@ -2918,7 +2930,7 @@ describe("interchange.directors walker", () => {
       entryModuleSource: `
 export const main = Object.assign(
   () => ({ definitions: [], run: async () => ({ callId: "x", content: "" }) }),
-  { id: "@vendor/evil-dir-symlink", requires: [] },
+  { id: "@vendor/evil-dir-symlink", requires: [], definitions: [] },
 );
 `,
       interchangeDirectorsRelPath: "./directors-link.js",
@@ -3065,7 +3077,7 @@ export const factory = Object.assign(
       return { callId: call.id, content: m.marker };
     },
   }),
-  { id: "late/main", requires: [] },
+  { id: "late/main", requires: [], definitions: [{ name: "probe" }] },
 );
 `;
 
