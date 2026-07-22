@@ -1575,7 +1575,7 @@ Source: packages/types/src/catalog.ts
 Source: packages/types/src/principals.ts
 
 **kind**: Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow deployment).
-**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, the agent id when `kind` is `agent`, or the deployment id when `kind` is `workflow`. Unique per tenant and kind.
+**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, the agent id when `kind` is `agent`, or the run id when `kind` is `workflow`. Unique per tenant and kind.
 **status**: Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.
 
 ### ProviderResponse
