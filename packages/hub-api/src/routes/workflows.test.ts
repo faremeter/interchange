@@ -12,6 +12,7 @@ import {
   asset as assetTable,
   grant as grantTable,
   principal as principalTable,
+  workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import {
   createDefaultDirectorRegistry,
@@ -265,10 +266,20 @@ type MockDBOpts = {
 function createMockDB(opts: MockDBOpts) {
   const list = opts.deploymentList ?? [];
   const inserts = opts.inserts ?? [];
+  // The mock records each insert and supports both call shapes the routes
+  // use: a bare `.values(v)` (awaited directly) and the conflict-tolerant
+  // `.values(v).onConflictDoNothing().returning()`. The `.returning()` here
+  // always yields the inserted row (the no-conflict path); the mock does not
+  // model a primary-key conflict, so the reconciliation branch is exercised
+  // against a real database, not here.
   const insert = (table: unknown) => ({
     values: (values: unknown) => {
       inserts.push({ table, values });
-      return Promise.resolve();
+      return Object.assign(Promise.resolve(), {
+        onConflictDoNothing: () => ({
+          returning: () => Promise.resolve([values]),
+        }),
+      });
     },
   });
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
@@ -566,6 +577,15 @@ const GrantInsert = type({
   action: "string",
   effect: "string",
   origin: "string",
+  "+": "ignore",
+});
+
+const WorkflowRunInsert = type({
+  id: "string",
+  deploymentId: "string",
+  tenantId: "string",
+  principalId: "string",
+  status: "string",
   "+": "ignore",
 });
 
@@ -950,7 +970,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     expect(routeMailCalls).toHaveLength(0);
   });
 
-  test("mints a run principal and sends run.grants before the mail", async () => {
+  test("mints a run principal, anchors the run, and sends run.grants before the mail", async () => {
     const runGrantsCalls: RunGrantsCall[] = [];
     const routeMailCalls: RouteMailCall[] = [];
     const sendOrder: SendCall[] = [];
@@ -1013,6 +1033,19 @@ describe("POST /workflows/:deploymentId/mail", () => {
       refId: json.messageId,
       tenantId: TENANT_ID,
       status: "active",
+    });
+
+    // A workflow_run row keyed on the same runId anchors the run, carrying
+    // the minted principal and the deployment it belongs to.
+    const runInserts = inserts.filter((i) => i.table === workflowRunTable);
+    expect(runInserts).toHaveLength(1);
+    const runRow = assertBody(WorkflowRunInsert, runInserts[0]?.values);
+    expect(runRow).toMatchObject({
+      id: json.messageId,
+      deploymentId: DEPLOYMENT_ID,
+      tenantId: TENANT_ID,
+      principalId: principalRow.id,
+      status: "running",
     });
 
     const grantInserts = inserts.filter((i) => i.table === grantTable);

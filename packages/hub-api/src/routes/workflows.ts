@@ -11,6 +11,7 @@ import {
   workflowDeployment,
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
+import { createWorkflowRunStore } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
@@ -180,6 +181,7 @@ export function createWorkflowRoutes({
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   const runReader = createWorkflowRunReader(repoStore);
+  const workflowRunStore = createWorkflowRunStore(db);
 
   app.post(
     "/instances",
@@ -754,10 +756,17 @@ export function createWorkflowRoutes({
         );
       }
 
-      // Delivery accepted. Commit the run principal and its grants now, so
-      // the 409 path above never leaves orphaned authz state behind. The
+      // Commit the run principal and its grants after delivery is accepted,
+      // so the 409 path above never leaves orphaned authz state behind. The
       // principal is a bare `workflow`-kind row keyed on the runId, mirroring
       // the per-instance principal the agent.deploy path mints.
+      //
+      // The run row has two co-writers keyed on the same runId: this path and
+      // the lazy anchor in signal-correlation registration, which fires if the
+      // run parks on an approval before this commits and inserts the row with
+      // a null principal. `anchorWithPrincipal` is therefore conflict-tolerant
+      // and, on a prior co-write insert, reconciles by attaching this run's
+      // principal, so terminal deactivation still finds one.
       await db.transaction(async (tx) => {
         await tx.insert(principalTable).values({
           id: runPrincipalId,
@@ -768,6 +777,16 @@ export function createWorkflowRoutes({
           createdAt: now,
           updatedAt: now,
         });
+        await workflowRunStore.anchorWithPrincipal(
+          {
+            id: runId,
+            deploymentId,
+            tenantId: tenant.id,
+            principalId: runPrincipalId,
+            status: "running",
+          },
+          tx,
+        );
         for (const g of stagedGrantRows) {
           await tx.insert(grantTable).values(g);
         }

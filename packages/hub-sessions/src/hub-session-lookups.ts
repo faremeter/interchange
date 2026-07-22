@@ -8,7 +8,11 @@
 
 import { eq, and, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
-import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
+import {
+  createApprovalStore,
+  createSignalCorrelationStore,
+  createWorkflowRunStore,
+} from "@intx/db";
 import {
   agentInstance,
   sessionMail,
@@ -39,6 +43,7 @@ export function createHubSessionLookups(
 
   const signalCorrelationStore = createSignalCorrelationStore(db);
   const approvalStore = createApprovalStore(db);
+  const workflowRunStore = createWorkflowRunStore(db);
 
   return {
     async lookupPublicKey(agentAddress) {
@@ -242,6 +247,25 @@ export function createHubSessionLookups(
           );
         }
         const tenantId = deployment.tenantId;
+
+        // Lazily anchor the run before its correlation and approval reference
+        // it. A workflow-spawned internal run never crosses the external
+        // trigger route that mints a run principal, so its run row would
+        // otherwise not exist; ensure it here so the co-written rows have a
+        // referent. The principal is null: an internal run inherits its
+        // deployment's grants and has no principal of its own. The insert is
+        // idempotent on the run id, so a redelivered register frame -- the same
+        // redelivery the co-writes below tolerate -- is a no-op.
+        await workflowRunStore.createIfAbsent(
+          {
+            id: runId,
+            deploymentId: deployment.id,
+            tenantId,
+            principalId: null,
+            status: "running",
+          },
+          tx,
+        );
 
         await signalCorrelationStore.registerIfAbsent(
           {
