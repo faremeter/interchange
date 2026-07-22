@@ -101,4 +101,49 @@ describe("catalogCapabilitiesFor over the production support matrix", () => {
     expect(result).not.toContain("structured-output");
     expect(result).not.toContain("vision-input");
   });
+
+  test("projects gpt-5.5's captured flows and omits reasoning-content", () => {
+    // gpt-5.5 on api.openai.com Chat Completions returns no reasoning field,
+    // so reasoning-content is unsupported (not misled) and never projected —
+    // the highest-value assertion here, since a naive read would assume a
+    // frontier model exposes its reasoning trace.
+    const result = catalogCapabilitiesFor("openai", "gpt-5.5");
+    expect(result).toContain("function-calling");
+    expect(result).toContain("vision-input");
+    expect(result).toContain("structured-output-streaming");
+    expect(result).not.toContain("reasoning-content");
+    expect(result).toHaveLength(7);
+  });
+
+  test("projects claude-sonnet-5's thinking and code-execution flows", () => {
+    const result = catalogCapabilitiesFor("anthropic", "claude-sonnet-5");
+    expect(result).toContain("reasoning-content");
+    expect(result).toContain("code-execution");
+    expect(result).toContain("redacted-thinking");
+    expect(result).toHaveLength(21);
+  });
+
+  test("projects gemini-2.5-pro's audio, video, and code-execution flows", () => {
+    const result = catalogCapabilitiesFor("google-genai", "gemini-2.5-pro");
+    expect(result).toContain("audio-input");
+    expect(result).toContain("video-input");
+    expect(result).toContain("code-execution");
+    expect(result).toHaveLength(22);
+  });
+
+  test("projects kimi-k3's reasoning, vision, and structured-output flows", () => {
+    const result = catalogCapabilitiesFor("opencode-zen", "kimi-k3");
+    expect(result).toContain("reasoning-content");
+    expect(result).toContain("vision-input");
+    expect(result).toContain("structured-output");
+    expect(result).toHaveLength(9);
+  });
+
+  test("projects kimi-k2.7-code's reasoning, vision, and structured-output flows", () => {
+    const result = catalogCapabilitiesFor("opencode-zen", "kimi-k2.7-code");
+    expect(result).toContain("reasoning-content");
+    expect(result).toContain("vision-input");
+    expect(result).toContain("structured-output");
+    expect(result).toHaveLength(9);
+  });
 });
