@@ -1,0 +1,7 @@
+{
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "capability": "plain-text-streaming",
+  "capturedAt": "2026-07-22T17:43:18.685Z",
+  "schemaVersion": "1"
+}

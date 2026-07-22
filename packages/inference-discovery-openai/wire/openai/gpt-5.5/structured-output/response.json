@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-E4VGWWY95PMmyAlw13rcc8GDrHNz4",
+  "object": "chat.completion",
+  "created": 1784742204,
+  "model": "gpt-5.5-2026-04-23",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"age\":30,\"email\":\"alice@example.com\",\"name\":\"Alice\"}",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 81,
+    "completion_tokens": 35,
+    "total_tokens": 116,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 7,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

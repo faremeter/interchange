@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-E4VGVcEBqZIns8AqgscNU9yVA4Cvk",
+  "object": "chat.completion",
+  "created": 1784742203,
+  "model": "gpt-5.5-2026-04-23",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "A side-by-side visualization compares a spherical albedo map with a darker water signature map highlighting a small blue region.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 246,
+    "completion_tokens": 26,
+    "total_tokens": 272,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

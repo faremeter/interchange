@@ -1,0 +1,7 @@
+{
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "capability": "function-calling",
+  "capturedAt": "2026-07-22T17:43:19.733Z",
+  "schemaVersion": "1"
+}

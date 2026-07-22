@@ -48,6 +48,7 @@ const GEMINI_TEXT_MODEL = "gemini-2.5-flash";
 const GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
 
 const OPENCODE_PROVIDER = "opencode-zen";
+const OPENAI_PROVIDER = "openai";
 
 const GEMINI_TEXT_CAPABILITIES = [
   "plain-text",
@@ -103,6 +104,26 @@ const OPENCODE_NON_VISION_CAPABILITIES = [
   "reasoning-content-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
+// The first-party api.openai.com deployment covers what the OpenAI-protocol
+// body builder builds. The streaming multi-turn and vision-streaming variants
+// are not built by that builder, so they carry no rows at all: their absence is
+// a rig limitation, not a provider outcome, and marking them unsupported would
+// wrongly attribute it to the model.
+const OPENAI_CAPTURED_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
+  "vision-input",
+  "structured-output",
+  "structured-output-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
+const OPENAI_UNSUPPORTED_REASONING = [
+  "reasoning-content",
+  "reasoning-content-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
 function gemini(
   model: string,
   capabilities: readonly SupportEntry["capability"][],
@@ -138,6 +159,32 @@ function opencode(
     model,
     capability,
     outcome: "captured",
+  }));
+}
+
+function openai(
+  model: string,
+  capabilities: readonly SupportEntry["capability"][],
+): SupportEntry[] {
+  return capabilities.map((capability) => ({
+    provider: OPENAI_PROVIDER,
+    model,
+    capability,
+    outcome: "captured",
+  }));
+}
+
+function openaiUnsupported(
+  model: string,
+  capabilities: readonly SupportEntry["capability"][],
+  notes: string,
+): SupportEntry[] {
+  return capabilities.map((capability) => ({
+    provider: OPENAI_PROVIDER,
+    model,
+    capability,
+    outcome: "unsupported",
+    notes,
   }));
 }
 
@@ -330,6 +377,12 @@ const MATRIX: SupportEntry[] = [
     notes:
       "OpenAI-style multimodal messages[].content elicits HTTP 400 invalid_request_error \"unknown variant 'image_url', expected 'text'\"; recorded as 'http-error' here so no capture is attempted.",
   },
+  ...openai("gpt-5.5", OPENAI_CAPTURED_CAPABILITIES),
+  ...openaiUnsupported(
+    "gpt-5.5",
+    OPENAI_UNSUPPORTED_REASONING,
+    "OpenAI's first-party api.openai.com Chat Completions responses for the gpt-5 series carry no reasoning or reasoning_content field; the assistant message holds only role, content, refusal, and annotations. OpenAI exposes reasoning tokens solely through the Responses API, which this Chat-Completions plug-in does not probe. The OpenAI-protocol opencode-zen relays do surface reasoning_content on this same wire, so this is a first-party OpenAI behavior, not a protocol limitation.",
+  ),
 ];
 
 export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;
@@ -342,6 +395,7 @@ const FIXTURE_ROOTS: Record<string, string> = {
   anthropic: "packages/inference-discovery-anthropic/wire",
   "google-genai": "packages/inference-discovery-google-genai/wire",
   "opencode-zen": "packages/inference-discovery-openai/wire",
+  openai: "packages/inference-discovery-openai/wire",
 };
 
 const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
