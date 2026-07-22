@@ -98,9 +98,14 @@ export interface AnthropicServerTool {
 
 export type AnthropicTool = AnthropicToolDecl | AnthropicServerTool;
 
-export interface AnthropicThinkingConfig {
-  type: "enabled";
-  budget_tokens: number;
+export type AnthropicThinkingConfig =
+  | { type: "enabled"; budget_tokens: number }
+  | { type: "adaptive" };
+
+export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface AnthropicOutputConfig {
+  effort: AnthropicEffort;
 }
 
 export interface AnthropicRequestBody {
@@ -109,7 +114,44 @@ export interface AnthropicRequestBody {
   messages: AnthropicMessage[];
   tools?: AnthropicTool[];
   thinking?: AnthropicThinkingConfig;
+  output_config?: AnthropicOutputConfig;
   stream?: true;
+}
+
+// claude-sonnet-5 rejects the classic thinking:{type:"enabled",budget_tokens}
+// shape with invalid_request_error and requires thinking:{type:"adaptive"}
+// paired with output_config.effort. This is the only model-keyed branch in
+// this file: the adaptive requirement can be selected only by model identity,
+// because the API surfaces it solely as a runtime 400 with no build-time
+// signal. Add a model here when its API rejects the classic shape.
+const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
+  "claude-sonnet-5",
+]);
+
+// Adaptive thinking is the model's own per-request choice; empirically only
+// effort "max" reliably elicits a thinking block to capture (low/medium/high/
+// xhigh are non-deterministic).
+const ADAPTIVE_THINKING_EFFORT: AnthropicEffort = "max";
+
+// The adaptive path carries no budget_tokens, so it cannot reuse the
+// budget-derived THINKING_MAX_TOKENS. A flat ceiling sized to let effort:max
+// emit a capturable thinking block; the exact value is not load-bearing, and
+// truncation (stop_reason max_tokens) is acceptable for a capability probe.
+const ADAPTIVE_THINKING_MAX_TOKENS = 4096;
+
+// Sets the model-appropriate extended-thinking request shape in place: adaptive
+// models get thinking:{type:"adaptive"} + output_config.effort; all others get
+// the classic thinking:{type:"enabled",budget_tokens}. Owns max_tokens for the
+// thinking path because the two shapes size it differently.
+function applyThinking(body: AnthropicRequestBody, model: string): void {
+  if (ADAPTIVE_THINKING_MODELS.has(model)) {
+    body.thinking = { type: "adaptive" };
+    body.output_config = { effort: ADAPTIVE_THINKING_EFFORT };
+    body.max_tokens = ADAPTIVE_THINKING_MAX_TOKENS;
+    return;
+  }
+  body.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET_TOKENS };
+  body.max_tokens = THINKING_MAX_TOKENS;
 }
 
 function readMediaBase64(ref: MediaRef): string {
@@ -188,13 +230,11 @@ function functionCallingBody(
   const decl = expectSingleTool(intent);
   const body: AnthropicRequestBody = {
     model,
-    max_tokens: opts.thinking ? THINKING_MAX_TOKENS : PLAIN_MAX_TOKENS,
+    max_tokens: PLAIN_MAX_TOKENS,
     messages: [userTextMessage(intent.prompt)],
     tools: [functionToolDecl(decl)],
   };
-  if (opts.thinking) {
-    body.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET_TOKENS };
-  }
+  if (opts.thinking) applyThinking(body, model);
   if (opts.stream) body.stream = true;
   return body;
 }
@@ -297,10 +337,10 @@ function reasoningBody(
 ): AnthropicRequestBody {
   const body: AnthropicRequestBody = {
     model,
-    max_tokens: THINKING_MAX_TOKENS,
+    max_tokens: PLAIN_MAX_TOKENS,
     messages: [userTextMessage(intent.prompt)],
-    thinking: { type: "enabled", budget_tokens: THINKING_BUDGET_TOKENS },
   };
+  applyThinking(body, model);
   if (opts.stream) body.stream = true;
   return body;
 }
@@ -327,10 +367,10 @@ function redactedThinkingTurn1Body(
 ): AnthropicRequestBody {
   const body: AnthropicRequestBody = {
     model,
-    max_tokens: THINKING_MAX_TOKENS,
+    max_tokens: PLAIN_MAX_TOKENS,
     messages: [userTextMessage(intent.prompt)],
-    thinking: { type: "enabled", budget_tokens: THINKING_BUDGET_TOKENS },
   };
+  applyThinking(body, model);
   if (opts.stream) body.stream = true;
   return body;
 }
@@ -545,6 +585,8 @@ export function buildFunctionCallingTurn2Body(opts: {
   if (opts.turn1Body.tools !== undefined) body.tools = opts.turn1Body.tools;
   if (opts.turn1Body.thinking !== undefined)
     body.thinking = opts.turn1Body.thinking;
+  if (opts.turn1Body.output_config !== undefined)
+    body.output_config = opts.turn1Body.output_config;
   if (opts.turn1Body.stream === true) body.stream = true;
   return body;
 }
@@ -575,6 +617,8 @@ export function buildRedactedThinkingTurn2Body(opts: {
   };
   if (opts.turn1Body.thinking !== undefined)
     body.thinking = opts.turn1Body.thinking;
+  if (opts.turn1Body.output_config !== undefined)
+    body.output_config = opts.turn1Body.output_config;
   if (opts.turn1Body.stream === true) body.stream = true;
   return body;
 }
