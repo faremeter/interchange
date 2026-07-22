@@ -23,6 +23,7 @@ import {
   tenant,
   wallet,
   workflowDeployment,
+  workflowRun,
 } from "@intx/db/schema";
 
 type Db = DB["db"];
@@ -331,6 +332,27 @@ export async function seedAgentInstance(
     agentId: i.agentId,
     principalId: i.principalId,
     address: i.address ?? `${i.id}.agent.test`,
+  });
+}
+
+export type SeedWorkflowRun = {
+  id: string;
+  deploymentId: string;
+  tenantId: string;
+  principalId?: string | null;
+  status?: "running" | "completed" | "failed" | "cancelled";
+};
+
+export async function seedWorkflowRun(
+  db: Db,
+  r: SeedWorkflowRun,
+): Promise<void> {
+  await db.insert(workflowRun).values({
+    id: r.id,
+    deploymentId: r.deploymentId,
+    tenantId: r.tenantId,
+    principalId: r.principalId ?? null,
+    status: r.status ?? "running",
   });
 }
 
