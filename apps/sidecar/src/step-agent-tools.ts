@@ -31,6 +31,7 @@ import {
   createAgent,
   defineAgent,
   defineTool,
+  toolApprovalEffect,
   type Agent,
   type AgentDefinition,
   type AnnotatedPluginFactory,
@@ -43,6 +44,7 @@ import { getLogger } from "@intx/log";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 import { resolveStepAddress } from "@intx/workflow-deploy";
 import { parseAgentAddress } from "@intx/types";
+import type { GrantRule } from "@intx/types/authz";
 import { baseStepId } from "@intx/workflow";
 
 import { materializeToolPackages } from "./tool-materialization";
@@ -73,6 +75,54 @@ export interface StepToolCacheConfig {
 export interface StepToolMaterialization {
   readonly factories: readonly LoadedToolFactory[];
   readonly pluginFactories: readonly AnnotatedPluginFactory[];
+}
+
+/**
+ * Derive the per-step tool-mark floor grants from a step's materialized
+ * tool factories. Each loaded factory carries its static
+ * `definitions` (name + optional `approval` mark) verbatim from the tool
+ * package; every declared tool contributes a `tool:<name>` / `invoke`
+ * grant whose effect is the tool's floor (`ask` for an approval-gated
+ * tool, `allow` otherwise), computed through the same
+ * `toolApprovalEffect` mapping the deploy-time capability walk uses so a
+ * pinned tool floors identically hub-side and sidecar-side.
+ *
+ * The hub's capability walk reads only INLINE `agent.toolFactories`, so a
+ * tool that ships as a pinned package loads in the child and never
+ * produces a `tool:<name>` grant on the run principal. These derived rows
+ * supply that missing floor: they join the per-step grants the authz path
+ * evaluates as ADDITIONAL rows, so `evaluateGrants` precedence still
+ * resolves an explicit `deny` (priority 2) over the derived `ask`/`allow`
+ * -- the floor only raises the minimum authority to the tool's mark, it
+ * never overrides a declared denial.
+ *
+ * The grant `id` is deterministic (`floor:tool:<name>`) rather than
+ * random: `evaluateGrants` never dedupes or joins on `id` (it ranks by
+ * specificity then effect), so a stable id keeps the rows reproducible
+ * without a generator, and a floor row that coincides with a
+ * hub-supplied `tool:<name>` row resolves by effect precedence regardless
+ * of the ids.
+ */
+export function deriveToolMarkFloorGrants(
+  factories: readonly LoadedToolFactory[],
+): GrantRule[] {
+  const rows: GrantRule[] = [];
+  for (const factory of factories) {
+    for (const definition of factory.definitions) {
+      rows.push({
+        id: `floor:tool:${definition.name}`,
+        resource: `tool:${definition.name}`,
+        action: "invoke",
+        effect: toolApprovalEffect(definition),
+        origin: "creator",
+        conditions: null,
+        expiresAt: null,
+        roleId: null,
+        principalId: null,
+      });
+    }
+  }
+  return rows;
 }
 
 /**

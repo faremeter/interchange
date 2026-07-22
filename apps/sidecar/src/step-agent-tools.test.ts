@@ -31,17 +31,23 @@ import path from "node:path";
 import {
   definePlugin,
   defineTool,
+  type AnnotatedToolFactory,
   type BaseEnv,
   type ToolBundle,
+  type ToolDeclaration,
 } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { evaluateGrants } from "@intx/authz";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { noopAuditStore } from "@intx/agent/testing";
+import type { GrantRule } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { LoadedToolFactory } from "@intx/tool-packaging";
 
 import {
   attachStepTools,
   createToolBearingAgentFactory,
+  deriveToolMarkFloorGrants,
   rewrapStepToolFactory,
   stepDeployTreeDir,
   type StepToolMaterialization,
@@ -328,5 +334,83 @@ describe("rewrapStepToolFactory", () => {
     expect(rewrapped.definitions).toEqual(source.definitions);
     expect(rewrapped.id).toBe(source.id);
     expect(rewrapped.requires).toEqual(source.requires);
+  });
+});
+
+describe("deriveToolMarkFloorGrants", () => {
+  // A loaded tool factory carrying only the static metadata the floor
+  // deriver reads (`definitions`), shaped like the pinned factories the
+  // child's loader hands back. Never invoked here.
+  function loadedFactory(
+    id: string,
+    definitions: readonly ToolDeclaration[],
+  ): LoadedToolFactory {
+    const factory: AnnotatedToolFactory<BaseEnv> = Object.assign(
+      (_env: BaseEnv) => ({
+        definitions: [],
+        run: () =>
+          Promise.resolve({ callId: "", content: "", isError: false as const }),
+      }),
+      { id, requires: [] as readonly string[], definitions },
+    );
+    return factory;
+  }
+
+  // Mirror the sidecar's grant evaluator merge: the credentials snapshot's
+  // grants plus the derived floor, resolved via `evaluateGrants`. This is
+  // the exact composition the `evaluateGrantsAdapter` performs.
+  async function resolveWithFloor(
+    toolName: string,
+    factories: readonly LoadedToolFactory[],
+    snapshotGrants: readonly GrantRule[],
+  ): Promise<"allow" | "deny" | "ask" | null> {
+    const floor = deriveToolMarkFloorGrants(factories);
+    const result = await evaluateGrants(
+      [...snapshotGrants, ...floor],
+      `tool:${toolName}`,
+      "invoke",
+    );
+    return result.effect;
+  }
+
+  test("a pinned ask-marked tool resolves to ask on its floor alone", async () => {
+    const factories = [
+      loadedFactory("@intx/tools-posix/sidecar-bundle", [
+        { name: "run_shell", approval: "ask" },
+      ]),
+    ];
+    expect(await resolveWithFloor("run_shell", factories, [])).toBe("ask");
+  });
+
+  test("a pinned unmarked tool resolves to allow on its floor alone", async () => {
+    const factories = [
+      loadedFactory("@intx/tools-mail/sidecar-bundle", [{ name: "mail_send" }]),
+    ];
+    expect(await resolveWithFloor("mail_send", factories, [])).toBe("allow");
+  });
+
+  test("a declared deny still beats the derived floor", async () => {
+    const factories = [
+      loadedFactory("@intx/tools-posix/sidecar-bundle", [
+        { name: "run_shell", approval: "ask" },
+      ]),
+    ];
+    // A credentials-snapshot grant explicitly denying the tool at equal
+    // specificity. `deny` (priority 2) outranks the derived `ask`, so the
+    // floor never overrides an explicit denial.
+    const declaredDeny: GrantRule = {
+      id: "declared-deny",
+      resource: "tool:run_shell",
+      action: "invoke",
+      effect: "deny",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: null,
+    };
+    expect(await resolveWithFloor("run_shell", factories, [declaredDeny])).toBe(
+      "deny",
+    );
   });
 });

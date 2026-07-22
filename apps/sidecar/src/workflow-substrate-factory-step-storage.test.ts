@@ -100,6 +100,7 @@ function buildDeps(opts: {
     outboundMailBridge: stubOutboundMailBridge(),
     cache: { cacheMaxBytes: 1_000_000, registryMaxTarballBytes: 1_000_000 },
     adapters: createBuiltinRegistry(),
+    recordToolMarkFloor: () => undefined,
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),
