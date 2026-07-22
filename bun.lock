@@ -349,6 +349,7 @@
         "ssri": "catalog:",
       },
       "devDependencies": {
+        "@intx/workflow": "workspace:*",
         "openapi-types": "^12.1.3",
         "tar": "catalog:",
       },
