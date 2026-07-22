@@ -609,6 +609,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // correlationId to track across the drop/reconnect.
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<reconnect-reemit-1@integration.interchange>",
+        grants: [ASK_GRANT],
       });
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {

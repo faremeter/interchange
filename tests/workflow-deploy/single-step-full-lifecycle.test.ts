@@ -353,6 +353,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     const first = await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<full-lifecycle-1@integration.interchange>",
       content: FIRST_BODY,
+      grants: [GRANTED_RULE],
     });
 
     const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
@@ -417,6 +418,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     const second = await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<full-lifecycle-2@integration.interchange>",
       content: SECOND_BODY,
+      grants: [GRANTED_RULE],
     });
     expect(second.messageId).not.toBe(first.messageId);
 

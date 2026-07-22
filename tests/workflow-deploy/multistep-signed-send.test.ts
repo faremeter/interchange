@@ -264,6 +264,7 @@ describe("multi-step signed outbound send", () => {
 
     await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<multistep-signed-send-1@integration.interchange>",
+      grants: [GRANTED_RULE],
     });
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {

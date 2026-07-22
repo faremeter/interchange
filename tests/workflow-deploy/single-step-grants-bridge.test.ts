@@ -398,6 +398,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
     // would not complete.
     await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<single-step-grants-bridge-1@integration.interchange>",
+      grants: [GRANTED_RULE],
     });
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {

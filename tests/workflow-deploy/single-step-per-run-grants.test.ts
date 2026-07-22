@@ -62,6 +62,21 @@ const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
 const SENTINEL_FILENAME = "per-run-grants-ran.txt";
 const SENTINEL_CONTENT = "authorized-per-run";
 
+// The run's single grant, delivered per run via the `run.grants` frame and
+// recorded at deploy time. The run's authorize resolves the tool call
+// against this.
+const PER_RUN_TOOL_GRANT = {
+  id: "grant-per-run-tool-invoke",
+  resource: `tool:${TOOL_NAME}`,
+  action: "invoke",
+  effect: "allow" as const,
+  origin: "creator" as const,
+  conditions: null,
+  expiresAt: null,
+  roleId: null,
+  principalId: null,
+};
+
 const TOOL_PINS: readonly ToolPackagePin[] = [
   { name: "@intx/tools-mail", version: "0.1.2" },
 ];
@@ -114,25 +129,15 @@ describe("single-step per-run grants barrier", () => {
       agentAddress: deploymentMailAddress,
       systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
       tools: [],
-      // The operator-approved grant the hub ships in-band. The deploy
-      // router's grants bridge writes it into the step's agent-state repo;
-      // the supervisor's `onRunStart` sink reads it back per run and pushes
-      // it to the child ahead of the trigger. Without the per-run push
-      // landing, the child's authorize would throw on a null snapshot and
-      // the run would fail before the tool ran.
-      grants: [
-        {
-          id: "grant-per-run-tool-invoke",
-          resource: `tool:${TOOL_NAME}`,
-          action: "invoke",
-          effect: "allow",
-          origin: "creator",
-          conditions: null,
-          expiresAt: null,
-          roleId: null,
-          principalId: null,
-        },
-      ],
+      // The operator-approved grant the hub ships in-band at deploy time,
+      // recorded so the deployment's step carries it. The run's authority
+      // is delivered per run via the `run.grants` frame the trigger sends
+      // (see the `fireMailTrigger` grants below); the supervisor's
+      // `onRunStart` sink reads that per-run file back and pushes it to the
+      // child ahead of the trigger. Without the per-run grants landing, the
+      // child's authorize would deny the tool and the run would fail before
+      // the tool ran.
+      grants: [PER_RUN_TOOL_GRANT],
       sources: [
         {
           id: "anthropic:mock-model",
@@ -246,6 +251,7 @@ describe("single-step per-run grants barrier", () => {
 
     await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<single-step-per-run-grants-1@integration.interchange>",
+      grants: [PER_RUN_TOOL_GRANT],
     });
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {

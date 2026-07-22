@@ -649,6 +649,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // ask grant and suspends, so the run parks rather than completing.
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<approval-capstone-1@integration.interchange>",
+        grants: [ASK_GRANT],
       });
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {

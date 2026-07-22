@@ -65,6 +65,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { base64Encode, hexEncode } from "@intx/types";
+import type { WireGrantRule } from "@intx/types/grant-wire";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import {
   createWorkflowDeployOrchestrator,
@@ -1552,6 +1553,16 @@ export type FireMailTriggerOpts = {
   content?: string;
   /** Sender address. Defaults to a test-stable user address. */
   from?: string;
+  /**
+   * Per-run grants delivered ahead of the trigger mail, mirroring the
+   * production trigger route: the hub sends the run's `run.grants` frame
+   * before the mail so the run's `runs/<runId>/grants.json` lands before
+   * dispatch. Defaults to an empty set, which still materializes the file
+   * -- every mail-born run carries a grants file, so the supervisor's
+   * `onRunStart` barrier and a spawned child both resolve it rather than
+   * failing closed on its absence.
+   */
+  grants?: WireGrantRule[];
 };
 
 /**
@@ -1604,6 +1615,24 @@ export async function fireMailTrigger(
   );
   const rawMessage = assembleMessage(headers, signedContent, signature);
   const base64 = base64Encode(rawMessage);
+
+  // Deliver the run's grants before the trigger mail, exactly as the
+  // production trigger route does: the runId is the mail's Message-ID, and
+  // same-address FIFO guarantees the `run.grants` frame lands ahead of the
+  // mail that dispatches the run. `messageId` here is the RFC 2822 header
+  // value; the sidecar derives the same runId from the mail bytes.
+  const runId = messageId;
+  const grantsDelivered = env.hub.router.sendRunGrants(
+    address,
+    runId,
+    opts.grants ?? [],
+  );
+  if (!grantsDelivered) {
+    throw new Error(
+      `fireMailTrigger: sendRunGrants returned false for ${address}; address is not routable on the hub`,
+    );
+  }
+
   const delivered = env.hub.router.routeMail(address, base64);
   if (!delivered) {
     throw new Error(

@@ -57,6 +57,7 @@ import {
 import { createIsogitStore } from "@intx/storage-isogit";
 import {
   adaptHostScheduler,
+  createCredentialsBackedAuthorize,
   createProxyWorkflowRunRepoStore,
   createSupervisorBackedTransport,
   createWorkflowHostScheduler,
@@ -65,7 +66,10 @@ import {
   createWorkflowHostSignalChannel,
   createWorkflowSpawnChild,
   createWorkflowStepInvoker,
+  hashGrants,
   type ChildOutboundMailBridge,
+  type CredentialsSnapshot,
+  type CredentialsSnapshotRef,
   type GrantEvaluator,
   type LoadParkedApproval,
   type RunChildWorkflow,
@@ -84,7 +88,7 @@ import {
   type ReadParkedApprovalOps,
   type Scheduler,
   type StepInvokeRequest,
-  type StepInvoker,
+  type StepInvokeResult,
   type WorkflowAuthorizeFn,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
@@ -96,6 +100,7 @@ import {
   materializeStepTools,
   type StepToolCacheConfig,
 } from "./step-agent-tools";
+import { readRunGrants, runGrantsPath } from "./run-grants";
 import {
   createDurableConversationRegistry,
   isErrnoNotFound,
@@ -911,6 +916,20 @@ export function createSidecarStepBuildEnv(
 }
 
 /**
+ * Step invoker the child runtime's `env.invokeStep` wraps. It widens the
+ * workflow-runtime `StepInvoker` with the child's credentials-backed
+ * `authorize`: the runtime body calls `env.invokeStep` with the request
+ * alone, so the invoker is the seam that resolves each tool call against
+ * the run's grants. Mirrors the workflow-process child's `ChildStepInvoker`
+ * authorize slot without carrying the event/warm-cache/sources slots the
+ * in-process child does not use.
+ */
+export type SidecarChildStepInvoker = (
+  req: StepInvokeRequest,
+  authorize: WorkflowAuthorizeFn,
+) => Promise<StepInvokeResult>;
+
+/**
  * Inputs required to construct the sidecar's in-process child runtime.
  * Lifted out of `createSidecarSubstrateFactory` so the implementation
  * is exercisable in isolation (the co-located test wires a hand-built
@@ -972,8 +991,22 @@ interface SidecarRunChildDeps {
    * because real per-step child execution is not built (see
    * `childInvokeStep` in `createSidecarSubstrateFactory`); a test may
    * inject a functional invoker.
+   *
+   * The invoker receives the child's credentials-backed `authorize`
+   * alongside the request, mirroring the workflow-process child's
+   * `ChildStepInvoker`: the runtime body calls `env.invokeStep` with the
+   * request only, so the invoker -- not the runtime -- is the seam that
+   * gates each tool call against the run's grants.
    */
-  invokeStep: StepInvoker;
+  invokeStep: SidecarChildStepInvoker;
+  /**
+   * Grant evaluator the child's credentials-backed `authorize` delegates
+   * each `(resource, action)` decision to. The parent factory owns the
+   * sidecar's grant-rule grammar and supplies its adapter here so the
+   * child resolves authorization against the same evaluator the parent's
+   * steps use.
+   */
+  evaluateGrants: GrantEvaluator;
   /** Director registry the child runtime uses; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
   /** Clock for timestamp generation; defaults to `() => new Date()`. */
@@ -983,6 +1016,46 @@ interface SidecarRunChildDeps {
    * a monotonic counter combined with a random suffix.
    */
   newId?: (prefix: string) => string;
+}
+
+/**
+ * Write a spawned child's inherited grants to its own
+ * `runs/<childRunId>/grants.json` in the deployment's workflow-run repo.
+ *
+ * The write goes through the child proxy substrate's
+ * `writeTreePreservingPrefix` -- the only write path the proxy forwards
+ * to the supervisor -- preserving the child's own `runs/<childRunId>/`
+ * subtree (empty at spawn time, before the runtime writes any events)
+ * and adding the single `grants.json` file. A later event append under
+ * `runs/<childRunId>/events/` preserves a nested prefix, so it leaves
+ * this sibling file untouched.
+ */
+async function writeChildRunGrants(args: {
+  substrate: RepoStore;
+  workflowRunRepoId: RepoId;
+  principal: Principal;
+  ref: string;
+  childRunId: string;
+  grants: readonly unknown[];
+}): Promise<void> {
+  const prefix = `runs/${args.childRunId}/`;
+  const grantsFile = runGrantsPath(args.childRunId);
+  const serialized = JSON.stringify({ grants: args.grants }, null, 2);
+  await args.substrate.writeTreePreservingPrefix(
+    args.principal,
+    args.workflowRunRepoId,
+    args.ref,
+    {
+      preservePrefix: prefix,
+      merge: async (existing) => {
+        const files: Record<string, string | Uint8Array> = {};
+        for (const [k, v] of existing) files[k] = v;
+        files[grantsFile] = serialized;
+        return files;
+      },
+      message: `Write inherited run grants for ${args.childRunId}`,
+    },
+  );
 }
 
 /**
@@ -1033,8 +1106,63 @@ export function createSidecarRunChild(
     definition,
     childRunId,
     input,
+    parentRunId,
     signal,
   }) => {
+    // Inherit the parent run's grants. A spawned child runs under the
+    // authority of the run that spawned it, so its authorize resolves
+    // against the parent's per-run grant set -- the same flat set read
+    // back at `runs/<parentRunId>/grants.json` in the deployment's
+    // workflow-run repo. Fail closed if the parent's file is absent: a
+    // run that reached the spawn point carries a grants file (every birth
+    // path materializes one), so its absence is a defect, not a run that
+    // legitimately holds no grants.
+    const parentGrants = await readRunGrants({
+      repoStore: deps.substrate,
+      deploymentId: deps.workflowRunRepoId.id,
+      runId: parentRunId,
+    });
+    if (parentGrants === undefined) {
+      throw new Error(
+        `sidecar runChild: parent run ${parentRunId} has no grants file at ${runGrantsPath(parentRunId)}; refusing to spawn child ${childRunId} under-authorized`,
+      );
+    }
+    // Persist the inherited grants as the child's OWN per-run file so a
+    // grandchild spawned by this child reads them from
+    // `runs/<childRunId>/grants.json`, exactly as this child read the
+    // parent's. The multi-hop chain never prunes these files, so each
+    // rung's grants stay resolvable for the rung below it.
+    //
+    // Ordering is LOAD-BEARING: this write happens BEFORE `runtimeRun`
+    // dispatches the child, so `runs/<childRunId>/` holds no event blobs
+    // yet and the grants write only adds `grants.json`. Reordering it
+    // AFTER the runtime starts appending events would delete the child's
+    // event log -- `writeChildRunGrants` rebuilds the preserved subtree
+    // from the `merge` callback's inputs, so any run event committed under
+    // `runs/<childRunId>/` before this write is not carried forward.
+    await writeChildRunGrants({
+      substrate: deps.substrate,
+      workflowRunRepoId: deps.workflowRunRepoId,
+      principal: deps.principal,
+      ref: deps.workflowRunRef,
+      childRunId,
+      grants: parentGrants,
+    });
+    // The child's credentials snapshot applies the inherited flat grant
+    // set uniformly across every step the child definition declares,
+    // keyed on each step's id (the same shape the deploy-time and per-run
+    // snapshot assemblies produce). The in-process child has no per-step
+    // mail address, so the snapshot's `address` mirrors the step id --
+    // `createCredentialsBackedAuthorize` reads only `grants`.
+    const contentHash = await hashGrants(parentGrants);
+    const credentialsSnapshot: CredentialsSnapshot = {
+      steps: definition.stepOrder.map((stepId) => ({
+        stepId,
+        address: stepId,
+        grants: parentGrants,
+        contentHash,
+      })),
+    };
     const blobs = createWorkflowRunBlobSubstrate({
       substrate: deps.substrate,
       repoId: deps.workflowRunRepoId,
@@ -1052,23 +1180,19 @@ export function createSidecarRunChild(
       newId: () => newId("sig"),
       clock,
     });
-    // The child's `env.authorize` slot is the workflow-typed authorize
-    // the runtime body stores; the runtime body never reads it
-    // directly. Step invocations route through `invokeStep`, which
-    // wires its own `BaseEnv.authorize` against the workflow-typed
-    // callback. Throwing here surfaces a precise "no credentialsRef
-    // installed" error if a future wiring forgets to inject one.
-    const authorize: WorkflowAuthorizeFn = () => {
-      // The slot is intentionally throwing: a step that actually calls
-      // `env.authorize` is asking for a per-step credentials snapshot
-      // that the sub-namespace child does not yet inherit from the
-      // parent's `runWorkflowChild` credentialsRef. The slot is
-      // observable to tests that wire an `invokeStep` bypassing
-      // authorize.
-      throw new Error(
-        "sidecar runChild authorize: per-step credentials snapshot is not threaded through the spawn-child seam; the child runtime cannot resolve a workflow-typed authorize call",
-      );
+    // The child's `env.authorize` binds to the inherited credentials
+    // snapshot: each `(resource, action)` decision looks up the step's
+    // grants and delegates to the parent factory's grant evaluator. The
+    // runtime body stores this on the env; the child's `invokeStep`
+    // wrapper below is the seam that consults it per tool call, and an
+    // action step's `EffectContext` calls it directly for each effect.
+    const credentialsRef: CredentialsSnapshotRef = {
+      current: credentialsSnapshot,
     };
+    const authorize = createCredentialsBackedAuthorize(
+      credentialsRef,
+      deps.evaluateGrants,
+    );
     const drain = createNoopDrainController(definition);
     // Recursive `spawnChild`: a grandchild's `definitionRef` is resolved
     // against the workflow-asset substrate the parent's spawn used, and
@@ -1089,7 +1213,10 @@ export function createSidecarRunChild(
       blobs,
       directors,
       authorize,
-      invokeStep: deps.invokeStep,
+      // The runtime body invokes `env.invokeStep` with the request alone;
+      // forward the child's credentials-backed authorize so the invoker
+      // gates each tool call against the inherited grants.
+      invokeStep: (req) => deps.invokeStep(req, authorize),
       spawnChild,
       clock,
       newId,
@@ -1330,9 +1457,11 @@ export function createSidecarSubstrateFactory(
     // `createSidecarRunChild` below) runs a separate WorkflowDefinition
     // whose stepIds are disjoint from the parent's, and deploy does not
     // stage the child definition's per-step assets (inference sources,
-    // tool trees, grant state) or walk its capabilities. Running a real
-    // per-step agent for a `childWorkflow` / `map` fan-out step is
-    // therefore not implemented; that work is tracked in INTR-310.
+    // tool trees) or walk its capabilities. Running a real per-step agent
+    // for a `childWorkflow` / `map` fan-out step is therefore not
+    // implemented; that work is tracked in INTR-310. The `authorize`
+    // argument -- the child's credentials-backed authorize -- is unused
+    // here for the same reason: no agent runs to gate.
     //
     // This is a deliberate hard stop, not a fabricated result. A fake
     // success output (the shape this once returned) reported a child run
@@ -1341,7 +1470,7 @@ export function createSidecarSubstrateFactory(
     // structured, INTR-310-named error instead. The `spawnChild` /
     // `runChild` recursion and the sub-namespace scoping around it are
     // real and exercised right up to this seam.
-    const childInvokeStep: StepInvoker = (req) =>
+    const childInvokeStep: SidecarChildStepInvoker = (req) =>
       Promise.reject(
         new ChildStepNotImplementedError(req.agent.id, req.authzContext.stepId),
       );
@@ -1460,6 +1589,7 @@ export function createSidecarSubstrateFactory(
       principal,
       scheduler,
       invokeStep: childInvokeStep,
+      evaluateGrants: evaluateGrantsAdapter,
     });
 
     const spawnChild = createWorkflowSpawnChild({
