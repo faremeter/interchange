@@ -78,6 +78,15 @@ export async function evaluateGrants(
   // Sort ascending by specificity, then by effect priority.
   // Last element wins -- which is the most specific, and at equal
   // specificity the strongest effect (deny > ask > allow).
+  //
+  // The `ask > allow` half of that ordering is a load-bearing security
+  // invariant, not just a convention: a tool's static approval mark is
+  // materialized as an `ask` floor grant on the run principal, and a
+  // workflow that declares a competing `allow` grant for the same
+  // `tool:<name>/invoke` resource lands at equal specificity. `ask`
+  // outranking `allow` here is what stops a workflow from declaring its
+  // way below a tool's approval gate. Do not reorder EFFECT_PRIORITY
+  // without accounting for that floor.
   matching.sort((a, b) => {
     const specDiff = a.specificity - b.specificity;
     if (specDiff !== 0) return specDiff;

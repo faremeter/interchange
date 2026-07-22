@@ -5,7 +5,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
-import { createInMemoryGrantStore } from "@intx/authz";
+import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
 import { base64Decode, ErrorResponse } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -14,11 +14,21 @@ import {
   principal as principalTable,
 } from "@intx/db/schema";
 import {
+  createDefaultDirectorRegistry,
+  defineAgent,
+  type AnnotatedToolFactory,
+  type BaseEnv,
+  type ToolDeclaration,
+} from "@intx/agent";
+import { defineWorkflow } from "@intx/workflow/definition";
+import {
   deriveDeploymentAddress,
   deriveWorkflowRunRepoId,
+  walkCapabilities,
 } from "@intx/workflow-deploy";
 
 import { createApp } from "../app";
+import { deriveRunRuntimeGrantRows } from "./workflows";
 import {
   createSidecarEmitter,
   type AssetService,
@@ -1438,5 +1448,93 @@ describe("GET /workflows/:deploymentId/runs/:runId/events", () => {
       ),
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("deriveRunRuntimeGrantRows tool-mark floor", () => {
+  function makeFactory(
+    id: string,
+    definitions: readonly ToolDeclaration[],
+  ): AnnotatedToolFactory<BaseEnv> {
+    const factory = (_env: BaseEnv) => ({
+      definitions: [],
+      run: () =>
+        Promise.resolve({ callId: "", content: "", isError: false as const }),
+    });
+    return Object.assign(factory, {
+      id,
+      requires: [] as readonly string[],
+      definitions,
+    });
+  }
+
+  test("an ask tool floor beats a workflow-declared allow at run time", async () => {
+    const toolName = "run_shell";
+    const agent = defineAgent({
+      id: "ag_floor",
+      systemPrompt: "an ask-marked tool",
+      tools: [
+        makeFactory("@intx/tools-posix/sidecar-bundle", [
+          { name: toolName, approval: "ask" },
+        ]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_floor",
+      agent,
+      trigger: { type: "manual" },
+    });
+
+    const now = new Date("2026-01-01T00:00:00Z");
+    const runPrincipalId = "prn_run_floor";
+    const walk = walkCapabilities(workflow, createDefaultDirectorRegistry());
+
+    // The tool's `ask` mark materializes as an `ask` floor grant on the run
+    // principal.
+    const floorRows = deriveRunRuntimeGrantRows(
+      walk,
+      TENANT_ID,
+      runPrincipalId,
+      now,
+    );
+    const floor = floorRows.find((r) => r.resource === `tool:${toolName}`);
+    if (floor === undefined) {
+      throw new Error("expected a derived floor row for the ask-marked tool");
+    }
+    expect(floor.effect).toBe("ask");
+
+    // A workflow that declares a competing `allow` grant for the same
+    // `tool:<name>/invoke` lands at equal specificity on the same principal.
+    // The declaration must not be able to lower the tool below its `ask` floor.
+    const declaredAllow: GrantRule = {
+      id: "grant-declared-allow",
+      resource: `tool:${toolName}`,
+      action: "invoke",
+      effect: "allow",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: runPrincipalId,
+    };
+    const grants: GrantRule[] = [
+      ...floorRows.map((r) => ({
+        id: r.id,
+        resource: r.resource,
+        action: r.action,
+        effect: r.effect,
+        origin: r.origin,
+        conditions: r.conditions,
+        expiresAt: r.expiresAt,
+        roleId: null,
+        principalId: r.principalId,
+      })),
+      declaredAllow,
+    ];
+
+    const result = await evaluateGrants(grants, `tool:${toolName}`, "invoke");
+    expect(result.effect).toBe("ask");
   });
 });

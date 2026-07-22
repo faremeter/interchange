@@ -919,7 +919,7 @@ const EFFECT_GRANT_PREFIX = "effect:";
  * so they are NOT routed through the `grantEffects` map (which covers tool
  * grants only). An `effect:<cap>` in more than one step is emitted once.
  */
-function deriveRunRuntimeGrantRows(
+export function deriveRunRuntimeGrantRows(
   walk: CapabilityWalkResult,
   tenantId: string,
   runPrincipalId: string,
@@ -929,7 +929,18 @@ function deriveRunRuntimeGrantRows(
   for (const declarations of walk.perStep.values()) {
     for (const grant of declarations.grants) {
       if (grant.startsWith(TOOL_GRANT_PREFIX)) {
-        const effect = declarations.grantEffects.get(grant) ?? "allow";
+        // Every `tool:` grant the walk emits carries a `grantEffects`
+        // entry (the tool-mark floor: `ask` for an approval-gated tool,
+        // `allow` otherwise). A missing entry means the walk's `grants`
+        // and `grantEffects` maps have diverged -- a defaulted `allow`
+        // here would silently DOWNGRADE an `ask` tool below its floor,
+        // defeating the approval gate. Fail loudly instead.
+        const effect = declarations.grantEffects.get(grant);
+        if (effect === undefined) {
+          throw new Error(
+            `deriveRunRuntimeGrantRows: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the capability walk must emit an effect for every tool grant`,
+          );
+        }
         const existing = effectByResource.get(grant);
         if (existing === "ask" || effect === "ask") {
           effectByResource.set(grant, "ask");
