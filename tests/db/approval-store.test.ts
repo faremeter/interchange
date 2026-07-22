@@ -17,6 +17,7 @@ import {
   seedAsset,
   seedTenants,
   seedWorkflowDeployment,
+  seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
 const TENANT = "tnt";
@@ -35,6 +36,17 @@ async function seedDeploymentDeps(h: TestDb): Promise<void> {
     id: DEPLOYMENT,
     tenantId: TENANT,
     definitionAssetId: ASSET,
+  });
+}
+
+// Anchor the run an approval/correlation references, so the runId FK to
+// workflow_run resolves. The store rows carry a runId whose only referent is
+// this row.
+async function seedRun(h: TestDb, runId: string): Promise<void> {
+  await seedWorkflowRun(h.db, {
+    id: runId,
+    deploymentId: DEPLOYMENT,
+    tenantId: TENANT,
   });
 }
 
@@ -73,6 +85,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
 
   test("resolves a pending approval exactly once", async () => {
     await seedDeploymentDeps(h);
+    await seedRun(h, "run_corr-1");
     const store = createApprovalStore(h.db);
     await store.create(approvalRow("corr-1"));
 
@@ -95,6 +108,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
 
   test("finds an approval by correlation id", async () => {
     await seedDeploymentDeps(h);
+    await seedRun(h, "run_corr-find");
     const store = createApprovalStore(h.db);
     await store.create(approvalRow("corr-find"));
 
@@ -107,6 +121,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
 
   test("finds an approval by its primary key", async () => {
     await seedDeploymentDeps(h);
+    await seedRun(h, "run_corr-byid");
     const store = createApprovalStore(h.db);
     await store.create(approvalRow("corr-byid"));
 
@@ -119,6 +134,7 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
 
   test("round-trips an approval's tool snapshot", async () => {
     await seedDeploymentDeps(h);
+    await seedRun(h, "run_corr-snap");
     const store = createApprovalStore(h.db);
 
     const row = approvalRow("corr-snap");
@@ -163,6 +179,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("claims a correlation for terminal delivery exactly once", async () => {
       await seedDeploymentDeps(h);
+      await seedRun(h, "run-1");
       const store = createSignalCorrelationStore(h.db);
       await store.register(correlationRow("c-1"));
 

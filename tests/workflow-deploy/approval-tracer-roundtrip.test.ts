@@ -88,7 +88,11 @@ import { and, eq } from "drizzle-orm";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { createInMemoryGrantStore } from "@intx/authz";
-import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
+import {
+  createApprovalStore,
+  createSignalCorrelationStore,
+  createWorkflowRunStore,
+} from "@intx/db";
 import {
   approval,
   signalCorrelation,
@@ -302,6 +306,7 @@ const approverGrant: GrantRule = {
 function createRegisterSignalCorrelation(db: TestDb["db"]) {
   const signalCorrelationStore = createSignalCorrelationStore(db);
   const approvalStore = createApprovalStore(db);
+  const workflowRunStore = createWorkflowRunStore(db);
   return async ({
     correlationId,
     runId,
@@ -343,6 +348,18 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
     }
     const tenantId = deployment.tenantId;
     await db.transaction(async (tx) => {
+      // Mirror the production co-write: lazily anchor the run before the
+      // correlation and approval reference it, so their runId FK resolves.
+      await workflowRunStore.createIfAbsent(
+        {
+          id: runId,
+          deploymentId,
+          tenantId,
+          principalId: null,
+          status: "running",
+        },
+        tx,
+      );
       await signalCorrelationStore.registerIfAbsent(
         {
           correlationId,

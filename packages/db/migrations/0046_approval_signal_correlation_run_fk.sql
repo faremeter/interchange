@@ -1,0 +1,2 @@
+ALTER TABLE "approval" ADD CONSTRAINT "approval_run_id_workflow_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."workflow_run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "signal_correlation" ADD CONSTRAINT "signal_correlation_run_id_workflow_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."workflow_run"("id") ON DELETE cascade ON UPDATE no action;

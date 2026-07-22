@@ -41,6 +41,7 @@ import {
   seedAsset,
   seedTenants,
   seedWorkflowDeployment,
+  seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
 // The register handler never touches the repo store, so a throwing stub keeps
@@ -692,6 +693,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: WF_ADDR,
         publicKey: null,
         status: "deployed",
+      });
+      // The direct store inserts carry a runId; anchor its run row so the FK
+      // to workflow_run resolves. The co-write path seeds this itself, but this
+      // test bypasses it to exercise the stores directly.
+      await seedWorkflowRun(h.db, {
+        id: "run-1",
+        deploymentId: DEPLOYMENT,
+        tenantId: TENANT,
       });
 
       const signalCorrelationStore = createSignalCorrelationStore(h.db);
