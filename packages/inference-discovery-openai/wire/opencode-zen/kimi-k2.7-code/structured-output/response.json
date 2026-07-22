@@ -1,0 +1,24 @@
+{
+  "id": "4aed2cbf-d7df-4737-9ae4-c87c50ed6218-chatcmpl-6b3d3d9",
+  "object": "chat.completion",
+  "created": 1784748914,
+  "model": "kimi-k2.7-code",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"name\": \"Alice\", \"age\": 30, \"email\": \"alice@example.com\"}",
+        "reasoning_content": "We need extract structured fields from sentence: Alice is 30 years old and her email is alice@example.com. Reply with only JSON object — no markdown fences, no prose. We need produce JSON with likely fields: name, age, email. Need ensure only JSON object, no markdown fences. Use valid JSON format. Could be {\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"} No extra text."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 44,
+    "completion_tokens": 110,
+    "total_tokens": 154,
+    "prompt_tokens_details": { "cached_tokens": 3 }
+  },
+  "cost": "0"
+}

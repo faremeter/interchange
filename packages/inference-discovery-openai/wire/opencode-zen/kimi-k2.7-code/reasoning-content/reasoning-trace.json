@@ -1,0 +1,4 @@
+{
+  "fieldPath": "choices.0.message.reasoning_content",
+  "sample": "We need answer classic puzzle. Need show reasoning before final answer. Ball costs 5 cents, bat $1.05, total $1.10, difference $1.00. Many intuitive answer 10 cents is wrong. Let's produce reasoning.\n\nWe need to ensure we follow instruction: Show reasoning before final answer. So final answer after reasoning. Let's write equations: Let ball cost x dollars. Bat costs x+1. Total: x + (x+1) = 1.10 => 2x+1=1.10 => 2x=0.10 => x=0.05. So ball is $0.05. Check bat $1.05, difference $1.00. Final answer."
+}

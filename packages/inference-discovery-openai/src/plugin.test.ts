@@ -185,7 +185,7 @@ function collectSteps(opts: {
 }
 
 describe("createOpencodeZenPlugin", () => {
-  test("exposes the six OpenCode-Zen models", () => {
+  test("exposes the seven OpenCode-Zen models", () => {
     const plugin = makePlugin();
     expect(plugin.name).toBe("opencode-zen");
     expect([...plugin.models].sort()).toEqual(
@@ -193,6 +193,7 @@ describe("createOpencodeZenPlugin", () => {
         "deepseek-v4-pro",
         "glm-5.1",
         "kimi-k2.6",
+        "kimi-k2.7-code",
         "kimi-k3",
         "mimo-v2-omni",
         "qwen3.6-plus",

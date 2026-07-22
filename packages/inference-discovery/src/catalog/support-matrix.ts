@@ -332,6 +332,11 @@ const MATRIX: SupportEntry[] = [
   ]),
   ...opencode("kimi-k3", OPENCODE_FULL_CAPABILITIES),
   ...opencode("kimi-k3", ["structured-output", "structured-output-streaming"]),
+  ...opencode("kimi-k2.7-code", OPENCODE_FULL_CAPABILITIES),
+  ...opencode("kimi-k2.7-code", [
+    "structured-output",
+    "structured-output-streaming",
+  ]),
   ...opencode("glm-5.1", ["structured-output", "structured-output-streaming"]),
   ...opencode("qwen3.6-plus", [
     "structured-output",
