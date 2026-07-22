@@ -414,7 +414,7 @@ function sse(event: string, data: unknown): string {
 // seeing.
 export async function buildSyntheticToolsMailTarball(
   registerTempDir: (dir: string) => void,
-  opts: { transportBacked?: boolean } = {},
+  opts: { transportBacked?: boolean; approvalMarked?: boolean } = {},
 ): Promise<Uint8Array> {
   const stagingDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "tools-mail-fixture-"),
@@ -453,6 +453,16 @@ export async function buildSyntheticToolsMailTarball(
   // after a successful receipt. A broken outbound path rejects inside
   // `send`, so no sentinel is written and the run fails -- making the
   // sentinel a load-bearing proof of the signed-outbound composition.
+  // The static `definitions` the loader exposes on the AnnotatedToolFactory
+  // is what the sidecar's tool-mark floor deriver reads to authorize a
+  // pinned tool. Stamping `approval: "ask"` here makes the derived floor
+  // `ask`, so a call suspends for approval WITHOUT any hand-injected ask
+  // grant -- the proof that the sidecar floor authorizes a pinned
+  // ask-marked tool on its own static mark.
+  const staticDefinitions =
+    opts.approvalMarked === true
+      ? `[{ name: "mail_send", approval: "ask" }]`
+      : `[{ name: "mail_send" }]`;
   const bundleSource = opts.transportBacked
     ? `
 import fs from "node:fs";
@@ -489,7 +499,7 @@ const factory = (env) => ({
 export const mail = Object.assign(factory, {
   id: "@intx/tools-mail/sidecar-bundle",
   requires: ["transport", "address"],
-  definitions: [{ name: "mail_send" }],
+  definitions: ${staticDefinitions},
 });
 `.trimStart()
     : `
@@ -519,7 +529,7 @@ const factory = (env) => ({
 export const mail = Object.assign(factory, {
   id: "@intx/tools-mail/sidecar-bundle",
   requires: [],
-  definitions: [{ name: "mail_send" }],
+  definitions: ${staticDefinitions},
 });
 `.trimStart();
   await fs.promises.writeFile(
@@ -597,6 +607,7 @@ export async function startHub(
   registerTempDir: (dir: string) => void,
   opts: {
     transportBackedMailTool?: boolean;
+    approvalMarkedMailTool?: boolean;
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
   } = {},
 ): Promise<HubEnv> {
@@ -773,6 +784,7 @@ export async function startHub(
 
   const tarballBytes = await buildSyntheticToolsMailTarball(registerTempDir, {
     ...(opts.transportBackedMailTool === true ? { transportBacked: true } : {}),
+    ...(opts.approvalMarkedMailTool === true ? { approvalMarked: true } : {}),
   });
   await agentRepoStore.repoStore.initRepo({
     kind: "package-registry",
@@ -1087,6 +1099,15 @@ export type StartDeployFlowEnvOpts = {
    */
   transportBackedMailTool?: boolean;
   /**
+   * When true, the synthetic `@intx/tools-mail` tarball's static tool
+   * definition carries `approval: "ask"`. The sidecar derives the pinned
+   * tool's authorization floor from this static mark, so the tool
+   * suspends for approval on its own -- no hand-injected `ask` grant. Used
+   * to prove the sidecar-derived floor authorizes a pinned ask-marked tool
+   * end-to-end.
+   */
+  approvalMarkedMailTool?: boolean;
+  /**
    * Co-write hook for the `signal.correlation.register` frame a suspending
    * agent step emits. When set, the mock hub's sidecar router wires it as
    * the `registerSignalCorrelation` lookup, so a parked run's correlation +
@@ -1138,6 +1159,9 @@ export async function startDeployFlowEnv(
   const hub = await startHub(registerTempDir, {
     ...(opts.transportBackedMailTool === true
       ? { transportBackedMailTool: true }
+      : {}),
+    ...(opts.approvalMarkedMailTool === true
+      ? { approvalMarkedMailTool: true }
       : {}),
     ...(opts.registerSignalCorrelation !== undefined
       ? { registerSignalCorrelation: opts.registerSignalCorrelation }

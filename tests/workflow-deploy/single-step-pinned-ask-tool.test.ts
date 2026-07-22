@@ -1,23 +1,30 @@
-// Phase 2 proof: a step's agent runs a REAL tool materialized in the
-// spawned workflow-process child.
+// End-to-end proof that a PINNED, ask-marked tool authorizes on its own
+// static mark, sidecar-side, and suspends for approval.
 //
-// Deploys a one-step workflow that pins a tool package (the synthetic
-// `@intx/tools-mail` tarball seeded by the deploy-flow fixture). The
-// hub resolves the pin into a tool-package manifest and ships it to the
-// sidecar's per-step deploy tree; the child materializes the pinned
-// closure IN-PROCESS (the loader runs in the child), attaches the tool
-// factory to the step's agent, and runs the agent.
+// A pinned tool ships as a tool package that loads in the spawned
+// workflow-process child, so the hub's deploy-time capability walk (which
+// reads only inline `agent.toolFactories`) never produces a `tool:<name>`
+// grant for it. Before the sidecar tool-mark floor, such a tool would
+// authorize against nothing and fail closed. This test deploys a one-step
+// workflow that pins the synthetic `@intx/tools-mail` tarball whose static
+// tool definition carries `approval: "ask"`, supplies NO hand-injected
+// grant for the tool, and drives the model to call it.
 //
-// The mock inference server is configured to emit a `tool_use` turn
-// calling the pinned tool on the first request, then a text reply once
-// the tool_result lands. The tool's `run` writes a sentinel file into
-// the agent's `env.workdir` -- which, for a step agent, is the per-step
-// workspace under the sidecar data dir. The test asserts that sentinel
-// file exists, proving the tool actually EXECUTED in the child's
-// filesystem view. It also asserts the mock saw the follow-up request
-// (the tool_result round-trip) and the run reached a terminal phase.
+// The proof: the run SUSPENDS (a `SignalAwaited` event lands on the
+// workflow-run log) rather than completing or failing. That outcome is the
+// discriminator across the three possibilities:
+//   - silent allow -> the tool would run and the run would complete;
+//   - deny -> the call would be blocked and the step would fail;
+//   - ask -> the call suspends awaiting approval.
+// Only a derived `ask` floor produces a suspend here, since no other grant
+// authorizes the tool at all. The tool must NOT have run (no sentinel), and
+// no terminal event may land while the step is parked.
 //
-// This is the test that proves real tools run in-child for Phase 2.
+// This runs against the REAL substrate path -- the hub resolves the pin,
+// ships the manifest to the child, the child materializes the pinned
+// closure in-process, derives the floor from the loaded factory's static
+// mark, and the before-tool authz gate resolves it -- not a stub that
+// bypasses the sidecar derivation.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -38,7 +45,6 @@ import {
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { sanitizeAddress } from "@intx/hub-agent";
 import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
 import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
 
@@ -47,25 +53,20 @@ import {
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitFor,
   waitForFirstRunId,
-  waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "single-step-posix-tool-1";
+const DEPLOYMENT_ID = "single-step-pinned-ask-tool-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
 
-// The tool the model is told to call. The loader namespaces the
-// synthetic bundle's `mail_send` definition under the bundle id.
 const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
-// The tool's `run` writes a file named after its `body` arg with its
-// `to` arg as content; the test drives those values and asserts the
-// file lands in the child's per-step workspace.
-const SENTINEL_FILENAME = "posix-tool-ran.txt";
-const SENTINEL_CONTENT = "executed-in-child";
+const SENTINEL_FILENAME = "ask-tool-ran.txt";
+const SENTINEL_CONTENT = "should-not-run-until-approved";
 
 const TOOL_PINS: readonly ToolPackagePin[] = [
   { name: "@intx/tools-mail", version: "0.1.2" },
@@ -75,6 +76,9 @@ let env: DeployFlowEnv;
 
 beforeAll(async () => {
   env = await startDeployFlowEnv({
+    // The pinned tool's static definition carries `approval: "ask"`, so the
+    // sidecar derives an `ask` floor for it -- the whole point of this test.
+    approvalMarkedMailTool: true,
     inferenceToolCall: {
       toolName: TOOL_NAME,
       input: { to: SENTINEL_CONTENT, body: SENTINEL_FILENAME },
@@ -86,11 +90,11 @@ afterAll(async () => {
   await env.teardown();
 });
 
-describe("single-step posix-tool in-child execution", () => {
-  test("the spawned child materializes and runs a real tool for the step", async () => {
+describe("single-step pinned ask-marked tool", () => {
+  test("suspends for approval on the sidecar-derived floor with no injected grant", async () => {
     const agent = defineAgent({
       id: "agent-step1",
-      systemPrompt: "You are the single-step tool agent.",
+      systemPrompt: "You are the single-step ask-tool agent.",
       tools: [],
       capabilities: [],
       inference: {
@@ -119,13 +123,10 @@ describe("single-step posix-tool in-child execution", () => {
       agentAddress: deploymentMailAddress,
       systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
       tools: [],
-      // No hand-injected grant for the pinned tool. The tool ships as a
-      // PINNED package that loads sidecar-side in the child, so the hub's
-      // capability walk never produced a `tool:<name>` grant for it; the
-      // child derives a `tool:<name>` floor from the tool's static mark
-      // (unmarked -> `allow`) and merges it under the run's grants, so the
-      // tool authorizes on its own. This fixture deliberately supplies no
-      // tool grant to prove the sidecar floor is what authorizes it.
+      // No grant for the pinned tool. The sidecar derives the tool's `ask`
+      // floor from its static mark, so the tool authorizes -- and suspends
+      // -- on its own. This is the load-bearing difference from the
+      // hand-injected-ask approval tests.
       grants: [],
       sources: [
         {
@@ -190,7 +191,7 @@ describe("single-step posix-tool in-child execution", () => {
           DEFAULT_ASSET_REF,
           {
             files,
-            message: `single-step-posix-tool test: write workflow repo ${args.workflowRepoId}`,
+            message: `single-step-pinned-ask-tool test: write workflow repo ${args.workflowRepoId}`,
           },
         );
       },
@@ -239,7 +240,7 @@ describe("single-step posix-tool in-child execution", () => {
     });
 
     await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<single-step-posix-tool-1@integration.interchange>",
+      messageId: "<single-step-pinned-ask-tool-1@integration.interchange>",
     });
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {
@@ -247,47 +248,29 @@ describe("single-step posix-tool in-child execution", () => {
       timeoutMs: 20_000,
     });
 
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      runId,
+    // The run parks on the tool's approval gate: a `SignalAwaited` event
+    // lands on the workflow-run log. It reaches the hub through the
+    // pack-push pipeline, so wait for it rather than racing the push. Only
+    // a derived `ask` floor produces this outcome -- no grant otherwise
+    // authorizes the pinned tool.
+    await waitFor(
+      async () => {
+        const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
+        return events.some((e) => e.type === "SignalAwaited");
+      },
       { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
-    if (terminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
-      const failed = events.find(
-        (e) => e.type === "StepFailed" || e.type === "RunFailed",
-      );
-      throw new Error(
-        `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(terminal.type).toBe("RunCompleted");
 
-    // The model was driven to call the tool on its first turn, then the
-    // tool_result fed a second inference turn. Two (or more) requests
-    // means the tool executed and the agent looped back -- the tool did
-    // not silently no-op.
-    expect(env.inference.requests.length).toBeGreaterThanOrEqual(2);
+    const parkedEvents = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
+    const parkedTypes = parkedEvents.map((e) => e.type);
+    // Suspended, not silently allowed and not denied: no terminal event has
+    // landed while the step is parked awaiting approval.
+    expect(parkedTypes).not.toContain("RunCompleted");
+    expect(parkedTypes).not.toContain("RunFailed");
+    expect(parkedTypes).not.toContain("RunCancelled");
 
-    // The first request must have exposed the materialized tool to the
-    // model -- proof the loader ran in the child and the factory's
-    // definition reached inference.
-    const firstReq = env.inference.requests[0];
-    if (firstReq === undefined)
-      throw new Error("no inference request captured");
-    const toolNames = (firstReq.tools ?? []).map((t) => t.name);
-    expect(toolNames).toContain(TOOL_NAME);
-
-    // THE PROOF that the tool ran IN THE CHILD: the tool's `run` wrote a
-    // sentinel file into `env.workdir`, which for the warm single-step
-    // agent is the STABLE per-agent workspace rooted at
-    // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
-    // step identity, not the per-message runId, so the workspace is reused
-    // across messages and bounded to one dir per agent). The file's
-    // presence (with the content the tool was given) means the
-    // materialized tool factory's `run` executed in the child's filesystem
-    // view.
+    // The tool has NOT run: the `ask` floor suspended the call before
+    // execution. The sentinel would only appear if the tool executed.
     const stepWorkspace = path.join(
       env.sidecar.dataDir,
       "workflow-step-state",
@@ -296,30 +279,8 @@ describe("single-step posix-tool in-child execution", () => {
       encodeURIComponent(STEP_ID),
       "workspace",
     );
-    const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);
-    if (!fs.existsSync(sentinelPath)) {
-      throw new Error(
-        `tool sentinel file ${sentinelPath} was not written; the materialized tool did not run in the child\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
-
-    // The step's deploy tree (carrying the resolved tool-package
-    // manifest) landed at the HEAD's legacy agent dir on the child -- the
-    // on-disk source the child read for materialization. A single-step
-    // workflow collapses its lone step onto the head, so the deploy tree
-    // is staged at the deployment (head) address, not a per-step address.
-    const headAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-    });
-    const headDeployDir = path.join(
-      env.sidecar.dataDir,
-      sanitizeAddress(headAddress),
-      "deploy",
+    expect(fs.existsSync(path.join(stepWorkspace, SENTINEL_FILENAME))).toBe(
+      false,
     );
-    expect(
-      fs.existsSync(path.join(headDeployDir, "tool-packages-manifest.json")),
-    ).toBe(true);
   });
 });
