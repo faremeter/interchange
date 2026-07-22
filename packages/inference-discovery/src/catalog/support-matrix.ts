@@ -311,6 +311,12 @@ const MATRIX: SupportEntry[] = [
     GEMINI_TEXT_MISLED_CAPABILITIES,
     'Probe prompt did not engage Gemini\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture (different prompt, different classifier thresholds, or different model behavior) may flip this row to captured without code changes once a structured safety signal materializes.',
   ),
+  ...gemini("gemini-2.5-pro", GEMINI_TEXT_CAPABILITIES),
+  ...geminiMisled(
+    "gemini-2.5-pro",
+    GEMINI_TEXT_MISLED_CAPABILITIES,
+    'Probe prompt did not engage gemini-2.5-pro\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture may flip this row to captured once a structured safety signal materializes.',
+  ),
   ...opencode("kimi-k2.6", OPENCODE_FULL_CAPABILITIES),
   ...opencode("mimo-v2-omni", OPENCODE_FULL_CAPABILITIES),
   ...opencode("qwen3.6-plus", OPENCODE_FULL_CAPABILITIES),

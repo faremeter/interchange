@@ -1,0 +1,6 @@
+{
+  "Content-Type": "application/pdf",
+  "X-Goog-Upload-Protocol": "raw",
+  "X-Goog-Upload-File-Name": "sample.pdf",
+  "x-goog-api-key": "<REDACTED>"
+}

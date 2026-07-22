@@ -1,0 +1,42 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "**Analyzing the Weather Query**\n\nOkay, so the user wants the weather, specifically in Boston, MA. I see that there's a `get_weather` tool available, which is exactly what I'd use for this kind of query. The tool definitely needs a `location` parameter, and luckily, the user has explicitly provided \"Boston, MA\". Therefore, based on the input and available tools, I can determine that the optimal response involves calling the `get_weather` function. I will call the `get_weather` function with the parameter `location` and set it to \"Boston, MA\" and expect the weather data as a response. The function call I'd generate would be `print(get_weather(location=\"Boston, MA\"))`. Simple and efficient!\n",
+            "thought": true
+          },
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "location": "Boston, MA"
+              }
+            },
+            "thoughtSignature": "CqcEARFNMg+u4pPGXmotCpRaCuALIaJ4hjlk4YSt8MPcWzj4LSOfFc3H7JHmcNcu9H8ipYHVhMG+9ANzwT+5LbWg2OBTDLXMguA9IOY8Q8byOeBmBVavGaxrDnRvfi47xZdi8hamLwCrz0Gc+7CA/9sl+FL0/G02SZXv3RZ73Qzql1AmHl7jj++3nveRwBahPQTtDmn81PjDbNkFXIYGF9AsH2HDYkiUDwAm4vTqL5fCBfsKBIKxBEjPkMTMsWseENx6/cehvirJdTkliQk7loNljvBzbJPuYa0PYZqRFEKN8kWwtjMXfQHBsyUFaowiPBrD2tW9fThuDUHWzKTusQGmLSYMy9Ak21QFKz14HX0cvp4YqZ42jn0AkosnAApTuA9HoidHxTIeUrcmqAIuWLMX5rwTIH/7+0cdTZK6yanV/U7/0WSJd4QKJHdGLOv2S5dvMhmEfX8xo5BkRlLio+eUqwhMzt6kRHeiCQA2gqUvTNaa/FiuzzTkUUIX22O1er1YKrMjoDenIki1M5PsWIurS4igJYX45B8q95upPQv2BuOYf+kzTLMelWyP69gEQb6x1WewoOAUWZWKtVHSTZhsuXElNhm5cFrfdhFwppohULjZxH5n5xYDdvPlsAQR1bUN+kgEs6iyCFcntboa6Emvfih/qAvwtqwAtDehQd345W+UQQqgKPcmqWM10PnBCmmTpQxpuJZRkoA4kF2ZxO0UKg3/gkUN92M="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "finishMessage": "Model generated function call(s)."
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 78,
+    "candidatesTokenCount": 17,
+    "totalTokenCount": 226,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 78
+      }
+    ],
+    "thoughtsTokenCount": 131,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "SxRhau_5Ksvrz7IP0ePbqA4"
+}

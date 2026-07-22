@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-2.5-pro",
+  "capability": "grounding-streaming",
+  "capturedAt": "2026-07-22T19:06:45.984Z",
+  "schemaVersion": "1"
+}

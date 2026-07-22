@@ -15,6 +15,11 @@ for the runtime, the plug-in contract, and the `discover` CLI.
   variants of each.
 - `gemini-2.5-flash-image` — image output, streaming and
   non-streaming.
+- `gemini-2.5-pro` — the same text, vision, audio, video, document,
+  function-calling, code-execution, grounding, and files-API surface
+  as `gemini-2.5-flash`. It only runs in thinking mode (a zero
+  thinking budget is rejected), so the request builder uses the
+  dynamic thinking budget where flash disables thinking.
 
 The full per-capability list is in `SUPPORT_MATRIX` in
 `@intx/inference-discovery/catalog`.
@@ -57,7 +62,8 @@ runner writes the bundle:
   `function-calling-with-thinking`,
   `function-calling-with-thinking-streaming`) — turn 1 is sent as
   usual; the plug-in extracts the model's assistant content from
-  the parsed response, derives a tool follow-up from the intent's
+  the parsed response (reconstructing it from the SSE stream when
+  turn-1 is streamed), derives a tool follow-up from the intent's
   `followUp` (or synthesises one from the intent's tools), and
   sends a turn-2 body that echoes the assistant turn verbatim and
   appends the tool response. Each turn writes its own `turn-1/` and

@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "This document is a table of contents listing the titles for the first seventeen chapters of *The Adventures of Tom"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 268,"candidatesTokenCount": 21,"totalTokenCount": 890,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 10},{"modality": "DOCUMENT","tokenCount": 258}],"thoughtsTokenCount": 601,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "ihRharfcFafVz7IPnKKX2Qo"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " Sawyer*."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 268,"candidatesTokenCount": 24,"totalTokenCount": 893,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 10},{"modality": "DOCUMENT","tokenCount": 258}],"thoughtsTokenCount": 601,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "ihRharfcFafVz7IPnKKX2Qo"}
+
