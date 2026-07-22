@@ -36,8 +36,8 @@ const plugin = createOpencodeZenPlugin({
 // Hand off to runCapture from @intx/inference-discovery.
 ```
 
-Models: `kimi-k2.6`, `glm-5.1`, `deepseek-v4-pro`, `qwen3.6-plus`,
-`mimo-v2-omni`.
+Models: `kimi-k2.6`, `kimi-k3`, `glm-5.1`, `deepseek-v4-pro`,
+`qwen3.6-plus`, `mimo-v2-omni`.
 
 For the per-model, per-capability behaviour observed at capture
 time — including the discrepancies between vendor documentation

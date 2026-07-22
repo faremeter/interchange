@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl-6a6119a13d5f06668f7d2d96",
+  "object": "chat.completion",
+  "created": 1784748450,
+  "model": "kimi-k3",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Two side-by-side striped spherical Moon maps compare “Albedo” in grayscale with a mostly dark “Water Signature” sphere showing a small blue marking near the top.",
+        "reasoning_content": "The user wants a one short sentence description of the image. Need answer only. Describe: side-by-side spherical lunar maps labeled Albedo and Water Signature, with striped grayscale bands and a small blue water-signature mark on the right sphere. Keep one sentence."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 349,
+    "completion_tokens": 101,
+    "total_tokens": 450,
+    "completion_tokens_details": { "reasoning_tokens": 53 }
+  },
+  "cost": "0"
+}

@@ -6,6 +6,7 @@ const PROVIDER_NAME = "opencode-zen";
 
 const OPENCODE_ZEN_MODELS: readonly string[] = [
   "kimi-k2.6",
+  "kimi-k3",
   "glm-5.1",
   "deepseek-v4-pro",
   "qwen3.6-plus",
