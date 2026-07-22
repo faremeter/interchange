@@ -413,4 +413,59 @@ describe("deriveToolMarkFloorGrants", () => {
       "deny",
     );
   });
+
+  test("an allow grant at equal specificity does not drop the ask floor", async () => {
+    const factories = [
+      loadedFactory("@intx/tools-posix/sidecar-bundle", [
+        { name: "run_shell", approval: "ask" },
+      ]),
+    ];
+    // A run grant explicitly ALLOWING the tool at the SAME specificity as the
+    // derived floor (both `tool:run_shell`/`invoke`, exact match). `ask`
+    // (priority 1) outranks `allow` (priority 0) at equal specificity, so the
+    // floor holds -- a workflow cannot declare its way below a tool's
+    // approval gate. This is the `ask > allow` half of the effect ordering in
+    // packages/authz/src/evaluate.ts.
+    const declaredAllow: GrantRule = {
+      id: "declared-allow",
+      resource: "tool:run_shell",
+      action: "invoke",
+      effect: "allow",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: null,
+    };
+    expect(
+      await resolveWithFloor("run_shell", factories, [declaredAllow]),
+    ).toBe("ask");
+  });
+
+  test("a broader allow glob loses to the exact ask floor on specificity", async () => {
+    const factories = [
+      loadedFactory("@intx/tools-posix/sidecar-bundle", [
+        { name: "run_shell", approval: "ask" },
+      ]),
+    ];
+    // A run grant allowing EVERY tool via a `tool:*` glob. The glob is far
+    // less specific than the exact `tool:run_shell` floor, so specificity --
+    // ranked before effect -- resolves to the exact floor regardless of
+    // effect. The exact `ask` wins; the broad `allow` never enters the effect
+    // tie-break.
+    const broadAllow: GrantRule = {
+      id: "broad-allow",
+      resource: "tool:*",
+      action: "invoke",
+      effect: "allow",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: null,
+    };
+    expect(await resolveWithFloor("run_shell", factories, [broadAllow])).toBe(
+      "ask",
+    );
+  });
 });
