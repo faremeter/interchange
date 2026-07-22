@@ -7,6 +7,10 @@ capability and writes them into the shared fixture corpus.
 See [`@intx/inference-discovery`](../inference-discovery/README.md)
 for the runtime, the plug-in contract, and the `discover` CLI.
 
+For the observed-vs-documented narrative of Anthropic's wire behaviour
+— where the captured bytes diverge from the published shape — see
+[`docs/discovery.md`](./docs/discovery.md).
+
 ## Models
 
 - `claude-sonnet-4-5-20250929`

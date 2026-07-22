@@ -42,7 +42,7 @@ Models: `kimi-k2.6`, `glm-5.1`, `deepseek-v4-pro`, `qwen3.6-plus`,
 For the per-model, per-capability behaviour observed at capture
 time — including the discrepancies between vendor documentation
 and the actual wire bytes — see
-[`docs/OPENCODE_DISCOVERY.md`](../../docs/OPENCODE_DISCOVERY.md).
+[`docs/discovery.md`](./docs/discovery.md).
 The matrix entries for this deployment live in `SUPPORT_MATRIX`;
 two vision entries are marked `refused` and `http-error` and so
 produce no fixtures.

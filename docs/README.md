@@ -53,10 +53,10 @@ see [`LAYOUT.md`](../LAYOUT.md).
 
 - [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) — implementation notes.
   Currently covers the SMTP/IMAP message bus.
-- [`ANTHROPIC_DISCOVERY.md`](./ANTHROPIC_DISCOVERY.md) — observed vs
+- [`inference-discovery-anthropic/docs/discovery.md`](../packages/inference-discovery-anthropic/docs/discovery.md) — observed vs
   documented wire behaviour of Anthropic's `/v1/messages` and
   `/v1/files` surfaces. Narrative companion to the discovery fixtures
   and the `SUPPORT_MATRIX`.
-- [`OPENCODE_DISCOVERY.md`](./OPENCODE_DISCOVERY.md) — observed vs
+- [`inference-discovery-openai/docs/discovery.md`](../packages/inference-discovery-openai/docs/discovery.md) — observed vs
   documented wire behaviour of the OpenCode Zen relay. Narrative
   companion to the discovery fixtures and the `SUPPORT_MATRIX`.

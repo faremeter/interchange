@@ -126,7 +126,7 @@ pair in the matrix for the selected provider.
 
 ## See also
 
-- [`docs/OPENCODE_DISCOVERY.md`](../../docs/OPENCODE_DISCOVERY.md) —
+- [`inference-discovery-openai/docs/discovery.md`](../inference-discovery-openai/docs/discovery.md) —
   observed-vs-documented narrative for the OpenCode Zen relay, with
   pointers into the captured corpus.
 - [`@intx/inference-testing`](../inference-testing/README.md) —
