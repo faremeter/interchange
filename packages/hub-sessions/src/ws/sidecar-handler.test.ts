@@ -1376,6 +1376,249 @@ describe("SidecarRouter", () => {
     });
   });
 
+  describe("mail-triggered run grants", () => {
+    const WORKFLOW_ADDR = "ins_dep_wf1@tenant.example";
+    const AGENT_ADDR = "ins_agent1@tenant.example";
+
+    function mailWithMessageId(messageId: string): string {
+      const raw = [
+        "From: user@tenant.example",
+        `To: ${WORKFLOW_ADDR}`,
+        `Message-ID: ${messageId}`,
+        "",
+        "trigger body",
+      ].join("\r\n");
+      return btoa(raw);
+    }
+
+    const SAMPLE_GRANTS: RunGrantsFrame["stepGrants"] = [
+      {
+        id: "grant-1",
+        resource: "tool:x",
+        action: "invoke",
+        effect: "allow",
+        origin: "creator",
+        conditions: null,
+        expiresAt: null,
+        roleId: null,
+        principalId: "prin-run",
+      },
+    ];
+
+    async function connectRecipient(
+      router: ReturnType<typeof createSidecarRouter>,
+      address: string,
+    ): Promise<ReturnType<typeof createMockWs>> {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-recipient",
+          token: "tok",
+          agentAddresses: [address],
+        }),
+      );
+      await tick();
+      return ws;
+    }
+
+    async function sendOutbound(
+      router: ReturnType<typeof createSidecarRouter>,
+      rawMessage: string,
+      recipients: string[],
+    ): Promise<void> {
+      const sender = createMockWs();
+      router.handleOpen(sender);
+      router.handleMessage(
+        sender,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-outbound",
+          token: "tok",
+          agentAddresses: ["ins_dep_sender@tenant.example"],
+        }),
+      );
+      await tick();
+      await router.handleMessage(
+        sender,
+        JSON.stringify({ type: "mail.outbound", rawMessage, recipients }),
+      );
+      await tick();
+    }
+
+    test("materializes grants and sends them before the inbound mail for a workflow recipient", async () => {
+      const calls: { agentAddress: string; runId: string }[] = [];
+      let committed = false;
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async (args) => {
+            calls.push(args);
+            return {
+              outcome: "materialized",
+              stepGrants: SAMPLE_GRANTS,
+              commit: async () => {
+                committed = true;
+              },
+            };
+          },
+        },
+      });
+      const ws = await connectRecipient(router, WORKFLOW_ADDR);
+
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-run-1@tenant.example>"),
+        [WORKFLOW_ADDR],
+      );
+
+      // The lookup was invoked with the derived runId (the mail's Message-ID).
+      expect(calls).toEqual([
+        { agentAddress: WORKFLOW_ADDR, runId: "<mail-run-1@tenant.example>" },
+      ]);
+      // The recipient received the run.grants frame BEFORE the mail.inbound.
+      const frames = ws.sent.map((s) => JSON.parse(s));
+      expect(frames[0]?.type).toBe("run.grants");
+      expect(frames[0]?.runId).toBe("<mail-run-1@tenant.example>");
+      expect(frames[0]?.stepGrants).toEqual(SAMPLE_GRANTS);
+      expect(frames[1]?.type).toBe("mail.inbound");
+      // The commit ran only after the mail was accepted for delivery.
+      expect(committed).toBe(true);
+    });
+
+    test("does not materialize grants for a non-workflow recipient", async () => {
+      let called = false;
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async () => {
+            called = true;
+            return { outcome: "skip" };
+          },
+        },
+      });
+      const ws = await connectRecipient(router, AGENT_ADDR);
+
+      await sendOutbound(router, btoa("From: x\r\nTo: y\r\n\r\nbody"), [
+        AGENT_ADDR,
+      ]);
+
+      expect(called).toBe(false);
+      // The mail still forwarded, with no preceding run.grants frame.
+      const frames = ws.sent.map((s) => JSON.parse(s));
+      expect(frames.map((f) => f.type)).toEqual(["mail.inbound"]);
+    });
+
+    test("forwards the mail without grants when the lookup skips", async () => {
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async () => ({ outcome: "skip" }),
+        },
+      });
+      const ws = await connectRecipient(router, WORKFLOW_ADDR);
+
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-run-skip@tenant.example>"),
+        [WORKFLOW_ADDR],
+      );
+
+      const frames = ws.sent.map((s) => JSON.parse(s));
+      expect(frames.map((f) => f.type)).toEqual(["mail.inbound"]);
+    });
+
+    test("fails a rejected run closed: no grants, no mail, no commit", async () => {
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async () => ({
+            outcome: "rejected",
+            status: 403,
+            code: "grant_requirement_unsatisfied",
+            message: "creator lacks secret:vault/use",
+          }),
+        },
+      });
+      const ws = await connectRecipient(router, WORKFLOW_ADDR);
+
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-run-reject@tenant.example>"),
+        [WORKFLOW_ADDR],
+      );
+
+      // The run is fail-closed: the recipient sees neither the run.grants
+      // frame nor the mail that would dispatch an under-authorized run.
+      expect(ws.sent).toHaveLength(0);
+    });
+
+    test("isolates a rejected recipient from a co-recipient's delivery", async () => {
+      // One workflow recipient is rejected; a co-recipient agent address must
+      // still receive its mail. (A mail with more than one workflow-derived
+      // recipient is separately rejected wholesale, so the co-recipient here
+      // is a non-workflow address.)
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async (args) =>
+            args.agentAddress === WORKFLOW_ADDR
+              ? {
+                  outcome: "rejected",
+                  status: 403,
+                  code: "grant_requirement_unsatisfied",
+                  message: "creator lacks authority",
+                }
+              : { outcome: "skip" },
+        },
+      });
+      const wfWs = await connectRecipient(router, WORKFLOW_ADDR);
+      const agentWs = await connectRecipient(router, AGENT_ADDR);
+
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-run-corec@tenant.example>"),
+        [WORKFLOW_ADDR, AGENT_ADDR],
+      );
+
+      // The rejected workflow recipient got nothing; the co-recipient still
+      // received its mail.
+      expect(wfWs.sent).toHaveLength(0);
+      const agentFrames = agentWs.sent.map((s) => JSON.parse(s));
+      expect(agentFrames.map((f) => f.type)).toEqual(["mail.inbound"]);
+    });
+
+    test("rejects a mail addressed to more than one workflow recipient", async () => {
+      let called = false;
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async () => {
+            called = true;
+            return { outcome: "skip" };
+          },
+        },
+      });
+      const wfWs = await connectRecipient(router, WORKFLOW_ADDR);
+      const otherWfAddr = "ins_dep_wf2@tenant.example";
+      const otherWs = await connectRecipient(router, otherWfAddr);
+
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-run-multi@tenant.example>"),
+        [WORKFLOW_ADDR, otherWfAddr],
+      );
+
+      // The shared-runId collision is refused loudly before any
+      // materialization; neither workflow recipient is delivered to.
+      expect(called).toBe(false);
+      expect(wfWs.sent).toHaveLength(0);
+      expect(otherWs.sent).toHaveLength(0);
+    });
+  });
+
   describe("agent lifecycle", () => {
     test("agent.deploy sends frame and resolves on ack", async () => {
       const ws = createMockWs();

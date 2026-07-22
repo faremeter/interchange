@@ -21,4 +21,5 @@ export {
   type SidecarLookups,
   type SidecarMailPersistedRow,
   type SidecarMailPersistedPayload,
+  type MailTriggeredRunGrantsResult,
 } from "./sidecar-events";

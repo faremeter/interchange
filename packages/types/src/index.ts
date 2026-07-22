@@ -22,6 +22,7 @@ export * from "./observability";
 export * from "./agent-address";
 export * from "./agent-data";
 export * from "./hex";
+export * from "./message-id";
 export * from "./base64";
 export * from "./base64url";
 export * from "./concat";

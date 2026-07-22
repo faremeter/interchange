@@ -19,7 +19,11 @@
 // wire layer already has both behaviors, and pretending otherwise
 // would silently change failure handling.
 
-import type { PackRejectReason, RepoId } from "@intx/types/sidecar";
+import type {
+  PackRejectReason,
+  RepoId,
+  RunGrantsFrame,
+} from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
   ConnectorThreadState,
@@ -40,6 +44,24 @@ export type SidecarMailPersistedRow = {
 export type SidecarMailPersistedPayload = SidecarMailPersistedRow & {
   raw: Uint8Array;
 };
+
+/**
+ * Outcome of staging a mail-triggered run's grants, discriminated so the
+ * `mail.outbound` handler can order delivery against the commit. `skip`
+ * means the recipient names no deployed workflow deployment; `rejected`
+ * means a declared requirement's authority is insufficient (the run must
+ * not launch); `materialized` carries the staged wire rows plus a
+ * deferred, idempotent `commit` the caller invokes only after delivery is
+ * accepted.
+ */
+export type MailTriggeredRunGrantsResult =
+  | { outcome: "skip" }
+  | { outcome: "rejected"; status: 403 | 409; code: string; message: string }
+  | {
+      outcome: "materialized";
+      stepGrants: RunGrantsFrame["stepGrants"];
+      commit: () => Promise<void>;
+    };
 
 export type SidecarEventMap = {
   /** Notification. Emitted for every agent.event frame the wire layer
@@ -237,6 +259,25 @@ export type SidecarLookups = {
     kind: SignalKind;
     approvalSnapshot: ApprovalSnapshot;
   }) => Promise<void>;
+
+  /** Stages a mail-triggered workflow run's grants from the receiving
+   * deployment's definition WITHOUT committing, returning a discriminated
+   * result the `mail.outbound` handler orders against delivery. Called for
+   * each recipient that is a workflow deployment. The `runId` is the mail's
+   * Message-ID, derived identically to the sidecar's supervisor, so the
+   * grants land under the runId the supervisor will consume the mail as.
+   *
+   * On `materialized` the caller sends `stepGrants` ahead of the inbound
+   * mail and, only once delivery is accepted, calls `commit` -- idempotent
+   * on the runId, so a redelivered inbound mail neither double-mints nor
+   * throws. On `skip` the address names no deployed workflow deployment, so
+   * no grants are sent and the mail still forwards. On `rejected` a declared
+   * requirement's authority is insufficient; the caller fails the mail
+   * closed for that recipient. */
+  materializeMailTriggeredRunGrants?: (args: {
+    agentAddress: string;
+    runId: string;
+  }) => Promise<MailTriggeredRunGrantsResult>;
 
   /** Ingests a received agent-state pack and returns whether the wire
    * layer should ack or reject the pack to the sidecar. `repoId.kind`

@@ -1,5 +1,9 @@
-import { createDB } from "@intx/db";
-import { createApp, createAuth } from "@intx/hub-api";
+import { createDB, createGrantStore } from "@intx/db";
+import {
+  createApp,
+  createAuth,
+  createMailTriggeredRunGrantsMaterializer,
+} from "@intx/hub-api";
 import {
   createAgentRepoStore,
   createAssetService,
@@ -110,7 +114,43 @@ const agentRepoStore = createAgentRepoStore({
   },
 });
 
-const lookups = createHubSessionLookups({ db, agentRepoStore });
+// The asset service shares the agent-repo store's substrate so skill
+// assets land under the same on-disk root and reuse the same signing
+// key for commit signatures. It is consumed by the session service for
+// per-attachment pack fan-out, by the smart-HTTP asset routes for clone
+// and push, and by the mail-triggered run-grants materializer to hydrate
+// a receiving deployment's definition. The E2E test seeds fixtures
+// directly through this service object.
+const httpRegistries = new Map([
+  ["npmjs", { url: "https://registry.npmjs.org" }],
+]);
+
+const assetService = createAssetService({
+  db,
+  repoStore: agentRepoStore.repoStore,
+  // Reserve every configured HTTP registry name so a `package-registry`
+  // asset cannot silently shadow it at session launch. The session
+  // service's per-launch registry assembly applies asset-wins-on-name-
+  // collision (see `session-service.ts` `assetIndex` build), which
+  // turns a same-named asset into an opaque reroute of the public
+  // npm registry; rejecting at creation surfaces the collision at
+  // intent time instead of debugging an unexpected reroute later.
+  reservedPackageRegistryNames: new Set(httpRegistries.keys()),
+});
+
+// Materialize a mail-triggered workflow run's grants from the receiving
+// deployment's definition, so a workflow->workflow mail run is born with
+// the same authorization an externally-triggered run gets. Threaded into
+// the sidecar router as a lookup its `mail.outbound` handler invokes for
+// each workflow-deployment recipient.
+const lookups = {
+  ...createHubSessionLookups({ db, agentRepoStore }),
+  materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer({
+    db,
+    assetService,
+    grantStore: createGrantStore(db),
+  }),
+};
 
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
@@ -143,29 +183,6 @@ createHubSessionOrchestrator({
   db,
   eventCollectors,
   agentRepoStore,
-});
-
-// The asset service shares the agent-repo store's substrate so skill
-// assets land under the same on-disk root and reuse the same signing
-// key for commit signatures. It is consumed by the session service for
-// per-attachment pack fan-out and by the smart-HTTP asset routes for
-// clone and push. The E2E test seeds fixtures directly through this
-// service object.
-const httpRegistries = new Map([
-  ["npmjs", { url: "https://registry.npmjs.org" }],
-]);
-
-const assetService = createAssetService({
-  db,
-  repoStore: agentRepoStore.repoStore,
-  // Reserve every configured HTTP registry name so a `package-registry`
-  // asset cannot silently shadow it at session launch. The session
-  // service's per-launch registry assembly applies asset-wins-on-name-
-  // collision (see `session-service.ts` `assetIndex` build), which
-  // turns a same-named asset into an opaque reroute of the public
-  // npm registry; rejecting at creation surfaces the collision at
-  // intent time instead of debugging an unexpected reroute later.
-  reservedPackageRegistryNames: new Set(httpRegistries.keys()),
 });
 
 const sessionService = createSessionService({
