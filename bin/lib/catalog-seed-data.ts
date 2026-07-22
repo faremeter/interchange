@@ -81,19 +81,25 @@ const OPENAI_REASONING_QUIRKS: Record<string, unknown> = {
 };
 
 export const catalogModels: CatalogModelSpec[] = [
-  { canonicalName: "claude-sonnet-4", displayName: "Claude Sonnet 4" },
-  { canonicalName: "claude-haiku-4", displayName: "Claude Haiku 4" },
-  { canonicalName: "gpt-4o", displayName: "GPT-4o" },
+  { canonicalName: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+  {
+    canonicalName: "claude-haiku-4-5-20251001",
+    displayName: "Claude Haiku 4.5",
+  },
+  { canonicalName: "gpt-5.5", displayName: "GPT-5.5" },
   { canonicalName: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro" },
-  { canonicalName: "kimi-k2", displayName: "Kimi K2" },
-  { canonicalName: "kimi-k2.6", displayName: "Kimi K2.6" },
+  { canonicalName: "kimi-k3", displayName: "Kimi K3" },
+  { canonicalName: "kimi-k2.7-code", displayName: "Kimi K2.7 Code" },
 ];
 
-// The Fireworks / Moonshot / OpenRouter providers all offer the one `kimi-k2`
-// model, and the two OpenCode Zen providers both offer `kimi-k2.6`. Distinct
-// priorities give source resolution a deterministic order across the
-// deployments of a shared model. anthropic and google-genai adapters carry no
-// accommodations, so their offerings' quirks bag is empty.
+// The Fireworks / Moonshot / OpenRouter providers all offer the one `kimi-k3`
+// model, and the two OpenCode Zen providers both offer `kimi-k2.7-code`.
+// Distinct priorities give source resolution a deterministic order across the
+// deployments of a shared model. The anthropic and google-genai adapters carry
+// no accommodations, and gpt-5.5 emits no reasoning_content on api.openai.com
+// (its discovery source marks reasoning-content unsupported), so the Anthropic,
+// Gemini, and OpenAI Direct offerings all ship an empty quirks bag; only the
+// kimi-serving openai-compatible deployments need OPENAI_REASONING_QUIRKS.
 export const catalogProviders: CatalogProviderSpec[] = [
   {
     name: "Anthropic Direct",
@@ -103,17 +109,20 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "sk-ant-fake-key-for-seed-data",
     offerings: [
       {
-        model: "claude-sonnet-4",
+        model: "claude-sonnet-5",
         priority: 0,
-        discoverySource: null,
+        discoverySource: { provider: "anthropic", model: "claude-sonnet-5" },
         curatedCapabilities: ["long-context"],
         quirks: {},
         price: { input: "0.000003", output: "0.000015" },
       },
       {
-        model: "claude-haiku-4",
+        model: "claude-haiku-4-5-20251001",
         priority: 10,
-        discoverySource: null,
+        discoverySource: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5-20251001",
+        },
         curatedCapabilities: [],
         quirks: {},
         price: { input: "0.0000008", output: "0.000004" },
@@ -128,11 +137,11 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "sk-openai-fake-key-for-seed-data",
     offerings: [
       {
-        model: "gpt-4o",
+        model: "gpt-5.5",
         priority: 0,
-        discoverySource: null,
+        discoverySource: { provider: "openai", model: "gpt-5.5" },
         curatedCapabilities: [],
-        quirks: OPENAI_REASONING_QUIRKS,
+        quirks: {},
         price: { input: "0.0000025", output: "0.00001" },
       },
     ],
@@ -147,7 +156,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
       {
         model: "gemini-2.5-pro",
         priority: 0,
-        discoverySource: null,
+        discoverySource: { provider: "google-genai", model: "gemini-2.5-pro" },
         curatedCapabilities: ["long-context"],
         quirks: {},
         price: { input: "0.00000125", output: "0.00001" },
@@ -162,9 +171,9 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "fw-fake-key-for-seed-data",
     offerings: [
       {
-        model: "kimi-k2",
+        model: "kimi-k3",
         priority: 0,
-        discoverySource: null,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
         curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
@@ -179,9 +188,9 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "sk-moonshot-fake-key-for-seed-data",
     offerings: [
       {
-        model: "kimi-k2",
+        model: "kimi-k3",
         priority: 10,
-        discoverySource: null,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
         curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
@@ -196,9 +205,9 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "sk-or-fake-key-for-seed-data",
     offerings: [
       {
-        model: "kimi-k2",
+        model: "kimi-k3",
         priority: 20,
-        discoverySource: null,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
         curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
@@ -213,9 +222,9 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "ocz-fake-key-for-seed-data",
     offerings: [
       {
-        model: "kimi-k2.6",
+        model: "kimi-k2.7-code",
         priority: 0,
-        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.7-code" },
         curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
@@ -230,9 +239,9 @@ export const catalogProviders: CatalogProviderSpec[] = [
     credentialSecret: "ocz-go-fake-key-for-seed-data",
     offerings: [
       {
-        model: "kimi-k2.6",
+        model: "kimi-k2.7-code",
         priority: 10,
-        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.7-code" },
         curatedCapabilities: [],
         quirks: OPENAI_REASONING_QUIRKS,
         price: { input: "0.0000006", output: "0.0000025" },
