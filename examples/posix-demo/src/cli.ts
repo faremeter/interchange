@@ -44,7 +44,7 @@ const log = getLogger(["demo"]);
 
 const ANTHROPIC_DEFAULTS = {
   baseURL: "https://api.anthropic.com",
-  model: "claude-sonnet-4-6",
+  model: "claude-sonnet-5",
 };
 
 function readAgentSource(prefix: string): InferenceSource {

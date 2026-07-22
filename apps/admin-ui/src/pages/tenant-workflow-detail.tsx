@@ -260,7 +260,7 @@ export function TenantWorkflowDetailPage() {
                 onChange={(e) =>
                   setLaunchSource((s) => ({ ...s, id: e.target.value }))
                 }
-                placeholder="e.g. anthropic:claude-sonnet-4-6"
+                placeholder="e.g. anthropic:claude-sonnet-5"
                 className="h-8 text-xs"
               />
             </div>
@@ -288,7 +288,7 @@ export function TenantWorkflowDetailPage() {
                 onChange={(e) =>
                   setLaunchSource((s) => ({ ...s, model: e.target.value }))
                 }
-                placeholder="e.g. claude-sonnet-4-6"
+                placeholder="e.g. claude-sonnet-5"
                 className="h-8 text-xs"
               />
             </div>

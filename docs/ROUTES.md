@@ -193,7 +193,7 @@ The current implementation uses Server-Sent Events at `GET .../api/tenants/:tena
 Event format: JSON objects with a `type` field and `data` payload.
 
 ```json
-{"type": "inference.start", "data": {"model": "claude-sonnet-4-20250514"}}
+{"type": "inference.start", "data": {"model": "claude-sonnet-5"}}
 {"type": "inference.text.delta", "data": {"token": "Hello"}}
 {"type": "inference.thinking.delta", "data": {"token": "Let me think..."}}
 {"type": "inference.tool_call.start", "data": {"name": "web_search", "callId": "call_xyz"}}

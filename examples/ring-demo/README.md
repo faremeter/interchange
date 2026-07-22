@@ -42,7 +42,7 @@ bun run start
 | `RING_PROVIDER` | `openai-compatible`                                                                         |
 | `RING_BASE_URL` | `OPENAI_BASE_URL`, else `http://localhost:4096/v1` (Anthropic: `https://api.anthropic.com`) |
 | `RING_API_KEY`  | `OPENAI_API_KEY` / `OPENCODE_API_KEY` (Anthropic: `ANTHROPIC_API_KEY`)                      |
-| `RING_MODEL`    | `OPENAI_MODEL` (Anthropic: `claude-sonnet-4-6`)                                             |
+| `RING_MODEL`    | `OPENAI_MODEL` (Anthropic: `claude-sonnet-5`)                                               |
 | `RING_PROMPT`   | "Should we build our own authentication system or use a third-party provider?"              |
 
 To run against Anthropic:

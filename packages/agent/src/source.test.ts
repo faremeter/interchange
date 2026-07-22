@@ -17,11 +17,11 @@ const S_ANTHROPIC: InferenceSource = {
 };
 
 const S_OPENAI: InferenceSource = {
-  id: "openai:gpt-4o",
+  id: "openai:gpt-5.5",
   provider: "openai",
   baseURL: "https://api.openai.com",
   apiKey: "sk-openai-1",
-  model: "gpt-4o",
+  model: "gpt-5.5",
 };
 
 /**
@@ -38,10 +38,10 @@ describe("createSourceRegistry", () => {
   test("selects the source whose id matches defaultSource", () => {
     const reg = createSourceRegistry({
       sources: [S_ANTHROPIC, S_OPENAI],
-      defaultSource: "openai:gpt-4o",
+      defaultSource: "openai:gpt-5.5",
     });
     expect(reg.active.provider).toBe("openai");
-    expect(reg.active.model).toBe("gpt-4o");
+    expect(reg.active.model).toBe("gpt-5.5");
     expect(reg.active.apiKey).toBe("sk-openai-1");
   });
 
@@ -88,7 +88,7 @@ describe("createSourceRegistry", () => {
     expect(() =>
       createSourceRegistry({
         sources: [S_ANTHROPIC],
-        defaultSource: "openai:gpt-4o",
+        defaultSource: "openai:gpt-5.5",
       }),
     ).toThrow(SourceNotFoundError);
   });
@@ -180,10 +180,10 @@ describe("createSourceRegistry", () => {
     });
     const reference = reg.active;
 
-    reg.setSources([S_ANTHROPIC, S_OPENAI], "openai:gpt-4o");
+    reg.setSources([S_ANTHROPIC, S_OPENAI], "openai:gpt-5.5");
 
     expect(reg.active).toBe(reference);
-    expect(reg.active.id).toBe("openai:gpt-4o");
+    expect(reg.active.id).toBe("openai:gpt-5.5");
     expect(reg.active.provider).toBe("openai");
     expect(reg.active.apiKey).toBe("sk-openai-1");
   });

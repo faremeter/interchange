@@ -15,7 +15,7 @@
 import type { InferenceSource } from "@intx/types/runtime";
 
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
 
 export type ResolveSourceOpts = {
   /**

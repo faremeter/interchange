@@ -128,14 +128,14 @@ describe("SidecarRouter", () => {
   // under test are independent of the source content.
   const TEST_SOURCES = [
     {
-      id: "anthropic:claude-sonnet-4-20250514",
+      id: "anthropic:claude-sonnet-5",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "sk-test",
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-5",
     },
   ];
-  const TEST_DEFAULT_SOURCE = "anthropic:claude-sonnet-4-20250514";
+  const TEST_DEFAULT_SOURCE = "anthropic:claude-sonnet-5";
 
   beforeEach(() => {
     router = createTestRouter({
@@ -1398,14 +1398,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const promise = router.sendAgentDeploy("new-agent@local", config);
@@ -1461,14 +1461,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const promise = router.sendAgentDeploy("ack-agent@local", config);
@@ -1521,14 +1521,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const promise = router.sendAgentDeploy("fail-ack@local", config);
@@ -1571,14 +1571,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const promise = router.sendAgentDeploy("fail-agent@local", config);
@@ -1657,14 +1657,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       await expect(
@@ -1726,14 +1726,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const promise = router.sendAgentDeploy("dc-agent@local", config);
@@ -2363,14 +2363,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const ws = createMockWs();
@@ -2447,14 +2447,14 @@ describe("SidecarRouter", () => {
         grants: [],
         sources: [
           {
-            id: "anthropic:claude-sonnet-4-20250514",
+            id: "anthropic:claude-sonnet-5",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
             apiKey: "sk-test",
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-5",
           },
         ],
-        defaultSource: "anthropic:claude-sonnet-4-20250514",
+        defaultSource: "anthropic:claude-sonnet-5",
       };
 
       const ws = createMockWs();

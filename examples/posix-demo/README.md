@@ -48,7 +48,7 @@ values fall back to the shared `OPENAI_*` / `OPENCODE_API_KEY` /
 | `ALPHA_PROVIDER` / `BETA_PROVIDER` | `openai-compatible`                                                                         |
 | `ALPHA_BASE_URL` / `BETA_BASE_URL` | `OPENAI_BASE_URL`, else `http://localhost:4096/v1` (Anthropic: `https://api.anthropic.com`) |
 | `ALPHA_API_KEY` / `BETA_API_KEY`   | `OPENAI_API_KEY` / `OPENCODE_API_KEY` (Anthropic: `ANTHROPIC_API_KEY`)                      |
-| `ALPHA_MODEL` / `BETA_MODEL`       | `OPENAI_MODEL` (Anthropic: `claude-sonnet-4-6`)                                             |
+| `ALPHA_MODEL` / `BETA_MODEL`       | `OPENAI_MODEL` (Anthropic: `claude-sonnet-5`)                                               |
 | `DEMO_SEED`                        | the built-in "ask Beta what it wants to be when it grows up" prompt                         |
 
 To run the two agents on different providers — say Beta on Anthropic:

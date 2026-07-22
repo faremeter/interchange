@@ -234,7 +234,7 @@ describe("Anthropic adapter: buildRequest", () => {
           { type: "text", text: "Answer." },
         ],
         timestamp: 1100,
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
       },
       {
         role: "user",
@@ -243,7 +243,7 @@ describe("Anthropic adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "claude-sonnet-4-6", {});
+    const req = adapter.buildRequest(messages, "claude-sonnet-5", {});
     const body = AnthropicRequestBody.assert(JSON.parse(req.body));
     const assistantMsg = body.messages.find((m) => m.role === "assistant");
     if (assistantMsg === undefined) {
