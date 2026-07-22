@@ -50,7 +50,7 @@ export type CatalogOfferingSpec = {
   curatedCapabilities: Capability[];
   // Per-deployment adapter accommodations, explicit on every offering (the
   // guard enforces it) even when empty. See OPENAI_REASONING_QUIRKS for why
-  // the openai-plugin deployments spell out today's universal defaults.
+  // the openai-plugin deployments carry explicit reasoning quirks.
   quirks: Record<string, unknown>;
   // Dev pricing as decimal strings, matching the API's string money fields.
   price: { input: string; output: string };
@@ -68,13 +68,13 @@ export type CatalogProviderSpec = {
   offerings: CatalogOfferingSpec[];
 };
 
-// The OpenAI adapter today forces reasoning_content on every assistant turn
-// and reads reasoning tokens from these fields, applying this to every
-// openai/openai-compatible source by default. kimi-serving backends depend on
-// that behavior. Spelling it out per deployment matches what these sources
-// implicitly rely on now, so the universal default can later be removed
-// without regressing them. The value equals the current default on purpose:
-// it is the accommodation being made explicit, not a deviation from it.
+// kimi-serving backends require reasoning_content on every assistant turn. The
+// OpenAI adapter no longer forces that by default, so
+// forceAssistantReasoningContent is a required override here: drop it and these
+// deployments regress. reasoningFieldNames instead restates the adapter's
+// still-lenient default (read reasoning_content, then reasoning); it is
+// redundant with that default but kept as explicit catalog documentation of the
+// reasoning fields these backends emit.
 const OPENAI_REASONING_QUIRKS: Record<string, unknown> = {
   forceAssistantReasoningContent: true,
   reasoningFieldNames: ["reasoning_content", "reasoning"],
