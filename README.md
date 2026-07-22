@@ -165,5 +165,5 @@ back deterministic tests in
 [`@intx/inference-testing`](./packages/inference-testing). See
 [`@intx/inference-discovery`](./packages/inference-discovery) for
 the runtime and CLI, and
-[`docs/OPENCODE_DISCOVERY.md`](./docs/OPENCODE_DISCOVERY.md) for
-the OpenCode Zen observed-vs-documented narrative.
+[`packages/inference-discovery-openai/docs/discovery.md`](./packages/inference-discovery-openai/docs/discovery.md)
+for the OpenCode Zen observed-vs-documented narrative.
