@@ -29,6 +29,7 @@
 
 import type {
   InitRepoOpts,
+  NewlyTerminalRun,
   Principal,
   RepoId,
   RepoStore,
@@ -163,7 +164,7 @@ export function createProxyWorkflowRunRepoStore(
       _pack: Uint8Array,
       _commitSha: string,
       _expectedOldSha: string | null,
-    ): Promise<void> => {
+    ): Promise<NewlyTerminalRun[]> => {
       throw new Error(
         "workflow-child proxy substrate: receivePack is not supported (writes are proxied to the supervisor)",
       );

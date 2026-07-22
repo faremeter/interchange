@@ -19,6 +19,7 @@ import type {
   CommittedTreeEntry,
   InitRepoOpts,
   KindHandler,
+  NewlyTerminalRun,
   Principal,
   RefEntry,
   RepoAction,
@@ -1589,7 +1590,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     pack: Uint8Array,
     commitSha: string,
     expectedOldSha: string | null,
-  ): Promise<void> {
+  ): Promise<NewlyTerminalRun[]> {
     gateAccess(principal, repoId, ref, "receivePack");
 
     // The lock spans the entire substrate body of receivePack: the
@@ -1612,6 +1613,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         existingCommitsCache.set(existingKey, existingCommits);
       }
       const newCommitsFromPack: string[] = [];
+      const newlyTerminalRuns: NewlyTerminalRun[] = [];
 
       const oldSha = await receivePackObjects(
         dir,
@@ -1713,6 +1715,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${result.reason}`;
               return { ok: false, reason: result.reason };
             }
+            if (result.newlyTerminalRuns !== undefined) {
+              newlyTerminalRuns.push(...result.newlyTerminalRuns);
+            }
           }
           return true;
         },
@@ -1728,6 +1733,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       await emitRefUpdate(repoId, ref, oldSha, commitSha);
 
       await maybeRunGC(repoId);
+
+      return newlyTerminalRuns;
     });
   }
 

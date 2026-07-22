@@ -15,8 +15,10 @@ import {
 } from "@intx/db";
 import {
   agentInstance,
+  principal,
   sessionMail,
   workflowDeployment,
+  workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
 import { parseAgentAddress, signalName } from "@intx/types";
@@ -350,8 +352,9 @@ export function createHubSessionLookups(
         );
       }
       const deploymentId = repoId.id;
+      let newlyTerminalRuns;
       try {
-        await agentRepoStore.receiveWorkflowRunPack(
+        newlyTerminalRuns = await agentRepoStore.receiveWorkflowRunPack(
           { kind: "workflow-run", id: deploymentId },
           pack,
           ref,
@@ -372,6 +375,80 @@ export function createHubSessionLookups(
         logger.error`Workflow-run pack receive failed for ${deploymentId}: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
       }
+
+      // The substrate has already durably advanced the git ref by the time it
+      // returns, so the pack is accepted regardless of what happens below. The
+      // per-run status flip and principal deactivation are a best-effort
+      // downstream side effect of that durable advance, not part of accepting
+      // the pack. A failure here leaves the run "running" in the DB with its
+      // principal still active; there is no automatic re-fire, because a
+      // redelivery of the same durable tip produces no newly-terminal signal
+      // (the substrate's per-commit walk short-circuits on an already-present
+      // tip). The failure is therefore logged at ERROR as the only record that
+      // the row needs a manual flip, and the pack verdict stays accepted so the
+      // sidecar is acked and does not wedge re-pushing a pack that already
+      // landed.
+      const now = new Date();
+      for (const { runId, status } of newlyTerminalRuns) {
+        try {
+          await db.transaction(async (tx) => {
+            const won = await workflowRunStore.markTerminal(
+              runId,
+              status,
+              now,
+              tx,
+            );
+            if (won === null) {
+              // No running row matched. Either the run is already terminal (a
+              // benign replay against an already-settled row) or no row exists
+              // at all -- the run reached a terminal event before its anchor
+              // committed, so its terminal state has nowhere to land. Only the
+              // second case is a defect; distinguish them and log the missing
+              // anchor loudly rather than silently treating both as done.
+              const [existing] = await tx
+                .select({ id: workflowRun.id })
+                .from(workflowRun)
+                .where(eq(workflowRun.id, runId));
+              if (existing === undefined) {
+                logger.error`Terminal event for run ${runId} (deployment ${deploymentId}, target status ${status}) has no workflow_run row; the run terminated before its anchor committed`;
+              }
+              return;
+            }
+            // Deactivate the run's own principal, if it has one. Externally-
+            // triggered runs carry a principal; internal, workflow-spawned runs
+            // have `principalId = null` and inherit the deployment's grants, so
+            // there is nothing to deactivate. Deactivation is gated on winning
+            // the flip -- the single claim point -- not on the principal's own
+            // status.
+            if (won.principalId !== null) {
+              await tx
+                .update(principal)
+                .set({ status: "deactivated", updatedAt: now })
+                // The `refId` clause is a defensive mirror of the per-instance
+                // teardown in instances.ts: `won.principalId` is already this
+                // run's own principal, and `principal.id` is the primary key,
+                // so the `refId` match is belt-and-suspenders that the id we
+                // won belongs to this run.
+                .where(
+                  and(
+                    eq(principal.id, won.principalId),
+                    eq(principal.refId, runId),
+                  ),
+                );
+            }
+          });
+        } catch (err) {
+          // Per-run isolation: a failed flip for one run must not abort the
+          // rest of the batch, and must not throw out of this method -- a throw
+          // would leave the sidecar with neither an ack nor a reject for a pack
+          // the substrate already accepted. This ERROR is the only signal that
+          // the run is stuck "running" in the DB with its principal active, so
+          // it carries enough to find and flip the row by hand.
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error`Terminal DB flip failed for run ${runId} (deployment ${deploymentId}, target status ${status}); run left running in the DB: ${msg}`;
+        }
+      }
+
       return { accepted: true };
     },
   };

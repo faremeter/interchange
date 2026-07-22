@@ -82,6 +82,32 @@ export function createWorkflowRunStore(db: DBHandle) {
           and(eq(workflowRun.id, row.id), isNull(workflowRun.principalId)),
         );
     },
+
+    /**
+     * Atomically settle a running run into a terminal state. The
+     * `status = 'running'` guard makes the flip single-shot: the first caller
+     * stamps the terminal status and `endedAt` and gets the row back; any later
+     * caller matches no row and receives null, so the run is not re-terminated
+     * and its `endedAt` is not overwritten. This is a safety property, not a
+     * recovery path -- it makes a second call (a manual replay against an
+     * already-settled run) a harmless no-op; it does not by itself re-drive a
+     * flip that failed. Returns the parsed row only on the winning flip.
+     */
+    async markTerminal(
+      runId: string,
+      status: "completed" | "failed" | "cancelled",
+      endedAt: Date,
+      tx?: DBExecutor,
+    ): Promise<ParsedWorkflowRun | null> {
+      const [updated] = await (tx ?? db)
+        .update(workflowRun)
+        .set({ status, endedAt })
+        .where(
+          and(eq(workflowRun.id, runId), eq(workflowRun.status, "running")),
+        )
+        .returning();
+      return updated === undefined ? null : parseWorkflowRunRow(updated);
+    },
   };
 }
 
