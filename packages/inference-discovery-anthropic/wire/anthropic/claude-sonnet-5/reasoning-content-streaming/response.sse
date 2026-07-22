@@ -1,0 +1,48 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011CdHUxWNksMHj18mWbizxn","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"global"}} }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}       }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EpgHCokBCBAYAipAL/oLPjqNBIwi4wGELFZ/VnucxyByTeVjeAqlOCnKbt5TNZ+UnCPMjb2E/v7t2ww1RWftPnknG0btjFrtxRhQgTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDMlvGp/VwsfZPtQYwBoMa4VYzw2SSXOL1YoBIjDKMifz3l9Qmon6Qodh3gYQ3Qt+MfcxYKxfNfsBFabsHwUI+qU/qr+tDQQ6pfTpaOgquwVhU8LJzuyxKY+zYO63QwGdRyvy5LJ7ZFQwCDVxn4yMGNXe6RXhIAK+itMeHHQhR3iyBCehLQJVmjasthWUG1nppT/qLSpvPbypbSiZvZpHYtIMC5wWqm6Rr47z008I4dJqtk8UHaQk0CwO7W7MZwtWGNbRFfuKBOWF7m3Xe8C1e82Xlw1UU/BLqzDmyBb4gi6kE+BsstKQYYPtLx9gaTTUxqiR5wKq91Pyrq8A+p2g1vd0fDfWos33477rCJ5O0/xISKqMNgmSJqck+cBKj/7zACz+pxLbaoP05vHhks2wMf4/pKTLowb9MzXgpli3Zba/Yzp1JaBm0Rw38WoA6s6u8ScCw/yoYC4KLUaG9naA0JkT78U6UxOm0zgT93mVM9D5OT37p/Z2n5GX8KdTH4na3u9QvtxQZUeScgpoGpUs3xMV6SBKyL8iQWX8BBeJSLvIWAbNeKy1ZC0giJjTPfXDwZjxaFC9osy8U2QcR0YZb/FD+C1Nrj3z26zBh3jSaKg7bNCGIaYE7o2p17k8b3OcenfzifB4pKyh1Iryvcz5IEt6OeawRyUF6BscS/EErVYJ6NkCfXp2661G7Wm+rRUeC4pKY9eAqjjvH74rnphkHftHBt92q3gUL7nQ4olnNuvdaNI6BYrHa+56yEW0DFwE948qfmoPqEIjlRPuUq3S/BlH9RlMMBdwUKfcxD/Y9YObxqym5oSBBSuKqWwIhqd28+8TliaqGC9v5fJTcSPWGXOMdvmir6/FpoNt7OrO42UBWg1uC/VSfu+Gx3zBXkd39o+Q6YsTBX7gQWw6nAV1It109CTnI6UNStseqziTxPX0XL1stkrSDgxcOUski8XXhRbGHzl2mB45lsunodB+fhwaAKfdtDCCWeoIrNT9htrTHiwlJlKCE73nOJTokVkxGbyxqDPhekZtiywYAQ=="}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"## Setting Up the Problem\n\nLet me define variables:\n- Let **b** = cost of the ball\n- The bat costs $"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"1.00 more than the ball, so the bat = **b + 1.00**\n\n**Key equation:** Together they cost $1.10:"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n$$b + (b + 1.00) = 1.10$$\n\n## Solving\n\n$$2b + 1.00 = 1.10$$\n$$2b = 0.10$$\n$$b ="} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 0.05$$\n\n## Verification\n\n- Ball: $0.05\n- Bat: $0.05 + $1.00 = $1.05\n- Total: $0.05 + $1.05 = $1"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":".10 ✓\n- Difference: $1.05 − $0.05 = $1.00 ✓\n\n## Answer\n\n**The ball costs $0.05 (5 "}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"cents).**\n\n*Note: The intuitive \"obvious\" answer is often $0.10, but that's incorrect — if the ball c"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ost $0.10, the bat would cost $1.10 (a dollar more), making the total $1.20, not $1.10.*"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1          }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":654,"output_tokens_details":{"thinking_tokens":317}}           }
+
+event: message_stop
+data: {"type":"message_stop"}
+

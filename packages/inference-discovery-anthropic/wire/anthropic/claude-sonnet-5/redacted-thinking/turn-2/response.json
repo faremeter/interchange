@@ -1,0 +1,28 @@
+{
+  "model": "claude-sonnet-5",
+  "id": "msg_011CdHUyVrXsc9m1aSkFsmhz",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "I said that this string isn't a real trigger that changes my behavior—I'm just Claude responding normally, and I invited you to share what you're actually trying to do."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 617,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 52,
+    "output_tokens_details": { "thinking_tokens": 0 },
+    "service_tier": "standard",
+    "inference_geo": "global"
+  }
+}

@@ -29,6 +29,7 @@ import { extractContentBlocksFromSSE } from "./sse";
 const PROVIDER_NAME = "anthropic";
 
 const MODELS = [
+  "claude-sonnet-5",
   "claude-sonnet-4-5-20250929",
   "claude-opus-4-1-20250805",
   "claude-haiku-4-5-20251001",

@@ -1,0 +1,35 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "Et8KCokBCBAYAipAIVDL0ge/GuVJdfCHSn98LKpqwKDobiCkVc/p1NOx0pqCPJnyn6L2rcdzRvxSEsVkYysYzZXkKnE34MxZCJjAJjIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDAxM9oPbMHxnuc1RUBoMiDp1f1T6U3uqwxMzIjBSGgYPtki8Z5rDOw8vMQ3H+xe8hF0zza2o+NKCNL3RkvtSWrTMk/BaHGY7LHrBB1AqggkYVckCOPPIXKW6VGqWyvwxAUFq6V+uNHwU6qYW/zePJe8d58NkS3KaJGDzcg0RzGbZQ+6d5joGEISE9c0GtB72wpo9K0dzbFGyBKH7M/Kwp/dcG9xlKUEvZthdVyTIMuu2Rvlu2UfBBEOajxc33uDbfmFL72yVqx8I5QYiUMIyZdDNH2HUnt9JHny3RYHTrpGKXV0OITNHNv/jflC72dRRAYbN0iKEmFyz2xBcSj4qPYZSSRoMlhUyiPXiFfizKcZmRuDVQaQUU5+IhUOU0hqT7yA0c4i7phEiJdQcKKdQB1Omdok+Ue7pdYbRnmvqSlncNDVjcqpnYFipRk7am/A7byQu+Q7Gu1XlRRx5tyMbq65rc52IPee9fSFxIw+/icn2jz8JcpqSFY3GgkTwGEhkZEyns6INqDFqGAQsJrG5mch40B+gLno4OxtFvcFXx61yzN1NfBWcoUqvHLObwc2gJjuIt3WitVxWUAYyATn7gWNJWC1k/EPO39ZSjgQq5sJJxVRO2To7TXK8SlHsvkntSIyP4qhIEXzmkYuZZ8ceG56p2xjd94euNx8wKsaaivoQWW9HINUzs3DKq1GvEKBPati7yaC22hCPMUAID7Stg76zK2dYZPrrLH3s9/P9W1fCKjgizz2ouKOznJwNTtCNE2ufSK6STGB2z8U/Syeye1RSOASL762s3ozDkj7tqoq/2EzM37AilVYB+vE8jDzTjGpC5mBqlHICmJcgYoTZHboKs5+/7SWrjSAnhQOG+BglNgjZRYYwKX+qRRRb8hZcBOoSnstONVU7T200PrpBUr9WZptEYe3s7ncqkbfwDq81VRzOiS8H3Qxfa5XNxtlg9Gu4nQ/uzO9JlL13H6qEcB/EaaUbuVwEg7hCVLHg0sjY9HrdIUkeU/zaiTt1YV1VC83J/uo4a8jhLkP+hw5Rv3kSgKssHCTgqgj9UxZYIBS6okC1c+1NiSHyrZssYdX8K4GZEtnzhxAyBJGMRMFPokMewg2MtcfFowTsvATmsyck4dfawkOUCWkyfOPhW1LXBG8fctORjrNp9d66alF8Ew4nbDSmtOaZcJGVSYDqAqF4OL10CeCSxy3cmPBPhSP7Lmugi6rwBbxPCAzZEFdSluuqxJyeGlXvGPYDzVoDz9CiAvNE+9O+q93FaTjPGRlLY9CTUiOy7jDZS/QH5TcXs/bJUMHTnQrG/l4cdbPoFqh2RkqcKwUCtqm0T6fLWsp4xP7O34i+285CdzmpB+w16xJCqwZKtMCfn6/GDU1zqAI+8fS6bMAJYQW42+DPtLNEH0QQTvGQJr/XPX8mMIci0JYl+HZzFsGEnglCWOcb8GLiZGad2eD9ffJB/TQQRSQfbtAOlAp82NBsptuhNyPnu7bkUDix/bSNytqFy9tbVIyARAOuD4CmNl0U4Fs/Pie6rM2du5+zkLn/A1Q+U47D1MQAeYhxdyJOUbfhZR98a3abjBqVvl4dFW/WJQkGPB7TMjzla3E7KpjxUEYRv8rgUnd05r9QOohRRSvVF4/Zs3xlshgB"
+        },
+        {
+          "type": "text",
+          "text": "This looks like it's trying to trigger some kind of hidden mode or special behavior, but I don't have anything like that. There's no \"magic string\" that unlocks different functionality for me—I just process text and respond normally.\n\nIf you're testing how I handle unusual inputs, that's fine! But if you're trying to get me to do something specific, it'd be more effective to just tell me directly what you're looking for. What can I help you with?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Briefly summarize what you just said in one sentence."
+    }
+  ],
+  "thinking": {
+    "type": "adaptive"
+  },
+  "output_config": {
+    "effort": "max"
+  },
+  "stream": true
+}
