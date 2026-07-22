@@ -1,3 +1,5 @@
+import { and, eq, isNull } from "drizzle-orm";
+
 import type { DB, DBExecutor } from "./client";
 import { workflowRun } from "./schema/workflow-run";
 import { parseWorkflowRunRow } from "./parse-row";
@@ -48,6 +50,37 @@ export function createWorkflowRunStore(db: DBHandle) {
         .onConflictDoNothing({ target: workflowRun.id })
         .returning();
       return inserted === undefined ? null : parseWorkflowRunRow(inserted);
+    },
+
+    /**
+     * Anchor an externally-triggered run whose row may already exist. The run
+     * row has two co-writers keyed on the same id: the trigger route (which
+     * mints a principal) and the lazy anchor in signal-correlation
+     * registration (which inserts with a null principal when the run parks
+     * before the trigger commits). This insert is conflict-tolerant, and on a
+     * prior null-principal insert it reconciles by attaching `principalId`
+     * without disturbing the row's status. The `principalId IS NULL` guard
+     * keeps the attach single-shot, so it never overwrites a principal a
+     * concurrent winner already set. `principalId` must be non-null: only the
+     * externally-triggered path anchors through here, and it always mints one.
+     */
+    async anchorWithPrincipal(
+      row: WorkflowRunInsert & { principalId: string },
+      tx?: DBExecutor,
+    ): Promise<void> {
+      const executor = tx ?? db;
+      const [inserted] = await executor
+        .insert(workflowRun)
+        .values(row)
+        .onConflictDoNothing({ target: workflowRun.id })
+        .returning();
+      if (inserted !== undefined) return;
+      await executor
+        .update(workflowRun)
+        .set({ principalId: row.principalId })
+        .where(
+          and(eq(workflowRun.id, row.id), isNull(workflowRun.principalId)),
+        );
     },
   };
 }

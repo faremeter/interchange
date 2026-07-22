@@ -20,6 +20,7 @@ import {
   approval,
   signalCorrelation,
   workflowDeployment,
+  workflowRun,
 } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 import {
@@ -338,6 +339,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // hold-indefinitely: no deadline reaches the co-write.
       expect(appr?.timeoutAt).toBeNull();
       expect(appr?.resolvedAt).toBeNull();
+
+      // The co-write lazily anchored the run: a workflow_run row keyed on the
+      // frame's runId, on the same deployment and tenant. Its principal is null
+      // -- an internal, workflow-spawned run inherits the deployment's grants
+      // and has no principal of its own.
+      const runs = await h.db.select().from(workflowRun);
+      expect(runs).toHaveLength(1);
+      const run = runs[0];
+      expect(run?.id).toBe("run-1");
+      expect(run?.deploymentId).toBe(DEPLOYMENT);
+      expect(run?.tenantId).toBe(TENANT);
+      expect(run?.principalId).toBeNull();
+      expect(run?.status).toBe("running");
     });
 
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {
@@ -407,10 +421,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const firstCorr = await h.db.select().from(signalCorrelation);
       const firstAppr = await h.db.select().from(approval);
+      const firstRun = await h.db.select().from(workflowRun);
       expect(firstCorr).toHaveLength(1);
       expect(firstAppr).toHaveLength(1);
+      expect(firstRun).toHaveLength(1);
       const approvalId = firstAppr[0]?.id;
       const createdAt = firstCorr[0]?.createdAt;
+      const runCreatedAt = firstRun[0]?.createdAt;
 
       // Redeliver the identical frame: reconnect replay / supervisor restart.
       router.handleMessage(ws, registerFrame());
@@ -418,11 +435,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const secondCorr = await h.db.select().from(signalCorrelation);
       const secondAppr = await h.db.select().from(approval);
+      const secondRun = await h.db.select().from(workflowRun);
       expect(secondCorr).toHaveLength(1);
       expect(secondAppr).toHaveLength(1);
+      // The lazy run-row ensure is redelivery-safe: the run row is not
+      // re-inserted, so exactly one survives and its timestamp is untouched.
+      expect(secondRun).toHaveLength(1);
       // The original rows are untouched -- no second insert, no id churn.
       expect(secondAppr[0]?.id).toBe(approvalId);
       expect(secondCorr[0]?.createdAt).toEqual(createdAt);
+      expect(secondRun[0]?.createdAt).toEqual(runCreatedAt);
     });
 
     test("rejects a frame for an address the connection does not own", async () => {
