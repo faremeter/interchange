@@ -916,6 +916,18 @@ export function createWorkflowRoutes({
 // The walk's other strings (capability:/director:/inference.source:/mail.*)
 // are deploy-time approval concerns, not runtime authority, so they do not
 // materialize as run grant rows.
+//
+// The `tool:<name>` rows carry BARE tool names: the walk reads inline
+// `agent.toolFactories`, which have no bundle context. A workflow child gates
+// each tool call on `tool:<call.name>`, and every runnable step tool is a
+// pinned package the loader namespaces to `<bundleId>:<name>`, so the child
+// queries `tool:<bundleId>:<name>`. These bare rows therefore never address a
+// pinned tool's runtime gate; they are inert against a pinned call. A pinned
+// tool's authority (including its `ask` mark) is supplied instead by the
+// sidecar tool-mark floor (`deriveToolMarkFloorGrants`), derived from the
+// loaded factory's already-namespaced definitions. The `effect:<cap>` rows are
+// different: an action's EffectContext authorizes the bare `effect:<cap>` on
+// both sides, so those rows ARE name-matched and operative at run time.
 const TOOL_GRANT_PREFIX = "tool:";
 const EFFECT_GRANT_PREFIX = "effect:";
 
