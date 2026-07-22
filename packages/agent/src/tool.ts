@@ -32,6 +32,7 @@
 // wants per-tool granularity wraps each tool in its own single-
 // definition bundle.
 
+import type { GrantEffect } from "@intx/types";
 import type {
   ToolCall,
   ToolDefinition,
@@ -148,6 +149,26 @@ export type ToolFactory<EnvReq extends BaseEnv = BaseEnv> = (
 export interface ToolDeclaration {
   readonly name: string;
   readonly approval?: "ask";
+}
+
+/**
+ * Map a tool's static approval mark to the `GrantEffect` floor its
+ * `tool:<name>` grant carries: an `ask`-marked tool floors at `ask` (its
+ * invocation must clear an approval gate), every other tool floors at
+ * `allow`.
+ *
+ * This is the single canonical derivation of a tool's authorization floor
+ * from its declaration. Both the deploy-time capability walk (hub-side)
+ * and the per-step tool authorization (sidecar-side) route through here so
+ * a pinned tool loaded in the child derives the SAME floor the walk would
+ * have derived from an inline declaration. A divergence between the two
+ * sites would let a pinned `ask` tool authorize as `allow` (or vice
+ * versa), so the mapping lives in exactly one place.
+ */
+export function toolApprovalEffect(
+  declaration: Pick<ToolDeclaration, "approval">,
+): GrantEffect {
+  return declaration.approval === "ask" ? "ask" : "allow";
 }
 
 /**
