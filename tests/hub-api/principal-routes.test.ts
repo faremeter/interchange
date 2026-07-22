@@ -26,18 +26,21 @@ import {
   seedPrincipal,
   seedTenants,
   seedWorkflowDeployment,
+  seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
 // Exercises the principals resolver against a real migrated schema so the
 // `workflow`-kind display-name second pass -- which reads the deployment's
-// `address` off the `workflow_deployment` row a workflow principal's refId
-// points at -- runs end to end rather than against a mock.
+// `address` by joining a workflow principal's refId (its run id) through
+// `workflow_run` to `workflow_deployment` -- runs end to end rather than
+// against a mock.
 
 const TENANT_ID = "tnt_principals";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
 const ACTOR_USER_ID = "usr_actor";
 const ASSET_ID = "ast_wf";
 const DEPLOYMENT_ID = "dep_wf";
+const RUN_ID = "run_wf";
 const WORKFLOW_PRINCIPAL_ID = "prn_workflow";
 const DEPLOYMENT_ADDRESS = "ins_dep_wf@principals.test";
 
@@ -162,19 +165,25 @@ async function setup() {
     kind: "workflow",
     name: "wf",
   });
-  // The workflow principal's refId is the deployment id, so name resolution
-  // can reach the deployment row and derive the display name from its address.
+  // The workflow principal's refId is its run id; name resolution joins the
+  // runId through workflow_run to the deployment row to derive the display
+  // name from the deployment's address.
   await seedPrincipal(h.db, {
     id: WORKFLOW_PRINCIPAL_ID,
     tenantId: TENANT_ID,
     kind: "workflow",
-    refId: DEPLOYMENT_ID,
+    refId: RUN_ID,
   });
   await seedWorkflowDeployment(h.db, {
     id: DEPLOYMENT_ID,
     tenantId: TENANT_ID,
     definitionAssetId: ASSET_ID,
     address: DEPLOYMENT_ADDRESS,
+  });
+  await seedWorkflowRun(h.db, {
+    id: RUN_ID,
+    deploymentId: DEPLOYMENT_ID,
+    tenantId: TENANT_ID,
   });
 
   return createApp({
@@ -214,7 +223,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const row = data[0];
       if (!isObject(row)) throw new Error("expected principal row");
       expect(row["kind"]).toBe("workflow");
-      expect(row["refId"]).toBe(DEPLOYMENT_ID);
+      expect(row["refId"]).toBe(RUN_ID);
       expect(row["displayName"]).toBe(`Workflow (${DEPLOYMENT_ADDRESS})`);
     });
   },

@@ -22,6 +22,7 @@ import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
+import { resolveWorkflowPrincipalNames } from "./workflow-principal-name";
 import {
   parsePageParams,
   cursorCondition,
@@ -143,13 +144,15 @@ async function resolveGrantNames(
     }
 
     if (workflowRefIds.length > 0) {
-      // A workflow principal's refId is its workflow_deployment id; the
-      // deployment's routable address is the only human-facing label it has.
-      const deployments = await db.query.workflowDeployment.findMany({
-        where: (d, { inArray }) => inArray(d.id, workflowRefIds),
-      });
-      for (const d of deployments) {
-        refToName.set(d.id, `Workflow (${d.address})`);
+      // A workflow principal's refId is its run id; the run's deployment
+      // address is the only human-facing label it has, reached by joining the
+      // runId through workflow_run to workflow_deployment.
+      const workflowNames = await resolveWorkflowPrincipalNames(
+        db,
+        workflowRefIds,
+      );
+      for (const [runId, name] of workflowNames) {
+        refToName.set(runId, name);
       }
     }
 
