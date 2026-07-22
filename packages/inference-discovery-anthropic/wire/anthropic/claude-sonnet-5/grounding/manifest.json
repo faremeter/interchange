@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "capability": "grounding",
+  "capturedAt": "2026-07-22T16:54:40.190Z",
+  "schemaVersion": "1"
+}

@@ -26,15 +26,22 @@ matrix disagree, the matrix wins.
 
 ## Models in scope
 
-Three first-party Anthropic models are exercised. The plug-in pins the
+Four first-party Anthropic models are exercised. The plug-in pins the
 `anthropic-version: 2023-06-01` header on every request and authenticates
 with `x-api-key`. Per-capability beta flags
 (`anthropic-beta: files-api-2025-04-14`,
 `anthropic-beta: code-execution-2025-05-22`) live on the per-step
 headers map for the steps that need them, not in `buildAuthHeaders`.
 
+`claude-sonnet-5` rejects the classic
+`thinking: {type: "enabled", budget_tokens}` shape and requires the
+adaptive shape `thinking: {type: "adaptive"}` paired with
+`output_config: {effort}`; the request builder selects the shape by
+model. The three earlier models still use the classic shape.
+
 | Model                        | Tier      | Extended thinking | Vision | Document input | Code execution | Web search |
 | ---------------------------- | --------- | ----------------- | ------ | -------------- | -------------- | ---------- |
+| `claude-sonnet-5`            | Workhorse | yes (adaptive)    | yes    | yes            | yes            | yes        |
 | `claude-sonnet-4-5-20250929` | Workhorse | yes               | yes    | yes            | yes            | yes        |
 | `claude-opus-4-1-20250805`   | Flagship  | yes               | yes    | yes            | yes            | yes        |
 | `claude-haiku-4-5-20251001`  | Cheap     | yes               | yes    | yes            | yes            | yes        |

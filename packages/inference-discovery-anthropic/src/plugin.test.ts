@@ -85,10 +85,11 @@ function collectSteps(opts: {
 }
 
 describe("createAnthropicPlugin", () => {
-  test("declares provider name, all three models, and redaction lists", () => {
+  test("declares provider name, all four models, and redaction lists", () => {
     const plugin = createAnthropicPlugin({ apiKey: TEST_API_KEY });
     expect(plugin.name).toBe("anthropic");
     expect(plugin.models).toEqual([
+      "claude-sonnet-5",
       "claude-sonnet-4-5-20250929",
       "claude-opus-4-1-20250805",
       "claude-haiku-4-5-20251001",

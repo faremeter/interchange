@@ -37,6 +37,7 @@ export type SupportEntry = typeof SupportEntry.infer;
 
 const ANTHROPIC_PROVIDER = "anthropic";
 const ANTHROPIC_MODELS = [
+  "claude-sonnet-5",
   "claude-sonnet-4-5-20250929",
   "claude-opus-4-1-20250805",
   "claude-haiku-4-5-20251001",

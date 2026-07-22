@@ -1,0 +1,34 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "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"
+        },
+        {
+          "type": "text",
+          "text": "I don't recognize this as a special command that changes how I operate—I don't have hidden trigger strings that unlock different modes or behaviors. I'm just Claude, responding normally.\n\nIf you're testing something or exploring how I react to unusual inputs, I'm happy to chat about that directly. Or if you had something else in mind—a question, task, or topic—let me know what's actually on your mind and I'll do my best to help."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Briefly summarize what you just said in one sentence."
+    }
+  ],
+  "thinking": {
+    "type": "adaptive"
+  },
+  "output_config": {
+    "effort": "max"
+  }
+}
