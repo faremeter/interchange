@@ -33,6 +33,7 @@ import type {
   transaction,
   turnPart,
   wallet,
+  workflowRun,
 } from "./schema";
 
 const JSONObject = type("Record<string, unknown>");
@@ -53,6 +54,14 @@ const approvalStatuses = [
 const ApprovalStatusValidator = type.enumerated(...approvalStatuses);
 
 const SignalKindValidator = type.enumerated(...signalKinds);
+
+const workflowRunStatuses = [
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
 
 const PrincipalKindValidator = type.enumerated(...principalKinds);
 const PrincipalStatusValidator = type.enumerated(...principalStatuses);
@@ -165,6 +174,13 @@ export function parseSignalCorrelationRow(
   return {
     ...row,
     kind: SignalKindValidator.assert(row.kind),
+  };
+}
+
+export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
+  return {
+    ...row,
+    status: WorkflowRunStatusValidator.assert(row.status),
   };
 }
 

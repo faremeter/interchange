@@ -16,6 +16,10 @@ export {
   createSignalCorrelationStore,
   type SignalCorrelationStore,
 } from "./signal-correlation-store";
+export {
+  createWorkflowRunStore,
+  type WorkflowRunStore,
+} from "./workflow-run-store";
 export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";
 export { resolveActivePrice, type ModelPricingRow } from "./pricing";
 export {
@@ -57,6 +61,7 @@ export {
   parseApprovalRow,
   parsePrincipalRow,
   parseSignalCorrelationRow,
+  parseWorkflowRunRow,
   parseOfferingRow,
   parseModelOfferingRow,
   parseCredentialRow,
