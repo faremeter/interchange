@@ -10,8 +10,8 @@ is organised in two layers:
 - `deployments/` — concrete deployments built on the protocol
   layer. Each deployment names a provider, lists its models,
   declares its auth and redaction policy, and (where needed)
-  overrides reasoning extraction. Today the only deployment is
-  OpenCode Zen.
+  overrides reasoning extraction. Two deployments ship today: the
+  OpenCode Zen relay and first-party OpenAI.
 
 See [`@intx/inference-discovery`](../inference-discovery/README.md)
 for the runtime, the plug-in contract, and the `discover` CLI.
@@ -65,6 +65,38 @@ signal lives in the captured event stream itself.
 | ------------------- | ------------------------------------------------------------ |
 | `OPENCODE_API_KEY`  | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
 | `OPENCODE_BASE_URL` | Relay base URL (e.g. `https://opencode.ai/zen/v1`).          |
+
+## OpenAI
+
+The `openai` deployment probes first-party `api.openai.com` directly,
+under provider name `openai` (distinct from `opencode-zen`, though both
+write fixtures into this package's `wire/` tree). The base URL is fixed
+to `https://api.openai.com/v1`; the deployment reads only `OPENAI_API_KEY`.
+
+```ts
+import { createOpenAIPlugin } from "@intx/inference-discovery-openai";
+
+const plugin = createOpenAIPlugin({ apiKey: process.env.OPENAI_API_KEY });
+// Hand off to runCapture from @intx/inference-discovery.
+```
+
+Models: `gpt-5.5`.
+
+`gpt-5.5` captures `plain-text`, `function-calling`,
+`function-calling-multi-turn`, `vision-input`, and `structured-output`
+(plus the streaming variants the OpenAI-protocol body builder emits).
+`reasoning-content` is marked `unsupported`: first-party
+`api.openai.com` Chat Completions responses carry no reasoning field for
+the gpt-5 series (OpenAI surfaces reasoning only via the Responses API,
+which this plug-in does not probe). The `function-calling-multi-turn`
+and `vision-input` streaming variants carry no rows because the body
+builder does not build them — a rig gap, not a provider limitation.
+
+### Environment
+
+| Variable         | Purpose                                                      |
+| ---------------- | ------------------------------------------------------------ |
+| `OPENAI_API_KEY` | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
 
 ## Adding a new deployment
 

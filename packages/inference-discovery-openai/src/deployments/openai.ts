@@ -22,11 +22,12 @@ export interface CreateOpenAIPluginOpts {
   apiKey: string;
 }
 
-// No reasoning-trace extractor is wired: the OpenAI Chat Completions reasoning
-// path is unverified until a live capture confirms whether a reasoning field
-// appears on the response. If one does, the shared extractor belongs in
-// protocol/, consumed by both this deployment and OpenCode Zen — not reached
-// across from the sibling deployment.
+// No reasoning-trace extractor is wired: a live gpt-5.5 capture confirmed that
+// first-party api.openai.com Chat Completions responses carry no reasoning or
+// reasoning_content field (OpenAI surfaces reasoning only via the Responses
+// API). If a future first-party model exposes one on this wire, the shared
+// extractor belongs in protocol/, consumed by both this deployment and
+// OpenCode Zen — not reached across from the sibling deployment.
 export function createOpenAIPlugin(
   opts: CreateOpenAIPluginOpts,
 ): ProviderPlugin {
