@@ -22,7 +22,7 @@ import { createIsogitStore } from "@intx/storage-isogit";
 // shape that fits the deployment. The snippet below uses literals so
 // it copy-pastes cleanly.
 const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
-const model = "claude-sonnet-4-6";
+const model = "claude-sonnet-5";
 const source = {
   id: `anthropic:${model}`,
   provider: "anthropic",

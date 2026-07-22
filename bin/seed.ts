@@ -581,9 +581,9 @@ const { status: a1Status, data: a1Data } = await api(
     description: "Researches topics and summarizes findings",
     systemPrompt:
       "You are a research assistant. Find and summarize information. When you receive a mail message, reply to it immediately with a helpful response. Do not wait for further instructions.",
-    modelConfig: { defaultModel: "kimi-k2.6" },
+    modelConfig: { defaultModel: "kimi-k2.7-code" },
     modelRequirements: [
-      { model: "claude-sonnet-4", capabilities: ["long-context"] },
+      { model: "claude-sonnet-5", capabilities: ["long-context"] },
     ],
     toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { research: true, summarize: true },
@@ -609,7 +609,7 @@ const { status: a2Status, data: a2Data } = await api(
     description: "Reviews pull requests and suggests improvements",
     systemPrompt:
       "You are a code reviewer. Analyze code for bugs and improvements.",
-    modelConfig: { defaultModel: "kimi-k2.6" },
+    modelConfig: { defaultModel: "kimi-k2.7-code" },
     toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { codeReview: true },
     credentialRequirements: [
@@ -658,7 +658,7 @@ Use the file tools (read_file, write_file, edit_file, search_files, grep) to exp
 When you edit or write files, the language server will automatically report type errors and diagnostics. Pay attention to these diagnostics and fix any issues before declaring your work complete.
 
 When you receive a task via mail, work through it methodically: understand the codebase, plan your approach, implement the changes, verify they build and pass tests, then report back with what you did.`,
-    modelConfig: { defaultModel: "kimi-k2.6" },
+    modelConfig: { defaultModel: "kimi-k2.7-code" },
     toolPackages: BUILTIN_TOOL_PACKAGES,
     capabilities: { coding: true, fileSystem: true, languageServer: true },
     credentialRequirements: [
@@ -700,7 +700,7 @@ const { status: a3Status, data: a3Data } = await api(
     description: "Handles customer support tickets",
     systemPrompt:
       "You are a customer support agent. Help customers with their issues.",
-    modelConfig: { defaultModel: "claude-sonnet-4-6" },
+    modelConfig: { defaultModel: "claude-sonnet-5" },
     capabilities: { ticketManagement: true, knowledgeBase: true },
     credentialRequirements: [
       { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
@@ -790,7 +790,7 @@ const { status: prv1Status, data: prv1Data } = await api(
     plugin: "anthropic",
     metadata: {
       baseURL: "https://api.anthropic.com",
-      defaultModel: "claude-sonnet-4-6",
+      defaultModel: "claude-sonnet-5",
     },
   },
   aliceCookies,
@@ -833,7 +833,7 @@ const { status: prv4Status, data: prv4Data } = await api(
     plugin: "openai-compatible",
     metadata: {
       baseURL: "https://opencode.ai/zen/go/v1",
-      defaultModel: "kimi-k2.6",
+      defaultModel: "kimi-k2.7-code",
     },
   },
   aliceCookies,

@@ -733,7 +733,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
 
   test("omitted responseFormat builds a request without throwing", () => {
     const adapter = createAnthropicAdapter(TEST_SOURCE);
-    const req = adapter.buildRequest(conversation, "claude-sonnet-4", {});
+    const req = adapter.buildRequest(conversation, "claude-sonnet-5", {});
     expect(req.url).toBe("/v1/messages");
   });
 
@@ -742,7 +742,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
     // here rather than a throw so the cross-provider call site can
     // pass `{ kind: "text" }` uniformly without conditional logic.
     const adapter = createAnthropicAdapter(TEST_SOURCE);
-    const req = adapter.buildRequest(conversation, "claude-sonnet-4", {
+    const req = adapter.buildRequest(conversation, "claude-sonnet-5", {
       responseFormat: { kind: "text" },
     });
     expect(req.url).toBe("/v1/messages");
@@ -751,7 +751,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
   test("responseFormat.kind=json throws at the marshaling boundary", () => {
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     expect(() =>
-      adapter.buildRequest(conversation, "claude-sonnet-4", {
+      adapter.buildRequest(conversation, "claude-sonnet-5", {
         responseFormat: { kind: "json" },
       }),
     ).toThrow(/does not support structured outputs/);
@@ -760,7 +760,7 @@ describe("Anthropic adapter — responseFormat boundary", () => {
   test("responseFormat.kind=json-schema throws and names the kind", () => {
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     expect(() =>
-      adapter.buildRequest(conversation, "claude-sonnet-4", {
+      adapter.buildRequest(conversation, "claude-sonnet-5", {
         responseFormat: {
           kind: "json-schema",
           name: "user",

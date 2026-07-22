@@ -100,14 +100,14 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
 
     // URL is relative (base URL already includes /v1).
     expect(req.url).toBe("/chat/completions");
     expect(req.headers["content-type"]).toBe("application/json");
 
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
-    expect(body.model).toBe("gpt-4o");
+    expect(body.model).toBe("gpt-5.5");
     expect(body.stream).toBe(true);
     expect(typeof body.max_tokens).toBe("number");
   });
@@ -121,7 +121,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
 
     expect(body.messages).toHaveLength(1);
@@ -143,7 +143,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
 
     expect(body.messages[0]?.role).toBe("system");
@@ -159,7 +159,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {
+    const req = adapter.buildRequest(messages, "gpt-5.5", {
       systemPrompt: "Always respond in JSON.",
     });
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
@@ -185,7 +185,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const assistantMsg = OpenAIAssistantMessage.assert(body.messages[0]);
     const toolCalls = assistantMsg.tool_calls;
@@ -213,7 +213,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     // tool_result blocks are flattened into tool role messages.
     const toolMsg = OpenAIPlainMessage.assert(body.messages[0]);
@@ -238,7 +238,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const toolMsg = OpenAIPlainMessage.assert(body.messages[0]);
     expect(toolMsg.role).toBe("tool");
@@ -265,7 +265,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const toolMsg = OpenAIPlainMessage.assert(body.messages[0]);
     expect(toolMsg.content).toBe("ok");
@@ -280,7 +280,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", { maxTokens: 256 });
+    const req = adapter.buildRequest(messages, "gpt-5.5", { maxTokens: 256 });
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     expect(body.max_tokens).toBe(256);
   });
@@ -306,7 +306,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const message = body.messages[0];
     if (!message || !Array.isArray(message.content)) {
@@ -352,10 +352,10 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /file-reference image sources/,
     );
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /file_abc123/,
     );
   });
@@ -385,7 +385,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const userMsg = body.messages[0];
     if (userMsg === undefined) {
@@ -432,7 +432,7 @@ describe("OpenAI adapter: buildRequest", () => {
         },
       ];
 
-      expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
         new RegExp(`${blockType} content blocks`),
       );
     },
@@ -463,10 +463,10 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /document content blocks/,
     );
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /captured fixture/,
     );
   });
@@ -494,7 +494,7 @@ describe("OpenAI adapter: buildRequest", () => {
         },
       ];
 
-      expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+      expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
         new RegExp(`${blockType} content blocks`),
       );
     },
@@ -527,7 +527,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /code_execution_request content blocks/,
     );
   });
@@ -546,7 +546,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /refusal content blocks/,
     );
   });
@@ -564,7 +564,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    expect(() => adapter.buildRequest(messages, "gpt-4o", {})).toThrow(
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
       /refusal content blocks/,
     );
   });
@@ -584,7 +584,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const msg = OpenAIPlainMessage.assert(body.messages[0]);
     expect(msg.content).toBe("Hello");
@@ -606,7 +606,7 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
-    const req = adapter.buildRequest(messages, "gpt-4o", {});
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     // The citation block contributes an empty string; the text remains.
     const msg = OpenAIPlainMessage.assert(body.messages[0]);
@@ -952,13 +952,13 @@ describe("OpenAI adapter: responseFormat translation", () => {
   ];
 
   test("omits response_format when responseFormat is undefined", () => {
-    const req = adapter.buildRequest(conversation, "gpt-4o", {});
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     expect(body.response_format).toBeUndefined();
   });
 
   test("translates responseFormat.kind=text to { type: 'text' }", () => {
-    const req = adapter.buildRequest(conversation, "gpt-4o", {
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {
       responseFormat: { kind: "text" },
     });
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
@@ -966,7 +966,7 @@ describe("OpenAI adapter: responseFormat translation", () => {
   });
 
   test("translates responseFormat.kind=json to { type: 'json_object' }", () => {
-    const req = adapter.buildRequest(conversation, "gpt-4o", {
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {
       responseFormat: { kind: "json" },
     });
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
@@ -980,7 +980,7 @@ describe("OpenAI adapter: responseFormat translation", () => {
       required: ["name"],
       additionalProperties: false,
     };
-    const req = adapter.buildRequest(conversation, "gpt-4o", {
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {
       responseFormat: { kind: "json-schema", name: "user_info", schema },
     });
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
@@ -996,7 +996,7 @@ describe("OpenAI adapter: responseFormat translation", () => {
       properties: {},
       additionalProperties: false,
     };
-    const req = adapter.buildRequest(conversation, "gpt-4o", {
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {
       responseFormat: {
         kind: "json-schema",
         name: "empty",
@@ -1037,7 +1037,7 @@ describe("OpenAI adapter: quirks", () => {
     adapterInstance: ProviderAdapter,
     turns: ConversationTurn[],
   ) {
-    const req = adapterInstance.buildRequest(turns, "gpt-4o", {});
+    const req = adapterInstance.buildRequest(turns, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     const message = body.messages[0];
     if (message === undefined) throw new Error("expected an assistant message");

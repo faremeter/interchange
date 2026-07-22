@@ -43,7 +43,7 @@ export const WORKFLOW_FIXTURE_SIGNAL_NAME = "approve";
  * deployed step resolves against a real seeded source.
  */
 export const WORKFLOW_FIXTURE_INFERENCE_PROVIDER = "anthropic";
-export const WORKFLOW_FIXTURE_INFERENCE_MODEL = "claude-sonnet-4-6";
+export const WORKFLOW_FIXTURE_INFERENCE_MODEL = "claude-sonnet-5";
 
 /**
  * Resource pattern the seed plants (with the `manage` verb) so the

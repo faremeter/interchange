@@ -91,8 +91,8 @@ const adapters: {
   },
   {
     name: "openai",
-    adapter: createOpenAIAdapter(source("openai", "gpt-4o")),
-    model: "gpt-4o",
+    adapter: createOpenAIAdapter(source("openai", "gpt-5.5")),
+    model: "gpt-5.5",
     marker: '"image_url"',
   },
   {
@@ -256,8 +256,8 @@ describe("attachment end-to-end: pdf document", () => {
   });
 
   test("openai rejects document blocks loudly (not yet wired)", () => {
-    const adapter = createOpenAIAdapter(source("openai", "gpt-4o"));
-    expect(() => adapter.buildRequest([turn], "gpt-4o", {})).toThrow(
+    const adapter = createOpenAIAdapter(source("openai", "gpt-5.5"));
+    expect(() => adapter.buildRequest([turn], "gpt-5.5", {})).toThrow(
       /document/i,
     );
   });

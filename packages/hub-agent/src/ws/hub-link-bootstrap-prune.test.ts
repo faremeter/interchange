@@ -130,14 +130,14 @@ const TEST_CONFIG: HarnessConfig = {
   grants: [],
   sources: [
     {
-      id: "anthropic:claude-sonnet-4-20250514",
+      id: "anthropic:claude-sonnet-5",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
       apiKey: "sk-test",
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-5",
     },
   ],
-  defaultSource: "anthropic:claude-sonnet-4-20250514",
+  defaultSource: "anthropic:claude-sonnet-5",
 };
 
 async function waitFor(

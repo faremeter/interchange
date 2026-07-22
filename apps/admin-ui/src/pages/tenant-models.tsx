@@ -166,7 +166,7 @@ export function TenantModelsPage() {
                 id="model-name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
-                placeholder="e.g. claude-sonnet-4"
+                placeholder="e.g. claude-sonnet-5"
                 required
                 autoFocus
               />

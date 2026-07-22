@@ -47,7 +47,7 @@ const def = defineAgent({
   tools: [],
   capabilities: [],
   inference: {
-    sources: [{ provider: "anthropic", model: "claude-sonnet-4-6" }],
+    sources: [{ provider: "anthropic", model: "claude-sonnet-5" }],
   },
 });
 

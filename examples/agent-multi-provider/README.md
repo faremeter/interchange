@@ -50,7 +50,7 @@ Output looks like:
   text:      100C.
 
 > explain quantum tunneling in two paragraphs, ...
-  routed to: tier=smart model=claude-sonnet-4-6
+  routed to: tier=smart model=claude-sonnet-5
   attempts:  primary
   served by: primary
   reply:     assistant
