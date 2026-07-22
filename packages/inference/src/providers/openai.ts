@@ -234,15 +234,9 @@ function toOpenAIMessage(
     // forceAssistantReasoningContent true, which keeps the field always
     // present, empty on a turn with no thinking. The default is false: the
     // field is emitted only on turns that actually have thinking.
-    if (forceAssistantReasoningContent) {
-      result["reasoning_content"] =
-        thinkingBlocks.length > 0
-          ? thinkingBlocks.map((b) => b.thinking).join("")
-          : "";
-    } else if (thinkingBlocks.length > 0) {
-      result["reasoning_content"] = thinkingBlocks
-        .map((b) => b.thinking)
-        .join("");
+    const reasoning = thinkingBlocks.map((b) => b.thinking).join("");
+    if (forceAssistantReasoningContent || thinkingBlocks.length > 0) {
+      result["reasoning_content"] = reasoning;
     }
 
     if (toolCalls.length > 0) {
