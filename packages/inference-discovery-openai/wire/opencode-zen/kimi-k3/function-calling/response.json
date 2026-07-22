@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-6a6119772cae07460ae3433a",
+  "object": "chat.completion",
+  "created": 1784748395,
+  "model": "kimi-k3",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": "I'll check the current weather in Boston, MA for you.",
+        "reasoning_content": "The user is asking about the weather in Boston, MA, and explicitly says to use the provided tool. I have the get_weather tool available. Let me call it with the location \"Boston, MA\".",
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "get_weather_0",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\":\"Boston, MA\"}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 196,
+    "completion_tokens": 109,
+    "total_tokens": 305,
+    "completion_tokens_details": { "reasoning_tokens": 43 }
+  },
+  "cost": "0"
+}

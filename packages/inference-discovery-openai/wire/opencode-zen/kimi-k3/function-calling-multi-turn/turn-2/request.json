@@ -1,0 +1,49 @@
+{
+  "model": "kimi-k3",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": "I’ll check the current weather for Boston, MA.",
+      "reasoning_content": "We need answer weather in Boston, MA using tool. Need call get_weather. Then final concise. Then final.",
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "get_weather_0",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"Boston, MA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "get_weather_0",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ]
+}

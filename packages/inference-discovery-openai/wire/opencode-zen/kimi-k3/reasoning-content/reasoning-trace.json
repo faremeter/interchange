@@ -1,0 +1,4 @@
+{
+  "fieldPath": "choices.0.message.reasoning_content",
+  "sample": "This is the classic bat-and-ball problem from the Cognitive Reflection Test. The intuitive (wrong) answer is $0.10, but the correct answer is $0.05.\n\nLet me work through it:\n- Let the ball cost x\n- The bat costs x + $1.00\n- Together: x + (x + 1.00) = 1.10\n- 2x + 1.00 = 1.10\n- 2x = 0.10\n- x = 0.05\n\nSo the ball costs $0.05 and the bat costs $1.05. Check: $1.05 + $0.05 = $1.10 ✓ And $1.05 - $0.05 = $1.00 ✓\n\nThe user asked me to show reasoning before the final answer. I should do that clearly. I can also note the common trap answer of $0.10 and why it's wrong. Keep it concise but complete. Format: probably a short worked solution with a check. Maybe use a little structure. Not too long."
+}

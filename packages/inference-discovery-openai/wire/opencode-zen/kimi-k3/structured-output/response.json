@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl-6a6119a6718d3426b330a1f6",
+  "object": "chat.completion",
+  "created": 1784748455,
+  "model": "kimi-k3",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}",
+        "reasoning_content": "The user wants me to extract structured fields from the sentence \"Alice is 30 years old and her email is alice@example.com.\"\n\nThe schema requires: name (string), age (integer), email (string).\n\nExtraction:\n- name: \"Alice\"\n- age: 30\n- email: \"alice@example.com\"\n\nReply with only the JSON object, no markdown fences, no prose."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 215,
+    "completion_tokens": 113,
+    "total_tokens": 328,
+    "completion_tokens_details": { "reasoning_tokens": 82 }
+  },
+  "cost": "0"
+}

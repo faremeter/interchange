@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "kimi-k3",
+  "capability": "function-calling",
+  "capturedAt": "2026-07-22T19:26:51.234Z",
+  "schemaVersion": "1"
+}
