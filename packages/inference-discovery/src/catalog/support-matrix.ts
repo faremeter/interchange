@@ -333,7 +333,15 @@ const MATRIX: SupportEntry[] = [
 
 export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;
 
-const FIXTURE_ROOT = "packages/inference-testing/wire";
+// Each provider's captured corpus lives inside the discovery package that
+// probes it. This map is the single owner of "which package holds which
+// provider's fixtures"; getFixtureDir composes the per-provider root with the
+// same {provider}/{model}/{capability} layout every package's wire/ dir uses.
+const FIXTURE_ROOTS: Record<string, string> = {
+  anthropic: "packages/inference-discovery-anthropic/wire",
+  "google-genai": "packages/inference-discovery-google-genai/wire",
+  "opencode-zen": "packages/inference-discovery-openai/wire",
+};
 
 const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
   "captured",
@@ -351,5 +359,12 @@ export function isFixtureBearing(entry: SupportEntry): boolean {
 
 export function getFixtureDir(entry: SupportEntry): string | null {
   if (!isFixtureBearing(entry)) return null;
-  return `${FIXTURE_ROOT}/${entry.provider}/${entry.model}/${entry.capability}`;
+  const root = FIXTURE_ROOTS[entry.provider];
+  if (root === undefined) {
+    throw new Error(
+      `no fixture root registered for provider '${entry.provider}' ` +
+        `(${entry.model}/${entry.capability}); add it to FIXTURE_ROOTS`,
+    );
+  }
+  return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;
 }

@@ -32,7 +32,7 @@ const FIXTURE_ROOT = join(
   "..",
   "..",
   "packages",
-  "inference-testing",
+  "inference-discovery-google-genai",
   "wire",
   "google-genai",
 );

@@ -86,7 +86,8 @@ function buildHelpText(): string {
   return `Usage: bun bin/discover.ts --provider <name> [--all | --only <capability>] [--model <name>] [-h]
 
 Captures live inference responses from a provider plug-in and writes
-fixture bundles under packages/inference-testing/wire/<provider>/<model>/<capability>/.
+fixture bundles into the provider's discovery package, under
+wire/<provider>/<model>/<capability>/.
 
 Options:
   --provider <name>     Required. Selects the provider plug-in to invoke.

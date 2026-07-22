@@ -47,7 +47,7 @@ const TEST_SOURCE: LastCycleSource = {
 const WORKSPACE_ROOT = path.resolve(__dirname, "../..");
 const CORPUS_ROOT = path.join(
   WORKSPACE_ROOT,
-  "packages/inference-testing/wire/anthropic/claude-haiku-4-5-20251001/function-calling-with-thinking-streaming",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/function-calling-with-thinking-streaming",
 );
 
 const SOURCE: InferenceSource = {

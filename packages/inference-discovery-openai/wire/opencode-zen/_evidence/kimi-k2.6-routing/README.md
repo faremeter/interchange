@@ -59,7 +59,7 @@ The `moonshot-path/` files come from a baseline probe that the INTR-78 Phase 2
 discovery script ran during its setup pass; that probe is local-only orchestration
 scratch in the originating repository. The `fireworks-path/` files are the
 committed wire fixture at
-`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/`
+`packages/inference-discovery-openai/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/`
 on the `intr-78-empirical-discovery-and-multimodal-design-gemini-and` branch.
 
 ## Both requests sent `model: "kimi-k2.6"`
@@ -179,7 +179,7 @@ bun bin/opencode-discover.ts --only reasoning-non-streaming --model kimi-k2.6
 The two invocations should produce a probe-record JSON under
 `dispatch/intr-78-phase-2/1a-opencode_rig/probe-kimi-k2.6.json` and an updated
 production fixture under
-`packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/`.
+`packages/inference-discovery-openai/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/`.
 The `model` field in each `response.json` will identify which upstream the
 relay routed to that time. Re-running may produce different routing.
 
@@ -191,7 +191,7 @@ relay routed to that time. Re-running may produce different routing.
   The probe record is preserved into this evidence directory because the
   `dispatch/` tree itself is not committed.
 - `fireworks-path/`: copied verbatim from the production capture at
-  `packages/inference-testing/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/`
+  `packages/inference-discovery-openai/wire/opencode-zen/kimi-k2.6/reasoning-non-streaming/`
   in this same repository (this evidence directory is itself part of the
   same fixture tree). The production capture is the authoritative copy
   for tooling that consumes the corpus; the copy here exists so a third

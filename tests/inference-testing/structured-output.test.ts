@@ -29,7 +29,11 @@ import {
   createOpenAIAdapter,
   createGoogleGenAIAdapter,
 } from "@intx/inference/providers";
-import { INTENTS } from "@intx/inference-discovery/catalog";
+import {
+  INTENTS,
+  SUPPORT_MATRIX,
+  getFixtureDir,
+} from "@intx/inference-discovery/catalog";
 import type {
   ConversationTurn,
   InferenceEvent,
@@ -51,14 +55,35 @@ const GOOGLE_SOURCE: LastCycleSource = {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const FIXTURE_ROOT = path.resolve(
-  __dirname,
-  "..",
-  "..",
-  "packages",
-  "inference-testing",
-  "wire",
-);
+const WORKSPACE_ROOT = path.resolve(__dirname, "..", "..");
+
+// Resolve a fixture directory through the catalog's canonical resolver so
+// this test follows the corpus wherever getFixtureDir points, rather than
+// reconstructing a wire root of its own.
+function fixtureDirFor(
+  provider: string,
+  model: string,
+  capability: string,
+): string {
+  const entry = SUPPORT_MATRIX.find(
+    (e) =>
+      e.provider === provider &&
+      e.model === model &&
+      e.capability === capability,
+  );
+  if (entry === undefined) {
+    throw new Error(
+      `no support-matrix entry for ${provider}/${model}/${capability}`,
+    );
+  }
+  const relDir = getFixtureDir(entry);
+  if (relDir === null) {
+    throw new Error(
+      `entry ${provider}/${model}/${capability} is not fixture-bearing`,
+    );
+  }
+  return path.resolve(WORKSPACE_ROOT, relDir);
+}
 
 // The catalog intent in
 // packages/inference-discovery/src/catalog/intent.ts declares this
@@ -88,12 +113,7 @@ async function replayFixture(opts: {
   model: string;
   capability: string;
 }): Promise<readonly InferenceEvent[]> {
-  const fixtureDir = path.join(
-    FIXTURE_ROOT,
-    opts.provider,
-    opts.model,
-    opts.capability,
-  );
+  const fixtureDir = fixtureDirFor(opts.provider, opts.model, opts.capability);
   const result = await runCompatReplay({
     fixtureDir,
     provider: opts.provider,
@@ -159,10 +179,7 @@ function readOpenAINonStreamingContent(opts: {
   capability: string;
 }): string {
   const responsePath = path.join(
-    FIXTURE_ROOT,
-    opts.provider,
-    opts.model,
-    opts.capability,
+    fixtureDirFor(opts.provider, opts.model, opts.capability),
     "response.json",
   );
   const raw = JSON.parse(readFileSync(responsePath, "utf8"));
@@ -182,10 +199,7 @@ function readGeminiNonStreamingContent(opts: {
   capability: string;
 }): string {
   const responsePath = path.join(
-    FIXTURE_ROOT,
-    opts.provider,
-    opts.model,
-    opts.capability,
+    fixtureDirFor(opts.provider, opts.model, opts.capability),
     "response.json",
   );
   const raw = JSON.parse(readFileSync(responsePath, "utf8"));
@@ -293,8 +307,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     const adapterBody = CapturedOpenAIBody.assert(JSON.parse(adapterReq.body));
     const capturedRaw = readFileSync(
       path.join(
-        FIXTURE_ROOT,
-        "opencode-zen/gpt-5.4-mini/structured-output/request.json",
+        fixtureDirFor("opencode-zen", "gpt-5.4-mini", "structured-output"),
+        "request.json",
       ),
       "utf8",
     );
@@ -312,8 +326,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     const adapterBody = CapturedGeminiBody.assert(JSON.parse(adapterReq.body));
     const capturedRaw = readFileSync(
       path.join(
-        FIXTURE_ROOT,
-        "google-genai/gemini-2.5-flash/structured-output/request.json",
+        fixtureDirFor("google-genai", "gemini-2.5-flash", "structured-output"),
+        "request.json",
       ),
       "utf8",
     );

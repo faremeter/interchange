@@ -9,7 +9,7 @@
 //     accumulated `PartialMessage` and final `inference.done` turn
 //     line up with the parser's emissions
 //
-// The fixtures live in `packages/inference-testing/wire/google-genai`
+// The fixtures live in `packages/inference-discovery-google-genai/wire/google-genai`
 // and were captured against live Gemini endpoints; any drift between
 // adapter output and fixture is a real protocol mismatch.
 
@@ -52,7 +52,7 @@ const FIXTURE_ROOT = join(
   "..",
   "..",
   "packages",
-  "inference-testing",
+  "inference-discovery-google-genai",
   "wire",
   "google-genai",
 );
