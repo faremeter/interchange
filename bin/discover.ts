@@ -18,7 +18,10 @@ import {
 } from "@intx/inference-discovery";
 import { createAnthropicPlugin } from "@intx/inference-discovery-anthropic";
 import { createGoogleGenaiPlugin } from "@intx/inference-discovery-google-genai";
-import { createOpencodeZenPlugin } from "@intx/inference-discovery-openai";
+import {
+  createOpenAIPlugin,
+  createOpencodeZenPlugin,
+} from "@intx/inference-discovery-openai";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -42,6 +45,14 @@ function googleGenaiCreate(env: Record<string, string>): ProviderPlugin {
     throw new Error("GOOGLE_API_KEY missing from validated env");
   }
   return createGoogleGenaiPlugin({ apiKey });
+}
+
+function openaiCreate(env: Record<string, string>): ProviderPlugin {
+  const apiKey = env.OPENAI_API_KEY;
+  if (apiKey === undefined) {
+    throw new Error("OPENAI_API_KEY missing from validated env");
+  }
+  return createOpenAIPlugin({ apiKey });
 }
 
 function opencodeZenCreate(env: Record<string, string>): ProviderPlugin {
@@ -70,6 +81,11 @@ const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
     name: "opencode-zen",
     requiredEnv: ["OPENCODE_API_KEY", "OPENCODE_BASE_URL"],
     create: opencodeZenCreate,
+  },
+  {
+    name: "openai",
+    requiredEnv: ["OPENAI_API_KEY"],
+    create: openaiCreate,
   },
 ];
 
