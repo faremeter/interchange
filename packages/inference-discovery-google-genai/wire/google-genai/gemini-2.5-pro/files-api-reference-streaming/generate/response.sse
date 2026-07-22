@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "This document is a table"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 268,"candidatesTokenCount": 5,"totalTokenCount": 1150,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 10},{"modality": "DOCUMENT","tokenCount": 258}],"thoughtsTokenCount": 877,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "zRRhaqXLG5msz7IP1K6ekA0"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " of contents listing the titles for the first seventeen chapters of *The Adventures of Tom Sawyer*."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 268,"candidatesTokenCount": 23,"totalTokenCount": 1168,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 10},{"modality": "DOCUMENT","tokenCount": 258}],"thoughtsTokenCount": 877,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "zRRhaqXLG5msz7IP1K6ekA0"}
+

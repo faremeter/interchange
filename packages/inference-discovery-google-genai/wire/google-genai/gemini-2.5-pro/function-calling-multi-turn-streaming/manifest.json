@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-2.5-pro",
+  "capability": "function-calling-multi-turn-streaming",
+  "capturedAt": "2026-07-22T19:04:43.585Z",
+  "schemaVersion": "1"
+}

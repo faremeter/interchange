@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-2.5-pro",
+  "capability": "vision-input-streaming",
+  "capturedAt": "2026-07-22T19:05:10.197Z",
+  "schemaVersion": "1"
+}

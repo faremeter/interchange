@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-2.5-pro",
+  "capability": "structured-output-streaming",
+  "capturedAt": "2026-07-22T19:07:06.816Z",
+  "schemaVersion": "1"
+}

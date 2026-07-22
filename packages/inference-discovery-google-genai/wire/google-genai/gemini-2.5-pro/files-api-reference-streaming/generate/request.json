@@ -1,0 +1,18 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Summarize the attached document in one sentence."
+        },
+        {
+          "fileData": {
+            "mimeType": "application/pdf",
+            "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/dgmzvhhynh6a"
+          }
+        }
+      ]
+    }
+  ]
+}

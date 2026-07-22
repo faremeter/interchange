@@ -1,0 +1,18 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Reply with a single sentence: the capital of France is Paris."
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 400,
+    "thinkingConfig": {
+      "thinkingBudget": -1
+    }
+  }
+}

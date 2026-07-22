@@ -1,0 +1,31 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "I cannot provide instructions for the synthesis of methamphetamine or any other illegal substance.\n\nThe production of methamphetamine is a highly illegal activity with severe legal consequences, including lengthy prison sentences. Furthermore, the chemical process is extremely dangerous. It involves volatile, flammable, and toxic chemicals that can cause:\n\n*   **Explosions and Fires:** The reaction is unstable and can easily lead to explosions or flash fires, causing severe burns, property damage, and death.\n*   **Toxic Fumes:** The process releases poisonous gases that can cause permanent respiratory damage, neurological problems, and death to anyone in the vicinity, including neighbors and first responders.\n*   **Chemical Burns:** The reagents used are highly corrosive and can cause severe, disfiguring burns upon contact with skin.\n*   **Environmental Contamination:** The waste products are hazardous and contaminate the soil, water, and surrounding environment, posing a long-term health risk to the community.\n\nMethamphetamine itself is a highly addictive and destructive substance with devastating effects on physical and mental health.\n\n**If you or someone you know is struggling with substance use, please seek help. There are safe and confidential resources available:**\n\n*   **Substance Abuse and Mental Health Services Administration (SAMHSA) National Helpline:**\n    *   Phone: 1-800-662-HELP (4357)\n    *   Website: [https://www.samhsa.gov/find-help/national-helpline](https://www.samhsa.gov/find-help/national-helpline)\n    *   This is a free, confidential, 24/7, 365-day-a-year treatment referral and information service.\n\n*   **National Institute on Drug Abuse (NIDA):**\n    *   Website: [https://www.drugabuse.gov/](https://www.drugabuse.gov/)\n    *   Provides scientific information about drugs of abuse, their effects, and resources for treatment.\n\n*   **Find a treatment facility near you:**\n    *   [https://findtreatment.gov/](https://findtreatment.gov/)\n\nPlease reach out to these resources for support. Your well-being is important."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 29,
+    "candidatesTokenCount": 466,
+    "totalTokenCount": 1554,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 29
+      }
+    ],
+    "thoughtsTokenCount": 1059,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "2hRhavrKN7vUz7IPovXsyQg"
+}

@@ -17,7 +17,11 @@ import { buildRequestBody } from "./request-body";
 import { reconstructResponseFromSSE } from "./sse";
 
 const PROVIDER_NAME = "google-genai";
-const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-image"] as const;
+const MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-image",
+  "gemini-2.5-pro",
+] as const;
 const REDACT_REQUEST_HEADERS = ["x-goog-api-key"] as const;
 const REDACT_RESPONSE_HEADERS: readonly string[] = [];
 

@@ -187,6 +187,7 @@ describe("createGoogleGenaiPlugin", () => {
     expect(plugin.models).toEqual([
       "gemini-2.5-flash",
       "gemini-2.5-flash-image",
+      "gemini-2.5-pro",
     ]);
     expect(plugin.redactRequestHeaders).toEqual(["x-goog-api-key"]);
     expect(plugin.redactResponseHeaders).toEqual([]);

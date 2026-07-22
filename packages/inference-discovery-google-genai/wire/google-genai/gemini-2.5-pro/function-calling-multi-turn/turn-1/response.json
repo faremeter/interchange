@@ -1,0 +1,38 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "location": "Boston, MA"
+              }
+            },
+            "thoughtSignature": "CqEDARFNMg+3klD1vya6da3077tixXmRxop83th2Vxg3kVGNZ7HM6uCOFtFnrchPOuDEptQNnAU6233Q0yXzwJPwAvJQmFHVfBqV7wLtQDJiHHBNrYosRN8+TGW9nUwxf/64a2xQJ8ZPOce78uw3irpE109XwaaNBOeG4+74SW6xqVv4CMk1UMFdCAHSLQFYm/fgQs4dt6aI8VWq7Pkxi9ksclC+3LcwKO1RVqXDtAG0kxpGNayVUrFcyrFdfjY+M8liju2jfUL9HvHorwBlRdhuMgiAvwnX/F8mpftOLueRsdljz2ou33lsq7TvXY6723I+/NA5SZcPDT8eps95jO92DUiT/9RdAsdzMqJd6Qn15GvXMfFeP6CsO8tI3LN1eYyiRVZU/Gwn3aQhKf0LObp2U14Ci1xsGBGS0cZvDLMmso87LAWQNtfkU6ItxPXOd7Q0yXDZTrfWAUaP/NiRCtCVGBTMw6zAfySI0fz4tH9OKQ/X0T1/koVr3DfFhfV+dBcBB7aSVOeM0JHwGRbnQR/mHAc8Lv4SkGbiAvwmpHBW9jqB"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "finishMessage": "Model generated function call(s)."
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 69,
+    "candidatesTokenCount": 17,
+    "totalTokenCount": 177,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 69
+      }
+    ],
+    "thoughtsTokenCount": 91,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "QxRhaseVLqPgz7IP6uSLiAw"
+}
