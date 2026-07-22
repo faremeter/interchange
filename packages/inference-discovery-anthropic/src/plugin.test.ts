@@ -56,6 +56,9 @@ function expectArrayContent(
 
 const TEST_API_KEY = "test-anthropic-key";
 const SONNET = "claude-sonnet-4-5-20250929";
+// A model that requires Anthropic's adaptive extended-thinking shape instead
+// of the classic thinking:{type:"enabled",budget_tokens}.
+const SONNET5 = "claude-sonnet-5";
 
 function collectSteps(opts: {
   model: string;
@@ -178,6 +181,7 @@ describe("buildRequestBody — wire-shape spot checks", () => {
     });
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
     expect(body.max_tokens).toBeGreaterThan(1024);
+    expect(body.output_config).toBeUndefined();
   });
 
   test("reasoning-content enables thinking with budget_tokens=1024", () => {
@@ -187,6 +191,26 @@ describe("buildRequestBody — wire-shape spot checks", () => {
       intent: INTENTS["reasoning-content"],
     });
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+    expect(body.output_config).toBeUndefined();
+  });
+
+  test("an adaptive-thinking model uses thinking:adaptive with output_config effort", () => {
+    for (const capability of [
+      "reasoning-content",
+      "function-calling-with-thinking",
+      "redacted-thinking",
+    ] as const) {
+      const body = buildRequestBody({
+        model: SONNET5,
+        capability,
+        intent: INTENTS[capability],
+      });
+      expect(body.thinking).toEqual({ type: "adaptive" });
+      expect(body.output_config).toEqual({ effort: "max" });
+      // The adaptive shape must not smuggle a budget_tokens field, which the
+      // API rejects for these models.
+      expect(body.thinking).not.toHaveProperty("budget_tokens");
+    }
   });
 
   test("vision-input embeds a base64 image source", () => {
@@ -370,6 +394,35 @@ describe("buildFunctionCallingTurn2Body", () => {
         turn1Response: { content: [{ type: "text", text: "no tool" }] },
       }),
     ).toThrow(/tool_use/);
+  });
+
+  test("forwards adaptive thinking and output_config from turn-1", () => {
+    const intent = INTENTS["function-calling-with-thinking"];
+    const turn1 = buildRequestBody({
+      model: SONNET5,
+      capability: "function-calling-with-thinking",
+      intent,
+    });
+    const turn1Response = {
+      content: [
+        { type: "thinking", thinking: "working it out", signature: "sig" },
+        {
+          type: "tool_use",
+          id: "tool_use_1",
+          name: "get_weather",
+          input: { location: "Boston, MA" },
+        },
+      ],
+    };
+    const turn2 = buildFunctionCallingTurn2Body({
+      model: SONNET5,
+      capability: "function-calling-with-thinking",
+      intent,
+      turn1Body: turn1,
+      turn1Response,
+    });
+    expect(turn2.thinking).toEqual({ type: "adaptive" });
+    expect(turn2.output_config).toEqual({ effort: "max" });
   });
 });
 
