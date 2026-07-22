@@ -45,11 +45,11 @@ function googleGenaiCreate(env: Record<string, string>): ProviderPlugin {
 }
 
 function opencodeZenCreate(env: Record<string, string>): ProviderPlugin {
-  const apiKey = env.OPENAI_API_KEY;
-  const baseUrl = env.OPENAI_BASE_URL;
+  const apiKey = env.OPENCODE_API_KEY;
+  const baseUrl = env.OPENCODE_BASE_URL;
   if (apiKey === undefined || baseUrl === undefined) {
     throw new Error(
-      "OPENAI_API_KEY or OPENAI_BASE_URL missing from validated env",
+      "OPENCODE_API_KEY or OPENCODE_BASE_URL missing from validated env",
     );
   }
   return createOpencodeZenPlugin({ apiKey, baseUrl });
@@ -68,7 +68,7 @@ const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
   },
   {
     name: "opencode-zen",
-    requiredEnv: ["OPENAI_API_KEY", "OPENAI_BASE_URL"],
+    requiredEnv: ["OPENCODE_API_KEY", "OPENCODE_BASE_URL"],
     create: opencodeZenCreate,
   },
 ];

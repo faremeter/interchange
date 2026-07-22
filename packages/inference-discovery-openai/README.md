@@ -30,8 +30,8 @@ re-run unchanged against it.
 import { createOpencodeZenPlugin } from "@intx/inference-discovery-openai";
 
 const plugin = createOpencodeZenPlugin({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseUrl: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENCODE_API_KEY,
+  baseUrl: process.env.OPENCODE_BASE_URL,
 });
 // Hand off to runCapture from @intx/inference-discovery.
 ```
@@ -61,10 +61,10 @@ signal lives in the captured event stream itself.
 
 ### Environment
 
-| Variable          | Purpose                                                      |
-| ----------------- | ------------------------------------------------------------ |
-| `OPENAI_API_KEY`  | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
-| `OPENAI_BASE_URL` | Relay base URL (e.g. `https://opencode.ai/zen/v1`).          |
+| Variable            | Purpose                                                      |
+| ------------------- | ------------------------------------------------------------ |
+| `OPENCODE_API_KEY`  | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
+| `OPENCODE_BASE_URL` | Relay base URL (e.g. `https://opencode.ai/zen/v1`).          |
 
 ## Adding a new deployment
 
