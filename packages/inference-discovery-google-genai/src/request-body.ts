@@ -7,7 +7,13 @@ import {
   type ToolDecl,
 } from "@intx/inference-discovery/catalog";
 
-const TEXT_MODEL = "gemini-2.5-flash";
+// gemini-2.5-pro shares gemini-2.5-flash's text capability surface, so both are
+// recognized as text models; only their thinking-budget handling differs (pro
+// cannot disable thinking — see minimalThinkingBudget).
+const TEXT_MODELS: ReadonlySet<string> = new Set([
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+]);
 const IMAGE_MODEL = "gemini-2.5-flash-image";
 
 const TEXT_MODEL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
@@ -134,7 +140,7 @@ interface GeminiRequestBody {
 }
 
 function modelSupportsCapability(model: string, capability: Capability): void {
-  if (model === TEXT_MODEL) {
+  if (TEXT_MODELS.has(model)) {
     if (!TEXT_MODEL_CAPABILITIES.has(capability)) {
       throw new Error(
         `google-genai: model ${model} does not support capability ${capability}`,
@@ -227,19 +233,43 @@ function userTextContent(prompt: string): GeminiContent {
   };
 }
 
+// Gemini's "dynamic" thinking budget sentinel: the model decides how much to
+// think and no cap is imposed.
+const DYNAMIC_THINKING_BUDGET = -1;
+
+// gemini-2.5-pro rejects thinkingConfig.thinkingBudget: 0 with HTTP 400
+// "Budget 0 is invalid. This model only works in thinking mode." The budget can
+// only be chosen by model identity, because the API surfaces the constraint
+// solely as a runtime 400 with no build-time signal. Add a model here when its
+// API rejects a zero thinking budget.
+const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
+  "gemini-2.5-pro",
+]);
+
+// The thinking budget to request when a probe wants thinking suppressed: 0
+// (fully off) for models that allow it, or the dynamic budget for models that
+// cannot be set to 0. includeThoughts stays false in both cases, so no thought
+// parts are returned either way.
+function minimalThinkingBudget(model: string): number {
+  return THINKING_MANDATORY_MODELS.has(model) ? DYNAMIC_THINKING_BUDGET : 0;
+}
+
 function plainTextBody(intent: CapabilityIntent): GeminiRequestBody {
   return {
     contents: [userTextContent(intent.prompt)],
   };
 }
 
-function plainTextStreamingBody(intent: CapabilityIntent): GeminiRequestBody {
+function plainTextStreamingBody(
+  intent: CapabilityIntent,
+  model: string,
+): GeminiRequestBody {
   return {
     contents: [userTextContent(intent.prompt)],
     generationConfig: {
       maxOutputTokens: 400,
       thinkingConfig: {
-        thinkingBudget: 0,
+        thinkingBudget: minimalThinkingBudget(model),
       },
     },
   };
@@ -376,11 +406,11 @@ export function buildRequestBody(opts: {
     case "plain-text":
       return plainTextBody(opts.intent);
     case "plain-text-streaming":
-      return plainTextStreamingBody(opts.intent);
+      return plainTextStreamingBody(opts.intent, opts.model);
     case "function-calling-multi-turn":
     case "function-calling-multi-turn-streaming":
       return functionCallingBody(opts.intent, {
-        budget: 0,
+        budget: minimalThinkingBudget(opts.model),
         includeThoughts: false,
       });
     case "function-calling-with-thinking":
