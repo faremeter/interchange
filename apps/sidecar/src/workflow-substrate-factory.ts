@@ -92,6 +92,7 @@ import {
 import {
   attachStepTools,
   createToolBearingAgentFactory,
+  deriveToolMarkFloorGrants,
   materializeStepTools,
   type StepToolCacheConfig,
 } from "./step-agent-tools";
@@ -677,6 +678,21 @@ export interface SidecarStepBuildEnvDeps {
    * need no cross-run conversation durability.
    */
   durableConversation?: DurableConversationRegistry;
+  /**
+   * Record the tool-mark floor grants derived from the step's
+   * materialized tool factories, keyed by the step's base id. The env
+   * builder is the only place the child holds the loaded factories'
+   * static `definitions` (name + approval mark), so it derives the floor
+   * here; the grant evaluator (a sibling closure in the substrate
+   * factory) reads the recorded floor by base step id and merges it under
+   * the credentials snapshot's grants at authorization time. Keyed by
+   * base id (matching the credentials snapshot and inference-source
+   * table) so a `map` iteration's scoped id shares its base step's floor.
+   * The recording persists across a warm agent's messages: the env
+   * builder runs once (first build) but the floor it records must be
+   * available for every later tool call the warm agent makes.
+   */
+  recordToolMarkFloor: (baseStepId: string, grants: GrantRule[]) => void;
 }
 
 /**
@@ -826,6 +842,19 @@ export function createSidecarStepBuildEnv(
       storeDir,
       cache: deps.cache,
     });
+
+    // Derive and record the step's tool-mark floor from the just-loaded
+    // factories' static definitions. A pinned tool loads here in the
+    // child and never reached the hub's capability walk, so its
+    // `tool:<name>` grant is absent from the credentials snapshot; the
+    // recorded floor is what lets the grant evaluator authorize a pinned
+    // tool against its own static mark. Keyed by base step id so the
+    // evaluator's `baseStepId(stepId)` lookup resolves for both a plain
+    // step and a `map` iteration's scoped id.
+    deps.recordToolMarkFloor(
+      baseStepId(stepId),
+      deriveToolMarkFloorGrants(materialization.factories),
+    );
 
     // Supervisor-backed transport for the step agent's mail tools
     // (OUTBOUND half of mailbox ownership, §3a). Inbound is inert -- the
@@ -1261,6 +1290,16 @@ export function createSidecarSubstrateFactory(
         })
       : undefined;
 
+    // Per-step tool-mark floor grants, keyed by base step id. The step
+    // env builder derives and records each step's floor from its
+    // materialized (pinned) tool factories; the grant evaluator reads it
+    // by base step id and merges it under the credentials snapshot's
+    // grants so a pinned tool authorizes against its own static mark. The
+    // map lives for the factory's (child's) lifetime, so a warm agent's
+    // floor -- recorded on its single first build -- remains available
+    // for every later tool call it makes.
+    const toolMarkFloorByStep = new Map<string, GrantRule[]>();
+
     const buildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
@@ -1270,6 +1309,9 @@ export function createSidecarSubstrateFactory(
       outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
       adapters: childAdapterRegistry,
+      recordToolMarkFloor: (stepId, grants) => {
+        toolMarkFloorByStep.set(stepId, grants);
+      },
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
@@ -1372,8 +1414,26 @@ export function createSidecarSubstrateFactory(
     const evaluateGrantsAdapter: GrantEvaluator = async ({
       resource,
       action,
+      stepId,
       grants,
     }) => {
+      // Merge the step's pinned-tool floor grants (derived and recorded
+      // by the env builder from the step's materialized factories) under
+      // the credentials snapshot's grants. The floor supplies the
+      // `tool:<name>` authority a pinned tool never got from the hub's
+      // capability walk. It is ADDITIVE: `evaluateGrants` ranks by
+      // specificity then effect, so a declared `deny` (priority 2) still
+      // beats the derived `ask`/`allow` and an explicit denial is
+      // honored -- the floor only raises the minimum authority to the
+      // tool's static mark.
+      //
+      // A missing floor entry (`?? []`) contributes no rows: this can
+      // only ever fail MORE closed (a pinned tool the hub also did not
+      // grant stays denied, the pre-#68 behavior), never open a hole, so
+      // it is safe as an additive default. The floor is keyed by base
+      // step id, so a `map` iteration's scoped id resolves to its base
+      // step's floor.
+      const floor = toolMarkFloorByStep.get(baseStepId(stepId)) ?? [];
       const result = await evaluateGrants(
         // The credentialsSnapshot's grants are typed as
         // `readonly unknown[]` so the workflow-host package does not
@@ -1381,7 +1441,7 @@ export function createSidecarSubstrateFactory(
         // that grammar; the cast surfaces here at the boundary where
         // the typed grant shape is known.
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- credentialsSnapshot.steps[*].grants is typed unknown[] at the workflow-host boundary; the sidecar owns the GrantRule grammar
-        [...(grants as readonly GrantRule[])],
+        [...(grants as readonly GrantRule[]), ...floor],
         resource,
         action,
       );
