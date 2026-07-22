@@ -1044,12 +1044,22 @@ describe("OpenAI adapter: quirks", () => {
     return message;
   }
 
-  test("absent quirks emit reasoning_content on assistant turns without thinking", () => {
+  test("absent quirks omit reasoning_content on a turn without thinking", () => {
     const message = assistantMessage(
       createOpenAIAdapter(TEST_SOURCE),
       assistantWithText,
     );
-    expect(ReasoningContentView.assert(message).reasoning_content).toBe("");
+    expect("reasoning_content" in message).toBe(false);
+  });
+
+  test("absent quirks emit reasoning_content on a turn with thinking", () => {
+    const message = assistantMessage(
+      createOpenAIAdapter(TEST_SOURCE),
+      assistantWithThinking,
+    );
+    expect(ReasoningContentView.assert(message).reasoning_content).toBe(
+      "pondering",
+    );
   });
 
   test("forceAssistantReasoningContent false omits reasoning_content on turns without thinking", () => {
@@ -1066,6 +1076,28 @@ describe("OpenAI adapter: quirks", () => {
     const message = assistantMessage(
       createOpenAIAdapter(TEST_SOURCE, {
         forceAssistantReasoningContent: false,
+      }),
+      assistantWithThinking,
+    );
+    expect(ReasoningContentView.assert(message).reasoning_content).toBe(
+      "pondering",
+    );
+  });
+
+  test("forceAssistantReasoningContent true forces reasoning_content on a turn without thinking", () => {
+    const message = assistantMessage(
+      createOpenAIAdapter(TEST_SOURCE, {
+        forceAssistantReasoningContent: true,
+      }),
+      assistantWithText,
+    );
+    expect(ReasoningContentView.assert(message).reasoning_content).toBe("");
+  });
+
+  test("forceAssistantReasoningContent true emits reasoning_content on a turn with thinking", () => {
+    const message = assistantMessage(
+      createOpenAIAdapter(TEST_SOURCE, {
+        forceAssistantReasoningContent: true,
       }),
       assistantWithThinking,
     );

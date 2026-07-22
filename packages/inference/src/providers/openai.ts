@@ -27,12 +27,14 @@ const OPENAI_TOOL_NAME_LIMIT: ToolNameLimit = {
 };
 
 // Per-source accommodations for the OpenAI-compatible backends this adapter
-// serves. Every field is optional; an absent field resolves to today's
-// universal behavior, so a source that supplies no quirks is unchanged.
+// serves. Every field is optional; an absent field resolves to the strict
+// protocol default, so a source that supplies no quirks gets no accommodation
+// and must opt into lenient behavior explicitly.
 export const OpenAIQuirks = type({
-  // Emit `reasoning_content` on every assistant message even when the turn
-  // carried no thinking (kimi requires it whenever thinking is enabled). When
-  // false, the field is emitted only on turns that actually have thinking.
+  // When true, emit `reasoning_content` on every assistant message even when
+  // the turn carried no thinking (kimi requires it whenever thinking is
+  // enabled). Defaults to false: the field is emitted only on turns that
+  // actually have thinking.
   "forceAssistantReasoningContent?": "boolean",
   // Which delta fields to read reasoning tokens from, in precedence order.
   // Constrained to the fields the chunk schema declares so the type cannot
@@ -228,11 +230,10 @@ function toOpenAIMessage(
 
     // kimi requires reasoning_content on every assistant message once thinking
     // is enabled anywhere in the conversation, even on turns that carried no
-    // thinking of their own. forceAssistantReasoningContent (the universal
-    // default, true) satisfies that: the field is always present, empty on a
-    // turn with no thinking. A source whose backend does not share that
-    // requirement sets the quirk false, and the field is emitted only on turns
-    // that actually have thinking.
+    // thinking of their own. A source serving such a backend sets
+    // forceAssistantReasoningContent true, which keeps the field always
+    // present, empty on a turn with no thinking. The default is false: the
+    // field is emitted only on turns that actually have thinking.
     if (forceAssistantReasoningContent) {
       result["reasoning_content"] =
         thinkingBlocks.length > 0
@@ -782,7 +783,7 @@ export function createOpenAIAdapter(
   }
   const resolvedQuirks: ResolvedOpenAIQuirks = {
     forceAssistantReasoningContent:
-      parsedQuirks.forceAssistantReasoningContent ?? true,
+      parsedQuirks.forceAssistantReasoningContent ?? false,
     reasoningFieldNames:
       parsedQuirks.reasoningFieldNames ?? DEFAULT_REASONING_FIELDS,
   };
