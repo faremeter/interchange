@@ -51,7 +51,11 @@
 // approval flow.
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
-import { effectiveDirectorRef, UnknownDirectorIdError } from "@intx/agent";
+import {
+  effectiveDirectorRef,
+  toolApprovalEffect,
+  UnknownDirectorIdError,
+} from "@intx/agent";
 import type { GrantEffect } from "@intx/types";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
@@ -283,8 +287,7 @@ function collectAgentGrants(
       // to `allow`; keep `ask` if either the existing or the incoming
       // effect asks, so a same-named sibling can never silently drop the
       // approval gate.
-      const incoming: GrantEffect =
-        definition.approval === "ask" ? "ask" : "allow";
+      const incoming = toolApprovalEffect(definition);
       const existing = collected.effects.get(grant);
       collected.effects.set(
         grant,

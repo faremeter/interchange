@@ -33,6 +33,7 @@ export {
   isToolPluginInstance,
   stringTool,
   tool,
+  toolApprovalEffect,
 } from "./tool";
 export {
   type AuthorizeFn,
