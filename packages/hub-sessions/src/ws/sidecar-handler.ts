@@ -7,7 +7,12 @@
 import { getLogger } from "@intx/log";
 import { verifyEd25519 } from "@intx/crypto";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
-import { hexDecode, hexEncode } from "@intx/types";
+import {
+  base64Decode,
+  deriveMessageId,
+  hexDecode,
+  hexEncode,
+} from "@intx/types";
 import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
@@ -601,8 +606,7 @@ export function createSidecarRouter(
         return;
       case "mail.outbound":
         if (frame.delivered !== true) {
-          handleMailOutbound(frame.rawMessage, frame.recipients);
-          return;
+          return handleMailOutbound(frame.rawMessage, frame.recipients);
         }
         if (lookups.persistMail && frame.senderAddress) {
           return handleMailPersist(
@@ -1185,31 +1189,40 @@ export function createSidecarRouter(
     logger.info`Sidecar ${challenge.sidecarId} reconnected with ${String(ready.length)} verified agent(s)${failed.length > 0 ? `, ${String(failed.length)} rejected` : ""}`;
   }
 
-  function handleMailOutbound(rawMessage: string, recipients: string[]): void {
+  async function handleMailOutbound(
+    rawMessage: string,
+    recipients: string[],
+  ): Promise<void> {
+    // A single mail to two workflow-derived recipients would derive ONE
+    // Message-ID and thus ONE runId shared across both, colliding on the
+    // `workflow_run` primary key -- materializing either would silently
+    // conflate two runs into one. Fail loudly rather than pick a winner:
+    // the single-workflow-recipient invariant holds because the runId IS
+    // the Message-ID, which every recipient of a mail shares. The guard
+    // only applies when a materializer is wired -- absent one, no run is
+    // born from the mail, so there is nothing to conflate.
+    if (lookups.materializeMailTriggeredRunGrants !== undefined) {
+      const workflowRecipients = recipients.filter(isWorkflowDerivedAddress);
+      if (workflowRecipients.length > 1) {
+        throw new Error(
+          `mail addressed to multiple workflow-derived recipients (${workflowRecipients.join(", ")}); the run id is the shared Message-ID, so materializing more than one run from a single mail is unsupported`,
+        );
+      }
+    }
+
     // Route to locally connected sidecars first, then try disconnect queues.
     const unrouted: string[] = [];
     for (const recipient of recipients) {
-      const targetWs = addressIndex.get(recipient);
-      if (targetWs !== undefined) {
-        const conn = connections.get(targetWs);
-        if (conn !== undefined) {
-          conn.send({
-            type: "mail.inbound",
-            agentAddress: recipient,
-            rawMessage,
-          });
-          continue;
-        }
+      // Each recipient is isolated: a materialization failure or a
+      // fail-closed rejection for one must not drop the mail for its
+      // co-recipients. The catch fails THIS recipient closed (its run never
+      // starts under-authorized) and continues to the rest.
+      try {
+        const outcome = await deliverMailToRecipient(recipient, rawMessage);
+        if (outcome === "unrouted") unrouted.push(recipient);
+      } catch (err) {
+        logger.error`Failed to deliver mail to ${recipient}: ${err instanceof Error ? err.message : String(err)}`;
       }
-
-      const frame: HubFrame = {
-        type: "mail.inbound",
-        agentAddress: recipient,
-        rawMessage,
-      };
-      if (enqueueForDisconnected(recipient, frame)) continue;
-
-      unrouted.push(recipient);
     }
 
     // Anything not routed locally is emitted as a notification. The
@@ -1221,6 +1234,98 @@ export function createSidecarRouter(
         recipients: unrouted,
       });
     }
+  }
+
+  // Deliver an inbound mail to one recipient, materializing a
+  // mail-triggered run's grants first when the recipient is a workflow
+  // deployment. Returns:
+  //   - `routed`: the mail reached a live connection or disconnect queue.
+  //   - `unrouted`: the mail was locally undeliverable and should be
+  //     relayed externally by the host.
+  //   - `failed-closed`: the run's grants could not be materialized safely,
+  //     so the mail is deliberately DROPPED for this recipient (not relayed)
+  //     to keep its run from starting under-authorized.
+  //
+  // A workflow deployment is the only recipient whose inbound mail births a
+  // run. Its grants are staged, the `run.grants` frame is sent BEFORE the
+  // mail -- same-address FIFO guarantees it lands ahead of the mail that
+  // dispatches the run, so the run's `onRunStart` barrier resolves its
+  // grants rather than failing closed -- and the run principal + grants are
+  // committed only AFTER the mail is accepted for delivery, so an
+  // unroutable deployment leaves no orphaned authz state.
+  async function deliverMailToRecipient(
+    recipient: string,
+    rawMessage: string,
+  ): Promise<"routed" | "unrouted" | "failed-closed"> {
+    if (
+      lookups.materializeMailTriggeredRunGrants !== undefined &&
+      isWorkflowDerivedAddress(recipient)
+    ) {
+      const runId = await deriveMessageId(base64Decode(rawMessage));
+      const result = await lookups.materializeMailTriggeredRunGrants({
+        agentAddress: recipient,
+        runId,
+      });
+      if (result.outcome === "rejected") {
+        // The run's grants could not be materialized with sufficient
+        // authority. Fail the mail closed for this recipient: routing it
+        // would start the run under-authorized, and relaying it externally
+        // would leak the trigger past the fail-closed decision. The run
+        // correctly does not launch and is not orphaned (nothing committed).
+        logger.error`Refusing mail-triggered run ${runId} for ${recipient}: grant materialization rejected (${result.code}): ${result.message}`;
+        return "failed-closed";
+      }
+      if (result.outcome === "materialized") {
+        // Send the run's grants ahead of the mail. A `false` here means the
+        // deployment is unroutable; abandon the run without committing any
+        // authz state (no orphaned principal, run, or grant rows) and do
+        // not route the mail that would dispatch it.
+        if (!sendRunGrants(recipient, runId, result.stepGrants)) {
+          logger.error`Deployment ${recipient} is not routable for run ${runId}; abandoning mail-triggered run without committing grants`;
+          return "unrouted";
+        }
+        const outcome = routeInboundMail(recipient, rawMessage);
+        // Commit the run principal, run row, and grants only after the mail
+        // is accepted, mirroring the external trigger route's commit-last
+        // discipline so a dropped mail never leaves orphaned authz state.
+        if (outcome === "routed") await result.commit();
+        return outcome;
+      }
+      // `skip`: the address named no deployed workflow deployment. Forward
+      // the mail without grants -- the run, if any, is not ours to
+      // authorize.
+    }
+
+    return routeInboundMail(recipient, rawMessage);
+  }
+
+  // Route a single `mail.inbound` frame to a live connection or, failing
+  // that, a disconnect queue. Returns `unrouted` when neither is available.
+  function routeInboundMail(
+    recipient: string,
+    rawMessage: string,
+  ): "routed" | "unrouted" {
+    const targetWs = addressIndex.get(recipient);
+    if (targetWs !== undefined) {
+      const conn = connections.get(targetWs);
+      if (conn !== undefined) {
+        conn.send({
+          type: "mail.inbound",
+          agentAddress: recipient,
+          rawMessage,
+        });
+        return "routed";
+      }
+    }
+
+    const frame: HubFrame = {
+      type: "mail.inbound",
+      agentAddress: recipient,
+      rawMessage,
+    };
+    if (enqueueForDisconnected(recipient, frame)) return "routed";
+
+    return "unrouted";
   }
 
   async function handleMailPersist(

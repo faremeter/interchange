@@ -33,6 +33,7 @@ export {
   type SidecarLookups,
   type SidecarMailPersistedPayload,
   type SidecarMailPersistedRow,
+  type MailTriggeredRunGrantsResult,
 } from "./ws";
 export {
   createHubSessionLookups,

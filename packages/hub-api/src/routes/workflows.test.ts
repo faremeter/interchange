@@ -29,7 +29,7 @@ import {
 } from "@intx/workflow-deploy";
 
 import { createApp } from "../app";
-import { deriveRunRuntimeGrantRows } from "./workflows";
+import { deriveRunRuntimeGrantRows } from "../run-grant-materialization";
 import {
   createSidecarEmitter,
   type AssetService,
@@ -282,6 +282,18 @@ function createMockDB(opts: MockDBOpts) {
       });
     },
   });
+  // The list-route select resolves through `.orderBy`; the commit's
+  // already-materialized guard select resolves through `.limit`, returning
+  // no rows so the mock always exercises the first-commit insert path (a
+  // redelivery no-op is covered against a real database).
+  const select = () => ({
+    from: () => ({
+      where: () => ({
+        orderBy: () => Promise.resolve(list),
+        limit: () => Promise.resolve([]),
+      }),
+    }),
+  });
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
@@ -290,18 +302,15 @@ function createMockDB(opts: MockDBOpts) {
       asset: { findFirst: async () => opts.assetRow },
       workflowDeployment: { findFirst: async () => opts.deploymentRow },
     },
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => Promise.resolve(list),
-        }),
-      }),
-    }),
+    select,
     insert,
     transaction: async (
-      fn: (tx: { insert: typeof insert }) => Promise<void>,
+      fn: (tx: {
+        insert: typeof insert;
+        select: typeof select;
+      }) => Promise<void>,
     ) => {
-      await fn({ insert });
+      await fn({ insert, select });
     },
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }

@@ -80,6 +80,7 @@ export type SeedAsset = {
   kind: string;
   name: string;
   displayName?: string | null;
+  creatorPrincipalId?: string | null;
 };
 
 export async function seedAsset(db: Db, a: SeedAsset): Promise<void> {
@@ -89,7 +90,7 @@ export async function seedAsset(db: Db, a: SeedAsset): Promise<void> {
     kind: a.kind,
     name: a.name,
     displayName: a.displayName ?? null,
-    creatorPrincipalId: null,
+    creatorPrincipalId: a.creatorPrincipalId ?? null,
   });
 }
 
