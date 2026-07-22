@@ -8,13 +8,14 @@ import {
   type CompatReplaySkipReason,
 } from "./compat-replay";
 
-// Workspace-relative fixture root. The compat-replay helper requires an
+// Workspace-relative root of the opencode-zen fixture corpus, which lives
+// in the openai discovery package. The compat-replay helper requires an
 // absolute path; tests resolve against the workspace root by walking up
 // from this file's location.
 const WORKSPACE_ROOT = path.resolve(__dirname, "../../..");
 const FIXTURE_ROOT = path.join(
   WORKSPACE_ROOT,
-  "packages/inference-testing/wire",
+  "packages/inference-discovery-openai/wire",
 );
 
 describe("runCompatReplay — single-turn streaming SSE", () => {

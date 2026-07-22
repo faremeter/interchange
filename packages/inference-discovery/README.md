@@ -5,11 +5,11 @@ provider plug-in contract, drives capture runs, and owns the
 capability catalog and support matrix that say which
 (provider, model, capability) tuples the rig knows how to record.
 
-The output of a discovery run is a fixture bundle on disk under
-`packages/inference-testing/wire/<provider>/<model>/<capability>/`,
-which `@intx/inference-testing` then replays in tests. This package
-does not perform the replay; it produces the bytes that the replay
-layer consumes.
+The output of a discovery run is a fixture bundle on disk in the
+provider's discovery package, under
+`wire/<provider>/<model>/<capability>/`, which `@intx/inference-testing`
+then replays in tests. This package does not perform the replay; it
+produces the bytes that the replay layer consumes.
 
 Discovery makes real, paid network calls to upstream model providers.
 It must never run in CI. The `assertNotCI` guard exported here aborts

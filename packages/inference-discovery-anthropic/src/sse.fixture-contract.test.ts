@@ -21,7 +21,7 @@ import { extractContentBlocksFromSSE } from "./sse";
 // block type.
 
 // The test file is at packages/inference-discovery-anthropic/src/; the
-// fixtures it reads live under packages/inference-testing/wire/, so the
+// fixtures it reads live under this package's wire/anthropic/ tree, so the
 // repo root is three directories up from this file's parent.
 const REPO_ROOT = resolve(
   fileURLToPath(new URL(".", import.meta.url)),
@@ -31,12 +31,12 @@ const REPO_ROOT = resolve(
 );
 
 const FIXTURES = [
-  "packages/inference-testing/wire/anthropic/claude-opus-4-1-20250805/grounding-streaming/response.sse",
-  "packages/inference-testing/wire/anthropic/claude-sonnet-4-5-20250929/grounding-streaming/response.sse",
-  "packages/inference-testing/wire/anthropic/claude-haiku-4-5-20251001/grounding-streaming/response.sse",
-  "packages/inference-testing/wire/anthropic/claude-opus-4-1-20250805/code-execution-streaming/response.sse",
-  "packages/inference-testing/wire/anthropic/claude-sonnet-4-5-20250929/code-execution-streaming/response.sse",
-  "packages/inference-testing/wire/anthropic/claude-haiku-4-5-20251001/code-execution-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-opus-4-1-20250805/grounding-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-4-5-20250929/grounding-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/grounding-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-opus-4-1-20250805/code-execution-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-4-5-20250929/code-execution-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/code-execution-streaming/response.sse",
 ];
 
 describe("extractContentBlocksFromSSE — server-side tool fixture contract", () => {

@@ -49,22 +49,36 @@ describe("SUPPORT_MATRIX validation", () => {
 });
 
 describe("getFixtureDir", () => {
-  test("returns a wire-relative path for a captured entry", () => {
-    const captured = SUPPORT_MATRIX.find((e) => e.outcome === "captured");
-    expect(captured).toBeDefined();
-    if (captured === undefined) return;
-    const dir = getFixtureDir(captured);
-    expect(dir).toBe(
-      `packages/inference-testing/wire/${captured.provider}/${captured.model}/${captured.capability}`,
+  test("composes the anthropic package wire path for a captured entry", () => {
+    const entry = SUPPORT_MATRIX.find(
+      (e) => e.provider === "anthropic" && e.outcome === "captured",
+    );
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    expect(getFixtureDir(entry)).toBe(
+      `packages/inference-discovery-anthropic/wire/anthropic/${entry.model}/${entry.capability}`,
     );
   });
 
-  test("returns a wire-relative path for a misled entry", () => {
-    const misled = SUPPORT_MATRIX.find((e) => e.outcome === "misled");
-    if (misled === undefined) return;
-    const dir = getFixtureDir(misled);
-    expect(dir).toBe(
-      `packages/inference-testing/wire/${misled.provider}/${misled.model}/${misled.capability}`,
+  test("composes the openai package wire path for a captured opencode-zen entry", () => {
+    const entry = SUPPORT_MATRIX.find(
+      (e) => e.provider === "opencode-zen" && e.outcome === "captured",
+    );
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    expect(getFixtureDir(entry)).toBe(
+      `packages/inference-discovery-openai/wire/opencode-zen/${entry.model}/${entry.capability}`,
+    );
+  });
+
+  test("returns a fixture path for a misled entry", () => {
+    const entry = SUPPORT_MATRIX.find(
+      (e) => e.provider === "anthropic" && e.outcome === "misled",
+    );
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    expect(getFixtureDir(entry)).toBe(
+      `packages/inference-discovery-anthropic/wire/anthropic/${entry.model}/${entry.capability}`,
     );
   });
 
@@ -75,5 +89,15 @@ describe("getFixtureDir", () => {
     expect(noFixture).toBeDefined();
     if (noFixture === undefined) return;
     expect(getFixtureDir(noFixture)).toBeNull();
+  });
+
+  test("throws for a fixture-bearing entry whose provider has no wire root", () => {
+    const entry: SupportEntry = {
+      provider: "made-up-provider",
+      model: "some-model",
+      capability: "plain-text",
+      outcome: "captured",
+    };
+    expect(() => getFixtureDir(entry)).toThrow(/no fixture root/);
   });
 });

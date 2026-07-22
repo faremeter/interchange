@@ -8,7 +8,7 @@ plug-in. For each captured capability we contrast Anthropic's published
 shape against the bytes the API actually emitted and call out every
 place the two diverged.
 
-The capture corpus lives at `packages/inference-testing/wire/anthropic/`.
+The capture corpus lives at `packages/inference-discovery-anthropic/wire/anthropic/`.
 The model-to-capability matrix is authoritatively defined in the
 `SUPPORT_MATRIX` export of `@intx/inference-discovery/catalog`
 (`packages/inference-discovery/src/catalog/support-matrix.ts`). The
