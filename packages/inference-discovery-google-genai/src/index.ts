@@ -14,6 +14,7 @@ import type {
 import { buildAuthHeaders } from "./auth";
 import { buildEndpointURL } from "./endpoint";
 import { buildRequestBody } from "./request-body";
+import { reconstructResponseFromSSE } from "./sse";
 
 const PROVIDER_NAME = "google-genai";
 const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-image"] as const;
@@ -197,6 +198,19 @@ function deriveToolFollowUp(intent: CapabilityIntent): {
   return { toolName: tool.name, content: "{}" };
 }
 
+// Resolves turn-1's assistant response for the multi-turn builder. A
+// non-streaming turn-1 arrives as parsed JSON; a streaming turn-1 arrives as
+// SSE bytes and is reconstructed into the same response shape.
+function turn1AssistantResponse(turn1: CapturedResponse): unknown {
+  if (turn1.parsed !== null) return turn1.parsed;
+  if (turn1.bytes === null) {
+    throw new Error(
+      "google-genai multi-turn: turn-1 had neither a parsed body nor SSE bytes",
+    );
+  }
+  return reconstructResponseFromSSE(turn1.bytes);
+}
+
 function buildMultiTurnTurn2Body(opts: {
   capability: Capability;
   intent: CapabilityIntent;
@@ -293,7 +307,7 @@ export function* iterateCaptureSteps(
       capability,
       intent,
       turn1Body,
-      turn1Response: turn1Response.parsed,
+      turn1Response: turn1AssistantResponse(turn1Response),
     });
     yield {
       kind: "json",
