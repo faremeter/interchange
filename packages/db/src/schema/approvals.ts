@@ -2,6 +2,7 @@ import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { tenant } from "./tenants";
 import { workflowDeployment } from "./workflow-deployments";
+import { workflowRun } from "./workflow-run";
 
 // Every approval originates from a workflow deployment, so the origin is
 // modeled as the deployment rather than a launched single agent. A workflow
@@ -18,7 +19,13 @@ export const approval = pgTable(
     deploymentId: text("deployment_id")
       .notNull()
       .references(() => workflowDeployment.id, { onDelete: "cascade" }),
-    runId: text("run_id").notNull(),
+    // References the run this approval belongs to, making "this approval is for
+    // a real run of this deployment" a database invariant. Cascades on the
+    // run's delete; the `deployment_id` FK above stays as the lock and cascade
+    // anchor the co-write orders against.
+    runId: text("run_id")
+      .notNull()
+      .references(() => workflowRun.id, { onDelete: "cascade" }),
     agentAddress: text("agent_address").notNull(),
     correlationId: text("correlation_id").notNull().unique(),
     // Always populated: the ask rail is the sole co-writer and the register

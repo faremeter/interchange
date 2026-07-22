@@ -2,6 +2,7 @@ import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { tenant } from "./tenants";
 import { workflowDeployment } from "./workflow-deployments";
+import { workflowRun } from "./workflow-run";
 
 export const signalCorrelation = pgTable("signal_correlation", {
   correlationId: text("correlation_id").primaryKey(),
@@ -17,7 +18,14 @@ export const signalCorrelation = pgTable("signal_correlation", {
     .notNull()
     .references(() => workflowDeployment.id, { onDelete: "cascade" }),
   agentAddress: text("agent_address").notNull(),
-  runId: text("run_id").notNull(),
+  // References the run this correlation belongs to. Cascades on the run's
+  // delete: a correlation whose run is gone can never resolve, and the
+  // deployment-level cascade above already removes it when the whole deployment
+  // is torn down. The `deployment_id` FK stays as the lock and cascade anchor
+  // the co-write orders against.
+  runId: text("run_id")
+    .notNull()
+    .references(() => workflowRun.id, { onDelete: "cascade" }),
   signalName: text("signal_name").notNull(),
   kind: text("kind", { enum: ["approval"] }).notNull(),
   signalId: text("signal_id"),
