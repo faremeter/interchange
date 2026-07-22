@@ -8,7 +8,7 @@ import { type } from "arktype";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { Principal, RepoId, RepoStore } from "@intx/hub-sessions";
+import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createControlChannelSender,
   type EventPayload,
@@ -2995,7 +2995,6 @@ describe("assembleRunCredentialsSnapshot", () => {
     });
   }
 
-  const principal: Principal = { kind: "hub" };
   const deploymentId = "dep-run-grants";
   const runId = "run-xyz";
   const stepOrder = ["step-1", "step-2"];
@@ -3055,7 +3054,6 @@ describe("assembleRunCredentialsSnapshot", () => {
 
     const snapshot = await assembleRunCredentialsSnapshot({
       repoStore,
-      principal,
       deploymentId,
       runId,
       stepOrder,
@@ -3076,35 +3074,28 @@ describe("assembleRunCredentialsSnapshot", () => {
     );
   });
 
-  test("a run without a per-run grants file falls back to deploy-time grants", async () => {
+  test("a run without a per-run grants file fails closed", async () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
-    // No per-run file: the internal-run inherit path. Each step's grants come
-    // from its own agent-state repo instead.
-    const step1Grants = [{ id: "deploy-grant-1" }];
+    // No per-run file. A deploy-time file is present so a silent fallback
+    // would surface deploy-time grants rather than failing; the run must fail
+    // closed instead of running against them.
     await writeDeployTimeStepGrants(
       tempBase,
       "step-1",
-      JSON.stringify({ grants: step1Grants }),
+      JSON.stringify({ grants: [{ id: "deploy-grant-1" }] }),
     );
-    // step-2 carries no deploy-time file either, which resolves to an empty
-    // grant set rather than throwing.
 
-    const snapshot = await assembleRunCredentialsSnapshot({
-      repoStore,
-      principal,
-      deploymentId,
-      runId,
-      stepOrder,
-      deriveStepAddress,
-    });
-
-    expect(snapshot.steps).toHaveLength(2);
-    expect(snapshot.steps[0]?.stepId).toBe("step-1");
-    expect(snapshot.steps[0]?.grants).toEqual(step1Grants);
-    expect(snapshot.steps[1]?.stepId).toBe("step-2");
-    expect(snapshot.steps[1]?.grants).toEqual([]);
+    await expect(
+      assembleRunCredentialsSnapshot({
+        repoStore,
+        deploymentId,
+        runId,
+        stepOrder,
+        deriveStepAddress,
+      }),
+    ).rejects.toThrow(/has no grants file/);
   });
 
   test("a run with a malformed per-run grants file throws", async () => {
@@ -3123,7 +3114,6 @@ describe("assembleRunCredentialsSnapshot", () => {
     await expect(
       assembleRunCredentialsSnapshot({
         repoStore,
-        principal,
         deploymentId,
         runId,
         stepOrder,
@@ -3138,7 +3128,6 @@ describe("assembleRunCredentialsSnapshot", () => {
     await expect(
       assembleRunCredentialsSnapshot({
         repoStore,
-        principal,
         deploymentId,
         runId,
         stepOrder,
@@ -3174,7 +3163,6 @@ describe("assembleRunCredentialsSnapshot", () => {
 
     const first = await assembleRunCredentialsSnapshot({
       repoStore,
-      principal,
       deploymentId,
       runId,
       stepOrder,
@@ -3185,7 +3173,6 @@ describe("assembleRunCredentialsSnapshot", () => {
     // the grants file in between.
     const second = await assembleRunCredentialsSnapshot({
       repoStore,
-      principal,
       deploymentId,
       runId,
       stepOrder,

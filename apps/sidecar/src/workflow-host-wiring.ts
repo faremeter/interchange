@@ -28,7 +28,6 @@ import type {
   SessionManager,
 } from "@intx/hub-agent";
 import {
-  assembleCredentialsSnapshot,
   createWorkflowSupervisor,
   hashGrants,
   STEP_GRANTS_PATH,
@@ -248,42 +247,36 @@ async function writeStepGrants(args: {
 }
 
 export type AssembleRunCredentialsSnapshotOpts = {
-  /** Substrate handle the sink reads the per-run and deploy-time grants from. */
+  /** Substrate handle the sink reads the per-run grants file from. */
   repoStore: RepoStore;
-  /** Principal presented for the deploy-time per-step read. */
-  principal: Principal;
-  /** Deployment id keying the workflow-run repo and the deploy-time read. */
+  /** Deployment id keying the workflow-run repo the grants file lives in. */
   deploymentId: string;
-  /** Run whose per-run grants are read, when present. */
+  /** Run whose per-run grants file is read. */
   runId: string;
   /** Step ids in `stepOrder`; the per-run grants apply uniformly across them. */
   stepOrder: readonly string[];
   /** Per-step mail-address derivation. */
   deriveStepAddress: DeriveStepAddress;
-  /** Optional override of the deploy-time per-step `agent-state` repo id. */
-  deriveStepRepoId?: DeriveStepRepoId;
 };
 
 /**
  * Resolve a run's credentials snapshot for the `onRunStart` grants
- * barrier, per-run read first with a graceful deploy-time fallback.
+ * barrier from its per-run grants file.
  *
- * A run resolved on the hub carries its own grants, shipped over a
- * `run.grants` frame and written to `runs/<runId>/grants.json` in the
- * deployment's workflow-run repo. When that per-run file is present it IS
- * the run's snapshot: the run's single flat grant set is applied
- * uniformly across every step, keyed on the same per-step addresses the
- * deploy-time assembly uses.
+ * Every legitimate run birth path writes `runs/<runId>/grants.json` in
+ * the deployment's workflow-run repo before the run dispatches -- the
+ * external trigger route and the mail-triggered path both ship a
+ * `run.grants` frame the sidecar writes, and a spawned child inherits its
+ * parent's grants directly at spawn without reaching this barrier. The
+ * per-run file IS the run's snapshot: the run's single flat grant set is
+ * applied uniformly across every step, keyed on each step's address.
  *
- * When the per-run file is ABSENT (ENOENT), the run inherited the
- * deployment's grants without a `run.grants` frame -- a child spawn or a
- * co-located internal run. This is a requirements-driven default:
- * internal runs inherit the deployment's grants, so fall back to the
- * deploy-time per-step read (`assembleCredentialsSnapshot`) from each
- * step's `agent-state` repo. The fallback is keyed on file-absent
- * SPECIFICALLY -- `readRunGrants` returns `undefined` only on ENOENT and
- * THROWS on a malformed per-run file, so a corrupt run grants file fails
- * the run rather than silently inheriting the deployment's.
+ * A missing file is therefore not an internal run inheriting deploy-time
+ * grants -- it is a run that reached its barrier with no grants written,
+ * so it FAILS CLOSED here rather than running under-authorized. A file
+ * that exists but is malformed also throws (via `readRunGrants`), for the
+ * same reason: the file's presence implies a grants frame was delivered,
+ * so a structural failure is a boundary bug, not a default.
  */
 export async function assembleRunCredentialsSnapshot(
   opts: AssembleRunCredentialsSnapshotOpts,
@@ -294,16 +287,9 @@ export async function assembleRunCredentialsSnapshot(
     runId: opts.runId,
   });
   if (runGrants === undefined) {
-    return assembleCredentialsSnapshot({
-      repoStore: opts.repoStore,
-      principal: opts.principal,
-      stepOrder: opts.stepOrder,
-      deploymentId: opts.deploymentId,
-      deriveStepAddress: opts.deriveStepAddress,
-      ...(opts.deriveStepRepoId !== undefined
-        ? { deriveStepRepoId: opts.deriveStepRepoId }
-        : {}),
-    });
+    throw new Error(
+      `sidecar onRunStart: run ${opts.runId} has no grants file at ${runGrantsPath(opts.runId)}; refusing to start the run under-authorized`,
+    );
   }
   const contentHash = await hashGrants(runGrants);
   const steps: CredentialsSnapshotStep[] = opts.stepOrder.map((stepId) => ({
@@ -597,11 +583,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * Predicate consulted at the `onRunStart` grants barrier: returns `true`
    * for a runId whose `run.grants` write was attempted and FAILED, so the
    * per-run grants file the run needs never landed. The barrier fails such a
-   * run loudly rather than falling through to the deploy-time read (empty for
-   * a workflow deploy), which would silently run it under-authorized. Absent
-   * means no run is poisoned; a run that never had a `run.grants` frame (an
-   * internal run inheriting the deployment's grants) is never poisoned and
-   * falls through normally.
+   * run loudly rather than starting it under-authorized. This is a
+   * fast-fail with a precise cause: an absent grants file already fails the
+   * barrier closed on its own (every run birth path writes the file before
+   * dispatch, so its absence is a defect), and this predicate lets a run
+   * whose write is KNOWN to have failed reject with that specific reason
+   * instead of a generic missing-file error. Absent means no run is
+   * poisoned.
    */
   isRunPoisoned?: (runId: string) => boolean;
 };
@@ -2186,19 +2174,19 @@ export function createSidecarWorkflowSupervisor(
   // Per-run grants sink. The supervisor awaits this and pushes the
   // resulting snapshot to the child before the run's `trigger.fire`; a
   // throw propagates and the dispatch barrier fails the run rather than
-  // firing the trigger against absent grants. The per-run read wins when
-  // the run carries its own `run.grants` frame; an internal run whose
-  // per-run file is absent inherits the deployment's deploy-time grants
-  // (see `assembleRunCredentialsSnapshot`).
+  // firing the trigger against absent grants. The snapshot is the run's
+  // own per-run grants file, which every legitimate birth path writes
+  // before dispatch (see `assembleRunCredentialsSnapshot`).
   const onRunStart = (args: {
     runId: string;
     deploymentId: string;
   }): Promise<CredentialsSnapshot> => {
-    // Fail closed on a run whose `run.grants` write was attempted and failed:
-    // its per-run grants file never landed, so assembling the snapshot would
-    // fall through to the deploy-time read (empty for a workflow deploy) and
-    // run the child under-authorized. Reject at the barrier instead, so the
-    // dispatch loop fails the run rather than firing its trigger.
+    // Fail closed on a run whose `run.grants` write was recorded as failed:
+    // its per-run grants file never landed. This is the known-failed-write
+    // case, distinct from the general absent-file backstop in
+    // `assembleRunCredentialsSnapshot` -- both fail the run closed, but this
+    // one names the recorded write failure specifically so a poisoned run's
+    // diagnostics point at the failed push rather than a generic absence.
     if (opts.isRunPoisoned?.(args.runId) === true) {
       return Promise.reject(
         new Error(
@@ -2208,14 +2196,10 @@ export function createSidecarWorkflowSupervisor(
     }
     return assembleRunCredentialsSnapshot({
       repoStore: opts.repoStore,
-      principal: supervisorPrincipal,
       deploymentId: args.deploymentId,
       runId: args.runId,
       stepOrder: opts.stepOrder,
       deriveStepAddress: opts.deriveStepAddress,
-      ...(opts.deriveStepRepoId !== undefined
-        ? { deriveStepRepoId: opts.deriveStepRepoId }
-        : {}),
     });
   };
   const supervisor = createWorkflowSupervisor({

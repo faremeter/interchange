@@ -53,7 +53,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import { base64Encode, hexEncode } from "@intx/types";
+import { base64Encode, deriveMessageId, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
@@ -122,7 +122,7 @@ describe("mail-handling edge cases", () => {
 
     // Fire the first mail; the supervisor should mint a run with
     // runId === sha256(raw). Wait for `RunStarted` to land.
-    routeRaw(env, ctx.deploymentMailAddress, raw);
+    await routeRaw(env, ctx.deploymentMailAddress, raw);
     await waitForWorkflowRunComplete(
       env,
       NO_HEADER_DEPLOYMENT_ID,
@@ -173,7 +173,7 @@ describe("mail-handling edge cases", () => {
     // duplicate so the log-substring wait below can scope its match
     // to events that arrive AFTER the second routeRaw call.
     const diagBeforeDuplicate = env.sidecarDiagnostics();
-    routeRaw(env, ctx.deploymentMailAddress, raw);
+    await routeRaw(env, ctx.deploymentMailAddress, raw);
 
     // The duplicate must produce the supervisor's `enqueueInbox
     // failed` log line carrying one of the `claim_check_already_*`
@@ -220,7 +220,7 @@ describe("mail-handling edge cases", () => {
       body: "malformed message-id edge case body",
     });
 
-    routeRaw(env, ctx.deploymentMailAddress, raw);
+    await routeRaw(env, ctx.deploymentMailAddress, raw);
 
     await waitForWorkflowRunComplete(
       env,
@@ -268,7 +268,7 @@ describe("mail-handling edge cases", () => {
       body: "duplicate edge case body — second send (different body)",
     });
 
-    routeRaw(env, ctx.deploymentMailAddress, raw1);
+    await routeRaw(env, ctx.deploymentMailAddress, raw1);
     await waitForWorkflowRunComplete(env, DUPLICATE_DEPLOYMENT_ID, messageId, {
       timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
@@ -295,7 +295,7 @@ describe("mail-handling edge cases", () => {
     // the rejection. The dedup index stays at one entry; no second
     // run materialises.
     const diagBeforeDuplicate = env.sidecarDiagnostics();
-    routeRaw(env, ctx.deploymentMailAddress, raw2);
+    await routeRaw(env, ctx.deploymentMailAddress, raw2);
 
     // Wait for the supervisor's `enqueueInbox failed` log line that
     // carries the `claim_check_already_*` reason; pinning on the
@@ -534,7 +534,25 @@ function buildMinimalMail(opts: {
  * encoding `routeMail` consumes (base64) so the bytes survive the
  * sidecar's hub-link decode unchanged.
  */
-function routeRaw(env: DeployFlowEnv, address: string, raw: Uint8Array): void {
+async function routeRaw(
+  env: DeployFlowEnv,
+  address: string,
+  raw: Uint8Array,
+): Promise<void> {
+  // Deliver the run's grants ahead of the mail under the SAME runId the
+  // sidecar derives from these bytes (the shared `deriveMessageId`: the
+  // Message-ID header when present, else sha256 of the bytes), so the run's
+  // `onRunStart` barrier resolves its grants file rather than failing
+  // closed. These edge-case workflows authorize no tools, so an empty grant
+  // set is sufficient -- what matters is that the file lands under the
+  // derived runId.
+  const runId = await deriveMessageId(raw);
+  const grantsDelivered = env.hub.router.sendRunGrants(address, runId, []);
+  if (!grantsDelivered) {
+    throw new Error(
+      `routeRaw: sendRunGrants returned false for ${address}; address is not routable on the hub`,
+    );
+  }
   const base64 = base64Encode(raw);
   const delivered = env.hub.router.routeMail(address, base64);
   if (!delivered) {
