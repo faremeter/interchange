@@ -36,7 +36,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import type { NewlyTerminalRun, RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
   createWorkflowSupervisor,
@@ -196,16 +196,19 @@ type WriteCapture = {
 // event blob under its `events/` prefix. The real handler scopes this to
 // events newly added against the prior tree; the stub's merge always runs
 // against an empty prior, so every terminal event it emits is new.
-const STUB_TERMINAL_EVENT_TYPES = new Set([
-  "RunCompleted",
-  "RunFailed",
-  "RunCancelled",
+const STUB_TERMINAL_EVENT_STATUS = new Map<
+  string,
+  "completed" | "failed" | "cancelled"
+>([
+  ["RunCompleted", "completed"],
+  ["RunFailed", "failed"],
+  ["RunCancelled", "cancelled"],
 ]);
 const STUB_RUN_EVENT_PATH_RE = /^runs\/([^/]+)\/events\/[0-9]+\.json$/;
 function deriveNewlyTerminalRuns(
   merged: Record<string, string | Uint8Array>,
-): { runId: string; terminalEventJson: string }[] {
-  const out: { runId: string; terminalEventJson: string }[] = [];
+): NewlyTerminalRun[] {
+  const out: NewlyTerminalRun[] = [];
   for (const [blobPath, content] of Object.entries(merged)) {
     const match = STUB_RUN_EVENT_PATH_RE.exec(blobPath);
     if (match === null || match[1] === undefined) continue;
@@ -221,11 +224,10 @@ function deriveNewlyTerminalRuns(
       continue;
     }
     const eventType = (parsed as { type?: unknown }).type;
-    if (
-      typeof eventType === "string" &&
-      STUB_TERMINAL_EVENT_TYPES.has(eventType)
-    ) {
-      out.push({ runId: match[1], terminalEventJson: json });
+    if (typeof eventType !== "string") continue;
+    const status = STUB_TERMINAL_EVENT_STATUS.get(eventType);
+    if (status !== undefined) {
+      out.push({ runId: match[1], status, terminalEventJson: json });
     }
   }
   return out;
@@ -260,8 +262,7 @@ function createStubRepoStore(opts: {
         preservePrefix: args.preservePrefix,
         message: args.message,
       });
-      let newlyTerminalRuns: { runId: string; terminalEventJson: string }[] =
-        [];
+      let newlyTerminalRuns: NewlyTerminalRun[] = [];
       if (opts.invokeMerge !== false) {
         const merged = await args.merge(new Map());
         // Stand in for the real workflow-run kind handler's terminal

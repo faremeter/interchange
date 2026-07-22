@@ -433,25 +433,36 @@ export type ConsumedEnvelope = typeof ConsumedEnvelope.infer;
 export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
 
 /**
- * Terminal event discriminators. A run whose log contains an entry
- * with one of these `type` values must not receive any event with a
- * strictly greater seq.
+ * Terminal event discriminators mapped to the `workflow_run.status` value
+ * each settles the run into. A run whose log contains an entry with one of
+ * these `type` values must not receive any event with a strictly greater
+ * seq.
  *
- * This set is a hand-rolled copy of the runtime's terminal-run vocabulary
+ * This map is a hand-rolled copy of the runtime's terminal-run vocabulary
  * (`isTerminalRunPhase` in `@intx/workflow` state-machine `state.ts`,
- * re-exported from the state-machine index and consumed by
- * `transition.ts`), duplicated here because `@intx/hub-sessions` must not
- * depend on `@intx/workflow`. It MUST stay in sync with that canonical
- * definition:
- * if the runtime adds or removes a terminal run phase, update this set too.
+ * re-exported from the state-machine index and consumed by `transition.ts`),
+ * duplicated here because `@intx/hub-sessions` must not depend on
+ * `@intx/workflow`. It is the sole authority for that vocabulary and MUST
+ * stay in sync with the canonical runtime definition:
+ * if the runtime adds or removes a terminal run phase, update this map too.
  * Drift silently reopens the restore-time double-driver collision that
  * `readOwnedMessageIds` (below) exists to prevent.
  */
-const TERMINAL_EVENT_TYPES = new Set<string>([
-  "RunCompleted",
-  "RunFailed",
-  "RunCancelled",
+const TERMINAL_EVENT_STATUS: ReadonlyMap<
+  string,
+  "completed" | "failed" | "cancelled"
+> = new Map([
+  ["RunCompleted", "completed"],
+  ["RunFailed", "failed"],
+  ["RunCancelled", "cancelled"],
 ]);
+
+/**
+ * Membership set of terminal event types, derived from
+ * `TERMINAL_EVENT_STATUS` so it always covers exactly the mapped types and
+ * the two cannot drift apart.
+ */
+const TERMINAL_EVENT_TYPES = new Set<string>(TERMINAL_EVENT_STATUS.keys());
 
 /**
  * Recognised CancelRequested origins. Mirrors the workflow package's
@@ -2185,9 +2196,16 @@ export const workflowRunKindHandler: KindHandler = {
           // signal, so a downstream consumer keyed on the signal does
           // not double-fire.
           if ((await priorReadBlob(entry.blobPath)) === null) {
+            const status = TERMINAL_EVENT_STATUS.get(parsed.parsed.body.type);
+            if (status === undefined) {
+              throw new Error(
+                `terminal event type ${parsed.parsed.body.type} has no workflow_run.status mapping`,
+              );
+            }
             const terminalBytes = await readBlob(entry.blobPath);
             newlyTerminalRuns.push({
               runId,
+              status,
               terminalEventJson: new TextDecoder().decode(terminalBytes),
             });
           }

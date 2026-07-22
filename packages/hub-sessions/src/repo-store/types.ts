@@ -87,13 +87,20 @@ export type AuthorizeFn = (
  * commit under validation -- present in the prospective tree and absent from
  * the prior tree. The kind handler authoritatively detects this during its
  * validation walk and surfaces it so callers do not re-derive terminal-ness
- * by sniffing committed path shapes. `terminalEventJson` carries the raw bytes
- * of the terminal event blob so a caller can reconstruct the event without a
- * second read. A commit that carries an already-terminal run forward
- * unchanged (e.g. a later compaction commit) is NOT newly terminal and does
- * not appear here.
+ * by sniffing committed path shapes. `status` is the terminal run state the
+ * terminal event maps to, matching the `workflow_run.status` vocabulary, so a
+ * caller flips the run's row without re-parsing the event type.
+ * `terminalEventJson` carries the raw bytes of the terminal event blob so a
+ * caller that needs the full event (the supervisor's terminal-write broadcast)
+ * can reconstruct it without a second read. A commit that carries an
+ * already-terminal run forward unchanged (e.g. a later compaction commit) is
+ * NOT newly terminal and does not appear here.
  */
-export type NewlyTerminalRun = { runId: string; terminalEventJson: string };
+export type NewlyTerminalRun = {
+  runId: string;
+  status: "completed" | "failed" | "cancelled";
+  terminalEventJson: string;
+};
 
 export type ValidatePushResult =
   | { ok: true; newlyTerminalRuns?: NewlyTerminalRun[] }
@@ -427,6 +434,14 @@ export interface RepoStore {
    * via `resolveRef` first; the substrate exposes no force-write
    * mode because silently overwriting a losing concurrent update is
    * never the right behavior.
+   *
+   * Returns the runs the received pack drove to a terminal event,
+   * aggregated across every commit it carried. The kind handler
+   * detects terminal-ness authoritatively during validation; the
+   * substrate forwards it so a caller can react (flip the run's DB
+   * row, deactivate its principal) without re-deriving terminal-ness
+   * from the committed path shape. Empty for kinds and packs that
+   * produce none.
    */
   receivePack(
     principal: Principal,
@@ -435,7 +450,7 @@ export interface RepoStore {
     pack: Uint8Array,
     commitSha: string,
     expectedOldSha: string | null,
-  ): Promise<void>;
+  ): Promise<NewlyTerminalRun[]>;
   createPack(
     principal: Principal,
     repoId: RepoId,

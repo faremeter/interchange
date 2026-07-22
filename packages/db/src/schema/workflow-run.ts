@@ -30,8 +30,10 @@ export const workflowRun = pgTable("workflow_run", {
   principalId: text("principal_id").references(() => principal.id, {
     onDelete: "set null",
   }),
-  // Only "running" is ever written today; a run is born running and stays so.
-  // The terminal transitions are a separate concern and no code writes them.
+  // A run is born "running". It settles into a terminal status when its
+  // terminal event lands on the workflow-run ref: the hub's pack-receive path
+  // flips this column under a `status = 'running'` guard so a redelivered
+  // terminal event does not re-terminate the run.
   status: text("status", {
     enum: ["running", "completed", "failed", "cancelled"],
   })

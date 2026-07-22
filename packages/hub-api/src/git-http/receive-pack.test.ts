@@ -140,6 +140,7 @@ function createStubStore(stub: ReceivePackStub): {
       };
       calls.push(call);
       await stub(call);
+      return [];
     },
     subscribe: () => {
       throw new Error("subscribe: not used in this test");

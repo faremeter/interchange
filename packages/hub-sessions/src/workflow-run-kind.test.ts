@@ -412,7 +412,11 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
     });
     if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
     expect(r.newlyTerminalRuns).toEqual([
-      { runId: "run-a", terminalEventJson: eventBody(1, "RunCompleted") },
+      {
+        runId: "run-a",
+        status: "completed",
+        terminalEventJson: eventBody(1, "RunCompleted"),
+      },
     ]);
   });
 
@@ -471,8 +475,16 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
     if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
     expect(r.newlyTerminalRuns).toEqual(
       expect.arrayContaining([
-        { runId: "run-a", terminalEventJson: eventBody(1, "RunCompleted") },
-        { runId: "run-b", terminalEventJson: eventBody(1, "RunCancelled") },
+        {
+          runId: "run-a",
+          status: "completed",
+          terminalEventJson: eventBody(1, "RunCompleted"),
+        },
+        {
+          runId: "run-b",
+          status: "cancelled",
+          terminalEventJson: eventBody(1, "RunCancelled"),
+        },
       ]),
     );
     expect(r.newlyTerminalRuns ?? []).toHaveLength(2);
@@ -508,7 +520,11 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
     );
     if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
     expect(r.newlyTerminalRuns).toEqual([
-      { runId: "run-b", terminalEventJson: eventBody(1, "RunCompleted") },
+      {
+        runId: "run-b",
+        status: "completed",
+        terminalEventJson: eventBody(1, "RunCompleted"),
+      },
     ]);
   });
 });

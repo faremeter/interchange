@@ -3,7 +3,12 @@ import type { GCPolicy } from "@intx/storage-isogit";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createRepoStore } from "./repo-store";
-import type { AuthorizeFn, RepoId, RepoStore } from "./repo-store";
+import type {
+  AuthorizeFn,
+  NewlyTerminalRun,
+  RepoId,
+  RepoStore,
+} from "./repo-store";
 import {
   agentStateKindHandler,
   agentStateAuthorize,
@@ -90,13 +95,17 @@ export type AgentRepoStore = {
    * writes by design, so the supervisor branch is the correct path for
    * sidecar-originated run-event commits (the supervisor lives on the
    * sidecar and is the actual signer of the run events).
+   *
+   * Returns the runs the pack drove terminal, surfaced from the
+   * substrate's per-commit validation so a caller can flip the run's
+   * DB state without re-deriving terminal-ness.
    */
   receiveWorkflowRunPack(
     repoId: RepoId,
     pack: Uint8Array,
     ref: string,
     commitSha: string,
-  ): Promise<void>;
+  ): Promise<NewlyTerminalRun[]>;
 
   /** Resolve the current deploy ref SHA, or null if no deploy exists. */
   getDeployRef(agentId: string): Promise<string | null>;
@@ -242,7 +251,7 @@ export function createAgentRepoStore(config: {
         deploymentId: incomingRepoId.id,
       };
       const expectedOldSha = await store.resolveRef(hub, incomingRepoId, ref);
-      await store.receivePack(
+      return store.receivePack(
         principal,
         incomingRepoId,
         ref,
