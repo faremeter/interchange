@@ -1,6 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
-import { SUPPORT_MATRIX, SupportEntry, getFixtureDir } from "./support-matrix";
+import {
+  SUPPORT_MATRIX,
+  SupportEntry,
+  STRUCTURED_OUTPUT_CAPABILITIES,
+  getFixtureDir,
+} from "./support-matrix";
 
 describe("SUPPORT_MATRIX validation", () => {
   test("every entry parses as a SupportEntry", () => {
@@ -45,6 +50,18 @@ describe("SUPPORT_MATRIX validation", () => {
       expect(seen.has(key)).toBe(false);
       seen.add(key);
     }
+  });
+});
+
+describe("STRUCTURED_OUTPUT_CAPABILITIES", () => {
+  // Pins the shared constant's exact membership so that adding a member fails
+  // here loudly rather than silently fanning an extra row across every model
+  // that references it.
+  test("is exactly the two structured-output capabilities", () => {
+    expect(STRUCTURED_OUTPUT_CAPABILITIES).toEqual([
+      "structured-output",
+      "structured-output-streaming",
+    ]);
   });
 });
 

@@ -50,6 +50,17 @@ const GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
 const OPENCODE_PROVIDER = "opencode-zen";
 const OPENAI_PROVIDER = "openai";
 
+// The structured-output capability pair, shared by the rows whose entire
+// capability list is exactly this pair — several opencode models with outcome
+// captured, and Anthropic with outcome unsupported — so they need not re-spell
+// it. These two capabilities also appear as members of the larger
+// GEMINI_TEXT_CAPABILITIES and OPENAI_CAPTURED_CAPABILITIES lists, where they
+// stay inline as part of those providers' full captured sets.
+export const STRUCTURED_OUTPUT_CAPABILITIES = [
+  "structured-output",
+  "structured-output-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
 const GEMINI_TEXT_CAPABILITIES = [
   "plain-text",
   "plain-text-streaming",
@@ -184,11 +195,6 @@ const ANTHROPIC_UNSUPPORTED_OUTPUT_MODALITIES = [
   "image-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-const ANTHROPIC_UNSUPPORTED_STRUCTURED_OUTPUTS = [
-  "structured-output",
-  "structured-output-streaming",
-] as const satisfies readonly SupportEntry["capability"][];
-
 const MATRIX: SupportEntry[] = [
   ...ANTHROPIC_MODELS.flatMap((model) =>
     rows(
@@ -229,7 +235,7 @@ const MATRIX: SupportEntry[] = [
     rows(
       ANTHROPIC_PROVIDER,
       model,
-      ANTHROPIC_UNSUPPORTED_STRUCTURED_OUTPUTS,
+      STRUCTURED_OUTPUT_CAPABILITIES,
       "unsupported",
       "Anthropic's Messages API has no native structured-outputs surface. The internal adapter rejects responseFormat values of json and json-schema at the marshaling boundary rather than synthesizing a hidden tool-input wrapper; callers needing structured output route through a provider with native support.",
     ),
@@ -299,20 +305,20 @@ const MATRIX: SupportEntry[] = [
   ...rows(
     OPENCODE_PROVIDER,
     "gpt-5.4-mini",
-    ["structured-output", "structured-output-streaming"],
+    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(
     OPENCODE_PROVIDER,
     "kimi-k2.6",
-    ["structured-output", "structured-output-streaming"],
+    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(OPENCODE_PROVIDER, "kimi-k3", OPENCODE_FULL_CAPABILITIES, "captured"),
   ...rows(
     OPENCODE_PROVIDER,
     "kimi-k3",
-    ["structured-output", "structured-output-streaming"],
+    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(
@@ -324,19 +330,19 @@ const MATRIX: SupportEntry[] = [
   ...rows(
     OPENCODE_PROVIDER,
     "kimi-k2.7-code",
-    ["structured-output", "structured-output-streaming"],
+    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(
     OPENCODE_PROVIDER,
     "glm-5.1",
-    ["structured-output", "structured-output-streaming"],
+    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(
     OPENCODE_PROVIDER,
     "qwen3.6-plus",
-    ["structured-output", "structured-output-streaming"],
+    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   {
