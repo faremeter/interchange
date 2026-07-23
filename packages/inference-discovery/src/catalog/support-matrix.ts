@@ -124,67 +124,24 @@ const OPENAI_UNSUPPORTED_REASONING = [
   "reasoning-content-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-function gemini(
+// Builds one SupportEntry per capability for a single (provider, model,
+// outcome). notes is included only when supplied, so captured rows stay
+// notes-free while misled/unsupported rows carry their explanation. The
+// per-outcome notes pairing (captured carries no notes; misled/unsupported
+// always do) is the caller's responsibility: this helper does not enforce it.
+function rows(
+  provider: string,
   model: string,
   capabilities: readonly SupportEntry["capability"][],
+  outcome: SupportEntry["outcome"],
+  notes?: string,
 ): SupportEntry[] {
   return capabilities.map((capability) => ({
-    provider: GEMINI_PROVIDER,
+    provider,
     model,
     capability,
-    outcome: "captured",
-  }));
-}
-
-function geminiMisled(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-  notes: string,
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: GEMINI_PROVIDER,
-    model,
-    capability,
-    outcome: "misled",
-    notes,
-  }));
-}
-
-function opencode(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: OPENCODE_PROVIDER,
-    model,
-    capability,
-    outcome: "captured",
-  }));
-}
-
-function openai(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: OPENAI_PROVIDER,
-    model,
-    capability,
-    outcome: "captured",
-  }));
-}
-
-function openaiUnsupported(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-  notes: string,
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: OPENAI_PROVIDER,
-    model,
-    capability,
-    outcome: "unsupported",
-    notes,
+    outcome,
+    ...(notes === undefined ? {} : { notes }),
   }));
 }
 
@@ -232,116 +189,156 @@ const ANTHROPIC_UNSUPPORTED_STRUCTURED_OUTPUTS = [
   "structured-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-function anthropic(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: ANTHROPIC_PROVIDER,
-    model,
-    capability,
-    outcome: "captured",
-  }));
-}
-
-function anthropicUnsupported(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-  notes: string,
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: ANTHROPIC_PROVIDER,
-    model,
-    capability,
-    outcome: "unsupported",
-    notes,
-  }));
-}
-
-function anthropicMisled(
-  model: string,
-  capabilities: readonly SupportEntry["capability"][],
-  notes: string,
-): SupportEntry[] {
-  return capabilities.map((capability) => ({
-    provider: ANTHROPIC_PROVIDER,
-    model,
-    capability,
-    outcome: "misled",
-    notes,
-  }));
-}
-
 const MATRIX: SupportEntry[] = [
   ...ANTHROPIC_MODELS.flatMap((model) =>
-    anthropic(model, ANTHROPIC_CAPTURED_CAPABILITIES),
+    rows(
+      ANTHROPIC_PROVIDER,
+      model,
+      ANTHROPIC_CAPTURED_CAPABILITIES,
+      "captured",
+    ),
   ),
   ...ANTHROPIC_MODELS.flatMap((model) =>
-    anthropicMisled(
+    rows(
+      ANTHROPIC_PROVIDER,
       model,
       ANTHROPIC_MISLED_CAPABILITIES,
+      "misled",
       "Anthropic's documentation describes the canary prompt as a deterministic trigger for a redacted_thinking content block. On capture day the safety classifier did not fire on any first-party model; the assistant response carries a regular thinking block instead. The fixture on disk documents what the wire actually returned for the documented input. The plug-in and SSE parser already accept redacted_thinking blocks, so a future re-capture on a day the classifier does fire will flip this row to captured without code changes.",
     ),
   ),
   ...ANTHROPIC_MODELS.flatMap((model) =>
-    anthropicUnsupported(
+    rows(
+      ANTHROPIC_PROVIDER,
       model,
       ANTHROPIC_UNSUPPORTED_INPUT_MODALITIES,
+      "unsupported",
       "Anthropic's first-party Claude models do not accept audio or video inputs; the Messages API content array only permits text, image, document, tool_use, and tool_result blocks. No equivalent server-side ingestion path exists today.",
     ),
   ),
   ...ANTHROPIC_MODELS.flatMap((model) =>
-    anthropicUnsupported(
+    rows(
+      ANTHROPIC_PROVIDER,
       model,
       ANTHROPIC_UNSUPPORTED_OUTPUT_MODALITIES,
+      "unsupported",
       "Anthropic's first-party Claude models do not emit images; the Messages API surface is text-only on the output side and has no responseModalities-style toggle.",
     ),
   ),
   ...ANTHROPIC_MODELS.flatMap((model) =>
-    anthropicUnsupported(
+    rows(
+      ANTHROPIC_PROVIDER,
       model,
       ANTHROPIC_UNSUPPORTED_STRUCTURED_OUTPUTS,
+      "unsupported",
       "Anthropic's Messages API has no native structured-outputs surface. The internal adapter rejects responseFormat values of json and json-schema at the marshaling boundary rather than synthesizing a hidden tool-input wrapper; callers needing structured output route through a provider with native support.",
     ),
   ),
-  ...gemini(GEMINI_TEXT_MODEL, GEMINI_TEXT_CAPABILITIES),
-  ...gemini(GEMINI_IMAGE_MODEL, GEMINI_IMAGE_CAPABILITIES),
-  ...geminiMisled(
+  ...rows(
+    GEMINI_PROVIDER,
+    GEMINI_TEXT_MODEL,
+    GEMINI_TEXT_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    GEMINI_PROVIDER,
+    GEMINI_IMAGE_MODEL,
+    GEMINI_IMAGE_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    GEMINI_PROVIDER,
     GEMINI_TEXT_MODEL,
     GEMINI_TEXT_MISLED_CAPABILITIES,
+    "misled",
     'Probe prompt did not engage Gemini\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture (different prompt, different classifier thresholds, or different model behavior) may flip this row to captured without code changes once a structured safety signal materializes.',
   ),
-  ...gemini("gemini-2.5-pro", GEMINI_TEXT_CAPABILITIES),
-  ...geminiMisled(
+  ...rows(
+    GEMINI_PROVIDER,
+    "gemini-2.5-pro",
+    GEMINI_TEXT_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    GEMINI_PROVIDER,
     "gemini-2.5-pro",
     GEMINI_TEXT_MISLED_CAPABILITIES,
+    "misled",
     'Probe prompt did not engage gemini-2.5-pro\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture may flip this row to captured once a structured safety signal materializes.',
   ),
-  ...opencode("kimi-k2.6", OPENCODE_FULL_CAPABILITIES),
-  ...opencode("mimo-v2-omni", OPENCODE_FULL_CAPABILITIES),
-  ...opencode("qwen3.6-plus", OPENCODE_FULL_CAPABILITIES),
-  ...opencode("glm-5.1", OPENCODE_NON_VISION_CAPABILITIES),
-  ...opencode("deepseek-v4-pro", OPENCODE_NON_VISION_CAPABILITIES),
-  ...opencode("gpt-5.4-mini", [
-    "structured-output",
-    "structured-output-streaming",
-  ]),
-  ...opencode("kimi-k2.6", [
-    "structured-output",
-    "structured-output-streaming",
-  ]),
-  ...opencode("kimi-k3", OPENCODE_FULL_CAPABILITIES),
-  ...opencode("kimi-k3", ["structured-output", "structured-output-streaming"]),
-  ...opencode("kimi-k2.7-code", OPENCODE_FULL_CAPABILITIES),
-  ...opencode("kimi-k2.7-code", [
-    "structured-output",
-    "structured-output-streaming",
-  ]),
-  ...opencode("glm-5.1", ["structured-output", "structured-output-streaming"]),
-  ...opencode("qwen3.6-plus", [
-    "structured-output",
-    "structured-output-streaming",
-  ]),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "kimi-k2.6",
+    OPENCODE_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "mimo-v2-omni",
+    OPENCODE_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "qwen3.6-plus",
+    OPENCODE_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "glm-5.1",
+    OPENCODE_NON_VISION_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "deepseek-v4-pro",
+    OPENCODE_NON_VISION_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "gpt-5.4-mini",
+    ["structured-output", "structured-output-streaming"],
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "kimi-k2.6",
+    ["structured-output", "structured-output-streaming"],
+    "captured",
+  ),
+  ...rows(OPENCODE_PROVIDER, "kimi-k3", OPENCODE_FULL_CAPABILITIES, "captured"),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "kimi-k3",
+    ["structured-output", "structured-output-streaming"],
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "kimi-k2.7-code",
+    OPENCODE_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "kimi-k2.7-code",
+    ["structured-output", "structured-output-streaming"],
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "glm-5.1",
+    ["structured-output", "structured-output-streaming"],
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "qwen3.6-plus",
+    ["structured-output", "structured-output-streaming"],
+    "captured",
+  ),
   {
     provider: OPENCODE_PROVIDER,
     model: "deepseek-v4-pro",
@@ -390,10 +387,12 @@ const MATRIX: SupportEntry[] = [
     notes:
       "OpenAI-style multimodal messages[].content elicits HTTP 400 invalid_request_error \"unknown variant 'image_url', expected 'text'\"; recorded as 'http-error' here so no capture is attempted.",
   },
-  ...openai("gpt-5.5", OPENAI_CAPTURED_CAPABILITIES),
-  ...openaiUnsupported(
+  ...rows(OPENAI_PROVIDER, "gpt-5.5", OPENAI_CAPTURED_CAPABILITIES, "captured"),
+  ...rows(
+    OPENAI_PROVIDER,
     "gpt-5.5",
     OPENAI_UNSUPPORTED_REASONING,
+    "unsupported",
     "OpenAI's first-party api.openai.com Chat Completions responses for the gpt-5 series carry no reasoning or reasoning_content field; the assistant message holds only role, content, refusal, and annotations. OpenAI exposes reasoning tokens solely through the Responses API, which this Chat-Completions plug-in does not probe. The OpenAI-protocol opencode-zen relays do surface reasoning_content on this same wire, so this is a first-party OpenAI behavior, not a protocol limitation.",
   ),
 ];
