@@ -137,9 +137,9 @@ const OPENAI_UNSUPPORTED_REASONING = [
 
 // Builds one SupportEntry per capability for a single (provider, model,
 // outcome). notes is included only when supplied, so captured rows stay
-// notes-free while misled/unsupported rows carry their explanation. The
-// per-outcome notes pairing (captured carries no notes; misled/unsupported
-// always do) is the caller's responsibility: this helper does not enforce it.
+// notes-free while misled/unsupported rows carry their explanation. rows does
+// not itself check the notes/outcome pairing; assertNotesDiscipline enforces it
+// over the assembled matrix at module load.
 function rows(
   provider: string,
   model: string,
@@ -421,6 +421,13 @@ const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
   "misled",
 ]);
 
+// captured is the sole self-explanatory outcome: its fixture is the evidence, so
+// the row carries no notes. Every other outcome is a deviation that must justify
+// itself, so it requires a non-empty notes explanation. This is a DIFFERENT axis
+// from FIXTURE_BEARING_OUTCOMES — misled is fixture-bearing yet still requires
+// notes — so the two sets are intentionally distinct; do not unify them.
+const NOTES_FREE_OUTCOMES = new Set<SupportEntry["outcome"]>(["captured"]);
+
 // captured and misled rows both point to a captured wire flow on disk that the
 // smoke tests replay, so both are empirical proof the capability works; refused,
 // http-error, and unsupported rows carry no fixture. This is the single owner of
@@ -440,4 +447,31 @@ export function getFixtureDir(entry: SupportEntry): string | null {
     );
   }
   return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;
+}
+
+// Enforces the notes/outcome pairing on a single entry: a notes-free outcome
+// must carry no notes; every other outcome must carry a non-empty notes
+// explanation. Applied to every entry at module load below, so it covers the
+// inline refused/http-error rows that never flow through rows() as well.
+export function assertNotesDiscipline(entry: SupportEntry): void {
+  const site = `${entry.provider}/${entry.model}/${entry.capability}`;
+  if (NOTES_FREE_OUTCOMES.has(entry.outcome)) {
+    if (entry.notes !== undefined) {
+      throw new Error(
+        `support-matrix: ${site} is ${entry.outcome} and must not carry ` +
+          `notes (got ${JSON.stringify(entry.notes)})`,
+      );
+    }
+    return;
+  }
+  if (entry.notes === undefined || entry.notes.trim().length === 0) {
+    throw new Error(
+      `support-matrix: ${site} is ${entry.outcome} and requires a non-empty ` +
+        `notes explanation`,
+    );
+  }
+}
+
+for (const entry of SUPPORT_MATRIX) {
+  assertNotesDiscipline(entry);
 }
