@@ -4,6 +4,7 @@ import {
   SUPPORT_MATRIX,
   SupportEntry,
   STRUCTURED_OUTPUT_CAPABILITIES,
+  assertNotesDiscipline,
   getFixtureDir,
 } from "./support-matrix";
 
@@ -50,6 +51,55 @@ describe("SUPPORT_MATRIX validation", () => {
       expect(seen.has(key)).toBe(false);
       seen.add(key);
     }
+  });
+});
+
+describe("assertNotesDiscipline", () => {
+  const base = {
+    provider: "opencode-zen",
+    model: "kimi-k3",
+    capability: "plain-text",
+  } as const;
+
+  const deviations = [
+    "misled",
+    "unsupported",
+    "refused",
+    "http-error",
+  ] as const;
+
+  test("accepts a captured row with no notes", () => {
+    expect(() =>
+      assertNotesDiscipline({ ...base, outcome: "captured" }),
+    ).not.toThrow();
+  });
+
+  test("rejects a captured row that carries notes", () => {
+    expect(() =>
+      assertNotesDiscipline({ ...base, outcome: "captured", notes: "oops" }),
+    ).toThrow(/must not carry notes/);
+  });
+
+  test("accepts every deviation outcome with a non-empty note", () => {
+    for (const outcome of deviations) {
+      expect(() =>
+        assertNotesDiscipline({ ...base, outcome, notes: "explained" }),
+      ).not.toThrow();
+    }
+  });
+
+  test("rejects a deviation outcome with no notes", () => {
+    for (const outcome of deviations) {
+      expect(() => assertNotesDiscipline({ ...base, outcome })).toThrow(
+        /requires a non-empty notes/,
+      );
+    }
+  });
+
+  test("rejects a deviation outcome with blank notes", () => {
+    expect(() =>
+      assertNotesDiscipline({ ...base, outcome: "unsupported", notes: "   " }),
+    ).toThrow(/requires a non-empty notes/);
   });
 });
 
