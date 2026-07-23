@@ -25,6 +25,8 @@ export {
   type CapabilityApprovalGate,
 } from "./capability-approval";
 export {
+  assertChainHeadIsDefault,
+  isSourceApproved,
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   deriveStepAddress,

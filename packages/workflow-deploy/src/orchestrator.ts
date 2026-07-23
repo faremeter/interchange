@@ -458,13 +458,27 @@ async function runSingleStepAtHead(args: {
     );
   }
   const stepAgent = extractAgent(primitive);
-  const source = pickStepInferenceSource({
-    stepAgent,
-    stepId,
+  // The lone step's chain IS the deploy-wide source chain: a one-step
+  // workflow pins its FULL ordered chain so the reactor fails over across it
+  // -- whole-workflow failover, identical to the instance path. (The
+  // multi-step branch keeps the per-step single-source collapse; failover
+  // across distinct steps is not a thing.) Unlike the pre-authorized instance
+  // path, the workflow deploy is gated: every source in the chain must be in
+  // the operator-approved set, and an unapproved source is a loud rejection
+  // rather than a silent skip that would reshape the reviewed chain.
+  assertChainHeadIsDefault({
+    sources: deploy.config.sources,
+    defaultSource: deploy.config.defaultSource,
     workflowId: deploy.workflow.id,
-    config: deploy.config,
-    operatorApprovals: deploy.operatorApprovals,
   });
+  for (const candidate of deploy.config.sources) {
+    if (!isSourceApproved(candidate, deploy.operatorApprovals)) {
+      throw new WorkflowDefinitionInvalidError(
+        deploy.workflow.id,
+        `step ${stepId} inference chain includes ${candidate.provider}:${candidate.model}, which is not in the operator-approved grant set`,
+      );
+    }
+  }
 
   // The lone step IS the head: one deploy at the deployment address, no
   // per-step derivation. The head's agentId and instanceId are the same
@@ -492,11 +506,9 @@ async function runSingleStepAtHead(args: {
     config: headConfig,
     deployContent: headDeployContent,
     definition: deploy.workflow,
-    // A workflow step pins a single source (no per-step failover): wrap the
-    // one operator-approved source in a one-element list. The per-step
-    // failover chain is intentionally an instance-only concern; a workflow
-    // step preserves its prior single-source behavior.
-    sources: { [stepId]: [source] },
+    // Pin the full ordered chain gated above; the reactor fails over forward
+    // across it, matching the instance deploy path.
+    sources: { [stepId]: [...deploy.config.sources] },
     hubPublicKey: deploy.hubPublicKey,
     ...(deploy.toolPackagePins !== undefined
       ? { toolPackagePins: deploy.toolPackagePins }
@@ -622,6 +634,54 @@ async function runMultiStepBranch(args: {
 }
 
 /**
+ * Assert the reactor's forward-only failover invariant on a single-step
+ * source chain: the chain is non-empty and its head is the default source.
+ * The reactor activates the chain's element 0 and fails over forward with no
+ * wrap, so the default must be element 0; a default placed elsewhere would
+ * silently no-op failover. Shared by the instance and workflow single-step
+ * deploy paths, which both pin a full ordered chain.
+ *
+ * Throws `WorkflowDefinitionInvalidError` (a client/definition error) so the
+ * deploy route can classify an inverted request as a 409 rather than a 502.
+ */
+export function assertChainHeadIsDefault(args: {
+  sources: readonly InferenceSource[];
+  defaultSource: string;
+  workflowId: string;
+}): void {
+  if (args.sources.length === 0) {
+    throw new WorkflowDefinitionInvalidError(
+      args.workflowId,
+      "config.sources is empty; at least the default source is required as the chain head",
+    );
+  }
+  if (args.sources[0]?.id !== args.defaultSource) {
+    throw new WorkflowDefinitionInvalidError(
+      args.workflowId,
+      `config.sources[0] (${JSON.stringify(
+        args.sources[0]?.id,
+      )}) must be the default source ${JSON.stringify(
+        args.defaultSource,
+      )}; a single-step deploy pins the full ordered chain and the reactor activates the head, so the default must be element 0`,
+    );
+  }
+}
+
+/**
+ * Whether an inference source is in the operator-approved grant set, keyed
+ * by provider and model. The single definition of "approved source," shared
+ * by single-step source selection and the single-step chain gate.
+ */
+export function isSourceApproved(
+  source: InferenceSource,
+  operatorApprovals: ApprovalSet,
+): boolean {
+  return operatorApprovals.has(
+    `inference.source:${source.provider}:${source.model}`,
+  );
+}
+
+/**
  * Pick the per-step `InferenceSource` from the deploy's
  * `HarnessConfig.sources`, cross-checked against the operator-approved
  * grant set.
@@ -644,21 +704,22 @@ function pickStepInferenceSource(args: {
   config: HarnessConfig;
   operatorApprovals: ApprovalSet;
 }): InferenceSource {
-  const isApproved = (source: InferenceSource) =>
-    args.operatorApprovals.has(
-      `inference.source:${source.provider}:${source.model}`,
-    );
   const preferred = args.stepAgent?.inference.sources[0];
   if (preferred !== undefined) {
     const match = args.config.sources.find(
       (s) => s.provider === preferred.provider && s.model === preferred.model,
     );
-    if (match !== undefined && isApproved(match)) return match;
+    if (match !== undefined && isSourceApproved(match, args.operatorApprovals))
+      return match;
   }
   const fallback = args.config.sources.find(
     (s) => s.id === args.config.defaultSource,
   );
-  if (fallback !== undefined && isApproved(fallback)) return fallback;
+  if (
+    fallback !== undefined &&
+    isSourceApproved(fallback, args.operatorApprovals)
+  )
+    return fallback;
   const preferredDesc =
     preferred !== undefined
       ? `agent preferred ${preferred.provider}:${preferred.model}`

@@ -1,4 +1,7 @@
-// Pins the agent-step contract for `pickStepInferenceSource`:
+// Pins the agent-step contract for `pickStepInferenceSource`, exercised via the
+// MULTI-step deploy path (the single-step branch now pins the full ordered
+// source chain rather than selecting one, so prefer/fallback selection lives
+// only on the multi-step path after the fold).
 //
 // The orchestrator must not pin a step to a `HarnessConfig.defaultSource`
 // whose `(provider, model)` was never approved by the operator. The
@@ -68,12 +71,20 @@ function makeAgent(
   });
 }
 
+// A MULTI-step workflow: after the fold, `pickStepInferenceSource` (this
+// suite's subject -- prefer/fallback/approval-gate source selection) is
+// exercised only by the multi-step branch. The single-step branch now pins the
+// full ordered chain with head == default (see the single-step-chain tests in
+// orchestrator.test.ts), so the prefer/fallback semantics asserted here live on
+// the multi-step path. Both steps share the agent, so one grant set covers both
+// and the assertions read the head step's recorded pin.
 function makeWorkflow(agent: AgentDefinition<BaseEnv>): WorkflowDefinition {
   return defineWorkflow({
     id: "wf_fallback",
     trigger: { type: "manual" },
     steps: {
       only: step({ agent, after: [] }),
+      tail: step({ agent, after: ["only"] }),
     },
   });
 }

@@ -31,6 +31,7 @@ import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import {
   deriveDeploymentAddress,
   deriveWorkflowRunRepoId,
+  WorkflowDefinitionInvalidError,
 } from "@intx/workflow-deploy";
 
 import type { TenantEnv } from "../context";
@@ -286,6 +287,20 @@ export function createWorkflowRoutes({
           deployContent: { systemPrompt: "" },
         });
       } catch (err) {
+        // A single-step deploy whose source chain is invalid (head is not the
+        // default source, or a chain source the operator never approved) is a
+        // client/definition error, not a sidecar-reachability failure.
+        if (err instanceof WorkflowDefinitionInvalidError) {
+          return c.json(
+            {
+              error: {
+                code: "invalid_workflow",
+                message: err.message,
+              },
+            },
+            409,
+          );
+        }
         return c.json(
           {
             error: {

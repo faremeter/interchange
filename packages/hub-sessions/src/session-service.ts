@@ -47,6 +47,7 @@ import {
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
 import {
+  assertChainHeadIsDefault,
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   walkCapabilities,
@@ -1031,26 +1032,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     // Pin the step's inference sources to the instance's FULL ordered source
     // chain so the workflow-process child's reactor fails over across it at
     // runtime. The route already resolved and authorized `config.sources`
-    // against the tenant catalog, so it is pinned directly rather than re-run
-    // through the orchestrator's operator-approval gate.
-    //
-    // Fail loud on the invariant the reactor depends on: the reactor resolves
-    // its initial source by id (`defaultSource`) and fails over FORWARD-ONLY
-    // with no wrap, so the default must be element 0 or part of the chain is
-    // unreachable -- and if the default were last, failover would silently
-    // no-op. The route guarantees `config.sources[0].id === config.defaultSource`
-    // (head = active); assert it here so a future reordering fails loudly
-    // rather than silently disabling failover.
-    if (config.sources.length === 0) {
-      throw new Error(
-        `instance deploy for ${agentAddress}: config.sources is empty; at least the default source is required`,
-      );
-    }
-    if (config.sources[0]?.id !== config.defaultSource) {
-      throw new Error(
-        `instance deploy for ${agentAddress}: config.sources[0] (${JSON.stringify(config.sources[0]?.id)}) must be the default source ${JSON.stringify(config.defaultSource)}; the reactor fails over forward from the default and would otherwise skip the head`,
-      );
-    }
+    // against the tenant catalog, so the chain is pinned directly with NO
+    // operator-approval sweep: the operator-approval gate does not apply on
+    // the pre-authorized instance path (unlike the workflow deploy path,
+    // which gates every source in the chain). Only the reactor's
+    // head-is-default invariant is enforced here.
+    assertChainHeadIsDefault({
+      sources: config.sources,
+      defaultSource: config.defaultSource,
+      workflowId: workflow.id,
+    });
 
     return deploySingleStepAtHead({
       agentAddress,

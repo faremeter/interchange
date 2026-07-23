@@ -638,6 +638,195 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     });
 
+    test("single-step workflow pins the full ordered source chain", async () => {
+      const agent = makeAgent("only");
+      const workflow = makeSingleStepWorkflow(agent);
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const multiStep = createRecordingMultiStepDeploy();
+      const singleStep = createRecordingSingleStepDeploy();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+        sendMultiStepDeploy: multiStep.fn,
+        deploySingleStepAtHead: singleStep.fn,
+      });
+      // A two-element failover chain. Both elements share the agent's declared
+      // (provider, model), so the single `inference.source:anthropic:mock-model`
+      // approval covers both; the head is element 0 and equals defaultSource.
+      const chain = [
+        {
+          id: "src-head",
+          provider: "anthropic",
+          baseURL: "https://api.example/head",
+          apiKey: "secret-head",
+          model: "mock-model",
+        },
+        {
+          id: "src-tail",
+          provider: "anthropic",
+          baseURL: "https://api.example/tail",
+          apiKey: "secret-tail",
+          model: "mock-model",
+        },
+      ];
+      const config: HarnessConfig = {
+        ...HARNESS_CONFIG_BASE,
+        sources: chain,
+        defaultSource: "src-head",
+      };
+      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+
+      await orchestrator.deployWorkflow({
+        workflow,
+        deploymentId: "dep_chain",
+        deploymentDomain: "workflow.interchange",
+        config,
+        deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
+        operatorApprovals: approvals,
+      });
+
+      expect(singleStep.calls).toHaveLength(1);
+      const call = singleStep.calls[0];
+      if (call === undefined) throw new Error("missing single-step deploy");
+      const stepId = workflow.stepOrder[0];
+      if (stepId === undefined) throw new Error("missing step id");
+      // The whole ordered chain is pinned, not collapsed to a single source, so
+      // the reactor fails over forward across it -- whole-workflow failover
+      // matching the instance deploy path.
+      expect(call.sources[stepId]).toEqual(chain);
+    });
+
+    test("single-step deploy rejects a chain source the operator never approved", async () => {
+      const agent = makeAgent("only");
+      const workflow = makeSingleStepWorkflow(agent);
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const singleStep = createRecordingSingleStepDeploy();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+        deploySingleStepAtHead: singleStep.fn,
+      });
+      // The head is approved and is the default; the tail is a (provider, model)
+      // the agent never declared, so the walk never approved it. The gate must
+      // reject the whole deploy rather than silently drop the unapproved tail.
+      const config: HarnessConfig = {
+        ...HARNESS_CONFIG_BASE,
+        sources: [
+          {
+            id: "src-head",
+            provider: "anthropic",
+            baseURL: "https://api.example/head",
+            apiKey: "secret-head",
+            model: "mock-model",
+          },
+          {
+            id: "src-rogue",
+            provider: "openai",
+            baseURL: "https://api.example/rogue",
+            apiKey: "secret-rogue",
+            model: "gpt-unapproved",
+          },
+        ],
+        defaultSource: "src-head",
+      };
+      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+
+      let caught: unknown;
+      try {
+        await orchestrator.deployWorkflow({
+          workflow,
+          deploymentId: "dep_rogue",
+          deploymentDomain: "workflow.interchange",
+          config,
+          deployContent: DEPLOY_CONTENT_BASE,
+          hubPublicKey: "00".repeat(32),
+          operatorApprovals: approvals,
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(WorkflowDefinitionInvalidError);
+      if (!(caught instanceof WorkflowDefinitionInvalidError)) {
+        throw new Error("unreachable");
+      }
+      expect(caught.workflowId).toBe(workflow.id);
+      expect(caught.message).toContain("openai");
+      expect(caught.message).toContain("gpt-unapproved");
+      // Rejected before any provisioning.
+      expect(singleStep.calls).toHaveLength(0);
+      expect(launch.launches).toHaveLength(0);
+    });
+
+    test("single-step deploy rejects a chain whose head is not the default source", async () => {
+      const agent = makeAgent("only");
+      const workflow = makeSingleStepWorkflow(agent);
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const singleStep = createRecordingSingleStepDeploy();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+        deploySingleStepAtHead: singleStep.fn,
+      });
+      // Both sources are approved (same provider+model), but defaultSource
+      // points at element 1, not the head. The reactor activates element 0 and
+      // fails over forward, so an inverted chain is rejected rather than
+      // silently reordered.
+      const config: HarnessConfig = {
+        ...HARNESS_CONFIG_BASE,
+        sources: [
+          {
+            id: "src-head",
+            provider: "anthropic",
+            baseURL: "https://api.example/head",
+            apiKey: "secret-head",
+            model: "mock-model",
+          },
+          {
+            id: "src-second",
+            provider: "anthropic",
+            baseURL: "https://api.example/second",
+            apiKey: "secret-second",
+            model: "mock-model",
+          },
+        ],
+        defaultSource: "src-second",
+      };
+      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+
+      let caught: unknown;
+      try {
+        await orchestrator.deployWorkflow({
+          workflow,
+          deploymentId: "dep_inverted",
+          deploymentDomain: "workflow.interchange",
+          config,
+          deployContent: DEPLOY_CONTENT_BASE,
+          hubPublicKey: "00".repeat(32),
+          operatorApprovals: approvals,
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(WorkflowDefinitionInvalidError);
+      if (!(caught instanceof WorkflowDefinitionInvalidError)) {
+        throw new Error("unreachable");
+      }
+      expect(caught.workflowId).toBe(workflow.id);
+      expect(caught.message).toContain("src-second");
+      expect(singleStep.calls).toHaveLength(0);
+      expect(launch.launches).toHaveLength(0);
+    });
+
     test("source-pin failure carries workflow.id and names the offending provider+model", async () => {
       const workflow = makeMultiStepWorkflow();
       const planAgent = workflow.steps.plan;

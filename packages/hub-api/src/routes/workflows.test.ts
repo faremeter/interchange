@@ -26,6 +26,7 @@ import {
   deriveDeploymentAddress,
   deriveWorkflowRunRepoId,
   walkCapabilities,
+  WorkflowDefinitionInvalidError,
 } from "@intx/workflow-deploy";
 
 import { createApp } from "../app";
@@ -397,6 +398,7 @@ function createMockSidecarRouter(
 function createMockSessionService(
   deployCalls: DeployWorkflowDefinitionParams[],
   result?: DeployWorkflowDefinitionResult,
+  deployError?: Error,
 ): SessionService {
   function notImpl(name: string): never {
     throw new Error(`mock: sessionService.${name} not implemented`);
@@ -407,7 +409,7 @@ function createMockSessionService(
     deployWorkflowDefinition: (params) => {
       deployCalls.push(params);
       if (result === undefined) {
-        throw new Error("deploy failed");
+        throw deployError ?? new Error("deploy failed");
       }
       return Promise.resolve(result);
     },
@@ -501,6 +503,7 @@ type TestAppOpts = {
   runGrantsResult?: boolean;
   deployCalls?: DeployWorkflowDefinitionParams[];
   deployResult?: DeployWorkflowDefinitionResult;
+  deployError?: Error;
   workflowJson?: string | null;
   repoDirById?: Map<string, string>;
 };
@@ -525,6 +528,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     sessionService: createMockSessionService(
       opts.deployCalls ?? [],
       opts.deployResult,
+      opts.deployError,
     ),
     eventCollectors: createMockEventCollectors(),
     assetService: createMockAssetService(
@@ -694,6 +698,41 @@ describe("POST /workflows/instances", () => {
     );
     expect(res.status).toBe(502);
     expect(await errorCode(res)).toBe("sidecar_unavailable");
+  });
+
+  test("reports an invalid single-step source chain as 409 invalid_workflow", async () => {
+    // A WorkflowDefinitionInvalidError from the single-step source-chain
+    // assertion (inverted or unapproved chain) is a client error, not a
+    // sidecar-reachability failure -- the route must classify it as 409.
+    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      deployCalls,
+      deployError: new WorkflowDefinitionInvalidError(
+        "wf_x",
+        'config.sources[0] ("src-b") must be the default source "src-a"',
+      ),
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/instances`, {
+        assetId: ASSET_ID,
+        sources: [
+          {
+            id: "src",
+            provider: "anthropic",
+            baseURL: "https://api.example",
+            apiKey: "secret",
+            model: "m",
+          },
+        ],
+        defaultSource: "src",
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("invalid_workflow");
+    // Pin the assertion to the deploy-catch branch: the hydrate-failure path
+    // also yields 409 invalid_workflow but never reaches the deploy call.
+    expect(deployCalls).toHaveLength(1);
   });
 
   test("reports a missing post-deploy projection row as 500, not 502", async () => {
