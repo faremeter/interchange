@@ -337,6 +337,13 @@
       "when": 1784837465838,
       "tag": "0047_create_workflow_definition",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1784843439588,
+      "tag": "0048_workflow_definition_origin_agent_id",
+      "breakpoints": true
     }
   ]
 }

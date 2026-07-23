@@ -29,6 +29,8 @@ const PREFIXES = {
   deployment: "dep_",
   approval: "apr_",
   signal: "sig_",
+  workflowDefinition: "wfd_",
+  workflowDefinitionVersion: "wdv_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;

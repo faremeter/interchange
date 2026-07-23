@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_definition" ADD COLUMN "origin_agent_id" text;--> statement-breakpoint
+CREATE INDEX "workflow_definition_origin_agent_idx" ON "workflow_definition" USING btree ("origin_agent_id");

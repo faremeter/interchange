@@ -42,6 +42,13 @@ export const workflowDefinition = pgTable(
     assetId: text("asset_id").references(() => asset.id, {
       onDelete: "restrict",
     }),
+    // Transient backfill scaffolding: the `agent.id` an agent-origin definition
+    // was materialized from, so the grant re-key and the definition-level FK
+    // re-anchors can join agent-keyed rows to their new definition. Null for
+    // workflow-origin definitions (their `asset_id` is the back-reference).
+    // A plain text column, not an FK, to avoid coupling to the `agent` table's
+    // lifecycle during the migration; dropped when the agent table is dropped.
+    originAgentId: text("origin_agent_id"),
     name: text("name").notNull(),
     description: text("description"),
     // Grant requirements manifest, resolved at launch into materialized grants.
@@ -59,6 +66,9 @@ export const workflowDefinition = pgTable(
   (t) => [
     index("workflow_definition_tenant_idx").on(t.tenantId, t.createdAt),
     uniqueIndex("workflow_definition_asset_idx").on(t.assetId),
+    // Supports the backfill/re-key joins from agent-keyed rows; dropped with
+    // the column when the agent table is retired.
+    index("workflow_definition_origin_agent_idx").on(t.originAgentId),
   ],
 );
 
