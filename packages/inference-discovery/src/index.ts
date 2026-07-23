@@ -4,6 +4,7 @@ export type {
   CapturedResponse,
   IterateCaptureStepsOpts,
 } from "./plugin";
+export { resolveTurn1Response, type Turn1Reconstructor } from "./plugin";
 export { runCapture, type FetchLike, type RunCaptureOpts } from "./runner";
 export {
   writeCapture,

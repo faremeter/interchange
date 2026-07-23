@@ -11,6 +11,27 @@ export interface CapturedResponse {
   bytes: Uint8Array | null;
 }
 
+export type Turn1Reconstructor = (bytes: Uint8Array) => unknown;
+
+// Resolves turn-1's assistant response for a multi-turn capture. A non-streaming
+// turn-1 arrives as a parsed JSON body; a streaming turn-1 arrives as SSE bytes
+// that the provider reconstructs into the response shape its turn-2 builder
+// expects. Enforces CapturedResponse's parsed-XOR-bytes invariant: exactly one
+// of parsed/bytes is non-null, so a response carrying neither is malformed and
+// throws.
+export function resolveTurn1Response(
+  turn1: CapturedResponse,
+  reconstruct: Turn1Reconstructor,
+): unknown {
+  if (turn1.parsed !== null) return turn1.parsed;
+  if (turn1.bytes === null) {
+    throw new Error(
+      "resolveTurn1Response: CapturedResponse had neither a parsed body nor SSE bytes (violates the parsed-XOR-bytes invariant)",
+    );
+  }
+  return reconstruct(turn1.bytes);
+}
+
 export interface IterateCaptureStepsOpts {
   model: string;
   capability: Capability;

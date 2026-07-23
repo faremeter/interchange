@@ -5,11 +5,12 @@ import {
   type CapabilityIntent,
   type MediaRef,
 } from "@intx/inference-discovery/catalog";
-import type {
-  CaptureStep,
-  CapturedResponse,
-  IterateCaptureStepsOpts,
-  ProviderPlugin,
+import {
+  resolveTurn1Response,
+  type CaptureStep,
+  type CapturedResponse,
+  type IterateCaptureStepsOpts,
+  type ProviderPlugin,
 } from "@intx/inference-discovery";
 import { buildAuthHeaders } from "./auth";
 import { buildEndpointURL } from "./endpoint";
@@ -202,19 +203,6 @@ function deriveToolFollowUp(intent: CapabilityIntent): {
   return { toolName: tool.name, content: "{}" };
 }
 
-// Resolves turn-1's assistant response for the multi-turn builder. A
-// non-streaming turn-1 arrives as parsed JSON; a streaming turn-1 arrives as
-// SSE bytes and is reconstructed into the same response shape.
-function turn1AssistantResponse(turn1: CapturedResponse): unknown {
-  if (turn1.parsed !== null) return turn1.parsed;
-  if (turn1.bytes === null) {
-    throw new Error(
-      "google-genai multi-turn: turn-1 had neither a parsed body nor SSE bytes",
-    );
-  }
-  return reconstructResponseFromSSE(turn1.bytes);
-}
-
 function buildMultiTurnTurn2Body(opts: {
   capability: Capability;
   intent: CapabilityIntent;
@@ -311,7 +299,10 @@ export function* iterateCaptureSteps(
       capability,
       intent,
       turn1Body,
-      turn1Response: turn1AssistantResponse(turn1Response),
+      turn1Response: resolveTurn1Response(
+        turn1Response,
+        reconstructResponseFromSSE,
+      ),
     });
     yield {
       kind: "json",

@@ -4,11 +4,13 @@ import {
   type Capability,
   type CapabilityIntent,
 } from "@intx/inference-discovery/catalog";
-import type {
-  CaptureStep,
-  CapturedResponse,
-  IterateCaptureStepsOpts,
-  ProviderPlugin,
+import {
+  resolveTurn1Response,
+  type CaptureStep,
+  type CapturedResponse,
+  type IterateCaptureStepsOpts,
+  type ProviderPlugin,
+  type Turn1Reconstructor,
 } from "@intx/inference-discovery";
 import { buildAuthHeaders } from "./auth";
 import {
@@ -198,21 +200,14 @@ function makeJsonStep(opts: {
   });
 }
 
-// Reconstructs the assistant content blocks from turn-1's CapturedResponse.
-// For JSON turn-1, that is the parsed message body. For SSE turn-1, the
-// runner returns bytes and we parse them through the SSE event stream.
-// Both paths surface the blocks in the shape buildFunctionCallingTurn2Body
-// and buildRedactedThinkingTurn2Body expect.
-function turn1AssistantResponse(turn1: CapturedResponse): unknown {
-  if (turn1.parsed !== null) return turn1.parsed;
-  if (turn1.bytes === null) {
-    throw new Error(
-      "anthropic multi-turn: turn-1 CapturedResponse had neither parsed body nor SSE bytes",
-    );
-  }
-  const blocks = extractContentBlocksFromSSE(turn1.bytes);
-  return { content: blocks };
-}
+// Reconstructs the assistant response from turn-1's SSE bytes into the shape
+// buildFunctionCallingTurn2Body and buildRedactedThinkingTurn2Body expect:
+// the content blocks wrapped as { content: blocks }. The parsed/bytes/throw
+// dispatch lives in the shared resolveTurn1Response; this callback owns only
+// Anthropic's wire shape.
+const reconstructTurn1Blocks: Turn1Reconstructor = (bytes) => ({
+  content: extractContentBlocksFromSSE(bytes),
+});
 
 export function* iterateCaptureSteps(
   opts: IterateCaptureStepsOpts,
@@ -249,7 +244,10 @@ export function* iterateCaptureSteps(
       capability,
       intent,
       turn1Body,
-      turn1Response: turn1AssistantResponse(turn1Response),
+      turn1Response: resolveTurn1Response(
+        turn1Response,
+        reconstructTurn1Blocks,
+      ),
     });
     yield makeJsonStep({
       capability,
@@ -275,7 +273,10 @@ export function* iterateCaptureSteps(
       model,
       intent,
       turn1Body,
-      turn1Response: turn1AssistantResponse(turn1Response),
+      turn1Response: resolveTurn1Response(
+        turn1Response,
+        reconstructTurn1Blocks,
+      ),
     });
     yield makeJsonStep({
       capability,
