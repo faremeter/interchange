@@ -6,6 +6,7 @@ export * from "./roles";
 export * from "./grants";
 export * from "./signals";
 export * from "./agents";
+export * from "./workflows";
 export * from "./attachments";
 export * from "./sessions";
 export * from "./approvals";

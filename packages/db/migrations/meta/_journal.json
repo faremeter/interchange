@@ -330,6 +330,13 @@
       "when": 1784685004809,
       "tag": "0046_approval_signal_correlation_run_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1784837465838,
+      "tag": "0047_create_workflow_definition",
+      "breakpoints": true
     }
   ]
 }

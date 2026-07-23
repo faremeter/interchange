@@ -11,6 +11,8 @@ import {
   principalKinds,
   principalStatuses,
   signalKinds,
+  workflowDefinitionStatuses,
+  workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
@@ -33,6 +35,8 @@ import type {
   transaction,
   turnPart,
   wallet,
+  workflowDefinition,
+  workflowDefinitionVersion,
   workflowRun,
 } from "./schema";
 
@@ -62,6 +66,13 @@ const workflowRunStatuses = [
   "cancelled",
 ] as const;
 const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
+
+const WorkflowDefinitionStatusValidator = type.enumerated(
+  ...workflowDefinitionStatuses,
+);
+const WorkflowDefinitionVersionStatusValidator = type.enumerated(
+  ...workflowDefinitionVersionStatuses,
+);
 
 const PrincipalKindValidator = type.enumerated(...principalKinds);
 const PrincipalStatusValidator = type.enumerated(...principalStatuses);
@@ -138,6 +149,28 @@ export function parseAgentVersionRow(row: typeof agentVersion.$inferSelect) {
   return {
     ...row,
     status: AgentVersionStatusValidator.assert(row.status),
+  };
+}
+
+export function parseWorkflowDefinitionRow(
+  row: typeof workflowDefinition.$inferSelect,
+) {
+  return {
+    ...row,
+    status: WorkflowDefinitionStatusValidator.assert(row.status),
+    grantRequirements:
+      row.grantRequirements !== null
+        ? GrantRequirement.array().assert(row.grantRequirements)
+        : null,
+  };
+}
+
+export function parseWorkflowDefinitionVersionRow(
+  row: typeof workflowDefinitionVersion.$inferSelect,
+) {
+  return {
+    ...row,
+    status: WorkflowDefinitionVersionStatusValidator.assert(row.status),
   };
 }
 
