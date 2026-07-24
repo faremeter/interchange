@@ -50,20 +50,18 @@ export function createHubSessionLookups(
 
   return {
     async lookupPublicKey(agentAddress) {
-      // Route by address space, not a blind two-table fallback: a
-      // workflow-derived address's key lives on its workflow_deployment
-      // row, a launched agent's on its agent_instance row, and the two
-      // spaces are disjoint. Routing (rather than falling back) means a
-      // launched agent that is missing its instance row returns null and
-      // fails its challenge visibly, instead of silently resolving against
-      // the wrong table.
+      // Route by address space. A workflow-derived address's key lives on
+      // its workflow_deployment row; a plain `ins_<hex>` address is backed by
+      // either a launched agent_instance or a folded workflow_run -- the two
+      // share that address space under the fold -- and `resolveRoutableAddress`
+      // resolves both together. A missing endpoint (or a null key) returns
+      // null so the reconnect challenge fails closed and the address stays
+      // unrouted rather than routing without ownership proof.
       if (isWorkflowDerivedAddress(agentAddress)) {
         // Filter to a live ("deployed") deployment so a torn-down
         // deployment's key can no longer satisfy a challenge. A null
         // publicKey (deployed but not yet acked, or pre-migration) or an
-        // absent row returns null -- the challenge fails closed and the
-        // address stays unrouted rather than routing without ownership
-        // proof.
+        // absent row returns null.
         const row = await db
           .select({ publicKey: workflowDeployment.publicKey })
           .from(workflowDeployment)
@@ -77,18 +75,8 @@ export function createHubSessionLookups(
           .then((rows) => rows[0]);
         return row?.publicKey ?? null;
       }
-      const row = await db
-        .select({ publicKey: agentInstance.publicKey })
-        .from(agentInstance)
-        .where(
-          and(
-            eq(agentInstance.address, agentAddress),
-            isNull(agentInstance.endedAt),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0]);
-      return row?.publicKey ?? null;
+      const endpoint = await resolveRoutableAddress(db, agentAddress);
+      return endpoint?.publicKey ?? null;
     },
 
     async lookupDeployRef(agentAddress) {
@@ -97,56 +85,67 @@ export function createHubSessionLookups(
     },
 
     async persistMail({ senderAddress, recipients, raw }) {
-      const senderInstance = await requireInstance(db, senderAddress);
-      if (!senderInstance.sessionId) {
+      // The sender and recipients are plain addresses backed by either a
+      // launched agent_instance or a folded workflow_run; resolve each through
+      // the fold-aware resolver. A mail record's `instanceId` is the agent
+      // instance's id, or null when the endpoint is a folded run (which is not
+      // an instance) -- the record still anchors on its session either way.
+      const sender = await resolveRoutableAddress(db, senderAddress);
+      if (sender === undefined) {
         throw new Error(
-          `Instance ${senderInstance.id} has no session for address "${senderAddress}"`,
+          `No active endpoint found for sender address "${senderAddress}"`,
+        );
+      }
+      if (sender.sessionId === null) {
+        throw new Error(
+          `Endpoint ${sender.id} has no session for address "${senderAddress}"`,
         );
       }
       const createdAt = new Date();
+      const senderInstanceId = sender.kind === "instance" ? sender.id : null;
 
       // Outbound record on the sender's session.
       const outboundId = generateId("sessionMail");
       const outboundRecord = {
         id: outboundId,
-        sessionId: senderInstance.sessionId,
-        instanceId: senderInstance.id,
-        tenantId: senderInstance.tenantId,
+        sessionId: sender.sessionId,
+        instanceId: senderInstanceId,
+        tenantId: sender.tenantId,
         direction: "outbound" as const,
         status: "delivered" as const,
         raw,
         createdAt,
       };
 
-      // Inbound records for each recipient that has an active agent
-      // instance. Recipients that are not agent instances (e.g. human
-      // user addresses) are skipped.
+      // Inbound records for each recipient that is a live endpoint.
+      // Recipients that are not (e.g. human user addresses) are skipped.
       const recipientResults = await Promise.all(
         recipients.map(async (addr) => {
-          const row = await findInstance(db, addr);
-          if (row === undefined) {
+          const endpoint = await resolveRoutableAddress(db, addr);
+          if (endpoint === undefined) {
             return null;
           }
-          if (row.sessionId === null) {
-            logger.warn`Active instance ${row.id} for "${addr}" has no session; skipping inbound record`;
+          if (endpoint.sessionId === null) {
+            logger.warn`Active endpoint ${endpoint.id} for "${addr}" has no session; skipping inbound record`;
             return null;
           }
-          return { addr, instance: row, sessionId: row.sessionId };
+          return { addr, endpoint, sessionId: endpoint.sessionId };
         }),
       );
-      const recipientInstances = recipientResults.filter(
+      const recipientEndpoints = recipientResults.filter(
         (r): r is NonNullable<typeof r> => r !== null,
       );
 
-      const inboundEntries = recipientInstances.map(
-        ({ addr, instance, sessionId }) => {
+      const inboundEntries = recipientEndpoints.map(
+        ({ addr, endpoint, sessionId }) => {
           const id = generateId("sessionMail");
+          const instanceId = endpoint.kind === "instance" ? endpoint.id : null;
           return {
             record: {
               id,
               sessionId,
-              instanceId: instance.id,
-              tenantId: instance.tenantId,
+              instanceId,
+              tenantId: endpoint.tenantId,
               direction: "inbound" as const,
               status: "delivered" as const,
               raw,
@@ -155,7 +154,7 @@ export function createHubSessionLookups(
             result: {
               id,
               direction: "inbound" as const,
-              instanceId: instance.id,
+              instanceId,
               address: addr,
               createdAt,
             },
@@ -171,8 +170,8 @@ export function createHubSessionLookups(
         {
           id: outboundId,
           direction: "outbound" as const,
-          instanceId: senderInstance.id,
-          address: senderInstance.address,
+          instanceId: senderInstanceId,
+          address: sender.address,
           createdAt,
         },
         ...inboundEntries.map((e) => e.result),
@@ -508,10 +507,10 @@ export interface RoutableEndpoint {
   readonly address: string;
   readonly publicKey: string | null;
   /**
-   * The active session backing this endpoint. An instance carries its own
-   * `sessionId`; a folded run has no session column, so this is the active
-   * `agent_session` keyed by the run's principal. Transitional -- it retires
-   * when mail record-keeping moves off `agent_session`.
+   * The live session backing this endpoint. An instance carries its own
+   * `sessionId`; a folded run has no session column, so this is the run's
+   * not-yet-ended `agent_session`, keyed by the run's principal. Transitional
+   * -- it retires when mail record-keeping moves off `agent_session`.
    */
   readonly sessionId: string | null;
 }
@@ -591,9 +590,10 @@ export async function resolveRoutableAddress(
 }
 
 /**
- * A folded run has no session column; its active session is the `agent_session`
- * keyed by the run's principal. Returns null when the run has no principal or no
- * active session. Transitional, alongside `RoutableEndpoint.sessionId`.
+ * A folded run has no session column; its live session is the not-yet-ended
+ * `agent_session` keyed by the run's principal. Returns null when the run has no
+ * principal or no live session. Transitional, alongside
+ * `RoutableEndpoint.sessionId`.
  */
 async function resolveRunSessionId(
   db: DB["db"],

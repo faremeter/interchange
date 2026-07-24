@@ -6,6 +6,8 @@ import type { InferenceEvent } from "@intx/types/runtime";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { RepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
+import { agentInstance } from "@intx/db/schema";
+
 import { createHubSessionOrchestrator } from "./hub-session-orchestrator";
 import {
   createSidecarEmitter,
@@ -102,15 +104,25 @@ function createMockDB(opts: MockDBOpts) {
     },
     select() {
       return {
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([]),
-            orderBy: () => ({ limit: () => Promise.resolve([]) }),
-          }),
-          innerJoin: () => ({
-            where: () => ({ limit: () => Promise.resolve([]) }),
-          }),
-        }),
+        from: (t: unknown) => {
+          // `resolveRoutableAddress` selects the routing endpoint from
+          // `agent_instance` and `workflow_run`; the seeded instance (if any)
+          // backs the instance query, and the run query is always empty in
+          // these instance-only orchestrator tests.
+          const rows =
+            t === agentInstance && opts.instance !== undefined
+              ? [opts.instance]
+              : [];
+          return {
+            where: () => ({
+              limit: () => Promise.resolve(rows),
+              orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+            }),
+            innerJoin: () => ({
+              where: () => ({ limit: () => Promise.resolve([]) }),
+            }),
+          };
+        },
       };
     },
   } as unknown as DB["db"];
@@ -362,14 +374,14 @@ describe("createHubSessionOrchestrator", () => {
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
     });
 
-    test("throws when a launched-agent instance address has no row", async () => {
+    test("throws when a plain address resolves to no endpoint", async () => {
       harness = setup({ instance: undefined });
       await expect(
         harness.events.emitAndAwait("agent.deploy.ack", {
           agentAddress: AGENT_ADDRESS,
           publicKey: "deadbeef",
         }),
-      ).rejects.toThrow(/No active instance found for deploy ack/);
+      ).rejects.toThrow(/No active endpoint found for deploy ack/);
     });
   });
 

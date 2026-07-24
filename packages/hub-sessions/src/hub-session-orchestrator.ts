@@ -13,7 +13,11 @@
 import { eq } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
-import { agentInstance, workflowDeployment } from "@intx/db/schema";
+import {
+  agentInstance,
+  workflowDeployment,
+  workflowRun,
+} from "@intx/db/schema";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
@@ -23,9 +27,9 @@ import type { AgentRepoStore } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SidecarEventEmitter } from "./ws/sidecar-events";
 import {
-  findInstance,
   parseAgentId,
   requireInstance,
+  resolveRoutableAddress,
 } from "./hub-session-lookups";
 
 const log = getLogger(["hub", "orchestrator"]);
@@ -116,18 +120,26 @@ export function createHubSessionOrchestrator(
           .where(eq(workflowDeployment.address, agentAddress));
         return;
       }
-      // A launched agent has an agent_instance row; a missing one is a bug
-      // to surface, not to drop silently.
-      const instance = await findInstance(db, agentAddress);
-      if (instance === undefined) {
+      // A plain address is backed by either a launched agent_instance or a
+      // folded workflow_run; persist the acked key on whichever the address
+      // resolves to. A missing endpoint is a bug to surface, not to drop.
+      const endpoint = await resolveRoutableAddress(db, agentAddress);
+      if (endpoint === undefined) {
         throw new Error(
-          `No active instance found for deploy ack on address "${agentAddress}"`,
+          `No active endpoint found for deploy ack on address "${agentAddress}"`,
         );
       }
-      await db
-        .update(agentInstance)
-        .set({ publicKey })
-        .where(eq(agentInstance.id, instance.id));
+      if (endpoint.kind === "instance") {
+        await db
+          .update(agentInstance)
+          .set({ publicKey })
+          .where(eq(agentInstance.id, endpoint.id));
+      } else {
+        await db
+          .update(workflowRun)
+          .set({ publicKey })
+          .where(eq(workflowRun.id, endpoint.id));
+      }
     }),
   );
 

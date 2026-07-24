@@ -138,6 +138,71 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeUndefined();
     });
 
+    test("skips a terminated instance (endedAt set)", async () => {
+      await seedBase();
+      await h.db.insert(agentInstance).values({
+        id: "ins_gone",
+        agentId: "agt_1",
+        tenantId: "tnt_root",
+        principalId: "prn_creator",
+        address: "ins_gone@root.example",
+        status: "stopped",
+        endedAt: new Date(0),
+      });
+      expect(
+        await resolveRoutableAddress(h.db, "ins_gone@root.example"),
+      ).toBeUndefined();
+    });
+
+    test("resolves a run with no principal to a null session", async () => {
+      await seedBase();
+      await h.db.insert(workflowRun).values({
+        id: "run_noprincipal",
+        tenantId: "tnt_root",
+        deploymentId: null,
+        principalId: null,
+        address: "ins_noprincipal@root.example",
+        status: "running",
+      });
+      const endpoint = await resolveRoutableAddress(
+        h.db,
+        "ins_noprincipal@root.example",
+      );
+      expect(endpoint?.kind).toBe("run");
+      expect(endpoint?.sessionId).toBeNull();
+    });
+
+    test("resolves a run whose principal has no live session to a null session", async () => {
+      await seedBase();
+      // A principal with only an ended session leaves the run session-less.
+      await seedPrincipal(h.db, {
+        id: "prn_sessionless",
+        tenantId: "tnt_root",
+      });
+      await h.db.insert(agentSession).values({
+        id: "ses_ended",
+        tenantId: "tnt_root",
+        agentId: "agt_1",
+        principalId: "prn_sessionless",
+        status: "ended",
+        endedAt: new Date(0),
+      });
+      await h.db.insert(workflowRun).values({
+        id: "run_sessionless",
+        tenantId: "tnt_root",
+        deploymentId: null,
+        principalId: "prn_sessionless",
+        address: "ins_sessionless@root.example",
+        status: "running",
+      });
+      const endpoint = await resolveRoutableAddress(
+        h.db,
+        "ins_sessionless@root.example",
+      );
+      expect(endpoint?.kind).toBe("run");
+      expect(endpoint?.sessionId).toBeNull();
+    });
+
     test("throws when an address matches both an instance and a run", async () => {
       await seedBase();
       const address = "ins_dup@root.example";
