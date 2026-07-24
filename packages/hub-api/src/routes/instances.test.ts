@@ -1303,9 +1303,20 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     };
   }
 
-  function createCapturingEventCollectors(): EventCollectorRegistry {
+  type CollectorCreate = {
+    addr: string;
+    tenantId: string;
+    sessionId: string;
+    instanceId: string;
+  };
+
+  function createCapturingEventCollectors(
+    creates: CollectorCreate[] = [],
+  ): EventCollectorRegistry {
     return {
-      create: () => undefined,
+      create: (addr, tenantId, sessionId, instanceId) => {
+        creates.push({ addr, tenantId, sessionId, instanceId });
+      },
       dispatch: notImplemented("eventCollectors.dispatch"),
       abandon: () => undefined,
       has: () => false,
@@ -1386,6 +1397,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 
   test("a folded agent launches as a workflow_run keyed by the run principal", async () => {
     const inserts: TableInsert[] = [];
+    const collectorCreates: CollectorCreate[] = [];
 
     const db = createLaunchMockDB({
       agent: makeAgentDef(),
@@ -1404,7 +1416,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       grantStore: createLaunchGrantStore(),
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createCapturingSessionService(),
-      eventCollectors: createCapturingEventCollectors(),
+      eventCollectors: createCapturingEventCollectors(collectorCreates),
       assetService: null,
       repoStore: null,
       maxTarballBytes: 10_000_000,
@@ -1439,6 +1451,11 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     expect(sessionInserts).toHaveLength(1);
     const sessionRow = sessionInserts[0]?.rows[0];
     expect(sessionRow?.["principalId"]).toBe(runRow?.["principalId"]);
+
+    // The run opens an inference-turn collector under its own id, just as an
+    // instance launch does -- the turn FK no longer forbids a run id.
+    expect(collectorCreates).toHaveLength(1);
+    expect(runRow?.["id"]).toBe(collectorCreates[0]?.instanceId);
   });
 
   test("agent-state grant insert is ordered after the agent_instance insert", async () => {

@@ -181,11 +181,12 @@ export function createHubSessionOrchestrator(
           );
       }
 
-      // Restore the inference-turn collector only for an instance. A folded
-      // run cannot own one yet: the collector writes inference_turn.instanceId,
-      // a NOT NULL FK to agent_instance.id that a run id would violate. Restore
-      // this for runs once that FK is relaxed and the run turns surface lands.
-      if (endpoint.kind === "instance" && !eventCollectors.has(agentAddress)) {
+      // Restore the inference-turn collector for either kind. It records turns
+      // under endpoint.id -- an instance id or a folded run id from the shared
+      // id space -- which inference_turn.instanceId stores without a foreign
+      // key. The status flip above stays instance-only, but a run collects
+      // turns just as an instance does.
+      if (!eventCollectors.has(agentAddress)) {
         eventCollectors.create(
           agentAddress,
           endpoint.tenantId,

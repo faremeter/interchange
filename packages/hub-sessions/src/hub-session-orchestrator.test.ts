@@ -498,7 +498,7 @@ describe("createHubSessionOrchestrator", () => {
       ).rejects.toThrow(/No active endpoint found for reconnect/);
     });
 
-    test("a folded run restores routing without a status write or collector", async () => {
+    test("a folded run restores its collector without a status write", async () => {
       harness = setup({
         instance: undefined,
         run: makeRun(),
@@ -509,13 +509,16 @@ describe("createHubSessionOrchestrator", () => {
         agentAddress: AGENT_ADDRESS,
       });
 
-      // A run is born running and cannot own an inference-turn collector yet
-      // (the inference_turn FK to agent_instance), so reconnect touches
-      // neither its status nor a collector -- routing is restored upstream.
+      // A run is born running, so reconnect writes no status (the flip is
+      // instance-only). Its inference-turn collector is restored just like an
+      // instance's, keyed by the run's session.
       expect(harness.updates).toHaveLength(0);
-      expect(
-        harness.collectors.calls.find((c) => c.kind === "create"),
-      ).toBeUndefined();
+      const created = harness.collectors.calls.find((c) => c.kind === "create");
+      expect(created).toBeDefined();
+      if (created?.kind === "create") {
+        expect(created.addr).toBe(AGENT_ADDRESS);
+        expect(created.sessionId).toBe(RUN_SESSION_ID);
+      }
     });
 
     test("does not resurrect a leaked terminal run on reconnect", async () => {
