@@ -19,9 +19,13 @@ export const inferenceTurn = pgTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => agentSession.id, { onDelete: "cascade" }),
-    instanceId: text("instance_id")
-      .notNull()
-      .references(() => agentInstance.id, { onDelete: "cascade" }),
+    // The endpoint that produced this turn: a legacy agent_instance id or a
+    // folded workflow_run id, drawn from one shared id space. This is a
+    // polymorphic reference across two tables, so it carries no foreign key
+    // (mirroring workflow_definition.originAgentId); the collector-creation
+    // layer owns the invariant that the id names a live endpoint. It stays
+    // NOT NULL -- a turn always names its producer.
+    instanceId: text("instance_id").notNull(),
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
