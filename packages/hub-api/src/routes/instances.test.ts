@@ -121,6 +121,23 @@ function notImplemented(path: string) {
   };
 }
 
+// Recovers the SQL table name a mock's `.from(table)` / `.update(table)` was
+// called with, so a mock db can branch on which table a query targets. Drizzle
+// stores the name under a documented symbol; there is no plain `.name`.
+function drizzleTableName(table: unknown): string {
+  if (table && typeof table === "object") {
+    const sym = Object.getOwnPropertySymbols(table).find(
+      (s) => s.description === "drizzle:Name",
+    );
+    if (sym) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle stores the table name keyed by a documented symbol
+      const value = (table as Record<symbol, unknown>)[sym];
+      if (typeof value === "string") return value;
+    }
+  }
+  return "unknown";
+}
+
 function createMockDB(opts: MockDBOpts) {
   const sessionMailRows = opts.sessionMail ?? [];
 
@@ -1031,20 +1048,6 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 
   type TableInsert = { table: string; rows: Record<string, unknown>[] };
 
-  function drizzleTableName(table: unknown): string {
-    if (table && typeof table === "object") {
-      const sym = Object.getOwnPropertySymbols(table).find(
-        (s) => s.description === "drizzle:Name",
-      );
-      if (sym) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle stores the table name keyed by a documented symbol
-        const value = (table as Record<symbol, unknown>)[sym];
-        if (typeof value === "string") return value;
-      }
-    }
-    return "unknown";
-  }
-
   type LaunchMockOpts = {
     agent: Record<string, unknown> | undefined;
     inserts: TableInsert[];
@@ -1638,5 +1641,284 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     const instanceRow = inserts.find((i) => i.table === "agent_instance")
       ?.rows[0];
     expect(instanceRow?.["modelPreferences"]).toEqual(preferences);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /:instanceId — folded run (workflow_run) stop path
+// ---------------------------------------------------------------------------
+
+describe("DELETE /agents/instances/:instanceId (folded run)", () => {
+  type Update = { table: string; set: Record<string, unknown> };
+  type EndCall = { address: string; reason: string };
+
+  const RUN_ID = "ins_folded_run";
+  const RUN_PRINCIPAL = "prn_run";
+  const RUN_ADDRESS = `${RUN_ID}@${testTenant.domain}`;
+
+  function makeRun(overrides: Record<string, unknown> = {}) {
+    return {
+      id: RUN_ID,
+      tenantId: TENANT_ID,
+      deploymentId: null,
+      definitionId: "wfd_folded",
+      principalId: RUN_PRINCIPAL,
+      address: RUN_ADDRESS,
+      status: "running",
+      publicKey: "pk-run",
+      endedAt: null,
+      ...overrides,
+    };
+  }
+
+  // A db whose `select(workflow_run)` returns the seeded run and whose
+  // `update(...)` records the (table, set) of every write, so the test can
+  // assert the run, its principal, and its session are all flipped terminal.
+  // `agentInstance.findFirst` returns undefined: a folded stop never reaches
+  // the legacy path.
+  function createFoldedDeleteDB(opts: {
+    run: Record<string, unknown> | undefined;
+    updates: Update[];
+  }) {
+    function updateChain(table: unknown) {
+      return {
+        set: (values: Record<string, unknown>) => ({
+          where: () => {
+            opts.updates.push({
+              table: drizzleTableName(table),
+              set: values,
+            });
+            return Promise.resolve();
+          },
+        }),
+      };
+    }
+
+    // The teardown writes run inside db.transaction; the tx exposes the same
+    // capturing update as the db.
+    const txLike = { update: updateChain };
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
+    return {
+      query: {
+        // The tenant/principal middleware resolves these before the route runs.
+        tenant: {
+          findFirst: async () => testTenant,
+          findMany: notImplemented("db.query.tenant.findMany"),
+        },
+        principal: {
+          findFirst: async () => testPrincipal,
+          findMany: notImplemented("db.query.principal.findMany"),
+        },
+        agentInstance: {
+          findFirst: async () => undefined,
+          findMany: notImplemented("db.query.agentInstance.findMany"),
+        },
+      },
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve(
+                drizzleTableName(table) === "workflow_run" && opts.run
+                  ? [opts.run]
+                  : [],
+              ),
+          }),
+        }),
+      }),
+      update: updateChain,
+      transaction: async (fn: (tx: typeof txLike) => Promise<unknown>) =>
+        fn(txLike),
+    } as unknown as Parameters<typeof createApp>[0]["db"];
+  }
+
+  function createStopSessionService(calls: EndCall[]): SessionService {
+    return {
+      stageWorkflowStep: () => {
+        throw new Error("mock: stageWorkflowStep not implemented");
+      },
+      deployInstanceAtHead: () => {
+        throw new Error("mock: deployInstanceAtHead not implemented");
+      },
+      deployWorkflowDefinition: () => {
+        throw new Error("mock: deployWorkflowDefinition not implemented");
+      },
+      deploySingleStepAtHead: () => {
+        throw new Error("mock: deploySingleStepAtHead not implemented");
+      },
+      sendUserMessage: () => {
+        throw new Error("mock: sendUserMessage not implemented");
+      },
+      endSession: (address, reason) => {
+        calls.push({ address, reason });
+        return Promise.resolve();
+      },
+    };
+  }
+
+  function stopApp(
+    db: ReturnType<typeof createFoldedDeleteDB>,
+    sessionService: SessionService,
+    abandoned: string[],
+  ) {
+    return createApp({
+      getSession: createMockGetSession(USER_ID),
+      authHandler: () => new Response("", { status: 404 }),
+      db,
+      grantStore: createInMemoryGrantStore([
+        makeGrant({ resource: "instance:*", action: "manage" }),
+      ]),
+      sidecarRouter: createMockSidecarRouter(),
+      sessionService,
+      eventCollectors: {
+        create: () => undefined,
+        dispatch: notImplemented("eventCollectors.dispatch"),
+        abandon: (address) => {
+          abandoned.push(address);
+        },
+        has: () => false,
+        getStatus: () => undefined,
+        getAccumulatedText: () => undefined,
+        getCurrentTurnId: () => undefined,
+        getLastTurnId: () => undefined,
+      },
+      assetService: null,
+      repoStore: null,
+      maxTarballBytes: 10_000_000,
+    });
+  }
+
+  async function stop(app: ReturnType<typeof stopApp>) {
+    return app.request(`/api/tenants/${TENANT_ID}/agents/instances/${RUN_ID}`, {
+      method: "DELETE",
+    });
+  }
+
+  test("stopping a running folded run flips it, its principal, and its session terminal", async () => {
+    const updates: Update[] = [];
+    const endCalls: EndCall[] = [];
+    const abandoned: string[] = [];
+    const app = stopApp(
+      createFoldedDeleteDB({ run: makeRun(), updates }),
+      createStopSessionService(endCalls),
+      abandoned,
+    );
+
+    const res = await stop(app);
+
+    expect(res.status).toBe(204);
+    expect(endCalls).toEqual([
+      { address: RUN_ADDRESS, reason: "instance_stopped" },
+    ]);
+    expect(abandoned).toEqual([RUN_ADDRESS]);
+
+    const runUpdate = updates.find((u) => u.table === "workflow_run");
+    expect(runUpdate?.set).toMatchObject({ status: "cancelled" });
+    expect(runUpdate?.set["endedAt"]).toBeInstanceOf(Date);
+
+    // The run's own principal is deactivated and its transitional session,
+    // keyed by that principal, is ended.
+    const principalUpdate = updates.find((u) => u.table === "principal");
+    expect(principalUpdate?.set).toMatchObject({ status: "deactivated" });
+
+    const sessionUpdate = updates.find((u) => u.table === "agent_session");
+    expect(sessionUpdate?.set).toMatchObject({ status: "ended" });
+  });
+
+  test("stopping an already-terminal folded run is a 409 with no writes", async () => {
+    const updates: Update[] = [];
+    const endCalls: EndCall[] = [];
+    const abandoned: string[] = [];
+    const app = stopApp(
+      createFoldedDeleteDB({
+        run: makeRun({ status: "cancelled", endedAt: new Date(0) }),
+        updates,
+      }),
+      createStopSessionService(endCalls),
+      abandoned,
+    );
+
+    const res = await stop(app);
+
+    expect(res.status).toBe(409);
+    expect(endCalls).toEqual([]);
+    expect(updates).toEqual([]);
+    expect(abandoned).toEqual([]);
+  });
+
+  test("a run with no address is not an instance the stop route owns (404)", async () => {
+    const updates: Update[] = [];
+    const endCalls: EndCall[] = [];
+    const abandoned: string[] = [];
+    const app = stopApp(
+      createFoldedDeleteDB({
+        run: makeRun({ address: null }),
+        updates,
+      }),
+      createStopSessionService(endCalls),
+      abandoned,
+    );
+
+    const res = await stop(app);
+
+    expect(res.status).toBe(404);
+    expect(endCalls).toEqual([]);
+    expect(updates).toEqual([]);
+    expect(abandoned).toEqual([]);
+  });
+
+  test("a sidecar teardown failure returns 502 before any run write", async () => {
+    const updates: Update[] = [];
+    const abandoned: string[] = [];
+    // endSession rejects: the sidecar-first ordering must surface 502 and
+    // leave the run non-terminal (no writes, no abandon) so a retry re-drives.
+    const throwingService: SessionService = {
+      stageWorkflowStep: () => {
+        throw new Error("mock: stageWorkflowStep not implemented");
+      },
+      deployInstanceAtHead: () => {
+        throw new Error("mock: deployInstanceAtHead not implemented");
+      },
+      deployWorkflowDefinition: () => {
+        throw new Error("mock: deployWorkflowDefinition not implemented");
+      },
+      deploySingleStepAtHead: () => {
+        throw new Error("mock: deploySingleStepAtHead not implemented");
+      },
+      sendUserMessage: () => {
+        throw new Error("mock: sendUserMessage not implemented");
+      },
+      endSession: () => Promise.reject(new Error("sidecar down")),
+    };
+    const app = stopApp(
+      createFoldedDeleteDB({ run: makeRun(), updates }),
+      throwingService,
+      abandoned,
+    );
+
+    const res = await stop(app);
+
+    expect(res.status).toBe(502);
+    expect(updates).toEqual([]);
+    expect(abandoned).toEqual([]);
+  });
+
+  test("stopping a folded run with no principal skips the principal and session writes", async () => {
+    const updates: Update[] = [];
+    const endCalls: EndCall[] = [];
+    const abandoned: string[] = [];
+    const app = stopApp(
+      createFoldedDeleteDB({ run: makeRun({ principalId: null }), updates }),
+      createStopSessionService(endCalls),
+      abandoned,
+    );
+
+    const res = await stop(app);
+
+    expect(res.status).toBe(204);
+    // Only the run is settled; there is no own principal or session to end.
+    expect(updates.map((u) => u.table)).toEqual(["workflow_run"]);
+    expect(abandoned).toEqual([RUN_ADDRESS]);
   });
 });

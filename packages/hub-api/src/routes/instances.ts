@@ -1,4 +1,4 @@
-import { eq, and, inArray, asc } from "drizzle-orm";
+import { eq, and, inArray, asc, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
@@ -1002,6 +1002,106 @@ export function createInstanceRoutes({
     async (c) => {
       const tenantCtx = c.get("tenant");
       const instanceId = c.req.param("instanceId");
+
+      // A folded agent runs as a workflow_run under the same id; stop it there.
+      // A legacy instance falls through to the agent_instance path below.
+      const [run] = await db
+        .select()
+        .from(workflowRun)
+        .where(
+          and(
+            eq(workflowRun.id, instanceId),
+            eq(workflowRun.tenantId, tenantCtx.id),
+          ),
+        )
+        .limit(1);
+
+      if (run !== undefined) {
+        if (run.address === null) {
+          // A run with no address is a deployment-anchored native workflow
+          // run, not a folded instance; the instance stop route does not own
+          // it. Report it as absent rather than "already stopped".
+          return c.json(
+            { error: { code: "not_found", message: "Instance not found" } },
+            404,
+          );
+        }
+        if (run.endedAt !== null) {
+          return c.json(
+            {
+              error: {
+                code: "conflict",
+                message: "Instance is already stopped",
+              },
+            },
+            409,
+          );
+        }
+        try {
+          await sessionService.endSession(run.address, "instance_stopped");
+        } catch (err) {
+          return c.json(
+            {
+              error: {
+                code: "sidecar_unavailable",
+                message:
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to reach sidecar for instance teardown",
+              },
+            },
+            502,
+          );
+        }
+
+        const endedAt = new Date();
+        // Settle the run and its principal/session atomically. The terminal
+        // flip guards on `endedAt` rather than reusing the workflow-run store's
+        // markTerminal `status = 'running'` guard on purpose: a launch that
+        // leaked a folded run leaves it `failed` with a null `endedAt` so it
+        // stays routable, and this stop must still settle that non-terminal row
+        // — a `status = 'running'` guard would skip it.
+        await db.transaction(async (tx) => {
+          await tx
+            .update(workflowRun)
+            .set({ status: "cancelled", endedAt })
+            .where(
+              and(eq(workflowRun.id, instanceId), isNull(workflowRun.endedAt)),
+            );
+
+          if (run.principalId !== null) {
+            // Deactivate the run's principal (refId guard scopes it to this
+            // run), then end its transitional session, which is keyed by that
+            // principal.
+            await tx
+              .update(principalTable)
+              .set({ status: "deactivated", updatedAt: endedAt })
+              .where(
+                and(
+                  eq(principalTable.id, run.principalId),
+                  eq(principalTable.refId, instanceId),
+                ),
+              );
+            await tx
+              .update(agentSession)
+              .set({ status: "ended", endedAt, updatedAt: endedAt })
+              .where(
+                and(
+                  eq(agentSession.principalId, run.principalId),
+                  isNull(agentSession.endedAt),
+                ),
+              );
+          }
+        });
+
+        eventCollectors.abandon(run.address);
+        instanceKeyCache.delete(instanceId);
+        sidecarRouter.dispatchAgentEvent(run.address, {
+          type: "session.ended",
+        });
+
+        return c.body(null, 204);
+      }
 
       const row = await db.query.agentInstance.findFirst({
         where: and(
