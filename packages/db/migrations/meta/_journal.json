@@ -351,6 +351,13 @@
       "when": 1784874344480,
       "tag": "0049_curly_omega_flight",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1784900369564,
+      "tag": "0050_late_crystal",
+      "breakpoints": true
     }
   ]
 }

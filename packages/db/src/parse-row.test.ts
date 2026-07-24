@@ -8,12 +8,14 @@ import {
   parseModelOfferingRow,
   parseModelProviderRow,
   parsePrincipalRow,
+  parseWorkflowRunRow,
 } from "./parse-row";
 import type {
   gitToken,
   modelOffering,
   modelProvider,
   principal,
+  workflowRun,
 } from "./schema";
 
 type GitTokenRow = typeof gitToken.$inferSelect;
@@ -241,6 +243,58 @@ describe("parseModelOfferingRow", () => {
   test("rejects a scalar quirks value", () => {
     expect(() =>
       parseModelOfferingRow(makeOfferingRow({ quirks: "not-an-object" })),
+    ).toThrow();
+  });
+});
+
+type WorkflowRunRow = typeof workflowRun.$inferSelect;
+
+function makeWorkflowRunRow(
+  overrides: Partial<WorkflowRunRow> = {},
+): WorkflowRunRow {
+  const now = new Date();
+  return {
+    id: "run_0123456789abcdef",
+    definitionId: null,
+    deploymentId: "dep_0123456789abcdef",
+    tenantId: "tnt_acme",
+    principalId: null,
+    status: "running",
+    address: null,
+    publicKey: null,
+    sidecarId: null,
+    kernelId: null,
+    modelPreferences: null,
+    createdAt: now,
+    endedAt: null,
+    ...overrides,
+  };
+}
+
+describe("parseWorkflowRunRow", () => {
+  test("passes a null modelPreferences through as null", () => {
+    const parsed = parseWorkflowRunRow(makeWorkflowRunRow());
+    expect(parsed.modelPreferences).toBeNull();
+  });
+
+  test("validates a well-formed modelPreferences", () => {
+    const modelPreferences = [
+      {
+        model: "opus",
+        providers: { mode: "prefer" as const, order: ["anthropic"] },
+      },
+    ];
+    const parsed = parseWorkflowRunRow(
+      makeWorkflowRunRow({ modelPreferences }),
+    );
+    expect(parsed.modelPreferences).toEqual(modelPreferences);
+  });
+
+  test("rejects a modelPreferences entry missing its providers", () => {
+    expect(() =>
+      parseWorkflowRunRow(
+        makeWorkflowRunRow({ modelPreferences: [{ model: "opus" }] }),
+      ),
     ).toThrow();
   });
 });

@@ -6,6 +6,7 @@ import {
   GrantRequirement,
   grantEffects,
   grantOrigins,
+  InvokerModelPreferences,
   ModelProviderPlugin,
   ModelRequirements,
   principalKinds,
@@ -215,6 +216,10 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
   return {
     ...row,
     status: WorkflowRunStatusValidator.assert(row.status),
+    modelPreferences:
+      row.modelPreferences !== null
+        ? InvokerModelPreferences.assert(row.modelPreferences)
+        : null,
   };
 }
 
