@@ -1053,6 +1053,10 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     model?: Record<string, unknown> | undefined;
     modelProvider?: Record<string, unknown> | undefined;
     modelOffering?: Record<string, unknown> | undefined;
+    // The `workflow_definition` (with this agent's `origin_agent_id`) that the
+    // launch route's fold-detection query returns, or undefined for an unfolded
+    // agent that launches as an `agent_instance`.
+    foldedDefinition?: { id: string } | undefined;
   };
 
   function createLaunchMockDB(opts: LaunchMockOpts) {
@@ -1150,6 +1154,19 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
             opts.modelOffering ? [opts.modelOffering] : [],
         },
       },
+      // The route's fold-detection query: `.from(workflow_definition)
+      // .where(origin_agent_id = agent).limit(1)`. Returns the folded
+      // definition's id when the agent is folded, else an empty set.
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve(
+                opts.foldedDefinition ? [{ id: opts.foldedDefinition.id }] : [],
+              ),
+          }),
+        }),
+      }),
       transaction: async (fn: (tx: typeof txLike) => Promise<unknown>) =>
         fn(txLike),
       insert: insertChain,
@@ -1362,6 +1379,63 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       );
     }
     expect(stateGrant?.["resource"]).toBe(`agent-state:${instanceId}`);
+  });
+
+  test("a folded agent launches as a workflow_run keyed by the run principal", async () => {
+    const inserts: TableInsert[] = [];
+
+    const db = createLaunchMockDB({
+      agent: makeAgentDef(),
+      credential: makeCredential(),
+      model: makeCatalogModel(),
+      modelProvider: makeCatalogProvider(),
+      modelOffering: makeCatalogOffering(),
+      inserts,
+      foldedDefinition: { id: "wfd_folded_1" },
+    });
+
+    const app = createApp({
+      getSession: createMockGetSession(USER_ID),
+      authHandler: () => new Response("", { status: 404 }),
+      db,
+      grantStore: createLaunchGrantStore(),
+      sidecarRouter: createMockSidecarRouter(),
+      sessionService: createCapturingSessionService(),
+      eventCollectors: createCapturingEventCollectors(),
+      assetService: null,
+      repoStore: null,
+      maxTarballBytes: 10_000_000,
+    });
+
+    const res = await app.request(
+      `/api/tenants/${TENANT_ID}/agents/instances`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+      },
+    );
+
+    expect(res.status).toBe(201);
+
+    // A folded agent launches as a workflow_run, never an agent_instance.
+    expect(inserts.filter((i) => i.table === "agent_instance")).toHaveLength(0);
+    const runInserts = inserts.filter((i) => i.table === "workflow_run");
+    expect(runInserts).toHaveLength(1);
+    const runRow = runInserts[0]?.rows[0];
+    expect(runRow).toBeDefined();
+    expect(runRow?.["definitionId"]).toBe("wfd_folded_1");
+    expect(runRow?.["deploymentId"]).toBeNull();
+    expect(runRow?.["status"]).toBe("running");
+    expect(typeof runRow?.["address"]).toBe("string");
+
+    // The run's session is keyed by the run's own principal so the address
+    // resolver can find it (the run row has no session column), not by the
+    // invoker as a legacy instance's session is.
+    const sessionInserts = inserts.filter((i) => i.table === "agent_session");
+    expect(sessionInserts).toHaveLength(1);
+    const sessionRow = sessionInserts[0]?.rows[0];
+    expect(sessionRow?.["principalId"]).toBe(runRow?.["principalId"]);
   });
 
   test("agent-state grant insert is ordered after the agent_instance insert", async () => {
