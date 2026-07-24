@@ -27,6 +27,7 @@ export {
 export {
   assertChainHeadIsDefault,
   isSourceApproved,
+  buildSingleStepAgentDefinition,
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   deriveStepAddress,

@@ -27,6 +27,7 @@ import type {
   AnnotatedToolFactory,
   BaseEnv,
   DirectorRegistry,
+  InferencePreference,
 } from "@intx/agent";
 import type {
   HarnessConfig,
@@ -997,19 +998,48 @@ export function wrapHarnessAsSingleStepWorkflow(args: {
   config: HarnessConfig;
   deployContent: DeployContent;
 }): AgentDefinition<BaseEnv> {
-  const inferenceSources = args.config.sources.map((source) => ({
-    provider: source.provider,
-    model: source.model,
-  }));
-  const toolFactories = args.config.tools.map(synthesizeWalkToolFactory);
-  return {
+  return buildSingleStepAgentDefinition({
     id: args.config.agentId,
     systemPrompt: args.deployContent.systemPrompt,
-    toolFactories,
-    capabilities: [],
-    inference: {
-      sources: inferenceSources,
-    },
+    inferencePreferences: args.config.sources.map((source) => ({
+      provider: source.provider,
+      model: source.model,
+    })),
+    toolFactories: args.config.tools.map(synthesizeWalkToolFactory),
+  });
+}
+
+/**
+ * Assemble a single-step `AgentDefinition` from already-resolved fields. This
+ * is the single place the single-step agent shape is constructed, shared by
+ * the live-config wrap (`wrapHarnessAsSingleStepWorkflow`) and the offline
+ * agent-to-workflow fold synthesis, so the two cannot drift on which fields a
+ * wrapped or folded agent carries. Callers pass resolved inputs: the wrap
+ * passes walk-only synthesized tool factories and no pins; the fold passes
+ * empty tool factories (its tools ride as `toolPackagePins`), the agent's own
+ * pins, and its catalog-resolved inference preferences.
+ */
+export function buildSingleStepAgentDefinition(args: {
+  id: string;
+  systemPrompt: string;
+  inferencePreferences: readonly InferencePreference[];
+  toolFactories: readonly AnnotatedToolFactory<BaseEnv>[];
+  capabilities?: readonly string[];
+  description?: string;
+  toolPackagePins?: readonly ToolPackagePin[];
+}): AgentDefinition<BaseEnv> {
+  return {
+    id: args.id,
+    systemPrompt: args.systemPrompt,
+    toolFactories: args.toolFactories,
+    capabilities: args.capabilities ?? [],
+    inference: { sources: args.inferencePreferences },
+    ...(args.description !== undefined
+      ? { description: args.description }
+      : {}),
+    ...(args.toolPackagePins !== undefined
+      ? { toolPackagePins: args.toolPackagePins }
+      : {}),
   };
 }
 
