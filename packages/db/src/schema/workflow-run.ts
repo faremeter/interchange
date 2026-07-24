@@ -1,4 +1,12 @@
-import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 import { principal } from "./principals";
 import { sidecar } from "./sidecar";
@@ -60,12 +68,12 @@ export const workflowRun = pgTable(
     })
       .notNull()
       .default("running"),
-    // Runtime bindings a folded run carries once the deploy path materializes
-    // it, mirroring `agent_instance`; no code writes them yet, so they are null
-    // shadow columns for now. `address` is nullable and NOT unique (unlike the
-    // instance's NOT NULL UNIQUE): a run is not the addressable routing
-    // endpoint, and runs of one deployment share its address, so a unique index
-    // would collide.
+    // Runtime bindings a folded run carries, mirroring `agent_instance`: a
+    // folded run IS the launched instance, so it owns its routing endpoint.
+    // `address` is that endpoint -- nullable because a run that anchors on a
+    // deployment leaves it null and routes via the deployment, but unique among
+    // the folded runs that set it (the partial unique index below). No code
+    // writes these yet; `publicKey`/`sidecarId`/`kernelId` land at deploy-ack.
     address: text("address"),
     publicKey: text("public_key"),
     sidecarId: text("sidecar_id").references(() => sidecar.id, {
@@ -81,5 +89,12 @@ export const workflowRun = pgTable(
     // Supports lookups of a definition's runs, the read path folded runs use
     // once `definitionId` is the anchor.
     index("workflow_run_definition_idx").on(t.definitionId),
+    // A folded run owns a unique routing address, exactly like the agent
+    // instance it stands in for; a run that anchors on a deployment instead
+    // leaves `address` null and is not indexed. Partial so the many null-address
+    // rows never collide and are kept out of the index.
+    uniqueIndex("workflow_run_address_idx")
+      .on(t.address)
+      .where(sql`${t.address} is not null`),
   ],
 );

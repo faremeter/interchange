@@ -358,6 +358,13 @@
       "when": 1784900369564,
       "tag": "0050_late_crystal",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1784904262816,
+      "tag": "0051_funny_madelyne_pryor",
+      "breakpoints": true
     }
   ]
 }

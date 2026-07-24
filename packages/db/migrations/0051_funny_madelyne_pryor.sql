@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "workflow_run_address_idx" ON "workflow_run" USING btree ("address") WHERE "workflow_run"."address" is not null;
