@@ -50,6 +50,7 @@ export {
 } from "./catalog-resolution";
 export {
   resolveModelSources,
+  resolveInferencePreferences,
   resolveInstanceModelSources,
   type CatalogSourceResolution,
   type SourceSkip,

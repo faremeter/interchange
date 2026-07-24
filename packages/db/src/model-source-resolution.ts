@@ -264,6 +264,43 @@ export async function resolveModelSources(
 }
 
 /**
+ * Resolve an agent's model requirements to the credential-free
+ * `{ provider, model }` inference preferences a folded workflow definition
+ * carries on its step agent. Reuses `resolveModelSources` -- the same catalog
+ * + creator-grant resolution the instance launch path runs -- and projects its
+ * ordered sources to their `{ provider (plugin), model }` identity, dropping
+ * the credentials: a definition's inference preference is hash-only, and the
+ * credential-bearing sources are supplied per deploy on the workflow path.
+ *
+ * A requirement set that resolves to no source is a hard failure. A folded
+ * agent whose model is unresolvable is undeployable, so this raises rather
+ * than synthesizing an empty preference list that would silently strip the
+ * agent's inference.
+ */
+export async function resolveInferencePreferences(
+  db: DB["db"],
+  tenantId: string,
+  requirements: ModelRequirement[],
+  creatorGrants: GrantRule[],
+): Promise<{ provider: string; model: string }[]> {
+  const resolution = await resolveModelSources(
+    db,
+    tenantId,
+    requirements,
+    creatorGrants,
+  );
+  if (!resolution.ok) {
+    throw new Error(
+      `cannot resolve inference preferences for the folded definition: ${resolution.reason}`,
+    );
+  }
+  return resolution.sources.map((source) => ({
+    provider: source.provider,
+    model: source.model,
+  }));
+}
+
+/**
  * Resolves the ordered sources for a running instance from persisted state:
  * the agent definition's model requirements and the invoker's launch-time
  * preferences stored on the instance row. Launch, credential-rotation push,

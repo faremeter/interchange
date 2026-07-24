@@ -7,7 +7,11 @@ import {
   test,
 } from "bun:test";
 
-import { resolveInstanceModelSources, resolveModelSources } from "@intx/db";
+import {
+  resolveInferencePreferences,
+  resolveInstanceModelSources,
+  resolveModelSources,
+} from "@intx/db";
 import type { ModelRequirement } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -380,6 +384,47 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // The invoker pins relay, overriding the creator's anthropic
         // preference.
         expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
+      });
+    });
+
+    describe("resolveInferencePreferences", () => {
+      test("projects resolved sources to credential-free provider/model preferences", async () => {
+        await seedBase();
+        const prefs = await resolveInferencePreferences(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          AUTHORIZED_CREATOR_GRANTS,
+        );
+        // The credential-free {provider, model} projection -- no apiKey/baseURL.
+        expect(prefs).toEqual([{ provider: "anthropic", model: "opus" }]);
+      });
+
+      test("throws when the requirements resolve to no source", async () => {
+        await seedBase();
+        await expect(
+          resolveInferencePreferences(
+            h.db,
+            "tnt_root",
+            [],
+            AUTHORIZED_CREATOR_GRANTS,
+          ),
+        ).rejects.toThrow();
+      });
+
+      test("throws when a required model is unavailable in the catalog", async () => {
+        await seedBase();
+        // The catalog offers only "opus"; a requirement for another model
+        // resolves model_unavailable, which must raise rather than yield an
+        // empty preference list.
+        await expect(
+          resolveInferencePreferences(
+            h.db,
+            "tnt_root",
+            [{ model: "not-in-catalog" }],
+            AUTHORIZED_CREATOR_GRANTS,
+          ),
+        ).rejects.toThrow();
       });
     });
 
