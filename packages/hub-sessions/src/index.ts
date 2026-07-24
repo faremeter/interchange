@@ -44,7 +44,9 @@ export {
 export {
   createHubSessionLookups,
   parseAgentId,
+  resolveRoutableAddress,
   type HubSessionLookupsDeps,
+  type RoutableEndpoint,
 } from "./hub-session-lookups";
 export {
   createHubSessionOrchestrator,

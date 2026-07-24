@@ -15,6 +15,7 @@ import {
 } from "@intx/db";
 import {
   agentInstance,
+  agentSession,
   principal,
   sessionMail,
   workflowDeployment,
@@ -491,4 +492,126 @@ export async function requireInstance(
     throw new Error(`No active instance found for address "${agentAddress}"`);
   }
   return row;
+}
+
+/**
+ * A live routing endpoint backing a plain `ins_<hex>` agent address, normalized
+ * across the agent-instance -> workflow-run fold. Both a legacy launched
+ * instance (`agent_instance`) and a folded run (`workflow_run`) share that
+ * address space, so callers work against this shape rather than a specific
+ * table.
+ */
+export interface RoutableEndpoint {
+  readonly kind: "instance" | "run";
+  readonly id: string;
+  readonly tenantId: string;
+  readonly address: string;
+  readonly publicKey: string | null;
+  /**
+   * The active session backing this endpoint. An instance carries its own
+   * `sessionId`; a folded run has no session column, so this is the active
+   * `agent_session` keyed by the run's principal. Transitional -- it retires
+   * when mail record-keeping moves off `agent_session`.
+   */
+  readonly sessionId: string | null;
+}
+
+/**
+ * Resolve a plain (non-workflow-derived) agent address to the routing endpoint
+ * backing it. Under the fold a plain `ins_<hex>` address is prefix-
+ * indistinguishable between a legacy `agent_instance` and a folded
+ * `workflow_run`, so this queries BOTH tables. A given launch writes exactly
+ * one, so at most one matches; a match in both is a corruption signal and
+ * throws rather than silently picking a table (the two ids are drawn from the
+ * same random space, so a real collision cannot happen by construction).
+ * Callers must NOT reintroduce a blind single-table fallback.
+ */
+export async function resolveRoutableAddress(
+  db: DB["db"],
+  address: string,
+): Promise<RoutableEndpoint | undefined> {
+  const [instanceRows, runRows] = await Promise.all([
+    db
+      .select({
+        id: agentInstance.id,
+        tenantId: agentInstance.tenantId,
+        publicKey: agentInstance.publicKey,
+        sessionId: agentInstance.sessionId,
+      })
+      .from(agentInstance)
+      .where(
+        and(eq(agentInstance.address, address), isNull(agentInstance.endedAt)),
+      )
+      .limit(1),
+    db
+      .select({
+        id: workflowRun.id,
+        tenantId: workflowRun.tenantId,
+        publicKey: workflowRun.publicKey,
+        principalId: workflowRun.principalId,
+      })
+      .from(workflowRun)
+      .where(and(eq(workflowRun.address, address), isNull(workflowRun.endedAt)))
+      .limit(1),
+  ]);
+
+  const instanceRow = instanceRows[0];
+  const runRow = runRows[0];
+
+  if (instanceRow !== undefined && runRow !== undefined) {
+    throw new Error(
+      `address "${address}" resolves to both an agent instance (${instanceRow.id}) ` +
+        `and a workflow run (${runRow.id}); refusing to route an ambiguous address`,
+    );
+  }
+
+  if (instanceRow !== undefined) {
+    return {
+      kind: "instance",
+      id: instanceRow.id,
+      tenantId: instanceRow.tenantId,
+      address,
+      publicKey: instanceRow.publicKey,
+      sessionId: instanceRow.sessionId,
+    };
+  }
+
+  if (runRow !== undefined) {
+    return {
+      kind: "run",
+      id: runRow.id,
+      tenantId: runRow.tenantId,
+      address,
+      publicKey: runRow.publicKey,
+      sessionId: await resolveRunSessionId(db, runRow.principalId),
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * A folded run has no session column; its active session is the `agent_session`
+ * keyed by the run's principal. Returns null when the run has no principal or no
+ * active session. Transitional, alongside `RoutableEndpoint.sessionId`.
+ */
+async function resolveRunSessionId(
+  db: DB["db"],
+  principalId: string | null,
+): Promise<string | null> {
+  if (principalId === null) {
+    return null;
+  }
+  const row = await db
+    .select({ id: agentSession.id })
+    .from(agentSession)
+    .where(
+      and(
+        eq(agentSession.principalId, principalId),
+        isNull(agentSession.endedAt),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+  return row?.id ?? null;
 }
