@@ -20,18 +20,13 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import {
-  defineAgent,
-  createDefaultDirectorRegistry,
-  type AgentDefinition,
-  type BaseEnv,
-} from "@intx/agent";
+import { createDefaultDirectorRegistry } from "@intx/agent";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
+  synthesizeFoldedWorkflow,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -56,7 +51,6 @@ import { toLaunchDeployContent } from "./launch-session-bridge";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "folded-tools-failover-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
-const STEP_ID = "step1";
 
 // The namespaced tool name the model calls and the walk grants on.
 const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
@@ -96,35 +90,30 @@ afterAll(async () => {
 
 describe("folded tools + failover real-agent round-trip", () => {
   test("an on-asset folded agent materializes its tool in-child and fails over to the healthy source", async () => {
-    // A folded agent: its tool pins live on the definition. The sidecar
-    // materializes `toolPackagePins` and its tool floor authorizes the tool at
-    // runtime. `defineAgent` carries no live tool factories.
-    const baseAgent = defineAgent({
-      id: `ins_${DEPLOYMENT_ID}`,
-      systemPrompt: "You are the folded single-step tool agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
-    });
-    const agent: AgentDefinition<BaseEnv> = {
-      ...baseAgent,
-      toolPackagePins: TOOL_PINS,
-    };
-
     const deploymentMailAddress = deriveDeploymentAddress({
       deploymentId: DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
     });
 
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        [STEP_ID]: step({ agent }),
-      },
+    // The folded artifact, produced by the real synthesizer (A4-c). Its tool
+    // pins ride on the step agent (pins-only): the sidecar materializes
+    // `toolPackagePins` and its tool floor authorizes the tool at runtime,
+    // with no live tool factories and nothing passed at the deploy call.
+    const workflow = synthesizeFoldedWorkflow({
+      workflowId: `wf_${DEPLOYMENT_ID}`,
+      mailAddress: deploymentMailAddress,
+      systemPrompt: "You are the folded single-step tool agent.",
+      description: null,
+      inferencePreferences: [{ provider: "anthropic", model: "mock-model" }],
+      toolPackagePins: TOOL_PINS,
     });
+
+    // The singular shorthand names the lone step; the sentinel path below keys
+    // on it rather than a hard-coded id.
+    const stepId = workflow.stepOrder[0];
+    if (stepId === undefined) {
+      throw new Error("synthesized folded workflow has no step");
+    }
 
     // A two-element failover chain: element 0 is the dead head (default), the
     // tail is the healthy mock. Both share the agent's declared (provider,
@@ -310,7 +299,7 @@ describe("folded tools + failover real-agent round-trip", () => {
       "workflow-step-state",
       workflowRunRepoId.id,
       "warm",
-      encodeURIComponent(STEP_ID),
+      encodeURIComponent(stepId),
       "workspace",
     );
     const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);

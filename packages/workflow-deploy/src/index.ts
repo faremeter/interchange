@@ -25,6 +25,10 @@ export {
   type CapabilityApprovalGate,
 } from "./capability-approval";
 export {
+  synthesizeFoldedWorkflow,
+  type FoldedWorkflowInput,
+} from "./fold-synthesis";
+export {
   assertChainHeadIsDefault,
   isSourceApproved,
   buildSingleStepAgentDefinition,
