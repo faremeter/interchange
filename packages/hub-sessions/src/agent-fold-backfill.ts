@@ -1,0 +1,284 @@
+// Core of the run-once agent->workflow-definition fold.
+//
+// Lifts each legacy `agent` (and each native `workflow`-kind asset) into a
+// `workflow_definition` + `workflow_definition_version` row. The fold is ROWS
+// ONLY: the definition body is NOT persisted here. An agent-origin definition's
+// `asset_id` is null and its body is synthesized on the fly at deploy time from
+// the still-live `agent` row (via `synthesizeFoldedWorkflow`), so there is one
+// source of truth during the transition and no drifting frozen copy. This
+// module therefore needs only a `db` handle -- no RepoStore, no asset writes.
+//
+// It lives here rather than beside its `bin/db-backfill` entry so both the
+// entry and the deploy path can share the same agent->definition fold: the
+// preflight runs the exact synthesis the deploy-time hydrate will run, and a
+// tests/db suite can exercise it against a real database.
+
+import { eq, isNotNull } from "drizzle-orm";
+
+import type { DB } from "@intx/db";
+import {
+  createGrantStore,
+  parseAgentRow,
+  parseAgentVersionRow,
+  resolveInferencePreferences,
+} from "@intx/db";
+import {
+  agent,
+  agentVersion,
+  asset,
+  tenant,
+  workflowDefinition,
+  workflowDefinitionVersion,
+} from "@intx/db/schema";
+import type { GrantStore } from "@intx/types/authz";
+import { generateId } from "@intx/hub-common";
+import {
+  deriveDeploymentAddress,
+  synthesizeFoldedWorkflow,
+} from "@intx/workflow-deploy";
+
+/** An agent that cannot be folded, with the reason its dry-run synthesis threw. */
+export interface UndeployableAgent {
+  readonly agentId: string;
+  readonly name: string;
+  readonly reason: string;
+}
+
+/**
+ * Thrown by the preflight when one or more agents cannot be folded. Carries the
+ * complete manifest so the whole failure set surfaces at once, and signals that
+ * NO rows were written -- the disposition of the listed agents (fix, delete, or
+ * consciously skip) is an operator decision made with this manifest in hand.
+ */
+export class BackfillPreflightError extends Error {
+  constructor(readonly undeployable: readonly UndeployableAgent[]) {
+    super(
+      `agent fold preflight: ${undeployable.length} agent(s) cannot be folded; no rows written`,
+    );
+    this.name = "BackfillPreflightError";
+  }
+}
+
+export interface BackfillSummary {
+  readonly agentsFolded: number;
+  readonly agentsSkipped: number;
+  readonly workflowAssetsFolded: number;
+  readonly workflowAssetsSkipped: number;
+}
+
+/**
+ * Fold every legacy agent and native workflow asset into definition rows.
+ * Idempotent: re-running skips agents/assets that already have a definition
+ * (guarded by the `origin_agent_id` / `asset_id` query plus their unique
+ * indexes). Aborts loud via `BackfillPreflightError` -- writing nothing -- if
+ * any agent is undeployable.
+ */
+export async function runBackfill(db: DB["db"]): Promise<BackfillSummary> {
+  const agentResult = await foldAgents(db);
+  const workflowResult = await foldWorkflowAssets(db);
+  return { ...agentResult, ...workflowResult };
+}
+
+async function foldAgents(
+  db: DB["db"],
+): Promise<Pick<BackfillSummary, "agentsFolded" | "agentsSkipped">> {
+  const agents = (await db.select().from(agent)).map(parseAgentRow);
+
+  // Only agents that do not already have a definition are in scope. Scoping the
+  // preflight to these -- rather than every agent -- keeps a re-run from
+  // aborting because an already-folded agent's source data has since degraded
+  // (an offering or creator grant removed) so that it would no longer
+  // synthesize; such an agent is never re-folded, so it must not gate the ones
+  // that still need folding.
+  const foldedOriginIds = new Set(
+    (
+      await db
+        .select({ originAgentId: workflowDefinition.originAgentId })
+        .from(workflowDefinition)
+        .where(isNotNull(workflowDefinition.originAgentId))
+    ).map((row) => row.originAgentId),
+  );
+  const pending = agents.filter((a) => !foldedOriginIds.has(a.id));
+  const agentsSkipped = agents.length - pending.length;
+
+  // Preflight: prove every pending agent can be folded before writing anything.
+  // An agent whose deploy-time synthesis would throw (null system prompt, or
+  // model requirements that resolve to no source), or that has no version rows
+  // to mirror, cannot be folded into a coherent definition; inserting one would
+  // manufacture a row that can never hydrate or a definition with no version.
+  // Collect the whole failing set and, if it is non-empty, abort having written
+  // nothing. The versions are read here and reused below so the preflight and
+  // the write agree on exactly which rows land.
+  const grantStore = createGrantStore(db);
+  const domains = await tenantDomains(db);
+  const undeployable: UndeployableAgent[] = [];
+  const versionsByAgent = new Map<
+    string,
+    ReturnType<typeof parseAgentVersionRow>[]
+  >();
+  for (const a of pending) {
+    try {
+      await synthesizeForPreflight(db, grantStore, domains, a);
+      const versions = (
+        await db
+          .select()
+          .from(agentVersion)
+          .where(eq(agentVersion.agentId, a.id))
+      ).map(parseAgentVersionRow);
+      if (versions.length === 0) {
+        throw new Error("agent has no agent_version rows to mirror");
+      }
+      versionsByAgent.set(a.id, versions);
+    } catch (err) {
+      undeployable.push({
+        agentId: a.id,
+        name: a.name,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (undeployable.length > 0) {
+    throw new BackfillPreflightError(undeployable);
+  }
+
+  let agentsFolded = 0;
+  for (const a of pending) {
+    const versions = versionsByAgent.get(a.id);
+    if (versions === undefined) {
+      throw new Error(`internal: no preflighted versions for agent ${a.id}`);
+    }
+    const definitionId = generateId("workflowDefinition");
+    // One transaction per agent: the definition and its versions land together
+    // or not at all, and a failure on one agent leaves the already-folded ones
+    // committed (the run is re-runnable). Rows-only writes are what make this
+    // single-store transaction possible.
+    await db.transaction(async (tx) => {
+      await tx.insert(workflowDefinition).values({
+        id: definitionId,
+        tenantId: a.tenantId,
+        creatorPrincipalId: a.creatorPrincipalId,
+        assetId: null,
+        originAgentId: a.id,
+        name: a.name,
+        description: a.description,
+        grantRequirements: a.grantRequirements,
+        currentVersion: a.currentVersion,
+        status: a.status,
+      });
+      for (const v of versions) {
+        await tx.insert(workflowDefinitionVersion).values({
+          id: generateId("workflowDefinitionVersion"),
+          definitionId,
+          version: v.version,
+          status: v.status,
+        });
+      }
+    });
+    agentsFolded += 1;
+  }
+  return { agentsFolded, agentsSkipped };
+}
+
+/**
+ * A faithful dry run of the deploy-time transform, so an agent that cannot be
+ * synthesized surfaces in the preflight rather than at deploy. Resolves the
+ * inference preferences (throws when the requirements resolve to no source) and
+ * runs the synthesizer (throws on a null system prompt). The synthesized
+ * definition is discarded -- the fold persists no body; the value of running it
+ * here is the throw.
+ */
+async function synthesizeForPreflight(
+  db: DB["db"],
+  grantStore: GrantStore,
+  domains: Map<string, string>,
+  a: ReturnType<typeof parseAgentRow>,
+): Promise<void> {
+  // A null requirement list flows through as `[]`, which is exactly what the
+  // resolver rejects (`no_requirements`) -- the fail-loud path, not a fallback.
+  const requirements = a.modelRequirements ?? [];
+  const creatorGrants = await grantStore.collectGrantsInChain(
+    a.creatorPrincipalId,
+    a.tenantId,
+  );
+  const inferencePreferences = await resolveInferencePreferences(
+    db,
+    a.tenantId,
+    requirements,
+    creatorGrants,
+  );
+
+  const domain = domains.get(a.tenantId);
+  if (domain === undefined) {
+    throw new Error(`tenant ${a.tenantId} has no domain`);
+  }
+
+  synthesizeFoldedWorkflow({
+    workflowId: `wf_${a.id}`,
+    mailAddress: deriveDeploymentAddress({
+      deploymentId: a.id,
+      deploymentDomain: domain,
+    }),
+    systemPrompt: a.systemPrompt,
+    description: a.description,
+    inferencePreferences,
+    toolPackagePins: a.toolPackages,
+    ...(a.grantRequirements !== null
+      ? { grantRequirements: a.grantRequirements }
+      : {}),
+  });
+}
+
+async function tenantDomains(db: DB["db"]): Promise<Map<string, string>> {
+  const rows = await db
+    .select({ id: tenant.id, domain: tenant.domain })
+    .from(tenant);
+  return new Map(rows.map((r) => [r.id, r.domain]));
+}
+
+async function foldWorkflowAssets(
+  db: DB["db"],
+): Promise<
+  Pick<BackfillSummary, "workflowAssetsFolded" | "workflowAssetsSkipped">
+> {
+  const assets = await db
+    .select()
+    .from(asset)
+    .where(eq(asset.kind, "workflow"));
+
+  let workflowAssetsFolded = 0;
+  let workflowAssetsSkipped = 0;
+  for (const workflowAsset of assets) {
+    const existing = await db
+      .select({ id: workflowDefinition.id })
+      .from(workflowDefinition)
+      .where(eq(workflowDefinition.assetId, workflowAsset.id))
+      .limit(1);
+    if (existing.length > 0) {
+      workflowAssetsSkipped += 1;
+      continue;
+    }
+
+    const definitionId = generateId("workflowDefinition");
+    // A native workflow already carries its body in the asset it points at, so
+    // this arm only projects a definition row over it: one version "1", and
+    // `current_version`/`status` left to the table defaults (a workflow asset's
+    // real deploy status lives on `workflow_deployment`, not derivable here).
+    await db.transaction(async (tx) => {
+      await tx.insert(workflowDefinition).values({
+        id: definitionId,
+        tenantId: workflowAsset.tenantId,
+        creatorPrincipalId: workflowAsset.creatorPrincipalId,
+        assetId: workflowAsset.id,
+        name: workflowAsset.name,
+        description: workflowAsset.displayName,
+      });
+      await tx.insert(workflowDefinitionVersion).values({
+        id: generateId("workflowDefinitionVersion"),
+        definitionId,
+        version: "1",
+      });
+    });
+    workflowAssetsFolded += 1;
+  }
+  return { workflowAssetsFolded, workflowAssetsSkipped };
+}

@@ -13,6 +13,12 @@ export {
 } from "./session-service";
 export type { WorkflowDefinition } from "@intx/workflow/definition";
 export {
+  runBackfill,
+  BackfillPreflightError,
+  type BackfillSummary,
+  type UndeployableAgent,
+} from "./agent-fold-backfill";
+export {
   createEventCollectorRegistry,
   type EventCollectorRegistry,
 } from "./event-collector-registry";
