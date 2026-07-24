@@ -499,6 +499,14 @@ async function runSingleStepAtHead(args: {
       ? { ...deploy.deployContent, systemPrompt: stepAgent.systemPrompt }
       : deploy.deployContent;
 
+  // Tool pins for the child's tool materialization: prefer the pins carried on
+  // the folded step agent (the definition is the self-contained home for tools
+  // under the workflow model), falling back to the deploy-supplied pins for the
+  // live-authored instance path. Per-step pins for genuine multi-step workflows
+  // are a separate, deferred concern; this path is single-step by construction.
+  const headToolPackagePins =
+    stepAgent?.toolPackagePins ?? deploy.toolPackagePins;
+
   return deploySingleStepAtHead({
     agentAddress: headAddress,
     agentId: headId,
@@ -510,8 +518,8 @@ async function runSingleStepAtHead(args: {
     // across it, matching the instance deploy path.
     sources: { [stepId]: [...deploy.config.sources] },
     hubPublicKey: deploy.hubPublicKey,
-    ...(deploy.toolPackagePins !== undefined
-      ? { toolPackagePins: deploy.toolPackagePins }
+    ...(headToolPackagePins !== undefined
+      ? { toolPackagePins: headToolPackagePins }
       : {}),
   });
 }

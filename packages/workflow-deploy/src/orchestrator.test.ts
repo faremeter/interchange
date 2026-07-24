@@ -827,6 +827,50 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(launch.launches).toHaveLength(0);
     });
 
+    test("single-step deploy threads the step agent's tool package pins to the child", async () => {
+      const pins = [{ name: "@intx/tools-posix", version: "1.2.3" }];
+      // A folded step agent carries its tool pins on the definition (the
+      // self-contained home under the workflow model), rather than relying on
+      // pins supplied only at deploy time.
+      const agent: AgentDefinition<BaseEnv> = {
+        id: "ag_pinned",
+        systemPrompt: "pinned agent",
+        toolFactories: [],
+        capabilities: [],
+        inference: {
+          sources: [{ provider: "anthropic", model: "mock-model" }],
+        },
+        toolPackagePins: pins,
+      };
+      const workflow = makeSingleStepWorkflow(agent);
+      const directorRegistry = createDefaultDirectorRegistry();
+      const workflowRepo = createRecordingWorkflowRepoWriter();
+      const launch = createRecordingLaunch();
+      const singleStep = createRecordingSingleStepDeploy();
+      const orchestrator = createWorkflowDeployOrchestrator({
+        directorRegistry,
+        workflowRepo,
+        launchSession: launch.fn,
+        deploySingleStepAtHead: singleStep.fn,
+      });
+      const approvals = approvedGrantsForWorkflow(workflow, [agent]);
+
+      await orchestrator.deployWorkflow({
+        workflow,
+        deploymentId: "dep_pinned",
+        deploymentDomain: "workflow.interchange",
+        config: HARNESS_CONFIG_BASE,
+        deployContent: DEPLOY_CONTENT_BASE,
+        hubPublicKey: "00".repeat(32),
+        operatorApprovals: approvals,
+      });
+
+      expect(singleStep.calls).toHaveLength(1);
+      const call = singleStep.calls[0];
+      if (call === undefined) throw new Error("missing single-step deploy");
+      expect(call.toolPackagePins).toEqual(pins);
+    });
+
     test("source-pin failure carries workflow.id and names the offending provider+model", async () => {
       const workflow = makeMultiStepWorkflow();
       const planAgent = workflow.steps.plan;
