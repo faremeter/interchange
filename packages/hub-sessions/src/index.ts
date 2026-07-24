@@ -43,10 +43,12 @@ export {
 } from "./ws";
 export {
   createHubSessionLookups,
+  findRoutableById,
   parseAgentId,
   resolveRoutableAddress,
   type HubSessionLookupsDeps,
   type RoutableEndpoint,
+  type RoutableRecord,
 } from "./hub-session-lookups";
 export {
   createHubSessionOrchestrator,

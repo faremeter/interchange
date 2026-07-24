@@ -44,12 +44,15 @@ import {
 import type { ProviderPreference } from "@intx/types";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
+  findRoutableById,
   SessionLaunchError,
   type EventCollectorRegistry,
+  type RoutableRecord,
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
+import { formatInstanceView } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
 import { resolveGrantMaterialization } from "../grant-materialization";
 
@@ -536,26 +539,26 @@ export function createInstanceRoutes({
 
       if (foldedDefinitionId !== undefined) {
         // The folded run was inserted `running`, so there is no deployed ->
-        // running flip. Return the instance-shaped view of it: the run has no
-        // `updatedAt` (it mirrors `createdAt`), and its public key is null
-        // until deploy-ack lands it.
-        return c.json(
-          {
-            id: instanceId,
-            agentId: row.id,
-            agentName: row.name,
-            tenantId: tenant.id,
-            address: agentAddress,
-            status: "running" as const,
-            publicKey: null,
-            kernelId: null,
-            sidecarId: null,
-            createdAt: ts(now),
-            updatedAt: ts(now),
-            endedAt: null,
-          },
-          201,
-        );
+        // running flip. Shape it through the shared instance view so it reads
+        // identically to a later GET: the run has no `updatedAt` (it mirrors
+        // `createdAt`), and its public key is null until deploy-ack lands it.
+        const runRecord: RoutableRecord = {
+          kind: "run",
+          id: instanceId,
+          tenantId: tenant.id,
+          address: agentAddress,
+          publicKey: null,
+          status: "running",
+          createdAt: now,
+          updatedAt: now,
+          endedAt: null,
+          agentId: row.id,
+          principalId: instancePrincipalId,
+          sessionId,
+          kernelId: null,
+          sidecarId: null,
+        };
+        return c.json(formatInstanceView(runRecord, row.name), 201);
       }
 
       const launchedAt = new Date();
@@ -806,40 +809,32 @@ export function createInstanceRoutes({
       const tenantCtx = c.get("tenant");
       const instanceId = c.req.param("instanceId");
 
-      const [row] = await db
-        .select({
-          instance: agentInstance,
-          agentName: agent.name,
-        })
-        .from(agentInstance)
-        .innerJoin(agent, eq(agentInstance.agentId, agent.id))
-        .where(
-          and(
-            eq(agentInstance.id, instanceId),
-            eq(agentInstance.tenantId, tenantCtx.id),
-          ),
-        )
-        .limit(1);
-
-      if (!row) {
+      // Resolve across the fold: a legacy agent instance or a folded run. The
+      // origin agent supplies the display name for either kind.
+      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
         );
       }
 
-      const result = formatInstance(row.instance, row.agentName) as Record<
-        string,
-        unknown
-      >;
-
-      // Enrich with runtime status from the event collector if available.
-      const runtimeStatus = eventCollectors.getStatus(row.instance.address);
-      if (runtimeStatus !== undefined) {
-        result["runtimeStatus"] = runtimeStatus.status;
+      const agentRow = await db.query.agent.findFirst({
+        where: eq(agent.id, record.agentId),
+      });
+      if (agentRow === undefined) {
+        return c.json(
+          { error: { code: "not_found", message: "Instance not found" } },
+          404,
+        );
       }
 
-      return c.json(result);
+      // Enrich with runtime status from the event collector if available.
+      const runtimeStatus = eventCollectors.getStatus(record.address);
+
+      return c.json(
+        formatInstanceView(record, agentRow.name, runtimeStatus?.status),
+      );
     },
   );
 

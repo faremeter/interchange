@@ -18,6 +18,7 @@ import {
   agentSession,
   principal,
   sessionMail,
+  workflowDefinition,
   workflowDeployment,
   workflowRun,
 } from "@intx/db/schema";
@@ -589,4 +590,156 @@ async function resolveRunSessionId(
     .limit(1)
     .then((rows) => rows[0]);
   return row?.id ?? null;
+}
+
+/**
+ * A routing endpoint resolved BY ID for the instance read/interact surface,
+ * normalized across the agent-instance -> workflow-run fold into one
+ * instance-shaped record. Unlike `resolveRoutableAddress` (keyed by address,
+ * live-only), this is keyed by the path id and does NOT filter terminated rows
+ * -- a stopped instance's detail, mail history, and turns are still served.
+ * Keep the two separate: routing must never reach a dead endpoint, while the
+ * read surface must still render one.
+ */
+export interface RoutableRecord {
+  readonly kind: "instance" | "run";
+  readonly id: string;
+  readonly tenantId: string;
+  /** The routing address. Non-null for both kinds: an instance's column is
+   * not-null, and a run resolves here only when it owns an address. */
+  readonly address: string;
+  readonly publicKey: string | null;
+  /** Raw table status (instance or run enum). The wire mapping onto the
+   * instance status enum is a hub-api concern, done by the response shaper. */
+  readonly status: string;
+  readonly createdAt: Date;
+  /** A run has no `updatedAt` column, so it reports `endedAt ?? createdAt`. */
+  readonly updatedAt: Date;
+  readonly endedAt: Date | null;
+  /** The origin agent: an instance's `agentId`, or a folded run's definition's
+   * `originAgentId`. Non-null for both kinds. */
+  readonly agentId: string;
+  readonly principalId: string | null;
+  readonly sessionId: string | null;
+  readonly kernelId: string | null;
+  readonly sidecarId: string | null;
+}
+
+/**
+ * Resolve a plain instance/run id to its instance-shaped record. Queries BOTH
+ * tables (a launch writes exactly one, so at most one matches; a match in both
+ * is corruption and throws, as in `resolveRoutableAddress`). A run resolves
+ * only when it presents as an instance: it owns a routing address AND its
+ * definition names an origin agent. A run with no address is deployment-
+ * anchored, not an instance, and returns undefined (mirroring the stop route).
+ */
+export async function findRoutableById(
+  db: DB["db"],
+  id: string,
+  tenantId: string,
+): Promise<RoutableRecord | undefined> {
+  const [instanceRows, runRows] = await Promise.all([
+    db
+      .select({
+        id: agentInstance.id,
+        tenantId: agentInstance.tenantId,
+        address: agentInstance.address,
+        publicKey: agentInstance.publicKey,
+        status: agentInstance.status,
+        createdAt: agentInstance.createdAt,
+        updatedAt: agentInstance.updatedAt,
+        endedAt: agentInstance.endedAt,
+        agentId: agentInstance.agentId,
+        principalId: agentInstance.principalId,
+        sessionId: agentInstance.sessionId,
+        kernelId: agentInstance.kernelId,
+        sidecarId: agentInstance.sidecarId,
+      })
+      .from(agentInstance)
+      .where(
+        and(eq(agentInstance.id, id), eq(agentInstance.tenantId, tenantId)),
+      )
+      .limit(1),
+    db
+      .select({
+        id: workflowRun.id,
+        tenantId: workflowRun.tenantId,
+        address: workflowRun.address,
+        publicKey: workflowRun.publicKey,
+        status: workflowRun.status,
+        createdAt: workflowRun.createdAt,
+        endedAt: workflowRun.endedAt,
+        principalId: workflowRun.principalId,
+        kernelId: workflowRun.kernelId,
+        sidecarId: workflowRun.sidecarId,
+        originAgentId: workflowDefinition.originAgentId,
+      })
+      .from(workflowRun)
+      .leftJoin(
+        workflowDefinition,
+        eq(workflowRun.definitionId, workflowDefinition.id),
+      )
+      .where(and(eq(workflowRun.id, id), eq(workflowRun.tenantId, tenantId)))
+      .limit(1),
+  ]);
+
+  const instanceRow = instanceRows[0];
+  const runRow = runRows[0];
+
+  if (instanceRow !== undefined && runRow !== undefined) {
+    throw new Error(
+      `id "${id}" resolves to both an agent instance and a workflow run; ` +
+        `refusing to resolve an ambiguous instance record`,
+    );
+  }
+
+  if (instanceRow !== undefined) {
+    return {
+      kind: "instance",
+      id: instanceRow.id,
+      tenantId: instanceRow.tenantId,
+      address: instanceRow.address,
+      publicKey: instanceRow.publicKey,
+      status: instanceRow.status,
+      createdAt: instanceRow.createdAt,
+      updatedAt: instanceRow.updatedAt,
+      endedAt: instanceRow.endedAt,
+      agentId: instanceRow.agentId,
+      principalId: instanceRow.principalId,
+      sessionId: instanceRow.sessionId,
+      kernelId: instanceRow.kernelId,
+      sidecarId: instanceRow.sidecarId,
+    };
+  }
+
+  if (runRow !== undefined) {
+    if (runRow.address === null) {
+      // Deployment-anchored native run, not a folded instance; not served here.
+      return undefined;
+    }
+    if (runRow.originAgentId === null) {
+      // A folded run owns an address but its definition names no origin agent:
+      // backfill corruption. Surface it rather than bury it as a silent 404.
+      logger.warn`Run ${runRow.id} owns a routing address but its definition has no origin agent; treating as not found`;
+      return undefined;
+    }
+    return {
+      kind: "run",
+      id: runRow.id,
+      tenantId: runRow.tenantId,
+      address: runRow.address,
+      publicKey: runRow.publicKey,
+      status: runRow.status,
+      createdAt: runRow.createdAt,
+      updatedAt: runRow.endedAt ?? runRow.createdAt,
+      endedAt: runRow.endedAt,
+      agentId: runRow.originAgentId,
+      principalId: runRow.principalId,
+      sessionId: await resolveRunSessionId(db, runRow.principalId),
+      kernelId: runRow.kernelId,
+      sidecarId: runRow.sidecarId,
+    };
+  }
+
+  return undefined;
 }
