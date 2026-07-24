@@ -1415,6 +1415,33 @@ async function runGit(
   });
 }
 
+async function runDbBackfill(): Promise<void> {
+  // Shell out to the run-once fold rather than reproduce it here: the backfill
+  // is the single writer of workflow_definition rows, and running it against
+  // the same database this seed just populated keeps a fresh dev DB in the
+  // folded shape (and exercises the fold on every reset). The fold writes rows
+  // only, so it needs the DB connection the dev environment already exports and
+  // writes no repos.
+  const backfillBin = resolve(SEED_ROOT, "bin", "db-backfill");
+  const status = await new Promise<number>((resolveRun, reject) => {
+    const child = spawn(backfillBin, [], {
+      cwd: SEED_ROOT,
+      env: process.env,
+      stdio: "inherit",
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolveRun(code ?? -1);
+    });
+  });
+  if (status !== 0) {
+    process.stderr.write(
+      `[seed] FAIL db-backfill exited with status ${status}\n`,
+    );
+    process.exit(1);
+  }
+}
+
 function withBasicAuth(url: string, user: string, pass: string): string {
   const u = new URL(url);
   u.username = user;
@@ -1656,5 +1683,10 @@ const { data: carolPrinData } = await api(
 log(
   `  Carol has ${parse(paginatedSchema(PrincipalSummary), carolPrinData, "carol principals response").data.length} principal(s)`,
 );
+
+// Fold the seeded agents and native workflow assets onto workflow
+// definitions, so a freshly seeded dev database lands in the folded shape.
+log("Folding seeded agents onto workflow definitions...");
+await runDbBackfill();
 
 log("Seed completed successfully.");
