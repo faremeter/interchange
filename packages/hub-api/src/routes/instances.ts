@@ -444,7 +444,14 @@ export function createInstanceRoutes({
         tenant.id,
       );
 
-      eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
+      // Restore the inference-turn collector only for a launched instance. A
+      // folded run cannot own one yet: the collector writes
+      // inference_turn.instanceId, a NOT NULL FK to agent_instance.id that a
+      // run id would violate. Wire this for runs once that FK is relaxed and
+      // the run turns surface lands.
+      if (foldedDefinitionId === undefined) {
+        eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
+      }
 
       try {
         // Deploy the instance as a single-step workflow at the head: it runs

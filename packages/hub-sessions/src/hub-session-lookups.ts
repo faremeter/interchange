@@ -468,31 +468,6 @@ export function parseAgentId(agentAddress: string): string {
   return parsed.instanceId;
 }
 
-export async function findInstance(
-  db: DB["db"],
-  agentAddress: string,
-): Promise<Awaited<ReturnType<typeof db.query.agentInstance.findFirst>>> {
-  return db.query.agentInstance.findFirst({
-    where: and(
-      eq(agentInstance.address, agentAddress),
-      isNull(agentInstance.endedAt),
-    ),
-  });
-}
-
-export async function requireInstance(
-  db: DB["db"],
-  agentAddress: string,
-): Promise<
-  NonNullable<Awaited<ReturnType<typeof db.query.agentInstance.findFirst>>>
-> {
-  const row = await findInstance(db, agentAddress);
-  if (!row) {
-    throw new Error(`No active instance found for address "${agentAddress}"`);
-  }
-  return row;
-}
-
 /**
  * A live routing endpoint backing a plain `ins_<hex>` agent address, normalized
  * across the agent-instance -> workflow-run fold. Both a legacy launched

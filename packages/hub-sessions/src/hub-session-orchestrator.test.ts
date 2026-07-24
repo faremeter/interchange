@@ -1,12 +1,14 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { RepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
-import { agentInstance } from "@intx/db/schema";
+import { agentInstance, agentSession, workflowRun } from "@intx/db/schema";
 
 import { createHubSessionOrchestrator } from "./hub-session-orchestrator";
 import {
@@ -58,10 +60,45 @@ function makeInstance(overrides: Partial<InstanceRow> = {}): InstanceRow {
   };
 }
 
-type UpdateCall = { table: string; set: Record<string, unknown> };
+const RUN_PRINCIPAL_ID = "prn_run";
+const RUN_SESSION_ID = "ses_run";
+
+// The projection `resolveRoutableAddress` reads off a `workflow_run` row.
+type RunRow = {
+  id: string;
+  tenantId: string;
+  principalId: string | null;
+  address: string;
+  status: string;
+  publicKey: string | null;
+  endedAt: Date | null;
+};
+
+function makeRun(overrides: Partial<RunRow> = {}): RunRow {
+  return {
+    id: INSTANCE_ID,
+    tenantId: TENANT_ID,
+    principalId: RUN_PRINCIPAL_ID,
+    address: AGENT_ADDRESS,
+    status: "running",
+    publicKey: null,
+    endedAt: null,
+    ...overrides,
+  };
+}
+
+type UpdateCall = {
+  table: string;
+  set: Record<string, unknown>;
+  guard: SQL;
+};
 
 type MockDBOpts = {
   instance?: InstanceRow | undefined;
+  run?: RunRow | undefined;
+  // The live agent_session id `resolveRunSessionId` finds for a run's
+  // principal; null/undefined leaves the run session-less.
+  runSessionId?: string | null;
   recordUpdates?: UpdateCall[];
 };
 
@@ -95,8 +132,10 @@ function createMockDB(opts: MockDBOpts) {
       return {
         set(values: Record<string, unknown>) {
           return {
-            where: async () => {
-              updates.push({ table: tableName(t), set: values });
+            // Capture the where-condition so a test can render it to SQL and
+            // assert a status flip is guarded, not an unconditional write.
+            where: async (guard: SQL) => {
+              updates.push({ table: tableName(t), set: values, guard });
             },
           };
         },
@@ -106,13 +145,17 @@ function createMockDB(opts: MockDBOpts) {
       return {
         from: (t: unknown) => {
           // `resolveRoutableAddress` selects the routing endpoint from
-          // `agent_instance` and `workflow_run`; the seeded instance (if any)
-          // backs the instance query, and the run query is always empty in
-          // these instance-only orchestrator tests.
-          const rows =
-            t === agentInstance && opts.instance !== undefined
-              ? [opts.instance]
-              : [];
+          // `agent_instance` and `workflow_run`; `resolveRunSessionId` then
+          // reads the run principal's live `agent_session`. Back whichever the
+          // test seeded.
+          let rows: unknown[] = [];
+          if (t === agentInstance && opts.instance !== undefined) {
+            rows = [opts.instance];
+          } else if (t === workflowRun && opts.run !== undefined) {
+            rows = [opts.run];
+          } else if (t === agentSession && opts.runSessionId != null) {
+            rows = [{ id: opts.runSessionId }];
+          }
           return {
             where: () => ({
               limit: () => Promise.resolve(rows),
@@ -386,26 +429,16 @@ describe("createHubSessionOrchestrator", () => {
   });
 
   describe("agent.reconnected", () => {
-    test("skips the status update when already running", async () => {
-      harness = setup({ instance: makeInstance() });
-
-      await harness.events.emitAndAwait("agent.reconnected", {
-        agentAddress: AGENT_ADDRESS,
-      });
-
-      // A supervised deployment refreshes grants/sources over the
-      // supervisor IPC snapshot, not a reconnect wire push, so no router
-      // call fires here. status was already "running", so no update fires.
-      expect(harness.router.calls).toHaveLength(0);
-      expect(harness.updates).toHaveLength(0);
-    });
-
-    test("flips status to running and restores collector when missing", async () => {
+    test("flips a non-running instance to running and restores its collector", async () => {
       harness = setup({ instance: makeInstance({ status: "deployed" }) });
 
       await harness.events.emitAndAwait("agent.reconnected", {
         agentAddress: AGENT_ADDRESS,
       });
+
+      // A supervised deployment refreshes grants/sources over the supervisor
+      // IPC snapshot, not a reconnect wire push, so no router call fires.
+      expect(harness.router.calls).toHaveLength(0);
 
       const statusUpdate = harness.updates.find(
         (u) => u.set["status"] === "running",
@@ -420,7 +453,32 @@ describe("createHubSessionOrchestrator", () => {
       }
     });
 
-    test("throws when the instance has no active session", async () => {
+    test("guards the instance flip so an already-running row is untouched", async () => {
+      harness = setup({ instance: makeInstance() });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      // The flip is issued unconditionally but carries a `status != running`
+      // guard, so the DB leaves an already-running row untouched -- the
+      // idempotency lives in the where-clause, not a read-then-skip. Render
+      // the captured condition to SQL to prove the guard encodes that
+      // predicate, so dropping the `ne` term fails here rather than silently
+      // reintroducing the leaked-run resurrection risk on the instance path.
+      const statusUpdate = harness.updates.find(
+        (u) => u.set["status"] === "running",
+      );
+      if (statusUpdate === undefined) {
+        throw new Error("expected a status-running update to be issued");
+      }
+      const rendered = new PgDialect().sqlToQuery(statusUpdate.guard);
+      expect(rendered.sql).toContain("status");
+      expect(rendered.sql).toContain("<>");
+      expect(rendered.params).toContain("running");
+    });
+
+    test("throws when the endpoint has no active session", async () => {
       harness = setup({ instance: makeInstance({ sessionId: null }) });
 
       await expect(
@@ -430,14 +488,51 @@ describe("createHubSessionOrchestrator", () => {
       ).rejects.toThrow(/no active session/);
     });
 
-    test("throws when no active instance exists", async () => {
+    test("throws when the address resolves to no endpoint", async () => {
       harness = setup({ instance: undefined });
 
       await expect(
         harness.events.emitAndAwait("agent.reconnected", {
           agentAddress: AGENT_ADDRESS,
         }),
-      ).rejects.toThrow(/No active instance/);
+      ).rejects.toThrow(/No active endpoint found for reconnect/);
+    });
+
+    test("a folded run restores routing without a status write or collector", async () => {
+      harness = setup({
+        instance: undefined,
+        run: makeRun(),
+        runSessionId: RUN_SESSION_ID,
+      });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      // A run is born running and cannot own an inference-turn collector yet
+      // (the inference_turn FK to agent_instance), so reconnect touches
+      // neither its status nor a collector -- routing is restored upstream.
+      expect(harness.updates).toHaveLength(0);
+      expect(
+        harness.collectors.calls.find((c) => c.kind === "create"),
+      ).toBeUndefined();
+    });
+
+    test("does not resurrect a leaked terminal run on reconnect", async () => {
+      // A failed launch leaves a run `failed` with a null `endedAt` so it stays
+      // routable; a symmetric guarded flip would revive it. The run branch must
+      // write no status at all.
+      harness = setup({
+        instance: undefined,
+        run: makeRun({ status: "failed" }),
+        runSessionId: RUN_SESSION_ID,
+      });
+
+      await harness.events.emitAndAwait("agent.reconnected", {
+        agentAddress: AGENT_ADDRESS,
+      });
+
+      expect(harness.updates).toHaveLength(0);
     });
   });
 

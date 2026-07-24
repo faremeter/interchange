@@ -10,7 +10,7 @@
 // than the full SidecarRouter, so tests can drive subscriber behavior
 // with a small stub and an isolated emitter.
 
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
 import {
@@ -26,11 +26,7 @@ import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 import type { AgentRepoStore } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SidecarEventEmitter } from "./ws/sidecar-events";
-import {
-  parseAgentId,
-  requireInstance,
-  resolveRoutableAddress,
-} from "./hub-session-lookups";
+import { parseAgentId, resolveRoutableAddress } from "./hub-session-lookups";
 
 const log = getLogger(["hub", "orchestrator"]);
 
@@ -145,33 +141,56 @@ export function createHubSessionOrchestrator(
 
   unsubscribers.push(
     events.on("agent.reconnected", async ({ agentAddress }) => {
-      const instance = await requireInstance(db, agentAddress);
-
-      if (!instance.sessionId) {
+      // A plain address is backed by either a launched agent_instance or a
+      // folded workflow_run; resolve across both. A missing endpoint is a bug
+      // to surface, not to drop.
+      const endpoint = await resolveRoutableAddress(db, agentAddress);
+      if (endpoint === undefined) {
+        throw new Error(
+          `No active endpoint found for reconnect on address "${agentAddress}"`,
+        );
+      }
+      if (endpoint.sessionId === null) {
         throw new Error(
           `Agent "${agentAddress}" reconnected but has no active session`,
         );
       }
-      const sessionId = instance.sessionId;
+      const sessionId = endpoint.sessionId;
 
       // A supervised deployment carries its grants and sources in the
       // deploy pack and refreshes them over the supervisor's IPC
       // credentials snapshot at spawn and recycle, so reconnect does not
       // re-push them over the wire.
 
-      const now = new Date();
-      if (instance.status !== "running") {
+      if (endpoint.kind === "instance") {
+        // Advance a non-running instance (e.g. `deployed`) to running; the
+        // guard leaves an already-running row untouched. A folded run is born
+        // running and has no non-terminal-non-running state, so it needs no
+        // flip -- and a guarded write would resurrect a leaked terminal run,
+        // which a failed launch leaves `failed` with a null `endedAt` to keep
+        // routable.
+        const now = new Date();
         await db
           .update(agentInstance)
           .set({ status: "running", updatedAt: now })
-          .where(eq(agentInstance.id, instance.id));
+          .where(
+            and(
+              eq(agentInstance.id, endpoint.id),
+              ne(agentInstance.status, "running"),
+            ),
+          );
       }
-      if (!eventCollectors.has(agentAddress)) {
+
+      // Restore the inference-turn collector only for an instance. A folded
+      // run cannot own one yet: the collector writes inference_turn.instanceId,
+      // a NOT NULL FK to agent_instance.id that a run id would violate. Restore
+      // this for runs once that FK is relaxed and the run turns surface lands.
+      if (endpoint.kind === "instance" && !eventCollectors.has(agentAddress)) {
         eventCollectors.create(
           agentAddress,
-          instance.tenantId,
+          endpoint.tenantId,
           sessionId,
-          instance.id,
+          endpoint.id,
         );
         log.info(
           "Restored event collector for reconnected agent {agentAddress}",

@@ -1556,8 +1556,8 @@ are explicitly **not** a go-live gate for INTR-209.
   `wrapHarnessAsSingleStepWorkflow`); `packages/types/src/agent-address.ts`
   (`formatAgentAddress`, `parseAgentAddress`);
   `packages/hub-sessions/src/hub-session-orchestrator.ts` (deploy-ack listener);
-  `packages/hub-sessions/src/hub-session-lookups.ts` (`findInstance`,
-  `lookupPublicKey`).
+  `packages/hub-sessions/src/hub-session-lookups.ts`
+  (`resolveRoutableAddress`, `lookupPublicKey`).
 - Grants bridge (reusable):
   `dispatch/workflow-launch-and-converge/8a-route_single_step_via_child/8a-groundwork.patch`.
 - Transport interface: `packages/types/src/runtime.ts` (`MessageTransport`).

@@ -1078,10 +1078,12 @@ export function createSidecarRouter(
     const failed: string[] = [];
 
     for (const addr of verified) {
-      // The `agent.reconnected` reaction is session lifecycle -- instance
-      // status flip, event-collector restore -- owned by the agent_instance
-      // concept. A workflow-derived deployment address has no agent_instance
-      // row, so the reaction's `requireInstance` would throw and roll the
+      // The `agent.reconnected` reaction is session lifecycle -- status flip
+      // and event-collector restore -- for a routable endpoint, either a
+      // launched agent_instance or a folded workflow_run, both of which
+      // resolve through `resolveRoutableAddress`. A workflow-derived
+      // deployment address resolves to neither (it routes via its deployment,
+      // not an instance or run row), so the reaction would throw and roll the
       // just-verified address back out of routing. It needs routing + queue
       // flush only, which the passed challenge has now made safe; skip the
       // session reaction for it.
