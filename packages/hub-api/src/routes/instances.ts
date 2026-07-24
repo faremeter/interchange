@@ -52,7 +52,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
-import { formatInstanceView } from "./instance-view";
+import { formatInstanceView, instanceStatusOf } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
 import { resolveGrantMaterialization } from "../grant-materialization";
 
@@ -871,21 +871,15 @@ export function createInstanceRoutes({
       const tenantCtx = c.get("tenant");
       const instanceId = c.req.param("instanceId");
 
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenantCtx.id),
-        ),
-      });
-
-      if (!row) {
+      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
         );
       }
 
-      if (row.status === "stopped") {
+      if (instanceStatusOf(record) === "stopped") {
         return c.json(
           { error: { code: "gone", message: "Instance has stopped" } },
           410,
@@ -893,11 +887,11 @@ export function createInstanceRoutes({
       }
 
       const routableAddresses = sidecarRouter.getRoutableAddresses();
-      const liveness = routableAddresses.includes(row.address)
+      const liveness = routableAddresses.includes(record.address)
         ? "ok"
         : "unhealthy";
 
-      const status = eventCollectors.getStatus(row.address);
+      const status = eventCollectors.getStatus(record.address);
       const readiness = status !== undefined ? "ok" : "not_ready";
 
       return c.json({ liveness, readiness, lastCheckedAt: null });
@@ -933,22 +927,20 @@ export function createInstanceRoutes({
       const tenantCtx = c.get("tenant");
       const instanceId = c.req.param("instanceId");
 
-      const [row] = await db
-        .select({
-          instance: agentInstance,
-          agentName: agent.name,
-        })
-        .from(agentInstance)
-        .innerJoin(agent, eq(agentInstance.agentId, agent.id))
-        .where(
-          and(
-            eq(agentInstance.id, instanceId),
-            eq(agentInstance.tenantId, tenantCtx.id),
-          ),
-        )
-        .limit(1);
+      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      if (record === undefined) {
+        return c.json(
+          { error: { code: "not_found", message: "Instance not found" } },
+          404,
+        );
+      }
 
-      if (!row) {
+      // Offerings belong to the origin agent, which a run reaches through its
+      // definition and an instance carries directly; both surface as agentId.
+      const agentRow = await db.query.agent.findFirst({
+        where: eq(agent.id, record.agentId),
+      });
+      if (agentRow === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
@@ -957,12 +949,12 @@ export function createInstanceRoutes({
 
       const offerings = await db.query.offering.findMany({
         where: and(
-          eq(offering.agentId, row.instance.agentId),
+          eq(offering.agentId, record.agentId),
           eq(offering.tenantId, tenantCtx.id),
         ),
       });
 
-      return c.json(offerings.map((o) => formatOffering(o, row.agentName)));
+      return c.json(offerings.map((o) => formatOffering(o, agentRow.name)));
     },
   );
 
@@ -1221,26 +1213,22 @@ export function createInstanceRoutes({
       const tenantCtx = c.get("tenant");
       const instanceId = c.req.param("instanceId");
 
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenantCtx.id),
-        ),
-      });
-
-      if (!row) {
+      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
         );
       }
 
-      if (row.status === "stopped") {
+      if (instanceStatusOf(record) === "stopped") {
         return c.json(
           { error: { code: "gone", message: "Instance has stopped" } },
           410,
         );
       }
+
+      const address = record.address;
 
       return streamSSE(c, async (stream) => {
         const noop = () => undefined;
@@ -1248,7 +1236,7 @@ export function createInstanceRoutes({
         // Emit the replay before subscribing to live events so that a
         // delta arriving between subscribe() and the replay write cannot
         // beat the catch-up text onto the stream.
-        const status = eventCollectors.getStatus(row.address);
+        const status = eventCollectors.getStatus(address);
         if (status?.status === "busy") {
           await stream.writeSSE({
             event: "agent.event",
@@ -1259,9 +1247,9 @@ export function createInstanceRoutes({
             }),
           });
         }
-        const accumulatedText = eventCollectors.getAccumulatedText(row.address);
+        const accumulatedText = eventCollectors.getAccumulatedText(address);
         if (accumulatedText !== undefined && accumulatedText !== "") {
-          const turnId = eventCollectors.getLastTurnId(row.address);
+          const turnId = eventCollectors.getLastTurnId(address);
           await stream.writeSSE({
             event: "agent.event",
             data: JSON.stringify({
@@ -1271,17 +1259,14 @@ export function createInstanceRoutes({
           });
         }
 
-        const unsubscribe = sidecarRouter.subscribeAgent(
-          row.address,
-          (event) => {
-            stream
-              .writeSSE({
-                event: "agent.event",
-                data: JSON.stringify(event),
-              })
-              .catch(noop);
-          },
-        );
+        const unsubscribe = sidecarRouter.subscribeAgent(address, (event) => {
+          stream
+            .writeSSE({
+              event: "agent.event",
+              data: JSON.stringify(event),
+            })
+            .catch(noop);
+        });
 
         const keepalive = setInterval(() => {
           stream.write(": keepalive\n\n").catch(noop);

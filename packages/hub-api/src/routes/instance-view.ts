@@ -40,15 +40,21 @@ function passthroughInstanceStatus(status: string): AgentInstanceStatus {
   return match;
 }
 
+// The record's status in the instance vocabulary: a run's mapped onto it, a
+// legacy instance's passed through. Route status guards (a stopped endpoint is
+// gone) through this so a terminal run 410s exactly as a stopped instance does.
+export function instanceStatusOf(record: RoutableRecord): AgentInstanceStatus {
+  return record.kind === "run"
+    ? mapRunStatusToInstanceStatus(record.status)
+    : passthroughInstanceStatus(record.status);
+}
+
 export function formatInstanceView(
   record: RoutableRecord,
   agentName: string,
   runtimeStatus?: string,
 ) {
-  const status =
-    record.kind === "run"
-      ? mapRunStatusToInstanceStatus(record.status)
-      : passthroughInstanceStatus(record.status);
+  const status = instanceStatusOf(record);
   return {
     id: record.id,
     agentId: record.agentId,

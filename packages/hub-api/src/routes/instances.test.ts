@@ -15,6 +15,7 @@ import type {
 } from "@intx/types/runtime";
 
 import { createApp } from "../app";
+import { agentInstance, workflowRun } from "@intx/db/schema";
 import {
   createSidecarEmitter,
   type EventCollectorRegistry,
@@ -73,6 +74,27 @@ const testInstance = {
 
 const testAgent = { id: AGENT_ID, name: "Test Agent" };
 
+// A folded workflow_run as `findRoutableById`'s run query projects it: it
+// shares the instance id space and reaches its origin agent through the
+// definition (surfaced here as `originAgentId`). Its status is the run enum,
+// which the read routes map onto the instance vocabulary.
+function makeTestRun(overrides: Record<string, unknown> = {}) {
+  return {
+    id: INSTANCE_ID,
+    tenantId: TENANT_ID,
+    address: ADDRESS,
+    publicKey: null,
+    status: "running",
+    createdAt: new Date("2025-01-01"),
+    endedAt: null,
+    principalId: null,
+    kernelId: null,
+    sidecarId: null,
+    originAgentId: AGENT_ID,
+    ...overrides,
+  };
+}
+
 function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
   return {
     id: "grant-test",
@@ -107,6 +129,9 @@ type MockDBOpts = {
   principal?: typeof testPrincipal | undefined;
   instance?: TestInstance | undefined;
   agent?: typeof testAgent | undefined;
+  /** A folded workflow_run row `findRoutableById`'s run query returns (with an
+   * `originAgentId`), or undefined for the instance-only tests. */
+  run?: Record<string, unknown> | undefined;
   offerings?: Record<string, unknown>[] | undefined;
   /** Rows returned for the priorMail query used by POST /mail.
    * Defaults to `[]` (no prior session mail). */
@@ -141,37 +166,53 @@ function drizzleTableName(table: unknown): string {
 function createMockDB(opts: MockDBOpts) {
   const sessionMailRows = opts.sessionMail ?? [];
 
-  // Builder chain that handles two shapes:
-  //   1. .from().innerJoin().where().{limit | orderBy().limit()} — the
-  //      instance+agent join used by the offerings handler.
-  //   2. .from().where().orderBy().limit() — the priorMail query used by
-  //      POST /:instanceId/mail.
-  // The mock distinguishes them by whether innerJoin is on the path.
+  // Builder chain, distinguished by the target table `t`:
+  //   - agentInstance: `findRoutableById`'s instance query (.where().limit()
+  //     -> the seeded instance) AND the list route's .innerJoin(agent) join.
+  //   - workflowRun: `findRoutableById`'s run query (.leftJoin().where()
+  //     .limit() -> the seeded run, or empty in instance-only tests).
+  //   - anything else (sessionMail): the priorMail query used by POST mail
+  //     (.where().orderBy().limit()).
   function selectChain() {
     const joinedRows =
       opts.instance && opts.agent
         ? [{ instance: opts.instance, agentName: opts.agent.name }]
         : [];
+    const instanceRows = opts.instance ? [opts.instance] : [];
+    const runRows = opts.run ? [opts.run] : [];
 
     return {
-      from: () => ({
-        // join-shaped chain
-        innerJoin: () => ({
-          where: () => ({
-            limit: () => Promise.resolve(joinedRows),
-            orderBy: (..._args: unknown[]) => ({
+      from: (t: unknown) => {
+        if (t === workflowRun) {
+          return {
+            leftJoin: () => ({
+              where: () => ({ limit: () => Promise.resolve(runRows) }),
+            }),
+          };
+        }
+        return {
+          // list route: instance + agent join
+          innerJoin: () => ({
+            where: () => ({
               limit: () => Promise.resolve(joinedRows),
+              orderBy: (..._args: unknown[]) => ({
+                limit: () => Promise.resolve(joinedRows),
+              }),
             }),
           }),
-        }),
-        // non-join chain (priorMail)
-        where: () => ({
-          orderBy: (..._args: unknown[]) => ({
-            limit: () => Promise.resolve(sessionMailRows),
+          // findRoutableById instance query (agentInstance) vs priorMail
+          // (sessionMail).
+          where: () => ({
+            orderBy: (..._args: unknown[]) => ({
+              limit: () => Promise.resolve(sessionMailRows),
+            }),
+            limit: () =>
+              Promise.resolve(
+                t === agentInstance ? instanceRows : sessionMailRows,
+              ),
           }),
-          limit: () => Promise.resolve(sessionMailRows),
-        }),
-      }),
+        };
+      },
     };
   }
 
@@ -191,6 +232,10 @@ function createMockDB(opts: MockDBOpts) {
       agentInstance: {
         findFirst: async () => opts.instance,
         findMany: notImplemented("db.query.agentInstance.findMany"),
+      },
+      agent: {
+        findFirst: async () => opts.agent,
+        findMany: notImplemented("db.query.agent.findMany"),
       },
       offering: {
         findFirst: notImplemented("db.query.offering.findFirst"),
@@ -636,6 +681,102 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const body: unknown = await res.json();
     expect(body).toHaveLength(1);
     expect(body).toMatchObject([{ id: "off_1", agentName: "Test Agent" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Folded run read routes — a workflow_run served through the instance surface
+// ---------------------------------------------------------------------------
+
+describe("read routes serve a folded run", () => {
+  // No agent_instance row; the run backs the address instead.
+  function foldedApp(run: Record<string, unknown>) {
+    return createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run,
+      },
+    });
+  }
+
+  test("detail shapes a running run as a running instance", async () => {
+    const res = await foldedApp(makeTestRun()).request(instanceURL());
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({
+      id: INSTANCE_ID,
+      agentId: AGENT_ID,
+      agentName: "Test Agent",
+      address: ADDRESS,
+      status: "running",
+    });
+  });
+
+  test("detail maps a terminal run's status onto the instance vocabulary", async () => {
+    const res = await foldedApp(makeTestRun({ status: "completed" })).request(
+      instanceURL(),
+    );
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ status: "stopped" });
+  });
+
+  test("health 410s a terminal run, as it would a stopped instance", async () => {
+    const res = await foldedApp(makeTestRun({ status: "cancelled" })).request(
+      `${instanceURL()}/health`,
+    );
+    expect(res.status).toBe(410);
+  });
+
+  test("health serves a live run", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run: makeTestRun(),
+      },
+      routableAddresses: [ADDRESS],
+    });
+    const res = await app.request(`${instanceURL()}/health`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ liveness: "ok" });
+  });
+
+  test("offerings resolve through the run's origin agent", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run: makeTestRun(),
+        offerings: [
+          {
+            id: "off_1",
+            agentId: AGENT_ID,
+            tenantId: TENANT_ID,
+            name: "Translation",
+            description: "Translate text",
+            pricing: null,
+            schema: null,
+            createdAt: new Date("2025-01-01"),
+            updatedAt: new Date("2025-01-01"),
+          },
+        ],
+      },
+    });
+    const res = await app.request(`${instanceURL()}/offerings`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject([
+      { id: "off_1", agentName: "Test Agent", name: "Translation" },
+    ]);
   });
 });
 
