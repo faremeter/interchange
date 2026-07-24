@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   index,
   jsonb,
@@ -66,9 +67,15 @@ export const workflowDefinition = pgTable(
   (t) => [
     index("workflow_definition_tenant_idx").on(t.tenantId, t.createdAt),
     uniqueIndex("workflow_definition_asset_idx").on(t.assetId),
-    // Supports the backfill/re-key joins from agent-keyed rows; dropped with
-    // the column when the agent table is retired.
-    index("workflow_definition_origin_agent_idx").on(t.originAgentId),
+    // Partial UNIQUE over `origin_agent_id` (where not null): at most one
+    // definition per source agent, so the run-once backfill's double-fold is a
+    // structural fail-loud rather than a procedural query-guard, and the
+    // re-key joins from agent-keyed rows still resolve to one row. Partial
+    // because workflow-origin definitions leave `origin_agent_id` null and must
+    // not collide. Dropped with the column when the agent table is retired.
+    uniqueIndex("workflow_definition_origin_agent_idx")
+      .on(t.originAgentId)
+      .where(sql`${t.originAgentId} is not null`),
   ],
 );
 

@@ -1,0 +1,2 @@
+DROP INDEX "workflow_definition_origin_agent_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "workflow_definition_origin_agent_idx" ON "workflow_definition" USING btree ("origin_agent_id") WHERE "workflow_definition"."origin_agent_id" is not null;
