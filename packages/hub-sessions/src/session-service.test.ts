@@ -11,7 +11,10 @@ import type {
 import { base64Decode, hexEncode } from "@intx/types";
 import { extractAttachments } from "@intx/mime";
 import {
+  asset as assetTable,
   grant as grantTable,
+  workflowDefinition as workflowDefinitionTable,
+  workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
@@ -1396,11 +1399,30 @@ describe("deployWorkflowDefinition", () => {
     principalId?: string | null;
   };
 
+  type CapturedDefinitionRow = {
+    id: string;
+    tenantId: string;
+    assetId: string;
+    name: string;
+  };
+
   function createWorkflowDeployFixture() {
     const deploymentRows: CapturedDeploymentRow[] = [];
     const grantRows: CapturedGrantRow[] = [];
     const runRows: CapturedRunRow[] = [];
+    const definitionRows: CapturedDefinitionRow[] = [];
+    const definitionVersionRows: { definitionId: string; version: string }[] =
+      [];
     const workflowRepoWrites: { repoId: RepoId; files: string[] }[] = [];
+
+    // The workflow asset the definition is projected from. `ensureWorkflow-
+    // DefinitionForAsset` selects it by id to shape the definition row.
+    const assetRow = {
+      tenantId: "tenant-1",
+      creatorPrincipalId: "prin-creator",
+      name: "wf-asset",
+      displayName: "WF Asset",
+    };
 
     const insert = (table: unknown) => {
       if (table === grantTable) {
@@ -1427,17 +1449,62 @@ describe("deployWorkflowDefinition", () => {
           },
         };
       }
+      if (table === workflowDefinitionTable) {
+        return {
+          values(row: CapturedDefinitionRow) {
+            return {
+              onConflictDoNothing() {
+                return {
+                  returning() {
+                    definitionRows.push(row);
+                    return Promise.resolve([{ id: row.id }]);
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      if (table === workflowDefinitionVersionTable) {
+        return {
+          values(row: { definitionId: string; version: string }) {
+            return {
+              onConflictDoNothing() {
+                definitionVersionRows.push(row);
+                return Promise.resolve();
+              },
+            };
+          },
+        };
+      }
       throw new Error("deployWorkflowDefinition fixture: unexpected insert");
     };
 
-    // The projection row and the run-read grant are written inside a
+    // `ensureWorkflowDefinitionForAsset` selects the workflow asset by id; every
+    // other select in the deploy path is served elsewhere, so only the asset
+    // table is answered here.
+    const select = (_projection: unknown) => ({
+      from: (table: unknown) => ({
+        where: () => ({
+          limit: () => Promise.resolve(table === assetTable ? [assetRow] : []),
+        }),
+      }),
+    });
+
+    // The projection rows and the run-read grant are written inside a
     // single `db.transaction`. The fixture passes a `tx` exposing the
-    // same `insert` surface so both writes are captured, mirroring how
-    // the production code commits them atomically.
+    // same `insert`/`select` surface so every write is captured, mirroring
+    // how the production code commits them atomically.
     const fakeDb = {
       insert,
-      transaction(fn: (tx: { insert: typeof insert }) => Promise<void>) {
-        return fn({ insert });
+      select,
+      transaction(
+        fn: (tx: {
+          insert: typeof insert;
+          select: typeof select;
+        }) => Promise<void>,
+      ) {
+        return fn({ insert, select });
       },
     };
 
@@ -1469,6 +1536,8 @@ describe("deployWorkflowDefinition", () => {
       deploymentRows,
       grantRows,
       runRows,
+      definitionRows,
+      definitionVersionRows,
       workflowRepoWrites,
       fakeDb,
       repoStore,
@@ -1480,6 +1549,8 @@ describe("deployWorkflowDefinition", () => {
       deploymentRows,
       grantRows,
       runRows,
+      definitionRows,
+      definitionVersionRows,
       workflowRepoWrites,
       fakeDb,
       repoStore,
@@ -1596,11 +1667,23 @@ describe("deployWorkflowDefinition", () => {
     expect(deploymentRow.definitionAssetId).toBe("ast_workflow_1");
     expect(deploymentRow.status).toBe("deployed");
 
+    // The deploy projects a first-class definition (create-if-absent) and its
+    // version "1" over the workflow asset, so the anchor run can carry it.
+    expect(definitionRows).toHaveLength(1);
+    const definitionRow = definitionRows[0];
+    if (definitionRow === undefined) {
+      throw new Error("missing workflow_definition");
+    }
+    expect(definitionRow.assetId).toBe("ast_workflow_1");
+    expect(definitionVersionRows).toHaveLength(1);
+    expect(definitionVersionRows[0]?.definitionId).toBe(definitionRow.id);
+    expect(definitionVersionRows[0]?.version).toBe("1");
+
     // The deployment's anchor run is recorded in the same transaction: one
     // workflow_run 1:1 with the deployment, its id and routing address both
     // derived from the deployment, born running with no key yet (deploy-ack
-    // fills it). It anchors on the deployment for now, so definitionId and
-    // principalId are left unset.
+    // fills it). It carries the just-projected definition so the run anchors on
+    // a first-class definition; principalId is left unset.
     expect(runRows).toHaveLength(1);
     const runRow = runRows[0];
     if (runRow === undefined) throw new Error("missing anchor workflow_run");
@@ -1609,7 +1692,7 @@ describe("deployWorkflowDefinition", () => {
     expect(runRow.deploymentId).toBe("dep_xyz");
     expect(runRow.address).toBe("ins_dep_xyz@workflow.test");
     expect(runRow.status).toBe("running");
-    expect(runRow.definitionId ?? null).toBeNull();
+    expect(runRow.definitionId).toBe(definitionRow.id);
     expect(runRow.principalId ?? null).toBeNull();
 
     // A read grant on the deployment's workflow-run resource is seeded
