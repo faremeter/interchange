@@ -54,6 +54,8 @@
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/mail | List mail for an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/turns | List inference turns for an instance |
+| GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
+| POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
 | POST | /api/tenants/:tenantId/workflows/instances | Deploy a workflow |
 | GET | /api/tenants/:tenantId/workflows/instances | List workflow deployments |
 | POST | /api/tenants/:tenantId/workflows/:deploymentId/signals | Deliver a signal to a workflow run |
@@ -630,6 +632,28 @@ Query: cursor?, limit?
 
 200: unknown -- List of inference turns
 404: ErrorResponse -- Instance not found
+
+## Workflow Definitions
+
+### GET /api/tenants/:tenantId/workflows/definitions/:definitionId/versions
+List definition versions
+
+Lists all versions of a workflow definition with status.
+
+Query: cursor?, limit?
+
+200: unknown -- List of versions
+
+### POST /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback
+Roll back to a previous version
+
+Activates the specified version and stops the current one; repoints currentVersion.
+
+Body: WorkflowRollbackRequest
+
+200: WorkflowDefinitionResponse -- Rollback applied
+400: ErrorResponse -- Invalid version
+404: ErrorResponse -- Definition not found
 
 ## Workflows
 
@@ -1704,4 +1728,14 @@ Source: packages/types/src/wallets.ts
 **backendType**: Settlement backend the wallet is denominated in: `crypto` (on-chain assets), `fiat` (national currency), or `credits` (internal accounting units). Determines how balances and transactions are settled.
 **balance**: Current balance as a decimal string in the wallet's `currency`. Stored as a string to preserve precision for both crypto and fiat amounts.
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
+
+### WorkflowDefinitionResponse
+`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null }`
+Source: packages/types/src/workflows.ts
+
+**status**: Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).
+
+### WorkflowRollbackRequest
+`{ version: string }`
+Source: packages/types/src/workflows.ts
 

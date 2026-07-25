@@ -36,6 +36,7 @@ import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
 import { createAgentRoutes } from "./routes/agents";
 import { createInstanceRoutes } from "./routes/instances";
 import { createWorkflowRoutes } from "./routes/workflows";
+import { createWorkflowDefinitionRoutes } from "./routes/workflow-definitions";
 import { createApprovalRoutes } from "./routes/approvals";
 import { createWalletRoutes } from "./routes/wallets";
 import { createProviderRoutes } from "./routes/providers";
@@ -256,6 +257,17 @@ export function mountHubRoutes(
       conditionRegistry,
       requireGrant,
     }),
+  );
+
+  // Definition version/rollback management needs neither the asset service
+  // nor the repo store, so it mounts unconditionally -- definition management
+  // stays available even when the gated `/workflows` deploy surface is off.
+  // Registered before that surface as a defensive measure: the concrete
+  // `/workflows/definitions/...` paths do not overlap the deploy router's
+  // `/:deploymentId` patterns, so this ordering is belt-and-suspenders.
+  app.route(
+    "/api/tenants/:tenantId/workflows/definitions",
+    createWorkflowDefinitionRoutes({ db, requireGrant }),
   );
 
   // The workflow deploy + signal + listing surface needs the asset

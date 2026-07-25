@@ -20,6 +20,10 @@ export {
   createWorkflowRunStore,
   type WorkflowRunStore,
 } from "./workflow-run-store";
+export {
+  createWorkflowDefinitionStore,
+  type WorkflowDefinitionRollbackResult,
+} from "./workflow-definition-store";
 export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";
 export { resolveActivePrice, type ModelPricingRow } from "./pricing";
 export {
@@ -63,6 +67,8 @@ export {
   parsePrincipalRow,
   parseSignalCorrelationRow,
   parseWorkflowRunRow,
+  parseWorkflowDefinitionRow,
+  parseWorkflowDefinitionVersionRow,
   parseOfferingRow,
   parseModelOfferingRow,
   parseCredentialRow,
