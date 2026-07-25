@@ -12,6 +12,7 @@ import {
   createApprovalStore,
   createSignalCorrelationStore,
   createWorkflowRunStore,
+  resolveDefinitionIdForAsset,
 } from "@intx/db";
 import {
   agentInstance,
@@ -227,6 +228,7 @@ export function createHubSessionLookups(
           .select({
             id: workflowDeployment.id,
             tenantId: workflowDeployment.tenantId,
+            definitionAssetId: workflowDeployment.definitionAssetId,
           })
           .from(workflowDeployment)
           .where(
@@ -250,6 +252,12 @@ export function createHubSessionLookups(
           );
         }
         const tenantId = deployment.tenantId;
+        // Anchor the run on its definition too, resolved from the deployment's
+        // asset; null when that asset was never folded.
+        const definitionId = await resolveDefinitionIdForAsset(
+          tx,
+          deployment.definitionAssetId,
+        );
 
         // Lazily anchor the run before its correlation and approval reference
         // it. A workflow-spawned internal run never crosses the external
@@ -263,6 +271,7 @@ export function createHubSessionLookups(
           {
             id: runId,
             deploymentId: deployment.id,
+            definitionId,
             tenantId,
             principalId: null,
             status: "running",

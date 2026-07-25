@@ -10,7 +10,12 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createGrantStore } from "@intx/db";
-import { grant, principal, workflowRun } from "@intx/db/schema";
+import {
+  grant,
+  principal,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
 import type { AssetService } from "@intx/hub-sessions";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
 import {
@@ -173,6 +178,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(runs[0]?.deploymentId).toBe(DEPLOYMENT);
       expect(runs[0]?.principalId).toBe(runPrincipalId);
       expect(runs[0]?.status).toBe("running");
+      // The seeded asset was never folded, so the run has no definition: null,
+      // not an error; it still anchors on the deployment.
+      expect(runs[0]?.definitionId).toBeNull();
 
       // Every staged grant persisted and FK-resolves to the run principal.
       const grants = await h.db
@@ -183,6 +191,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const resources = grants.map((g) => `${g.resource}/${g.action}`).sort();
       expect(resources).toContain("tool:read_file/invoke");
       expect(resources).toContain("secret:vault/use");
+    });
+
+    test("anchors the committed run on its deployment's definition", async () => {
+      // The deployment's asset has a folded definition, so the committed run
+      // takes it alongside the deployment.
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_native",
+        tenantId: TENANT,
+        name: "native",
+        assetId: ASSET,
+      });
+
+      const result = await materializeOnce(
+        workflowJson("secret:vault"),
+        RUN_ID,
+      );
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+      await result.commit();
+
+      const run = (
+        await h.db.select().from(workflowRun).where(eq(workflowRun.id, RUN_ID))
+      )[0];
+      expect(run?.definitionId).toBe("wfd_native");
     });
 
     test("a redelivery with the same runId neither throws nor duplicates", async () => {

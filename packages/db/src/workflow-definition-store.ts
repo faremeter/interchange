@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
-import type { DB } from "./client";
+import type { DB, DBExecutor } from "./client";
 import {
   workflowDefinition,
   workflowDefinitionVersion,
@@ -20,7 +20,7 @@ type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
  * runs anchor on `deploymentId` until that gap closes.
  */
 export async function resolveDefinitionIdForAsset(
-  db: DBHandle,
+  db: DBExecutor,
   assetId: string,
 ): Promise<string | null> {
   const row = await db

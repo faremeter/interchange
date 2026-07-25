@@ -24,7 +24,7 @@ import {
   workflowDeployment,
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
-import { createWorkflowRunStore } from "@intx/db";
+import { createWorkflowRunStore, resolveDefinitionIdForAsset } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import { GrantRequirement, type GrantEffect } from "@intx/types";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
@@ -327,6 +327,13 @@ export type CommitRunGrantsArgs = {
   db: DB["db"];
   tenantId: string;
   deploymentId: string;
+  /**
+   * The deployment's definition, resolved by the caller (which holds the
+   * deployment's asset), or null when that asset was never folded. Anchors the
+   * run on its definition alongside the deployment. Edge resolves; this
+   * interior trusts.
+   */
+  definitionId: string | null;
   runId: string;
   runPrincipalId: string;
   now: Date;
@@ -383,6 +390,7 @@ export async function commitRunGrants(
       {
         id: args.runId,
         deploymentId: args.deploymentId,
+        definitionId: args.definitionId,
         tenantId: args.tenantId,
         principalId: args.runPrincipalId,
         status: "running",
@@ -500,16 +508,25 @@ export function createMailTriggeredRunGrantsMaterializer(
     return {
       outcome: "materialized",
       stepGrants: staged.stepGrants,
-      commit: () =>
-        commitRunGrants({
+      commit: async () => {
+        // Anchor the run on its definition too, resolved at commit where the
+        // deployment (and its asset) is in scope; null when that asset was
+        // never folded.
+        const definitionId = await resolveDefinitionIdForAsset(
+          deps.db,
+          deployment.definitionAssetId,
+        );
+        await commitRunGrants({
           db: deps.db,
           tenantId: deployment.tenantId,
           deploymentId,
+          definitionId,
           runId,
           runPrincipalId,
           now,
           grantRows: staged.grantRows,
-        }),
+        });
+      },
     };
   };
 }

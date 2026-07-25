@@ -19,6 +19,7 @@ import {
 import {
   approval,
   signalCorrelation,
+  workflowDefinition,
   workflowDeployment,
   workflowRun,
 } from "@intx/db/schema";
@@ -353,6 +354,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(run?.tenantId).toBe(TENANT);
       expect(run?.principalId).toBeNull();
       expect(run?.status).toBe("running");
+      // The seeded asset was never folded, so the run has no definition: null,
+      // not an error. It still anchors on the deployment.
+      expect(run?.definitionId).toBeNull();
+    });
+
+    test("anchors the lazily-created run on its deployment's definition", async () => {
+      const kp = await generateKeyPair();
+      await seedDeployment(hexEncode(kp.publicKey));
+      // The deployment's asset has a folded definition, so the run takes it.
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_native",
+        tenantId: TENANT,
+        name: "native",
+        assetId: ASSET,
+      });
+      const router = buildRouter();
+      const ws = createMockWs();
+      await reconnectAndVerify(router, ws, kp.privateKey);
+
+      router.handleMessage(ws, registerFrame());
+      await drain();
+
+      const run = (await h.db.select().from(workflowRun))[0];
+      expect(run?.id).toBe("run-1");
+      expect(run?.definitionId).toBe("wfd_native");
     });
 
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {

@@ -6,6 +6,7 @@ import { type } from "arktype";
 
 import { asset, workflowDeployment } from "@intx/db/schema";
 import type { DB } from "@intx/db";
+import { resolveDefinitionIdForAsset } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
@@ -735,10 +736,17 @@ export function createWorkflowRoutes({
       // the per-instance principal the agent.deploy path mints. The commit is
       // idempotent on the runId (unique for an external trigger), sharing the
       // same staging and commit the mail-triggered run path uses.
+      // Anchor the run on its definition too, resolved from the deployment's
+      // asset in scope; null when that asset was never folded.
+      const definitionId = await resolveDefinitionIdForAsset(
+        db,
+        row.definitionAssetId,
+      );
       await commitRunGrants({
         db,
         tenantId: tenant.id,
         deploymentId,
+        definitionId,
         runId,
         runPrincipalId,
         now,
