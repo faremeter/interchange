@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
-import type { SQL } from "drizzle-orm";
+import { getTableName, is, Table, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
@@ -106,9 +106,7 @@ function createMockDB(opts: MockDBOpts) {
   const updates = opts.recordUpdates ?? [];
 
   function tableName(t: unknown): string {
-    if (t && typeof t === "object" && "name" in t && typeof t.name === "string")
-      return t.name;
-    return "<unknown>";
+    return is(t, Table) ? getTableName(t) : "<unknown>";
   }
 
   /* eslint-disable @typescript-eslint/no-unsafe-type-assertion --
@@ -410,11 +408,12 @@ describe("createHubSessionOrchestrator", () => {
         publicKey: "deadbeef",
       });
       // A workflow-derived deployment address has no agent_instance row; its
-      // key is persisted on the workflow_deployment projection row (keyed by
-      // address) so the reconnect challenge can verify it. Previously this
-      // no-oped, which is what left these addresses un-verifiable.
+      // key is persisted on the deployment's anchor workflow_run row (keyed by
+      // address) so the reconnect challenge can verify it off the same row the
+      // key lookup reads.
       expect(harness.updates).toHaveLength(1);
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
+      expect(harness.updates[0]?.table).toBe("workflow_run");
     });
 
     test("throws when a plain address resolves to no endpoint", async () => {

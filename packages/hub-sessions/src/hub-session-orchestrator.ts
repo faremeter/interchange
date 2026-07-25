@@ -13,11 +13,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
-import {
-  agentInstance,
-  workflowDeployment,
-  workflowRun,
-} from "@intx/db/schema";
+import { agentInstance, workflowRun } from "@intx/db/schema";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
@@ -103,17 +99,16 @@ export function createHubSessionOrchestrator(
       // Workflow-derived addresses (the deployment-level
       // `ins_<deploymentId>@<domain>` and the per-step
       // `ins_<deploymentId>-<stepId>@<domain>`) have no agent_instance row;
-      // their public key lives on the workflow_deployment projection row,
+      // their public key lives on the deployment's anchor workflow_run row,
       // keyed by address. Persist it there so the reconnect ownership
-      // challenge can verify the deployment address. Only the
-      // deployment-level address has a row, so a stray per-step ack updates
-      // nothing. (This was previously a no-op, which is what left
-      // workflow-deployment addresses un-verifiable on reconnect.)
+      // challenge can verify the deployment address off the same row
+      // `lookupPublicKey` reads. Only the deployment-level address has an
+      // anchor run, so a stray per-step ack updates nothing.
       if (isWorkflowDerivedAddress(agentAddress)) {
         await db
-          .update(workflowDeployment)
+          .update(workflowRun)
           .set({ publicKey })
-          .where(eq(workflowDeployment.address, agentAddress));
+          .where(eq(workflowRun.address, agentAddress));
         return;
       }
       // A plain address is backed by either a launched agent_instance or a

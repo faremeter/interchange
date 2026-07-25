@@ -7,7 +7,7 @@ import {
   test,
 } from "bun:test";
 
-import { eq, sql } from "drizzle-orm";
+import { eq, ne, sql } from "drizzle-orm";
 
 import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, signalName } from "@intx/types";
@@ -158,6 +158,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
     });
 
+    // The deployment's anchor run: the row `lookupPublicKey` now reads the
+    // reconnect key off, keyed by the deployment address. A reconnect challenge
+    // against a workflow-derived address resolves its key here, so every test
+    // that reconnects needs one alongside the deployment projection.
+    async function seedAnchorRun(
+      id: string,
+      address: string,
+      publicKeyHex: string | null,
+    ): Promise<void> {
+      await h.db.insert(workflowRun).values({
+        id,
+        tenantId: TENANT,
+        deploymentId: id,
+        address,
+        publicKey: publicKeyHex,
+        status: "running",
+      });
+    }
+
     // Seed a live deployment whose address resolves to `publicKeyHex`, so the
     // reconnect challenge that routes WF_ADDR onto the connection passes.
     async function seedDeployment(publicKeyHex: string): Promise<void> {
@@ -176,6 +195,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         publicKey: publicKeyHex,
         status: "deployed",
       });
+      await seedAnchorRun(DEPLOYMENT, WF_ADDR, publicKeyHex);
     }
 
     // Bring WF_ADDR up as an owned workflow address on `ws` through the real
@@ -345,8 +365,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The co-write lazily anchored the run: a workflow_run row keyed on the
       // frame's runId, on the same deployment and tenant. Its principal is null
       // -- an internal, workflow-spawned run inherits the deployment's grants
-      // and has no principal of its own.
-      const runs = await h.db.select().from(workflowRun);
+      // and has no principal of its own. Exclude the deployment's anchor run
+      // (id == DEPLOYMENT) to isolate the lazily-anchored child.
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(ne(workflowRun.id, DEPLOYMENT));
       expect(runs).toHaveLength(1);
       const run = runs[0];
       expect(run?.id).toBe("run-1");
@@ -376,7 +400,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(ws, registerFrame());
       await drain();
 
-      const run = (await h.db.select().from(workflowRun))[0];
+      const run = (
+        await h.db
+          .select()
+          .from(workflowRun)
+          .where(ne(workflowRun.id, DEPLOYMENT))
+      )[0];
       expect(run?.id).toBe("run-1");
       expect(run?.definitionId).toBe("wfd_native");
     });
@@ -448,7 +477,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const firstCorr = await h.db.select().from(signalCorrelation);
       const firstAppr = await h.db.select().from(approval);
-      const firstRun = await h.db.select().from(workflowRun);
+      // Exclude the deployment's anchor run so only the lazily-anchored child
+      // run is counted for the idempotency check.
+      const firstRun = await h.db
+        .select()
+        .from(workflowRun)
+        .where(ne(workflowRun.id, DEPLOYMENT));
       expect(firstCorr).toHaveLength(1);
       expect(firstAppr).toHaveLength(1);
       expect(firstRun).toHaveLength(1);
@@ -462,7 +496,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const secondCorr = await h.db.select().from(signalCorrelation);
       const secondAppr = await h.db.select().from(approval);
-      const secondRun = await h.db.select().from(workflowRun);
+      const secondRun = await h.db
+        .select()
+        .from(workflowRun)
+        .where(ne(workflowRun.id, DEPLOYMENT));
       expect(secondCorr).toHaveLength(1);
       expect(secondAppr).toHaveLength(1);
       // The lazy run-row ensure is redelivery-safe: the run row is not
@@ -492,6 +529,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         publicKey: hexEncode(kp2.publicKey),
         status: "deployed",
       });
+      await seedAnchorRun(DEPLOYMENT_2, WF_ADDR_2, hexEncode(kp2.publicKey));
 
       const router = buildRouter();
       const ws = createMockWs();

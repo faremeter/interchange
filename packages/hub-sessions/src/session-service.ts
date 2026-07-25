@@ -1114,8 +1114,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         tenantId,
         definitionAssetId,
         address: deriveDeploymentAddress({ deploymentId, deploymentDomain }),
-        // publicKey is left null here; the sidecar's deploy-ack persists the
-        // deployment's minted key once the child has spawned.
+        // publicKey is left null and unread: the reconnect key now lives on the
+        // anchor run below, which deploy-ack writes and the key lookup reads.
+        // This projection column has no reader or writer.
         status: "deployed",
         createdAt: now,
       });
@@ -1123,15 +1124,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // The deployment's anchor run: the one workflow_run that carries the
       // deployment's routing identity, 1:1 with the deployment (id and address
       // both derived from `deploymentId`). It gives that identity a first-class
-      // home on the run independent of the deployment projection. The address
-      // and public key the reconnect ownership challenge verifies are read from
-      // and written to the deployment projection, so this row records the
-      // address without being read. Child runs of this deployment are separate
-      // address-less rows. `definitionId` stays null: the anchor row anchors on
-      // `deploymentId`, the column it can fall back to if the deployment
-      // projection is dissolved. `principalId` is null -- the workflow-derived
-      // key path reads `publicKey` directly and never consults it, and the
-      // `workflow-run:<deploymentId>` grant seeded below already covers reads.
+      // home on the run independent of the deployment projection, and it owns
+      // the address and public key the reconnect ownership challenge verifies:
+      // deploy-ack writes the key here and the key lookup reads it off this
+      // row. It is born running with no key yet (deploy-ack fills it). Child
+      // runs of this deployment are separate address-less rows. `definitionId`
+      // stays null: the anchor row anchors on `deploymentId`, the column it can
+      // fall back to if the deployment projection is dissolved. `principalId`
+      // is null -- the workflow-derived key path reads `publicKey` directly and
+      // never consults it, and the `workflow-run:<deploymentId>` grant seeded
+      // below already covers reads.
       await tx.insert(workflowRunTable).values({
         id: deploymentId,
         tenantId,

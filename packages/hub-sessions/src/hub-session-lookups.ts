@@ -52,25 +52,28 @@ export function createHubSessionLookups(
 
   return {
     async lookupPublicKey(agentAddress) {
-      // Route by address space. A workflow-derived address's key lives on
-      // its workflow_deployment row; a plain `ins_<hex>` address is backed by
-      // either a launched agent_instance or a folded workflow_run -- the two
-      // share that address space under the fold -- and `resolveRoutableAddress`
-      // resolves both together. A missing endpoint (or a null key) returns
-      // null so the reconnect challenge fails closed and the address stays
-      // unrouted rather than routing without ownership proof.
+      // Route by address space. A workflow-derived address's key lives on the
+      // deployment's anchor workflow_run row; a plain `ins_<hex>` address is
+      // backed by either a launched agent_instance or a folded workflow_run --
+      // the two share that address space under the fold -- and
+      // `resolveRoutableAddress` resolves both together. A missing endpoint (or
+      // a null key) returns null so the reconnect challenge fails closed and
+      // the address stays unrouted rather than routing without ownership proof.
       if (isWorkflowDerivedAddress(agentAddress)) {
-        // Filter to a live ("deployed") deployment so a torn-down
-        // deployment's key can no longer satisfy a challenge. A null
-        // publicKey (deployed but not yet acked, or pre-migration) or an
-        // absent row returns null.
+        // Read the key off the deployment's anchor run, gated on a live
+        // ("running") run so a decommissioned deployment's key can no longer
+        // satisfy a challenge. The anchor run is born running and no path flips
+        // it terminal today: the gate is the read-side invariant a future
+        // undeploy/teardown feature will satisfy -- mirroring the deployment's
+        // dormant `status='error'` contract -- not dead code. A null publicKey
+        // (running but not yet acked) or an absent row returns null.
         const row = await db
-          .select({ publicKey: workflowDeployment.publicKey })
-          .from(workflowDeployment)
+          .select({ publicKey: workflowRun.publicKey })
+          .from(workflowRun)
           .where(
             and(
-              eq(workflowDeployment.address, agentAddress),
-              eq(workflowDeployment.status, "deployed"),
+              eq(workflowRun.address, agentAddress),
+              eq(workflowRun.status, "running"),
             ),
           )
           .limit(1)
