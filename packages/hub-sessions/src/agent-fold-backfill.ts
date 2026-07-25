@@ -35,6 +35,7 @@ import {
 } from "@intx/db/schema";
 import type { GrantStore } from "@intx/types/authz";
 import { generateId } from "@intx/hub-common";
+import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import {
   deriveDeploymentAddress,
   synthesizeFoldedWorkflow,
@@ -301,37 +302,19 @@ async function foldWorkflowAssets(
   let workflowAssetsFolded = 0;
   let workflowAssetsSkipped = 0;
   for (const workflowAsset of assets) {
-    const existing = await db
-      .select({ id: workflowDefinition.id })
-      .from(workflowDefinition)
-      .where(eq(workflowDefinition.assetId, workflowAsset.id))
-      .limit(1);
-    if (existing.length > 0) {
-      workflowAssetsSkipped += 1;
-      continue;
-    }
-
-    const definitionId = generateId("workflowDefinition");
     // A native workflow already carries its body in the asset it points at, so
-    // this arm only projects a definition row over it: one version "1", and
-    // `current_version`/`status` left to the table defaults (a workflow asset's
-    // real deploy status lives on `workflow_deployment`, not derivable here).
-    await db.transaction(async (tx) => {
-      await tx.insert(workflowDefinition).values({
-        id: definitionId,
-        tenantId: workflowAsset.tenantId,
-        creatorPrincipalId: workflowAsset.creatorPrincipalId,
-        assetId: workflowAsset.id,
-        name: workflowAsset.name,
-        description: workflowAsset.displayName,
-      });
-      await tx.insert(workflowDefinitionVersion).values({
-        id: generateId("workflowDefinitionVersion"),
-        definitionId,
-        version: "1",
-      });
-    });
-    workflowAssetsFolded += 1;
+    // this only projects a definition row (plus version "1") over it, via the
+    // shared create-if-absent helper the deploy path uses -- one source for the
+    // definition's shape. Each projection is its own transaction so a partial
+    // failure never leaves a definition without its version.
+    const { created } = await db.transaction((tx) =>
+      ensureWorkflowDefinitionForAsset(tx, workflowAsset.id),
+    );
+    if (created) {
+      workflowAssetsFolded += 1;
+    } else {
+      workflowAssetsSkipped += 1;
+    }
   }
   return { workflowAssetsFolded, workflowAssetsSkipped };
 }

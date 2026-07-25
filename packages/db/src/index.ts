@@ -1,4 +1,4 @@
-export { createDB, type DB } from "./client";
+export { createDB, type DB, type DBExecutor } from "./client";
 export {
   pgErrorCode,
   PG_UNIQUE_VIOLATION,

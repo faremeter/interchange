@@ -59,6 +59,7 @@ export {
   type HubSessionRouterFacade,
 } from "./hub-session-orchestrator";
 export { pushSourceUpdates, pushSourceUpdatesSubtree } from "./credential-push";
+export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export {
   skillKindHandler,
   skillAuthorize,
