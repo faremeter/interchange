@@ -1,4 +1,4 @@
-import { eq, and, inArray, asc, isNull } from "drizzle-orm";
+import { eq, and, inArray, asc, isNull, isNotNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
@@ -98,6 +98,121 @@ function formatInstance(
     updatedAt: ts(row.updatedAt),
     endedAt: row.endedAt ? ts(row.endedAt) : null,
   };
+}
+
+type InstanceStatusFilter =
+  | "deployed"
+  | "running"
+  | "updating"
+  | "error"
+  | "stopped";
+
+function isInstanceStatusFilter(
+  status: string | undefined,
+): status is InstanceStatusFilter {
+  return (
+    status === "deployed" ||
+    status === "running" ||
+    status === "updating" ||
+    status === "error" ||
+    status === "stopped"
+  );
+}
+
+type WorkflowRunStatus = (typeof workflowRun.$inferSelect)["status"];
+
+// The `workflow_run` statuses that present as a given instance-status filter --
+// the inverse of `mapRunStatusToInstanceStatus`. A folded run never reads as
+// `deployed` or `updating`, so those filters select no runs (empty array), and
+// the caller skips the run query entirely.
+const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
+  InstanceStatusFilter,
+  WorkflowRunStatus[]
+> = {
+  running: ["running"],
+  stopped: ["completed", "cancelled"],
+  error: ["failed"],
+  deployed: [],
+  updating: [],
+};
+
+// The row shape the folded-run list sub-query projects: the run columns the
+// instance view needs, plus the origin agent the definition names.
+type FoldedRunListRow = {
+  run: typeof workflowRun.$inferSelect;
+  originAgentId: string | null;
+  agentName: string;
+};
+
+// Shape a folded run into the fold-normalized record the instance view expects.
+// The list does not resolve a per-run session: a scan must not issue a session
+// lookup per row, and `formatInstanceView` never reads `sessionId`, so it stays
+// null. `updatedAt` mirrors `findRoutableById`'s run branch (`endedAt ??
+// createdAt`). The sub-query filters `address` non-null and inner-joins the
+// origin agent, so a null in either is a broken invariant and surfaces loudly.
+function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
+  if (row.run.address === null || row.originAgentId === null) {
+    throw new Error(
+      `folded run ${row.run.id} listed with null address or origin agent`,
+    );
+  }
+  return {
+    kind: "run",
+    id: row.run.id,
+    tenantId: row.run.tenantId,
+    address: row.run.address,
+    publicKey: row.run.publicKey,
+    status: row.run.status,
+    createdAt: row.run.createdAt,
+    updatedAt: row.run.endedAt ?? row.run.createdAt,
+    endedAt: row.run.endedAt,
+    agentId: row.originAgentId,
+    principalId: row.run.principalId,
+    sessionId: null,
+    kernelId: row.run.kernelId,
+    sidecarId: row.run.sidecarId,
+  };
+}
+
+// A formatted list entry carried alongside its sort key so the two keyset heads
+// (agent instances and folded runs) merge into one page.
+type ListEntry = {
+  item:
+    | ReturnType<typeof formatInstance>
+    | ReturnType<typeof formatInstanceView>;
+  createdAt: Date;
+  id: string;
+};
+
+// Impose the identical total order the DB applied to each head -- createdAt
+// DESC, then id DESC -- so the merged page matches keyset resumption exactly.
+// createdAt is compared at millisecond precision (the `Date` the driver
+// returns, matching the cursor's `toISOString` milliseconds). This is exact
+// only because every list-visible row is inserted with an explicit
+// millisecond-precision `createdAt` (a JS `Date`): both the launch's instance
+// insert and its address-bearing run insert do so, and the sub-millisecond
+// `defaultNow()` rows are all address-less and excluded. A future address-
+// bearing insert that let `createdAt` fall to `defaultNow()` would store a
+// sub-millisecond value the millisecond cursor cannot address, silently
+// dropping rows at a page boundary -- keep such inserts on an explicit `Date`.
+// id is compared by raw code units, NOT `localeCompare`: every id is `ins_` +
+// 32 lowercase hex chars from one shared id space, so code-unit order equals
+// Postgres's text order, while `localeCompare` could diverge from the DB.
+// Revisit if the id scheme ever gains mixed case, variable length, or a
+// non-hex charset.
+function compareListEntriesDesc(a: ListEntry, b: ListEntry): number {
+  const at = a.createdAt.getTime();
+  const bt = b.createdAt.getTime();
+  if (at !== bt) {
+    return bt - at;
+  }
+  if (a.id < b.id) {
+    return 1;
+  }
+  if (a.id > b.id) {
+    return -1;
+  }
+  return 0;
 }
 
 export type CreateInstanceRoutesDeps = {
@@ -620,40 +735,103 @@ export function createInstanceRoutes({
         limit: c.req.query("limit"),
       });
 
-      const conditions = [eq(agentInstance.tenantId, tenantCtx.id)];
+      // The list spans the fold: a legacy `agent_instance` and a folded
+      // `workflow_run` both present as instances. Each table is queried as its
+      // own keyset head (same tenant/agent/status filters, cursor, order, and
+      // limit), then the two heads are merged in application code into a single
+      // page. A DB UNION is avoided because the two sides need different agent
+      // joins; the merge is exact because each head returns its own first
+      // `limit` post-cursor rows in the global order, so the global first
+      // `limit` is a subset of the two heads combined.
+      const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
+
+      const instanceConditions = [eq(agentInstance.tenantId, tenantCtx.id)];
       if (agentId !== undefined) {
-        conditions.push(eq(agentInstance.agentId, agentId));
+        instanceConditions.push(eq(agentInstance.agentId, agentId));
       }
-      if (
-        status === "deployed" ||
-        status === "running" ||
-        status === "updating" ||
-        status === "error" ||
-        status === "stopped"
-      ) {
-        conditions.push(eq(agentInstance.status, status));
+      if (statusFilter !== undefined) {
+        instanceConditions.push(eq(agentInstance.status, statusFilter));
       }
       if (cursor) {
-        conditions.push(
+        instanceConditions.push(
           cursorCondition(agentInstance.createdAt, agentInstance.id, cursor),
         );
       }
 
-      const rows = await db
+      const instanceRows = await db
         .select({
           instance: agentInstance,
           agentName: agent.name,
         })
         .from(agentInstance)
         .innerJoin(agent, eq(agentInstance.agentId, agent.id))
-        .where(and(...conditions))
+        .where(and(...instanceConditions))
         .orderBy(...pageOrder(agentInstance.createdAt, agentInstance.id))
         .limit(limit);
 
+      // A folded run presents as an instance only when it owns a routing
+      // address and its definition names an origin agent; the two inner joins
+      // enforce the latter and drop a definition-anchored or corrupt run. When
+      // a status filter selects no run statuses (`deployed`/`updating`), skip
+      // the run query entirely.
+      const runStatuses =
+        statusFilter === undefined
+          ? undefined
+          : RUN_STATUSES_BY_INSTANCE_STATUS[statusFilter];
+      let runRows: FoldedRunListRow[] = [];
+      if (runStatuses === undefined || runStatuses.length > 0) {
+        const runConditions = [
+          eq(workflowRun.tenantId, tenantCtx.id),
+          isNotNull(workflowRun.address),
+        ];
+        if (agentId !== undefined) {
+          runConditions.push(eq(workflowDefinition.originAgentId, agentId));
+        }
+        if (runStatuses !== undefined) {
+          runConditions.push(inArray(workflowRun.status, runStatuses));
+        }
+        if (cursor) {
+          runConditions.push(
+            cursorCondition(workflowRun.createdAt, workflowRun.id, cursor),
+          );
+        }
+
+        runRows = await db
+          .select({
+            run: workflowRun,
+            originAgentId: workflowDefinition.originAgentId,
+            agentName: agent.name,
+          })
+          .from(workflowRun)
+          .innerJoin(
+            workflowDefinition,
+            eq(workflowRun.definitionId, workflowDefinition.id),
+          )
+          .innerJoin(agent, eq(workflowDefinition.originAgentId, agent.id))
+          .where(and(...runConditions))
+          .orderBy(...pageOrder(workflowRun.createdAt, workflowRun.id))
+          .limit(limit);
+      }
+
+      const entries: ListEntry[] = [
+        ...instanceRows.map((r) => ({
+          item: formatInstance(r.instance, r.agentName),
+          createdAt: r.instance.createdAt,
+          id: r.instance.id,
+        })),
+        ...runRows.map((r) => ({
+          item: formatInstanceView(foldedRunToRecord(r), r.agentName),
+          createdAt: r.run.createdAt,
+          id: r.run.id,
+        })),
+      ];
+      entries.sort(compareListEntriesDesc);
+      const page = entries.slice(0, limit);
+
       return c.json(
         paginatedResponse(
-          rows.map((r) => formatInstance(r.instance, r.agentName)),
-          rows.map((r) => r.instance),
+          page.map((e) => e.item),
+          page.map((e) => ({ createdAt: e.createdAt, id: e.id })),
           limit,
         ),
       );
