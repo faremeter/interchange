@@ -45,6 +45,7 @@ import type { ProviderPreference } from "@intx/types";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   findRoutableById,
+  resolveRunIdForSession,
   resolveRunSessionId,
   SessionLaunchError,
   type EventCollectorRegistry,
@@ -731,7 +732,17 @@ export function createInstanceRoutes({
         );
       }
 
-      const resolvedInstanceId = mailRow.instanceId;
+      // The authorization subject is the mail's owning routable. An instance's
+      // mail carries its indexed instanceId; a folded run's mail carries a null
+      // instanceId (both write sites derive it from kind, so null marks a run)
+      // and keys on its session, so recover the run id from the session. Route
+      // the run resolution through workflow_run so the subject is proven to
+      // name a real run of this tenant -- a session held by any non-run
+      // principal fails closed to 404 rather than authorizing a fabricated
+      // subject.
+      const resolvedInstanceId =
+        mailRow.instanceId ??
+        (await resolveRunIdForSession(db, mailRow.sessionId, tenant.id));
       if (!resolvedInstanceId) {
         return c.json(
           { error: { code: "not_found", message: "Blob not found" } },

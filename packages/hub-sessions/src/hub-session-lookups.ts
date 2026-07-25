@@ -609,6 +609,43 @@ export async function resolveRunSessionId(
 }
 
 /**
+ * The folded run that owns a session, or null when the session belongs to no
+ * run. This is the inverse of `resolveRunSessionId`: a mail-read path holds a
+ * `sessionMail.sessionId` and no address, so it recovers the owning run by
+ * joining `workflow_run` to `agent_session` on their shared principal (a folded
+ * run, its session, and its launch all key on the same `instancePrincipalId`).
+ * Scoped to the tenant and routed through `workflow_run` so the returned id is
+ * proven to name a real run of this tenant -- callers key an authorization
+ * subject on it, so a session held by a non-run principal must fail closed to
+ * null rather than resolve to a fabricated subject.
+ */
+export async function resolveRunIdForSession(
+  db: DB["db"],
+  sessionId: string,
+  tenantId: string,
+): Promise<string | null> {
+  // No `endedAt` filter: a stopped run's mail must stay fetchable, so the
+  // session resolves whether or not it has ended. The run principal is minted
+  // per launch and shared 1:1 by the run and its session, so at most one row
+  // matches; order deterministically anyway so a hypothetical second row cannot
+  // make the pick flap, mirroring `resolveRunSessionId`.
+  const row = await db
+    .select({ id: workflowRun.id })
+    .from(workflowRun)
+    .innerJoin(
+      agentSession,
+      eq(agentSession.principalId, workflowRun.principalId),
+    )
+    .where(
+      and(eq(agentSession.id, sessionId), eq(workflowRun.tenantId, tenantId)),
+    )
+    .orderBy(asc(workflowRun.createdAt))
+    .limit(1)
+    .then((rows) => rows[0]);
+  return row?.id ?? null;
+}
+
+/**
  * A routing endpoint resolved BY ID for the instance read/interact surface,
  * normalized across the agent-instance -> workflow-run fold into one
  * instance-shaped record. Unlike `resolveRoutableAddress` (keyed by address,
