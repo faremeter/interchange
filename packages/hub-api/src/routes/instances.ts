@@ -122,7 +122,7 @@ export function createInstanceRoutes({
 
   app.post(
     "/",
-    requireGrant("instance:*", "create"),
+    requireGrant("workflow-run:*", "create"),
     describeRoute({
       tags: ["Instances"],
       summary: "Deploy an agent instance",
@@ -578,7 +578,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/",
-    requireGrant("instance:*", "read"),
+    requireGrant("workflow-run:*", "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List agent instances",
@@ -742,7 +742,7 @@ export function createInstanceRoutes({
         grantStore,
         principal.id,
         tenant.id,
-        `instance:${resolvedInstanceId}`,
+        `workflow-run:${resolvedInstanceId}`,
         "read",
         conditionRegistry,
       );
@@ -785,7 +785,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/:instanceId",
-    requireGrant(idResource("instance", "instanceId"), "read"),
+    requireGrant(idResource("workflow-run", "instanceId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "Get instance detail",
@@ -841,7 +841,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/:instanceId/health",
-    requireGrant(idResource("instance", "instanceId"), "read"),
+    requireGrant(idResource("workflow-run", "instanceId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "Get instance health",
@@ -901,7 +901,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/:instanceId/offerings",
-    requireGrant(idResource("instance", "instanceId"), "read"),
+    requireGrant(idResource("workflow-run", "instanceId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List instance offerings",
@@ -961,7 +961,7 @@ export function createInstanceRoutes({
 
   app.delete(
     "/:instanceId",
-    requireGrant(idResource("instance", "instanceId"), "manage"),
+    requireGrant(idResource("workflow-run", "instanceId"), "manage"),
     describeRoute({
       tags: ["Instances"],
       summary: "Stop an instance",
@@ -1183,7 +1183,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/:instanceId/events",
-    requireGrant(idResource("instance", "instanceId"), "read"),
+    requireGrant(idResource("workflow-run", "instanceId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "SSE event stream",
@@ -1303,7 +1303,7 @@ export function createInstanceRoutes({
 
   app.post(
     "/:instanceId/mail",
-    requireGrant(idResource("instance", "instanceId"), "write"),
+    requireGrant(idResource("workflow-run", "instanceId"), "write"),
     describeRoute({
       tags: ["Instances"],
       summary: "Send mail to the agent",
@@ -1555,7 +1555,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/:instanceId/mail",
-    requireGrant(idResource("instance", "instanceId"), "read"),
+    requireGrant(idResource("workflow-run", "instanceId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List mail for an instance",
@@ -1647,7 +1647,7 @@ export function createInstanceRoutes({
 
   app.get(
     "/:instanceId/turns",
-    requireGrant(idResource("instance", "instanceId"), "read"),
+    requireGrant(idResource("workflow-run", "instanceId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List inference turns for an instance",

@@ -104,7 +104,7 @@ function makeTestRun(overrides: Record<string, unknown> = {}) {
 function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
   return {
     id: "grant-test",
-    resource: "instance:*",
+    resource: "workflow-run:*",
     action: "read",
     effect: "allow",
     origin: "system",
@@ -831,10 +831,10 @@ describe("read routes serve a folded run", () => {
 
 describe("interact routes serve a folded run", () => {
   function writeGrant(): GrantRule {
-    return makeGrant({ resource: "instance:*", action: "write" });
+    return makeGrant({ resource: "workflow-run:*", action: "write" });
   }
   function readGrant(): GrantRule {
-    return makeGrant({ resource: "instance:*", action: "read" });
+    return makeGrant({ resource: "workflow-run:*", action: "read" });
   }
   function sendingService(): SessionService {
     return {
@@ -1000,7 +1000,7 @@ describe("POST /agents/instances/:instanceId/mail", () => {
   const USER_ADDR = `${USER_ID}@${testTenant.domain}`;
 
   function makeMailGrant(): GrantRule {
-    return makeGrant({ resource: "instance:*", action: "write" });
+    return makeGrant({ resource: "workflow-run:*", action: "write" });
   }
 
   type CapturedSendArgs = {
@@ -1156,7 +1156,7 @@ describe("POST /agents/instances/:instanceId/mail", () => {
 
 describe("POST /agents/instances/:instanceId/mail attachments", () => {
   function makeMailGrant(): GrantRule {
-    return makeGrant({ resource: "instance:*", action: "write" });
+    return makeGrant({ resource: "workflow-run:*", action: "write" });
   }
 
   // A session service whose sendUserMessage assembles a real conversation
@@ -1515,10 +1515,10 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     typeof createInMemoryGrantStore
   > {
     return createInMemoryGrantStore([
-      // The invoking user holds an instance:* create grant.
+      // The invoking user holds a workflow-run:* create grant.
       makeGrant({
-        id: "g-instance-create",
-        resource: "instance:*",
+        id: "g-workflow-run-create",
+        resource: "workflow-run:*",
         action: "create",
       }),
       // The definition's creator holds `credential:{id}` / `use` for the
@@ -2118,7 +2118,7 @@ describe("DELETE /agents/instances/:instanceId (folded run)", () => {
       authHandler: () => new Response("", { status: 404 }),
       db,
       grantStore: createInMemoryGrantStore([
-        makeGrant({ resource: "instance:*", action: "manage" }),
+        makeGrant({ resource: "workflow-run:*", action: "manage" }),
       ]),
       sidecarRouter: createMockSidecarRouter(),
       sessionService,
