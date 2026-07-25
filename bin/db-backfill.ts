@@ -52,7 +52,8 @@ async function main(): Promise<void> {
       `db-backfill: folded ${summary.agentsFolded} agent(s) ` +
         `(${summary.agentsSkipped} already folded), ` +
         `${summary.workflowAssetsFolded} workflow asset(s) ` +
-        `(${summary.workflowAssetsSkipped} already folded)`,
+        `(${summary.workflowAssetsSkipped} already folded); ` +
+        `anchored ${summary.nativeRunsAnchored} deployment run(s) to a definition`,
     );
   } catch (err) {
     await close();

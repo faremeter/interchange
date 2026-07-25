@@ -22,6 +22,7 @@ import {
   seedPrincipal,
   seedProvider,
   seedTenants,
+  seedWorkflowDeployment,
 } from "@intx/test-harness/seed";
 import {
   agent,
@@ -30,6 +31,7 @@ import {
   grant,
   workflowDefinition,
   workflowDefinitionVersion,
+  workflowRun,
 } from "@intx/db/schema";
 import { BackfillPreflightError, runBackfill } from "@intx/hub-sessions";
 
@@ -322,5 +324,60 @@ describe.skipIf(!harnessDbEnvAvailable())("db-backfill (real DB)", () => {
     const result = await runBackfill(h.db);
     expect(result.agentsFolded).toBe(1);
     expect(result.agentsSkipped).toBe(1);
+  });
+
+  // A native (deployment-anchored) run + its folded workflow definition.
+  async function seedNativeRun(): Promise<void> {
+    await seedResolvableBase();
+    await h.db.insert(asset).values({
+      id: "ast_wf",
+      tenantId: "tnt_root",
+      kind: "workflow",
+      name: "my-workflow",
+      creatorPrincipalId: "prn_creator",
+    });
+    await seedWorkflowDeployment(h.db, {
+      id: "dep_1",
+      tenantId: "tnt_root",
+      definitionAssetId: "ast_wf",
+      address: "ins_dep@wf.example",
+    });
+    await h.db.insert(workflowRun).values({
+      id: "run_native",
+      tenantId: "tnt_root",
+      deploymentId: "dep_1",
+      definitionId: null,
+      status: "running",
+    });
+  }
+
+  async function runDefinitionId(): Promise<string | null | undefined> {
+    const row = await h.db.query.workflowRun.findFirst({
+      where: eq(workflowRun.id, "run_native"),
+    });
+    return row?.definitionId;
+  }
+
+  test("anchors a deployment run to its folded definition", async () => {
+    await seedNativeRun();
+
+    const summary = await runBackfill(h.db);
+    expect(summary.nativeRunsAnchored).toBe(1);
+
+    const def = await h.db.query.workflowDefinition.findFirst({
+      where: eq(workflowDefinition.assetId, "ast_wf"),
+    });
+    expect(def?.id).toBeDefined();
+    expect(await runDefinitionId()).toBe(def?.id ?? "");
+  });
+
+  test("run anchoring is idempotent: a second run anchors nothing", async () => {
+    await seedNativeRun();
+    await runBackfill(h.db);
+    const anchored = await runDefinitionId();
+
+    const second = await runBackfill(h.db);
+    expect(second.nativeRunsAnchored).toBe(0);
+    expect(await runDefinitionId()).toBe(anchored ?? "");
   });
 });

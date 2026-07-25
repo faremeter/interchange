@@ -12,9 +12,16 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants } from "@intx/test-harness/seed";
-import { workflowDefinition, workflowDefinitionVersion } from "@intx/db/schema";
-import { createWorkflowDefinitionStore } from "@intx/db";
+import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  asset,
+  workflowDefinition,
+  workflowDefinitionVersion,
+} from "@intx/db/schema";
+import {
+  createWorkflowDefinitionStore,
+  resolveDefinitionIdForAsset,
+} from "@intx/db";
 import { and, eq } from "drizzle-orm";
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -111,6 +118,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(result).toEqual({ ok: false, reason: "version_not_found" });
       // No partial write: the active version is unchanged.
       expect(await versionStatus("2")).toBe("active");
+    });
+
+    test("resolveDefinitionIdForAsset resolves a folded asset and nulls a miss", async () => {
+      await seedTenants(h.db, [{ id: "tnt_root" }]);
+      await seedPrincipal(h.db, { id: "prn_creator", tenantId: "tnt_root" });
+      await h.db.insert(asset).values({
+        id: "ast_1",
+        tenantId: "tnt_root",
+        kind: "workflow",
+        name: "wf",
+        creatorPrincipalId: "prn_creator",
+      });
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_asset",
+        tenantId: "tnt_root",
+        name: "asset-backed",
+        assetId: "ast_1",
+      });
+
+      expect(await resolveDefinitionIdForAsset(h.db, "ast_1")).toBe(
+        "wfd_asset",
+      );
+      // An asset the fold never covered has no definition: null, not an error.
+      expect(await resolveDefinitionIdForAsset(h.db, "ast_missing")).toBeNull();
     });
   },
 );

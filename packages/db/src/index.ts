@@ -22,6 +22,7 @@ export {
 } from "./workflow-run-store";
 export {
   createWorkflowDefinitionStore,
+  resolveDefinitionIdForAsset,
   type WorkflowDefinitionRollbackResult,
 } from "./workflow-definition-store";
 export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";

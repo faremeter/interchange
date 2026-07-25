@@ -10,6 +10,28 @@ import { parseWorkflowDefinitionRow } from "./parse-row";
 type DBHandle = DB["db"];
 type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
 
+/**
+ * The definition that a workflow asset belongs to, or null when the asset was
+ * never folded into a definition. This is the single expression of the
+ * deployment -> definition mapping (a deployment names its asset via
+ * `definitionAssetId`); the run backfill and the native-run insert sites both
+ * resolve through it. Null on a miss is deliberate, not an error: a deployment
+ * whose asset the run-once fold never covered has no definition yet, and its
+ * runs anchor on `deploymentId` until that gap closes.
+ */
+export async function resolveDefinitionIdForAsset(
+  db: DBHandle,
+  assetId: string,
+): Promise<string | null> {
+  const row = await db
+    .select({ id: workflowDefinition.id })
+    .from(workflowDefinition)
+    .where(eq(workflowDefinition.assetId, assetId))
+    .limit(1)
+    .then((rows) => rows[0]);
+  return row?.id ?? null;
+}
+
 export type WorkflowDefinitionRollbackResult =
   | { ok: true; definition: ParsedWorkflowDefinition }
   | { ok: false; reason: "definition_not_found" | "version_not_found" };
