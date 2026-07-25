@@ -372,6 +372,13 @@
       "when": 1784930942498,
       "tag": "0052_drop_inference_turn_instance_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1784937859340,
+      "tag": "0053_session_mail_session_id_index",
+      "breakpoints": true
     }
   ]
 }

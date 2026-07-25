@@ -1,0 +1,1 @@
+CREATE INDEX "session_mail_session_id_created_at_idx" ON "session_mail" USING btree ("session_id","created_at");

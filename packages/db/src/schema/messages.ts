@@ -97,5 +97,12 @@ export const sessionMail = pgTable(
       t.instanceId,
       t.createdAt,
     ),
+    // A folded run's mail carries a null instanceId, so its history and prior-
+    // mail queries key on the session instead. This index supports that scan
+    // the way the instanceId index supports a legacy instance's.
+    index("session_mail_session_id_created_at_idx").on(
+      t.sessionId,
+      t.createdAt,
+    ),
   ],
 );
