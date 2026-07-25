@@ -2230,6 +2230,30 @@ describe("DELETE /agents/instances/:instanceId (folded run)", () => {
     expect(abandoned).toEqual([]);
   });
 
+  test("a deployment anchor run (workflow-derived address) is not stoppable here (404, no undeploy)", async () => {
+    const updates: Update[] = [];
+    const endCalls: EndCall[] = [];
+    const abandoned: string[] = [];
+    // The anchor run shares the deployment id and owns a workflow-derived
+    // address. The stop route must report it absent rather than tear down the
+    // live deployment via endSession.
+    const app = stopApp(
+      createFoldedDeleteDB({
+        run: makeRun({ address: `ins_dep_anchor@${testTenant.domain}` }),
+        updates,
+      }),
+      createStopSessionService(endCalls),
+      abandoned,
+    );
+
+    const res = await stop(app);
+
+    expect(res.status).toBe(404);
+    expect(endCalls).toEqual([]);
+    expect(updates).toEqual([]);
+    expect(abandoned).toEqual([]);
+  });
+
   test("a sidecar teardown failure returns 502 before any run write", async () => {
     const updates: Update[] = [];
     const abandoned: string[] = [];

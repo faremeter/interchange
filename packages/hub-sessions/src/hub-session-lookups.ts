@@ -514,6 +514,15 @@ export async function resolveRoutableAddress(
   db: DB["db"],
   address: string,
 ): Promise<RoutableEndpoint | undefined> {
+  // A workflow-derived address belongs to a deployment's anchor run, resolved
+  // through the workflow-derived key path (`lookupPublicKey`/deploy-ack), not
+  // here. `resolveRoutableAddress` owns plain `ins_<hex>` resolution; excluding
+  // the derived family keeps the anchor run invisible to every plain-address
+  // consumer (mail persistence, the reconnect reaction), preserving the
+  // undefined result those paths saw before the anchor row existed.
+  if (isWorkflowDerivedAddress(address)) {
+    return undefined;
+  }
   const [instanceRows, runRows] = await Promise.all([
     db
       .select({
@@ -770,9 +779,18 @@ export async function findRoutableById(
       // Deployment-anchored native run, not a folded instance; not served here.
       return undefined;
     }
+    if (isWorkflowDerivedAddress(runRow.address)) {
+      // A deployment's anchor run owns a workflow-derived address. Like an
+      // address-less deployment-anchored run it is not a folded instance and is
+      // not served on the instance read surface -- and unlike a plain-address
+      // run with no origin agent below, its missing origin agent is expected,
+      // not corruption, so it must not warn.
+      return undefined;
+    }
     if (runRow.originAgentId === null) {
-      // A folded run owns an address but its definition names no origin agent:
-      // backfill corruption. Surface it rather than bury it as a silent 404.
+      // A folded run owns a plain address but its definition names no origin
+      // agent: backfill corruption. Surface it rather than bury it as a silent
+      // 404.
       logger.warn`Run ${runRow.id} owns a routing address but its definition has no origin agent; treating as not found`;
       return undefined;
     }

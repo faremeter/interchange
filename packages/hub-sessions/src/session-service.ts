@@ -16,6 +16,7 @@ import { listAssetsForTenant, type DB } from "@intx/db";
 import {
   grant as grantTable,
   workflowDeployment as workflowDeploymentTable,
+  workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
 import { generateId } from "@intx/hub-common";
@@ -1116,6 +1117,27 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         // publicKey is left null here; the sidecar's deploy-ack persists the
         // deployment's minted key once the child has spawned.
         status: "deployed",
+        createdAt: now,
+      });
+
+      // The deployment's anchor run: the one workflow_run that carries the
+      // deployment's routing identity, 1:1 with the deployment (id and address
+      // both derived from `deploymentId`). It gives that identity a first-class
+      // home on the run independent of the deployment projection. The address
+      // and public key the reconnect ownership challenge verifies are read from
+      // and written to the deployment projection, so this row records the
+      // address without being read. Child runs of this deployment are separate
+      // address-less rows. `definitionId` stays null: the anchor row anchors on
+      // `deploymentId`, the column it can fall back to if the deployment
+      // projection is dissolved. `principalId` is null -- the workflow-derived
+      // key path reads `publicKey` directly and never consults it, and the
+      // `workflow-run:<deploymentId>` grant seeded below already covers reads.
+      await tx.insert(workflowRunTable).values({
+        id: deploymentId,
+        tenantId,
+        deploymentId,
+        address: deriveDeploymentAddress({ deploymentId, deploymentDomain }),
+        status: "running",
         createdAt: now,
       });
 

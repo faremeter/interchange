@@ -53,6 +53,7 @@ import {
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
+import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 import { formatOffering } from "./offerings";
 import { formatInstanceView, instanceStatusOf } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
@@ -1201,10 +1202,12 @@ export function createInstanceRoutes({
         .limit(1);
 
       if (run !== undefined) {
-        if (run.address === null) {
-          // A run with no address is a deployment-anchored native workflow
-          // run, not a folded instance; the instance stop route does not own
-          // it. Report it as absent rather than "already stopped".
+        if (run.address === null || isWorkflowDerivedAddress(run.address)) {
+          // A run with no address, or one bearing a workflow-derived address
+          // (a deployment's anchor run), is a deployment-anchored native
+          // workflow run, not a folded instance; the instance stop route does
+          // not own it. Report it as absent rather than "already stopped" --
+          // and never drive it into a deployment undeploy.
           return c.json(
             { error: { code: "not_found", message: "Instance not found" } },
             404,

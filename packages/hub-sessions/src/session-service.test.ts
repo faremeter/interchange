@@ -13,6 +13,7 @@ import { extractAttachments } from "@intx/mime";
 import {
   grant as grantTable,
   workflowDeployment as workflowDeploymentTable,
+  workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AgentAssetWithAsset, AssetService } from "./asset-service";
@@ -1385,9 +1386,20 @@ describe("deployWorkflowDefinition", () => {
     effect: string;
   };
 
+  type CapturedRunRow = {
+    id: string;
+    tenantId: string;
+    deploymentId: string;
+    address: string;
+    status: string;
+    definitionId?: string | null;
+    principalId?: string | null;
+  };
+
   function createWorkflowDeployFixture() {
     const deploymentRows: CapturedDeploymentRow[] = [];
     const grantRows: CapturedGrantRow[] = [];
+    const runRows: CapturedRunRow[] = [];
     const workflowRepoWrites: { repoId: RepoId; files: string[] }[] = [];
 
     const insert = (table: unknown) => {
@@ -1403,6 +1415,14 @@ describe("deployWorkflowDefinition", () => {
         return {
           values(row: CapturedDeploymentRow) {
             deploymentRows.push(row);
+            return Promise.resolve();
+          },
+        };
+      }
+      if (table === workflowRunTable) {
+        return {
+          values(row: CapturedRunRow) {
+            runRows.push(row);
             return Promise.resolve();
           },
         };
@@ -1445,12 +1465,25 @@ describe("deployWorkflowDefinition", () => {
     (repoStore as unknown as { repoStore: RepoStore }).repoStore =
       writingRepoStore;
 
-    return { deploymentRows, grantRows, workflowRepoWrites, fakeDb, repoStore };
+    return {
+      deploymentRows,
+      grantRows,
+      runRows,
+      workflowRepoWrites,
+      fakeDb,
+      repoStore,
+    };
   }
 
   test("deploys a multi-step workflow with an awaitSignal step on the multi-step branch and records a projection row", async () => {
-    const { deploymentRows, grantRows, workflowRepoWrites, fakeDb, repoStore } =
-      createWorkflowDeployFixture();
+    const {
+      deploymentRows,
+      grantRows,
+      runRows,
+      workflowRepoWrites,
+      fakeDb,
+      repoStore,
+    } = createWorkflowDeployFixture();
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
     mockRouter.sendAgentDeploy = ((
@@ -1562,6 +1595,22 @@ describe("deployWorkflowDefinition", () => {
     expect(deploymentRow.tenantId).toBe("tenant-1");
     expect(deploymentRow.definitionAssetId).toBe("ast_workflow_1");
     expect(deploymentRow.status).toBe("deployed");
+
+    // The deployment's anchor run is recorded in the same transaction: one
+    // workflow_run 1:1 with the deployment, its id and routing address both
+    // derived from the deployment, born running with no key yet (deploy-ack
+    // fills it). It anchors on the deployment for now, so definitionId and
+    // principalId are left unset.
+    expect(runRows).toHaveLength(1);
+    const runRow = runRows[0];
+    if (runRow === undefined) throw new Error("missing anchor workflow_run");
+    expect(runRow.id).toBe("dep_xyz");
+    expect(runRow.tenantId).toBe("tenant-1");
+    expect(runRow.deploymentId).toBe("dep_xyz");
+    expect(runRow.address).toBe("ins_dep_xyz@workflow.test");
+    expect(runRow.status).toBe("running");
+    expect(runRow.definitionId ?? null).toBeNull();
+    expect(runRow.principalId ?? null).toBeNull();
 
     // A read grant on the deployment's workflow-run resource is seeded
     // for the deploying principal so they can observe run events.

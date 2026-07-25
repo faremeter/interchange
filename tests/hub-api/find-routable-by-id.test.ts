@@ -201,6 +201,35 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     ).toBeUndefined();
   });
 
+  test("returns undefined for a deployment anchor run (workflow-derived address)", async () => {
+    await seedBase();
+    // The deployment's anchor run owns a workflow-derived address and its id is
+    // the deployment id. It is a routing/key anchor, not a folded instance, so
+    // the read surface never serves it. The address alone excludes it: even
+    // pointed at a definition that DOES name an origin agent -- so absent the
+    // workflow-derived guard it would resolve as a run -- it still returns
+    // not-found, and without the corruption warning the plain-address case
+    // above emits.
+    await h.db.insert(workflowDefinition).values({
+      id: "wfd_anchor",
+      tenantId: "tnt_root",
+      name: "anchor-def",
+      originAgentId: "agt_1",
+    });
+    await h.db.insert(workflowRun).values({
+      id: "dep_anchor",
+      tenantId: "tnt_root",
+      definitionId: "wfd_anchor",
+      deploymentId: null,
+      principalId: null,
+      address: "ins_dep_anchor@root.example",
+      status: "running",
+    });
+    expect(
+      await findRoutableById(h.db, "dep_anchor", "tnt_root"),
+    ).toBeUndefined();
+  });
+
   test("returns undefined for an unknown id", async () => {
     await seedBase();
     expect(

@@ -122,6 +122,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeUndefined();
     });
 
+    test("excludes a deployment anchor run (workflow-derived address)", async () => {
+      await seedBase();
+      // The anchor run owns a workflow-derived address in the run table. A
+      // plain-resolution caller (mail persist, reconnect reaction) must not
+      // match it -- the workflow-derived key path owns it -- so the guard
+      // returns undefined before the address query runs.
+      await h.db.insert(workflowRun).values({
+        id: "dep_anchor",
+        tenantId: "tnt_root",
+        deploymentId: null,
+        principalId: null,
+        address: "ins_dep_anchor@root.example",
+        status: "running",
+      });
+      expect(
+        await resolveRoutableAddress(h.db, "ins_dep_anchor@root.example"),
+      ).toBeUndefined();
+    });
+
     test("skips a terminated run (endedAt set)", async () => {
       await seedBase();
       await h.db.insert(workflowRun).values({
