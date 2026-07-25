@@ -75,8 +75,9 @@ export const workflowRun = pgTable(
     // folded run IS the launched instance, so it owns its routing endpoint.
     // `address` is that endpoint -- nullable because a run that anchors on a
     // deployment leaves it null and routes via the deployment, but unique among
-    // the folded runs that set it (the partial unique index below). No code
-    // writes these yet; `publicKey`/`sidecarId`/`kernelId` land at deploy-ack.
+    // the folded runs that set it (the partial unique index below). The folded
+    // launch writes `address` and `modelPreferences`; `publicKey` is persisted
+    // when the sidecar acks the deploy; no code populates `sidecarId`/`kernelId`.
     address: text("address"),
     publicKey: text("public_key"),
     sidecarId: text("sidecar_id").references(() => sidecar.id, {
