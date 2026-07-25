@@ -15,7 +15,13 @@ import type {
 } from "@intx/types/runtime";
 
 import { createApp } from "../app";
-import { agentInstance, workflowRun } from "@intx/db/schema";
+import {
+  agentInstance,
+  agentSession,
+  inferenceTurn,
+  turnPart,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createSidecarEmitter,
   type EventCollectorRegistry,
@@ -132,6 +138,13 @@ type MockDBOpts = {
   /** A folded workflow_run row `findRoutableById`'s run query returns (with an
    * `originAgentId`), or undefined for the instance-only tests. */
   run?: Record<string, unknown> | undefined;
+  /** The session id `resolveRunSessionId` finds for a run's principal (used by
+   * the mail routes). */
+  runSessionId?: string | undefined;
+  /** inference_turn rows the turns route returns for a run. */
+  turns?: Record<string, unknown>[] | undefined;
+  /** turn_part rows joined to those turns. */
+  turnParts?: Record<string, unknown>[] | undefined;
   offerings?: Record<string, unknown>[] | undefined;
   /** Rows returned for the priorMail query used by POST /mail.
    * Defaults to `[]` (no prior session mail). */
@@ -187,6 +200,38 @@ function createMockDB(opts: MockDBOpts) {
           return {
             leftJoin: () => ({
               where: () => ({ limit: () => Promise.resolve(runRows) }),
+            }),
+          };
+        }
+        if (t === agentSession) {
+          // resolveRunSessionId: .where().orderBy().limit()
+          const sessionRows = opts.runSessionId
+            ? [{ id: opts.runSessionId }]
+            : [];
+          return {
+            where: () => ({
+              orderBy: (..._args: unknown[]) => ({
+                limit: () => Promise.resolve(sessionRows),
+              }),
+            }),
+          };
+        }
+        if (t === inferenceTurn) {
+          // turns route: .where().orderBy().limit()
+          return {
+            where: () => ({
+              orderBy: (..._args: unknown[]) => ({
+                limit: () => Promise.resolve(opts.turns ?? []),
+              }),
+            }),
+          };
+        }
+        if (t === turnPart) {
+          // turns route: .where().orderBy() (no limit)
+          return {
+            where: () => ({
+              orderBy: (..._args: unknown[]) =>
+                Promise.resolve(opts.turnParts ?? []),
             }),
           };
         }
@@ -777,6 +822,154 @@ describe("read routes serve a folded run", () => {
     expect(body).toMatchObject([
       { id: "off_1", agentName: "Test Agent", name: "Translation" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Folded run interact routes — mail send/list and turns for a workflow_run
+// ---------------------------------------------------------------------------
+
+describe("interact routes serve a folded run", () => {
+  function writeGrant(): GrantRule {
+    return makeGrant({ resource: "instance:*", action: "write" });
+  }
+  function readGrant(): GrantRule {
+    return makeGrant({ resource: "instance:*", action: "read" });
+  }
+  function sendingService(): SessionService {
+    return {
+      stageWorkflowStep() {
+        throw new Error("not implemented");
+      },
+      deployInstanceAtHead() {
+        throw new Error("not implemented");
+      },
+      deployWorkflowDefinition() {
+        throw new Error("not implemented");
+      },
+      deploySingleStepAtHead() {
+        throw new Error("not implemented");
+      },
+      endSession() {
+        throw new Error("not implemented");
+      },
+      sendUserMessage() {
+        return Promise.resolve(new Uint8Array([1, 2, 3]));
+      },
+    };
+  }
+
+  test("POST mail on a running run persists on the run session with a null instanceId", async () => {
+    const inserts: Record<string, unknown>[] = [];
+    const app = createTestApp({
+      grants: [writeGrant()],
+      sessionService: sendingService(),
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run: makeTestRun({ principalId: "prn_run" }),
+        runSessionId: "ses_run",
+        inserts,
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/mail`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hello run" }),
+    });
+
+    expect(res.status).toBe(201);
+    const body: unknown = await res.json();
+    // A run's mail anchors on its session and records no instance.
+    expect(body).toMatchObject({ sessionId: "ses_run", instanceId: null });
+    const mailInsert = inserts.find((r) => r["direction"] === "inbound");
+    expect(mailInsert).toMatchObject({
+      sessionId: "ses_run",
+      instanceId: null,
+    });
+  });
+
+  test("POST mail 409s a terminal run", async () => {
+    const app = createTestApp({
+      grants: [writeGrant()],
+      sessionService: sendingService(),
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run: makeTestRun({ status: "completed", principalId: "prn_run" }),
+        runSessionId: "ses_run",
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/mail`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "too late" }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  test("GET mail serves a terminated run's history via its ended session", async () => {
+    const app = createTestApp({
+      grants: [readGrant()],
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run: makeTestRun({
+          status: "cancelled",
+          endedAt: new Date("2025-02-01"),
+          principalId: "prn_run",
+        }),
+        // The ended session is still resolvable by the run's principal.
+        runSessionId: "ses_run",
+      },
+    });
+
+    // A terminal run is served (not 404); with no seeded mail the page is empty
+    // -- the point is that it resolves the ended session rather than 404ing.
+    const res = await app.request(`${instanceURL()}/mail`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ data: [] });
+  });
+
+  test("GET turns returns a run's inference turns keyed by the run id", async () => {
+    const app = createTestApp({
+      grants: [readGrant()],
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        instance: undefined,
+        agent: testAgent,
+        run: makeTestRun({ principalId: "prn_run" }),
+        turns: [
+          {
+            id: "turn_1",
+            sessionId: "ses_run",
+            instanceId: INSTANCE_ID,
+            model: "test-model",
+            status: "completed",
+            startedAt: new Date("2025-02-01"),
+            endedAt: new Date("2025-02-01"),
+          },
+        ],
+        turnParts: [],
+      },
+    });
+
+    const res = await app.request(`${instanceURL()}/turns`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({
+      data: [{ id: "turn_1", instanceId: INSTANCE_ID, model: "test-model" }],
+    });
   });
 });
 

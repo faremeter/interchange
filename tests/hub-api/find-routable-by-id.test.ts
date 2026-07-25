@@ -20,7 +20,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import { findRoutableById } from "@intx/hub-sessions";
+import { findRoutableById, resolveRunSessionId } from "@intx/hub-sessions";
 
 describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
   let h: TestDb;
@@ -237,5 +237,51 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     await expect(findRoutableById(h.db, "ins_dup", "tnt_root")).rejects.toThrow(
       /both an agent instance and a workflow run/,
     );
+  });
+
+  describe("resolveRunSessionId includeEnded", () => {
+    async function seedRunPrincipal(): Promise<void> {
+      await seedTenants(h.db, [{ id: "tnt_root" }]);
+      await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
+      await h.db.insert(agent).values({
+        id: "agt_1",
+        tenantId: "tnt_root",
+        creatorPrincipalId: "prn_run",
+        name: "a",
+        systemPrompt: "p",
+      });
+    }
+
+    test("default resolves only a live session; a stopped run's ended one is null", async () => {
+      await seedRunPrincipal();
+      await h.db.insert(agentSession).values({
+        id: "ses_ended",
+        tenantId: "tnt_root",
+        agentId: "agt_1",
+        principalId: "prn_run",
+        status: "ended",
+        endedAt: new Date("2026-01-05T00:00:00Z"),
+      });
+
+      expect(await resolveRunSessionId(h.db, "prn_run")).toBeNull();
+      expect(
+        await resolveRunSessionId(h.db, "prn_run", { includeEnded: true }),
+      ).toBe("ses_ended");
+    });
+
+    test("returns null for a principal with no session, either way", async () => {
+      await seedRunPrincipal();
+      expect(await resolveRunSessionId(h.db, "prn_run")).toBeNull();
+      expect(
+        await resolveRunSessionId(h.db, "prn_run", { includeEnded: true }),
+      ).toBeNull();
+    });
+
+    test("returns null for a null principal", async () => {
+      expect(await resolveRunSessionId(h.db, null)).toBeNull();
+      expect(
+        await resolveRunSessionId(h.db, null, { includeEnded: true }),
+      ).toBeNull();
+    });
   });
 });

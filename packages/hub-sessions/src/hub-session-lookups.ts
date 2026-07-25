@@ -6,7 +6,7 @@
 // single struct that the hub app passes to `createSidecarRouter` as
 // `lookups`.
 
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, asc, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
 import {
   createApprovalStore,
@@ -566,27 +566,34 @@ export async function resolveRoutableAddress(
 }
 
 /**
- * A folded run has no session column; its live session is the not-yet-ended
- * `agent_session` keyed by the run's principal. Returns null when the run has no
- * principal or no live session. Transitional, alongside
+ * A folded run has no session column; its session is the `agent_session` keyed
+ * by the run's principal. By default this is the live (not-yet-ended) session,
+ * matching routing semantics; `includeEnded` also resolves a stopped run's
+ * ended session, which mail history needs. Returns null when the run has no
+ * principal or no matching session. Transitional, alongside
  * `RoutableEndpoint.sessionId`.
  */
-async function resolveRunSessionId(
+export async function resolveRunSessionId(
   db: DB["db"],
   principalId: string | null,
+  opts: { includeEnded?: boolean } = {},
 ): Promise<string | null> {
   if (principalId === null) {
     return null;
   }
+  // One session per run principal (invariant), so limit(1) returns the whole
+  // history; order deterministically so a hypothetical second row cannot make
+  // the pick flap. If a run ever grows multiple sessions per principal this
+  // becomes a union and limit(1) silently truncates.
+  const conditions = [eq(agentSession.principalId, principalId)];
+  if (opts.includeEnded !== true) {
+    conditions.push(isNull(agentSession.endedAt));
+  }
   const row = await db
     .select({ id: agentSession.id })
     .from(agentSession)
-    .where(
-      and(
-        eq(agentSession.principalId, principalId),
-        isNull(agentSession.endedAt),
-      ),
-    )
+    .where(and(...conditions))
+    .orderBy(asc(agentSession.createdAt))
     .limit(1)
     .then((rows) => rows[0]);
   return row?.id ?? null;

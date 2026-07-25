@@ -45,6 +45,7 @@ import type { ProviderPreference } from "@intx/types";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   findRoutableById,
+  resolveRunSessionId,
   SessionLaunchError,
   type EventCollectorRegistry,
   type RoutableRecord,
@@ -1378,33 +1379,32 @@ export function createInstanceRoutes({
       }
       const messageAttachments = attachmentResult.attachments;
 
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenant.id),
-        ),
-      });
-
-      if (!row) {
+      const record = await findRoutableById(db, instanceId, tenant.id);
+      if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
         );
       }
 
-      if (row.status !== "running") {
+      const mappedStatus = instanceStatusOf(record);
+      if (mappedStatus !== "running") {
         return c.json(
           {
             error: {
               code: "conflict",
-              message: `Instance is not running (status: ${row.status})`,
+              message: `Instance is not running (status: ${mappedStatus})`,
             },
           },
           409,
         );
       }
 
-      if (!row.sessionId) {
+      // A send requires the live session: the running gate above guarantees a
+      // run's session is live, and an instance's session column is set while
+      // running.
+      const sessionId = record.sessionId;
+      if (sessionId === null) {
         return c.json(
           {
             error: {
@@ -1424,13 +1424,19 @@ export function createInstanceRoutes({
       const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
       const mimeMessageId = `<${mailId}@${tenant.domain}>`;
 
-      // Fetch recent delivered inbound mail for the MIME References chain.
+      // Fetch recent delivered inbound mail for the MIME References chain. A
+      // run's mail carries a null instanceId, so it is keyed on the session; an
+      // instance keys on its indexed instanceId. GET history keys the same way.
+      const mailScope =
+        record.kind === "instance"
+          ? eq(sessionMail.instanceId, record.id)
+          : eq(sessionMail.sessionId, sessionId);
       const priorMail = await db
         .select({ id: sessionMail.id })
         .from(sessionMail)
         .where(
           and(
-            eq(sessionMail.instanceId, instanceId),
+            mailScope,
             eq(sessionMail.direction, "inbound"),
             eq(sessionMail.status, "delivered"),
           ),
@@ -1461,7 +1467,7 @@ export function createInstanceRoutes({
         inReplyTo = lastIdFromSession;
         references = priorIds;
       } else {
-        const connectorState = sidecarRouter.getConnectorState(row.address);
+        const connectorState = sidecarRouter.getConnectorState(record.address);
         if (connectorState !== null) {
           inReplyTo = connectorState.lastMessageId;
           references = [connectorState.threadRoot];
@@ -1470,10 +1476,14 @@ export function createInstanceRoutes({
 
       const cryptoProvider = await getInstanceCryptoProvider(instanceId);
 
+      // A run's mail is not an instance's, so it records a null instanceId and
+      // anchors on the session (mirroring the sidecar mail-persist path).
+      const mailInstanceId = record.kind === "instance" ? record.id : null;
+
       let rawMIME: Uint8Array;
       try {
         rawMIME = await sessionService.sendUserMessage({
-          agentAddress: row.address,
+          agentAddress: record.address,
           from,
           messageId: mimeMessageId,
           date: now,
@@ -1485,7 +1495,7 @@ export function createInstanceRoutes({
           ...(references !== undefined && references.length > 0
             ? { references }
             : {}),
-          sessionId: row.sessionId,
+          sessionId,
           tenantId: tenant.id,
           cryptoProvider,
         });
@@ -1508,8 +1518,8 @@ export function createInstanceRoutes({
 
       await db.insert(sessionMail).values({
         id: mailId,
-        sessionId: row.sessionId,
-        instanceId,
+        sessionId,
+        instanceId: mailInstanceId,
         tenantId: tenant.id,
         direction: "inbound",
         status: "delivered",
@@ -1518,7 +1528,7 @@ export function createInstanceRoutes({
       });
 
       const parsed = parseMailToEmail(rawMIME, mailId);
-      sidecarRouter.dispatchAgentEvent(row.address, {
+      sidecarRouter.dispatchAgentEvent(record.address, {
         type: "mail.delivered",
         data: {
           ...parsed,
@@ -1531,8 +1541,8 @@ export function createInstanceRoutes({
       return c.json(
         {
           id: mailId,
-          sessionId: row.sessionId,
-          instanceId,
+          sessionId,
+          instanceId: mailInstanceId,
           direction: "inbound" as const,
           status: "delivered" as const,
           receivedAt: mailCreatedAt.toISOString(),
@@ -1577,21 +1587,34 @@ export function createInstanceRoutes({
         limit: c.req.query("limit"),
       });
 
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenant.id),
-        ),
-      });
-
-      if (!row) {
+      const record = await findRoutableById(db, instanceId, tenant.id);
+      if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
         );
       }
 
-      const conditions = [eq(sessionMail.instanceId, instanceId)];
+      // History must serve a terminated endpoint, and the key differs by kind.
+      // An instance keys on its indexed instanceId -- durable even after stop,
+      // when its session column is nulled and its invoker-keyed session is
+      // unrecoverable. A run's mail carries a null instanceId; its principal is
+      // 1:1 with its single session, so resolve that session (ended included)
+      // and key on it.
+      let mailScope;
+      if (record.kind === "instance") {
+        mailScope = eq(sessionMail.instanceId, record.id);
+      } else {
+        const runSessionId = await resolveRunSessionId(db, record.principalId, {
+          includeEnded: true,
+        });
+        if (runSessionId === null) {
+          return c.json(paginatedResponse([], [], limit));
+        }
+        mailScope = eq(sessionMail.sessionId, runSessionId);
+      }
+
+      const conditions = [mailScope];
       if (cursor) {
         conditions.push(
           cursorCondition(sessionMail.createdAt, sessionMail.id, cursor),
@@ -1656,21 +1679,18 @@ export function createInstanceRoutes({
         limit: c.req.query("limit"),
       });
 
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenant.id),
-        ),
-      });
-
-      if (!row) {
+      const record = await findRoutableById(db, instanceId, tenant.id);
+      if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
         );
       }
 
-      const conditions = [eq(inferenceTurn.instanceId, instanceId)];
+      // A turn records its producing endpoint's id: an instance id or, since the
+      // turn table's foreign key to the instance was dropped, a folded run id.
+      // Both equal the path id, so the filter is the same for either kind.
+      const conditions = [eq(inferenceTurn.instanceId, record.id)];
       if (cursor) {
         conditions.push(
           cursorCondition(inferenceTurn.startedAt, inferenceTurn.id, cursor),

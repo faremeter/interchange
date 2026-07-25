@@ -46,6 +46,7 @@ export {
   findRoutableById,
   parseAgentId,
   resolveRoutableAddress,
+  resolveRunSessionId,
   type HubSessionLookupsDeps,
   type RoutableEndpoint,
   type RoutableRecord,
