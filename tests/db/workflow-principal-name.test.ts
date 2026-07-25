@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 
 import { resolveWorkflowPrincipalNames } from "@intx/hub-api";
+import { workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -74,6 +75,36 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // back to the raw refId rather than a wrong label.
       const names = await resolveWorkflowPrincipalNames(h.db, ["run-missing"]);
       expect(names.has("run-missing")).toBe(false);
+    });
+
+    test("resolves a folded run via its own address (no deployment)", async () => {
+      // A folded launch's run carries its address directly and has no
+      // deployment, so the label comes from workflow_run.address.
+      await h.db.insert(workflowRun).values({
+        id: "run-folded",
+        tenantId: TENANT,
+        deploymentId: null,
+        definitionId: null,
+        address: "ins_folded@wf.example",
+        status: "running",
+      });
+
+      const names = await resolveWorkflowPrincipalNames(h.db, ["run-folded"]);
+      expect(names.get("run-folded")).toBe("Workflow (ins_folded@wf.example)");
+    });
+
+    test("omits a run with neither a deployment nor its own address", async () => {
+      await h.db.insert(workflowRun).values({
+        id: "run-nameless",
+        tenantId: TENANT,
+        deploymentId: null,
+        definitionId: null,
+        address: null,
+        status: "running",
+      });
+
+      const names = await resolveWorkflowPrincipalNames(h.db, ["run-nameless"]);
+      expect(names.has("run-nameless")).toBe(false);
     });
   },
 );

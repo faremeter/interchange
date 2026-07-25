@@ -1727,6 +1727,11 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       );
     }
     expect(stateGrant?.["resource"]).toBe(`agent-state:${instanceId}`);
+
+    // A legacy instance's principal stays agent-kind (only a folded run flips
+    // to workflow).
+    const principalRow = inserts.find((i) => i.table === "principal")?.rows[0];
+    expect(principalRow?.["kind"]).toBe("agent");
   });
 
   test("a folded agent launches as a workflow_run keyed by the run principal", async () => {
@@ -1790,6 +1795,12 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     // instance launch does -- the turn FK no longer forbids a run id.
     expect(collectorCreates).toHaveLength(1);
     expect(runRow?.["id"]).toBe(collectorCreates[0]?.instanceId);
+
+    // A folded run's principal is workflow-kind: it is a workflow run, so it
+    // converges on the native run's principal shape.
+    const principalRow = inserts.find((i) => i.table === "principal")?.rows[0];
+    expect(principalRow?.["kind"]).toBe("workflow");
+    expect(principalRow?.["refId"]).toBe(runRow?.["id"]);
   });
 
   test("agent-state grant insert is ordered after the agent_instance insert", async () => {

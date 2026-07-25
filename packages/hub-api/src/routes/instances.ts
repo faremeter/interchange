@@ -350,11 +350,14 @@ export function createInstanceRoutes({
       const sessionId = generateId("session");
 
       await db.transaction(async (tx) => {
-        // Create per-instance principal
+        // Create the endpoint's principal. A folded run is a workflow run, so
+        // its principal is `workflow`-kind (converging on the native run's
+        // principal shape); a legacy instance stays `agent`-kind. The refId is
+        // the shared id either way.
         await tx.insert(principalTable).values({
           id: instancePrincipalId,
           tenantId: tenant.id,
-          kind: "agent",
+          kind: foldedDefinitionId !== undefined ? "workflow" : "agent",
           refId: instanceId,
           status: "active",
           createdAt: now,

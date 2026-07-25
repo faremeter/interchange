@@ -144,9 +144,9 @@ async function resolveGrantNames(
     }
 
     if (workflowRefIds.length > 0) {
-      // A workflow principal's refId is its run id; the run's deployment
-      // address is the only human-facing label it has, reached by joining the
-      // runId through workflow_run to workflow_deployment.
+      // A workflow principal's refId is its run id; its label is the run's
+      // address -- a deployment's for a native run, or the run's own for a
+      // folded launch.
       const workflowNames = await resolveWorkflowPrincipalNames(
         db,
         workflowRefIds,

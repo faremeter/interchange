@@ -6,14 +6,14 @@ import type { DB } from "@intx/db";
 /**
  * Resolve display names for `workflow`-kind principals, keyed by their refId.
  *
- * A workflow run-principal's refId is the run id (not the deployment id): the
- * externally-triggered run mints the principal keyed on its runId. The only
- * human-facing label is the run's deployment address, reached by joining the
- * runId through `workflow_run` to `workflow_deployment`. Returns a map from
- * runId to `Workflow (<address>)`; a runId with no run row, or whose
- * deployment has vanished, is simply absent (the caller falls back to the raw
- * refId). Only externally-triggered runs mint these principals, so no
- * null-principal / internal-run branch is needed.
+ * A workflow run-principal's refId is the run id. Its human-facing label is the
+ * run's address: an externally-triggered or native run reaches it by joining
+ * the runId through `workflow_run` to `workflow_deployment`, while a folded
+ * launch's run carries its address directly on `workflow_run` and has no
+ * deployment. Left-join and prefer the deployment address, falling back to the
+ * run's own. Returns a map from runId to `Workflow (<address>)`; a runId with
+ * no run row, or a run with neither address, is simply absent (the caller falls
+ * back to the raw refId).
  */
 export async function resolveWorkflowPrincipalNames(
   db: DB["db"],
@@ -25,17 +25,21 @@ export async function resolveWorkflowPrincipalNames(
   const runs = await db
     .select({
       runId: workflowRun.id,
-      address: workflowDeployment.address,
+      runAddress: workflowRun.address,
+      deploymentAddress: workflowDeployment.address,
     })
     .from(workflowRun)
-    .innerJoin(
+    .leftJoin(
       workflowDeployment,
       eq(workflowRun.deploymentId, workflowDeployment.id),
     )
     .where(inArray(workflowRun.id, runIds));
 
   for (const r of runs) {
-    names.set(r.runId, `Workflow (${r.address})`);
+    const address = r.deploymentAddress ?? r.runAddress;
+    if (address !== null) {
+      names.set(r.runId, `Workflow (${address})`);
+    }
   }
   return names;
 }
