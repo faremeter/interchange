@@ -520,14 +520,18 @@ describe("createHubSessionOrchestrator", () => {
       }
     });
 
-    test("does not resurrect a leaked terminal run on reconnect", async () => {
+    test("keeps a leaked terminal run routable without a collector or status write", async () => {
       // A failed launch leaves a run `failed` with a null `endedAt` so it stays
-      // routable; a symmetric guarded flip would revive it. The run branch must
-      // write no status at all.
+      // routable, and it ends the run's session. On reconnect the run resolves
+      // session-less: the reaction keeps the address routable by returning
+      // rather than throwing (a throw would roll the just-verified address back
+      // out of routing, the opposite of the keep-inspectable intent) and
+      // restores no collector -- there is no live session to collect into --
+      // and writes no status, mirroring a leaked agent_instance.
       harness = setup({
         instance: undefined,
         run: makeRun({ status: "failed" }),
-        runSessionId: RUN_SESSION_ID,
+        runSessionId: null,
       });
 
       await harness.events.emitAndAwait("agent.reconnected", {
@@ -535,6 +539,8 @@ describe("createHubSessionOrchestrator", () => {
       });
 
       expect(harness.updates).toHaveLength(0);
+      const created = harness.collectors.calls.find((c) => c.kind === "create");
+      expect(created).toBeUndefined();
     });
   });
 

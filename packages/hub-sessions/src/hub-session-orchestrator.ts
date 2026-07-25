@@ -145,6 +145,17 @@ export function createHubSessionOrchestrator(
           `No active endpoint found for reconnect on address "${agentAddress}"`,
         );
       }
+      // A leaked or terminal folded run is deliberately kept routable (terminal
+      // status, null endedAt) so it stays reachable to inspect or clean up --
+      // exactly as a leaked agent_instance does. A run resolves its session
+      // live-only, so once that session has ended it has no session to collect
+      // into. Keep the address routable (return rather than throw, which would
+      // roll the just-verified address back out of routing) and restore no
+      // collector; no status flip either, since a failed -> running flip would
+      // claim a running session that does not exist.
+      if (endpoint.kind === "run" && endpoint.status !== "running") {
+        return;
+      }
       if (endpoint.sessionId === null) {
         throw new Error(
           `Agent "${agentAddress}" reconnected but has no active session`,

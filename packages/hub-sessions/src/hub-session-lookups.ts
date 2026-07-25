@@ -495,6 +495,14 @@ export interface RoutableEndpoint {
   readonly address: string;
   readonly publicKey: string | null;
   /**
+   * The endpoint's raw table status (the instance or run enum). Resolution is
+   * `endedAt`-filtered, so a resolved endpoint is not necessarily live: a
+   * leaked run/instance is deliberately kept routable (terminal status, null
+   * `endedAt`) to stay reachable, and the reconnect reaction reads this to keep
+   * such an endpoint routable without restoring a collector.
+   */
+  readonly status: string;
+  /**
    * The live session backing this endpoint. An instance carries its own
    * `sessionId`; a folded run has no session column, so this is the run's
    * not-yet-ended `agent_session`, keyed by the run's principal. Transitional
@@ -532,6 +540,7 @@ export async function resolveRoutableAddress(
         id: agentInstance.id,
         tenantId: agentInstance.tenantId,
         publicKey: agentInstance.publicKey,
+        status: agentInstance.status,
         sessionId: agentInstance.sessionId,
       })
       .from(agentInstance)
@@ -544,6 +553,7 @@ export async function resolveRoutableAddress(
         id: workflowRun.id,
         tenantId: workflowRun.tenantId,
         publicKey: workflowRun.publicKey,
+        status: workflowRun.status,
         principalId: workflowRun.principalId,
       })
       .from(workflowRun)
@@ -568,6 +578,7 @@ export async function resolveRoutableAddress(
       tenantId: instanceRow.tenantId,
       address,
       publicKey: instanceRow.publicKey,
+      status: instanceRow.status,
       sessionId: instanceRow.sessionId,
     };
   }
@@ -579,6 +590,7 @@ export async function resolveRoutableAddress(
       tenantId: runRow.tenantId,
       address,
       publicKey: runRow.publicKey,
+      status: runRow.status,
       sessionId: await resolveRunSessionId(db, runRow.principalId),
     };
   }
