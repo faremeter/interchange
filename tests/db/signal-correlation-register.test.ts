@@ -20,7 +20,6 @@ import {
   approval,
   signalCorrelation,
   workflowDefinition,
-  workflowDeployment,
   workflowRun,
 } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
@@ -386,13 +385,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("anchors the lazily-created run on its deployment's definition", async () => {
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
-      // The deployment's asset has a folded definition, so the run takes it.
+      // The anchor run carries a definition, so the lazily-anchored child run
+      // inherits it.
       await h.db.insert(workflowDefinition).values({
         id: "wfd_native",
         tenantId: TENANT,
         name: "native",
         assetId: ASSET,
       });
+      await h.db
+        .update(workflowRun)
+        .set({ definitionId: "wfd_native" })
+        .where(eq(workflowRun.id, DEPLOYMENT));
       const router = buildRouter();
       const ws = createMockWs();
       await reconnectAndVerify(router, ws, kp.privateKey);
@@ -598,11 +602,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(approvals).toHaveLength(0);
     });
 
-    test("rejects a frame whose deployment is no longer deployed", async () => {
-      // Bring WF_ADDR up while its deployment is live, then tear the deployment
-      // down (status flips off "deployed") with the connection still owning the
-      // address. registerSignalCorrelation filters to a deployed deployment, so
-      // the now-torn-down address resolves no row and it throws; the handler
+    test("rejects a frame whose anchor run is no longer running", async () => {
+      // Bring WF_ADDR up while its anchor run is live, then flip the anchor run
+      // terminal with the connection still owning the address.
+      // registerSignalCorrelation gates on a running anchor run, so the
+      // now-terminal address resolves no row and it throws; the handler
       // swallows the throw and writes nothing.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
@@ -612,12 +616,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await reconnectAndVerify(router, ws, kp.privateKey);
       expect(router.getRoutableAddresses()).toContain(WF_ADDR);
 
-      // Tear the deployment down after the address is already routed, so the
-      // ownership gate still passes but the deployed-only resolution misses.
+      // Flip the anchor run terminal after the address is already routed, so the
+      // ownership gate still passes but the running-only resolution misses.
       await h.db
-        .update(workflowDeployment)
-        .set({ status: "error" })
-        .where(eq(workflowDeployment.id, DEPLOYMENT));
+        .update(workflowRun)
+        .set({ status: "cancelled" })
+        .where(eq(workflowRun.id, DEPLOYMENT));
 
       router.handleMessage(ws, registerFrame());
       await drain();
@@ -629,13 +633,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a teardown interleaved mid-register never orphans a correlation pair", async () => {
-      // The window the row lock closes: a deployment teardown that flips the
-      // row off "deployed" while a register is in flight. The register resolves
-      // the deployment and co-writes both rows in one transaction, taking a
-      // `SELECT ... FOR UPDATE` on the deployment row; a concurrent teardown
+      // The window the row lock closes: an anchor-run teardown that flips the
+      // run off "running" while a register is in flight. The register resolves
+      // the anchor run and co-writes both rows in one transaction, taking a
+      // `SELECT ... FOR UPDATE` on the anchor run row; a concurrent teardown
       // that has locked the same row makes the register block, and once the
       // teardown commits the register's in-transaction re-check finds no
-      // deployed row and throws -- so the pair is never written against a
+      // running row and throws -- so the pair is never written against a
       // torn-down deployment.
       //
       // Two dedicated single-connection handles drive the interleave
@@ -663,12 +667,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         let registerPromise: Promise<unknown> = Promise.resolve();
 
         await teardownHandle.transaction(async (txT) => {
-          // Lock the deployment row and flip it off "deployed", held
-          // uncommitted for the duration of the register attempt.
+          // Lock the anchor run row and flip it terminal, held uncommitted for
+          // the duration of the register attempt.
           await txT
-            .update(workflowDeployment)
-            .set({ status: "error" })
-            .where(eq(workflowDeployment.id, DEPLOYMENT));
+            .update(workflowRun)
+            .set({ status: "cancelled" })
+            .where(eq(workflowRun.id, DEPLOYMENT));
 
           // Fire the register on its own backend without awaiting: it blocks on
           // the row lock, and awaiting it here would deadlock against the
@@ -704,18 +708,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
             }
             await new Promise((res) => setTimeout(res, 12));
           }
-          // Returning commits the teardown (status = "error") and releases the
-          // lock; a blocked register then re-checks and finds no deployed row.
+          // Returning commits the teardown (status = "cancelled") and releases
+          // the lock; a blocked register then re-checks and finds no running
+          // row.
         });
 
         await registerPromise;
 
         // The register waited on the teardown rather than racing past it, then
-        // threw once the deployment was no longer deployed.
+        // threw once the anchor run was no longer running.
         expect(sawBlock).toBe(true);
         expect(outcome).toBeInstanceOf(Error);
         if (outcome instanceof Error) {
-          expect(outcome.message).toContain("No deployed workflow deployment");
+          expect(outcome.message).toContain("No running workflow run");
         }
 
         // The invariant: no orphaned pair pointing at the torn-down deployment.
@@ -724,12 +729,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).toHaveLength(0);
         expect(await registerHandle.db.select().from(approval)).toHaveLength(0);
 
-        // The deployment row survived the teardown (flipped, not deleted).
-        const deployments = await registerHandle.db
+        // The anchor run survived the teardown (flipped, not deleted).
+        const anchorRuns = await registerHandle.db
           .select()
-          .from(workflowDeployment);
-        expect(deployments).toHaveLength(1);
-        expect(deployments[0]?.status).toBe("error");
+          .from(workflowRun)
+          .where(eq(workflowRun.id, DEPLOYMENT));
+        expect(anchorRuns).toHaveLength(1);
+        expect(anchorRuns[0]?.status).toBe("cancelled");
       } finally {
         await registerHandle.close();
         await teardownHandle.close();

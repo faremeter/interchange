@@ -12,7 +12,6 @@ import {
   createApprovalStore,
   createSignalCorrelationStore,
   createWorkflowRunStore,
-  resolveDefinitionIdForAsset,
 } from "@intx/db";
 import {
   agentInstance,
@@ -20,7 +19,6 @@ import {
   principal,
   sessionMail,
   workflowDefinition,
-  workflowDeployment,
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
@@ -200,52 +198,46 @@ export function createHubSessionLookups(
       // null: an agent-step suspend holds indefinitely (`parkOnSignal` is called
       // with no timeout), so no deadline reaches this co-write.
       await db.transaction(async (tx) => {
-        // Resolve tenancy from the workflow deployment the address names. The
-        // deployment is the origin of every approval (an approval has no
-        // agent_instance/agent/principal referent), so its row is the only place
-        // the tenant is recorded. Filter to a live ("deployed") deployment,
-        // symmetrically with `lookupPublicKey`: a torn-down deployment must not
-        // seed a routing row that can never be resolved. The lookup keys off
-        // `address` rather than `deploymentId` because `address` is the field
-        // the wire layer's ownership gate already authorized; the frame's
-        // `deploymentId` is the workflow-run repo slug the supervisor derives
-        // from the address (`deriveWorkflowRunRepoId`), not the deployment's raw
-        // row id, so it is cross-checked against the slug re-derived from the
-        // resolved row's address (which equals `agentAddress`) rather than
-        // against `deployment.id`. A mismatch fails loud instead of silently
-        // writing an inconsistent pair. The FK columns still take the raw row id
-        // (`deployment.id`), which is what `signal_correlation.deployment_id` and
-        // `approval.deployment_id` reference.
+        // Resolve tenancy and the run's definition from the deployment's anchor
+        // run -- the workflow_run whose id is the deployment id, which the
+        // address names. The anchor is the tenancy origin every approval needs
+        // (an approval has no agent_instance/agent/principal referent). The
+        // lookup keys off `address` (the field the wire layer's ownership gate
+        // authorized), not the frame's `deploymentId`: that is the workflow-run
+        // repo slug the supervisor derives from the address
+        // (`deriveWorkflowRunRepoId`), cross-checked below against the slug
+        // re-derived from `agentAddress` rather than against the row id. A
+        // mismatch fails loud instead of silently writing an inconsistent pair.
+        // The FK columns take the anchor run's id (= the deployment id), which
+        // is what `signal_correlation.deployment_id` and `approval.deployment_id`
+        // reference.
         //
         // The resolution takes a `FOR UPDATE` row lock and runs inside the
-        // co-write transaction, so the "deployed" check and the inserts are
-        // atomic against a concurrent deployment teardown. A teardown that flips
-        // the row off "deployed" either commits after this lock is taken (its
-        // flip cannot retroactively orphan a pair written under the lock) or
-        // locks the row first, in which case this select waits, then re-checks
-        // the committed row, finds it no longer deployed, and throws. The lock
-        // order is workflow_deployment before signal_correlation and approval;
-        // a teardown path must take the deployment lock before touching those
-        // rows to keep the ordering acyclic.
-        const deployment = await tx
+        // co-write transaction, gated on a live "running" anchor run, so the
+        // liveness check and the inserts are atomic against a concurrent
+        // teardown that flips the anchor run terminal. The lock order is
+        // workflow_run before signal_correlation and approval; a teardown path
+        // must take the anchor-run lock before touching those rows to keep the
+        // ordering acyclic.
+        const anchor = await tx
           .select({
-            id: workflowDeployment.id,
-            tenantId: workflowDeployment.tenantId,
-            definitionAssetId: workflowDeployment.definitionAssetId,
+            id: workflowRun.id,
+            tenantId: workflowRun.tenantId,
+            definitionId: workflowRun.definitionId,
           })
-          .from(workflowDeployment)
+          .from(workflowRun)
           .where(
             and(
-              eq(workflowDeployment.address, agentAddress),
-              eq(workflowDeployment.status, "deployed"),
+              eq(workflowRun.address, agentAddress),
+              eq(workflowRun.status, "running"),
             ),
           )
           .for("update")
           .limit(1)
           .then((rows) => rows[0]);
-        if (deployment === undefined) {
+        if (anchor === undefined) {
           throw new Error(
-            `No deployed workflow deployment for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
+            `No running workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
           );
         }
         const addressSlug = deriveWorkflowRunRepoId(agentAddress);
@@ -254,13 +246,8 @@ export function createHubSessionLookups(
             `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,
           );
         }
-        const tenantId = deployment.tenantId;
-        // Anchor the run on its definition too, resolved from the deployment's
-        // asset; null when that asset was never folded.
-        const definitionId = await resolveDefinitionIdForAsset(
-          tx,
-          deployment.definitionAssetId,
-        );
+        const tenantId = anchor.tenantId;
+        const definitionId = anchor.definitionId;
 
         // Lazily anchor the run before its correlation and approval reference
         // it. A workflow-spawned internal run never crosses the external
@@ -273,7 +260,7 @@ export function createHubSessionLookups(
         await workflowRunStore.createIfAbsent(
           {
             id: runId,
-            deploymentId: deployment.id,
+            deploymentId: anchor.id,
             definitionId,
             tenantId,
             principalId: null,
@@ -286,7 +273,7 @@ export function createHubSessionLookups(
           {
             correlationId,
             tenantId,
-            deploymentId: deployment.id,
+            deploymentId: anchor.id,
             agentAddress,
             runId,
             signalName: signalName(correlationId),
@@ -298,7 +285,7 @@ export function createHubSessionLookups(
           {
             id: generateId("approval"),
             tenantId,
-            deploymentId: deployment.id,
+            deploymentId: anchor.id,
             runId,
             agentAddress,
             correlationId,
