@@ -15,7 +15,6 @@ import {
 import { listAssetsForTenant, type DB } from "@intx/db";
 import {
   grant as grantTable,
-  workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
@@ -1105,23 +1104,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     if (db === undefined) {
       throw new Error(
-        "deployWorkflowDefinition requires a db handle to record the workflow_deployment projection row",
+        "deployWorkflowDefinition requires a db handle to record the deployment's anchor run",
       );
     }
     const now = new Date();
     await db.transaction(async (tx) => {
-      await tx.insert(workflowDeploymentTable).values({
-        id: deploymentId,
-        tenantId,
-        definitionAssetId,
-        address: deriveDeploymentAddress({ deploymentId, deploymentDomain }),
-        // publicKey is left null and unread: the reconnect key now lives on the
-        // anchor run below, which deploy-ack writes and the key lookup reads.
-        // This projection column has no reader or writer.
-        status: "deployed",
-        createdAt: now,
-      });
-
       // Project the workflow asset into a first-class definition (create-if-
       // absent) so the anchor run can carry it. A native workflow's definition
       // is otherwise born only in the one-time backfill; creating it here makes
@@ -1134,16 +1121,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
       // The deployment's anchor run: the one workflow_run that carries the
       // deployment's routing identity, 1:1 with the deployment (id and address
-      // both derived from `deploymentId`). It gives that identity a first-class
-      // home on the run independent of the deployment projection, and it owns
-      // the address and public key the reconnect ownership challenge verifies:
-      // deploy-ack writes the key here and the key lookup reads it off this
-      // row. It is born running with no key yet (deploy-ack fills it), carrying
-      // its definition so the run anchors on a first-class definition rather
-      // than the deployment. Child runs of this deployment are separate
-      // address-less rows. `principalId` is null -- the workflow-derived key
-      // path reads `publicKey` directly and never consults it, and the
-      // `workflow-run:<deploymentId>` grant seeded below already covers reads.
+      // both derived from `deploymentId`). It is the deployment's sole
+      // first-class record -- the row that owns the address and public key the
+      // reconnect ownership challenge verifies: deploy-ack writes the key here
+      // and the key lookup reads it off this row. It is born running with no key
+      // yet (deploy-ack fills it), carrying its definition. Its `deploymentId`
+      // equals its own id, so the anchor row references itself. Child runs of
+      // this deployment are separate address-less rows. `principalId` is null --
+      // the workflow-derived key path reads `publicKey` directly and never
+      // consults it, and the `workflow-run:<deploymentId>` grant seeded below
+      // already covers reads.
       await tx.insert(workflowRunTable).values({
         id: deploymentId,
         tenantId,

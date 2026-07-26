@@ -26,7 +26,6 @@ import {
   seedAsset,
   seedPrincipal,
   seedTenants,
-  seedWorkflowDeployment,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
@@ -175,26 +174,21 @@ async function setup() {
     kind: "workflow",
     refId: RUN_ID,
   });
-  await seedWorkflowDeployment(h.db, {
-    id: DEPLOYMENT_ID,
-    tenantId: TENANT_ID,
-    definitionAssetId: ASSET_ID,
-    address: DEPLOYMENT_ADDRESS,
-  });
-  await seedWorkflowRun(h.db, {
-    id: RUN_ID,
-    deploymentId: DEPLOYMENT_ID,
-    tenantId: TENANT_ID,
-  });
   // The deployment's anchor run carries the routing address the display name
-  // resolves to; its id is the deployment id and the child run above self-joins
-  // to it on that id.
+  // resolves to; its id is the deployment id and the child run below self-joins
+  // to it on that id. It is inserted first so the child run's deployment_id FK
+  // resolves.
   await h.db.insert(workflowRun).values({
     id: DEPLOYMENT_ID,
     tenantId: TENANT_ID,
     deploymentId: DEPLOYMENT_ID,
     address: DEPLOYMENT_ADDRESS,
     status: "running",
+  });
+  await seedWorkflowRun(h.db, {
+    id: RUN_ID,
+    deploymentId: DEPLOYMENT_ID,
+    tenantId: TENANT_ID,
   });
 
   return createApp({

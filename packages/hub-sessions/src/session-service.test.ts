@@ -15,7 +15,6 @@ import {
   grant as grantTable,
   workflowDefinition as workflowDefinitionTable,
   workflowDefinitionVersion as workflowDefinitionVersionTable,
-  workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
@@ -1375,13 +1374,6 @@ describe("SessionService", () => {
 });
 
 describe("deployWorkflowDefinition", () => {
-  type CapturedDeploymentRow = {
-    id: string;
-    tenantId: string;
-    definitionAssetId: string;
-    status: string;
-  };
-
   type CapturedGrantRow = {
     principalId: string | null;
     resource: string;
@@ -1407,7 +1399,6 @@ describe("deployWorkflowDefinition", () => {
   };
 
   function createWorkflowDeployFixture() {
-    const deploymentRows: CapturedDeploymentRow[] = [];
     const grantRows: CapturedGrantRow[] = [];
     const runRows: CapturedRunRow[] = [];
     const definitionRows: CapturedDefinitionRow[] = [];
@@ -1429,14 +1420,6 @@ describe("deployWorkflowDefinition", () => {
         return {
           values(row: CapturedGrantRow) {
             grantRows.push(row);
-            return Promise.resolve();
-          },
-        };
-      }
-      if (table === workflowDeploymentTable) {
-        return {
-          values(row: CapturedDeploymentRow) {
-            deploymentRows.push(row);
             return Promise.resolve();
           },
         };
@@ -1491,8 +1474,8 @@ describe("deployWorkflowDefinition", () => {
       }),
     });
 
-    // The projection rows and the run-read grant are written inside a
-    // single `db.transaction`. The fixture passes a `tx` exposing the
+    // The anchor run, its definition, and the run-read grant are written
+    // inside a single `db.transaction`. The fixture passes a `tx` exposing the
     // same `insert`/`select` surface so every write is captured, mirroring
     // how the production code commits them atomically.
     const fakeDb = {
@@ -1533,7 +1516,6 @@ describe("deployWorkflowDefinition", () => {
       writingRepoStore;
 
     return {
-      deploymentRows,
       grantRows,
       runRows,
       definitionRows,
@@ -1544,9 +1526,8 @@ describe("deployWorkflowDefinition", () => {
     };
   }
 
-  test("deploys a multi-step workflow with an awaitSignal step on the multi-step branch and records a projection row", async () => {
+  test("deploys a multi-step workflow with an awaitSignal step on the multi-step branch and records the anchor run", async () => {
     const {
-      deploymentRows,
       grantRows,
       runRows,
       definitionRows,
@@ -1655,17 +1636,6 @@ describe("deployWorkflowDefinition", () => {
       "capability-declarations.json",
       "workflow.json",
     ]);
-
-    // The projection row is recorded for listing.
-    expect(deploymentRows).toHaveLength(1);
-    const deploymentRow = deploymentRows[0];
-    if (deploymentRow === undefined) {
-      throw new Error("missing workflow_deployment row");
-    }
-    expect(deploymentRow.id).toBe("dep_xyz");
-    expect(deploymentRow.tenantId).toBe("tenant-1");
-    expect(deploymentRow.definitionAssetId).toBe("ast_workflow_1");
-    expect(deploymentRow.status).toBe("deployed");
 
     // The deploy projects a first-class definition (create-if-absent) and its
     // version "1" over the workflow asset, so the anchor run can carry it.

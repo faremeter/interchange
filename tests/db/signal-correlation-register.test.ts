@@ -40,7 +40,6 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import {
   seedAsset,
   seedTenants,
-  seedWorkflowDeployment,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
@@ -160,7 +159,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     // The deployment's anchor run: the row `lookupPublicKey` now reads the
     // reconnect key off, keyed by the deployment address. A reconnect challenge
     // against a workflow-derived address resolves its key here, so every test
-    // that reconnects needs one alongside the deployment projection.
+    // that reconnects needs one.
     async function seedAnchorRun(
       id: string,
       address: string,
@@ -185,14 +184,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT,
         kind: "workflow",
         name: "wf",
-      });
-      await seedWorkflowDeployment(h.db, {
-        id: DEPLOYMENT,
-        tenantId: TENANT,
-        definitionAssetId: ASSET,
-        address: WF_ADDR,
-        publicKey: publicKeyHex,
-        status: "deployed",
       });
       await seedAnchorRun(DEPLOYMENT, WF_ADDR, publicKeyHex);
     }
@@ -523,16 +514,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
       // seedDeployment already seeded the tenant and asset; add a second
-      // deployment on them so the connection can own WF_ADDR_2.
+      // anchor run on them so the connection can own WF_ADDR_2.
       const kp2 = await generateKeyPair();
-      await seedWorkflowDeployment(h.db, {
-        id: DEPLOYMENT_2,
-        tenantId: TENANT,
-        definitionAssetId: ASSET,
-        address: WF_ADDR_2,
-        publicKey: hexEncode(kp2.publicKey),
-        status: "deployed",
-      });
       await seedAnchorRun(DEPLOYMENT_2, WF_ADDR_2, hexEncode(kp2.publicKey));
 
       const router = buildRouter();
@@ -566,14 +549,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // handler swallows the throw, so no rows are written.
       const kp = await generateKeyPair();
       await seedDeployment(hexEncode(kp.publicKey));
-      await seedWorkflowDeployment(h.db, {
-        id: DEPLOYMENT_2,
-        tenantId: TENANT,
-        definitionAssetId: ASSET,
-        address: WF_ADDR_2,
-        publicKey: null,
-        status: "deployed",
-      });
+      await seedAnchorRun(DEPLOYMENT_2, WF_ADDR_2, null);
 
       const router = buildRouter();
       const ws = createMockWs();
@@ -756,14 +732,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow",
         name: "wf",
       });
-      await seedWorkflowDeployment(h.db, {
-        id: DEPLOYMENT,
-        tenantId: TENANT,
-        definitionAssetId: ASSET,
-        address: WF_ADDR,
-        publicKey: null,
-        status: "deployed",
-      });
+      await seedAnchorRun(DEPLOYMENT, WF_ADDR, null);
       // The direct store inserts carry a runId; anchor its run row so the FK
       // to workflow_run resolves. The co-write path seeds this itself, but this
       // test bypasses it to exercise the stores directly.

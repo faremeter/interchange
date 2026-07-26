@@ -22,7 +22,7 @@ import {
   seedPrincipal,
   seedProvider,
   seedTenants,
-  seedWorkflowDeployment,
+  seedWorkflowRun,
 } from "@intx/test-harness/seed";
 import {
   agent,
@@ -31,6 +31,7 @@ import {
   grant,
   workflowDefinition,
   workflowDefinitionVersion,
+  workflowDeployment,
   workflowRun,
 } from "@intx/db/schema";
 import { BackfillPreflightError, runBackfill } from "@intx/hub-sessions";
@@ -326,7 +327,10 @@ describe.skipIf(!harnessDbEnvAvailable())("db-backfill (real DB)", () => {
     expect(result.agentsSkipped).toBe(1);
   });
 
-  // A native (deployment-anchored) run + its folded workflow definition.
+  // A deployment's anchor run -- the workflow_run whose id equals its
+  // deployment id -- plus the deployment row the native-run backfill still reads
+  // the definition asset from. The run carries no definition yet; the backfill
+  // resolves it from the deployment's folded asset.
   async function seedNativeRun(): Promise<void> {
     await seedResolvableBase();
     await h.db.insert(asset).values({
@@ -336,24 +340,22 @@ describe.skipIf(!harnessDbEnvAvailable())("db-backfill (real DB)", () => {
       name: "my-workflow",
       creatorPrincipalId: "prn_creator",
     });
-    await seedWorkflowDeployment(h.db, {
+    await h.db.insert(workflowDeployment).values({
       id: "dep_1",
       tenantId: "tnt_root",
       definitionAssetId: "ast_wf",
       address: "ins_dep@wf.example",
     });
-    await h.db.insert(workflowRun).values({
-      id: "run_native",
-      tenantId: "tnt_root",
+    await seedWorkflowRun(h.db, {
+      id: "dep_1",
       deploymentId: "dep_1",
-      definitionId: null,
-      status: "running",
+      tenantId: "tnt_root",
     });
   }
 
   async function runDefinitionId(): Promise<string | null | undefined> {
     const row = await h.db.query.workflowRun.findFirst({
-      where: eq(workflowRun.id, "run_native"),
+      where: eq(workflowRun.id, "dep_1"),
     });
     return row?.definitionId;
   }

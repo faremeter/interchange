@@ -16,7 +16,6 @@ import {
 import {
   seedAsset,
   seedTenants,
-  seedWorkflowDeployment,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
@@ -32,10 +31,13 @@ async function seedDeploymentDeps(h: TestDb): Promise<void> {
     kind: "workflow",
     name: ASSET,
   });
-  await seedWorkflowDeployment(h.db, {
+  // The deployment's anchor run -- the workflow_run whose id equals the
+  // deployment id. The approval/correlation `deployment_id` FK and the child
+  // runs' `deployment_id` both resolve to it.
+  await seedWorkflowRun(h.db, {
     id: DEPLOYMENT,
+    deploymentId: DEPLOYMENT,
     tenantId: TENANT,
-    definitionAssetId: ASSET,
   });
 }
 

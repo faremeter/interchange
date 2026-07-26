@@ -17,7 +17,6 @@ import {
 import {
   seedAsset,
   seedTenants,
-  seedWorkflowDeployment,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
@@ -47,12 +46,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT,
         kind: "workflow",
         name: ASSET,
-      });
-      await seedWorkflowDeployment(h.db, {
-        id: DEPLOYMENT,
-        tenantId: TENANT,
-        definitionAssetId: ASSET,
-        address: ADDRESS,
       });
       // The deployment's anchor run carries the routing address the display
       // name comes from; its id is the deployment id.

@@ -1,7 +1,6 @@
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { tenant } from "./tenants";
-import { workflowDeployment } from "./workflow-deployments";
 import { workflowRun } from "./workflow-run";
 
 export const signalCorrelation = pgTable("signal_correlation", {
@@ -16,7 +15,7 @@ export const signalCorrelation = pgTable("signal_correlation", {
   // correlation pointing at a vanished deployment.
   deploymentId: text("deployment_id")
     .notNull()
-    .references(() => workflowDeployment.id, { onDelete: "cascade" }),
+    .references(() => workflowRun.id, { onDelete: "cascade" }),
   agentAddress: text("agent_address").notNull(),
   // References the run this correlation belongs to. Cascades on the run's
   // delete: a correlation whose run is gone can never resolve, and the

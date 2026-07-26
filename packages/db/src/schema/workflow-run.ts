@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   index,
   jsonb,
   pgTable,
@@ -12,7 +13,6 @@ import { principal } from "./principals";
 import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
 import { workflowDefinition } from "./workflow-definitions";
-import { workflowDeployment } from "./workflow-deployments";
 
 // workflow_run is the per-run authorization subject: one row per run of a
 // workflow deployment. It gives "this approval belongs to a real run of this
@@ -43,11 +43,14 @@ export const workflowRun = pgTable(
       },
     ),
     // Nullable as of the fold: a folded agent-origin run carries a
-    // `definitionId` and no deployment, while native-workflow runs still set
-    // this. The only runtime read of the column (`resolveWorkflowPrincipalNames`)
-    // degrades gracefully when it is null.
+    // `definitionId` and no deployment, while a deployment's anchor run sets
+    // this to its own id and a child run sets it to its anchor's id. It
+    // references the anchor `workflow_run` -- the run whose id equals the
+    // deployment id -- so an anchor row is self-referential. The only runtime
+    // read of the column (`resolveWorkflowPrincipalNames`) degrades gracefully
+    // when it is null.
     deploymentId: text("deployment_id").references(
-      () => workflowDeployment.id,
+      (): AnyPgColumn => workflowRun.id,
       { onDelete: "cascade" },
     ),
     tenantId: text("tenant_id")

@@ -24,12 +24,7 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import {
-  seedAsset,
-  seedPrincipal,
-  seedTenants,
-  seedWorkflowDeployment,
-} from "@intx/test-harness/seed";
+import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // Exercises GET /workflows/instances against a real migrated schema. The list
 // no longer reads the workflow_deployment projection: it enumerates each
@@ -224,21 +219,14 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-// A deployment and its anchor run -- the workflow_run whose id equals the
-// deployment id. The deployment row exists only to satisfy the run's
-// deployment_id foreign key; the list reads the run, not the projection.
+// A deployment's anchor run -- the workflow_run whose id equals the
+// deployment id. The list reads the run, not the projection.
 async function seedAnchor(opts: {
   id: string;
   createdAt: Date;
   status?: "running" | "completed" | "failed" | "cancelled";
   definitionId?: string;
 }): Promise<void> {
-  await seedWorkflowDeployment(h.db, {
-    id: opts.id,
-    tenantId: TENANT_ID,
-    definitionAssetId: ASSET_ID,
-    address: `ins_${opts.id}@wf.example`,
-  });
   await h.db.insert(workflowRun).values({
     id: opts.id,
     tenantId: TENANT_ID,

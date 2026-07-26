@@ -28,7 +28,6 @@ import {
   seedGrant,
   seedPrincipal,
   seedTenants,
-  seedWorkflowDeployment,
 } from "@intx/test-harness/seed";
 
 const TENANT = "tnt";
@@ -114,12 +113,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow",
         name: ASSET,
         creatorPrincipalId: CREATOR,
-      });
-      await seedWorkflowDeployment(h.db, {
-        id: DEPLOYMENT,
-        tenantId: TENANT,
-        definitionAssetId: ASSET,
-        address: WORKFLOW_ADDRESS,
       });
       // The deployment's first-class definition and its anchor run: the
       // materializer resolves the run's asset and definition off the anchor,

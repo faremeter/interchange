@@ -20,7 +20,6 @@ import {
   seedAsset,
   seedPrincipal,
   seedTenants,
-  seedWorkflowDeployment,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
@@ -50,10 +49,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow",
         name: ASSET,
       });
-      await seedWorkflowDeployment(h.db, {
+      await seedWorkflowRun(h.db, {
         id: DEPLOYMENT,
+        deploymentId: DEPLOYMENT,
         tenantId: TENANT,
-        definitionAssetId: ASSET,
       });
       await seedPrincipal(h.db, {
         id: "prn-run",

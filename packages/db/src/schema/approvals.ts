@@ -1,11 +1,11 @@
 import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import { tenant } from "./tenants";
-import { workflowDeployment } from "./workflow-deployments";
 import { workflowRun } from "./workflow-run";
 
 // Every approval originates from a workflow deployment, so the origin is
-// modeled as the deployment rather than a launched single agent. A workflow
+// modeled as the deployment's anchor run -- the workflow_run whose id equals
+// the deployment id -- rather than a launched single agent. A workflow
 // deployment has no `agent_instance` or `agent` row, and the principal its run
 // executes under is a substrate principal, not a `principal`-table row -- so
 // none of those tables can hold a valid referent for an approval's origin.
@@ -18,7 +18,7 @@ export const approval = pgTable(
       .references(() => tenant.id, { onDelete: "cascade" }),
     deploymentId: text("deployment_id")
       .notNull()
-      .references(() => workflowDeployment.id, { onDelete: "cascade" }),
+      .references(() => workflowRun.id, { onDelete: "cascade" }),
     // References the run this approval belongs to, making "this approval is for
     // a real run of this deployment" a database invariant. Cascades on the
     // run's delete; the `deployment_id` FK above stays as the lock and cascade
