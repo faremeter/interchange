@@ -10,8 +10,6 @@ import { Layout } from "@/components/layout";
 import { LoginPage } from "@/pages/login";
 import { DashboardPage } from "@/pages/dashboard";
 import { TenantPage } from "@/pages/tenant";
-import { TenantAgentsPage } from "@/pages/tenant-agents";
-import { TenantAgentDetailPage } from "@/pages/tenant-agent-detail";
 import { TenantApprovalsPage } from "@/pages/tenant-approvals";
 import { TenantApprovalDetailPage } from "@/pages/tenant-approval-detail";
 import { TenantPrincipalsPage } from "@/pages/tenant-principals";
@@ -69,18 +67,6 @@ const tenantRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/tenants/$tenantId",
   component: TenantPage,
-});
-
-const tenantAgentsRoute = createRoute({
-  getParentRoute: () => authedRoute,
-  path: "/tenants/$tenantId/agents",
-  component: TenantAgentsPage,
-});
-
-const tenantAgentDetailRoute = createRoute({
-  getParentRoute: () => authedRoute,
-  path: "/tenants/$tenantId/agents/$agentId",
-  component: TenantAgentDetailPage,
 });
 
 const tenantApprovalsRoute = createRoute({
@@ -232,8 +218,6 @@ const routeTree = rootRoute.addChildren([
   authedRoute.addChildren([
     dashboardRoute,
     tenantRoute,
-    tenantAgentsRoute,
-    tenantAgentDetailRoute,
     tenantApprovalsRoute,
     tenantApprovalDetailRoute,
     tenantInstancesRoute,

@@ -165,9 +165,6 @@ export function TenantInstanceDetailPage() {
       void queryClient.invalidateQueries({
         queryKey: ["tenants", tenantId, "instances"],
       });
-      void queryClient.invalidateQueries({
-        queryKey: ["tenants", tenantId, "agents"],
-      });
     },
   });
 
@@ -224,15 +221,7 @@ export function TenantInstanceDetailPage() {
 
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold">
-            <Link
-              to="/tenants/$tenantId/agents/$agentId"
-              params={{ tenantId, agentId: instance.agentId }}
-              className="text-primary hover:underline"
-            >
-              {instance.agentName}
-            </Link>
-          </h2>
+          <h2 className="text-lg font-semibold">{instance.agentName}</h2>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
             {instance.address}
           </p>

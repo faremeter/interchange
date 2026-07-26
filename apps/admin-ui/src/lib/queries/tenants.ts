@@ -65,38 +65,6 @@ type RoleResponse = {
   updatedAt: string;
 };
 
-type CredentialRequirement = {
-  providerName: string;
-  scopes?: string[];
-  source: "tenant" | "creator" | "invoker";
-  name?: string;
-};
-
-type GrantRequirement = {
-  resource: string;
-  action: string;
-  effect?: "allow" | "deny" | "ask";
-  source: "tenant" | "creator" | "invoker";
-  conditions?: Record<string, unknown> | null;
-};
-
-export type AgentResponse = {
-  id: string;
-  tenantId: string;
-  creatorPrincipalId: string;
-  name: string;
-  description: string | null;
-  systemPrompt: string | null;
-  status: "deployed" | "stopped";
-  currentVersion: string;
-  capabilities: Record<string, unknown> | null;
-  credentialRequirements?: CredentialRequirement[];
-  grantRequirements?: GrantRequirement[];
-  roles?: { id: string; name: string }[];
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type AgentInstanceResponse = {
   id: string;
   agentId: string;
@@ -320,37 +288,6 @@ export function tenantRolesInfiniteQuery(tenantId: string) {
   );
 }
 
-export function tenantAgentsQuery(tenantId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "agents"],
-    queryFn: async () => {
-      const res = await api<{ data: AgentResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/agents/definitions`,
-      );
-      return res.data;
-    },
-  });
-}
-
-export function tenantAgentsInfiniteQuery(tenantId: string) {
-  return infiniteListQuery<AgentResponse>(
-    ["tenants", tenantId, "agents", INFINITE_LIST_KEY],
-    `/api/tenants/${tenantId}/agents/definitions`,
-  );
-}
-
-export function agentDetailQuery(tenantId: string, agentId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "agents", agentId],
-    queryFn: () =>
-      api<AgentResponse>(
-        "GET",
-        `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
-      ),
-  });
-}
-
 export function tenantDefinitionsQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "definitions"],
@@ -419,19 +356,6 @@ export function tenantInstancesInfiniteQuery(tenantId: string) {
     ["tenants", tenantId, "instances", INFINITE_LIST_KEY],
     `/api/tenants/${tenantId}/agents/instances?status=running`,
   );
-}
-
-export function agentAllInstancesQuery(tenantId: string, agentId: string) {
-  return queryOptions({
-    queryKey: ["tenants", tenantId, "instances", { agentId }],
-    queryFn: async () => {
-      const res = await api<{ data: AgentInstanceResponse[] }>(
-        "GET",
-        `/api/tenants/${tenantId}/agents/instances?agentId=${agentId}`,
-      );
-      return res.data;
-    },
-  });
 }
 
 export function instanceDetailQuery(tenantId: string, instanceId: string) {
@@ -754,81 +678,6 @@ export function deletePrincipalMutation(
   };
 }
 
-// Agents
-
-type CreateAgentBody = {
-  name: string;
-  description?: string;
-  systemPrompt?: string;
-};
-
-type UpdateAgentBody = {
-  name?: string;
-  description?: string;
-  systemPrompt?: string;
-  credentialRequirements?: CredentialRequirement[];
-  grantRequirements?: GrantRequirement[];
-  roleIds?: string[];
-};
-
-export function createAgentMutation(tenantId: string, qc: QueryClient) {
-  return {
-    mutationFn: (body: CreateAgentBody) =>
-      api<AgentResponse>(
-        "POST",
-        `/api/tenants/${tenantId}/agents/definitions`,
-        body,
-      ),
-    onSuccess: () => invalidate(qc, tenantId, "agents"),
-  };
-}
-
-export function updateAgentMutation(
-  tenantId: string,
-  agentId: string,
-  qc: QueryClient,
-) {
-  return {
-    mutationFn: (body: UpdateAgentBody) =>
-      api<AgentResponse>(
-        "PATCH",
-        `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
-        body,
-      ),
-    onSuccess: () => invalidate(qc, tenantId, "agents"),
-  };
-}
-
-export function deleteAgentMutation(
-  tenantId: string,
-  agentId: string,
-  qc: QueryClient,
-) {
-  return {
-    mutationFn: () =>
-      api<undefined>(
-        "DELETE",
-        `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
-      ),
-    onSuccess: () => invalidate(qc, tenantId, "agents"),
-  };
-}
-
-export function deployInstanceMutation(tenantId: string, qc: QueryClient) {
-  return {
-    mutationFn: (body: { agentId: string }) =>
-      api<AgentInstanceResponse>(
-        "POST",
-        `/api/tenants/${tenantId}/agents/instances`,
-        body,
-      ),
-    onSuccess: () => {
-      void invalidate(qc, tenantId, "instances");
-      void invalidate(qc, tenantId, "agents");
-    },
-  };
-}
-
 export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
   return {
     mutationFn: (instanceId: string) =>
@@ -836,10 +685,7 @@ export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
         "DELETE",
         `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
       ),
-    onSuccess: () => {
-      void invalidate(qc, tenantId, "instances");
-      void invalidate(qc, tenantId, "agents");
-    },
+    onSuccess: () => invalidate(qc, tenantId, "instances"),
   };
 }
 
