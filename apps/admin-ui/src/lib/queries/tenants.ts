@@ -192,6 +192,19 @@ export type WorkflowDefinitionResponse = WorkflowAssetResponse & {
   origin: { tenantId: string; direct: boolean };
 };
 
+// A row from GET /workflows/definitions -- a first-class workflow_definition,
+// distinct from the workflow *asset* WorkflowDefinitionResponse above describes.
+export type WorkflowDefinitionListItem = {
+  id: string;
+  tenantId: string;
+  name: string;
+  description: string | null;
+  currentVersion: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type { WorkflowDeployment, WorkflowRunEvent, WorkflowRunEvents };
 
 const TERMINAL_RUN_EVENT_TYPES: readonly string[] = [
@@ -335,6 +348,19 @@ export function agentDetailQuery(tenantId: string, agentId: string) {
         "GET",
         `/api/tenants/${tenantId}/agents/definitions/${agentId}`,
       ),
+  });
+}
+
+export function tenantDefinitionsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "definitions"],
+    queryFn: async () => {
+      const res = await api<{ data: WorkflowDefinitionListItem[] }>(
+        "GET",
+        `/api/tenants/${tenantId}/workflows/definitions`,
+      );
+      return res.data;
+    },
   });
 }
 

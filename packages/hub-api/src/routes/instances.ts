@@ -1129,12 +1129,14 @@ export function createInstanceRoutes({
         );
       }
 
-      // Offerings belong to the origin agent, which a run reaches through its
-      // definition and an instance carries directly; both surface as agentId.
-      const agentRow = await db.query.agent.findFirst({
-        where: eq(agent.id, record.agentId),
+      // Offerings are keyed on the origin agent's folded definition (their
+      // `agentId` column holds a definition id). Resolve the record's definition
+      // by its origin agent, then filter offerings on that definition id and
+      // display its name.
+      const definitionRow = await db.query.workflowDefinition.findFirst({
+        where: eq(workflowDefinition.originAgentId, record.agentId),
       });
-      if (agentRow === undefined) {
+      if (definitionRow === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
@@ -1143,12 +1145,14 @@ export function createInstanceRoutes({
 
       const offerings = await db.query.offering.findMany({
         where: and(
-          eq(offering.agentId, record.agentId),
+          eq(offering.agentId, definitionRow.id),
           eq(offering.tenantId, tenantCtx.id),
         ),
       });
 
-      return c.json(offerings.map((o) => formatOffering(o, agentRow.name)));
+      return c.json(
+        offerings.map((o) => formatOffering(o, definitionRow.name)),
+      );
     },
   );
 

@@ -79,6 +79,14 @@ const testInstance = {
 };
 
 const testAgent = { id: AGENT_ID, name: "Test Agent" };
+// The folded definition for `testAgent`: offerings key on it now, and it
+// carries the agent's name (the fold copies it).
+const testDefinition = {
+  id: "wfd_test",
+  name: "Test Agent",
+  originAgentId: AGENT_ID,
+  tenantId: TENANT_ID,
+};
 
 // A folded workflow_run as `findRoutableById`'s run query projects it: it
 // shares the instance id space and reaches its origin agent through the
@@ -135,6 +143,7 @@ type MockDBOpts = {
   principal?: typeof testPrincipal | undefined;
   instance?: TestInstance | undefined;
   agent?: typeof testAgent | undefined;
+  definition?: typeof testDefinition | undefined;
   /** A folded workflow_run row `findRoutableById`'s run query returns (with an
    * `originAgentId`), or undefined for the instance-only tests. */
   run?: Record<string, unknown> | undefined;
@@ -281,6 +290,10 @@ function createMockDB(opts: MockDBOpts) {
       agent: {
         findFirst: async () => opts.agent,
         findMany: notImplemented("db.query.agent.findMany"),
+      },
+      workflowDefinition: {
+        findFirst: async () => opts.definition,
+        findMany: notImplemented("db.query.workflowDefinition.findMany"),
       },
       offering: {
         findFirst: notImplemented("db.query.offering.findFirst"),
@@ -639,6 +652,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
         principal: testPrincipal,
         instance: testInstance,
         agent: testAgent,
+        definition: testDefinition,
         offerings,
       },
     });
@@ -661,6 +675,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
         principal: testPrincipal,
         instance: testInstance,
         agent: testAgent,
+        definition: testDefinition,
         offerings: [],
       },
     });
@@ -716,6 +731,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
         principal: testPrincipal,
         instance: stoppedInstance,
         agent: testAgent,
+        definition: testDefinition,
         offerings,
       },
     });
@@ -800,6 +816,7 @@ describe("read routes serve a folded run", () => {
         principal: testPrincipal,
         instance: undefined,
         agent: testAgent,
+        definition: testDefinition,
         run: makeTestRun(),
         offerings: [
           {

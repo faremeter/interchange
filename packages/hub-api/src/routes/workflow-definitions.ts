@@ -2,8 +2,9 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { workflowDefinitionVersion } from "@intx/db/schema";
+import { workflowDefinition, workflowDefinitionVersion } from "@intx/db/schema";
 import {
+  parseWorkflowDefinitionRow,
   parseWorkflowDefinitionVersionRow,
   createWorkflowDefinitionStore,
 } from "@intx/db";
@@ -39,6 +40,68 @@ export function createWorkflowDefinitionRoutes({
 }: CreateWorkflowDefinitionRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   const definitionStore = createWorkflowDefinitionStore(db);
+
+  app.get(
+    "/",
+    requireGrant("workflow-definition:*", "read"),
+    describeRoute({
+      tags: ["Workflow Definitions"],
+      summary: "List workflow definitions",
+      description:
+        "Lists the workflow definitions for the tenant, most recent first.",
+      parameters: [...pageParameters],
+      responses: {
+        200: {
+          description: "List of workflow definitions",
+          content: {
+            "application/json": {
+              schema: resolver(paginatedSchema(WorkflowDefinitionResponse)),
+            },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const { limit, cursor } = parsePageParams({
+        cursor: c.req.query("cursor"),
+        limit: c.req.query("limit"),
+      });
+
+      const conditions = [eq(workflowDefinition.tenantId, tenantCtx.id)];
+      if (cursor) {
+        conditions.push(
+          cursorCondition(
+            workflowDefinition.createdAt,
+            workflowDefinition.id,
+            cursor,
+          ),
+        );
+      }
+
+      const rows = await db.query.workflowDefinition.findMany({
+        where: and(...conditions),
+        orderBy: pageOrder(workflowDefinition.createdAt, workflowDefinition.id),
+        limit,
+      });
+
+      const items = rows.map((row) => {
+        const def = parseWorkflowDefinitionRow(row);
+        return {
+          id: def.id,
+          tenantId: def.tenantId,
+          name: def.name,
+          description: def.description ?? null,
+          currentVersion: def.currentVersion,
+          status: def.status,
+          createdAt: ts(def.createdAt),
+          updatedAt: ts(def.updatedAt),
+        };
+      });
+
+      return c.json(paginatedResponse(items, rows, limit));
+    },
+  );
 
   app.get(
     "/:definitionId/versions",

@@ -9,7 +9,7 @@ import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
 import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createOfferingMutation,
-  tenantAgentsQuery,
+  tenantDefinitionsQuery,
   tenantOfferingsInfiniteQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
@@ -52,7 +52,7 @@ export function TenantOfferingsPage() {
     isFetchingNextPage,
     fetchNextPage,
   } = usePaginatedList(tenantOfferingsInfiniteQuery(tenantId));
-  const { data: agents } = useQuery(tenantAgentsQuery(tenantId));
+  const { data: definitions } = useQuery(tenantDefinitionsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
@@ -180,15 +180,15 @@ export function TenantOfferingsPage() {
             className="grid gap-4"
           >
             <div className="grid gap-2">
-              <Label>Agent</Label>
+              <Label>Workflow definition</Label>
               <Select value={createAgentId} onValueChange={setCreateAgentId}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select an agent" />
+                  <SelectValue placeholder="Select a workflow definition" />
                 </SelectTrigger>
                 <SelectContent>
-                  {agents?.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
+                  {definitions?.map((definition) => (
+                    <SelectItem key={definition.id} value={definition.id}>
+                      {definition.name}
                     </SelectItem>
                   ))}
                 </SelectContent>

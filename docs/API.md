@@ -54,6 +54,7 @@
 | POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/mail | List mail for an instance |
 | GET | /api/tenants/:tenantId/agents/instances/:instanceId/turns | List inference turns for an instance |
+| GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
 | POST | /api/tenants/:tenantId/workflows/instances | Deploy a workflow |
@@ -635,6 +636,15 @@ Query: cursor?, limit?
 
 ## Workflow Definitions
 
+### GET /api/tenants/:tenantId/workflows/definitions
+List workflow definitions
+
+Lists the workflow definitions for the tenant, most recent first.
+
+Query: cursor?, limit?
+
+200: unknown -- List of workflow definitions
+
 ### GET /api/tenants/:tenantId/workflows/definitions/:definitionId/versions
 List definition versions
 
@@ -975,18 +985,18 @@ Query: name?, minPrice?, maxPrice?, paymentMethod?, cursor?, limit?
 ### POST /api/tenants/:tenantId/offerings
 Register an offering
 
-Registers an offering for an agent. The agent must belong to the tenant.
+Registers an offering for a workflow definition. The definition must belong to the tenant.
 
 Body: CreateOffering
 
 201: OfferingDetail -- Offering registered
 400: ErrorResponse -- Validation error
-404: ErrorResponse -- Agent not found
+404: ErrorResponse -- Workflow definition not found
 
 ### GET /api/tenants/:tenantId/offerings/:offeringId
 Get offering details
 
-Returns pricing, agent info, and request/response type information.
+Returns pricing, definition info, and request/response type information.
 
 200: OfferingDetail -- Offering details
 404: ErrorResponse -- Offering not found

@@ -2,7 +2,7 @@ import { eq, and, ilike } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
-import { agent, offering } from "@intx/db/schema";
+import { offering, workflowDefinition } from "@intx/db/schema";
 import { parseOfferingRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
@@ -104,19 +104,21 @@ export function createOfferingRoutes({
         limit,
       });
 
-      const agentIds = [...new Set(rows.map((r) => r.agentId))];
-      const agentNames = new Map<string, string>();
-      if (agentIds.length > 0) {
-        const agents = await db.query.agent.findMany({
-          where: (a, { inArray }) => inArray(a.id, agentIds),
+      // `agentId` holds the offering's workflow_definition id (contract-stable
+      // name); the display name is the definition's name.
+      const definitionIds = [...new Set(rows.map((r) => r.agentId))];
+      const definitionNames = new Map<string, string>();
+      if (definitionIds.length > 0) {
+        const definitions = await db.query.workflowDefinition.findMany({
+          where: (d, { inArray }) => inArray(d.id, definitionIds),
         });
-        for (const a of agents) {
-          agentNames.set(a.id, a.name);
+        for (const d of definitions) {
+          definitionNames.set(d.id, d.name);
         }
       }
 
       const items = rows.map((r) =>
-        formatOffering(r, agentNames.get(r.agentId) ?? r.agentId),
+        formatOffering(r, definitionNames.get(r.agentId) ?? r.agentId),
       );
 
       return c.json(paginatedResponse(items, rows, limit));
@@ -130,7 +132,7 @@ export function createOfferingRoutes({
       tags: ["Discovery"],
       summary: "Register an offering",
       description:
-        "Registers an offering for an agent. The agent must belong to the tenant.",
+        "Registers an offering for a workflow definition. The definition must belong to the tenant.",
       responses: {
         201: {
           description: "Offering registered",
@@ -145,7 +147,7 @@ export function createOfferingRoutes({
           },
         },
         404: {
-          description: "Agent not found",
+          description: "Workflow definition not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -157,19 +159,20 @@ export function createOfferingRoutes({
       const tenantCtx = c.get("tenant");
       const body = c.req.valid("json");
 
-      const agentRow = await db.query.agent.findFirst({
+      // `agentId` carries a workflow_definition id (contract-stable field name).
+      const definitionRow = await db.query.workflowDefinition.findFirst({
         where: and(
-          eq(agent.id, body.agentId),
-          eq(agent.tenantId, tenantCtx.id),
+          eq(workflowDefinition.id, body.agentId),
+          eq(workflowDefinition.tenantId, tenantCtx.id),
         ),
       });
 
-      if (!agentRow) {
+      if (!definitionRow) {
         return c.json(
           {
             error: {
               code: "not_found",
-              message: "Agent not found in this tenant",
+              message: "Workflow definition not found in this tenant",
             },
           },
           404,
@@ -194,7 +197,7 @@ export function createOfferingRoutes({
           .returning(),
       );
 
-      return c.json(formatOffering(row, agentRow.name), 201);
+      return c.json(formatOffering(row, definitionRow.name), 201);
     },
   );
 
@@ -205,7 +208,7 @@ export function createOfferingRoutes({
       tags: ["Discovery"],
       summary: "Get offering details",
       description:
-        "Returns pricing, agent info, and request/response type information.",
+        "Returns pricing, definition info, and request/response type information.",
       responses: {
         200: {
           description: "Offering details",
@@ -239,11 +242,11 @@ export function createOfferingRoutes({
         );
       }
 
-      const agentRow = await db.query.agent.findFirst({
-        where: eq(agent.id, row.agentId),
+      const definitionRow = await db.query.workflowDefinition.findFirst({
+        where: eq(workflowDefinition.id, row.agentId),
       });
 
-      return c.json(formatOffering(row, agentRow?.name ?? row.agentId));
+      return c.json(formatOffering(row, definitionRow?.name ?? row.agentId));
     },
   );
 
@@ -296,11 +299,13 @@ export function createOfferingRoutes({
         );
       }
 
-      const agentRow = await db.query.agent.findFirst({
-        where: eq(agent.id, updated.agentId),
+      const definitionRow = await db.query.workflowDefinition.findFirst({
+        where: eq(workflowDefinition.id, updated.agentId),
       });
 
-      return c.json(formatOffering(updated, agentRow?.name ?? updated.agentId));
+      return c.json(
+        formatOffering(updated, definitionRow?.name ?? updated.agentId),
+      );
     },
   );
 

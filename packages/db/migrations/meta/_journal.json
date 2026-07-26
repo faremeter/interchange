@@ -407,6 +407,13 @@
       "when": 1785081029417,
       "tag": "0057_drop_workflow_deployment_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1785085643398,
+      "tag": "0058_repoint_offering_fk_to_definition",
+      "breakpoints": true
     }
   ]
 }
