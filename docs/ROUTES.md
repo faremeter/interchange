@@ -31,21 +31,19 @@ Tenant context is encoded in the URL, not in a header. This was a deliberate cho
 
 The tradeoff is longer URLs. `/api/tenants/tnt_abc/agents/agt_xyz` is more verbose than `/api/agents/agt_xyz`. This is acceptable -- IDs are globally unique and URLs are for machines, not humans.
 
-### Why agent definitions and instances are separate route groups
+### Why running agents and definitions are separate route groups
 
-Agent definitions (`/agents/definitions`) and agents (`/agents/instances`) are sibling route groups under the tenant's `/agents` namespace rather than agents being nested under definitions (`/agents/definitions/:agentId/instances`).
+Running agents live under `/agents/instances`; workflow definitions — the first-class blueprint model — are managed under `/workflows/definitions`. They are separate route groups because they are different resource types: an agent is a live running entity with state, an address, a principal, and offerings, while a definition is a catalog blueprint carrying versioning and rollback.
 
-Definitions are catalog entries and blueprints — they describe what an agent can do. Agents are the live running entities with state, addresses, principals, and offerings. They are siblings because they are different resource types under the same namespace: one is data, the other is a runtime entity.
+Keeping them separate means listing a tenant's running agents does not require knowing definition IDs, and a definition can be retired while its historical agents stay queryable. Agents are first-class tenant resources alongside wallets, credentials, and approvals.
 
-Nesting would mean listing all agents in a tenant requires knowing all definition IDs first. It also creates awkward paths when a definition is retired but its historical agents are still queryable. Agents are first-class tenant resources alongside wallets, credentials, and approvals.
-
-Runtime state — data, history, branches, health, logs, metrics — lives on agent paths (`/agents/instances/:instanceId/...`), not on definition paths. This follows from the model: runtime state belongs to the running agent, not the blueprint. Definition paths carry versioning, rollback, and catalog-level offerings. Most of these runtime-state routes are defined but not yet implemented: the data, history, and branches handlers (`agent-data.ts`) and the logs, metrics, and traces handlers (`observability.ts`) currently return `501`. Only the health read is wired, and it is a derived read of hub-side state rather than an active probe (see the Health Protocol in IMPLEMENTATION.md).
+Runtime state — data, history, branches, health, logs, metrics — lives on agent paths (`/agents/instances/:instanceId/...`), not on definition paths. This follows from the model: runtime state belongs to the running agent, not the blueprint. Most of these runtime-state routes are defined but not yet implemented: the data, history, and branches handlers (`agent-data.ts`) and the logs, metrics, and traces handlers (`observability.ts`) currently return `501`. Only the health read is wired, and it is a derived read of hub-side state rather than an active probe (see the Health Protocol in IMPLEMENTATION.md).
 
 ### Why cross-tenant reads are separate endpoints
 
 A user who belongs to multiple tenants needs dashboard views: "all my definitions across all orgs", "all my running agents", "all pending approvals". Rather than making the tenant-scoped endpoints optionally cross-tenant (via an absent header or special parameter), we provide explicit endpoints under `/api/me/...`.
 
-This is clearer for clients: `/api/me/agents` aggregates a user's agents across every tenant they belong to and tags each result with `tenantId`, a different operation from the tenant-scoped `/api/tenants/:tenantId/agents/definitions`. No mode-switching, no ambiguity about what "list agents" means in a given context.
+This is clearer for clients: `/api/me/agents` aggregates a user's agents across every tenant they belong to and tags each result with `tenantId` — a cross-tenant view rather than a per-tenant one. No mode-switching, no ambiguity about what "list agents" means in a given context.
 
 Cross-tenant `/api/me/...` endpoints exist for the dashboard resources — agents, running instances, approvals, principals, and sessions — the cross-tenant views of what's defined, what's running, and what needs a user's attention. The agents, instances, and principals views aggregate live across tenants; the approvals and sessions endpoints are deferred stubs that currently return an empty array.
 

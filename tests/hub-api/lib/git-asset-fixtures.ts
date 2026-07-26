@@ -13,9 +13,12 @@
 // test failure is actionable.
 
 import { type } from "arktype";
+import postgres from "postgres";
 
 import { hexEncode } from "@intx/types";
 import type { RepoAction } from "@intx/types/sidecar";
+import { generateId } from "@intx/hub-common";
+import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 
 import { tokenAskpassEnv } from "./git-harness";
 
@@ -189,6 +192,47 @@ export async function createTenant(
   }
   const tenantId = extractIdField(res.data);
   return { tenantId, slug };
+}
+
+// Insert an `agent` row directly, bypassing any HTTP surface. The
+// agent-state git routes resolve a per-definition repo by looking the
+// agent row up by (id, tenantId), so a real row must exist for the
+// smart-HTTP request to pass tenant binding rather than 404. Only the
+// four non-defaulted columns are set; the rest take their table
+// defaults. Runs against the hub's per-test schema via search_path.
+export async function seedAgentDefinition(
+  schema: string,
+  user: SignedUpUser,
+  tenant: CreatedTenant,
+  name: string,
+): Promise<{ agentId: string }> {
+  const dbConfig = loadHarnessDbConfig();
+  const sql = postgres({
+    host: dbConfig.host,
+    port: dbConfig.port,
+    user: dbConfig.user,
+    password: dbConfig.password,
+    database: dbConfig.database,
+    max: 1,
+    connection: { search_path: `"${schema.replace(/"/g, '""')}"` },
+  });
+  try {
+    const principalRows = await sql<
+      { id: string }[]
+    >`select id from principal where tenant_id = ${tenant.tenantId} and kind = 'user' and ref_id = ${user.userId}`;
+    const creatorPrincipal = principalRows[0];
+    if (creatorPrincipal === undefined) {
+      throw new Error(
+        `seedAgentDefinition: no principal for user ${user.userId} in tenant ${tenant.tenantId}`,
+      );
+    }
+    const agentId = generateId("agent");
+    await sql`insert into agent (id, tenant_id, creator_principal_id, name)
+              values (${agentId}, ${tenant.tenantId}, ${creatorPrincipal.id}, ${name})`;
+    return { agentId };
+  } finally {
+    await sql.end();
+  }
 }
 
 export async function createAsset(

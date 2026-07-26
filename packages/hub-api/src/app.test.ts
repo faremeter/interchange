@@ -105,7 +105,6 @@ describe("app", () => {
       "Principals",
       "Roles",
       "Grants",
-      "Agents",
       "Instances",
       "Approvals",
       "Wallets",

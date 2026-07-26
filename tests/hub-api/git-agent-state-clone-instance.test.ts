@@ -35,9 +35,9 @@ import {
 } from "./lib/git-harness";
 import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 import {
-  apiCall,
   createTenant,
   mintTenantGitToken,
+  seedAgentDefinition,
   signUpUser,
   tokenEnv,
   type CreatedTenant,
@@ -66,34 +66,6 @@ async function startHubTracked(): Promise<HubHandle> {
   const hub = await startHub();
   stops.push(hub.stop);
   return hub;
-}
-
-type CreatedAgent = { agentId: string };
-
-async function createAgentDefinition(
-  hubUrl: string,
-  user: SignedUpUser,
-  tenantId: string,
-  name: string,
-): Promise<CreatedAgent> {
-  const res = await apiCall(
-    hubUrl,
-    "POST",
-    `/api/tenants/${tenantId}/agents/definitions`,
-    {
-      name,
-      systemPrompt: "you are a test agent",
-    },
-    user.cookies,
-  );
-  if (res.status !== 201) {
-    throw new Error(
-      `create agent failed: status=${res.status} body=${JSON.stringify(res.data)}`,
-    );
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the route returns AgentResponse; only `id` is needed downstream
-  const data = res.data as { id: string };
-  return { agentId: data.id };
 }
 
 /**
@@ -188,10 +160,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
       const hub = await startHubTracked();
       const user = await signUpUser(hub.url);
       const tenant = await createTenant(hub.url, user);
-      const agent = await createAgentDefinition(
-        hub.url,
+      const agent = await seedAgentDefinition(
+        hub.schema,
         user,
-        tenant.tenantId,
+        tenant,
         "clone-creator-agent",
       );
       const instance = await seedInstanceRow(
@@ -251,10 +223,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
       const hub = await startHubTracked();
       const user = await signUpUser(hub.url);
       const tenant = await createTenant(hub.url, user);
-      const agent = await createAgentDefinition(
-        hub.url,
+      const agent = await seedAgentDefinition(
+        hub.schema,
         user,
-        tenant.tenantId,
+        tenant,
         "clone-admin-agent",
       );
       const instance = await seedInstanceRow(
@@ -298,10 +270,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
       const hub = await startHubTracked();
       const userA = await signUpUser(hub.url);
       const tenantA = await createTenant(hub.url, userA);
-      const agent = await createAgentDefinition(
-        hub.url,
+      const agent = await seedAgentDefinition(
+        hub.schema,
         userA,
-        tenantA.tenantId,
+        tenantA,
         "clone-denied-agent",
       );
       const instance = await seedInstanceRow(

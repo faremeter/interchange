@@ -9,14 +9,12 @@
 
 import { spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { type, type Type } from "arktype";
 import {
   TenantResponse,
-  AgentResponse,
   AssetResponse,
   AssetWithOriginResponse,
   PrincipalResponse,
@@ -34,7 +32,6 @@ import {
   WORKSPACE_BUILTINS_REGISTRY,
   WORKFLOW_JSON_PATH,
 } from "@intx/hub-sessions";
-import { extractTarballPackageJSON } from "@intx/tool-packaging";
 
 import {
   buildWorkflowJson,
@@ -49,50 +46,6 @@ import { offeringCapabilities } from "./lib/offering-capabilities";
 const AuthResponse = type({ "user?": { id: "string" } });
 
 const SEED_ROOT = resolve(import.meta.dirname ?? ".", "..");
-const BUILTINS_DIR = resolve(SEED_ROOT, "dist", "builtins");
-
-// Read every tarball under `dist/builtins/` and pin `(name, version)`
-// using the bytes the publisher will actually upload. Reading the
-// source packages' `package.json` instead would silently desynchronize
-// from the on-disk tarballs whenever a version is bumped without
-// re-running `make builtins`: the publish step would upload a tarball
-// whose filename still encodes the old version, but the seed would
-// pin the new version and the sidecar would fail with `tarball.missing`
-// at launch time. Going through the artifacts directly keeps the seed
-// honest about what was built.
-async function readBuiltinPins(): Promise<{ name: string; version: string }[]> {
-  let entries: string[];
-  try {
-    entries = readdirSync(BUILTINS_DIR);
-  } catch (cause) {
-    throw new Error(
-      `seed: cannot read ${BUILTINS_DIR}; run \`make builtins\` first`,
-      { cause },
-    );
-  }
-  const tarballs = entries.filter((f) => f.endsWith(".tgz")).sort();
-  if (tarballs.length === 0) {
-    throw new Error(
-      `seed: ${BUILTINS_DIR} contains no *.tgz files; run \`make builtins\` first`,
-    );
-  }
-  const pins: { name: string; version: string }[] = [];
-  for (const filename of tarballs) {
-    const abs = resolve(BUILTINS_DIR, filename);
-    const bytes = readFileSync(abs);
-    const outcome = await extractTarballPackageJSON(new Uint8Array(bytes));
-    if (outcome.kind !== "ok") {
-      throw new Error(
-        `seed: ${abs} did not yield a usable package.json (${outcome.kind})`,
-      );
-    }
-    pins.push({
-      name: outcome.parsed.name,
-      version: outcome.parsed.version,
-    });
-  }
-  return pins;
-}
 
 function parse<T extends Type>(
   schema: T,
@@ -108,17 +61,6 @@ function parse<T extends Type>(
 }
 
 const BASE = process.env["HUB_URL"] ?? "http://localhost:3000";
-
-// Built-in tool-package pins shared by the three workspace agents. The
-// matching tarballs are published into the `workspace-builtins`
-// package-registry asset by `bin/publish-tool-packages.ts`; the hub's
-// session-service scope-routing config maps the `@intx` scope onto
-// that asset. Pins are read directly from the artifacts under
-// `dist/builtins/` so the seed cannot pin a version that the build
-// step never produced — the previous behavior (consulting each
-// source package.json) silently desynchronized whenever a version
-// was bumped without re-running `make builtins`.
-const BUILTIN_TOOL_PACKAGES = await readBuiltinPins();
 
 type CookieJar = string[];
 
@@ -545,7 +487,7 @@ async function ensureRole(
   return roleId;
 }
 
-const researchRoleId = await ensureRole(
+await ensureRole(
   acmeTenantId,
   "research-bot",
   "Grants for the Research Bot agent",
@@ -557,7 +499,7 @@ const researchRoleId = await ensureRole(
   aliceCookies,
 );
 
-const codeReviewRoleId = await ensureRole(
+await ensureRole(
   acmeTenantId,
   "code-review-bot",
   "Grants for the Code Review Bot agent",
@@ -569,65 +511,7 @@ const codeReviewRoleId = await ensureRole(
   aliceCookies,
 );
 
-// -- Create agents in Acme --
-
-log("Creating agents in Acme...");
-
-const { status: a1Status, data: a1Data } = await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/agents/definitions`,
-  {
-    name: "Research Bot",
-    description: "Researches topics and summarizes findings",
-    systemPrompt:
-      "You are a research assistant. Find and summarize information. When you receive a mail message, reply to it immediately with a helpful response. Do not wait for further instructions.",
-    modelConfig: { defaultModel: "kimi-k2.7-code" },
-    modelRequirements: [
-      { model: "claude-sonnet-5", capabilities: ["long-context"] },
-    ],
-    toolPackages: BUILTIN_TOOL_PACKAGES,
-    capabilities: { research: true, summarize: true },
-    credentialRequirements: [
-      { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },
-    ],
-    roleIds: [researchRoleId],
-  },
-  aliceCookies,
-);
-checkOrSkip("create research bot", a1Status, 201, a1Data);
-const researchBotId =
-  a1Status === 201
-    ? parse(AgentResponse, a1Data, "research bot response").id
-    : null;
-if (researchBotId) log(`  Research Bot ID: ${researchBotId}`);
-
-const { status: a2Status, data: a2Data } = await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/agents/definitions`,
-  {
-    name: "Code Review Bot",
-    description: "Reviews pull requests and suggests improvements",
-    systemPrompt:
-      "You are a code reviewer. Analyze code for bugs and improvements.",
-    modelConfig: { defaultModel: "kimi-k2.7-code" },
-    toolPackages: BUILTIN_TOOL_PACKAGES,
-    capabilities: { codeReview: true },
-    credentialRequirements: [
-      { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },
-      { providerName: "GitHub", source: "tenant", scopes: ["repo"] },
-    ],
-    roleIds: [codeReviewRoleId],
-  },
-  aliceCookies,
-);
-checkOrSkip("create code review bot", a2Status, 201, a2Data);
-const codeReviewBotId =
-  a2Status === 201
-    ? parse(AgentResponse, a2Data, "code review bot response").id
-    : null;
-if (codeReviewBotId) log(`  Code Review Bot ID: ${codeReviewBotId}`);
-
-const codingRoleId = await ensureRole(
+await ensureRole(
   acmeTenantId,
   "coding-agent",
   "Grants for the Coding Agent with full filesystem and LSP access",
@@ -644,42 +528,11 @@ const codingRoleId = await ensureRole(
   aliceCookies,
 );
 
-const { status: a4Status, data: a4Data } = await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/agents/definitions`,
-  {
-    name: "Coding Agent",
-    description:
-      "Software engineering agent with filesystem, shell, and language server access",
-    systemPrompt: `You are a software engineering agent. You have access to the filesystem, a shell, and a language server for code navigation and diagnostics.
+// -- Create role in Widgets --
 
-Use the file tools (read_file, write_file, edit_file, search_files, grep) to explore and modify code. Use run_shell to execute build commands, run tests, and interact with version control. Use the lsp tool for code intelligence operations like go-to-definition, find-references, hover information, and symbol search.
+log("Creating role in Widgets...");
 
-When you edit or write files, the language server will automatically report type errors and diagnostics. Pay attention to these diagnostics and fix any issues before declaring your work complete.
-
-When you receive a task via mail, work through it methodically: understand the codebase, plan your approach, implement the changes, verify they build and pass tests, then report back with what you did.`,
-    modelConfig: { defaultModel: "kimi-k2.7-code" },
-    toolPackages: BUILTIN_TOOL_PACKAGES,
-    capabilities: { coding: true, fileSystem: true, languageServer: true },
-    credentialRequirements: [
-      { providerName: "OpenCode Go", source: "tenant", scopes: ["chat"] },
-    ],
-    roleIds: [codingRoleId],
-  },
-  aliceCookies,
-);
-checkOrSkip("create coding agent", a4Status, 201, a4Data);
-const codingAgentId =
-  a4Status === 201
-    ? parse(AgentResponse, a4Data, "coding agent response").id
-    : null;
-if (codingAgentId) log(`  Coding Agent ID: ${codingAgentId}`);
-
-// -- Create agent role and agent in Widgets --
-
-log("Creating agent in Widgets...");
-
-const supportRoleId = await ensureRole(
+await ensureRole(
   widgetsTenantId,
   "support-bot",
   "Grants for the Customer Support Bot agent",
@@ -691,35 +544,6 @@ const supportRoleId = await ensureRole(
   ],
   aliceCookies,
 );
-
-const { status: a3Status, data: a3Data } = await api(
-  "POST",
-  `/api/tenants/${widgetsTenantId}/agents/definitions`,
-  {
-    name: "Customer Support Bot",
-    description: "Handles customer support tickets",
-    systemPrompt:
-      "You are a customer support agent. Help customers with their issues.",
-    modelConfig: { defaultModel: "claude-sonnet-5" },
-    capabilities: { ticketManagement: true, knowledgeBase: true },
-    credentialRequirements: [
-      { providerName: "Anthropic", source: "tenant", scopes: ["chat"] },
-      {
-        providerName: "Stripe",
-        source: "tenant",
-        scopes: ["charges:read", "refunds:write"],
-      },
-    ],
-    roleIds: [supportRoleId],
-  },
-  aliceCookies,
-);
-checkOrSkip("create support bot", a3Status, 201, a3Data);
-const supportBotId =
-  a3Status === 201
-    ? parse(AgentResponse, a3Data, "support bot response").id
-    : null;
-if (supportBotId) log(`  Support Bot ID: ${supportBotId}`);
 
 // -- Create custom role and grants --
 
@@ -997,124 +821,6 @@ const { status: w2Status, data: w2Data } = await api(
   aliceCookies,
 );
 checkOrSkip("create widgets wallet", w2Status, 201, w2Data);
-
-// -- Create offerings --
-
-log("Creating offerings...");
-
-// Get agent IDs from listing if we didn't just create them
-const { data: acmeAgents } = await api(
-  "GET",
-  `/api/tenants/${acmeTenantId}/agents/definitions`,
-  undefined,
-  aliceCookies,
-);
-const agentList = parse(
-  paginatedSchema(AgentResponse),
-  acmeAgents,
-  "acme agents response",
-).data;
-const researchBot = agentList.find((a) => a.name === "Research Bot");
-const codeReviewBot = agentList.find((a) => a.name === "Code Review Bot");
-
-const { data: widgetAgents } = await api(
-  "GET",
-  `/api/tenants/${widgetsTenantId}/agents/definitions`,
-  undefined,
-  aliceCookies,
-);
-const widgetAgentList = parse(
-  paginatedSchema(AgentResponse),
-  widgetAgents,
-  "widget agents response",
-).data;
-const supportBot = widgetAgentList.find(
-  (a) => a.name === "Customer Support Bot",
-);
-
-if (researchBot) {
-  const { status: ofr1Status, data: ofr1Data } = await api(
-    "POST",
-    `/api/tenants/${acmeTenantId}/offerings`,
-    {
-      agentId: researchBot.id,
-      name: "Web Research",
-      description: "Search the web and summarize findings on any topic",
-      pricing: {
-        base: { amount: "0.50", currency: "USD" },
-        methods: ["credits"],
-        negotiable: false,
-      },
-    },
-    aliceCookies,
-  );
-  checkOrSkip("create web research offering", ofr1Status, 201, ofr1Data);
-
-  const { status: ofr2Status, data: ofr2Data } = await api(
-    "POST",
-    `/api/tenants/${acmeTenantId}/offerings`,
-    {
-      agentId: researchBot.id,
-      name: "Document Summarization",
-      description: "Summarize long documents into key takeaways",
-      pricing: {
-        base: { amount: "0.25", currency: "USD" },
-        methods: ["credits"],
-        negotiable: true,
-        bounds: { min: "0.10", max: "1.00" },
-      },
-    },
-    aliceCookies,
-  );
-  checkOrSkip("create summarization offering", ofr2Status, 201, ofr2Data);
-}
-
-if (codeReviewBot) {
-  const { status: ofr3Status, data: ofr3Data } = await api(
-    "POST",
-    `/api/tenants/${acmeTenantId}/offerings`,
-    {
-      agentId: codeReviewBot.id,
-      name: "Pull Request Review",
-      description:
-        "Automated code review with bug detection and improvement suggestions",
-      pricing: {
-        base: { amount: "1.00", currency: "USD" },
-        methods: ["credits"],
-        negotiable: false,
-      },
-      schema: {
-        input: { type: "object", properties: { prUrl: { type: "string" } } },
-        output: {
-          type: "object",
-          properties: { comments: { type: "array" } },
-        },
-      },
-    },
-    aliceCookies,
-  );
-  checkOrSkip("create pr review offering", ofr3Status, 201, ofr3Data);
-}
-
-if (supportBot) {
-  const { status: ofr4Status, data: ofr4Data } = await api(
-    "POST",
-    `/api/tenants/${widgetsTenantId}/offerings`,
-    {
-      agentId: supportBot.id,
-      name: "Ticket Resolution",
-      description: "Automatically resolve common customer support tickets",
-      pricing: {
-        base: { amount: "0.75", currency: "USD" },
-        methods: ["credits", "fiat"],
-        negotiable: true,
-        bounds: { min: "0.25", max: "2.00" },
-      },
-    },
-    aliceCookies,
-  );
-  checkOrSkip("create ticket resolution offering", ofr4Status, 201, ofr4Data);
-}
 
 // -- Create model catalog --
 //

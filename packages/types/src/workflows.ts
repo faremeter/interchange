@@ -1,8 +1,6 @@
-// Status vocabularies for the first-class workflow definition model. Kept in a
-// workflow-scoped module, deliberately separate from the coincident
-// `agentDefinitionStatuses` / agent version statuses in `./agents`: the agent
-// types are removed when the agent surface is retired, so a workflow table or
-// validator must not depend on them.
+// Status vocabulary for the first-class workflow definition model, kept in its
+// own workflow-scoped module so no workflow table or validator depends on a
+// type from the agent surface.
 export const workflowDefinitionStatuses = ["deployed", "stopped"] as const;
 export type WorkflowDefinitionStatus =
   (typeof workflowDefinitionStatuses)[number];

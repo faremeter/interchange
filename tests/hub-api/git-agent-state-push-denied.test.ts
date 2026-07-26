@@ -23,10 +23,9 @@ import {
   type HubHandle,
 } from "./lib/git-harness";
 import {
-  apiCall,
   createTenant,
+  seedAgentDefinition,
   signUpUser,
-  type SignedUpUser,
 } from "./lib/git-asset-fixtures";
 
 const stops: (() => Promise<void>)[] = [];
@@ -51,32 +50,6 @@ async function startHubTracked(): Promise<HubHandle> {
   const hub = await startHub();
   stops.push(hub.stop);
   return hub;
-}
-
-async function createAgentDefinition(
-  hubUrl: string,
-  user: SignedUpUser,
-  tenantId: string,
-  name: string,
-): Promise<{ agentId: string }> {
-  const res = await apiCall(
-    hubUrl,
-    "POST",
-    `/api/tenants/${tenantId}/agents/definitions`,
-    {
-      name,
-      systemPrompt: "you are a test agent",
-    },
-    user.cookies,
-  );
-  if (res.status !== 201) {
-    throw new Error(
-      `create agent failed: status=${res.status} body=${JSON.stringify(res.data)}`,
-    );
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the route returns AgentResponse; only `id` is needed downstream
-  const data = res.data as { id: string };
-  return { agentId: data.id };
 }
 
 /**
@@ -129,10 +102,10 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
-    const agent = await createAgentDefinition(
-      hub.url,
+    const agent = await seedAgentDefinition(
+      hub.schema,
       user,
-      tenant.tenantId,
+      tenant,
       "push-deny-agent",
     );
 
@@ -155,10 +128,10 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
-    const agent = await createAgentDefinition(
-      hub.url,
+    const agent = await seedAgentDefinition(
+      hub.schema,
       user,
-      tenant.tenantId,
+      tenant,
       "push-def-agent",
     );
 

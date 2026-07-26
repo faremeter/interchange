@@ -5,7 +5,6 @@ export * from "./principals";
 export * from "./roles";
 export * from "./grants";
 export * from "./signals";
-export * from "./agents";
 export * from "./instances";
 export * from "./workflows";
 export * from "./attachments";

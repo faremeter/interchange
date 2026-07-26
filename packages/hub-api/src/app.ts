@@ -33,7 +33,6 @@ import { createTenantFederationRoutes } from "./routes/tenant-federation";
 import { createPrincipalRoutes, createInviteRoutes } from "./routes/principals";
 import { createRoleRoutes, createRoleAssignRoutes } from "./routes/roles";
 import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
-import { createAgentRoutes } from "./routes/agents";
 import { createInstanceRoutes } from "./routes/instances";
 import { createWorkflowRoutes } from "./routes/workflows";
 import { createWorkflowDefinitionRoutes } from "./routes/workflow-definitions";
@@ -241,10 +240,6 @@ export function mountHubRoutes(
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/evaluate",
     createEvaluateRoutes({ db, grantStore, conditionRegistry }),
-  );
-  app.route(
-    "/api/tenants/:tenantId/agents/definitions",
-    createAgentRoutes({ db, requireGrant }),
   );
   app.route(
     "/api/tenants/:tenantId/agents/instances",
