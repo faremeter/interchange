@@ -817,9 +817,9 @@ Deactivate a wallet
 ### GET /api/tenants/:tenantId/wallets/:walletId/transactions
 List transactions
 
-Transaction history for a wallet. Filterable by agent, date range, and status.
+Transaction history for a wallet. Filterable by run, date range, and status.
 
-Query: agentId?, startTime?, endTime?, status?: pending|completed|failed, cursor?, limit?
+Query: runId?, startTime?, endTime?, status?: pending|completed|failed, cursor?, limit?
 
 200: unknown -- List of transactions
 

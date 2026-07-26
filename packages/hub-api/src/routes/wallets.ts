@@ -47,7 +47,7 @@ function formatTransaction(row: typeof transaction.$inferSelect) {
   return {
     id: parsed.id,
     walletId: parsed.walletId,
-    agentId: parsed.agentId ?? null,
+    runId: parsed.runId ?? null,
     direction: parsed.direction,
     amount: parsed.amount,
     currency: parsed.currency,
@@ -294,9 +294,9 @@ export function createWalletRoutes({
       tags: ["Wallets"],
       summary: "List transactions",
       description:
-        "Transaction history for a wallet. Filterable by agent, date range, and status.",
+        "Transaction history for a wallet. Filterable by run, date range, and status.",
       parameters: [
-        { name: "agentId", in: "query", schema: { type: "string" } },
+        { name: "runId", in: "query", schema: { type: "string" } },
         { name: "startTime", in: "query", schema: { type: "string" } },
         { name: "endTime", in: "query", schema: { type: "string" } },
         {
@@ -332,7 +332,7 @@ export function createWalletRoutes({
         );
       }
 
-      const agentId = c.req.query("agentId");
+      const runId = c.req.query("runId");
       const status = c.req.query("status");
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
@@ -340,7 +340,7 @@ export function createWalletRoutes({
       });
 
       const conditions = [eq(transaction.walletId, walletId)];
-      if (agentId) conditions.push(eq(transaction.agentId, agentId));
+      if (runId) conditions.push(eq(transaction.runId, runId));
       if (
         status === "pending" ||
         status === "completed" ||

@@ -414,6 +414,13 @@
       "when": 1785085643398,
       "tag": "0058_repoint_offering_fk_to_definition",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1785087256544,
+      "tag": "0059_repoint_transaction_fk_to_run",
+      "breakpoints": true
     }
   ]
 }

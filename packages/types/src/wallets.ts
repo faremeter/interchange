@@ -41,7 +41,7 @@ export const WalletResponse = type({
 export const TransactionResponse = type({
   id: "string",
   walletId: "string",
-  "agentId?": "string | null",
+  "runId?": "string | null",
   direction: type("'inbound' | 'outbound'").describe(
     "Whether funds moved into the wallet (`inbound`) or out of it (`outbound`).",
   ),

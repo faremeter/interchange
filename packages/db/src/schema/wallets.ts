@@ -1,7 +1,7 @@
 import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
-import { agent } from "./agents";
 import { tenant } from "./tenants";
+import { workflowRun } from "./workflow-run";
 
 export const wallet = pgTable("wallet", {
   id: text("id").primaryKey(),
@@ -24,7 +24,9 @@ export const transaction = pgTable("transaction", {
   walletId: text("wallet_id")
     .notNull()
     .references(() => wallet.id, { onDelete: "cascade" }),
-  agentId: text("agent_id").references(() => agent.id, {
+  // The run this ledger entry is attributed to. Nullable with set-null on
+  // delete: ledger history must survive deletion of the run it references.
+  runId: text("run_id").references(() => workflowRun.id, {
     onDelete: "set null",
   }),
   direction: text("direction", {
