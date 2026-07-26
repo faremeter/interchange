@@ -21,10 +21,11 @@ import {
   asset,
   grant as grantTable,
   principal as principalTable,
-  workflowDeployment,
+  workflowDefinition,
+  workflowRun,
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
-import { createWorkflowRunStore, resolveDefinitionIdForAsset } from "@intx/db";
+import { createWorkflowRunStore } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import { GrantRequirement, type GrantEffect } from "@intx/types";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
@@ -436,17 +437,43 @@ export function createMailTriggeredRunGrantsMaterializer(
   runId: string;
 }) => Promise<MailTriggeredRunGrantsResult> {
   return async ({ agentAddress, runId }) => {
-    const deployment = await deps.db.query.workflowDeployment.findFirst({
-      where: and(
-        eq(workflowDeployment.address, agentAddress),
-        eq(workflowDeployment.status, "deployed"),
-      ),
-    });
-    if (deployment === undefined) return { outcome: "skip" };
+    // Resolve the deployment's anchor run by its address and, through its
+    // definition, the workflow asset the run grants derive from. The anchor run
+    // (id = deployment id) is gated on a live "running" status, the analog of
+    // the deployment's "deployed"; the inner join yields the asset id and the
+    // definition id off the run in one read.
+    const [anchor] = await deps.db
+      .select({
+        deploymentId: workflowRun.id,
+        tenantId: workflowRun.tenantId,
+        definitionId: workflowRun.definitionId,
+        definitionAssetId: workflowDefinition.assetId,
+      })
+      .from(workflowRun)
+      .innerJoin(
+        workflowDefinition,
+        eq(workflowRun.definitionId, workflowDefinition.id),
+      )
+      .where(
+        and(
+          eq(workflowRun.address, agentAddress),
+          eq(workflowRun.status, "running"),
+        ),
+      )
+      .limit(1);
+    if (anchor === undefined) return { outcome: "skip" };
+    if (anchor.definitionAssetId === null) {
+      throw new Error(
+        `mail-triggered run ${runId} for ${agentAddress}: anchor run's definition has no asset`,
+      );
+    }
+    const definitionAssetId = anchor.definitionAssetId;
+    const tenantId = anchor.tenantId;
+    const deploymentId = anchor.deploymentId;
 
     const definition = await hydrateDefinition(
       deps.assetService,
-      deployment.definitionAssetId,
+      definitionAssetId,
     );
 
     const parsedRequirements = parseGrantRequirements(definition);
@@ -463,12 +490,12 @@ export function createMailTriggeredRunGrantsMaterializer(
     );
     const creatorPrincipalId = await loadAssetCreatorPrincipalId(
       deps.db,
-      deployment.tenantId,
-      deployment.definitionAssetId,
+      tenantId,
+      definitionAssetId,
     );
     const creatorGrants = await collectCreatorGrants(
       deps.grantStore,
-      deployment.tenantId,
+      tenantId,
       creatorPrincipalId,
       creatorRequirements,
     );
@@ -477,14 +504,11 @@ export function createMailTriggeredRunGrantsMaterializer(
     // (same Message-ID runId) mints the same principal id and its
     // conflict-noop reinsert leaves the grant rows pointing at the id that
     // is actually present.
-    const runPrincipalId = await deriveRunPrincipalId(
-      deployment.tenantId,
-      runId,
-    );
+    const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
     const now = new Date();
     const staged = await stageRunGrants({
       definition,
-      tenantId: deployment.tenantId,
+      tenantId: tenantId,
       runPrincipalId,
       now,
       invokerGrants: [],
@@ -500,27 +524,17 @@ export function createMailTriggeredRunGrantsMaterializer(
       };
     }
 
-    // The DB `workflow_run.deployment_id` is a foreign key to
-    // `workflow_deployment.id`, so it carries the deployment row's real id
-    // -- NOT the address-derived substrate repo slug, which keys the
-    // on-disk workflow-run repo and the wire routing, not this FK.
-    const deploymentId = deployment.id;
     return {
       outcome: "materialized",
       stepGrants: staged.stepGrants,
       commit: async () => {
-        // Anchor the run on its definition too, resolved at commit where the
-        // deployment (and its asset) is in scope; null when that asset was
-        // never folded.
-        const definitionId = await resolveDefinitionIdForAsset(
-          deps.db,
-          deployment.definitionAssetId,
-        );
+        // Anchor the run on the deployment's definition -- the one the anchor
+        // run already carries, resolved above.
         await commitRunGrants({
           db: deps.db,
-          tenantId: deployment.tenantId,
+          tenantId,
           deploymentId,
-          definitionId,
+          definitionId: anchor.definitionId,
           runId,
           runPrincipalId,
           now,

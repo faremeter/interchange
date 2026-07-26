@@ -45,13 +45,41 @@ function workflowJson(): string {
 // lookup and the workflow asset lookup. Staging writes nothing, so the
 // commit path (a real transaction with a guard select and inserts) is left
 // to the DB-backed test; this mock deliberately does not model it.
-function mockDb(opts: { deploymentRow: unknown; assetRow: unknown }) {
+function mockDb(opts: {
+  deploymentRow:
+    | { id: string; tenantId: string; definitionAssetId: string }
+    | undefined;
+  assetRow: unknown;
+}) {
+  // The materializer resolves the deployment's anchor run and its definition in
+  // one inner-joined select keyed by address; model that read shape here.
+  const select = () => ({
+    from: () => ({
+      innerJoin: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve(
+              opts.deploymentRow
+                ? [
+                    {
+                      deploymentId: opts.deploymentRow.id,
+                      tenantId: opts.deploymentRow.tenantId,
+                      definitionId: `wfd_${opts.deploymentRow.id}`,
+                      definitionAssetId: opts.deploymentRow.definitionAssetId,
+                    },
+                  ]
+                : [],
+            ),
+        }),
+      }),
+    }),
+  });
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
-      workflowDeployment: { findFirst: async () => opts.deploymentRow },
       asset: { findFirst: async () => opts.assetRow },
     },
+    select,
   } as unknown as Parameters<
     typeof createMailTriggeredRunGrantsMaterializer
   >[0]["db"];

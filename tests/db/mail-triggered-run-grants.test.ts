@@ -33,6 +33,7 @@ import {
 
 const TENANT = "tnt";
 const ASSET = "ast";
+const DEFINITION = "wfd_real";
 const DEPLOYMENT = "dep_real";
 const WORKFLOW_ADDRESS = "ins_dep_real@tenant.example";
 const CREATOR = "prn_creator";
@@ -120,6 +121,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionAssetId: ASSET,
         address: WORKFLOW_ADDRESS,
       });
+      // The deployment's first-class definition and its anchor run: the
+      // materializer resolves the run's asset and definition off the anchor,
+      // keyed by the deployment address.
+      await h.db.insert(workflowDefinition).values({
+        id: DEFINITION,
+        tenantId: TENANT,
+        name: DEFINITION,
+        assetId: ASSET,
+      });
+      await h.db.insert(workflowRun).values({
+        id: DEPLOYMENT,
+        tenantId: TENANT,
+        deploymentId: DEPLOYMENT,
+        definitionId: DEFINITION,
+        address: WORKFLOW_ADDRESS,
+        status: "running",
+      });
       // The creator holds the grant its creator-sourced requirement demands,
       // so the happy path resolves it. The rejection test overrides the
       // requirement to a resource the creator does NOT hold.
@@ -178,9 +196,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(runs[0]?.deploymentId).toBe(DEPLOYMENT);
       expect(runs[0]?.principalId).toBe(runPrincipalId);
       expect(runs[0]?.status).toBe("running");
-      // The seeded asset was never folded, so the run has no definition: null,
-      // not an error; it still anchors on the deployment.
-      expect(runs[0]?.definitionId).toBeNull();
+      // The committed run anchors on the deployment's definition -- the one the
+      // anchor run carries.
+      expect(runs[0]?.definitionId).toBe(DEFINITION);
 
       // Every staged grant persisted and FK-resolves to the run principal.
       const grants = await h.db
@@ -193,29 +211,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(resources).toContain("secret:vault/use");
     });
 
-    test("anchors the committed run on its deployment's definition", async () => {
-      // The deployment's asset has a folded definition, so the committed run
-      // takes it alongside the deployment.
+    test("throws when the anchor run's definition has no asset", async () => {
+      // A native workflow definition names its asset; a null asset is a corrupt
+      // definition the materializer cannot hydrate from, so it throws loudly.
       await h.db.insert(workflowDefinition).values({
-        id: "wfd_native",
+        id: "wfd_null",
         tenantId: TENANT,
-        name: "native",
-        assetId: ASSET,
+        name: "no-asset",
+        assetId: null,
       });
+      await h.db
+        .update(workflowRun)
+        .set({ definitionId: "wfd_null" })
+        .where(eq(workflowRun.id, DEPLOYMENT));
 
-      const result = await materializeOnce(
-        workflowJson("secret:vault"),
-        RUN_ID,
-      );
-      if (result.outcome !== "materialized") {
-        throw new Error(`expected materialized, got ${result.outcome}`);
-      }
-      await result.commit();
-
-      const run = (
-        await h.db.select().from(workflowRun).where(eq(workflowRun.id, RUN_ID))
-      )[0];
-      expect(run?.definitionId).toBe("wfd_native");
+      await expect(
+        materializeOnce(workflowJson("secret:vault"), RUN_ID),
+      ).rejects.toThrow(/definition has no asset/);
     });
 
     test("a redelivery with the same runId neither throws nor duplicates", async () => {
