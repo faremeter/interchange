@@ -4,9 +4,13 @@ import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import { asset, workflowDeployment, workflowRun } from "@intx/db/schema";
+import {
+  asset,
+  workflowDefinition,
+  workflowDeployment,
+  workflowRun,
+} from "@intx/db/schema";
 import type { DB } from "@intx/db";
-import { resolveDefinitionIdForAsset } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
@@ -524,13 +528,29 @@ export function createWorkflowRoutes({
       }
       const messageAttachments = attachmentResult.attachments;
 
-      const row = await db.query.workflowDeployment.findFirst({
-        where: and(
-          eq(workflowDeployment.id, deploymentId),
-          eq(workflowDeployment.tenantId, tenant.id),
-        ),
-      });
-      if (!row) {
+      // Resolve the deployment's anchor run and, through its definition, the
+      // workflow asset the trigger's grants derive from. The inner join to the
+      // definition yields the asset id and the definition id in one read, off
+      // the run rather than the deployment projection.
+      const [anchor] = await db
+        .select({
+          definitionId: workflowRun.definitionId,
+          definitionAssetId: workflowDefinition.assetId,
+        })
+        .from(workflowRun)
+        .innerJoin(
+          workflowDefinition,
+          eq(workflowRun.definitionId, workflowDefinition.id),
+        )
+        .where(
+          and(
+            eq(workflowRun.id, deploymentId),
+            eq(workflowRun.tenantId, tenant.id),
+            isNotNull(workflowRun.deploymentId),
+          ),
+        )
+        .limit(1);
+      if (anchor === undefined) {
         return c.json(
           {
             error: {
@@ -539,6 +559,20 @@ export function createWorkflowRoutes({
             },
           },
           404,
+        );
+      }
+      const definitionAssetId = anchor.definitionAssetId;
+      if (definitionAssetId === null) {
+        // A native workflow definition names its asset; a null here is a
+        // corrupt definition the trigger cannot hydrate from.
+        return c.json(
+          {
+            error: {
+              code: "invalid_workflow",
+              message: "Workflow definition has no asset",
+            },
+          },
+          409,
         );
       }
 
@@ -561,10 +595,7 @@ export function createWorkflowRoutes({
       // principal or grant rows behind.
       let definition: WorkflowDefinition;
       try {
-        definition = await hydrateDefinition(
-          assetService,
-          row.definitionAssetId,
-        );
+        definition = await hydrateDefinition(assetService, definitionAssetId);
       } catch (err) {
         return c.json(
           {
@@ -585,7 +616,7 @@ export function createWorkflowRoutes({
       // The deployment row alone does not carry the creator identity.
       const assetRow = await db.query.asset.findFirst({
         where: and(
-          eq(asset.id, row.definitionAssetId),
+          eq(asset.id, definitionAssetId),
           eq(asset.tenantId, tenant.id),
           eq(asset.kind, "workflow"),
         ),
@@ -595,7 +626,7 @@ export function createWorkflowRoutes({
           {
             error: {
               code: "invalid_workflow",
-              message: `Workflow asset ${row.definitionAssetId} not found`,
+              message: `Workflow asset ${definitionAssetId} not found`,
             },
           },
           409,
@@ -754,12 +785,9 @@ export function createWorkflowRoutes({
       // the per-instance principal the agent.deploy path mints. The commit is
       // idempotent on the runId (unique for an external trigger), sharing the
       // same staging and commit the mail-triggered run path uses.
-      // Anchor the run on its definition too, resolved from the deployment's
-      // asset in scope; null when that asset was never folded.
-      const definitionId = await resolveDefinitionIdForAsset(
-        db,
-        row.definitionAssetId,
-      );
+      // Anchor the run on the deployment's definition -- the one the anchor
+      // run already carries, resolved above.
+      const definitionId = anchor.definitionId;
       await commitRunGrants({
         db,
         tenantId: tenant.id,

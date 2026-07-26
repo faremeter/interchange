@@ -287,23 +287,39 @@ function createMockDB(opts: MockDBOpts) {
   // already-materialized guard select resolves through `.limit`, returning
   // no rows so the mock always exercises the first-commit insert path (a
   // redelivery no-op is covered against a real database).
-  const select = () => ({
-    from: (table: unknown) => ({
-      where: () => ({
-        orderBy: () => Promise.resolve(list),
-        // The anchor-run existence check keys on the deployment id; the anchor
-        // run is 1:1 with the deployment, so it resolves exactly when the
-        // deployment does. Only the workflow_run lookup answers it -- other
-        // limited selects (e.g. the definition-by-asset resolve) fall through.
-        limit: () =>
-          Promise.resolve(
-            table === workflowRunTable && opts.deploymentRow
-              ? [{ id: opts.deploymentRow.id }]
-              : [],
-          ),
-      }),
-    }),
-  });
+  const select = () => {
+    const from = (table: unknown) => {
+      // The anchor-run existence check selects the run alone; the trigger route
+      // additionally inner-joins the definition to read its asset. Track the
+      // join so the join case answers with the anchor's definition + asset and
+      // the plain case with the bare id, both keyed on the deployment.
+      let joined = false;
+      const chain = {
+        innerJoin: () => {
+          joined = true;
+          return chain;
+        },
+        where: () => ({
+          orderBy: () => Promise.resolve(list),
+          limit: () =>
+            Promise.resolve(
+              table === workflowRunTable && opts.deploymentRow
+                ? joined
+                  ? [
+                      {
+                        definitionId: `wfd_${opts.deploymentRow.id}`,
+                        definitionAssetId: opts.deploymentRow.definitionAssetId,
+                      },
+                    ]
+                  : [{ id: opts.deploymentRow.id }]
+                : [],
+            ),
+        }),
+      };
+      return chain;
+    };
+    return { from };
+  };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
@@ -1323,6 +1339,32 @@ describe("POST /workflows/:deploymentId/mail", () => {
     expect(await errorCode(res)).toBe("insufficient_grants");
     expect(runGrantsCalls).toHaveLength(0);
     expect(inserts.filter((i) => i.table === grantTable)).toHaveLength(0);
+  });
+
+  test("fails closed 409 when the anchor definition has a null asset", async () => {
+    const routeMailCalls: RouteMailCall[] = [];
+    // A native workflow definition names its asset; a null asset is a corrupt
+    // definition the trigger cannot hydrate from, so the route fails closed.
+    const app = createTestApp({
+      grants: [manageGrant()],
+      routeMailCalls,
+      db: {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drive the anchor join to return a null asset
+        deploymentRow: {
+          ...deploymentRow,
+          definitionAssetId: null,
+        } as unknown as typeof deploymentRow,
+        assetRow: workflowAssetRow,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("invalid_workflow");
+    expect(routeMailCalls).toHaveLength(0);
   });
 });
 

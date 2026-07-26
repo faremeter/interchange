@@ -57,6 +57,7 @@ import {
   grant as grantTable,
   principal as principalTable,
   tenant as tenantTable,
+  workflowDefinition as workflowDefinitionTable,
   workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
@@ -419,6 +420,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: deploymentMailAddress,
         publicKey: null,
         status: "deployed",
+      });
+      // The deployment's first-class definition and its anchor run: the trigger
+      // route reads the workflow asset and the run's definition off the anchor.
+      await h.db.insert(workflowDefinitionTable).values({
+        id: `wfd_${DEPLOYMENT_ID}`,
+        tenantId: TENANT_ID,
+        name: DEPLOYMENT_ID,
+        assetId: DEFINITION_ASSET_ID,
+      });
+      await h.db.insert(workflowRunTable).values({
+        id: DEPLOYMENT_ID,
+        tenantId: TENANT_ID,
+        deploymentId: DEPLOYMENT_ID,
+        definitionId: `wfd_${DEPLOYMENT_ID}`,
+        address: deploymentMailAddress,
+        status: "running",
       });
     }
 

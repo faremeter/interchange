@@ -60,6 +60,7 @@ import {
   grant as grantTable,
   principal as principalTable,
   tenant as tenantTable,
+  workflowDefinition as workflowDefinitionTable,
   workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
@@ -347,6 +348,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
         publicKey: null,
         status: "deployed",
       });
+      // The deployment's first-class definition and its anchor run: the trigger
+      // route reads the workflow asset and the run's definition off the anchor.
+      await h.db.insert(workflowDefinitionTable).values({
+        id: `wfd_${opts.deploymentId}`,
+        tenantId: TENANT_ID,
+        name: opts.deploymentId,
+        assetId,
+      });
+      await h.db.insert(workflowRunTable).values({
+        id: opts.deploymentId,
+        tenantId: TENANT_ID,
+        deploymentId: opts.deploymentId,
+        definitionId: `wfd_${opts.deploymentId}`,
+        address,
+        status: "running",
+      });
 
       await repoStore.initRepo({ kind: "workflow", id: assetId });
       await assetService.populateAsset({
@@ -470,8 +487,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       expect(runPrincipals).toHaveLength(0);
 
+      // Only the deployment's seeded anchor run (id == deploymentId) exists;
+      // the rejected trigger committed no child run of its own.
       const runs = await h.db.select().from(workflowRunTable);
-      expect(runs).toHaveLength(0);
+      const childRuns = runs.filter((r) => r.id !== r.deploymentId);
+      expect(childRuns).toHaveLength(0);
 
       // The only grants present are the seeded caller manage grant; no run
       // grant row was committed.
