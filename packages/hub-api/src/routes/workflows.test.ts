@@ -288,10 +288,19 @@ function createMockDB(opts: MockDBOpts) {
   // no rows so the mock always exercises the first-commit insert path (a
   // redelivery no-op is covered against a real database).
   const select = () => ({
-    from: () => ({
+    from: (table: unknown) => ({
       where: () => ({
         orderBy: () => Promise.resolve(list),
-        limit: () => Promise.resolve([]),
+        // The anchor-run existence check keys on the deployment id; the anchor
+        // run is 1:1 with the deployment, so it resolves exactly when the
+        // deployment does. Only the workflow_run lookup answers it -- other
+        // limited selects (e.g. the definition-by-asset resolve) fall through.
+        limit: () =>
+          Promise.resolve(
+            table === workflowRunTable && opts.deploymentRow
+              ? [{ id: opts.deploymentRow.id }]
+              : [],
+          ),
       }),
     }),
   });

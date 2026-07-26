@@ -1,10 +1,10 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import { asset, workflowDeployment } from "@intx/db/schema";
+import { asset, workflowDeployment, workflowRun } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { resolveDefinitionIdForAsset } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
@@ -148,6 +148,30 @@ function formatDeployment(row: typeof workflowDeployment.$inferSelect) {
     status: row.status,
     createdAt: ts(row.createdAt),
   };
+}
+
+// A deployment exists iff its anchor run does -- the workflow_run whose id is
+// the deployment id, carrying its routing identity. Existence checks resolve it
+// there rather than the workflow_deployment projection. The `deploymentId` is
+// non-null on a deployment-anchored run, distinguishing it from a folded-agent
+// run (which never shares a deployment id anyway).
+async function deploymentAnchorRunExists(
+  db: DB["db"],
+  deploymentId: string,
+  tenantId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: workflowRun.id })
+    .from(workflowRun)
+    .where(
+      and(
+        eq(workflowRun.id, deploymentId),
+        eq(workflowRun.tenantId, tenantId),
+        isNotNull(workflowRun.deploymentId),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 export type CreateWorkflowRoutesDeps = {
@@ -396,13 +420,7 @@ export function createWorkflowRoutes({
       const deploymentId = c.req.param("deploymentId");
       const body = c.req.valid("json");
 
-      const row = await db.query.workflowDeployment.findFirst({
-        where: and(
-          eq(workflowDeployment.id, deploymentId),
-          eq(workflowDeployment.tenantId, tenant.id),
-        ),
-      });
-      if (!row) {
+      if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
         return c.json(
           {
             error: {
@@ -784,13 +802,7 @@ export function createWorkflowRoutes({
       const tenant = c.get("tenant");
       const deploymentId = c.req.param("deploymentId");
 
-      const row = await db.query.workflowDeployment.findFirst({
-        where: and(
-          eq(workflowDeployment.id, deploymentId),
-          eq(workflowDeployment.tenantId, tenant.id),
-        ),
-      });
-      if (!row) {
+      if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
         return c.json(
           {
             error: {
@@ -838,13 +850,7 @@ export function createWorkflowRoutes({
       const deploymentId = c.req.param("deploymentId");
       const runId = c.req.param("runId");
 
-      const row = await db.query.workflowDeployment.findFirst({
-        where: and(
-          eq(workflowDeployment.id, deploymentId),
-          eq(workflowDeployment.tenantId, tenant.id),
-        ),
-      });
-      if (!row) {
+      if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
         return c.json(
           {
             error: {
