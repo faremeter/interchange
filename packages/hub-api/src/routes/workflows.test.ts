@@ -290,9 +290,10 @@ function createMockDB(opts: MockDBOpts) {
   const select = () => {
     const from = (table: unknown) => {
       // The anchor-run existence check selects the run alone; the trigger route
-      // additionally inner-joins the definition to read its asset. Track the
-      // join so the join case answers with the anchor's definition + asset and
-      // the plain case with the bare id, both keyed on the deployment.
+      // and the deploy readback additionally inner-join the definition to read
+      // its asset. Track the join so the join case answers with the anchor's
+      // full assembled shape (id, tenant, definition, asset, created-at) and the
+      // plain case with the bare id, both keyed on the deployment.
       let joined = false;
       const chain = {
         innerJoin: () => {
@@ -307,8 +308,12 @@ function createMockDB(opts: MockDBOpts) {
                 ? joined
                   ? [
                       {
+                        id: opts.deploymentRow.id,
+                        tenantId: opts.deploymentRow.tenantId,
+                        deploymentId: opts.deploymentRow.id,
                         definitionId: `wfd_${opts.deploymentRow.id}`,
                         definitionAssetId: opts.deploymentRow.definitionAssetId,
+                        createdAt: opts.deploymentRow.createdAt,
                       },
                     ]
                   : [{ id: opts.deploymentRow.id }]
@@ -326,7 +331,6 @@ function createMockDB(opts: MockDBOpts) {
       tenant: { findFirst: async () => testTenant },
       principal: { findFirst: async () => testPrincipal },
       asset: { findFirst: async () => opts.assetRow },
-      workflowDeployment: { findFirst: async () => opts.deploymentRow },
     },
     select,
     insert,
@@ -760,7 +764,7 @@ describe("POST /workflows/instances", () => {
     expect(deployCalls).toHaveLength(1);
   });
 
-  test("reports a missing post-deploy projection row as 500, not 502", async () => {
+  test("reports a missing post-deploy anchor run as 500, not 502", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       db: { assetRow: workflowAssetRow, deploymentRow: undefined },
@@ -786,7 +790,7 @@ describe("POST /workflows/instances", () => {
       }),
     );
     expect(res.status).toBe(500);
-    expect(await errorCode(res)).toBe("deployment_projection_missing");
+    expect(await errorCode(res)).toBe("anchor_run_missing");
   });
 
   test("returns 404 when the workflow asset is missing", async () => {

@@ -4,12 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import {
-  asset,
-  workflowDefinition,
-  workflowDeployment,
-  workflowRun,
-} from "@intx/db/schema";
+import { asset, workflowDefinition, workflowRun } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
@@ -144,12 +139,30 @@ function formatRunEvent(event: WorkflowRunEvent) {
   return { seq: event.seq, type: event.type, body: event.body };
 }
 
-function formatDeployment(row: typeof workflowDeployment.$inferSelect) {
+// A deployment's API shape, assembled from its anchor run and the run's
+// definition. The old projection reported a constant "deployed" for every row
+// -- no code path ever wrote another status -- and the anchor run's own status
+// (running -> terminal) is a different, run-level concept, so the deployment
+// status is synthesized as that same constant. `definitionAssetId` comes from
+// the run's definition; a null asset is a corrupt definition the deployment
+// contract cannot represent, so it surfaces loudly rather than emitting null
+// into a string field.
+function formatDeployment(row: {
+  id: string;
+  tenantId: string;
+  definitionAssetId: string | null;
+  createdAt: Date;
+}) {
+  if (row.definitionAssetId === null) {
+    throw new Error(
+      `deployment ${row.id}: anchor run's definition has no asset`,
+    );
+  }
   return {
     id: row.id,
     tenantId: row.tenantId,
     definitionAssetId: row.definitionAssetId,
-    status: row.status,
+    status: "deployed",
     createdAt: ts(row.createdAt),
   };
 }
@@ -344,19 +357,32 @@ export function createWorkflowRoutes({
         );
       }
 
-      // The sidecar deploy succeeded; reading back the projection row is
-      // an internal persistence concern. A missing row here is an
-      // invariant violation, not a sidecar-reachability failure, so it
-      // must surface as a 500 rather than be mislabeled 502.
-      const row = await db.query.workflowDeployment.findFirst({
-        where: eq(workflowDeployment.id, result.deploymentId),
-      });
+      // The sidecar deploy succeeded; reading back the anchor run is an
+      // internal persistence concern. The id is server-minted for this
+      // request, so a missing row is an invariant violation, not a
+      // sidecar-reachability failure, and must surface as a 500 rather than be
+      // mislabeled 502. Keyed on the run id alone -- no tenant filter -- since
+      // the id was just minted for this tenant's deploy.
+      const [row] = await db
+        .select({
+          id: workflowRun.id,
+          tenantId: workflowRun.tenantId,
+          definitionAssetId: workflowDefinition.assetId,
+          createdAt: workflowRun.createdAt,
+        })
+        .from(workflowRun)
+        .innerJoin(
+          workflowDefinition,
+          eq(workflowRun.definitionId, workflowDefinition.id),
+        )
+        .where(eq(workflowRun.id, result.deploymentId))
+        .limit(1);
       if (!row) {
         return c.json(
           {
             error: {
-              code: "deployment_projection_missing",
-              message: `workflow_deployment row ${result.deploymentId} missing after deploy`,
+              code: "anchor_run_missing",
+              message: `anchor workflow_run ${result.deploymentId} missing after deploy`,
             },
           },
           500,
@@ -387,11 +413,34 @@ export function createWorkflowRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
+      // List the deployments as their anchor runs -- the workflow_run whose id
+      // equals its own deployment_id. There is deliberately NO run-status
+      // filter: the old projection never tracked teardown and listed every
+      // deployment as "deployed", so enumerating every anchor run regardless of
+      // its run-level status preserves that exact row-set and value. The
+      // `id = deployment_id` predicate (with the explicit non-null, matching
+      // deploymentAnchorRunExists) is the anchor-run identity; child and folded
+      // runs never satisfy it.
       const rows = await db
-        .select()
-        .from(workflowDeployment)
-        .where(eq(workflowDeployment.tenantId, tenant.id))
-        .orderBy(desc(workflowDeployment.createdAt));
+        .select({
+          id: workflowRun.id,
+          tenantId: workflowRun.tenantId,
+          definitionAssetId: workflowDefinition.assetId,
+          createdAt: workflowRun.createdAt,
+        })
+        .from(workflowRun)
+        .innerJoin(
+          workflowDefinition,
+          eq(workflowRun.definitionId, workflowDefinition.id),
+        )
+        .where(
+          and(
+            eq(workflowRun.tenantId, tenant.id),
+            eq(workflowRun.id, workflowRun.deploymentId),
+            isNotNull(workflowRun.deploymentId),
+          ),
+        )
+        .orderBy(desc(workflowRun.createdAt));
       return c.json(rows.map(formatDeployment));
     },
   );
