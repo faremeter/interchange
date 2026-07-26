@@ -13,14 +13,13 @@
 // preflight runs the exact synthesis the deploy-time hydrate will run, and a
 // tests/db suite can exercise it against a real database.
 
-import { eq, isNotNull, isNull } from "drizzle-orm";
+import { eq, isNotNull } from "drizzle-orm";
 
 import type { DB } from "@intx/db";
 import {
   createGrantStore,
   parseAgentRow,
   parseAgentVersionRow,
-  resolveDefinitionIdForAsset,
   resolveInferencePreferences,
 } from "@intx/db";
 import {
@@ -30,8 +29,6 @@ import {
   tenant,
   workflowDefinition,
   workflowDefinitionVersion,
-  workflowDeployment,
-  workflowRun,
 } from "@intx/db/schema";
 import type { GrantStore } from "@intx/types/authz";
 import { generateId } from "@intx/hub-common";
@@ -68,8 +65,6 @@ export interface BackfillSummary {
   readonly agentsSkipped: number;
   readonly workflowAssetsFolded: number;
   readonly workflowAssetsSkipped: number;
-  /** Deployment-anchored runs given their deployment's definitionId. */
-  readonly nativeRunsAnchored: number;
 }
 
 /**
@@ -82,55 +77,7 @@ export interface BackfillSummary {
 export async function runBackfill(db: DB["db"]): Promise<BackfillSummary> {
   const agentResult = await foldAgents(db);
   const workflowResult = await foldWorkflowAssets(db);
-  // Runs the definitions the two folds above created, so it must come last.
-  const runResult = await backfillNativeRunDefinitions(db);
-  return { ...agentResult, ...workflowResult, ...runResult };
-}
-
-/**
- * Give each deployment-anchored run its deployment's definitionId, so a run
- * carries its definition directly rather than only through its deployment.
- * Folded (agent-origin) runs already set it, so they are skipped by the
- * `definition_id IS NULL` guard, which also makes a re-run a no-op. A run whose
- * deployment's asset was never folded resolves to nothing and is left null --
- * the honest value; it keeps anchoring on `deploymentId` until that asset is
- * folded. Definitions per asset are few, so their lookups are cached.
- */
-async function backfillNativeRunDefinitions(
-  db: DB["db"],
-): Promise<Pick<BackfillSummary, "nativeRunsAnchored">> {
-  const pending = await db
-    .select({
-      runId: workflowRun.id,
-      definitionAssetId: workflowDeployment.definitionAssetId,
-    })
-    .from(workflowRun)
-    .innerJoin(
-      workflowDeployment,
-      eq(workflowRun.deploymentId, workflowDeployment.id),
-    )
-    .where(isNull(workflowRun.definitionId));
-
-  const definitionByAsset = new Map<string, string | null>();
-  let nativeRunsAnchored = 0;
-
-  for (const { runId, definitionAssetId } of pending) {
-    let definitionId = definitionByAsset.get(definitionAssetId);
-    if (definitionId === undefined) {
-      definitionId = await resolveDefinitionIdForAsset(db, definitionAssetId);
-      definitionByAsset.set(definitionAssetId, definitionId);
-    }
-    if (definitionId === null) {
-      continue;
-    }
-    await db
-      .update(workflowRun)
-      .set({ definitionId })
-      .where(eq(workflowRun.id, runId));
-    nativeRunsAnchored += 1;
-  }
-
-  return { nativeRunsAnchored };
+  return { ...agentResult, ...workflowResult };
 }
 
 async function foldAgents(

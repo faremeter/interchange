@@ -12,7 +12,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 import {
   agent,
   agentInstance,
@@ -163,11 +167,10 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
 
   test("returns undefined for a deployment-anchored native run (no address)", async () => {
     await seedBase();
-    await h.db.insert(workflowRun).values({
+    await seedWorkflowRun(h.db, {
       id: "run_native",
       tenantId: "tnt_root",
       deploymentId: null,
-      definitionId: null,
       principalId: null,
       address: null,
       status: "running",

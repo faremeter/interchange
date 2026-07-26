@@ -168,8 +168,7 @@ function formatDeployment(row: {
 }
 
 // A deployment exists iff its anchor run does -- the workflow_run whose id is
-// the deployment id, carrying its routing identity. Existence checks resolve it
-// there rather than the workflow_deployment projection. The `deploymentId` is
+// the deployment id, carrying its routing identity. The `deploymentId` is
 // non-null on a deployment-anchored run, distinguishing it from a folded-agent
 // run (which never shares a deployment id anyway).
 async function deploymentAnchorRunExists(

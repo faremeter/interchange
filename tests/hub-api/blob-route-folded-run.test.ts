@@ -16,7 +16,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
-import { agentSession, sessionMail, workflowRun } from "@intx/db/schema";
+import { agentSession, sessionMail } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -27,6 +27,7 @@ import {
   seedAgentInstance,
   seedPrincipal,
   seedTenants,
+  seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
 // Exercises the blob endpoint against a real migrated schema. The blob route
@@ -230,7 +231,7 @@ async function seedFoldedRun(opts: { ended?: boolean } = {}): Promise<void> {
     status: opts.ended === true ? "ended" : "active",
     endedAt,
   });
-  await h.db.insert(workflowRun).values({
+  await seedWorkflowRun(h.db, {
     id: RUN_ID,
     tenantId: TENANT_ID,
     principalId: RUN_PRINCIPAL_ID,

@@ -43,7 +43,7 @@ const TENANT = "tnt";
 const ASSET = "ast";
 // The workflow-run repo slug the pack is received under. It is the id the
 // substrate maps to a `WorkflowRunSupervisorPrincipal`; it does not need to
-// match a `workflow_deployment.id`, since the terminal flip keys off the run
+// match a deployment's anchor-run id, since the terminal flip keys off the run
 // id carried in the event tree, not the deployment.
 const DEPLOYMENT = "dep";
 const WFR_REF = "refs/heads/events";

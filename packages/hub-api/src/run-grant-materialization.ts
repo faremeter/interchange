@@ -329,12 +329,10 @@ export type CommitRunGrantsArgs = {
   tenantId: string;
   deploymentId: string;
   /**
-   * The deployment's definition, resolved by the caller (which holds the
-   * deployment's asset), or null when that asset was never folded. Anchors the
-   * run on its definition alongside the deployment. Edge resolves; this
-   * interior trusts.
+   * The deployment's definition, resolved by the caller off the anchor run.
+   * Anchors the run on its definition. Edge resolves; this interior trusts.
    */
-  definitionId: string | null;
+  definitionId: string;
   runId: string;
   runPrincipalId: string;
   now: Date;

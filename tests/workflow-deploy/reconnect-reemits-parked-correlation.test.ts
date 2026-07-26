@@ -81,7 +81,12 @@ import {
   createSignalCorrelationStore,
   createWorkflowRunStore,
 } from "@intx/db";
-import { approval, signalCorrelation, workflowRun } from "@intx/db/schema";
+import {
+  approval,
+  signalCorrelation,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import { generateId } from "@intx/hub-common";
 import {
@@ -100,7 +105,12 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
@@ -171,6 +181,7 @@ const ASK_GRANT: WireGrantRule = {
 
 const TENANT_ID = "tnt_reconnect_reemit";
 const DEFINITION_ASSET_ID = "ast_reconnect_wf";
+const DEFINITION_ID = "wfd_reconnect_reemit";
 const APPROVER_USER_ID = "usr_reconnect_approver";
 const APPROVER_PRINCIPAL_ID = "prn_reconnect_approver";
 
@@ -180,7 +191,7 @@ let h: TestDb;
 // The deployment mail address and the workflow-run repo slug the supervisor
 // stamps onto the register frame's `deploymentId`. The co-write resolves
 // tenancy by the address and cross-checks the slug, so the seeded
-// `workflow_deployment` row is keyed by the slug with this address.
+// anchor run is keyed by the slug with this address.
 const deploymentMailAddress = deriveDeploymentAddress({
   deploymentId: DEPLOYMENT_ID,
   deploymentDomain: DEPLOYMENT_DOMAIN,
@@ -317,6 +328,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
           id: runId,
           deploymentId,
           tenantId,
+          definitionId: DEFINITION_ID,
           principalId: null,
           status: "running",
         },
@@ -424,10 +436,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow",
         name: "reconnect-reemit-wf",
       });
-      await h.db.insert(workflowRun).values({
+      await h.db.insert(workflowDefinition).values({
+        id: DEFINITION_ID,
+        tenantId: TENANT_ID,
+        name: "reconnect-reemit-wf",
+        assetId: DEFINITION_ASSET_ID,
+      });
+      await seedWorkflowRun(h.db, {
         id: deploymentSlug,
         tenantId: TENANT_ID,
         deploymentId: deploymentSlug,
+        definitionId: DEFINITION_ID,
         address: deploymentMailAddress,
         publicKey: null,
         status: "running",

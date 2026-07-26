@@ -61,7 +61,6 @@ import {
   principal as principalTable,
   tenant as tenantTable,
   workflowDefinition as workflowDefinitionTable,
-  workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { createSSHSignature, generateKeyPair } from "@intx/crypto";
@@ -340,14 +339,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           principalId: CREATOR_PRINCIPAL_ID,
         });
       }
-      await h.db.insert(workflowDeploymentTable).values({
-        id: opts.deploymentId,
-        tenantId: TENANT_ID,
-        definitionAssetId: assetId,
-        address,
-        publicKey: null,
-        status: "deployed",
-      });
       // The deployment's first-class definition and its anchor run: the trigger
       // route reads the workflow asset and the run's definition off the anchor.
       await h.db.insert(workflowDefinitionTable).values({

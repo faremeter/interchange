@@ -120,8 +120,8 @@ export type SessionService = {
    * wrapping the harness as a one-step workflow and routing it through the
    * deploy core with the instance's real identity. Replaces `launchSession`
    * as the production instance-deploy entry point: the instance runs as a
-   * supervised workflow-process child. Writes no `workflow_deployment`
-   * row. Returns the head's agent-key ack (the key the head signs its
+   * supervised workflow-process child. Records no deployment anchor run.
+   * Returns the head's agent-key ack (the key the head signs its
    * reconnect challenges with).
    */
   deployInstanceAtHead(params: {
@@ -135,7 +135,7 @@ export type SessionService = {
 
   /**
    * Deploy a one-step workflow once at the head through the deploy core,
-   * without the DB-backed `workflow_deployment` projection row. Stages the
+   * without a DB-backed deployment anchor run. Stages the
    * head's deploy tree (deploy-tree write, pack, asset fan-out), fires the
    * deployment `agent.deploy` frame carrying the workflow definition +
    * source pin (the sidecar initializes the head repo and spawns the
@@ -154,9 +154,10 @@ export type SessionService = {
    * agent-state repo via the shared per-agent deploy phases, writes the
    * workflow repo, and fires the deployment-level `agent.deploy` frame.
    *
-   * Persists one `workflow_deployment` projection row keyed by
-   * `deploymentId` so the deployment is listable per tenant; the
-   * RepoStore substrate has no by-kind listing API of its own.
+   * Persists the deployment's anchor run -- the `workflow_run` whose id is
+   * `deploymentId` -- carrying its routing identity and definition, so the
+   * deployment is listable per tenant off its runs; the RepoStore substrate
+   * has no by-kind listing API of its own.
    *
    * Returns the supervisor's principal public key surfaced by the
    * sidecar's `agent.deploy.ack`.
@@ -179,13 +180,12 @@ export type SessionService = {
 };
 
 export type DeployWorkflowDefinitionParams = {
-  /** Owning tenant; recorded on the projection row. */
+  /** Owning tenant; recorded on the deployment's anchor run. */
   tenantId: string;
   /**
    * Stable deployment identifier. The orchestrator concatenates it into
    * every derived per-step address and the deployment-level address, and
-   * it is the `workflow_deployment` row's primary key. The caller owns
-   * its generation.
+   * it is the deployment's anchor-run id. The caller owns its generation.
    */
   deploymentId: string;
   /**
@@ -999,7 +999,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * (`row.id`), NOT a `deriveDeploymentAgentId(deploymentId)` -- the child
    * resolves skills, deploy tree, and tool-package pins by `agentId`, so
    * collapsing it to the deployment id would strip the instance's attachments.
-   * It writes no `workflow_deployment` row (a plain instance has no workflow
+   * It records no deployment anchor run (a plain instance has no workflow
    * asset). Returns the head's agent-key ack.
    */
   async function deployInstanceAtHead(params: {

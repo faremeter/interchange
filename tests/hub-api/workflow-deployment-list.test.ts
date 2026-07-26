@@ -27,9 +27,9 @@ import {
 import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // Exercises GET /workflows/instances against a real migrated schema. The list
-// no longer reads the workflow_deployment projection: it enumerates each
-// deployment's anchor run -- the workflow_run whose id equals its deployment_id
-// -- and synthesizes the deployment shape from the run and its definition. Only
+// enumerates each deployment's anchor run -- the workflow_run whose id equals
+// its deployment_id -- and synthesizes the deployment shape from the run and
+// its definition. Only
 // a real database exercises the `id = deployment_id` identity predicate (which
 // excludes child and folded runs), the deliberate absence of a run-status
 // filter (a torn-down deployment still lists as "deployed", preserving the old

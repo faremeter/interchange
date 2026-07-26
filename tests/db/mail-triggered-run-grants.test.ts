@@ -177,10 +177,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const runPrincipalId = principals[0]?.id;
 
       // Exactly one run row whose deployment_id is the SEEDED deployment id
-      // -- the real workflow_deployment.id, NOT the address-derived substrate
-      // slug. The row inserts at all only because that real id was written:
-      // the slug is not a workflow_deployment.id, so the NOT NULL foreign key
-      // would reject it.
+      // -- the real anchor run's id, NOT the address-derived substrate slug.
+      // The row inserts at all only because that real id was written: the slug
+      // is not a workflow_run.id, so the NOT NULL foreign key would reject it.
       const runs = await h.db
         .select()
         .from(workflowRun)

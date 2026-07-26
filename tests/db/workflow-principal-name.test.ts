@@ -8,7 +8,6 @@ import {
 } from "bun:test";
 
 import { resolveWorkflowPrincipalNames } from "@intx/hub-api";
-import { workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -49,7 +48,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       // The deployment's anchor run carries the routing address the display
       // name comes from; its id is the deployment id.
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: DEPLOYMENT,
         tenantId: TENANT,
         deploymentId: DEPLOYMENT,
@@ -89,11 +88,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("resolves a folded run via its own address (no deployment)", async () => {
       // A folded launch's run carries its address directly and has no
       // deployment, so the label comes from workflow_run.address.
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run-folded",
         tenantId: TENANT,
         deploymentId: null,
-        definitionId: null,
         address: "ins_folded@wf.example",
         status: "running",
       });
@@ -103,11 +101,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("omits a run with neither a deployment nor its own address", async () => {
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run-nameless",
         tenantId: TENANT,
         deploymentId: null,
-        definitionId: null,
         address: null,
         status: "running",
       });

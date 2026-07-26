@@ -146,6 +146,32 @@ If the database already exists and you just need to apply new migrations:
 bin/db-migrate
 ```
 
+### One-time agent-fold migration (workflow_deployment dissolution)
+
+Migrations 0055–0057 dissolve the `workflow_deployment` projection onto
+first-class `workflow_run` anchor runs and promote `workflow_run.definition_id`
+to `NOT NULL`. They depend on the workflow-asset fold having run, which a SQL
+migration cannot itself perform. On a populated (non-fresh) database, before
+applying these migrations:
+
+1. **Back up the database.** Migration 0057 does an irreversible `DROP TABLE
+workflow_deployment` and a `NOT NULL` promotion; a snapshot is the only undo.
+2. **Run the fold:** `bin/db-backfill`. It must report zero undeployable agents
+   (it aborts writing nothing otherwise) so every workflow asset gets a folded
+   definition. This is what lets migration 0055's guard pass and 0056 fill every
+   run's `definition_id`.
+3. **Preflight the null check** the drop migration guards on:
+
+   ```sql
+   SELECT count(*) FROM workflow_run WHERE definition_id IS NULL;
+   ```
+
+   Expect `0`. A non-zero count means the fold has not fully run; migrations
+   0055 and 0057 will abort with an actionable message rather than strand rows.
+
+`bin/db-reset` on a fresh database needs none of this — the migrations no-op
+over an empty `workflow_deployment`.
+
 ## Build Pipeline
 
 The Makefile is the canonical entry point for the build verbs. It runs

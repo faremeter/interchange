@@ -20,8 +20,8 @@
 //     and `routeMail` therefore reach the SAME deployed sidecar the fixture
 //     stood up, so a 202 means the run was genuinely accepted for dispatch.
 //   - The committed rows insert under real foreign keys: `workflow_run`'s
-//     `deployment_id` references `workflow_deployment.id`, and the run
-//     principal is a real `principal` row. A broken derivation or a wrong
+//     `deployment_id` references its anchor run's `workflow_run.id`, and the
+//     run principal is a real `principal` row. A broken derivation or a wrong
 //     deployment id fails at the DB, not at a mock.
 //
 // SCOPE. This proves the route's grant DERIVATION + DB COMMIT under real
@@ -58,7 +58,6 @@ import {
   principal as principalTable,
   tenant as tenantTable,
   workflowDefinition as workflowDefinitionTable,
-  workflowDeployment as workflowDeploymentTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { createSSHSignature, generateKeyPair } from "@intx/crypto";
@@ -409,20 +408,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(effectGrant.origin).toBe("creator");
     });
 
-    // Insert the deployment row directly so the address matches the
-    // fixture's deploy address (seedWorkflowDeployment defaults to a
-    // different domain).
+    // Seed the deployment's first-class definition and its anchor run at the
+    // fixture's deploy address: the trigger route reads the workflow asset and
+    // the run's definition off the anchor.
     async function seedDeploymentRow(): Promise<void> {
-      await h.db.insert(workflowDeploymentTable).values({
-        id: DEPLOYMENT_ID,
-        tenantId: TENANT_ID,
-        definitionAssetId: DEFINITION_ASSET_ID,
-        address: deploymentMailAddress,
-        publicKey: null,
-        status: "deployed",
-      });
-      // The deployment's first-class definition and its anchor run: the trigger
-      // route reads the workflow asset and the run's definition off the anchor.
       await h.db.insert(workflowDefinitionTable).values({
         id: `wfd_${DEPLOYMENT_ID}`,
         tenantId: TENANT_ID,

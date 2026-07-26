@@ -12,13 +12,12 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 import {
-  agent,
-  agentInstance,
-  agentSession,
-  workflowRun,
-} from "@intx/db/schema";
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
+import { agent, agentInstance, agentSession } from "@intx/db/schema";
 import { resolveRoutableAddress } from "@intx/hub-sessions";
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -93,11 +92,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn_run",
         status: "active",
       });
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run_folded",
         tenantId: "tnt_root",
         deploymentId: null,
-        definitionId: null,
         principalId: "prn_run",
         address: "ins_folded@root.example",
         status: "running",
@@ -128,7 +126,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // plain-resolution caller (mail persist, reconnect reaction) must not
       // match it -- the workflow-derived key path owns it -- so the guard
       // returns undefined before the address query runs.
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "dep_anchor",
         tenantId: "tnt_root",
         deploymentId: null,
@@ -143,7 +141,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("skips a terminated run (endedAt set)", async () => {
       await seedBase();
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run_dead",
         tenantId: "tnt_root",
         deploymentId: null,
@@ -175,7 +173,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("resolves a run with no principal to a null session", async () => {
       await seedBase();
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run_noprincipal",
         tenantId: "tnt_root",
         deploymentId: null,
@@ -206,7 +204,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "ended",
         endedAt: new Date(0),
       });
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run_sessionless",
         tenantId: "tnt_root",
         deploymentId: null,
@@ -241,7 +239,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sessionId: "ses_d",
         status: "deployed",
       });
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "run_dup",
         tenantId: "tnt_root",
         deploymentId: null,

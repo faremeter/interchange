@@ -110,11 +110,11 @@ async function backendPid(
 
 const TENANT = "t1";
 const ASSET = "asset1";
-// The raw `dep_...` id `deployWorkflowDefinition` stamps onto the
-// `workflow_deployment` row -- NOT the workflow-run repo slug. The
+// The raw `dep_...` id `deployWorkflowDefinition` stamps onto the deployment's
+// anchor run -- NOT the workflow-run repo slug. The
 // `signal_correlation.deployment_id` and `approval.deployment_id` FKs both
-// reference `workflow_deployment.id`, so this raw id is what the co-write
-// writes into those columns.
+// reference `workflow_run.id`, so this raw id is what the co-write writes into
+// those columns.
 const DEPLOYMENT = "dep_abc123";
 const WF_ADDR = "ins_dep_abc@wf.example";
 // The workflow-run repo slug the supervisor derives from the address and stamps
@@ -165,7 +165,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       address: string,
       publicKeyHex: string | null,
     ): Promise<void> {
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id,
         tenantId: TENANT,
         deploymentId: id,
@@ -368,9 +368,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(run?.tenantId).toBe(TENANT);
       expect(run?.principalId).toBeNull();
       expect(run?.status).toBe("running");
-      // The seeded asset was never folded, so the run has no definition: null,
-      // not an error. It still anchors on the deployment.
-      expect(run?.definitionId).toBeNull();
+      // The lazily-anchored child inherits its deployment anchor run's
+      // definition, so it carries the anchor's definition_id.
+      const [anchor] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, DEPLOYMENT));
+      expect(run?.definitionId).toBe(anchor?.definitionId);
     });
 
     test("anchors the lazily-created run on its deployment's definition", async () => {
@@ -406,7 +410,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {
-      // Regression: a real deployment's `workflow_deployment.id` is the raw
+      // Regression: a real deployment's anchor-run id is the raw
       // `dep_...` id `deployWorkflowDefinition` stamps, while the frame's
       // `deploymentId` is the workflow-run repo slug the supervisor derives from
       // the address. seedDeployment seeds exactly that shape (raw id

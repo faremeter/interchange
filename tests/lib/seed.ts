@@ -22,7 +22,7 @@ import {
   provider,
   tenant,
   wallet,
-  workflowDeployment,
+  workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
 
@@ -91,29 +91,6 @@ export async function seedAsset(db: Db, a: SeedAsset): Promise<void> {
     name: a.name,
     displayName: a.displayName ?? null,
     creatorPrincipalId: a.creatorPrincipalId ?? null,
-  });
-}
-
-export type SeedWorkflowDeployment = {
-  id: string;
-  tenantId: string;
-  definitionAssetId: string;
-  address?: string;
-  publicKey?: string | null;
-  status?: "deployed" | "error";
-};
-
-export async function seedWorkflowDeployment(
-  db: Db,
-  d: SeedWorkflowDeployment,
-): Promise<void> {
-  await db.insert(workflowDeployment).values({
-    id: d.id,
-    tenantId: d.tenantId,
-    definitionAssetId: d.definitionAssetId,
-    address: d.address ?? `ins_${d.id}@example.test`,
-    publicKey: d.publicKey ?? null,
-    status: d.status ?? "deployed",
   });
 }
 
@@ -338,22 +315,46 @@ export async function seedAgentInstance(
 
 export type SeedWorkflowRun = {
   id: string;
-  deploymentId: string;
   tenantId: string;
+  deploymentId?: string | null;
+  definitionId?: string;
   principalId?: string | null;
+  address?: string | null;
+  publicKey?: string | null;
   status?: "running" | "completed" | "failed" | "cancelled";
+  createdAt?: Date;
+  endedAt?: Date | null;
 };
+
+// definition_id is NOT NULL on workflow_run. When a caller does not care which
+// definition a seeded run anchors on, anchor it on a per-tenant throwaway
+// definition created once, so the test need not seed one itself.
+async function ensureSeedDefinition(db: Db, tenantId: string): Promise<string> {
+  const id = `wfd_seed_${tenantId}`;
+  await db
+    .insert(workflowDefinition)
+    .values({ id, tenantId, name: `seed-def-${tenantId}` })
+    .onConflictDoNothing({ target: workflowDefinition.id });
+  return id;
+}
 
 export async function seedWorkflowRun(
   db: Db,
   r: SeedWorkflowRun,
 ): Promise<void> {
+  const definitionId =
+    r.definitionId ?? (await ensureSeedDefinition(db, r.tenantId));
   await db.insert(workflowRun).values({
     id: r.id,
-    deploymentId: r.deploymentId,
     tenantId: r.tenantId,
+    deploymentId: r.deploymentId ?? null,
+    definitionId,
     principalId: r.principalId ?? null,
+    address: r.address ?? null,
+    publicKey: r.publicKey ?? null,
     status: r.status ?? "running",
+    ...(r.createdAt !== undefined ? { createdAt: r.createdAt } : {}),
+    ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
   });
 }
 

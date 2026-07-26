@@ -27,21 +27,14 @@ export const workflowRun = pgTable(
   "workflow_run",
   {
     id: text("id").primaryKey(),
-    // The definition a run belongs to. A folded agent-origin run (which has no
-    // deployment) sets it at launch; a native-workflow run takes its
-    // deployment's definition -- backfilled for existing runs, and set at birth
-    // for new ones -- and still anchors on `deploymentId`. Nullable: a run whose
-    // deployment's asset was never folded has no definition yet, so it anchors
-    // on `deploymentId` alone until that gap closes. `cascade` matches
-    // `deploymentId`'s onDelete so this column can take over as the run's
-    // anchor, if the deployment table is dissolved, without changing delete
-    // behavior.
-    definitionId: text("definition_id").references(
-      () => workflowDefinition.id,
-      {
-        onDelete: "cascade",
-      },
-    ),
+    // The definition a run belongs to, carried by every run: a folded
+    // agent-origin run sets it at launch, and a deployment's anchor run and its
+    // child runs carry the deployment's definition. It is the run's anchor to a
+    // first-class definition. `cascade` matches `deploymentId`'s onDelete, so
+    // deleting the definition removes its runs.
+    definitionId: text("definition_id")
+      .notNull()
+      .references(() => workflowDefinition.id, { onDelete: "cascade" }),
     // Nullable as of the fold: a folded agent-origin run carries a
     // `definitionId` and no deployment, while a deployment's anchor run sets
     // this to its own id and a child run sets it to its anchor's id. It

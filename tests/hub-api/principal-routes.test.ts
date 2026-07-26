@@ -16,7 +16,6 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
-import { workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -32,7 +31,7 @@ import {
 // Exercises the principals resolver against a real migrated schema so the
 // `workflow`-kind display-name second pass -- which reads the deployment's
 // `address` by joining a workflow principal's refId (its run id) through
-// `workflow_run` to `workflow_deployment` -- runs end to end rather than
+// `workflow_run` to its anchor run -- runs end to end rather than
 // against a mock.
 
 const TENANT_ID = "tnt_principals";
@@ -178,7 +177,7 @@ async function setup() {
   // resolves to; its id is the deployment id and the child run below self-joins
   // to it on that id. It is inserted first so the child run's deployment_id FK
   // resolves.
-  await h.db.insert(workflowRun).values({
+  await seedWorkflowRun(h.db, {
     id: DEPLOYMENT_ID,
     tenantId: TENANT_ID,
     deploymentId: DEPLOYMENT_ID,

@@ -21,5 +21,4 @@ export * from "./session-assets";
 export * from "./messages";
 export * from "./git-tokens";
 export * from "./workflow-definitions";
-export * from "./workflow-deployments";
 export * from "./workflow-run";

@@ -11,13 +11,12 @@ import {
   createHubSessionLookups,
   type AgentRepoStore,
 } from "@intx/hub-sessions";
-import { workflowDeployment, workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedTenants } from "@intx/test-harness/seed";
+import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 
 // The reconnect ownership challenge verifies a deployment address against a
 // public key resolved by `lookupPublicKey`. These tests pin the workflow-
@@ -62,31 +61,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }).lookupPublicKey(address);
     }
 
-    // Seed a deployment and its anchor run. The deployment row is now only the
-    // FK parent the anchor run references; the key and liveness gate live on
-    // the run. `runStatus` "running" is a live deployment; a terminal status is
-    // the decommissioned case the read gate excludes (the run analog of the
-    // deployment's dormant `status='error'` contract).
+    // Seed a deployment's anchor run -- the workflow_run whose id equals its
+    // deployment id. The key and liveness gate live on the run. `runStatus`
+    // "running" is a live deployment; a terminal status is the decommissioned
+    // case the read gate excludes.
     async function seedAnchor(opts: {
       address: string;
       publicKey: string | null;
       runStatus: "running" | "cancelled";
     }): Promise<void> {
       await seedTenants(h.db, [{ id: "t1" }]);
-      await seedAsset(h.db, {
-        id: "asset1",
-        tenantId: "t1",
-        kind: "workflow",
-        name: "wf",
-      });
-      await h.db.insert(workflowDeployment).values({
-        id: "dep1",
-        tenantId: "t1",
-        definitionAssetId: "asset1",
-        address: opts.address,
-        status: "deployed",
-      });
-      await h.db.insert(workflowRun).values({
+      await seedWorkflowRun(h.db, {
         id: "dep1",
         tenantId: "t1",
         deploymentId: "dep1",
@@ -148,32 +133,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const deployments = [
         {
           id: "dep_one",
-          assetId: "asset_one",
           address: "ins_dep_one@wf.example",
           publicKey: "pk-one",
         },
         {
           id: "dep_two",
-          assetId: "asset_two",
           address: "ins_dep_two@wf.example",
           publicKey: "pk-two",
         },
       ];
       for (const d of deployments) {
-        await seedAsset(h.db, {
-          id: d.assetId,
-          tenantId: "t1",
-          kind: "workflow",
-          name: d.id,
-        });
-        await h.db.insert(workflowDeployment).values({
-          id: d.id,
-          tenantId: "t1",
-          definitionAssetId: d.assetId,
-          address: d.address,
-          status: "deployed",
-        });
-        await h.db.insert(workflowRun).values({
+        await seedWorkflowRun(h.db, {
           id: d.id,
           tenantId: "t1",
           deploymentId: d.id,

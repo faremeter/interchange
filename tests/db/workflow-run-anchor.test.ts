@@ -10,7 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createWorkflowRunStore } from "@intx/db";
-import { workflowRun } from "@intx/db/schema";
+import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -26,6 +26,7 @@ import {
 const TENANT = "tnt";
 const ASSET = "ast";
 const DEPLOYMENT = "dep";
+const DEFINITION = "wfd";
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowRunStore.anchorWithPrincipal (real DB)",
@@ -49,10 +50,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow",
         name: ASSET,
       });
+      await h.db.insert(workflowDefinition).values({
+        id: DEFINITION,
+        tenantId: TENANT,
+        name: DEFINITION,
+      });
       await seedWorkflowRun(h.db, {
         id: DEPLOYMENT,
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        definitionId: DEFINITION,
       });
       await seedPrincipal(h.db, {
         id: "prn-run",
@@ -69,6 +76,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        definitionId: DEFINITION,
         principalId: "prn-run",
         status: "running",
       });
@@ -90,6 +98,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        definitionId: DEFINITION,
         principalId: null,
       });
 
@@ -98,6 +107,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        definitionId: DEFINITION,
         principalId: "prn-run",
         status: "running",
       });
@@ -126,6 +136,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        definitionId: DEFINITION,
         principalId: "prn-existing",
       });
 
@@ -134,6 +145,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        definitionId: DEFINITION,
         principalId: "prn-run",
         status: "running",
       });
