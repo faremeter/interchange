@@ -421,6 +421,20 @@
       "when": 1785087256544,
       "tag": "0059_repoint_transaction_fk_to_run",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1785089581427,
+      "tag": "0060_drop_session_mail_instance_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1785089702623,
+      "tag": "0061_drop_session_asset_instance_fk",
+      "breakpoints": true
     }
   ]
 }

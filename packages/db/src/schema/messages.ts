@@ -8,7 +8,6 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { bytea } from "./column-types";
-import { agentInstance } from "./instances";
 import { agentSession } from "./sessions";
 import { tenant } from "./tenants";
 
@@ -79,9 +78,12 @@ export const sessionMail = pgTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => agentSession.id, { onDelete: "cascade" }),
-    instanceId: text("instance_id").references(() => agentInstance.id, {
-      onDelete: "set null",
-    }),
+    // The endpoint whose mail this is: a legacy agent_instance id, or null for
+    // a folded run (which keys its mail on the session instead). A polymorphic
+    // reference that carries no foreign key (mirroring inference_turn.instanceId
+    // and workflow_definition.originAgentId); the mail-write layer owns the
+    // invariant. Nullable -- absent for folded runs.
+    instanceId: text("instance_id"),
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),

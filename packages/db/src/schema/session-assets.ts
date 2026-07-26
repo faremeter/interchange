@@ -7,7 +7,6 @@ import {
 } from "drizzle-orm/pg-core";
 
 import { agentAsset } from "./agent-assets";
-import { agentInstance } from "./instances";
 
 // session_asset rows record per-(instance, materialization) pack
 // acknowledgments. A row exists iff the sidecar acked the pack that
@@ -44,9 +43,13 @@ export type SessionAssetSource = "direct" | "resolved";
 export const sessionAsset = pgTable(
   "session_asset",
   {
-    instanceId: text("instance_id")
-      .notNull()
-      .references(() => agentInstance.id, { onDelete: "cascade" }),
+    // The endpoint this materialization is for: a legacy agent_instance id or a
+    // folded workflow_run id, from one shared id space. A polymorphic reference
+    // carrying no foreign key (mirroring inference_turn.instanceId); the launch
+    // layer owns the invariant. NOT NULL -- a materialization always names its
+    // endpoint -- and part of the (instance_id, mount_path) key. A folded run
+    // writes its run id here, which the dropped agent_instance FK would reject.
+    instanceId: text("instance_id").notNull(),
     // Nullable: resolver-derived materializations have no per-agent
     // attachment row. Direct attachments carry the agent_asset id.
     agentAssetId: text("agent_asset_id").references(() => agentAsset.id, {
