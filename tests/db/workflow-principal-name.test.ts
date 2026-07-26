@@ -54,12 +54,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionAssetId: ASSET,
         address: ADDRESS,
       });
+      // The deployment's anchor run carries the routing address the display
+      // name comes from; its id is the deployment id.
+      await h.db.insert(workflowRun).values({
+        id: DEPLOYMENT,
+        tenantId: TENANT,
+        deploymentId: DEPLOYMENT,
+        address: ADDRESS,
+        status: "running",
+      });
     });
 
-    test("resolves a run-principal refId to Workflow (<address>)", async () => {
-      // The principal's refId is the run id, not the deployment id. The helper
-      // must join the runId through workflow_run to workflow_deployment to
-      // reach the address.
+    test("resolves a child run's refId to its anchor run's address", async () => {
+      // The principal's refId is the child run id, not the deployment id. The
+      // helper self-joins the run to its anchor run (on the deployment id) to
+      // reach the routing address the anchor carries.
       await seedWorkflowRun(h.db, {
         id: "run-1",
         deploymentId: DEPLOYMENT,
@@ -68,6 +77,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const names = await resolveWorkflowPrincipalNames(h.db, ["run-1"]);
       expect(names.get("run-1")).toBe(`Workflow (${ADDRESS})`);
+    });
+
+    test("resolves the anchor run's own refId to its address", async () => {
+      // The anchor run's deploymentId is its own id, so the self-join resolves
+      // it to itself and it names its own address.
+      const names = await resolveWorkflowPrincipalNames(h.db, [DEPLOYMENT]);
+      expect(names.get(DEPLOYMENT)).toBe(`Workflow (${ADDRESS})`);
     });
 
     test("omits a refId with no run row", async () => {

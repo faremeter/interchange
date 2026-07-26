@@ -16,6 +16,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
+import { workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -165,9 +166,9 @@ async function setup() {
     kind: "workflow",
     name: "wf",
   });
-  // The workflow principal's refId is its run id; name resolution joins the
-  // runId through workflow_run to the deployment row to derive the display
-  // name from the deployment's address.
+  // The workflow principal's refId is its run id; name resolution self-joins
+  // the run to its anchor run (on the deployment id) to derive the display
+  // name from the anchor run's address.
   await seedPrincipal(h.db, {
     id: WORKFLOW_PRINCIPAL_ID,
     tenantId: TENANT_ID,
@@ -184,6 +185,16 @@ async function setup() {
     id: RUN_ID,
     deploymentId: DEPLOYMENT_ID,
     tenantId: TENANT_ID,
+  });
+  // The deployment's anchor run carries the routing address the display name
+  // resolves to; its id is the deployment id and the child run above self-joins
+  // to it on that id.
+  await h.db.insert(workflowRun).values({
+    id: DEPLOYMENT_ID,
+    tenantId: TENANT_ID,
+    deploymentId: DEPLOYMENT_ID,
+    address: DEPLOYMENT_ADDRESS,
+    status: "running",
   });
 
   return createApp({
