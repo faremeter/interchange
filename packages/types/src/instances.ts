@@ -1,0 +1,56 @@
+import { type } from "arktype";
+import { InvokerModelPreferences } from "./catalog";
+import { grantEffects } from "./grants";
+
+const Effect = type.enumerated(...grantEffects);
+
+export const agentInstanceStatuses = [
+  "deployed",
+  "running",
+  "updating",
+  "error",
+  "stopped",
+] as const;
+export type AgentInstanceStatus = (typeof agentInstanceStatuses)[number];
+
+const AgentInstanceStatusType = type.enumerated(...agentInstanceStatuses);
+
+export const CreateAgentInstance = type({
+  agentId: "string",
+  "modelPreferences?": InvokerModelPreferences.describe(
+    "The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.",
+  ),
+  "invokerGrants?": type({
+    resource: "string",
+    action: "string",
+    "effect?": Effect,
+    "conditions?": "Record<string, unknown> | null",
+  })
+    .array()
+    .describe(
+      "Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.",
+    ),
+});
+
+export const AgentInstanceResponse = type({
+  id: "string",
+  agentId: "string",
+  agentName: "string",
+  tenantId: "string",
+  address: "string",
+  status: AgentInstanceStatusType.describe(
+    "Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).",
+  ),
+  "publicKey?": "string | null",
+  "kernelId?": "string | null",
+  "sidecarId?": "string | null",
+  createdAt: "string",
+  updatedAt: "string",
+  "endedAt?": "string | null",
+});
+
+export const AgentHealth = type({
+  liveness: "'ok' | 'unhealthy'",
+  readiness: "'ok' | 'not_ready' | 'unhealthy'",
+  "lastCheckedAt?": "string | null",
+});

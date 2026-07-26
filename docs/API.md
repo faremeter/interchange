@@ -1316,11 +1316,11 @@ Returns the current set of tarballs under tarballs/ for the package-registry ass
 
 ### AgentHealth
 `{ liveness: "ok" | "unhealthy", readiness: "not_ready" | "ok" | "unhealthy", lastCheckedAt?: string | null }`
-Source: packages/types/src/agents.ts
+Source: packages/types/src/instances.ts
 
 ### AgentInstanceResponse
 `{ address: string, agentId: string, agentName: string, createdAt: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
-Source: packages/types/src/agents.ts
+Source: packages/types/src/instances.ts
 
 **status**: Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
 
@@ -1387,7 +1387,7 @@ Source: packages/types/src/agents.ts
 
 ### CreateAgentInstance
 `{ agentId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
-Source: packages/types/src/agents.ts
+Source: packages/types/src/instances.ts
 
 **invokerGrants**: Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.
 **modelPreferences**: The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.

@@ -16,8 +16,17 @@ export const credentialStatuses = [
 ] as const;
 export type CredentialStatus = (typeof credentialStatuses)[number];
 
+export const credentialRequirementSources = [
+  "tenant",
+  "creator",
+  "invoker",
+] as const;
+export type CredentialRequirementSource =
+  (typeof credentialRequirementSources)[number];
+
 const CredType = type.enumerated(...credentialTypes);
 const CredStatus = type.enumerated(...credentialStatuses);
+const CredentialSourceType = type.enumerated(...credentialRequirementSources);
 
 const credentialTypeDescription =
   "Kind of secret material this credential holds: `api_key`, `oauth_token`, `certificate`, or `other`. Determines how `secret` (and `refreshSecret` for OAuth) is interpreted when the credential is used.";
@@ -77,4 +86,13 @@ export const CredentialResponse = type({
   ),
   createdAt: "string",
   updatedAt: "string",
+});
+
+export const CredentialRequirement = type({
+  providerName: "string",
+  "scopes?": "string[]",
+  source: CredentialSourceType.describe(
+    "Whose credential satisfies this requirement at launch: `tenant` (a credential owned by the tenant), `creator` (the definition author's), or `invoker` (whoever launched the agent).",
+  ),
+  "name?": "string",
 });

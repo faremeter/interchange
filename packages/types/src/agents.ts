@@ -1,61 +1,16 @@
 import { type } from "arktype";
-import { InvokerModelPreferences, ModelRequirements } from "./catalog";
-import { grantEffects } from "./grants";
+import { ModelRequirements } from "./catalog";
+import { CredentialRequirement } from "./credentials";
+import { GrantRequirement } from "./grants";
 import { ToolPackagePin, ToolPackagePinArray } from "./tool-packages";
 
 const modelRequirementsDescription =
   "Model needs declared by canonical name, with optional per-model capability filters and provider preferences. Resolved against the tenant catalog at launch to build the ordered inference sources; it does not introduce providers the tenant catalog lacks.";
 
-export const credentialRequirementSources = [
-  "tenant",
-  "creator",
-  "invoker",
-] as const;
-export type CredentialRequirementSource =
-  (typeof credentialRequirementSources)[number];
-
-export const grantRequirementSources = ["creator", "invoker"] as const;
-export type GrantRequirementSource = (typeof grantRequirementSources)[number];
-
 export const agentDefinitionStatuses = ["deployed", "stopped"] as const;
 export type AgentDefinitionStatus = (typeof agentDefinitionStatuses)[number];
 
-export const agentInstanceStatuses = [
-  "deployed",
-  "running",
-  "updating",
-  "error",
-  "stopped",
-] as const;
-export type AgentInstanceStatus = (typeof agentInstanceStatuses)[number];
-
-const CredentialSourceType = type.enumerated(...credentialRequirementSources);
-const GrantSourceType = type.enumerated(...grantRequirementSources);
 const AgentDefinitionStatusType = type.enumerated(...agentDefinitionStatuses);
-const AgentInstanceStatusType = type.enumerated(...agentInstanceStatuses);
-const Effect = type.enumerated(...grantEffects);
-
-export const CredentialRequirement = type({
-  providerName: "string",
-  "scopes?": "string[]",
-  source: CredentialSourceType.describe(
-    "Whose credential satisfies this requirement at launch: `tenant` (a credential owned by the tenant), `creator` (the definition author's), or `invoker` (whoever launched the agent).",
-  ),
-  "name?": "string",
-});
-
-export const GrantRequirement = type({
-  resource: "string",
-  action: "string",
-  "effect?": Effect.describe(
-    "Effect to assign the materialized grant: `allow`, `deny`, or `ask`. Defaults to `allow` when omitted.",
-  ),
-  source: GrantSourceType.describe(
-    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the agent). The requirement is only satisfied if that party actually holds the requested capability.",
-  ),
-  "conditions?": "Record<string, unknown> | null",
-});
-export type GrantRequirement = typeof GrantRequirement.infer;
 
 export const CreateAgent = type({
   name: "string",
@@ -125,50 +80,10 @@ export const AgentResponse = type({
   updatedAt: "string",
 });
 
-export const CreateAgentInstance = type({
-  agentId: "string",
-  "modelPreferences?": InvokerModelPreferences.describe(
-    "The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.",
-  ),
-  "invokerGrants?": type({
-    resource: "string",
-    action: "string",
-    "effect?": Effect,
-    "conditions?": "Record<string, unknown> | null",
-  })
-    .array()
-    .describe(
-      "Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.",
-    ),
-});
-
-export const AgentInstanceResponse = type({
-  id: "string",
-  agentId: "string",
-  agentName: "string",
-  tenantId: "string",
-  address: "string",
-  status: AgentInstanceStatusType.describe(
-    "Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).",
-  ),
-  "publicKey?": "string | null",
-  "kernelId?": "string | null",
-  "sidecarId?": "string | null",
-  createdAt: "string",
-  updatedAt: "string",
-  "endedAt?": "string | null",
-});
-
 export const AgentVersion = type({
   version: "string",
   status: "'active' | 'inactive' | 'failed'",
   createdAt: "string",
-});
-
-export const AgentHealth = type({
-  liveness: "'ok' | 'unhealthy'",
-  readiness: "'ok' | 'not_ready' | 'unhealthy'",
-  "lastCheckedAt?": "string | null",
 });
 
 export const RollbackRequest = type({

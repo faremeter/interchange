@@ -6,8 +6,12 @@ export type GrantEffect = (typeof grantEffects)[number];
 export const grantOrigins = ["system", "role", "creator", "invoker"] as const;
 export type GrantOrigin = (typeof grantOrigins)[number];
 
+export const grantRequirementSources = ["creator", "invoker"] as const;
+export type GrantRequirementSource = (typeof grantRequirementSources)[number];
+
 const Effect = type.enumerated(...grantEffects);
 const Origin = type.enumerated(...grantOrigins);
+const GrantSourceType = type.enumerated(...grantRequirementSources);
 
 const effectDescription =
   "Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).";
@@ -84,3 +88,16 @@ export const EvaluateResult = type({
     "Every grant that matched the requested resource and action, including the one that won. Useful for debugging why a request was allowed, denied, or required approval.",
   ),
 });
+
+export const GrantRequirement = type({
+  resource: "string",
+  action: "string",
+  "effect?": Effect.describe(
+    "Effect to assign the materialized grant: `allow`, `deny`, or `ask`. Defaults to `allow` when omitted.",
+  ),
+  source: GrantSourceType.describe(
+    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the agent). The requirement is only satisfied if that party actually holds the requested capability.",
+  ),
+  "conditions?": "Record<string, unknown> | null",
+});
+export type GrantRequirement = typeof GrantRequirement.infer;
