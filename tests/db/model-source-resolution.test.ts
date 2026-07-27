@@ -12,6 +12,7 @@ import {
   resolveInstanceModelSources,
   resolveModelSources,
 } from "@intx/db";
+import { workflowDefinition } from "@intx/db/schema";
 import type { ModelRequirement } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -448,15 +449,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
           resource: "credential:*",
           action: "use",
         });
+        // resolveInstanceModelSources reads the requirements off the folded
+        // definition, not the agent row -- so seed them there. The agent row
+        // carries null requirements, which proves the definition is the source
+        // (and mirrors the launch path, which also resolves off the definition,
+        // so reconnect reproduces the launch ordering).
         await seedAgent(h.db, {
           id: "agt_1",
           tenantId: "tnt_root",
           creatorPrincipalId: "prn_creator",
+          modelRequirements: null,
+        });
+        await h.db.insert(workflowDefinition).values({
+          id: "wfd_1",
+          tenantId: "tnt_root",
+          creatorPrincipalId: "prn_creator",
+          originAgentId: "agt_1",
+          name: "agent-1",
           modelRequirements,
         });
       }
 
-      test("resolves from the agent's persisted modelRequirements", async () => {
+      test("resolves from the folded definition's persisted modelRequirements", async () => {
         await seedAgentWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           agentId: "agt_1",
@@ -482,7 +496,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
       });
 
-      test("returns no_requirements when the agent has none", async () => {
+      test("returns no_requirements when the definition has none", async () => {
         await seedAgentWithRelay(null);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           agentId: "agt_1",
@@ -491,7 +505,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
       });
 
-      test("returns no_requirements when the agent is absent from the tenant", async () => {
+      test("returns no_requirements when no definition matches in the tenant", async () => {
         await seedAgentWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           agentId: "agt_missing",

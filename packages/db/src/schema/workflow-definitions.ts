@@ -43,12 +43,19 @@ export const workflowDefinition = pgTable(
     assetId: text("asset_id").references(() => asset.id, {
       onDelete: "restrict",
     }),
-    // Transient backfill scaffolding: the `agent.id` an agent-origin definition
-    // was materialized from, so the grant re-key and the definition-level FK
-    // re-anchors can join agent-keyed rows to their new definition. Null for
-    // workflow-origin definitions (their `asset_id` is the back-reference).
+    // The legacy `agent.id` an agent-origin definition was folded from; null
+    // for a workflow-origin definition (its `asset_id` is the back-reference).
     // A plain text column, not an FK, to avoid coupling to the `agent` table's
-    // lifecycle during the migration; dropped when the agent table is dropped.
+    // lifecycle.
+    //
+    // This is a PERMANENT, load-bearing identity key -- not fold-era
+    // scaffolding to drop with the agent table. Legacy agent ids outlive the
+    // agent table: agent-kind `principal.refId`, `agent_instance.agent_id`, and
+    // the agent-state git route's `:agentId` segment all still carry them.
+    // Resolving such an id to its folded definition joins through this column --
+    // model-source re-resolution (reconnect) and agent-state git scoping do so
+    // -- so it cannot be dropped until those legacy-id holders are themselves
+    // retired or re-keyed onto definition ids.
     originAgentId: text("origin_agent_id"),
     name: text("name").notNull(),
     description: text("description"),
@@ -78,11 +85,11 @@ export const workflowDefinition = pgTable(
     index("workflow_definition_tenant_idx").on(t.tenantId, t.createdAt),
     uniqueIndex("workflow_definition_asset_idx").on(t.assetId),
     // Partial UNIQUE over `origin_agent_id` (where not null): at most one
-    // definition per source agent, so the run-once backfill's double-fold is a
-    // structural fail-loud rather than a procedural query-guard, and the
-    // re-key joins from agent-keyed rows still resolve to one row. Partial
-    // because workflow-origin definitions leave `origin_agent_id` null and must
-    // not collide. Dropped with the column when the agent table is retired.
+    // definition per source agent, so every legacy-id lookup resolves to
+    // exactly one row and the run-once backfill's double-fold is a structural
+    // fail-loud rather than a procedural query-guard. Partial because
+    // workflow-origin definitions leave `origin_agent_id` null and must not
+    // collide.
     uniqueIndex("workflow_definition_origin_agent_idx")
       .on(t.originAgentId)
       .where(sql`${t.originAgentId} is not null`),

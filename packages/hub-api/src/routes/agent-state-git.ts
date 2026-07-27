@@ -41,7 +41,7 @@ import { createMiddleware } from "hono/factory";
 import type { MiddlewareHandler } from "hono";
 
 import { authorize } from "@intx/authz";
-import { agent as agentTable, agentInstance } from "@intx/db/schema";
+import { agentInstance, workflowDefinition } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { repoActionToGrantVerb } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
@@ -371,13 +371,18 @@ async function resolveAgentStateId(
     }
     return { ok: true, id: row.id };
   }
-  const row = await db.query.agent.findFirst({
-    where: and(eq(agentTable.id, paramId), eq(agentTable.tenantId, tenantId)),
+  const row = await db.query.workflowDefinition.findFirst({
+    where: and(
+      eq(workflowDefinition.originAgentId, paramId),
+      eq(workflowDefinition.tenantId, tenantId),
+    ),
   });
   if (row === undefined) {
     return { ok: false, reason: `no agent definition ${paramId} in tenant` };
   }
-  return { ok: true, id: row.id };
+  // Return paramId (the legacy agent id), not the definition's own id: it keys
+  // the agent-state git repo namespace, so existing checkouts stay valid.
+  return { ok: true, id: paramId };
 }
 
 type ResolveSmartHttpDeps = {

@@ -194,18 +194,20 @@ export async function createTenant(
   return { tenantId, slug };
 }
 
-// Insert an `agent` row directly, bypassing any HTTP surface. The
-// agent-state git routes resolve a per-definition repo by looking the
-// agent row up by (id, tenantId), so a real row must exist for the
-// smart-HTTP request to pass tenant binding rather than 404. Only the
-// four non-defaulted columns are set; the rest take their table
-// defaults. Runs against the hub's per-test schema via search_path.
+// Insert an `agent` row and its folded `workflow_definition` directly,
+// bypassing any HTTP surface -- every agent is folded, so the two always
+// coexist. The agent-state definition-mode git route resolves the repo by
+// looking the definition up by (origin_agent_id, tenantId), so a real folded
+// definition must exist for the smart-HTTP request to pass tenant binding
+// rather than 404. Returns both ids: the definition-mode repo keys on the
+// agent id, while any session/run row keys on the definition id. Runs against
+// the hub's per-test schema via search_path.
 export async function seedAgentDefinition(
   schema: string,
   user: SignedUpUser,
   tenant: CreatedTenant,
   name: string,
-): Promise<{ agentId: string }> {
+): Promise<{ agentId: string; definitionId: string }> {
   const dbConfig = loadHarnessDbConfig();
   const sql = postgres({
     host: dbConfig.host,
@@ -227,9 +229,16 @@ export async function seedAgentDefinition(
       );
     }
     const agentId = generateId("agent");
+    const definitionId = generateId("workflowDefinition");
     await sql`insert into agent (id, tenant_id, creator_principal_id, name)
               values (${agentId}, ${tenant.tenantId}, ${creatorPrincipal.id}, ${name})`;
-    return { agentId };
+    // The folded definition the definition-mode route resolves by
+    // origin_agent_id, and that any session/run row keys on.
+    await sql`insert into workflow_definition
+                (id, tenant_id, creator_principal_id, origin_agent_id, name)
+              values (${definitionId}, ${tenant.tenantId},
+                ${creatorPrincipal.id}, ${agentId}, ${name})`;
+    return { agentId, definitionId };
   } finally {
     await sql.end();
   }

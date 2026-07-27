@@ -18,7 +18,7 @@ import type { DB } from "./client";
 import { resolveCredentialById } from "./credential-resolution";
 import { createGrantStore } from "./grant-store";
 import { parseModelOfferingRow } from "./parse-row";
-import { agent } from "./schema/agents";
+import { workflowDefinition } from "./schema/workflow-definitions";
 
 /**
  * Why a single offering could not be turned into a launchable source.
@@ -342,19 +342,30 @@ export async function resolveInstanceModelSources(
   tenantId: string,
   instance: { agentId: string; modelPreferences: unknown },
 ): Promise<CatalogSourceResolution> {
-  // Scope the agent lookup to the resolving tenant, matching the launch
-  // route. A cross-tenant agentId resolves to nothing rather than
-  // contributing another tenant's model names or preferences.
-  const agentRow = await db.query.agent.findFirst({
-    where: and(eq(agent.id, instance.agentId), eq(agent.tenantId, tenantId)),
+  // Resolve from the folded definition, keyed by the legacy agent id it was
+  // folded from (`origin_agent_id`, partial-unique, so at most one row). This
+  // is the SAME row the launch resolves its requirements from, so a rotation
+  // or reconnect reproduces the launch's model resolution rather than drifting.
+  // Scope to the resolving tenant, matching the launch route: a cross-tenant
+  // agentId resolves to nothing rather than contributing another tenant's
+  // models. A definition with no creator principal cannot authorize a
+  // credential-backed source, so it fails closed like a missing definition.
+  const definitionRow = await db.query.workflowDefinition.findFirst({
+    where: and(
+      eq(workflowDefinition.originAgentId, instance.agentId),
+      eq(workflowDefinition.tenantId, tenantId),
+    ),
   });
-  if (agentRow === undefined) {
+  if (
+    definitionRow === undefined ||
+    definitionRow.creatorPrincipalId === null
+  ) {
     return { ok: false, reason: "no_requirements" };
   }
 
   const requirements =
-    agentRow.modelRequirements !== null
-      ? ModelRequirements.assert(agentRow.modelRequirements)
+    definitionRow.modelRequirements !== null
+      ? ModelRequirements.assert(definitionRow.modelRequirements)
       : [];
 
   const preferences =
@@ -366,17 +377,16 @@ export async function resolveInstanceModelSources(
     invokerPreferences[preference.model] = preference.providers;
   }
 
-  // The authorizing party for a credential-backed source is the agent's
-  // creator, recorded on the definition. Re-resolution (rotation, reconnect)
-  // must re-check the creator's `credential:{id}` / `use` grant, so collect
-  // the creator's grants here rather than threading them through the push
-  // callers. Collect across the tenant ancestor chain: credential resolution
-  // already reaches inherited credentials up the chain, and the authorizing
-  // `use` grant is stamped with the credential's own (ancestor) tenant, so a
-  // single-tenant collection would fail closed on a legitimately inherited
-  // credential.
+  // The authorizing party for a credential-backed source is the definition's
+  // creator. Re-resolution (rotation, reconnect) must re-check the creator's
+  // `credential:{id}` / `use` grant, so collect the creator's grants here
+  // rather than threading them through the push callers. Collect across the
+  // tenant ancestor chain: credential resolution already reaches inherited
+  // credentials up the chain, and the authorizing `use` grant is stamped with
+  // the credential's own (ancestor) tenant, so a single-tenant collection would
+  // fail closed on a legitimately inherited credential.
   const creatorGrants = await createGrantStore(db).collectGrantsInChain(
-    agentRow.creatorPrincipalId,
+    definitionRow.creatorPrincipalId,
     tenantId,
   );
 

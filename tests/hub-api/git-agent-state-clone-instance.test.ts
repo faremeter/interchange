@@ -82,6 +82,7 @@ async function seedInstanceRow(
   user: SignedUpUser,
   tenant: CreatedTenant,
   agentId: string,
+  definitionId: string,
 ): Promise<{ instanceId: string; creatorPrincipalId: string }> {
   const dbConfig = loadHarnessDbConfig();
   const sql = postgres({
@@ -120,12 +121,9 @@ async function seedInstanceRow(
     }
     const address = `${instanceId}@${tenantDomainRow.domain}`;
 
-    // agent_session.agent_id references workflow_definition, so mint the folded
-    // definition the launch path would have produced from this agent and key the
-    // session to it. agent_instance.agent_id stays the agent id.
-    const definitionId = generateId("workflowDefinition");
-    await sql`insert into workflow_definition (id, tenant_id, name, origin_agent_id)
-              values (${definitionId}, ${tenant.tenantId}, ${agentId}, ${agentId})`;
+    // agent_session.agent_id references the folded workflow_definition (created
+    // alongside the agent by seedAgentDefinition); agent_instance.agent_id
+    // stays the agent id.
 
     // The session row carries the invoker's principal id.
     await sql`insert into agent_session (id, tenant_id, agent_id, principal_id, status)
@@ -178,6 +176,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         user,
         tenant,
         agent.agentId,
+        agent.definitionId,
       );
 
       const token = await mintTenantGitToken(hub.url, user, tenant, {
@@ -241,6 +240,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         user,
         tenant,
         agent.agentId,
+        agent.definitionId,
       );
       const token = await mintTenantGitToken(hub.url, user, tenant, {
         resource: `agent-state:${instance.instanceId}`,
@@ -288,6 +288,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         userA,
         tenantA,
         agent.agentId,
+        agent.definitionId,
       );
 
       const userB = await signUpUser(hub.url);

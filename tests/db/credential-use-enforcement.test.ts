@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 
 import { resolveInstanceModelSources, resolveModelSources } from "@intx/db";
+import { workflowDefinition } from "@intx/db/schema";
 import type { ModelRequirement } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -135,6 +136,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "agt_1",
         tenantId: "tnt_root",
         creatorPrincipalId: "prn_creator",
+        modelRequirements: [{ model: "opus" }],
+      });
+      // The rotation path (resolveInstanceModelSources) reads the requirements
+      // and creator off the folded definition, so mirror them there.
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_1",
+        tenantId: "tnt_root",
+        creatorPrincipalId: "prn_creator",
+        originAgentId: "agt_1",
+        name: "agent-1",
         modelRequirements: [{ model: "opus" }],
       });
     }
