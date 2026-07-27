@@ -42,6 +42,7 @@ import {
 // This map is the one place that translates from the former to the latter.
 const CATALOG_TO_ADAPTER: Record<string, string> = {
   "opencode-zen": "openai-compatible",
+  openai: "openai-compatible",
   anthropic: "anthropic",
   "google-genai": "google-genai",
 };
