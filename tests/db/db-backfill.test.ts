@@ -149,6 +149,9 @@ describe.skipIf(!harnessDbEnvAvailable())("db-backfill (real DB)", () => {
     expect(def.name).toBe("helper-bot");
     expect(def.tenantId).toBe("tnt_root");
     expect(def.creatorPrincipalId).toBe("prn_creator");
+    // The agent's model requirements are mirrored onto the definition, so a
+    // folded launch resolves its sources without the agent row.
+    expect(def.modelRequirements).toEqual([{ model: "opus" }]);
 
     const versions = await h.db
       .select()

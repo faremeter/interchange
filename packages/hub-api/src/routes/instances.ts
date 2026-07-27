@@ -20,7 +20,11 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import { parseAgentRow, resolveModelSources } from "@intx/db";
+import {
+  parseAgentRow,
+  parseWorkflowDefinitionRow,
+  resolveModelSources,
+} from "@intx/db";
 import type { DB } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -289,12 +293,29 @@ export function createInstanceRoutes({
         );
       }
 
-      if (row.status !== "deployed") {
+      // The folded workflow_definition is authoritative for launchability and
+      // model resolution: launchability gates on its status and models resolve
+      // from its mirrored requirements, so neither reads the agent row. Every
+      // launchable agent was folded, so a missing definition is an invariant
+      // violation, not a client error. (The agent row above is still read for
+      // the body -- system prompt, tool packages -- until phase 2 materializes
+      // it into the definition's asset.)
+      const definitionRow = await db.query.workflowDefinition.findFirst({
+        where: eq(workflowDefinition.originAgentId, row.id),
+      });
+      if (definitionRow === undefined) {
+        throw new Error(
+          `agent ${row.id} has no folded workflow_definition; agent-fold invariant violated`,
+        );
+      }
+      const definition = parseWorkflowDefinitionRow(definitionRow);
+
+      if (definition.status !== "deployed") {
         return c.json(
           {
             error: {
               code: "conflict",
-              message: `Agent is not in a launchable state (status: ${row.status})`,
+              message: `Agent is not in a launchable state (status: ${definition.status})`,
             },
           },
           409,
@@ -321,7 +342,7 @@ export function createInstanceRoutes({
 
       const creatorPrincipalId = row.creatorPrincipalId;
 
-      const modelRequirements = parseAgentRow(row).modelRequirements ?? [];
+      const modelRequirements = definition.modelRequirements ?? [];
 
       // The invoker's launch-time preference reorders or restricts the
       // tenant-visible providers; it cannot introduce one the catalog lacks.
@@ -437,31 +458,13 @@ export function createInstanceRoutes({
       // instance. The plain `ins_<hex>` address, per-launch principal, grants,
       // and deploy are identical; only the persisted row (and how its session
       // is keyed) differ.
-      const foldedDefinitionId = (
-        await db
-          .select({ id: workflowDefinition.id })
-          .from(workflowDefinition)
-          .where(eq(workflowDefinition.originAgentId, row.id))
-          .limit(1)
-      )[0]?.id;
-
-      // Every launchable agent is folded to a workflow_definition: new
-      // unfolded agents are no longer created and the fold backfill covered
-      // the rest, enforced by the agent_session re-point's agent-table guard.
-      // A missing definition is an invariant violation, not a client error:
-      // fail loudly before opening a transaction or minting a principal.
-      if (foldedDefinitionId === undefined) {
-        throw new Error(
-          `agent ${row.id} has no folded workflow_definition; agent-fold invariant violated`,
-        );
-      }
 
       // --- Resolve role assignments for the instance principal ---
 
       // Role assignments hang off the folded definition -- agent_role.agent_id
       // holds definition ids.
       const agentRoleRows = await db.query.agentRole.findMany({
-        where: eq(agentRole.agentId, foldedDefinitionId),
+        where: eq(agentRole.agentId, definition.id),
       });
       const agentRoleIds = agentRoleRows.map((a) => a.roleId);
       const agentRoleAssignments =
@@ -515,7 +518,7 @@ export function createInstanceRoutes({
         await tx.insert(agentSession).values({
           id: sessionId,
           tenantId: tenant.id,
-          agentId: foldedDefinitionId,
+          agentId: definition.id,
           principalId: instancePrincipalId,
           status: "active",
           createdAt: now,
@@ -528,7 +531,7 @@ export function createInstanceRoutes({
         // key lands later at deploy-ack.
         await tx.insert(workflowRun).values({
           id: instanceId,
-          definitionId: foldedDefinitionId,
+          definitionId: definition.id,
           deploymentId: null,
           tenantId: tenant.id,
           principalId: instancePrincipalId,

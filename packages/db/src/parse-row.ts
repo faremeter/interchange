@@ -163,6 +163,10 @@ export function parseWorkflowDefinitionRow(
       row.grantRequirements !== null
         ? GrantRequirement.array().assert(row.grantRequirements)
         : null,
+    modelRequirements:
+      row.modelRequirements !== null
+        ? ModelRequirements.assert(row.modelRequirements)
+        : null,
   };
 }
 

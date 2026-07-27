@@ -1407,10 +1407,14 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     model?: Record<string, unknown> | undefined;
     modelProvider?: Record<string, unknown> | undefined;
     modelOffering?: Record<string, unknown> | undefined;
-    // The `workflow_definition` (with this agent's `origin_agent_id`) that the
-    // launch route's fold-detection query returns, or undefined for an unfolded
-    // agent that launches as an `agent_instance`.
-    foldedDefinition?: { id: string } | undefined;
+    // Overrides for the folded `workflow_definition` the launch route reads.
+    // `id` (default `DEFAULT_FOLDED_DEF_ID`) matters when a test asserts on the
+    // definition id the launched run is keyed to. `status`/`modelRequirements`
+    // override the mirrored agent values, so a test can prove the launch gates
+    // and resolves off the definition rather than the agent row.
+    foldedDefinition?:
+      | { id?: string; status?: string; modelRequirements?: unknown }
+      | undefined;
   };
 
   function createLaunchMockDB(opts: LaunchMockOpts) {
@@ -1477,6 +1481,18 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
           findFirst: async () => opts.agent,
           findMany: notImplemented("db.query.agent.findMany"),
         },
+        // The folded `workflow_definition` the launch route reads for
+        // launchability (status) and model resolution (model_requirements). The
+        // fold copies these off the agent verbatim, so mirror the agent fixture
+        // -- a test that varies the agent's status/requirements varies the
+        // definition's too, matching the real one-way fold.
+        workflowDefinition: {
+          findFirst: async () =>
+            opts.agent
+              ? foldedDefinitionRowFor(opts.agent, opts.foldedDefinition)
+              : undefined,
+          findMany: notImplemented("db.query.workflowDefinition.findMany"),
+        },
         agentRole: {
           findFirst: notImplemented("db.query.agentRole.findFirst"),
           findMany: async () => [],
@@ -1508,19 +1524,6 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
             opts.modelOffering ? [opts.modelOffering] : [],
         },
       },
-      // The route's fold-detection query: `.from(workflow_definition)
-      // .where(origin_agent_id = agent).limit(1)`. Returns the folded
-      // definition's id when the agent is folded, else an empty set.
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: () =>
-              Promise.resolve(
-                opts.foldedDefinition ? [{ id: opts.foldedDefinition.id }] : [],
-              ),
-          }),
-        }),
-      }),
       transaction: async (fn: (tx: typeof txLike) => Promise<unknown>) =>
         fn(txLike),
       insert: insertChain,
@@ -1571,6 +1574,37 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       status: "deployed",
       createdAt: new Date("2025-01-01"),
       updatedAt: new Date("2025-01-01"),
+    };
+  }
+
+  const DEFAULT_FOLDED_DEF_ID = "wfd_default";
+
+  // The `workflow_definition` row the fold produces for an agent: status,
+  // model_requirements, and grant_requirements are copied off the agent
+  // verbatim (the fold is one-way), so the launch route reads them here without
+  // the agent row. A test may override status/model_requirements to prove the
+  // launch reads the definition, not the agent.
+  function foldedDefinitionRowFor(
+    agent: Record<string, unknown>,
+    overrides?: { id?: string; status?: string; modelRequirements?: unknown },
+  ): Record<string, unknown> {
+    return {
+      id: overrides?.id ?? DEFAULT_FOLDED_DEF_ID,
+      tenantId: agent["tenantId"],
+      creatorPrincipalId: agent["creatorPrincipalId"],
+      assetId: null,
+      originAgentId: agent["id"],
+      name: agent["name"],
+      description: agent["description"],
+      grantRequirements: agent["grantRequirements"],
+      modelRequirements:
+        overrides !== undefined && "modelRequirements" in overrides
+          ? overrides.modelRequirements
+          : agent["modelRequirements"],
+      currentVersion: agent["currentVersion"],
+      status: overrides?.status ?? agent["status"],
+      createdAt: agent["createdAt"],
+      updatedAt: agent["updatedAt"],
     };
   }
 
@@ -1916,6 +1950,44 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     );
     expect(res.status).toBe(409);
     expect(JSON.stringify(await res.json())).toContain("no model requirements");
+  });
+
+  test("gates launchability on the folded definition, not the agent", async () => {
+    // The agent row is deployed, but launchability now reads the folded
+    // definition -- a stopped definition is not launchable even though the
+    // agent row still says deployed.
+    const res = await launch(
+      createLaunchMockDB({
+        agent: makeAgentDef(),
+        credential: makeCredential(),
+        inserts: [],
+        foldedDefinition: { status: "stopped" },
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain(
+      "not in a launchable state",
+    );
+  });
+
+  test("resolves models from the folded definition, not the agent", async () => {
+    // The agent row carries no model requirements -- if the launch read it, the
+    // launch would reject. The folded definition's requirements resolve, so a
+    // successful launch proves models resolve off the definition.
+    const agent = makeAgentDef();
+    agent["modelRequirements"] = null;
+    const res = await launch(
+      createLaunchMockDB({
+        agent,
+        credential: makeCredential(),
+        model: makeCatalogModel(),
+        modelProvider: makeCatalogProvider(),
+        modelOffering: makeCatalogOffering(),
+        inserts: [],
+        foldedDefinition: { modelRequirements: [{ model: "test-model" }] },
+      }),
+    );
+    expect(res.status).toBe(201);
   });
 
   test("rejects launch when the only provider is wallet-backed", async () => {

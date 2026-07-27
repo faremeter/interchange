@@ -2,13 +2,14 @@
 //
 // Phase 1 -- the rows-only fold (`runBackfill`). Lifts each legacy `agent`
 // (and each native `workflow`-kind asset) into a `workflow_definition` +
-// `workflow_definition_version` row. This phase is ROWS ONLY: the definition
-// body is NOT persisted. An agent-origin definition's `asset_id` is null and
-// its body is synthesized on the fly at deploy time from the still-live `agent`
-// row (via `synthesizeFoldedWorkflow`), so there is one source of truth during
-// the transition and no drifting frozen copy. It needs only a `db` handle --
-// no RepoStore, no asset writes -- which is what keeps it cheap to re-run
-// repeatedly while the fold rolls out.
+// `workflow_definition_version` row, mirroring the agent's row-level fields --
+// including its `model_requirements` manifest, which a folded launch resolves
+// against the live catalog without the agent row. This phase is ROWS ONLY: the
+// definition BODY (system prompt, tools, inference) is NOT persisted; an
+// agent-origin definition's `asset_id` is null and the body is still read from
+// the still-live `agent` row at launch until phase 2 freezes it. It needs only
+// a `db` handle -- no RepoStore, no asset writes -- which is what keeps it cheap
+// to re-run repeatedly while the fold rolls out.
 //
 // Phase 2 -- body materialization (`materializeFoldedBodies`). The one-time
 // cliff run just before the `agent` table is dropped: it freezes each folded
@@ -224,6 +225,11 @@ async function foldAgents(
         name: a.name,
         description: a.description,
         grantRequirements: a.grantRequirements,
+        // Mirror the agent's model requirements onto the definition so a folded
+        // launch resolves its inference sources without the agent row. Copied
+        // verbatim (null stays null) -- the launch re-resolves it against the
+        // live catalog each launch, exactly as the agent path did.
+        modelRequirements: a.modelRequirements,
         currentVersion: a.currentVersion,
         status: a.status,
       });

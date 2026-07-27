@@ -55,6 +55,16 @@ export const workflowDefinition = pgTable(
     // Grant requirements manifest, resolved at launch into materialized grants.
     // Validated as GrantRequirement[] at parse time.
     grantRequirements: jsonb("grant_requirements"),
+    // Model requirements manifest for an agent-origin (folded) definition: the
+    // canonical model names + provider preferences its launch resolves against
+    // the live tenant catalog into credential-bearing inference sources, fresh
+    // each launch. Null for a workflow-origin definition, which carries no such
+    // manifest -- a native workflow deploy supplies its sources directly.
+    // Validated as ModelRequirements at parse time. Mirrors the field the
+    // retired `agent` row carried, so a folded launch resolves models without
+    // the agent row. A null (or empty) manifest is legitimate -- it resolves to
+    // an unlaunchable empty source chain, exactly as the agent field did.
+    modelRequirements: jsonb("model_requirements"),
     currentVersion: text("current_version").notNull().default("1"),
     status: text("status", {
       enum: ["deployed", "stopped"],

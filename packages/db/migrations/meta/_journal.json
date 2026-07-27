@@ -456,6 +456,13 @@
       "when": 1785169484868,
       "tag": "0064_repoint_agent_session_fk_to_definition",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1785179839765,
+      "tag": "0065_add_workflow_definition_model_requirements",
+      "breakpoints": true
     }
   ]
 }
