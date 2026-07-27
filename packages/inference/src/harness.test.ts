@@ -27,6 +27,9 @@ const SOURCE: InferenceSource = {
   model: "claude-3-5-sonnet-20240620",
 };
 
+// Local copy: @intx/inference-testing depends on @intx/inference, so
+// importing the shared userTurn helper here would create a package
+// dependency cycle.
 function userTurn(text: string): ConversationTurn {
   return {
     role: "user",

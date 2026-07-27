@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import {
   INVARIANTS,
   createReplayHarness,
+  userTurn,
   type CapturedDispatch,
   type ReplayHarness,
 } from "@intx/inference-testing";
@@ -40,14 +41,6 @@ afterEach(() => {
     activeReplay = null;
   }
 });
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
-}
 
 // Build the tool_result content array that should be threaded into the
 // next user turn. Each captured dispatch's args carry the call_id-like

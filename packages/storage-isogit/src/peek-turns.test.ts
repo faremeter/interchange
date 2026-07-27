@@ -26,6 +26,9 @@ afterEach(async () => {
   );
 });
 
+// Kept local: pure ConversationTurn constructor. Importing
+// @intx/inference-testing would add an inference/discovery test graph
+// for a package that never uses the harness.
 function userTurn(text: string): ConversationTurn {
   return { role: "user", content: [{ type: "text", text }], timestamp: 1 };
 }

@@ -3,17 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type {
-  ConversationTurn,
-  InferenceEvent,
-  InferenceSource,
-} from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 import { createRecordingHarness } from "./session-recording";
 import {
   createReplayHarness,
   SessionReplayMismatchError,
 } from "./session-replay";
+import { userTurn } from "./turns";
 import * as wire from "./wire";
 
 const ANTHROPIC_SOURCE: InferenceSource = {
@@ -45,14 +42,6 @@ async function makeTmpDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "session-replay-"));
   tmpDirs.push(dir);
   return dir;
-}
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
 }
 
 function mergeChunks(chunks: Uint8Array[]): Uint8Array {

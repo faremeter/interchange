@@ -20,14 +20,15 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { setupHarness, wire } from "@intx/inference-testing";
+import {
+  expectToolCall,
+  expectToolCalls,
+  setupHarness,
+  userTurn,
+  wire,
+} from "@intx/inference-testing";
 import type { Harness } from "@intx/inference-testing";
-import { expectToolCall, expectToolCalls } from "@intx/inference-testing";
-import type {
-  ConversationTurn,
-  InferenceEvent,
-  InferenceSource,
-} from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 const SOURCE: InferenceSource = {
   id: "openai:test",
@@ -51,14 +52,6 @@ const USAGE_TAIL = {
   cacheWrite: 0,
   thinking: 0,
 };
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
-}
 
 let activeHarness: Harness | null = null;
 

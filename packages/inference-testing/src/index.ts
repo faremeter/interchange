@@ -105,3 +105,5 @@ export type {
   ReplayHarness,
   RunTurnOpts,
 } from "./session-replay";
+
+export { userTurn } from "./turns";

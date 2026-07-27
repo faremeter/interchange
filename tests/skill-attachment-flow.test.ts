@@ -52,9 +52,9 @@ import {
   type AvailableSkillEntry,
   type SkillIndexEntry,
 } from "@intx/hub-sessions";
-import { setupHarness, wire } from "@intx/inference-testing";
+import { setupHarness, userTurn, wire } from "@intx/inference-testing";
 import type { Harness } from "@intx/inference-testing";
-import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 
 // ---------------------------------------------------------------------------
 // Synthetic skill fixture
@@ -384,14 +384,6 @@ const USAGE_TAIL = {
   cacheWrite: 0,
   thinking: 0,
 };
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
