@@ -194,10 +194,9 @@ describe("attachment end-to-end: assemble -> fetchFull -> turn -> adapter", () =
   }
 });
 
-// A PDF rides the same pipe as a DocumentBlock. Adapter document support is
-// uneven (Anthropic and Google marshal it; OpenAI does not yet emit document
-// blocks and rejects loudly) — so this asserts each adapter's actual behavior
-// rather than a uniform success.
+// A PDF rides the same pipe as a DocumentBlock. Each adapter marshals to its
+// own wire shape (Anthropic document, Google inlineData, OpenAI file part) —
+// so this asserts provider-specific emission rather than a uniform body.
 describe("attachment end-to-end: pdf document", () => {
   const pdfBytes = new Uint8Array([
     0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34,
@@ -255,10 +254,13 @@ describe("attachment end-to-end: pdf document", () => {
     expect(req.body).toContain('"inlineData"');
   });
 
-  test("openai rejects document blocks loudly (not yet wired)", () => {
+  test("openai marshals the pdf as a Chat Completions file part", () => {
     const adapter = createOpenAIAdapter(source("openai", "gpt-5.5"));
-    expect(() => adapter.buildRequest([turn], "gpt-5.5", {})).toThrow(
-      /document/i,
+    const req = adapter.buildRequest([turn], "gpt-5.5", {});
+    expect(req.body).toContain('"type":"file"');
+    expect(req.body).toContain('"filename":"document.pdf"');
+    expect(req.body).toContain(
+      `"file_data":"data:application/pdf;base64,${pdfBase64}"`,
     );
   });
 });

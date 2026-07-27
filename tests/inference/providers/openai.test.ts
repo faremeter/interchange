@@ -438,18 +438,14 @@ describe("OpenAI adapter: buildRequest", () => {
     },
   );
 
-  test("rejects a document content block with a message naming the missing capture", () => {
-    // OpenAI's Chat Completions has a `file` content type for PDFs,
-    // but the exact wire shape (field names, required filename
-    // metadata) is version-sensitive and the capture corpus has no
-    // OpenAI document fixtures to verify against. The throw is the
-    // honest answer: surface explicit context rather than emitting
-    // an unverified shape that might silently land as malformed
-    // input the model ignores.
+  test("emits a base64 PDF document as a Chat Completions file part", () => {
+    // Shape grounded on openai/gpt-5.5/document-input capture: typed
+    // text + file parts; file_data is a data URI; filename required.
     const messages: ConversationTurn[] = [
       {
         role: "user",
         content: [
+          { type: "text", text: "Summarize the attached document." },
           {
             type: "document",
             source: {
@@ -463,11 +459,105 @@ describe("OpenAI adapter: buildRequest", () => {
       },
     ];
 
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const content = body.messages[0]?.content;
+    if (!Array.isArray(content)) {
+      throw new Error("expected multimodal content array");
+    }
+    expect(content).toEqual([
+      { type: "text", text: "Summarize the attached document." },
+      {
+        type: "file",
+        file: {
+          filename: "document.pdf",
+          file_data: "data:application/pdf;base64,JVBERi0xLjQK",
+        },
+      },
+    ]);
+  });
+
+  test("rejects a non-PDF base64 document mimeType", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "base64",
+              mimeType: "text/plain",
+              data: "aGVsbG8=",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
     expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
-      /document content blocks/,
+      /application\/pdf only/,
     );
     expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
-      /captured fixture/,
+      /text\/plain/,
+    );
+  });
+
+  test("emits a file-reference document as file_id", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "file-reference",
+              mimeType: "application/pdf",
+              reference: "file-abc123",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    const content = body.messages[0]?.content;
+    if (!Array.isArray(content)) {
+      throw new Error("expected multimodal content array");
+    }
+    expect(content).toEqual([
+      {
+        type: "file",
+        file: { file_id: "file-abc123" },
+      },
+    ]);
+  });
+
+  test("rejects a url document source with a message naming the url", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "url",
+              mimeType: "application/pdf",
+              url: "https://example.com/report.pdf",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
+      /url document sources/,
+    );
+    expect(() => adapter.buildRequest(messages, "gpt-5.5", {})).toThrow(
+      /https:\/\/example\.com\/report\.pdf/,
     );
   });
 
