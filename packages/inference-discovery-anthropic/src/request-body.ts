@@ -454,6 +454,7 @@ export function buildRequestBody(opts: {
     case "safety-classification-streaming":
     case "structured-output":
     case "structured-output-streaming":
+    case "structured-output-refusal-streaming":
       throw new Error(
         `anthropic: capability ${opts.capability} is not supported by any Anthropic model`,
       );

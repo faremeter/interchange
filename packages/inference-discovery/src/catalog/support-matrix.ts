@@ -402,6 +402,19 @@ const MATRIX: SupportEntry[] = [
     "unsupported",
     "OpenAI's first-party api.openai.com Chat Completions responses for the gpt-5 series carry no reasoning or reasoning_content field; the assistant message holds only role, content, refusal, and annotations. OpenAI exposes reasoning tokens solely through the Responses API, which this Chat-Completions plug-in does not probe. The OpenAI-protocol opencode-zen relays do surface reasoning_content on this same wire, so this is a first-party OpenAI behavior, not a protocol limitation.",
   ),
+  {
+    provider: OPENAI_PROVIDER,
+    model: "gpt-5.5",
+    capability: "structured-output-refusal-streaming",
+    outcome: "misled",
+    notes:
+      "Live gpt-5.5 stream under strict json_schema + a policy-declining " +
+      "prompt never emitted a non-null delta.refusal field. The assistant " +
+      "instead streamed schema-conformant JSON whose steps array carried a " +
+      "textual decline (content fragments; finish_reason stop). The fixture " +
+      "is retained as evidence of this wire behavior; synthetic SSE unit " +
+      "tests cover the adapter's delta.refusal parser independently.",
+  },
 ];
 
 export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;

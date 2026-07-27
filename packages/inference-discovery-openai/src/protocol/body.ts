@@ -334,6 +334,7 @@ export function buildRequestBody(args: BuildRequestBodyArgs): unknown {
     case "structured-output":
       return buildStructuredOutputBody(model, intent, false);
     case "structured-output-streaming":
+    case "structured-output-refusal-streaming":
       return buildStructuredOutputBody(model, intent, true);
     default:
       throw new Error(
