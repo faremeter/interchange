@@ -69,7 +69,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         mountPath: "/skills/demo",
         assetPackSha: "sha-pack",
         sourceCommitSha: "sha-commit",
-        source: "resolved",
       });
 
       const rows = await h.db
@@ -82,7 +81,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ),
         );
       expect(rows).toHaveLength(1);
-      expect(rows[0]?.source).toBe("resolved");
     });
   },
 );

@@ -455,8 +455,6 @@ function createMockAssetService(workflowJson: string | null): AssetService {
   return {
     createAsset: () => notImpl("createAsset"),
     populateAsset: () => notImpl("populateAsset"),
-    attachAsset: () => notImpl("attachAsset"),
-    listAgentAssets: () => notImpl("listAgentAssets"),
     readAssetBlob: async () => {
       if (workflowJson === null) {
         throw new Error("no blob");

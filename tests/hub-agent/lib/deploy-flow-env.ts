@@ -827,10 +827,6 @@ export async function startHub(
     populateAsset: () => {
       throw new Error("deploy-flow: AssetService.populateAsset not used");
     },
-    attachAsset: () => {
-      throw new Error("deploy-flow: AssetService.attachAsset not used");
-    },
-    listAgentAssets: async (_agentId: string) => [],
     readAssetBlob: async ({ assetId, path: p }) => {
       if (assetId !== ASSET_ID) {
         throw new Error(`deploy-flow: unexpected readAssetBlob ${assetId}`);

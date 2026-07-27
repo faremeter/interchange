@@ -1,4 +1,4 @@
-// In-process service for creating and attaching skill-asset repos.
+// In-process service for creating and populating skill-asset repos.
 //
 // Three responsibilities are layered here, mirroring the substrate's
 // own layering (DB row, repo bookkeeping, content validation):
@@ -8,28 +8,16 @@
 //   populateAsset  drives RepoStore.writeTree, which runs the kind
 //                  handler's validatePush before advancing the ref.
 //                  Content rejections surface as AssetValidationError.
-//   attachAsset    inserts an agent_asset row, surfacing the
-//                  (agentId, assetId) uniqueness violation (which
-//                  prevents the same asset being attached to one
-//                  agent twice) as AssetAttachError.
 //
 // The factory is closure-based to match createAgentRepoStore and
 // createRepoStore. There is no class because there is no per-instance
 // mutable state — every method is a pure function over the deps.
 
 import fs from "node:fs";
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import git from "isomorphic-git";
-import {
-  type DB,
-  pgErrorCode,
-  PG_UNIQUE_VIOLATION,
-  PG_FOREIGN_KEY_VIOLATION,
-} from "@intx/db";
-import {
-  agentAsset as agentAssetTable,
-  asset as assetTable,
-} from "@intx/db/schema";
+import { type DB, pgErrorCode, PG_UNIQUE_VIOLATION } from "@intx/db";
+import { asset as assetTable } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import type { RepoKind } from "@intx/types/sidecar";
@@ -52,21 +40,6 @@ export type Asset = {
   creatorPrincipalId: string | null;
   createdAt: Date;
   updatedAt: Date;
-};
-
-export type AccessMode = "read-only" | "read-write";
-
-export type AgentAsset = {
-  id: string;
-  agentId: string;
-  assetId: string;
-  ref: string;
-  accessMode: AccessMode;
-  createdAt: Date;
-};
-
-export type AgentAssetWithAsset = AgentAsset & {
-  asset: Pick<Asset, "id" | "tenantId" | "kind" | "name" | "displayName">;
 };
 
 export type CreateAssetParams = {
@@ -96,18 +69,9 @@ export type PopulateAssetParams = {
   principal: Principal;
 };
 
-export type AttachAssetParams = {
-  agentId: string;
-  assetId: string;
-  ref: string;
-  accessMode?: AccessMode;
-};
-
 export interface AssetService {
   createAsset(params: CreateAssetParams): Promise<Asset>;
   populateAsset(params: PopulateAssetParams): Promise<{ commitSha: string }>;
-  attachAsset(params: AttachAssetParams): Promise<AgentAsset>;
-  listAgentAssets(agentId: string): Promise<AgentAssetWithAsset[]>;
   /**
    * In-process blob read. Resolves the asset's row, then reads the blob
    * at `path` from the commit pointed to by `ref` (defaults to
@@ -180,10 +144,6 @@ export class AssetServiceError extends Error {
     this.name = "AssetServiceError";
     this.reason = reason;
   }
-}
-
-function isAccessMode(value: string): value is AccessMode {
-  return value === "read-only" || value === "read-write";
 }
 
 /**
@@ -261,22 +221,6 @@ function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
     creatorPrincipalId: row.creatorPrincipalId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
-}
-
-function rowToAgentAsset(row: typeof agentAssetTable.$inferSelect): AgentAsset {
-  if (!isAccessMode(row.accessMode)) {
-    throw new Error(
-      `agent_asset row ${row.id} has unknown accessMode ${JSON.stringify(row.accessMode)}`,
-    );
-  }
-  return {
-    id: row.id,
-    agentId: row.agentId,
-    assetId: row.assetId,
-    ref: row.ref,
-    accessMode: row.accessMode,
-    createdAt: row.createdAt,
   };
 }
 
@@ -431,83 +375,6 @@ export function createAssetService(deps: {
     }
   }
 
-  async function attachAsset(params: AttachAssetParams): Promise<AgentAsset> {
-    const id = generateId("agentAsset");
-    const accessMode = params.accessMode ?? "read-only";
-    const insertRow = {
-      id,
-      agentId: params.agentId,
-      assetId: params.assetId,
-      ref: params.ref,
-      accessMode,
-      createdAt: new Date(),
-    };
-
-    let inserted: typeof agentAssetTable.$inferSelect;
-    try {
-      const rows = await db
-        .insert(agentAssetTable)
-        .values(insertRow)
-        .returning();
-      const row = rows[0];
-      if (row === undefined) {
-        throw new Error("insert into agent_asset returned no rows");
-      }
-      inserted = row;
-    } catch (err) {
-      if (pgErrorCode(err) === PG_UNIQUE_VIOLATION) {
-        throw new AssetServiceError(
-          "duplicate_attachment",
-          `agent_asset (agentId=${params.agentId}, assetId=${params.assetId}) already attached`,
-          err,
-        );
-      }
-      if (pgErrorCode(err) === PG_FOREIGN_KEY_VIOLATION) {
-        throw new AssetServiceError(
-          "invalid_reference",
-          `agent_asset (agentId=${params.agentId}, assetId=${params.assetId}) references a missing agent or asset`,
-          err,
-        );
-      }
-      throw err;
-    }
-
-    return rowToAgentAsset(inserted);
-  }
-
-  async function listAgentAssets(
-    agentId: string,
-  ): Promise<AgentAssetWithAsset[]> {
-    // Order by (createdAt, id) so the row sequence is stable across reads
-    // — the available_skills stanza and pack fan-out both depend on a
-    // deterministic order, and Postgres does not guarantee one without
-    // an explicit orderBy.
-    const rows = await db
-      .select({
-        agentAsset: agentAssetTable,
-        asset: assetTable,
-      })
-      .from(agentAssetTable)
-      .innerJoin(assetTable, eq(agentAssetTable.assetId, assetTable.id))
-      .where(eq(agentAssetTable.agentId, agentId))
-      .orderBy(asc(agentAssetTable.createdAt), asc(agentAssetTable.id));
-
-    return rows.map((row) => {
-      const aa = rowToAgentAsset(row.agentAsset);
-      const a = rowToAsset(row.asset);
-      return {
-        ...aa,
-        asset: {
-          id: a.id,
-          tenantId: a.tenantId,
-          kind: a.kind,
-          name: a.name,
-          displayName: a.displayName,
-        },
-      };
-    });
-  }
-
   async function resolveAssetRowOrThrow(
     assetId: string,
     label: string,
@@ -608,8 +475,6 @@ export function createAssetService(deps: {
   return {
     createAsset,
     populateAsset,
-    attachAsset,
-    listAgentAssets,
     readAssetBlob,
     listAssetBlobs,
   };

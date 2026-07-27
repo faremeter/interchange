@@ -14,10 +14,7 @@ import {
 import type { KeyPair } from "@intx/types/runtime";
 import type { GrantRule } from "@intx/types/authz";
 import type { DB } from "@intx/db";
-import {
-  asset as assetTable,
-  agentAsset as agentAssetTable,
-} from "@intx/db/schema";
+import { asset as assetTable } from "@intx/db/schema";
 import {
   createAssetService,
   createRepoStore,
@@ -170,14 +167,6 @@ function makeMockDB(state: DBState): DB["db"] {
           }
           return {
             returning: () => Promise.resolve(inserted),
-            then: (resolve: (v: undefined) => unknown) => resolve(undefined),
-          };
-        }
-        if (table === agentAssetTable) {
-          // Unused in these tests; the asset-routes layer never
-          // inserts agent_asset rows.
-          return {
-            returning: () => Promise.resolve(list),
             then: (resolve: (v: undefined) => unknown) => resolve(undefined),
           };
         }

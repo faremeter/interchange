@@ -24,7 +24,6 @@ const PREFIXES = {
   inferenceTurn: "itn_",
   turnPart: "tp_",
   asset: "ast_",
-  agentAsset: "aas_",
   gitToken: "gtk_",
   deployment: "dep_",
   approval: "apr_",

@@ -125,8 +125,6 @@ function createStubAssetService(): AssetService {
   return {
     createAsset: () => notImpl("createAsset"),
     populateAsset: () => notImpl("populateAsset"),
-    attachAsset: () => notImpl("attachAsset"),
-    listAgentAssets: () => notImpl("listAgentAssets"),
     readAssetBlob: () => notImpl("readAssetBlob"),
     listAssetBlobs: () => notImpl("listAssetBlobs"),
   };

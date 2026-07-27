@@ -95,11 +95,9 @@ for the authoritative type shapes.
 ### Asset service
 
 - `createAssetService` / `AssetService`, `AssetServiceError`,
-  `DEFAULT_ASSET_REF`, and the supporting types `Asset`, `AgentAsset`,
-  `AgentAssetWithAsset`, `AccessMode`, `CreateAssetParams`,
-  `PopulateAssetParams`, `AttachAssetParams`,
-  `AssetServiceErrorReason`, `ReadAssetBlobParams`,
-  `ListAssetBlobsParams`.
+  `DEFAULT_ASSET_REF`, and the supporting types `Asset`,
+  `CreateAssetParams`, `PopulateAssetParams`, `AssetServiceErrorReason`,
+  `ReadAssetBlobParams`, `ListAssetBlobsParams`.
 
 ### Skills stanza and credential push
 

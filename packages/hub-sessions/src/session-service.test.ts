@@ -260,11 +260,9 @@ function createFakeRepoStore(
 
 type CapturedSessionAssetRow = {
   instanceId: string;
-  agentAssetId: string | null;
   mountPath: string;
   assetPackSha: string;
   sourceCommitSha: string;
-  source: "direct" | "resolved";
 };
 
 const AGENT_ADDRESS = "agent-1@test.local";
@@ -591,9 +589,8 @@ describe("SessionService", () => {
     // Build a single-tarball asset registry, fake the DB query path
     // the session service walks (`listAssetsForTenant` walks
     // `tenant.findFirst` + `asset.findMany`), and assert the fan-out
-    // emits a session_asset row whose `source` is "resolved" and
-    // whose `agentAssetId` is null — the contract the audit split
-    // introduced.
+    // materializes a session_asset row for the resolver-derived pack at
+    // the expected mount path and source commit.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ss-resolved-"));
     const stagingDir = path.join(dir, "tools-resolved-1.0.0");
     const pkgDir = path.join(stagingDir, "package");
@@ -622,11 +619,6 @@ describe("SessionService", () => {
       populateAsset: () => {
         throw new Error("not used");
       },
-      attachAsset: () => {
-        throw new Error("not used");
-      },
-      // No direct attachments — the session has only the resolver pin.
-      listAgentAssets: async (_agentId: string) => [],
       readAssetBlob: async ({ assetId, path: p }) => {
         if (assetId !== RESOLVED_ASSET_ID) {
           throw new Error(`unexpected assetId: ${assetId}`);
@@ -728,8 +720,6 @@ describe("SessionService", () => {
     expect(captured).toHaveLength(1);
     const row = captured[0];
     if (row === undefined) throw new Error("unreachable");
-    expect(row.agentAssetId).toBeNull();
-    expect(row.source).toBe("resolved");
     expect(row.mountPath).toBe(`package-registries/${RESOLVED_ASSET_NAME}/`);
     expect(row.sourceCommitSha).toBe("e".repeat(40));
     expect(row.instanceId).toBe(INSTANCE_ID);
@@ -797,10 +787,6 @@ describe("SessionService", () => {
       populateAsset: () => {
         throw new Error("not used");
       },
-      attachAsset: () => {
-        throw new Error("not used");
-      },
-      listAgentAssets: async (_agentId: string) => [],
       readAssetBlob: async ({ assetId, path: p }) => {
         const t = tarballByAsset.get(assetId);
         if (t === undefined) throw new Error(`unexpected assetId: ${assetId}`);

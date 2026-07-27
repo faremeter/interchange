@@ -4,10 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { DB } from "@intx/db";
-import {
-  agentAsset as agentAssetTable,
-  asset as assetTable,
-} from "@intx/db/schema";
+import { asset as assetTable } from "@intx/db/schema";
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
 
@@ -38,9 +35,8 @@ import { workflowKindHandler, workflowAuthorize } from "./workflow-kind";
 // stub reproduces the shape the service must walk to find the code.
 //
 // The where-clauses passed by drizzle's `eq` are opaque values; rather
-// than inspect them, the stub exposes `nextFindFirstAssetId` and
-// `nextSelectAgentId` setters that the tests use to tell the stub which
-// id the next query targets.
+// than inspect them, the stub exposes a `nextFindFirstAssetId` setter
+// that the tests use to tell the stub which id the next query targets.
 // ---------------------------------------------------------------------------
 
 type AssetRow = {
@@ -52,15 +48,6 @@ type AssetRow = {
   creatorPrincipalId: string | null;
   createdAt: Date;
   updatedAt: Date;
-};
-
-type AgentAssetRow = {
-  id: string;
-  agentId: string;
-  assetId: string;
-  ref: string;
-  accessMode: string;
-  createdAt: Date;
 };
 
 // A postgres-js-style driver error: carries the SQLSTATE on `code`.
@@ -85,43 +72,19 @@ class UniqueViolation extends Error {
   }
 }
 
-class ForeignKeyViolation extends Error {
-  constructor(constraint: string) {
-    const driver = new PostgresError(
-      "23503",
-      `insert violates foreign key constraint "${constraint}"`,
-    );
-    super(`Failed query: insert`, { cause: driver });
-  }
-}
-
 type DBStub = {
   db: DB["db"];
   assets: AssetRow[];
-  agentAssets: AgentAssetRow[];
   nextFindFirstAssetId: (id: string) => void;
-  nextSelectAgentId: (id: string) => void;
 };
 
 function makeDB(): DBStub {
   const assets: AssetRow[] = [];
-  const agentAssets: AgentAssetRow[] = [];
 
   let lastFindFirstId: string | null = null;
-  let lastSelectAgentId: string | null = null;
 
-  function isAssetRow(row: AssetRow | AgentAssetRow): row is AssetRow {
-    return "tenantId" in row && "kind" in row;
-  }
-
-  function insertReturning(
-    table: unknown,
-    row: AssetRow | AgentAssetRow,
-  ): Promise<unknown[]> {
+  function insertReturning(table: unknown, row: AssetRow): Promise<unknown[]> {
     if (table === assetTable) {
-      if (!isAssetRow(row)) {
-        throw new Error("insert into asset received non-asset row shape");
-      }
       if (
         assets.some(
           (a) =>
@@ -133,25 +96,6 @@ function makeDB(): DBStub {
         return Promise.reject(new UniqueViolation("asset_tenant_kind_name"));
       }
       assets.push(row);
-      return Promise.resolve([row]);
-    }
-    if (table === agentAssetTable) {
-      if (isAssetRow(row)) {
-        throw new Error("insert into agent_asset received asset row shape");
-      }
-      if (!assets.some((a) => a.id === row.assetId)) {
-        return Promise.reject(
-          new ForeignKeyViolation("agent_asset_asset_id_asset_id_fk"),
-        );
-      }
-      if (
-        agentAssets.some(
-          (a) => a.agentId === row.agentId && a.assetId === row.assetId,
-        )
-      ) {
-        return Promise.reject(new UniqueViolation("agent_asset_agent_asset"));
-      }
-      agentAssets.push(row);
       return Promise.resolve([row]);
     }
     throw new Error(`unexpected insert table`);
@@ -166,32 +110,12 @@ function makeDB(): DBStub {
     return Promise.resolve(match);
   }
 
-  function joinAgentAssets(): Promise<unknown[]> {
-    if (lastSelectAgentId === null) {
-      return Promise.resolve([]);
-    }
-    const id = lastSelectAgentId;
-    lastSelectAgentId = null;
-    const joined = agentAssets
-      .filter((aa) => aa.agentId === id)
-      .map((aa) => {
-        const a = assets.find((x) => x.id === aa.assetId);
-        if (a === undefined) {
-          throw new Error(
-            `inconsistent stub: agent_asset ${aa.id} references missing asset ${aa.assetId}`,
-          );
-        }
-        return { agentAsset: aa, asset: a };
-      });
-    return Promise.resolve(joined);
-  }
-
   /* eslint-disable @typescript-eslint/no-unsafe-type-assertion --
    * drizzle PgDatabase type cannot be structurally satisfied in tests */
   const db = {
     insert(t: unknown) {
       return {
-        values(row: AssetRow | AgentAssetRow) {
+        values(row: AssetRow) {
           return {
             returning: () => insertReturning(t, row),
           };
@@ -203,29 +127,14 @@ function makeDB(): DBStub {
         findFirst: (_args: { where: unknown }) => findFirstAsset(),
       },
     },
-    select(_cols: unknown) {
-      return {
-        from: (_t: unknown) => ({
-          innerJoin: (_t2: unknown, _on: unknown) => ({
-            where: (_w: unknown) => ({
-              orderBy: (..._order: unknown[]) => joinAgentAssets(),
-            }),
-          }),
-        }),
-      };
-    },
   } as unknown as DB["db"];
   /* eslint-enable @typescript-eslint/no-unsafe-type-assertion */
 
   return {
     db,
     assets,
-    agentAssets,
     nextFindFirstAssetId: (id) => {
       lastFindFirstId = id;
-    },
-    nextSelectAgentId: (id) => {
-      lastSelectAgentId = id;
     },
   };
 }
@@ -586,113 +495,6 @@ describe("AssetService", () => {
       if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
       expect(err.reason).toBe("path_violation");
       expect(err.message).toContain("path_violation:");
-    });
-  });
-
-  describe("attachAsset", () => {
-    test("inserts an agent_asset row", async () => {
-      const asset = await service.createAsset({
-        tenantId: "tnt_1",
-        kind: "skill",
-        name: "greet",
-      });
-
-      const aa = await service.attachAsset({
-        agentId: "agt_1",
-        assetId: asset.id,
-        ref: "refs/heads/main",
-        accessMode: "read-only",
-      });
-
-      expect(aa.id).toMatch(/^aas_/);
-      expect(aa.agentId).toBe("agt_1");
-      expect(aa.assetId).toBe(asset.id);
-      expect(aa.accessMode).toBe("read-only");
-      expect(dbFixture.agentAssets).toHaveLength(1);
-    });
-
-    test("defaults accessMode to read-only when omitted", async () => {
-      const asset = await service.createAsset({
-        tenantId: "tnt_1",
-        kind: "skill",
-        name: "greet",
-      });
-
-      const aa = await service.attachAsset({
-        agentId: "agt_1",
-        assetId: asset.id,
-        ref: "refs/heads/main",
-      });
-      expect(aa.accessMode).toBe("read-only");
-    });
-
-    test("surfaces a missing assetId reference as invalid_reference", async () => {
-      const err = await service
-        .attachAsset({
-          agentId: "agt_1",
-          assetId: "ast_missing",
-          ref: "refs/heads/main",
-        })
-        .catch((e: unknown) => e);
-
-      expect(err).toBeInstanceOf(AssetServiceError);
-      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
-      expect(err.reason).toBe("invalid_reference");
-      expect(dbFixture.agentAssets).toHaveLength(0);
-    });
-
-    test("surfaces duplicate (agentId, assetId) as duplicate_attachment", async () => {
-      const asset = await service.createAsset({
-        tenantId: "tnt_1",
-        kind: "skill",
-        name: "greet",
-      });
-
-      await service.attachAsset({
-        agentId: "agt_1",
-        assetId: asset.id,
-        ref: "refs/heads/main",
-      });
-
-      const err = await service
-        .attachAsset({
-          agentId: "agt_1",
-          assetId: asset.id,
-          ref: "refs/heads/main",
-        })
-        .catch((e: unknown) => e);
-
-      expect(err).toBeInstanceOf(AssetServiceError);
-      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
-      expect(err.reason).toBe("duplicate_attachment");
-      expect(dbFixture.agentAssets).toHaveLength(1);
-    });
-  });
-
-  describe("listAgentAssets", () => {
-    test("returns joined rows including asset.name and asset.kind", async () => {
-      const asset = await service.createAsset({
-        tenantId: "tnt_1",
-        kind: "skill",
-        name: "greet",
-        displayName: "Greeting",
-      });
-      await service.attachAsset({
-        agentId: "agt_1",
-        assetId: asset.id,
-        ref: "refs/heads/main",
-      });
-
-      dbFixture.nextSelectAgentId("agt_1");
-      const rows = await service.listAgentAssets("agt_1");
-      expect(rows).toHaveLength(1);
-      const row = rows[0];
-      if (row === undefined) throw new Error("unreachable");
-      expect(row.agentId).toBe("agt_1");
-      expect(row.asset.id).toBe(asset.id);
-      expect(row.asset.kind).toBe("skill");
-      expect(row.asset.name).toBe("greet");
-      expect(row.asset.displayName).toBe("Greeting");
     });
   });
 

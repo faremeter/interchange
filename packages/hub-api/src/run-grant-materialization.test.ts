@@ -93,8 +93,6 @@ function mockAssetService(json: string): AssetService {
   return {
     createAsset: () => notImpl("createAsset"),
     populateAsset: () => notImpl("populateAsset"),
-    attachAsset: () => notImpl("attachAsset"),
-    listAgentAssets: () => notImpl("listAgentAssets"),
     readAssetBlob: async () => new TextEncoder().encode(json),
   } as unknown as AssetService;
 }

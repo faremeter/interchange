@@ -20,10 +20,7 @@ import {
 import { base64Encode, hexEncode } from "@intx/types";
 import { generateId } from "@intx/hub-common";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
-import {
-  sessionAsset as sessionAssetTable,
-  type SessionAssetSource,
-} from "@intx/db/schema";
+import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type {
   CryptoProvider,
   HarnessConfig,
@@ -282,23 +279,12 @@ export type SessionServiceDeps = {
   };
 };
 
-// Hub-side principal for reading skill repos. Skills are signed by the
-// hub itself, and listAgentAssets is being called on the hub to assemble
-// packs for delivery to a sidecar — so the hub principal is correct.
+// Hub-side principal for reading asset repos. Assets are signed by the
+// hub itself, and the launch fan-out reads them on the hub to assemble
+// packs for delivery to a sidecar -- so the hub principal is correct.
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
 
 type ResolvedAttachment = {
-  /** The `agent_asset` row id when this attachment came from an
-   * explicit `agent_asset` attachment; `null` when it came from a
-   * resolver-derived package-registry asset that has no per-agent
-   * attachment row. The `session_asset.source` column distinguishes
-   * the two paths in the audit record. */
-  agentAssetId: string | null;
-  /** Which materialization path produced this attachment.
-   * `"direct"` mirrors `agentAssetId !== null`; `"resolved"` mirrors
-   * `agentAssetId === null`. The session-asset row carries the
-   * resolved value so audit queries can filter without joining. */
-  source: SessionAssetSource;
   mountPath: string;
   sourceCommitSha: string;
   repoId: RepoId;
@@ -586,7 +572,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           const mountPath = `package-registries/${asset.name}/`;
           assetMounts.set(assetId, mountPath);
           manifestAssetAttachments.push(
-            await resolveDirectAssetAttachment({
+            await resolveAssetAttachment({
               asset,
               mountPath,
             }),
@@ -1058,30 +1044,17 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       throw new Error("sendAttachmentPack invoked without a db handle");
     }
 
-    const {
-      agentAssetId,
-      source,
-      mountPath,
-      sourceCommitSha,
-      repoId,
-      pack,
-      ref,
-    } = attachment;
+    const { mountPath, sourceCommitSha, repoId, pack, ref } = attachment;
 
     const assetPackSha = await createPackSha(pack);
 
     // Insert manifest row before the pack send so we never end up in
-    // the materialized-without-manifest state. Both direct and
-    // resolver-derived materializations write a row; the `source`
-    // column records which path produced it, and `agentAssetId` is
-    // null for resolver-derived rows.
+    // the materialized-without-manifest state.
     await db.insert(sessionAssetTable).values({
       instanceId,
-      agentAssetId,
       mountPath,
       assetPackSha,
       sourceCommitSha,
-      source,
       materializedAt: new Date(),
     });
 
@@ -1220,13 +1193,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   }
 
   /**
-   * Build a `ResolvedAttachment` for an asset the resolver picked
-   * from but which has no per-agent attachment row. The pack is read
-   * from the asset's main ref (the same ref the resolver consumed
-   * tarballs from), and `agentAssetId` is `null` so the fan-out path
-   * knows to skip the `session_asset` insert.
+   * Build a `ResolvedAttachment` for an asset the tool-package resolver
+   * picked from. The pack is read from the asset's main ref (the same
+   * ref the resolver consumed tarballs from).
    */
-  async function resolveDirectAssetAttachment(args: {
+  async function resolveAssetAttachment(args: {
     asset: Asset;
     mountPath: string;
   }): Promise<ResolvedAttachment> {
@@ -1248,8 +1219,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         DEFAULT_ASSET_REF,
       );
     return {
-      agentAssetId: null,
-      source: "resolved",
       mountPath: args.mountPath,
       sourceCommitSha,
       repoId,
