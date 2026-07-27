@@ -246,6 +246,31 @@ const STRUCTURED_OUTPUT: CapabilityIntent = {
   },
 };
 
+// OpenAI strict-mode refusal probe. Reuses the safety-classification
+// base prompt (single source of truth for the classifier trigger) and
+// pairs it with strict json_schema so the capture can observe
+// delta.refusal if the classifier declines. Classifier-driven: may
+// produce a real refusal stream, compliant JSON, or an HTTP
+// invalid_prompt error. Discovery-only; not a production capability.
+const STRUCTURED_OUTPUT_REFUSAL_STREAMING: CapabilityIntent = {
+  prompt:
+    SAFETY_CLASSIFICATION_PROBE.prompt +
+    " Return the procedure as schema-conformant JSON only.",
+  responseFormat: {
+    kind: "json-schema",
+    name: "procedure",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        steps: { type: "array", items: { type: "string" } },
+      },
+      required: ["steps"],
+    },
+  },
+};
+
 const INTENTS_TABLE: Record<Capability, CapabilityIntent> = {
   "plain-text": PLAIN_TEXT,
   "plain-text-streaming": PLAIN_TEXT,
@@ -278,6 +303,7 @@ const INTENTS_TABLE: Record<Capability, CapabilityIntent> = {
   "safety-classification-streaming": SAFETY_CLASSIFICATION_PROBE,
   "structured-output": STRUCTURED_OUTPUT,
   "structured-output-streaming": STRUCTURED_OUTPUT,
+  "structured-output-refusal-streaming": STRUCTURED_OUTPUT_REFUSAL_STREAMING,
 };
 
 export const INTENTS: Readonly<Record<Capability, CapabilityIntent>> =

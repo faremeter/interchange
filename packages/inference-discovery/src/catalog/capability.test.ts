@@ -4,7 +4,7 @@ import { CAPABILITIES, Capability } from "./capability";
 
 describe("CAPABILITIES vocabulary", () => {
   test("declares exactly 31 capabilities", () => {
-    expect(CAPABILITIES.length).toBe(31);
+    expect(CAPABILITIES.length).toBe(32);
   });
 
   test("contains no duplicate names", () => {
