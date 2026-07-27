@@ -17,6 +17,10 @@ export {
   BackfillPreflightError,
   type BackfillSummary,
   type UndeployableAgent,
+  materializeFoldedBodies,
+  MaterializeError,
+  type MaterializeSummary,
+  type UnmaterializableDefinition,
 } from "./agent-fold-backfill";
 export {
   createEventCollectorRegistry,

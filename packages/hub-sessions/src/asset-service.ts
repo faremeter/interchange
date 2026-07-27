@@ -129,8 +129,11 @@ export type AssetServiceErrorReason =
 // character set; validate at the createAsset boundary so a bad name
 // fails at creation time rather than at materialization time. Names
 // must be lowercase-kebab: lowercase letters, digits, hyphens, with
-// no leading or trailing hyphen.
-const ASSET_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// no leading or trailing hyphen. Exported so a caller deriving a name
+// (the agent-fold materializer) asserts the shape at its own boundary
+// rather than discovering a violation three layers in as a generic
+// `invalid_name`.
+export const ASSET_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export class AssetServiceError extends Error {
   readonly reason: AssetServiceErrorReason;

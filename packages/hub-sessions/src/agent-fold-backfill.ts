@@ -1,19 +1,34 @@
-// Core of the run-once agent->workflow-definition fold.
+// Core of the run-once agent->workflow-definition fold, in two phases.
 //
-// Lifts each legacy `agent` (and each native `workflow`-kind asset) into a
-// `workflow_definition` + `workflow_definition_version` row. The fold is ROWS
-// ONLY: the definition body is NOT persisted here. An agent-origin definition's
-// `asset_id` is null and its body is synthesized on the fly at deploy time from
-// the still-live `agent` row (via `synthesizeFoldedWorkflow`), so there is one
-// source of truth during the transition and no drifting frozen copy. This
-// module therefore needs only a `db` handle -- no RepoStore, no asset writes.
+// Phase 1 -- the rows-only fold (`runBackfill`). Lifts each legacy `agent`
+// (and each native `workflow`-kind asset) into a `workflow_definition` +
+// `workflow_definition_version` row. This phase is ROWS ONLY: the definition
+// body is NOT persisted. An agent-origin definition's `asset_id` is null and
+// its body is synthesized on the fly at deploy time from the still-live `agent`
+// row (via `synthesizeFoldedWorkflow`), so there is one source of truth during
+// the transition and no drifting frozen copy. It needs only a `db` handle --
+// no RepoStore, no asset writes -- which is what keeps it cheap to re-run
+// repeatedly while the fold rolls out.
+//
+// Phase 2 -- body materialization (`materializeFoldedBodies`). The one-time
+// cliff run just before the `agent` table is dropped: it freezes each folded
+// definition's synthesized `workflow.json` into a `workflow`-kind asset and
+// sets `workflow_definition.asset_id`, so the body survives the agent row's
+// retirement and a folded definition hydrates exactly like a native one. This
+// phase deliberately mints the frozen copy phase 1 avoided -- it needs an
+// `AssetService` (a RepoStore) and is not part of `runBackfill`, so the
+// transitional re-runs never carry the repo substrate.
+//
+// The two phases share `assembleFoldedInput`, the single resolution of an
+// agent's fields into the synthesizer's input, so the body phase 2 freezes is
+// assembled identically to the one phase 1's preflight blesses.
 //
 // It lives here rather than beside its `bin/db-backfill` entry so both the
 // entry and the deploy path can share the same agent->definition fold: the
 // preflight runs the exact synthesis the deploy-time hydrate will run, and a
 // tests/db suite can exercise it against a real database.
 
-import { eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 
 import type { DB } from "@intx/db";
 import {
@@ -34,9 +49,23 @@ import type { GrantStore } from "@intx/types/authz";
 import { generateId } from "@intx/hub-common";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import {
+  ASSET_NAME_PATTERN,
+  AssetServiceError,
+  DEFAULT_ASSET_REF,
+  type AssetService,
+} from "./asset-service";
+import type { Principal } from "./repo-store";
+import { WORKFLOW_JSON_PATH } from "./workflow-kind";
+import {
   deriveDeploymentAddress,
   synthesizeFoldedWorkflow,
+  type FoldedWorkflowInput,
 } from "@intx/workflow-deploy";
+
+// The hub principal authorized to write a `workflow`-kind asset repo
+// (`workflowAuthorize` grants `kind: "hub"` full write). Materialization writes
+// the frozen body as the hub, matching the native workflow deploy path.
+const HUB_PRINCIPAL: Principal = { kind: "hub" };
 
 /** An agent that cannot be folded, with the reason its dry-run synthesis threw. */
 export interface UndeployableAgent {
@@ -65,6 +94,38 @@ export interface BackfillSummary {
   readonly agentsSkipped: number;
   readonly workflowAssetsFolded: number;
   readonly workflowAssetsSkipped: number;
+}
+
+/** A folded definition whose body could not be materialized, with the reason. */
+export interface UnmaterializableDefinition {
+  readonly definitionId: string;
+  readonly agentId: string;
+  readonly name: string;
+  readonly reason: string;
+}
+
+/**
+ * Thrown by `materializeFoldedBodies` when one or more folded definitions could
+ * not have their body frozen. Carries the complete manifest so the whole
+ * failure set surfaces in one pass. Unlike the rows-only preflight this is NOT
+ * all-or-nothing: definitions that did materialize stay committed (freezing a
+ * body is additive and independent), so this reports the stragglers the
+ * operator must resolve before the agent table can be dropped, not a rollback.
+ */
+export class MaterializeError extends Error {
+  constructor(
+    readonly unmaterializable: readonly UnmaterializableDefinition[],
+  ) {
+    super(
+      `agent fold materialize: ${unmaterializable.length} folded definition(s) could not be materialized`,
+    );
+    this.name = "MaterializeError";
+  }
+}
+
+export interface MaterializeSummary {
+  readonly bodiesMaterialized: number;
+  readonly bodiesSkipped: number;
 }
 
 /**
@@ -181,19 +242,21 @@ async function foldAgents(
 }
 
 /**
- * A faithful dry run of the deploy-time transform, so an agent that cannot be
- * synthesized surfaces in the preflight rather than at deploy. Resolves the
- * inference preferences (throws when the requirements resolve to no source) and
- * runs the synthesizer (throws on a null system prompt). The synthesized
- * definition is discarded -- the fold persists no body; the value of running it
- * here is the throw.
+ * Resolve a legacy agent's fields into the synthesizer's input: the impure
+ * resolution (inference preferences against the tenant catalog + creator
+ * grants, the deployment mail address) the pure `synthesizeFoldedWorkflow`
+ * requires supplied. Shared by the preflight (which synthesizes-to-throw) and
+ * materialization (which synthesizes-to-persist) so the body a launch
+ * eventually hydrates is assembled identically to the one the preflight
+ * blesses. Throws when the requirements resolve to no source (or collapse
+ * ambiguously) or the tenant has no domain.
  */
-async function synthesizeForPreflight(
+async function assembleFoldedInput(
   db: DB["db"],
   grantStore: GrantStore,
   domains: Map<string, string>,
   a: ReturnType<typeof parseAgentRow>,
-): Promise<void> {
+): Promise<FoldedWorkflowInput> {
   // A null requirement list flows through as `[]`, which is exactly what the
   // resolver rejects (`no_requirements`) -- the fail-loud path, not a fallback.
   const requirements = a.modelRequirements ?? [];
@@ -213,7 +276,7 @@ async function synthesizeForPreflight(
     throw new Error(`tenant ${a.tenantId} has no domain`);
   }
 
-  synthesizeFoldedWorkflow({
+  return {
     workflowId: `wf_${a.id}`,
     mailAddress: deriveDeploymentAddress({
       deploymentId: a.id,
@@ -226,7 +289,26 @@ async function synthesizeForPreflight(
     ...(a.grantRequirements !== null
       ? { grantRequirements: a.grantRequirements }
       : {}),
-  });
+  };
+}
+
+/**
+ * A faithful dry run of the deploy-time transform, so an agent that cannot be
+ * synthesized surfaces in the preflight rather than at deploy. Runs the
+ * synthesizer over the assembled input (which throws when the requirements
+ * resolve to no source) -- it throws too on a null system prompt. The
+ * synthesized definition is discarded -- the fold persists no body; the value
+ * of running it here is the throw.
+ */
+async function synthesizeForPreflight(
+  db: DB["db"],
+  grantStore: GrantStore,
+  domains: Map<string, string>,
+  a: ReturnType<typeof parseAgentRow>,
+): Promise<void> {
+  synthesizeFoldedWorkflow(
+    await assembleFoldedInput(db, grantStore, domains, a),
+  );
 }
 
 async function tenantDomains(db: DB["db"]): Promise<Map<string, string>> {
@@ -264,4 +346,192 @@ async function foldWorkflowAssets(
     }
   }
   return { workflowAssetsFolded, workflowAssetsSkipped };
+}
+
+/**
+ * The deterministic `workflow`-kind asset name a folded agent's body is stored
+ * under. Keyed on the globally-unique agent id, so it never collides across
+ * tenants and a re-run resolves the same asset. `createAsset` requires
+ * lowercase-kebab; agent ids are `agt_<hex>`, so replacing `_` with `-` yields
+ * a valid name. Asserting the shape here fails loud if a future id shape ever
+ * violates the assumption, rather than surfacing three layers in as a generic
+ * `invalid_name`.
+ */
+function foldedAssetName(agentId: string): string {
+  const name = `folded-${agentId.replace(/_/g, "-")}`;
+  if (!ASSET_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `cannot derive a workflow asset name for agent ${agentId}: ` +
+        `${JSON.stringify(name)} is not a valid lowercase-kebab asset name`,
+    );
+  }
+  return name;
+}
+
+/**
+ * Resolve the `workflow`-kind asset that holds a folded agent's body, creating
+ * it if absent. Find-or-create rather than create-then-catch: the normal
+ * re-run path looks the asset up by its deterministic `(tenant, kind, name)`
+ * and reuses it, so a crash between a prior run's asset creation and its
+ * `asset_id` write is recovered without minting a second asset row. The
+ * `duplicate_asset` catch is demoted to a guard against a concurrent racer
+ * between this lookup and the create.
+ */
+async function findOrCreateWorkflowAsset(
+  db: DB["db"],
+  assetService: AssetService,
+  a: ReturnType<typeof parseAgentRow>,
+): Promise<string> {
+  const name = foldedAssetName(a.id);
+
+  const existing = await db
+    .select({ id: asset.id })
+    .from(asset)
+    .where(
+      and(
+        eq(asset.tenantId, a.tenantId),
+        eq(asset.kind, "workflow"),
+        eq(asset.name, name),
+      ),
+    )
+    .limit(1);
+  const found = existing[0];
+  if (found !== undefined) {
+    return found.id;
+  }
+
+  try {
+    const created = await assetService.createAsset({
+      tenantId: a.tenantId,
+      kind: "workflow",
+      name,
+      displayName: a.name,
+      creatorPrincipalId: a.creatorPrincipalId,
+    });
+    return created.id;
+  } catch (err) {
+    if (err instanceof AssetServiceError && err.reason === "duplicate_asset") {
+      // A racer created it between the lookup and the create; read back the
+      // winner rather than fail.
+      const raced = await db
+        .select({ id: asset.id })
+        .from(asset)
+        .where(
+          and(
+            eq(asset.tenantId, a.tenantId),
+            eq(asset.kind, "workflow"),
+            eq(asset.name, name),
+          ),
+        )
+        .limit(1);
+      const winner = raced[0];
+      if (winner === undefined) {
+        throw new Error(
+          `duplicate_asset for folded workflow ${name} but no row found on read-back`,
+        );
+      }
+      return winner.id;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Freeze each folded definition's body into a `workflow`-kind asset -- the
+ * one-time cliff run just before the `agent` table is dropped. For every folded
+ * definition whose `asset_id` is still null, re-assemble the synthesizer input
+ * (identically to the preflight), synthesize the `workflow.json`, write it into
+ * the asset repo, and bind the definition to that asset. Idempotent: a
+ * definition that already has an `asset_id` is skipped, and the asset write plus
+ * the `asset_id` set are ordered so a re-run recovers a partial prior run.
+ *
+ * Bodies are materialized independently; a failure on one collects into the
+ * `MaterializeError` manifest without rolling back the ones that succeeded.
+ *
+ * A folded definition may mirror several `workflow_definition_version` rows, but
+ * this writes a single `workflow.json` at the asset's HEAD: there is no
+ * version->blob mapping anywhere (hydrate reads a fixed path at HEAD with no
+ * version argument), and the agent row only ever had one current body, so the
+ * historical versions never carried distinct bodies to freeze. All versions
+ * hydrate from the one HEAD body.
+ *
+ * The frozen body snapshots the agent's credential-*authorized* candidate set
+ * at fold time. After the launch path is rewired to hydrate from the asset, a
+ * folded agent behaves like a native definition: its candidate set is fixed and
+ * only credentials re-attach per deploy. This is the intended convergence, but
+ * it means a credential grant added *after* the fold no longer surfaces the way
+ * it does for a live agent instance, which re-resolves its full candidate set
+ * on every launch. That is an accepted semantic change, not a regression.
+ */
+export async function materializeFoldedBodies(
+  db: DB["db"],
+  assetService: AssetService,
+): Promise<MaterializeSummary> {
+  const pending = await db
+    .select({ definitionId: workflowDefinition.id, agentRow: agent })
+    .from(workflowDefinition)
+    .innerJoin(agent, eq(agent.id, workflowDefinition.originAgentId))
+    .where(
+      and(
+        isNull(workflowDefinition.assetId),
+        isNotNull(workflowDefinition.originAgentId),
+      ),
+    );
+
+  const alreadyMaterialized = await db
+    .select({ id: workflowDefinition.id })
+    .from(workflowDefinition)
+    .where(
+      and(
+        isNotNull(workflowDefinition.assetId),
+        isNotNull(workflowDefinition.originAgentId),
+      ),
+    );
+  const bodiesSkipped = alreadyMaterialized.length;
+
+  const grantStore = createGrantStore(db);
+  const domains = await tenantDomains(db);
+  const unmaterializable: UnmaterializableDefinition[] = [];
+  let bodiesMaterialized = 0;
+
+  for (const row of pending) {
+    const a = parseAgentRow(row.agentRow);
+    try {
+      const input = await assembleFoldedInput(db, grantStore, domains, a);
+      const definition = synthesizeFoldedWorkflow(input);
+      const body = JSON.stringify(definition, null, 2);
+      const assetId = await findOrCreateWorkflowAsset(db, assetService, a);
+      await assetService.populateAsset({
+        assetId,
+        ref: DEFAULT_ASSET_REF,
+        tree: {
+          files: { [WORKFLOW_JSON_PATH]: body },
+          message: `Materialize folded agent ${a.id} workflow body`,
+        },
+        principal: HUB_PRINCIPAL,
+      });
+      // Bind the definition to the asset LAST: the body is proven written
+      // before the definition points at it, so a crash before this leaves the
+      // definition unmaterialized (recovered next run) rather than pointing at
+      // an asset whose body never landed.
+      await db
+        .update(workflowDefinition)
+        .set({ assetId })
+        .where(eq(workflowDefinition.id, row.definitionId));
+      bodiesMaterialized += 1;
+    } catch (err) {
+      unmaterializable.push({
+        definitionId: row.definitionId,
+        agentId: a.id,
+        name: a.name,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (unmaterializable.length > 0) {
+    throw new MaterializeError(unmaterializable);
+  }
+
+  return { bodiesMaterialized, bodiesSkipped };
 }

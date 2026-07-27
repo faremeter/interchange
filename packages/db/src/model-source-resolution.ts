@@ -275,7 +275,10 @@ export async function resolveModelSources(
  * A requirement set that resolves to no source is a hard failure. A folded
  * agent whose model is unresolvable is undeployable, so this raises rather
  * than synthesizing an empty preference list that would silently strip the
- * agent's inference.
+ * agent's inference. It also raises when the resolved sources are not
+ * injective on `(provider, model)` -- the projection would otherwise freeze
+ * an ambiguous preference list whose lost `offering.id` distinctions cannot be
+ * recovered after the agent's columns are dropped.
  */
 export async function resolveInferencePreferences(
   db: DB["db"],
@@ -294,10 +297,36 @@ export async function resolveInferencePreferences(
       `cannot resolve inference preferences for the folded definition: ${resolution.reason}`,
     );
   }
-  return resolution.sources.map((source) => ({
+
+  // The projection to `{ provider (plugin), model }` drops the `offering.id`
+  // that keys each resolved source. Two distinct offerings can share a
+  // provider plugin and canonical model -- the catalog permits two
+  // `model_provider` rows on the same plugin (uniqueness is on the provider
+  // name), each offering the same model -- so the projection is only
+  // well-defined when the resolved sources are injective on `(provider,
+  // model)`. If they collapse, the folded definition's inference preferences
+  // cannot distinguish which offering each entry meant, and once the agent's
+  // columns are dropped that distinction is unrecoverable. Refuse to
+  // synthesize an ambiguous preference list: fail loud so the collapse
+  // surfaces in the fold/materialize manifest rather than freezing silently.
+  const preferences = resolution.sources.map((source) => ({
     provider: source.provider,
     model: source.model,
   }));
+  const seen = new Set<string>();
+  for (const preference of preferences) {
+    const key = `${preference.provider} ${preference.model}`;
+    if (seen.has(key)) {
+      throw new Error(
+        `cannot resolve inference preferences for the folded definition: ` +
+          `the model resolution is not injective on (provider, model) -- ` +
+          `two offerings collapse to (${preference.provider}, ${preference.model}); ` +
+          `a folded agent requires a distinguishable inference preference per source`,
+      );
+    }
+    seen.add(key);
+  }
+  return preferences;
 }
 
 /**
