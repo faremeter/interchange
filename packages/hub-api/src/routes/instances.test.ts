@@ -1688,6 +1688,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       modelProvider: makeCatalogProvider(),
       modelOffering: makeCatalogOffering(),
       inserts,
+      foldedDefinition: { id: "wfd_grant_1" },
     });
 
     const app = createApp({
@@ -1733,22 +1734,21 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       origin: "creator",
     });
 
-    const instanceInserts = inserts.filter((i) => i.table === "agent_instance");
-    expect(instanceInserts).toHaveLength(1);
-    const instanceRow = instanceInserts[0]?.rows[0];
-    expect(instanceRow).toBeDefined();
-    const instanceId = instanceRow?.["id"];
+    const runInserts = inserts.filter((i) => i.table === "workflow_run");
+    expect(runInserts).toHaveLength(1);
+    const runRow = runInserts[0]?.rows[0];
+    expect(runRow).toBeDefined();
+    const instanceId = runRow?.["id"];
     if (typeof instanceId !== "string") {
       throw new Error(
-        "expected captured agent_instance insert to carry a string id",
+        "expected captured workflow_run insert to carry a string id",
       );
     }
     expect(stateGrant?.["resource"]).toBe(`agent-state:${instanceId}`);
 
-    // A legacy instance's principal stays agent-kind (only a folded run flips
-    // to workflow).
+    // A folded run's principal is workflow-kind.
     const principalRow = inserts.find((i) => i.table === "principal")?.rows[0];
-    expect(principalRow?.["kind"]).toBe("agent");
+    expect(principalRow?.["kind"]).toBe("workflow");
   });
 
   test("a folded agent launches as a workflow_run keyed by the run principal", async () => {
@@ -1820,7 +1820,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     expect(principalRow?.["refId"]).toBe(runRow?.["id"]);
   });
 
-  test("agent-state grant insert is ordered after the agent_instance insert", async () => {
+  test("agent-state grant insert is ordered after the workflow_run insert", async () => {
     const inserts: TableInsert[] = [];
 
     const db = createLaunchMockDB({
@@ -1830,6 +1830,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       modelProvider: makeCatalogProvider(),
       modelOffering: makeCatalogOffering(),
       inserts,
+      foldedDefinition: { id: "wfd_order_1" },
     });
 
     const app = createApp({
@@ -1856,16 +1857,16 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 
     expect(res.status).toBe(201);
 
-    // Walk the insert log: find the agent_instance row first, then the
+    // Walk the insert log: find the workflow_run row first, then the
     // first agent-state grant after it.
-    let sawInstance = false;
+    let sawRun = false;
     let sawStateGrantAfterInstance = false;
     for (const ins of inserts) {
-      if (ins.table === "agent_instance") {
-        sawInstance = true;
+      if (ins.table === "workflow_run") {
+        sawRun = true;
         continue;
       }
-      if (!sawInstance) continue;
+      if (!sawRun) continue;
       if (ins.table === "grant") {
         for (const row of ins.rows) {
           if (
@@ -1880,7 +1881,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       if (sawStateGrantAfterInstance) break;
     }
 
-    expect(sawInstance).toBe(true);
+    expect(sawRun).toBe(true);
     expect(sawStateGrantAfterInstance).toBe(true);
   });
 
@@ -1968,6 +1969,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       modelProvider: makeCatalogProvider(),
       modelOffering: makeCatalogOffering(),
       inserts,
+      foldedDefinition: { id: "wfd_sources_1" },
     });
 
     const app = createApp({
@@ -2016,10 +2018,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     ]);
     expect(launchedDefaultSource).toBe(OFFERING_ID);
 
-    // The invoker preference is persisted on the instance for re-resolution.
-    const instanceRow = inserts.find((i) => i.table === "agent_instance")
-      ?.rows[0];
-    expect(instanceRow?.["modelPreferences"]).toEqual(preferences);
+    // The invoker preference is persisted on the run for re-resolution.
+    const runRow = inserts.find((i) => i.table === "workflow_run")?.rows[0];
+    expect(runRow?.["modelPreferences"]).toEqual(preferences);
   });
 });
 

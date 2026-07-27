@@ -63,7 +63,7 @@ import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { generateId } from "@intx/hub-common";
-import { first, ts } from "../format";
+import { ts } from "../format";
 import {
   parsePageParams,
   cursorCondition,
@@ -445,17 +445,24 @@ export function createInstanceRoutes({
           .limit(1)
       )[0]?.id;
 
+      // Every launchable agent is folded to a workflow_definition: new
+      // unfolded agents are no longer created and the fold backfill covered
+      // the rest, enforced by the agent_session re-point's agent-table guard.
+      // A missing definition is an invariant violation, not a client error:
+      // fail loudly before opening a transaction or minting a principal.
+      if (foldedDefinitionId === undefined) {
+        throw new Error(
+          `agent ${row.id} has no folded workflow_definition; agent-fold invariant violated`,
+        );
+      }
+
       // --- Resolve role assignments for the instance principal ---
 
       // Role assignments hang off the folded definition -- agent_role.agent_id
-      // holds definition ids -- so an unfolded agent (no definition) has no
-      // role rows.
-      const agentRoleRows =
-        foldedDefinitionId === undefined
-          ? []
-          : await db.query.agentRole.findMany({
-              where: eq(agentRole.agentId, foldedDefinitionId),
-            });
+      // holds definition ids.
+      const agentRoleRows = await db.query.agentRole.findMany({
+        where: eq(agentRole.agentId, foldedDefinitionId),
+      });
       const agentRoleIds = agentRoleRows.map((a) => a.roleId);
       const agentRoleAssignments =
         agentRoleIds.length > 0
@@ -474,13 +481,12 @@ export function createInstanceRoutes({
 
       await db.transaction(async (tx) => {
         // Create the endpoint's principal. A folded run is a workflow run, so
-        // its principal is `workflow`-kind (converging on the native run's
-        // principal shape); a legacy instance stays `agent`-kind. The refId is
-        // the shared id either way.
+        // its principal is `workflow`-kind, converging on the native run's
+        // principal shape. The refId is the instance id.
         await tx.insert(principalTable).values({
           id: instancePrincipalId,
           tenantId: tenant.id,
-          kind: foldedDefinitionId !== undefined ? "workflow" : "agent",
+          kind: "workflow",
           refId: instanceId,
           status: "active",
           createdAt: now,
@@ -502,54 +508,35 @@ export function createInstanceRoutes({
           await tx.insert(grantTable).values(g);
         }
 
-        // Transitional agentSession row (FK requirement). A folded run has no
-        // session column, so its session is resolved via the run's principal
-        // (`workflow_run.principalId`, which is `instancePrincipalId`); key the
-        // session by that principal so the lookup finds it. A legacy instance
-        // points at its session directly and keys it by the invoker.
+        // The agentSession row is keyed to the folded definition (agent_id) and
+        // to the run's principal (`workflow_run.principalId`, which is
+        // `instancePrincipalId`), so the run <-> session bridge resolves the
+        // session by that shared principal.
         await tx.insert(agentSession).values({
           id: sessionId,
           tenantId: tenant.id,
-          agentId: row.id,
-          principalId:
-            foldedDefinitionId !== undefined
-              ? instancePrincipalId
-              : principal.id,
+          agentId: foldedDefinitionId,
+          principalId: instancePrincipalId,
           status: "active",
           createdAt: now,
           updatedAt: now,
         });
 
-        if (foldedDefinitionId !== undefined) {
-          // The folded run IS the launched instance: it owns the plain routing
-          // address and carries the runtime bindings an agent_instance would.
-          // `deploymentId` is null (a folded run has no deployment); the public
-          // key lands later at deploy-ack.
-          await tx.insert(workflowRun).values({
-            id: instanceId,
-            definitionId: foldedDefinitionId,
-            deploymentId: null,
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            address: agentAddress,
-            status: "running",
-            modelPreferences: body.modelPreferences ?? null,
-            createdAt: now,
-          });
-        } else {
-          await tx.insert(agentInstance).values({
-            id: instanceId,
-            agentId: row.id,
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            address: agentAddress,
-            sessionId,
-            status: "deployed",
-            modelPreferences: body.modelPreferences ?? null,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
+        // The folded run IS the launched instance: it owns the plain routing
+        // address and carries the runtime bindings an agent_instance would.
+        // `deploymentId` is null (a folded run has no deployment); the public
+        // key lands later at deploy-ack.
+        await tx.insert(workflowRun).values({
+          id: instanceId,
+          definitionId: foldedDefinitionId,
+          deploymentId: null,
+          tenantId: tenant.id,
+          principalId: instancePrincipalId,
+          address: agentAddress,
+          status: "running",
+          modelPreferences: body.modelPreferences ?? null,
+          createdAt: now,
+        });
 
         // Seed a creator-level read grant on the per-instance
         // agent-state repo so the definition creator can read runtime
@@ -620,28 +607,16 @@ export function createInstanceRoutes({
 
         const leaked = err instanceof SessionLaunchError && err.leakedAgent;
 
-        if (foldedDefinitionId !== undefined) {
-          // A leaked deploy left a running child. Mark the run failed but leave
-          // it routable (endedAt null), so the leaked child stays reachable to
-          // inspect or clean up -- exactly as a leaked agent_instance (status
-          // "error", endedAt null) does. Otherwise roll the run back entirely.
-          if (leaked) {
-            await db
-              .update(workflowRun)
-              .set({ status: "failed" })
-              .where(eq(workflowRun.id, instanceId));
-          } else {
-            await db.delete(workflowRun).where(eq(workflowRun.id, instanceId));
-          }
-        } else if (leaked) {
+        // A leaked deploy left a running child. Mark the run failed but leave
+        // it routable (endedAt null), so the leaked child stays reachable to
+        // inspect or clean up. Otherwise roll the run back entirely.
+        if (leaked) {
           await db
-            .update(agentInstance)
-            .set({ status: "error", updatedAt: failedAt })
-            .where(eq(agentInstance.id, instanceId));
+            .update(workflowRun)
+            .set({ status: "failed" })
+            .where(eq(workflowRun.id, instanceId));
         } else {
-          await db
-            .delete(agentInstance)
-            .where(eq(agentInstance.id, instanceId));
+          await db.delete(workflowRun).where(eq(workflowRun.id, instanceId));
         }
 
         // Deactivate the instance principal created during this launch
@@ -664,41 +639,27 @@ export function createInstanceRoutes({
         );
       }
 
-      if (foldedDefinitionId !== undefined) {
-        // The folded run was inserted `running`, so there is no deployed ->
-        // running flip. Shape it through the shared instance view so it reads
-        // identically to a later GET: the run has no `updatedAt` (it mirrors
-        // `createdAt`), and its public key is null until deploy-ack lands it.
-        const runRecord: RoutableRecord = {
-          kind: "run",
-          id: instanceId,
-          tenantId: tenant.id,
-          address: agentAddress,
-          publicKey: null,
-          status: "running",
-          createdAt: now,
-          updatedAt: now,
-          endedAt: null,
-          agentId: row.id,
-          principalId: instancePrincipalId,
-          sessionId,
-          kernelId: null,
-          sidecarId: null,
-        };
-        return c.json(formatInstanceView(runRecord, row.name), 201);
-      }
-
-      const launchedAt = new Date();
-
-      const launched = first(
-        await db
-          .update(agentInstance)
-          .set({ status: "running", updatedAt: launchedAt })
-          .where(eq(agentInstance.id, instanceId))
-          .returning(),
-      );
-
-      return c.json(formatInstance(launched, row.name), 201);
+      // The folded run was inserted `running`, so there is no deployed ->
+      // running flip. Shape it through the shared instance view so it reads
+      // identically to a later GET: the run has no `updatedAt` (it mirrors
+      // `createdAt`), and its public key is null until deploy-ack lands it.
+      const runRecord: RoutableRecord = {
+        kind: "run",
+        id: instanceId,
+        tenantId: tenant.id,
+        address: agentAddress,
+        publicKey: null,
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+        endedAt: null,
+        agentId: row.id,
+        principalId: instancePrincipalId,
+        sessionId,
+        kernelId: null,
+        sidecarId: null,
+      };
+      return c.json(formatInstanceView(runRecord, row.name), 201);
     },
   );
 

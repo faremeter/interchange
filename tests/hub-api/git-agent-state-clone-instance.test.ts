@@ -120,9 +120,16 @@ async function seedInstanceRow(
     }
     const address = `${instanceId}@${tenantDomainRow.domain}`;
 
+    // agent_session.agent_id references workflow_definition, so mint the folded
+    // definition the launch path would have produced from this agent and key the
+    // session to it. agent_instance.agent_id stays the agent id.
+    const definitionId = generateId("workflowDefinition");
+    await sql`insert into workflow_definition (id, tenant_id, name, origin_agent_id)
+              values (${definitionId}, ${tenant.tenantId}, ${agentId}, ${agentId})`;
+
     // The session row carries the invoker's principal id.
     await sql`insert into agent_session (id, tenant_id, agent_id, principal_id, status)
-              values (${sessionId}, ${tenant.tenantId}, ${agentId}, ${creatorPrincipalId}, 'active')`;
+              values (${sessionId}, ${tenant.tenantId}, ${definitionId}, ${creatorPrincipalId}, 'active')`;
 
     // The instance row points back to the invoker principal for
     // `principal_id` so we don't have to mint a new agent principal

@@ -16,7 +16,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
-import { agentSession, sessionMail } from "@intx/db/schema";
+import { agentSession, sessionMail, workflowDefinition } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -43,6 +43,7 @@ const TENANT_ID = "tnt_blob";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
 const ACTOR_USER_ID = "usr_actor";
 const AGENT_ID = "agt_blob";
+const DEFINITION_ID = "wfd_blob";
 
 const RUN_PRINCIPAL_ID = "prn_run";
 const RUN_ID = "run_blob";
@@ -193,6 +194,12 @@ beforeEach(async () => {
     creatorPrincipalId: ACTOR_PRINCIPAL_ID,
     name: "blob-agent",
   });
+  await h.db.insert(workflowDefinition).values({
+    id: DEFINITION_ID,
+    tenantId: TENANT_ID,
+    name: "blob-agent",
+    originAgentId: AGENT_ID,
+  });
 });
 
 function buildApp(grants: GrantRule[]): ReturnType<typeof createApp> {
@@ -226,7 +233,7 @@ async function seedFoldedRun(opts: { ended?: boolean } = {}): Promise<void> {
   await h.db.insert(agentSession).values({
     id: RUN_SESSION_ID,
     tenantId: TENANT_ID,
-    agentId: AGENT_ID,
+    agentId: DEFINITION_ID,
     principalId: RUN_PRINCIPAL_ID,
     status: opts.ended === true ? "ended" : "active",
     endedAt,
@@ -234,6 +241,7 @@ async function seedFoldedRun(opts: { ended?: boolean } = {}): Promise<void> {
   await seedWorkflowRun(h.db, {
     id: RUN_ID,
     tenantId: TENANT_ID,
+    definitionId: DEFINITION_ID,
     principalId: RUN_PRINCIPAL_ID,
     status: opts.ended === true ? "completed" : "running",
     endedAt,
@@ -324,7 +332,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(agentSession).values({
         id: INSTANCE_SESSION_ID,
         tenantId: TENANT_ID,
-        agentId: AGENT_ID,
+        agentId: DEFINITION_ID,
         principalId: INSTANCE_PRINCIPAL_ID,
         status: "active",
       });
@@ -363,7 +371,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(agentSession).values({
         id: ORPHAN_SESSION_ID,
         tenantId: TENANT_ID,
-        agentId: AGENT_ID,
+        agentId: DEFINITION_ID,
         principalId: ORPHAN_PRINCIPAL_ID,
         status: "active",
       });

@@ -55,10 +55,16 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
 
   test("resolves a legacy agent instance by id", async () => {
     await seedBase();
+    await h.db.insert(workflowDefinition).values({
+      id: "wfd_legacy",
+      tenantId: "tnt_root",
+      name: "legacy",
+      originAgentId: "agt_1",
+    });
     await h.db.insert(agentSession).values({
       id: "ses_legacy",
       tenantId: "tnt_root",
-      agentId: "agt_1",
+      agentId: "wfd_legacy",
       principalId: "prn_creator",
       status: "active",
     });
@@ -94,7 +100,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     await h.db.insert(agentSession).values({
       id: "ses_run",
       tenantId: "tnt_root",
-      agentId: "agt_1",
+      agentId: "wfd_folded",
       principalId: "prn_run",
       status: "active",
     });
@@ -282,6 +288,12 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
         name: "a",
         systemPrompt: "p",
       });
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_run",
+        tenantId: "tnt_root",
+        name: "run",
+        originAgentId: "agt_1",
+      });
     }
 
     test("default resolves only a live session; a stopped run's ended one is null", async () => {
@@ -289,7 +301,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       await h.db.insert(agentSession).values({
         id: "ses_ended",
         tenantId: "tnt_root",
-        agentId: "agt_1",
+        agentId: "wfd_run",
         principalId: "prn_run",
         status: "ended",
         endedAt: new Date("2026-01-05T00:00:00Z"),

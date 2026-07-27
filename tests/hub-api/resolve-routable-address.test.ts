@@ -17,7 +17,12 @@ import {
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
-import { agent, agentInstance, agentSession } from "@intx/db/schema";
+import {
+  agent,
+  agentInstance,
+  agentSession,
+  workflowDefinition,
+} from "@intx/db/schema";
 import { resolveRoutableAddress } from "@intx/hub-sessions";
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -51,10 +56,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("resolves a legacy agent-instance address to kind instance", async () => {
       await seedBase();
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_i",
+        tenantId: "tnt_root",
+        name: "instance",
+        originAgentId: "agt_1",
+      });
       await h.db.insert(agentSession).values({
         id: "ses_i",
         tenantId: "tnt_root",
-        agentId: "agt_1",
+        agentId: "wfd_i",
         principalId: "prn_creator",
         status: "active",
       });
@@ -85,10 +96,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The run carries its own principal; its active session is keyed by that
       // principal (the run row has no session column).
       await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_folded",
+        tenantId: "tnt_root",
+        name: "folded",
+        originAgentId: "agt_1",
+      });
       await h.db.insert(agentSession).values({
         id: "ses_r",
         tenantId: "tnt_root",
-        agentId: "agt_1",
+        agentId: "wfd_folded",
         principalId: "prn_run",
         status: "active",
       });
@@ -96,6 +113,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run_folded",
         tenantId: "tnt_root",
         deploymentId: null,
+        definitionId: "wfd_folded",
         principalId: "prn_run",
         address: "ins_folded@root.example",
         status: "running",
@@ -196,10 +214,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "prn_sessionless",
         tenantId: "tnt_root",
       });
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_sessionless",
+        tenantId: "tnt_root",
+        name: "sessionless",
+        originAgentId: "agt_1",
+      });
       await h.db.insert(agentSession).values({
         id: "ses_ended",
         tenantId: "tnt_root",
-        agentId: "agt_1",
+        agentId: "wfd_sessionless",
         principalId: "prn_sessionless",
         status: "ended",
         endedAt: new Date(0),
@@ -208,6 +232,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run_sessionless",
         tenantId: "tnt_root",
         deploymentId: null,
+        definitionId: "wfd_sessionless",
         principalId: "prn_sessionless",
         address: "ins_sessionless@root.example",
         status: "running",
@@ -223,10 +248,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("throws when an address matches both an instance and a run", async () => {
       await seedBase();
       const address = "ins_dup@root.example";
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_dup",
+        tenantId: "tnt_root",
+        name: "dup",
+        originAgentId: "agt_1",
+      });
       await h.db.insert(agentSession).values({
         id: "ses_d",
         tenantId: "tnt_root",
-        agentId: "agt_1",
+        agentId: "wfd_dup",
         principalId: "prn_creator",
         status: "active",
       });

@@ -449,6 +449,13 @@
       "when": 1785167954461,
       "tag": "0063_repoint_agent_role_fk_to_definition",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1785169484868,
+      "tag": "0064_repoint_agent_session_fk_to_definition",
+      "breakpoints": true
     }
   ]
 }

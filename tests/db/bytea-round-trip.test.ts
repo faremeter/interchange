@@ -8,7 +8,13 @@ import {
 } from "bun:test";
 import { eq } from "drizzle-orm";
 
-import { agentSession, gitToken, sessionMail, user } from "@intx/db/schema";
+import {
+  agentSession,
+  gitToken,
+  sessionMail,
+  user,
+  workflowDefinition,
+} from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -93,10 +99,16 @@ describe.skipIf(!harnessDbEnvAvailable())("bytea round-trip (real DB)", () => {
           tenantId: "tnt_1",
           creatorPrincipalId: "prc_1",
         });
+        await h.db.insert(workflowDefinition).values({
+          id: "wfd_1",
+          tenantId: "tnt_1",
+          name: "agt_1",
+          originAgentId: "agt_1",
+        });
         await h.db.insert(agentSession).values({
           id: "ses_1",
           tenantId: "tnt_1",
-          agentId: "agt_1",
+          agentId: "wfd_1",
           principalId: "prc_1",
         });
         await h.db.insert(sessionMail).values({
