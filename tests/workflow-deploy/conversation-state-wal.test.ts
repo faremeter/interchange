@@ -42,7 +42,7 @@ import {
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "@intx/hub-sessions";
-
+import { userTurn } from "@intx/inference-testing";
 import {
   createDurableConversationStore,
   reconstructDurableConversation,
@@ -91,10 +91,6 @@ function readCheckpointMeta(agentStateDir: string): {
     throw new Error(`checkpoint.meta.json failed validation: ${meta.summary}`);
   }
   return meta;
-}
-
-function userTurn(text: string): ConversationTurn {
-  return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
 }
 
 interface Harness {

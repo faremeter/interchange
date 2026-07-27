@@ -16,13 +16,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type {
-  ConversationTurn,
-  InferenceEvent,
-  InferenceSource,
-} from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 import { createRecordingHarness } from "../src/session-recording";
+import { userTurn } from "../src/turns";
 import * as wire from "../src/wire";
 
 const ZERO_USAGE = {
@@ -46,14 +43,6 @@ const ANTHROPIC_SOURCE: InferenceSource = {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SESSIONS_ROOT = path.resolve(__dirname, "..", "sessions");
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
-}
 
 function sseResponse(chunks: Uint8Array[]): Response {
   let total = 0;

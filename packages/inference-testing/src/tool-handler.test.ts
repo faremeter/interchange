@@ -1,15 +1,12 @@
 import { describe, test, expect } from "bun:test";
 
 import { runInference } from "@intx/inference";
-import type {
-  ConversationTurn,
-  InferenceEvent,
-  InferenceSource,
-} from "@intx/types/runtime";
+import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 import { ClockWallClockOverrunError } from "./clock";
 import { UnmatchedFetchError } from "./errors";
 import { setupHarness, type Harness } from "./harness";
+import { userTurn } from "./turns";
 import * as wire from "./wire";
 
 const ANTHROPIC_SOURCE: InferenceSource = {
@@ -34,14 +31,6 @@ const TAIL_USAGE = {
   cacheWrite: 0,
   thinking: 0,
 };
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
-}
 
 function scriptToolCallTurn(
   harness: Harness,

@@ -34,7 +34,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { runInference } from "@intx/inference";
-import { setupHarness, wire } from "@intx/inference-testing";
+import { setupHarness, userTurn, wire } from "@intx/inference-testing";
 import type { Harness } from "@intx/inference-testing";
 import type {
   ConversationTurn,
@@ -109,14 +109,6 @@ async function parseRequestBody(
     throw new Error("captured request body was not a JSON object");
   }
   return parsed;
-}
-
-function userTurn(text: string): ConversationTurn {
-  return {
-    role: "user",
-    content: [{ type: "text", text }],
-    timestamp: 0,
-  };
 }
 
 // Drives the production runInference DIRECTLY against the harness's deps,
