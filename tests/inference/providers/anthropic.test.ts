@@ -34,6 +34,8 @@ const AnthropicContentBlock = type({
   // AnthropicMediaSourceBase64 / AnthropicMediaSourceFile at each
   // test site rather than baking the union here.
   "source?": "unknown",
+  "title?": "string",
+  "context?": "string",
   "cache_control?": { type: "string" },
 });
 
@@ -513,6 +515,77 @@ describe("Anthropic adapter: buildRequest", () => {
     expect(source.type).toBe("base64");
     expect(source.media_type).toBe("application/pdf");
     expect(source.data).toBe("JVBERi0xLjQK");
+  });
+
+  test("emits document title and context when present", () => {
+    // Grounded against a live Anthropic probe that accepted title and
+    // context as siblings of source on the document content block.
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "base64",
+              mimeType: "application/pdf",
+              data: "JVBERi0xLjQK",
+            },
+            title: "Q3 Invoice",
+            context:
+              "Internal accounting document used to test citation grounding.",
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "document") {
+      throw new Error("expected document block in the request");
+    }
+    expect(block.title).toBe("Q3 Invoice");
+    expect(block.context).toBe(
+      "Internal accounting document used to test citation grounding.",
+    );
+  });
+
+  test("drops document title and context when absent", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              kind: "base64",
+              mimeType: "application/pdf",
+              data: "JVBERi0xLjQK",
+            },
+          },
+        ],
+        timestamp: 1000,
+      },
+    ];
+
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    const block = body.messages[0]?.content[0];
+    if (block?.type !== "document") {
+      throw new Error("expected document block in the request");
+    }
+    expect(block).not.toHaveProperty("title");
+    expect(block).not.toHaveProperty("context");
   });
 
   test("emits a file-reference document as { type: file, file_id }", () => {

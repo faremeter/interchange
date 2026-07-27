@@ -756,6 +756,8 @@ const VideoBlock = type({
 const DocumentBlock = type({
   type: "'document'",
   source: MediaSource,
+  "title?": "string",
+  "context?": "string",
 });
 
 const ThinkingBlock = type({
