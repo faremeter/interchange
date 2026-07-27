@@ -266,6 +266,8 @@ inference.refusal.delta — Refusal fragment (token: string, index?: number)
 
 The event shape mirrors `inference.text.delta` so the harness's existing per-index block accumulator routes refusal fragments without any new state. The finalized assistant turn carries a `RefusalBlock { type: "refusal", reason: string }` in its `content[]` array, so consumers can branch on the block type rather than scan event history. Refusal is semantically distinct from `inference.error`: the HTTP call succeeded and the model produced a coherent response, but that response is "I will not satisfy this schema" rather than schema-conformant content.
 
+Parser coverage for that path is synthetic: wire-DSL `chunk({ refusal })` streams exercise the adapter and the harness end-to-end (see the OpenAI adapter refusal tests and `tests/inference/refusal-harness.test.ts`). A live discovery probe under `packages/inference-discovery-openai/wire/openai/gpt-5.5/structured-output-refusal-streaming/` is retained as a `misled` matrix row — the strict `json_schema` + policy-declining prompt never produced a non-null `delta.refusal` on gpt-5.5; the model streamed schema-conformant JSON whose `steps` array carried a textual decline instead. That fixture documents the observed classifier behavior; it does not replace the synthetic parser coverage.
+
 Gemini and Anthropic have no equivalent structured refusal field; declines from those providers surface as ordinary text content (with a textual refusal message) or as HTTP errors.
 
 ## Agent Reactor
