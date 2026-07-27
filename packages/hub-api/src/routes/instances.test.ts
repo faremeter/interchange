@@ -758,6 +758,7 @@ describe("read routes serve a folded run", () => {
         principal: testPrincipal,
         instance: undefined,
         agent: testAgent,
+        definition: testDefinition,
         run,
       },
     });

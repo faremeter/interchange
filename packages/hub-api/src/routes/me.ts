@@ -339,21 +339,27 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
         limit,
       });
 
+      // A running instance's agent_id is the legacy agent id; its display name
+      // lives on the folded definition, keyed by origin_agent_id.
       const agentIds = [...new Set(rows.map((r) => r.agentId))];
-      const agents =
+      const definitions =
         agentIds.length > 0
-          ? await db.query.agent.findMany({
-              where: (a, { inArray }) => inArray(a.id, agentIds),
+          ? await db.query.workflowDefinition.findMany({
+              where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
             })
           : [];
-      const agentMap = new Map(agents.map((a) => [a.id, a]));
+      const nameByAgentId = new Map(
+        definitions.flatMap((d) =>
+          d.originAgentId === null ? [] : [[d.originAgentId, d.name] as const],
+        ),
+      );
 
       const items = rows.map((r) => ({
         id: r.id,
         tenantId: r.tenantId,
         tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
         agentId: r.agentId,
-        agentName: agentMap.get(r.agentId)?.name ?? "Unknown",
+        agentName: nameByAgentId.get(r.agentId) ?? "Unknown",
         address: r.address,
         status: r.status as
           | "deployed"

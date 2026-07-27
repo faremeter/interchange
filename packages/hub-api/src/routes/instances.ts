@@ -732,19 +732,22 @@ export function createInstanceRoutes({
       const instanceRows = await db
         .select({
           instance: agentInstance,
-          agentName: agent.name,
+          agentName: workflowDefinition.name,
         })
         .from(agentInstance)
-        .innerJoin(agent, eq(agentInstance.agentId, agent.id))
+        .innerJoin(
+          workflowDefinition,
+          eq(agentInstance.agentId, workflowDefinition.originAgentId),
+        )
         .where(and(...instanceConditions))
         .orderBy(...pageOrder(agentInstance.createdAt, agentInstance.id))
         .limit(limit);
 
       // A folded run presents as an instance only when it owns a routing
-      // address and its definition names an origin agent; the two inner joins
-      // enforce the latter and drop a definition-anchored or corrupt run. When
-      // a status filter selects no run statuses (`deployed`/`updating`), skip
-      // the run query entirely.
+      // address and its definition names an origin agent; the address and
+      // origin_agent_id predicates enforce that, dropping a definition-anchored
+      // or corrupt run. When a status filter selects no run statuses
+      // (`deployed`/`updating`), skip the run query entirely.
       const runStatuses =
         statusFilter === undefined
           ? undefined
@@ -754,6 +757,7 @@ export function createInstanceRoutes({
         const runConditions = [
           eq(workflowRun.tenantId, tenantCtx.id),
           isNotNull(workflowRun.address),
+          isNotNull(workflowDefinition.originAgentId),
         ];
         if (agentId !== undefined) {
           runConditions.push(eq(workflowDefinition.originAgentId, agentId));
@@ -771,14 +775,13 @@ export function createInstanceRoutes({
           .select({
             run: workflowRun,
             originAgentId: workflowDefinition.originAgentId,
-            agentName: agent.name,
+            agentName: workflowDefinition.name,
           })
           .from(workflowRun)
           .innerJoin(
             workflowDefinition,
             eq(workflowRun.definitionId, workflowDefinition.id),
           )
-          .innerJoin(agent, eq(workflowDefinition.originAgentId, agent.id))
           .where(and(...runConditions))
           .orderBy(...pageOrder(workflowRun.createdAt, workflowRun.id))
           .limit(limit);
@@ -983,10 +986,15 @@ export function createInstanceRoutes({
         );
       }
 
-      const agentRow = await db.query.agent.findFirst({
-        where: eq(agent.id, record.agentId),
+      // The display name lives on the folded definition, keyed by the legacy
+      // agent id (origin_agent_id), scoped to the tenant.
+      const definitionRow = await db.query.workflowDefinition.findFirst({
+        where: and(
+          eq(workflowDefinition.originAgentId, record.agentId),
+          eq(workflowDefinition.tenantId, tenantCtx.id),
+        ),
       });
-      if (agentRow === undefined) {
+      if (definitionRow === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
           404,
@@ -997,7 +1005,7 @@ export function createInstanceRoutes({
       const runtimeStatus = eventCollectors.getStatus(record.address);
 
       return c.json(
-        formatInstanceView(record, agentRow.name, runtimeStatus?.status),
+        formatInstanceView(record, definitionRow.name, runtimeStatus?.status),
       );
     },
   );

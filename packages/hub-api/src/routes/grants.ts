@@ -113,11 +113,15 @@ async function resolveGrantNames(
     }
 
     if (agentRefIds.length > 0) {
-      const agents = await db.query.agent.findMany({
-        where: (a, { inArray }) => inArray(a.id, agentRefIds),
+      // An agent-kind principal's refId is the legacy agent id; its display
+      // name lives on the folded definition, keyed by origin_agent_id.
+      const definitions = await db.query.workflowDefinition.findMany({
+        where: (d, { inArray }) => inArray(d.originAgentId, agentRefIds),
       });
-      for (const a of agents) {
-        refToName.set(a.id, a.name);
+      for (const d of definitions) {
+        if (d.originAgentId !== null) {
+          refToName.set(d.originAgentId, d.name);
+        }
       }
 
       // Resolve instance principals (refId = agentInstance.id)
@@ -126,14 +130,20 @@ async function resolveGrantNames(
         const instances = await db.query.agentInstance.findMany({
           where: (i, { inArray }) => inArray(i.id, unresolvedRefIds),
         });
-        const definitionIds = [...new Set(instances.map((i) => i.agentId))];
-        const definitions =
-          definitionIds.length > 0
-            ? await db.query.agent.findMany({
-                where: (a, { inArray }) => inArray(a.id, definitionIds),
+        const agentIds = [...new Set(instances.map((i) => i.agentId))];
+        const instanceDefinitions =
+          agentIds.length > 0
+            ? await db.query.workflowDefinition.findMany({
+                where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
               })
             : [];
-        const defNames = new Map(definitions.map((d) => [d.id, d.name]));
+        const defNames = new Map(
+          instanceDefinitions.flatMap((d) =>
+            d.originAgentId === null
+              ? []
+              : [[d.originAgentId, d.name] as const],
+          ),
+        );
         for (const inst of instances) {
           const name = defNames.get(inst.agentId);
           if (name) {
