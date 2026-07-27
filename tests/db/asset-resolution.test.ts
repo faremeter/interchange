@@ -328,13 +328,8 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-resolution (real DB)", () => {
     });
   });
 
-  describe("ancestor-chain depth guard", () => {
-    test("walker terminates when the chain exceeds the MAX_DEPTH guard", async () => {
-      // Build a 30-link chain: tnt_0 -> tnt_1 -> ... -> tnt_29, where
-      // tnt_29 is the root. getAncestorChain caps traversal at
-      // MAX_DEPTH=20, so resolving from tnt_0 cannot reach an asset
-      // parked at tnt_25; the walker must terminate and return null
-      // rather than looping or throwing.
+  describe("deep ancestor resolution", () => {
+    test("resolves an asset beyond the former depth cutoff", async () => {
       const tenants: { id: string; parentId: string | null }[] = [];
       for (let i = 0; i < 30; i++) {
         tenants.push({
@@ -350,7 +345,7 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-resolution (real DB)", () => {
         name: "greet",
       });
       const got = await resolveAssetByName(h.db, "tnt_0", "skill", "greet");
-      expect(got).toBeNull();
+      expect(got?.id).toBe("ast_far");
     });
   });
 });
