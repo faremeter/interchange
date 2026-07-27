@@ -640,6 +640,9 @@ export async function createAgent<EnvReq extends BaseEnv>(
         : {}),
       deps,
       ...(env.compactors !== undefined ? { compactors: env.compactors } : {}),
+      ...(env.contextTransforms !== undefined
+        ? { contextTransforms: env.contextTransforms }
+        : {}),
     });
 
     sendQueue = createSendQueue<InboundMessage, SendResult>({

@@ -17,6 +17,7 @@ import type {
   AuditStore,
   Compactor,
   ContextStore,
+  ContextTransform,
   InferenceSource,
 } from "@intx/types/runtime";
 
@@ -140,6 +141,13 @@ export interface BaseEnv {
    * Forwarded to the reactor assembly's size-cap transform.
    */
   sizeCapMaxChars?: number;
+
+  /**
+   * Pre-inference context transforms applied in order before every model call.
+   * Output materializes into the cycle prompt only; durable turns stay untouched.
+   * Optional — omit for the default empty chain.
+   */
+  contextTransforms?: ContextTransform[];
 
   /**
    * Maximum number of pending sends (active + queued). Beyond this,
