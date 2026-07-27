@@ -18,7 +18,10 @@ import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
-import { resolveWorkflowPrincipalNames } from "./workflow-principal-name";
+import {
+  resolveWorkflowPrincipalNames,
+  resolveDefinitionPrincipalNames,
+} from "./workflow-principal-name";
 import {
   parsePageParams,
   cursorCondition,
@@ -75,55 +78,49 @@ async function resolveIdentities(
   }
 
   if (agentRefIds.length > 0) {
-    // An agent-kind principal's refId is the legacy agent id; its display name
-    // lives on the folded definition, keyed by origin_agent_id.
-    // First pass: resolve definition principals (refId = agent.id)
-    const definitions = await db.query.workflowDefinition.findMany({
-      where: (d, { inArray }) => inArray(d.originAgentId, agentRefIds),
+    // The surviving agent-kind principals are instance-level: refId is an
+    // agent_instance id, and the display name comes from the folded definition
+    // its agent maps to. (Definition-level agent principals are re-keyed to
+    // workflow-kind and resolve through the workflow branch.)
+    const instances = await db.query.agentInstance.findMany({
+      where: (i, { inArray }) => inArray(i.id, agentRefIds),
     });
-    for (const d of definitions) {
-      if (d.originAgentId !== null) {
-        identities.set(d.originAgentId, { displayName: d.name });
-      }
-    }
-
-    // Second pass: resolve instance principals (refId = agentInstance.id)
-    const unresolvedRefIds = agentRefIds.filter((id) => !identities.has(id));
-    if (unresolvedRefIds.length > 0) {
-      const instances = await db.query.agentInstance.findMany({
-        where: (i, { inArray }) => inArray(i.id, unresolvedRefIds),
-      });
-      const agentIds = [...new Set(instances.map((i) => i.agentId))];
-      const instanceDefinitions =
-        agentIds.length > 0
-          ? await db.query.workflowDefinition.findMany({
-              where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
-            })
-          : [];
-      const defNames = new Map(
-        instanceDefinitions.flatMap((d) =>
-          d.originAgentId === null ? [] : [[d.originAgentId, d.name] as const],
-        ),
-      );
-      for (const inst of instances) {
-        const name = defNames.get(inst.agentId);
-        if (name) {
-          identities.set(inst.id, { displayName: `${name} (instance)` });
-        }
+    const agentIds = [...new Set(instances.map((i) => i.agentId))];
+    const instanceDefinitions =
+      agentIds.length > 0
+        ? await db.query.workflowDefinition.findMany({
+            where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
+          })
+        : [];
+    const defNames = new Map(
+      instanceDefinitions.flatMap((d) =>
+        d.originAgentId === null ? [] : [[d.originAgentId, d.name] as const],
+      ),
+    );
+    for (const inst of instances) {
+      const name = defNames.get(inst.agentId);
+      if (name) {
+        identities.set(inst.id, { displayName: `${name} (instance)` });
       }
     }
   }
 
   if (workflowRefIds.length > 0) {
-    // A workflow principal's refId is its run id; its label is the run's
-    // address -- a deployment's for a native run, or the run's own for a
-    // folded launch.
-    const workflowNames = await resolveWorkflowPrincipalNames(
-      db,
-      workflowRefIds,
-    );
-    for (const [runId, displayName] of workflowNames) {
+    // A workflow principal's refId is either a run id or a definition id. A run
+    // principal's label is the run's address -- a deployment's for a native
+    // run, or the run's own for a folded launch. A re-keyed definition
+    // principal's label is the definition name; it falls through the run
+    // resolver (no matching run) to the definition resolver.
+    const runNames = await resolveWorkflowPrincipalNames(db, workflowRefIds);
+    for (const [runId, displayName] of runNames) {
       identities.set(runId, { displayName });
+    }
+    const defRefIds = workflowRefIds.filter((id) => !runNames.has(id));
+    if (defRefIds.length > 0) {
+      const defNames = await resolveDefinitionPrincipalNames(db, defRefIds);
+      for (const [defId, displayName] of defNames) {
+        identities.set(defId, { displayName });
+      }
     }
   }
 

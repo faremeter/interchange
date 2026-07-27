@@ -463,6 +463,13 @@
       "when": 1785179839765,
       "tag": "0065_add_workflow_definition_model_requirements",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1785280000000,
+      "tag": "0066_rekey_agent_definition_principals_to_workflow",
+      "breakpoints": true
     }
   ]
 }

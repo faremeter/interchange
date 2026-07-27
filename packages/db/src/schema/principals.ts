@@ -21,8 +21,9 @@ export const principal = pgTable(
   (t) => [unique().on(t.tenantId, t.kind, t.refId)],
 );
 
-// The refId on a user principal points to the auth user table.
-// We don't add a FK constraint because refId also points to agent.id
-// when kind='agent', and Postgres can't do conditional FKs.
-// The application layer enforces referential integrity.
+// refId is polymorphic on kind: the auth user for kind='user', an
+// agent_instance for kind='agent', and either a workflow_run or a
+// workflow_definition for kind='workflow'. Postgres can't express a
+// conditional FK across those targets, so there is no FK constraint here
+// and the application layer enforces referential integrity.
 export { user };

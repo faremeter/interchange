@@ -1,7 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
-import { workflowRun } from "@intx/db/schema";
+import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 
 /**
@@ -40,6 +40,33 @@ export async function resolveWorkflowPrincipalNames(
     if (address !== null) {
       names.set(r.runId, `Workflow (${address})`);
     }
+  }
+  return names;
+}
+
+/**
+ * Resolve display names for `workflow`-kind principals whose refId is a
+ * workflow_definition id -- the folded agent's stable actor identity, re-keyed
+ * off the legacy agent principal. Unlike a run-principal, a definition-principal
+ * carries the definition's plain name, not a routing address. Returns a map from
+ * definitionId to name; a definitionId with no definition row is absent (the
+ * caller falls back to the raw refId). A refId that is actually a run id with no
+ * address falls through to here and matches no definition, so it stays absent.
+ */
+export async function resolveDefinitionPrincipalNames(
+  db: DB["db"],
+  definitionIds: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  if (definitionIds.length === 0) return names;
+
+  const defs = await db
+    .select({ id: workflowDefinition.id, name: workflowDefinition.name })
+    .from(workflowDefinition)
+    .where(inArray(workflowDefinition.id, definitionIds));
+
+  for (const d of defs) {
+    names.set(d.id, d.name);
   }
   return names;
 }
