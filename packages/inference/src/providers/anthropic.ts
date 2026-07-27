@@ -310,7 +310,12 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       return { type: "image", source: toAnthropicMediaSource(block.source) };
 
     case "document":
-      return { type: "document", source: toAnthropicMediaSource(block.source) };
+      return {
+        type: "document",
+        source: toAnthropicMediaSource(block.source),
+        ...(block.title !== undefined ? { title: block.title } : {}),
+        ...(block.context !== undefined ? { context: block.context } : {}),
+      };
 
     case "audio":
     case "video":
