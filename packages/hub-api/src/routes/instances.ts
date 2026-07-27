@@ -431,23 +431,6 @@ export function createInstanceRoutes({
       }
       const grantRows = materialization.grantRows;
 
-      // --- Resolve agent role assignments for the instance principal ---
-
-      const agentRoleRows = await db.query.agentRole.findMany({
-        where: eq(agentRole.agentId, row.id),
-      });
-      const agentRoleIds = agentRoleRows.map((a) => a.roleId);
-      const agentRoleAssignments =
-        agentRoleIds.length > 0
-          ? (
-              await db.query.role.findMany({
-                where: (r, { inArray, and: a }) =>
-                  a(inArray(r.id, agentRoleIds), eq(r.tenantId, tenant.id)),
-                columns: { id: true },
-              })
-            ).map((r) => ({ roleId: r.id }))
-          : [];
-
       // A folded agent -- one the backfill lifted into a `workflow_definition`
       // (carrying this agent's id as `origin_agent_id`) -- launches as a
       // `workflow_run` rather than an `agent_instance`: the run IS the launched
@@ -461,6 +444,29 @@ export function createInstanceRoutes({
           .where(eq(workflowDefinition.originAgentId, row.id))
           .limit(1)
       )[0]?.id;
+
+      // --- Resolve role assignments for the instance principal ---
+
+      // Role assignments hang off the folded definition -- agent_role.agent_id
+      // holds definition ids -- so an unfolded agent (no definition) has no
+      // role rows.
+      const agentRoleRows =
+        foldedDefinitionId === undefined
+          ? []
+          : await db.query.agentRole.findMany({
+              where: eq(agentRole.agentId, foldedDefinitionId),
+            });
+      const agentRoleIds = agentRoleRows.map((a) => a.roleId);
+      const agentRoleAssignments =
+        agentRoleIds.length > 0
+          ? (
+              await db.query.role.findMany({
+                where: (r, { inArray, and: a }) =>
+                  a(inArray(r.id, agentRoleIds), eq(r.tenantId, tenant.id)),
+                columns: { id: true },
+              })
+            ).map((r) => ({ roleId: r.id }))
+          : [];
 
       // --- Write all DB rows in a transaction ---
 
