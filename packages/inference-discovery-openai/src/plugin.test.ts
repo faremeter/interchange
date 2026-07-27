@@ -283,6 +283,34 @@ describe("buildRequestBody capability dispatch", () => {
     );
   });
 
+  test("document-input embeds PDF as a Chat Completions file part", () => {
+    const body = buildRequestBody({
+      model: "gpt-5.5",
+      capability: "document-input",
+      intent: INTENTS["document-input"],
+    });
+    if (!isRecord(body)) throw new Error("expected record body");
+    expect(body.stream).toBeUndefined();
+    const messages = body.messages;
+    if (!Array.isArray(messages) || !isRecord(messages[0])) {
+      throw new Error("expected messages[0] to be a record");
+    }
+    const content = messages[0].content;
+    if (!Array.isArray(content)) throw new Error("expected content array");
+    const textPart = content.find((p) => isRecord(p) && p.type === "text");
+    if (!isRecord(textPart)) throw new Error("expected text part");
+    expect(textPart.text).toBe(INTENTS["document-input"].prompt);
+    const filePart = content.find((p) => isRecord(p) && p.type === "file");
+    if (!isRecord(filePart)) throw new Error("expected file part");
+    const file = filePart.file;
+    if (!isRecord(file)) throw new Error("expected file record");
+    expect(file.filename).toBe("sample.pdf");
+    expect(typeof file.file_data).toBe("string");
+    expect(
+      String(file.file_data).startsWith("data:application/pdf;base64,"),
+    ).toBe(true);
+  });
+
   test("reasoning-content uses user message only", () => {
     const body = buildRequestBody({
       model: "kimi-k2.6",
