@@ -57,7 +57,7 @@ export function formatInstanceView(
   const status = instanceStatusOf(record);
   return {
     id: record.id,
-    agentId: record.agentId,
+    definitionId: record.definitionId,
     agentName,
     tenantId: record.tenantId,
     address: record.address,

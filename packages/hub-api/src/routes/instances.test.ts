@@ -16,7 +16,6 @@ import type {
 
 import { createApp } from "../app";
 import {
-  agentInstance,
   agentSession,
   inferenceTurn,
   turnPart,
@@ -104,6 +103,7 @@ function makeTestRun(overrides: Record<string, unknown> = {}) {
     principalId: null,
     kernelId: null,
     sidecarId: null,
+    definitionId: "wfd_test",
     originAgentId: AGENT_ID,
     ...overrides,
   };
@@ -196,11 +196,21 @@ function createMockDB(opts: MockDBOpts) {
   //   - anything else (sessionMail): the priorMail query used by POST mail
   //     (.where().orderBy().limit()).
   function selectChain() {
+    // The list route joins the definition and projects its id + name.
     const joinedRows =
       opts.instance && opts.agent
-        ? [{ instance: opts.instance, agentName: opts.agent.name }]
+        ? [
+            {
+              instance: opts.instance,
+              definitionId: opts.definition?.id,
+              agentName: opts.agent.name,
+            },
+          ]
         : [];
-    const instanceRows = opts.instance ? [opts.instance] : [];
+    // findRoutableById's instance branch joins the definition to yield its id.
+    const instanceRows = opts.instance
+      ? [{ ...opts.instance, definitionId: opts.definition?.id }]
+      : [];
     const runRows = opts.run ? [opts.run] : [];
 
     return {
@@ -245,25 +255,23 @@ function createMockDB(opts: MockDBOpts) {
           };
         }
         return {
-          // list route: instance + agent join
+          // agentInstance joined to its definition: findRoutableById's instance
+          // branch (.where().limit()) and the list route
+          // (.where().orderBy().limit()).
           innerJoin: () => ({
             where: () => ({
-              limit: () => Promise.resolve(joinedRows),
+              limit: () => Promise.resolve(instanceRows),
               orderBy: (..._args: unknown[]) => ({
                 limit: () => Promise.resolve(joinedRows),
               }),
             }),
           }),
-          // findRoutableById instance query (agentInstance) vs priorMail
-          // (sessionMail).
+          // priorMail (sessionMail): .where().orderBy().limit().
           where: () => ({
             orderBy: (..._args: unknown[]) => ({
               limit: () => Promise.resolve(sessionMailRows),
             }),
-            limit: () =>
-              Promise.resolve(
-                t === agentInstance ? instanceRows : sessionMailRows,
-              ),
+            limit: () => Promise.resolve(sessionMailRows),
           }),
         };
       },
@@ -624,7 +632,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const offerings = [
       {
         id: "off_1",
-        agentId: AGENT_ID,
+        definitionId: "wfd_test",
         tenantId: TENANT_ID,
         name: "Translation",
         description: "Translate text",
@@ -635,7 +643,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
       },
       {
         id: "off_2",
-        agentId: AGENT_ID,
+        definitionId: "wfd_test",
         tenantId: TENANT_ID,
         name: "Summarization",
         description: null,
@@ -714,7 +722,7 @@ describe("GET /agents/instances/:instanceId/offerings", () => {
     const offerings = [
       {
         id: "off_1",
-        agentId: AGENT_ID,
+        definitionId: "wfd_test",
         tenantId: TENANT_ID,
         name: "Translation",
         description: "Translate text",
@@ -770,7 +778,7 @@ describe("read routes serve a folded run", () => {
     const body: unknown = await res.json();
     expect(body).toMatchObject({
       id: INSTANCE_ID,
-      agentId: AGENT_ID,
+      definitionId: "wfd_test",
       agentName: "Test Agent",
       address: ADDRESS,
       status: "running",
@@ -822,7 +830,7 @@ describe("read routes serve a folded run", () => {
         offerings: [
           {
             id: "off_1",
-            agentId: AGENT_ID,
+            definitionId: "wfd_test",
             tenantId: TENANT_ID,
             name: "Translation",
             description: "Translate text",
@@ -1414,7 +1422,12 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     // override the mirrored agent values, so a test can prove the launch gates
     // and resolves off the definition rather than the agent row.
     foldedDefinition?:
-      | { id?: string; status?: string; modelRequirements?: unknown }
+      | {
+          id?: string;
+          status?: string;
+          modelRequirements?: unknown;
+          originAgentId?: string | null;
+        }
       | undefined;
   };
 
@@ -1587,14 +1600,22 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
   // launch reads the definition, not the agent.
   function foldedDefinitionRowFor(
     agent: Record<string, unknown>,
-    overrides?: { id?: string; status?: string; modelRequirements?: unknown },
+    overrides?: {
+      id?: string;
+      status?: string;
+      modelRequirements?: unknown;
+      originAgentId?: string | null;
+    },
   ): Record<string, unknown> {
     return {
       id: overrides?.id ?? DEFAULT_FOLDED_DEF_ID,
       tenantId: agent["tenantId"],
       creatorPrincipalId: agent["creatorPrincipalId"],
       assetId: null,
-      originAgentId: agent["id"],
+      originAgentId:
+        overrides !== undefined && "originAgentId" in overrides
+          ? overrides.originAgentId
+          : agent["id"],
       name: agent["name"],
       description: agent["description"],
       grantRequirements: agent["grantRequirements"],
@@ -1744,7 +1765,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+        body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
       },
     );
 
@@ -1818,7 +1839,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+        body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
       },
     );
 
@@ -1886,7 +1907,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+        body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
       },
     );
 
@@ -1939,7 +1960,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     return launchApp(db).request(`/api/tenants/${TENANT_ID}/agents/instances`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentId: AGENT_DEF_ID }),
+      body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
     });
   }
 
@@ -1968,6 +1989,23 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     expect(res.status).toBe(409);
     expect(JSON.stringify(await res.json())).toContain(
       "not in a launchable state",
+    );
+  });
+
+  test("rejects launching a native definition with no origin agent", async () => {
+    // A native workflow-origin definition (origin_agent_id null) has no
+    // launchable agent body; it deploys through the workflow path, not here.
+    const res = await launch(
+      createLaunchMockDB({
+        agent: makeAgentDef(),
+        credential: makeCredential(),
+        inserts: [],
+        foldedDefinition: { originAgentId: null },
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain(
+      "no launchable agent body",
     );
   });
 
@@ -2070,7 +2108,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          agentId: AGENT_DEF_ID,
+          definitionId: DEFAULT_FOLDED_DEF_ID,
           modelPreferences: preferences,
         }),
       },

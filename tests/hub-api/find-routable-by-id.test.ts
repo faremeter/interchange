@@ -82,7 +82,8 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     const record = await findRoutableById(h.db, "ins_legacy", "tnt_root");
     expect(record?.kind).toBe("instance");
     expect(record?.id).toBe("ins_legacy");
-    expect(record?.agentId).toBe("agt_1");
+    // The definition the instance's agent folds to (joined via origin_agent_id).
+    expect(record?.definitionId).toBe("wfd_legacy");
     expect(record?.address).toBe("ins_legacy@root.example");
     expect(record?.status).toBe("running");
     expect(record?.sessionId).toBe("ses_legacy");
@@ -118,8 +119,8 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     const record = await findRoutableById(h.db, "ins_folded", "tnt_root");
     expect(record?.kind).toBe("run");
     expect(record?.id).toBe("ins_folded");
-    // agentId comes from the definition's originAgentId, not the run row.
-    expect(record?.agentId).toBe("agt_1");
+    // definitionId is the run's own definition.
+    expect(record?.definitionId).toBe("wfd_folded");
     expect(record?.address).toBe("ins_folded@root.example");
     expect(record?.status).toBe("running");
     // A run has no updatedAt column; a live run reports createdAt.
@@ -156,6 +157,12 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
 
   test("serves a terminated instance (no endedAt filter)", async () => {
     await seedBase();
+    await h.db.insert(workflowDefinition).values({
+      id: "wfd_stopped",
+      tenantId: "tnt_root",
+      name: "stopped",
+      originAgentId: "agt_1",
+    });
     await h.db.insert(agentInstance).values({
       id: "ins_stopped",
       agentId: "agt_1",

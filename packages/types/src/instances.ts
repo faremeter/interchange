@@ -16,7 +16,7 @@ export type AgentInstanceStatus = (typeof agentInstanceStatuses)[number];
 const AgentInstanceStatusType = type.enumerated(...agentInstanceStatuses);
 
 export const CreateAgentInstance = type({
-  agentId: "string",
+  definitionId: "string",
   "modelPreferences?": InvokerModelPreferences.describe(
     "The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.",
   ),
@@ -34,7 +34,7 @@ export const CreateAgentInstance = type({
 
 export const AgentInstanceResponse = type({
   id: "string",
-  agentId: "string",
+  definitionId: "string",
   agentName: "string",
   tenantId: "string",
   address: "string",

@@ -680,9 +680,9 @@ export interface RoutableRecord {
   /** A run has no `updatedAt` column, so it reports `endedAt ?? createdAt`. */
   readonly updatedAt: Date;
   readonly endedAt: Date | null;
-  /** The origin agent: an instance's `agentId`, or a folded run's definition's
-   * `originAgentId`. Non-null for both kinds. */
-  readonly agentId: string;
+  /** The folded definition this instance/run belongs to (`workflow_definition.id`).
+   * Non-null for both kinds. */
+  readonly definitionId: string;
   readonly principalId: string | null;
   readonly sessionId: string | null;
   readonly kernelId: string | null;
@@ -713,13 +713,17 @@ export async function findRoutableById(
         createdAt: agentInstance.createdAt,
         updatedAt: agentInstance.updatedAt,
         endedAt: agentInstance.endedAt,
-        agentId: agentInstance.agentId,
+        definitionId: workflowDefinition.id,
         principalId: agentInstance.principalId,
         sessionId: agentInstance.sessionId,
         kernelId: agentInstance.kernelId,
         sidecarId: agentInstance.sidecarId,
       })
       .from(agentInstance)
+      .innerJoin(
+        workflowDefinition,
+        eq(agentInstance.agentId, workflowDefinition.originAgentId),
+      )
       .where(
         and(eq(agentInstance.id, id), eq(agentInstance.tenantId, tenantId)),
       )
@@ -736,6 +740,9 @@ export async function findRoutableById(
         principalId: workflowRun.principalId,
         kernelId: workflowRun.kernelId,
         sidecarId: workflowRun.sidecarId,
+        definitionId: workflowRun.definitionId,
+        // The origin agent is not part of the record; it only gates whether a
+        // run presents as an instance (a native run's definition has none).
         originAgentId: workflowDefinition.originAgentId,
       })
       .from(workflowRun)
@@ -768,7 +775,7 @@ export async function findRoutableById(
       createdAt: instanceRow.createdAt,
       updatedAt: instanceRow.updatedAt,
       endedAt: instanceRow.endedAt,
-      agentId: instanceRow.agentId,
+      definitionId: instanceRow.definitionId,
       principalId: instanceRow.principalId,
       sessionId: instanceRow.sessionId,
       kernelId: instanceRow.kernelId,
@@ -806,7 +813,7 @@ export async function findRoutableById(
       createdAt: runRow.createdAt,
       updatedAt: runRow.endedAt ?? runRow.createdAt,
       endedAt: runRow.endedAt,
-      agentId: runRow.originAgentId,
+      definitionId: runRow.definitionId,
       principalId: runRow.principalId,
       sessionId: await resolveRunSessionId(db, runRow.principalId),
       kernelId: runRow.kernelId,

@@ -18,7 +18,7 @@ function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-02T00:00:00Z"),
     endedAt: null,
-    agentId: "agt_1",
+    definitionId: "wfd_1",
     principalId: "prn_1",
     sessionId: "ses_1",
     kernelId: null,
@@ -47,7 +47,7 @@ describe("formatInstanceView", () => {
     const view = formatInstanceView(makeRecord(), "My Agent");
     expect(view).toMatchObject({
       id: "ins_1",
-      agentId: "agt_1",
+      definitionId: "wfd_1",
       agentName: "My Agent",
       tenantId: "tnt_1",
       address: "ins_1@tenant.example",

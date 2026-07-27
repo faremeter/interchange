@@ -258,7 +258,7 @@ async function insertOriginlessDefinition(id: string): Promise<void> {
   });
 }
 
-type ListRow = { id: string; agentId: string; status: string };
+type ListRow = { id: string; definitionId: string; status: string };
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -282,7 +282,7 @@ async function fetchList(
     if (!isObject(d)) throw new Error("bad row");
     return {
       id: String(d["id"]),
-      agentId: String(d["agentId"]),
+      definitionId: String(d["definitionId"]),
       status: String(d["status"]),
     };
   });
@@ -319,7 +319,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         originAgentId: AGENT_B,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
-      const { ids } = await fetchList(buildApp(), `?agentId=${AGENT_A}`);
+      const { ids } = await fetchList(
+        buildApp(),
+        `?definitionId=${definitionIdFor(AGENT_A)}`,
+      );
       expect(ids).toEqual(["ins_a"]);
     });
 
@@ -345,17 +348,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const running = await fetchList(buildApp(), "?status=running");
       expect(running.rows).toEqual([
-        { id: "ins_run", agentId: AGENT_A, status: "running" },
+        {
+          id: "ins_run",
+          definitionId: definitionIdFor(AGENT_A),
+          status: "running",
+        },
       ]);
 
       const stopped = await fetchList(buildApp(), "?status=stopped");
       expect(stopped.rows).toEqual([
-        { id: "ins_done", agentId: AGENT_A, status: "stopped" },
+        {
+          id: "ins_done",
+          definitionId: definitionIdFor(AGENT_A),
+          status: "stopped",
+        },
       ]);
 
       const errored = await fetchList(buildApp(), "?status=error");
       expect(errored.rows).toEqual([
-        { id: "ins_failed", agentId: AGENT_A, status: "error" },
+        {
+          id: "ins_failed",
+          definitionId: definitionIdFor(AGENT_A),
+          status: "error",
+        },
       ]);
 
       // No folded run ever presents as `deployed`, so the run query is skipped.

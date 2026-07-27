@@ -67,7 +67,7 @@ type RoleResponse = {
 
 export type AgentInstanceResponse = {
   id: string;
-  agentId: string;
+  definitionId: string;
   agentName: string;
   tenantId: string;
   address: string;

@@ -467,9 +467,9 @@ Body: CreateAgentInstance
 ### GET /api/tenants/:tenantId/agents/instances
 List agent instances
 
-Lists agent instances in the tenant. Filterable by agentId and status.
+Lists agent instances in the tenant. Filterable by definitionId and status.
 
-Query: agentId?, status?: deployed|running|updating|error|stopped, cursor?, limit?
+Query: definitionId?, status?: deployed|running|updating|error|stopped, cursor?, limit?
 
 200: unknown -- List of instances
 
@@ -1246,7 +1246,7 @@ Returns the current set of tarballs under tarballs/ for the package-registry ass
 Source: packages/types/src/instances.ts
 
 ### AgentInstanceResponse
-`{ address: string, agentId: string, agentName: string, createdAt: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
+`{ address: string, agentName: string, createdAt: string, definitionId: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
 Source: packages/types/src/instances.ts
 
 **status**: Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
@@ -1261,7 +1261,7 @@ Source: packages/types/src/approvals.ts
 **toolDefinition**: The approver-facing tool snapshot (name, description, input schema) captured at suspend time.
 
 ### ApprovalSummary
-`{ action: string, agentId: string, agentName: string, createdAt: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`
+`{ action: string, agentName: string, createdAt: string, definitionId: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`
 Source: packages/types/src/me.ts
 
 **sessionId**: Internal FK to the session channel. The instance ID can be resolved via the session relationship.
@@ -1296,7 +1296,7 @@ Source: packages/types/src/agent-data.ts
 Source: packages/types/src/agent-data.ts
 
 ### CreateAgentInstance
-`{ agentId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
+`{ definitionId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
 Source: packages/types/src/instances.ts
 
 **invokerGrants**: Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.
@@ -1543,7 +1543,7 @@ Source: packages/types/src/roles.ts
 Source: packages/types/src/sessions.ts
 
 ### SessionSummary
-`{ agentId: string, agentName: string, createdAt: string, id: string, status: "ended" | "ending" | "idle", tenantId: string, tenantName: string, lastActivityAt?: string | null }`
+`{ agentName: string, createdAt: string, definitionId: string, id: string, status: "ended" | "ending" | "idle", tenantId: string, tenantName: string, lastActivityAt?: string | null }`
 Source: packages/types/src/me.ts
 
 ### SpanResponse

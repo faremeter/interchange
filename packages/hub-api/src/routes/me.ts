@@ -339,8 +339,8 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
         limit,
       });
 
-      // A running instance's agent_id is the legacy agent id; its display name
-      // lives on the folded definition, keyed by origin_agent_id.
+      // A running instance's agent_id is the legacy agent id; its folded
+      // definition (id + display name) is keyed by origin_agent_id.
       const agentIds = [...new Set(rows.map((r) => r.agentId))];
       const definitions =
         agentIds.length > 0
@@ -348,27 +348,39 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
               where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
             })
           : [];
-      const nameByAgentId = new Map(
+      const defByAgentId = new Map(
         definitions.flatMap((d) =>
-          d.originAgentId === null ? [] : [[d.originAgentId, d.name] as const],
+          d.originAgentId === null
+            ? []
+            : [[d.originAgentId, { id: d.id, name: d.name }] as const],
         ),
       );
 
-      const items = rows.map((r) => ({
-        id: r.id,
-        tenantId: r.tenantId,
-        tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
-        agentId: r.agentId,
-        agentName: nameByAgentId.get(r.agentId) ?? "Unknown",
-        address: r.address,
-        status: r.status as
-          | "deployed"
-          | "running"
-          | "updating"
-          | "error"
-          | "stopped",
-        createdAt: ts(r.createdAt),
-      }));
+      // Drop an instance whose agent has no folded definition, matching the
+      // per-tenant instance surfaces (which inner-join the definition): every
+      // agent is folded, so this never elides a real row, and it emits no
+      // definition id it cannot resolve.
+      const items = rows.flatMap((r) => {
+        const def = defByAgentId.get(r.agentId);
+        if (def === undefined) return [];
+        return [
+          {
+            id: r.id,
+            tenantId: r.tenantId,
+            tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
+            definitionId: def.id,
+            agentName: def.name,
+            address: r.address,
+            status: r.status as
+              | "deployed"
+              | "running"
+              | "updating"
+              | "error"
+              | "stopped",
+            createdAt: ts(r.createdAt),
+          },
+        ];
+      });
 
       return c.json(paginatedResponse(items, rows, limit));
     },

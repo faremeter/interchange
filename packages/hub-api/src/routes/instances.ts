@@ -87,11 +87,12 @@ const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
 function formatInstance(
   row: typeof agentInstance.$inferSelect,
+  definitionId: string,
   agentName: string,
 ) {
   return {
     id: row.id,
-    agentId: row.agentId,
+    definitionId,
     agentName,
     tenantId: row.tenantId,
     address: row.address,
@@ -142,7 +143,8 @@ const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
 };
 
 // The row shape the folded-run list sub-query projects: the run columns the
-// instance view needs, plus the origin agent the definition names.
+// instance view needs, plus the origin agent the definition names (used only to
+// gate a native run out of the instance surface, not part of the record).
 type FoldedRunListRow = {
   run: typeof workflowRun.$inferSelect;
   originAgentId: string | null;
@@ -171,7 +173,7 @@ function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
     createdAt: row.run.createdAt,
     updatedAt: row.run.endedAt ?? row.run.createdAt,
     endedAt: row.run.endedAt,
-    agentId: row.originAgentId,
+    definitionId: row.run.definitionId,
     principalId: row.run.principalId,
     sessionId: null,
     kernelId: row.run.kernelId,
@@ -282,30 +284,18 @@ export function createInstanceRoutes({
       const principal = c.get("principal");
       const body = c.req.valid("json");
 
-      const row = await db.query.agent.findFirst({
-        where: and(eq(agent.id, body.agentId), eq(agent.tenantId, tenant.id)),
-      });
-
-      if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Agent not found" } },
-          404,
-        );
-      }
-
-      // The folded workflow_definition is authoritative for launchability and
-      // model resolution: launchability gates on its status and models resolve
-      // from its mirrored requirements, so neither reads the agent row. Every
-      // launchable agent was folded, so a missing definition is an invariant
-      // violation, not a client error. (The agent row above is still read for
-      // the body -- system prompt, tool packages -- until phase 2 materializes
-      // it into the definition's asset.)
+      // The caller names the definition directly by its id. It is
+      // authoritative for launchability and model resolution.
       const definitionRow = await db.query.workflowDefinition.findFirst({
-        where: eq(workflowDefinition.originAgentId, row.id),
+        where: and(
+          eq(workflowDefinition.id, body.definitionId),
+          eq(workflowDefinition.tenantId, tenant.id),
+        ),
       });
       if (definitionRow === undefined) {
-        throw new Error(
-          `agent ${row.id} has no folded workflow_definition; agent-fold invariant violated`,
+        return c.json(
+          { error: { code: "not_found", message: "Definition not found" } },
+          404,
         );
       }
       const definition = parseWorkflowDefinitionRow(definitionRow);
@@ -315,7 +305,41 @@ export function createInstanceRoutes({
           {
             error: {
               code: "conflict",
-              message: `Agent is not in a launchable state (status: ${definition.status})`,
+              message: `Definition is not in a launchable state (status: ${definition.status})`,
+            },
+          },
+          409,
+        );
+      }
+
+      // The launch still sources its body (system prompt, tool packages) from
+      // the folded definition's origin agent row. A native workflow-origin
+      // definition has no origin agent -- it deploys through the workflow path,
+      // not here -- so reject it rather than launch a body-less instance.
+      if (definition.originAgentId === null) {
+        return c.json(
+          {
+            error: {
+              code: "conflict",
+              message:
+                "This definition has no launchable agent body; deploy it through the workflow path",
+            },
+          },
+          409,
+        );
+      }
+      const row = await db.query.agent.findFirst({
+        where: and(
+          eq(agent.id, definition.originAgentId),
+          eq(agent.tenantId, tenant.id),
+        ),
+      });
+      if (row === undefined) {
+        return c.json(
+          {
+            error: {
+              code: "conflict",
+              message: "This definition's agent body is unavailable",
             },
           },
           409,
@@ -656,7 +680,7 @@ export function createInstanceRoutes({
         createdAt: now,
         updatedAt: now,
         endedAt: null,
-        agentId: row.id,
+        definitionId: definition.id,
         principalId: instancePrincipalId,
         sessionId,
         kernelId: null,
@@ -673,9 +697,9 @@ export function createInstanceRoutes({
       tags: ["Instances"],
       summary: "List agent instances",
       description:
-        "Lists agent instances in the tenant. Filterable by agentId and status.",
+        "Lists agent instances in the tenant. Filterable by definitionId and status.",
       parameters: [
-        { name: "agentId", in: "query", schema: { type: "string" } },
+        { name: "definitionId", in: "query", schema: { type: "string" } },
         {
           name: "status",
           in: "query",
@@ -699,7 +723,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const agentId = c.req.query("agentId");
+      const definitionId = c.req.query("definitionId");
       const status = c.req.query("status");
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
@@ -717,8 +741,8 @@ export function createInstanceRoutes({
       const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
 
       const instanceConditions = [eq(agentInstance.tenantId, tenantCtx.id)];
-      if (agentId !== undefined) {
-        instanceConditions.push(eq(agentInstance.agentId, agentId));
+      if (definitionId !== undefined) {
+        instanceConditions.push(eq(workflowDefinition.id, definitionId));
       }
       if (statusFilter !== undefined) {
         instanceConditions.push(eq(agentInstance.status, statusFilter));
@@ -732,6 +756,7 @@ export function createInstanceRoutes({
       const instanceRows = await db
         .select({
           instance: agentInstance,
+          definitionId: workflowDefinition.id,
           agentName: workflowDefinition.name,
         })
         .from(agentInstance)
@@ -759,8 +784,8 @@ export function createInstanceRoutes({
           isNotNull(workflowRun.address),
           isNotNull(workflowDefinition.originAgentId),
         ];
-        if (agentId !== undefined) {
-          runConditions.push(eq(workflowDefinition.originAgentId, agentId));
+        if (definitionId !== undefined) {
+          runConditions.push(eq(workflowRun.definitionId, definitionId));
         }
         if (runStatuses !== undefined) {
           runConditions.push(inArray(workflowRun.status, runStatuses));
@@ -789,7 +814,7 @@ export function createInstanceRoutes({
 
       const entries: ListEntry[] = [
         ...instanceRows.map((r) => ({
-          item: formatInstance(r.instance, r.agentName),
+          item: formatInstance(r.instance, r.definitionId, r.agentName),
           createdAt: r.instance.createdAt,
           id: r.instance.id,
         })),
@@ -986,11 +1011,11 @@ export function createInstanceRoutes({
         );
       }
 
-      // The display name lives on the folded definition, keyed by the legacy
-      // agent id (origin_agent_id), scoped to the tenant.
+      // The display name lives on the definition the record belongs to,
+      // scoped to the tenant.
       const definitionRow = await db.query.workflowDefinition.findFirst({
         where: and(
-          eq(workflowDefinition.originAgentId, record.agentId),
+          eq(workflowDefinition.id, record.definitionId),
           eq(workflowDefinition.tenantId, tenantCtx.id),
         ),
       });
@@ -1107,12 +1132,11 @@ export function createInstanceRoutes({
         );
       }
 
-      // Offerings are keyed on the origin agent's folded definition (their
-      // `agentId` column holds a definition id). Resolve the record's definition
-      // by its origin agent, then filter offerings on that definition id and
-      // display its name.
+      // Offerings are keyed on the definition (their `agentId` column holds a
+      // definition id). Resolve the record's definition, then filter offerings
+      // on its id and display its name.
       const definitionRow = await db.query.workflowDefinition.findFirst({
-        where: eq(workflowDefinition.originAgentId, record.agentId),
+        where: eq(workflowDefinition.id, record.definitionId),
       });
       if (definitionRow === undefined) {
         return c.json(

@@ -37,7 +37,7 @@ type InstanceSummary = {
   id: string;
   tenantId: string;
   tenantName: string;
-  agentId: string;
+  definitionId: string;
   agentName: string;
   address: string;
   status: "deployed" | "running" | "updating" | "error" | "stopped";
