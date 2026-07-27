@@ -2,8 +2,8 @@ import { type SQL, eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
-import { agent, agentInstance, principal } from "@intx/db/schema";
-import { parsePrincipalRow } from "@intx/db";
+import { agentInstance, principal, workflowDefinition } from "@intx/db/schema";
+import { parsePrincipalRow, parseWorkflowDefinitionRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   UserProfile,
@@ -237,24 +237,41 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
 
       const conditions: SQL[] = [];
       if (cursor) {
-        conditions.push(cursorCondition(agent.createdAt, agent.id, cursor));
+        conditions.push(
+          cursorCondition(
+            workflowDefinition.createdAt,
+            workflowDefinition.id,
+            cursor,
+          ),
+        );
       }
 
-      const rows = await db.query.agent.findMany({
-        where: (a, { inArray }) =>
-          and(inArray(a.tenantId, tenantIds), ...conditions),
-        orderBy: pageOrder(agent.createdAt, agent.id),
+      // Agents are folded onto workflow_definition; this endpoint lists the
+      // folded population (origin_agent_id not null), so a native
+      // workflow-origin definition -- which the workflow surface owns -- does
+      // not surface here.
+      const rows = await db.query.workflowDefinition.findMany({
+        where: (d, { inArray, isNotNull }) =>
+          and(
+            inArray(d.tenantId, tenantIds),
+            isNotNull(d.originAgentId),
+            ...conditions,
+          ),
+        orderBy: pageOrder(workflowDefinition.createdAt, workflowDefinition.id),
         limit,
       });
 
-      const items = rows.map((a) => ({
-        id: a.id,
-        tenantId: a.tenantId,
-        tenantName: tenantMap.get(a.tenantId)?.name ?? "Unknown",
-        name: a.name,
-        description: a.description ?? null,
-        status: a.status as "deployed" | "stopped" | "updating" | "error",
-      }));
+      const items = rows.map((row) => {
+        const def = parseWorkflowDefinitionRow(row);
+        return {
+          id: def.id,
+          tenantId: def.tenantId,
+          tenantName: tenantMap.get(def.tenantId)?.name ?? "Unknown",
+          name: def.name,
+          description: def.description ?? null,
+          status: def.status,
+        };
+      });
 
       return c.json(paginatedResponse(items, rows, limit));
     },
