@@ -130,10 +130,7 @@ describe.skipIf(!harnessDbEnvAvailable())("tenant-hierarchy (real DB)", () => {
       expect(await getAncestorChain(h.db, "ghost")).toEqual(["ghost"]);
     });
 
-    test("caps traversal at MAX_DEPTH", async () => {
-      // 30-link chain: tnt_0 (leaf) -> tnt_1 -> ... -> tnt_29 (root). The
-      // walk caps at MAX_DEPTH=20 hops, so it yields tnt_0..tnt_20 (21
-      // ids) and never reaches the deeper ancestors.
+    test("returns a deep ancestor chain in full", async () => {
       const chain: { id: string; parentId: string | null }[] = [];
       for (let i = 0; i < 30; i++) {
         chain.push({
@@ -143,9 +140,20 @@ describe.skipIf(!harnessDbEnvAvailable())("tenant-hierarchy (real DB)", () => {
       }
       await seedTenants(h.db, chain);
       const result = await getAncestorChain(h.db, "tnt_0");
-      expect(result).toHaveLength(21);
-      expect(result[20]).toBe("tnt_20");
-      expect(result).not.toContain("tnt_21");
+      expect(result).toHaveLength(30);
+      expect(result).toEqual(chain.map((row) => row.id));
+    });
+
+    test("fails closed when the hierarchy contains a cycle", async () => {
+      await seedTenants(h.db, [{ id: "cycle" }]);
+      await h.db
+        .update(tenant)
+        .set({ parentId: "cycle" })
+        .where(eq(tenant.id, "cycle"));
+
+      await expect(getAncestorChain(h.db, "cycle")).rejects.toThrow(
+        /contains a cycle/,
+      );
     });
   });
 });
