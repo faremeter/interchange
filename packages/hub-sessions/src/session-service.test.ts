@@ -18,14 +18,13 @@ import {
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
-import type { AgentAssetWithAsset, AssetService } from "./asset-service";
+import type { AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
 import {
   createSessionService,
   SessionLaunchError,
   type UserMessageParams,
 } from "./session-service";
-import { skillKindHandler } from "./skill-kind";
 import type { SendPackOptions, SidecarRouter } from "./ws/sidecar-handler";
 import { createSidecarEmitter } from "./ws/sidecar-events";
 
@@ -259,29 +258,6 @@ function createFakeRepoStore(
   };
 }
 
-function createFakeAssetService(
-  attachments: AgentAssetWithAsset[],
-): AssetService {
-  return {
-    createAsset: () => {
-      throw new Error("not used");
-    },
-    populateAsset: () => {
-      throw new Error("not used");
-    },
-    attachAsset: () => {
-      throw new Error("not used");
-    },
-    listAgentAssets: async (_agentId: string) => attachments,
-    readAssetBlob: () => {
-      throw new Error("not used");
-    },
-    listAssetBlobs: () => {
-      throw new Error("not used");
-    },
-  };
-}
-
 type CapturedSessionAssetRow = {
   instanceId: string;
   agentAssetId: string | null;
@@ -290,32 +266,6 @@ type CapturedSessionAssetRow = {
   sourceCommitSha: string;
   source: "direct" | "resolved";
 };
-
-function createFakeDb(captured: CapturedSessionAssetRow[]) {
-  // The session-service calls `db.insert(sessionAssetTable).values(row)` on
-  // the happy path and `db.delete(sessionAssetTable).where(...)` on the
-  // rollback path when sendPack fails. Both are no-ops here aside from
-  // recording the inserts; the delete just resolves so the catch handler
-  // can rethrow without secondary errors.
-  const builder = {
-    values(row: CapturedSessionAssetRow) {
-      captured.push(row);
-      return Promise.resolve();
-    },
-  };
-  return {
-    insert(_table: unknown) {
-      return builder;
-    },
-    delete(_table: unknown) {
-      return {
-        where(_predicate: unknown) {
-          return Promise.resolve();
-        },
-      };
-    },
-  };
-}
 
 const AGENT_ADDRESS = "agent-1@test.local";
 const AGENT_ID = "agent-1";
@@ -637,306 +587,6 @@ describe("SessionService", () => {
   // Attachment fan-out
   // ---------------------------------------------------------------------
 
-  function makeAttachment(overrides: {
-    id: string;
-    assetId: string;
-    name: string;
-    ref?: string;
-  }): AgentAssetWithAsset {
-    return {
-      id: overrides.id,
-      agentId: AGENT_ID,
-      assetId: overrides.assetId,
-      ref: overrides.ref ?? "refs/heads/main",
-      accessMode: "read-only",
-      createdAt: new Date(),
-      asset: {
-        id: overrides.assetId,
-        tenantId: "tenant-1",
-        kind: "skill",
-        name: overrides.name,
-        displayName: null,
-      },
-    };
-  }
-
-  test("launchSession fans out attachment packs and inserts manifest rows", async () => {
-    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
-      [
-        "ast_greet",
-        {
-          pack: new Uint8Array([10, 11, 12]),
-          commitSha: "c".repeat(40),
-          ref: "refs/heads/main",
-        },
-      ],
-      [
-        "ast_search",
-        {
-          pack: new Uint8Array([20, 21, 22, 23]),
-          commitSha: "d".repeat(40),
-          ref: "refs/heads/main",
-        },
-      ],
-    ]);
-    const fakeRepoStore = createFakeRepoStore(packsByAssetId);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this test
-    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
-      fakeRepoStore;
-
-    const attachments = [
-      makeAttachment({ id: "aas_greet", assetId: "ast_greet", name: "greet" }),
-      makeAttachment({
-        id: "aas_search",
-        assetId: "ast_search",
-        name: "search",
-      }),
-    ];
-
-    const captured: CapturedSessionAssetRow[] = [];
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-      assetService: createFakeAssetService(attachments),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls (insert().values())
-      db: createFakeDb(captured) as unknown as NonNullable<
-        Parameters<typeof createSessionService>[0]["db"]
-      >,
-    });
-
-    await service.stageWorkflowStep({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
-      config: MOCK_CONFIG,
-      deployContent: MOCK_CONTENT,
-    });
-
-    expect(captured).toHaveLength(2);
-
-    const greetRow = captured.find((r) => r.agentAssetId === "aas_greet");
-    if (greetRow === undefined) throw new Error("greet row missing");
-    expect(greetRow.mountPath).toBe("skills/greet/");
-    expect(greetRow.sourceCommitSha).toBe("c".repeat(40));
-    expect(greetRow.instanceId).toBe(INSTANCE_ID);
-    expect(greetRow.assetPackSha).toBe(
-      hexEncode(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new Uint8Array([10, 11, 12])),
-        ),
-      ),
-    );
-
-    const searchRow = captured.find((r) => r.agentAssetId === "aas_search");
-    if (searchRow === undefined) throw new Error("search row missing");
-    expect(searchRow.mountPath).toBe("skills/search/");
-    expect(searchRow.sourceCommitSha).toBe("d".repeat(40));
-
-    const packCalls = router.calls.filter((c) => c.method === "sendPack");
-    // 1 deploy pack + 2 attachment packs
-    expect(packCalls).toHaveLength(3);
-    const attachmentPackCalls = packCalls.slice(1);
-    const opts0 = attachmentPackCalls[0]?.args[4];
-    const opts1 = attachmentPackCalls[1]?.args[4];
-    expect(opts0).toEqual({
-      mountPath: "skills/greet/",
-      repoId: { kind: "skill", id: "ast_greet" },
-    });
-    expect(opts1).toEqual({
-      mountPath: "skills/search/",
-      repoId: { kind: "skill", id: "ast_search" },
-    });
-  });
-
-  test("launchSession appends the available_skills stanza to deploy prompt before writeDeployTree", async () => {
-    const assetGreet = "ast_skill_greet_" + Math.random().toString(36).slice(2);
-    const assetSearch =
-      "ast_skill_search_" + Math.random().toString(36).slice(2);
-
-    // Seed the skill index for both assets by driving the kind
-    // handler's push lifecycle directly. The substrate runs
-    // validatePush then onRefUpdated in the same write; we mirror
-    // that ordering here.
-    async function seedSkillIndex(
-      assetId: string,
-      skills: { name: string; description: string }[],
-    ): Promise<void> {
-      const ref = "refs/heads/main";
-      const repoId: RepoId = { kind: "skill", id: assetId };
-      const files: Record<string, string> = {};
-      for (const s of skills) {
-        files[`${s.name}/SKILL.md`] =
-          `---\nname: ${s.name}\ndescription: ${s.description}\n---\nbody\n`;
-      }
-      const readBlob = async (p: string): Promise<Uint8Array> => {
-        const body = files[p];
-        if (body === undefined) throw new Error(`missing ${p}`);
-        return new TextEncoder().encode(body);
-      };
-      const listDir = async (dirPath: string): Promise<string[]> => {
-        const prefix = dirPath === "" ? "" : `${dirPath}/`;
-        const names = new Set<string>();
-        for (const p of Object.keys(files)) {
-          if (prefix !== "" && !p.startsWith(prefix)) continue;
-          const rest = p.slice(prefix.length);
-          if (rest.length === 0) continue;
-          const slash = rest.indexOf("/");
-          names.add(slash === -1 ? rest : rest.substring(0, slash));
-        }
-        return Array.from(names);
-      };
-      const result = await skillKindHandler.validatePush({
-        repoId,
-        ref,
-        principal: { kind: "hub" },
-        topLevelTreePaths: skills.map((s) => s.name),
-        readBlob,
-        listDir,
-        priorReadBlob: async () => null,
-        priorListDir: async () => [],
-      });
-      if (!result.ok) {
-        throw new Error(`validatePush failed: ${result.reason}`);
-      }
-      await skillKindHandler.onRefUpdated({
-        repoId,
-        ref,
-        oldSha: null,
-        newSha: "a".repeat(40),
-      });
-    }
-
-    await seedSkillIndex(assetGreet, [
-      { name: "wave", description: "Waves at the user." },
-      { name: "bow", description: "Bows formally with A & B." },
-    ]);
-    await seedSkillIndex(assetSearch, [
-      { name: "wave", description: "Searches for waves." },
-    ]);
-
-    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
-      [
-        assetGreet,
-        {
-          pack: new Uint8Array([10, 11, 12]),
-          commitSha: "c".repeat(40),
-          ref: "refs/heads/main",
-        },
-      ],
-      [
-        assetSearch,
-        {
-          pack: new Uint8Array([20, 21, 22]),
-          commitSha: "d".repeat(40),
-          ref: "refs/heads/main",
-        },
-      ],
-    ]);
-    const fakeRepoStore = createFakeRepoStore(packsByAssetId);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this test
-    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
-      fakeRepoStore;
-
-    const attachments = [
-      makeAttachment({
-        id: "aas_greet",
-        assetId: assetGreet,
-        name: "greeter",
-      }),
-      makeAttachment({
-        id: "aas_search",
-        assetId: assetSearch,
-        name: "searcher",
-      }),
-    ];
-
-    const captured: CapturedSessionAssetRow[] = [];
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-      assetService: createFakeAssetService(attachments),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls (insert().values())
-      db: createFakeDb(captured) as unknown as NonNullable<
-        Parameters<typeof createSessionService>[0]["db"]
-      >,
-    });
-
-    await service.stageWorkflowStep({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
-      config: MOCK_CONFIG,
-      deployContent: { systemPrompt: "Base prompt" },
-    });
-
-    const writeCall = repoStore.calls.find(
-      (c) => c.method === "writeDeployTree",
-    );
-    if (writeCall === undefined) throw new Error("writeDeployTree not called");
-    const content = writeCall.args[1];
-    if (
-      content === null ||
-      typeof content !== "object" ||
-      !("systemPrompt" in content) ||
-      typeof content.systemPrompt !== "string"
-    ) {
-      throw new Error("writeDeployTree content shape unexpected");
-    }
-    const prompt = content.systemPrompt;
-
-    expect(prompt.startsWith("Base prompt")).toBe(true);
-    expect(prompt).toContain("<available_skills>");
-    expect(prompt).toContain("</available_skills>");
-
-    // Skill order: assets in listAgentAssets order; within an asset,
-    // skills in index order (which the handler sorts).
-    const greetWaveIdx = prompt.indexOf("<name>greeter/wave</name>");
-    const greetBowIdx = prompt.indexOf("<name>greeter/bow</name>");
-    const searchWaveIdx = prompt.indexOf("<name>searcher/wave</name>");
-    expect(greetWaveIdx).toBeGreaterThan(-1);
-    expect(greetBowIdx).toBeGreaterThan(-1);
-    expect(searchWaveIdx).toBeGreaterThan(-1);
-    expect(greetBowIdx).toBeLessThan(greetWaveIdx);
-    expect(greetWaveIdx).toBeLessThan(searchWaveIdx);
-
-    expect(prompt).toContain(
-      "<description>Bows formally with A &amp; B.</description>",
-    );
-    expect(prompt).toContain("<path>workspace/skills/greeter/wave/</path>");
-    expect(prompt).toContain("<path>workspace/skills/searcher/wave/</path>");
-  });
-
-  test("launchSession omits the available_skills stanza when no skill assets are attached", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    await service.stageWorkflowStep({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
-      config: MOCK_CONFIG,
-      deployContent: { systemPrompt: "Only the base prompt" },
-    });
-
-    const writeCall = repoStore.calls.find(
-      (c) => c.method === "writeDeployTree",
-    );
-    if (writeCall === undefined) throw new Error("writeDeployTree not called");
-    const content = writeCall.args[1];
-    if (
-      content === null ||
-      typeof content !== "object" ||
-      !("systemPrompt" in content) ||
-      typeof content.systemPrompt !== "string"
-    ) {
-      throw new Error("writeDeployTree content shape unexpected");
-    }
-    expect(content.systemPrompt).toBe("Only the base prompt");
-    expect(content.systemPrompt).not.toContain("<available_skills>");
-  });
-
   test("launchSession writes a resolved-source session_asset row for resolver-derived packs", async () => {
     // Build a single-tarball asset registry, fake the DB query path
     // the session service walks (`listAssetsForTenant` walks
@@ -1093,29 +743,128 @@ describe("SessionService", () => {
   });
 
   test("launchSession rolls back earlier-committed session_asset rows on a later fan-out failure", async () => {
-    // Two skill attachments; sendPack succeeds on the first attachment
-    // pack (instance 1 of `sendPack`, after the deploy pack) and fails
-    // on the second. The first attachment's row must come off the
-    // books — the sidecar undeploy tears down its materialized state
-    // and the manifest must follow.
-    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
-      [
-        "ast_greet",
-        {
-          pack: new Uint8Array([10, 11, 12]),
-          commitSha: "c".repeat(40),
-          ref: "refs/heads/main",
+    // Two resolver-derived package-registry attachments, one per
+    // registry (routed by scope), so the fan-out has two items. The
+    // first attachment pack sends cleanly; the second fails. The
+    // second's own catch rolls back its row, and the outer sweep must
+    // additionally remove the first attachment's already-committed row.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ss-rollback-"));
+    const TENANT_ID = "tenant-1";
+
+    // The asset registry keys packuments by each tarball's package.json
+    // name, so the tarball filename is irrelevant — only the embedded
+    // name/version matters.
+    async function buildTarball(pkgName: string): Promise<Uint8Array> {
+      const stagingDir = path.join(dir, pkgName.replace(/[@/]/g, "_"));
+      const pkgDir = path.join(stagingDir, "package");
+      await fs.mkdir(pkgDir, { recursive: true });
+      await fs.writeFile(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({ name: pkgName, version: "1.0.0" }),
+      );
+      const tarballPath = path.join(stagingDir, "out.tgz");
+      await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
+        "package",
+      ]);
+      return fs.readFile(tarballPath);
+    }
+
+    const registries = [
+      {
+        assetId: "ast_reg_a",
+        name: "reg-a",
+        scope: "@rega",
+        pkg: "@rega/tools",
+        pack: new Uint8Array([1, 2, 3]),
+      },
+      {
+        assetId: "ast_reg_b",
+        name: "reg-b",
+        scope: "@regb",
+        pkg: "@regb/tools",
+        pack: new Uint8Array([4, 5, 6]),
+      },
+    ];
+    const tarballByAsset = new Map<string, Uint8Array>();
+    for (const r of registries) {
+      tarballByAsset.set(r.assetId, await buildTarball(r.pkg));
+    }
+
+    const assetService: AssetService = {
+      createAsset: () => {
+        throw new Error("not used");
+      },
+      populateAsset: () => {
+        throw new Error("not used");
+      },
+      attachAsset: () => {
+        throw new Error("not used");
+      },
+      listAgentAssets: async (_agentId: string) => [],
+      readAssetBlob: async ({ assetId, path: p }) => {
+        const t = tarballByAsset.get(assetId);
+        if (t === undefined) throw new Error(`unexpected assetId: ${assetId}`);
+        if (!p.startsWith("tarballs/")) {
+          throw new Error(`unexpected blob path: ${p}`);
+        }
+        return t;
+      },
+      listAssetBlobs: async ({ assetId, dir: d }) => {
+        if (!tarballByAsset.has(assetId)) {
+          throw new Error(`unexpected assetId: ${assetId}`);
+        }
+        if (d !== "tarballs") throw new Error(`unexpected list dir: ${d}`);
+        return ["pkg-1.0.0.tgz"];
+      },
+    };
+
+    const assetRows = registries.map((r) => ({
+      id: r.assetId,
+      tenantId: TENANT_ID,
+      kind: "package-registry" as const,
+      name: r.name,
+      displayName: null,
+      creatorPrincipalId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
+
+    const captured: CapturedSessionAssetRow[] = [];
+    let deleteCalls = 0;
+    const fakeDb = {
+      query: {
+        tenant: {
+          findFirst: async (_args: unknown) =>
+            ({ parentId: null }) as { parentId: string | null },
         },
-      ],
-      [
-        "ast_search",
-        {
-          pack: new Uint8Array([20, 21, 22, 23]),
-          commitSha: "d".repeat(40),
-          ref: "refs/heads/main",
+        asset: {
+          findMany: async (_args: unknown) => assetRows,
         },
-      ],
-    ]);
+      },
+      insert(_table: unknown) {
+        return {
+          values(row: CapturedSessionAssetRow) {
+            captured.push(row);
+            return Promise.resolve();
+          },
+        };
+      },
+      delete(_table: unknown) {
+        return {
+          where(_predicate: unknown) {
+            deleteCalls += 1;
+            return Promise.resolve();
+          },
+        };
+      },
+    };
+
+    const packsByAssetId = new Map<string, FakeAssetPackEntry>(
+      registries.map((r) => [
+        r.assetId,
+        { pack: r.pack, commitSha: "e".repeat(40), ref: "refs/heads/main" },
+      ]),
+    );
     const fakeRepoStore = createFakeRepoStore(packsByAssetId);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this test
     (repoStore as unknown as { repoStore: RepoStore }).repoStore =
@@ -1139,203 +888,6 @@ describe("SessionService", () => {
       return originalSendPack(agentAddress, pack, ref, commitSha, options);
     }) as SidecarRouter["sendPack"];
 
-    const attachments = [
-      makeAttachment({ id: "aas_greet", assetId: "ast_greet", name: "greet" }),
-      makeAttachment({
-        id: "aas_search",
-        assetId: "ast_search",
-        name: "search",
-      }),
-    ];
-
-    const captured: CapturedSessionAssetRow[] = [];
-    let deleteCalls = 0;
-    const fakeDb = {
-      insert(_table: unknown) {
-        return {
-          values(row: CapturedSessionAssetRow) {
-            captured.push(row);
-            return Promise.resolve();
-          },
-        };
-      },
-      delete(_table: unknown) {
-        return {
-          where(_predicate: unknown) {
-            deleteCalls += 1;
-            return Promise.resolve();
-          },
-        };
-      },
-    };
-
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-      assetService: createFakeAssetService(attachments),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls
-      db: fakeDb as unknown as NonNullable<
-        Parameters<typeof createSessionService>[0]["db"]
-      >,
-    });
-
-    let err: unknown;
-    try {
-      await service.stageWorkflowStep({
-        agentAddress: AGENT_ADDRESS,
-        agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
-        config: MOCK_CONFIG,
-        deployContent: MOCK_CONTENT,
-      });
-    } catch (e) {
-      err = e;
-    }
-    expect(err).toBeInstanceOf(SessionLaunchError);
-
-    // The first attachment committed; the second failed mid-send and
-    // its own catch handler rolled back its row. The outer rollback
-    // sweep must additionally remove the first attachment's row even
-    // though its own send succeeded — two delete calls total
-    // (sendAttachmentPack's own rollback for the failed entry +
-    // rollbackCommittedAttachments for the earlier successful one).
-    expect(captured).toHaveLength(2);
-    expect(deleteCalls).toBeGreaterThanOrEqual(2);
-  });
-
-  test("launchSession refuses overlapping direct + resolved attachments by asset id", async () => {
-    // A package-registry asset attached directly to the agent AND
-    // picked from by the tool-package resolver. The direct attachment
-    // can carry any ref the operator chose; the resolver path emits
-    // assetMounts at DEFAULT_ASSET_REF. Letting the launch proceed
-    // would materialize the direct attachment's bytes at the mount
-    // while assetMounts pointed at the resolver's ref — the loader
-    // would then look up tarballs that do not exist at the
-    // materialized mount. Refuse the conflict at launch as a
-    // manifest-shaped error.
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ss-dedup-"));
-    const stagingDir = path.join(dir, "tools-shared-1.0.0");
-    const pkgDir = path.join(stagingDir, "package");
-    await fs.mkdir(pkgDir, { recursive: true });
-    await fs.writeFile(
-      path.join(pkgDir, "package.json"),
-      JSON.stringify({ name: "tools-shared", version: "1.0.0" }),
-    );
-    const tarballPath = path.join(stagingDir, "out.tgz");
-    await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-      "package",
-    ]);
-    const tarballBytes = await fs.readFile(tarballPath);
-    const byPath = new Map<string, Uint8Array>([
-      ["tarballs/tools-shared-1.0.0.tgz", tarballBytes],
-    ]);
-
-    const SHARED_ASSET_ID = "ast_shared";
-    const SHARED_ASSET_NAME = "shared-registry";
-    const TENANT_ID = "tenant-1";
-
-    const directAttachment: AgentAssetWithAsset = {
-      id: "att_direct",
-      agentId: AGENT_ID,
-      assetId: SHARED_ASSET_ID,
-      ref: "refs/heads/main",
-      accessMode: "read-only",
-      createdAt: new Date(),
-      asset: {
-        id: SHARED_ASSET_ID,
-        tenantId: TENANT_ID,
-        kind: "package-registry",
-        name: SHARED_ASSET_NAME,
-        displayName: null,
-      },
-    };
-
-    const assetService: AssetService = {
-      createAsset: () => {
-        throw new Error("not used");
-      },
-      populateAsset: () => {
-        throw new Error("not used");
-      },
-      attachAsset: () => {
-        throw new Error("not used");
-      },
-      listAgentAssets: async (_agentId: string) => [directAttachment],
-      readAssetBlob: async ({ assetId, path: p }) => {
-        if (assetId !== SHARED_ASSET_ID) {
-          throw new Error(`unexpected assetId: ${assetId}`);
-        }
-        const b = byPath.get(p);
-        if (b === undefined) throw new Error(`no blob at ${p}`);
-        return b;
-      },
-      listAssetBlobs: async ({ assetId, dir: d }) => {
-        if (assetId !== SHARED_ASSET_ID) {
-          throw new Error(`unexpected assetId: ${assetId}`);
-        }
-        if (d !== "tarballs") {
-          throw new Error(`unexpected list dir: ${d}`);
-        }
-        return Array.from(byPath.keys()).map((p) =>
-          p.slice("tarballs/".length),
-        );
-      },
-    };
-
-    const assetRow = {
-      id: SHARED_ASSET_ID,
-      tenantId: TENANT_ID,
-      kind: "package-registry" as const,
-      name: SHARED_ASSET_NAME,
-      displayName: null,
-      creatorPrincipalId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    const captured: CapturedSessionAssetRow[] = [];
-    const fakeDb = {
-      query: {
-        tenant: {
-          findFirst: async (_args: unknown) =>
-            ({ parentId: null }) as { parentId: string | null },
-        },
-        asset: {
-          findMany: async (_args: unknown) => [assetRow],
-        },
-      },
-      insert(_table: unknown) {
-        return {
-          values(row: CapturedSessionAssetRow) {
-            captured.push(row);
-            return Promise.resolve();
-          },
-        };
-      },
-      delete(_table: unknown) {
-        return {
-          where(_predicate: unknown) {
-            return Promise.resolve();
-          },
-        };
-      },
-    };
-
-    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
-      [
-        SHARED_ASSET_ID,
-        {
-          pack: new Uint8Array([7, 8, 9]),
-          commitSha: "f".repeat(40),
-          ref: "refs/heads/main",
-        },
-      ],
-    ]);
-    const fakeRepoStore = createFakeRepoStore(packsByAssetId);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this test
-    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
-      fakeRepoStore;
-
     const service = createSessionService({
       sidecarRouter: router,
       agentRepoStore: repoStore,
@@ -1346,11 +898,15 @@ describe("SessionService", () => {
       >,
       toolPackageRegistries: {
         httpRegistries: new Map(),
-        defaultRegistry: SHARED_ASSET_NAME,
+        defaultRegistry: "reg-a",
+        scopeRouting: registries.map((r) => ({
+          scope: r.scope,
+          registry: r.name,
+        })),
       },
     });
 
-    let caught: unknown;
+    let err: unknown;
     try {
       await service.stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
@@ -1358,18 +914,21 @@ describe("SessionService", () => {
         instanceId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
-        toolPackagePins: [{ name: "tools-shared", version: "1.0.0" }],
+        toolPackagePins: registries.map((r) => ({
+          name: r.pkg,
+          version: "1.0.0",
+        })),
       });
-    } catch (err) {
-      caught = err;
+    } catch (e) {
+      err = e;
     }
-    expect(caught).toBeInstanceOf(Error);
-    expect(captured).toHaveLength(0);
-    if (caught instanceof Error) {
-      expect(caught.message).toMatch(
-        /both directly attached to the agent and selected by the tool-package resolver/,
-      );
-    }
+    expect(err).toBeInstanceOf(SessionLaunchError);
+    // Both attachment rows are inserted before their pack sends; the
+    // second send fails. Its own catch rolls back its row, and the
+    // outer rollback sweep removes the first (already-committed) row —
+    // at least two delete calls total.
+    expect(captured.length).toBeGreaterThanOrEqual(2);
+    expect(deleteCalls).toBeGreaterThanOrEqual(2);
   });
 });
 

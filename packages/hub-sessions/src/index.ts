@@ -146,10 +146,6 @@ export {
   type ListAssetBlobsParams,
 } from "./asset-service";
 export {
-  buildAvailableSkillsStanza,
-  type AvailableSkillEntry,
-} from "./available-skills-stanza";
-export {
   createWorkflowRunReader,
   type WorkflowRunReader,
   type WorkflowRunEvent,
