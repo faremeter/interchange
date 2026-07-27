@@ -12,11 +12,11 @@
 // replay, the adapter assembled the text deltas into a coherent
 // content block, and the bytes still parse on the other side.
 //
-// The refusal-path round-trip is covered as a unit test in
-// packages/inference/src/providers/openai.test.ts via a hand-crafted
-// SSE fixture because opencode-zen strips OpenAI's delta.refusal
-// field on relay. INTR-124 lands a live refusal capture once a
-// direct OpenAI deployment plug-in is wired.
+// The refusal-path round-trip is covered by synthetic SSE through the
+// OpenAI adapter (tests/inference/providers/openai.test.ts) and the
+// harness (tests/inference/refusal-harness.test.ts). A live
+// openai/gpt-5.5/structured-output-refusal-streaming probe is retained
+// as a misled matrix row: the model did not emit delta.refusal.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";

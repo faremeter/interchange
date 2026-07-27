@@ -186,15 +186,27 @@ describe("runCompatReplayCorpus — full SUPPORT_MATRIX iteration", () => {
     }
 
     // The corpus should include both real replays (anthropic +
-    // opencode-zen + google-genai captured rows) and structured
-    // skips (misled outcomes, raw-bytes upload leaves, non-streaming
-    // captures). A complete absence of either category would mean
-    // the catalog or the adapter wiring shifted in a way this
-    // suite isn't covering — surface that loudly rather than as a
+    // opencode-zen + google-genai + openai captured streaming rows) and
+    // structured skips (misled outcomes, raw-bytes upload leaves,
+    // non-streaming captures). A complete absence of either category
+    // would mean the catalog or the adapter wiring shifted in a way
+    // this suite isn't covering — surface that loudly rather than as a
     // green pass.
     const replayedCount = results.filter((r) => r.kind === "replayed").length;
     const skippedCount = results.filter((r) => r.kind === "skipped").length;
     expect(replayedCount).toBeGreaterThan(0);
     expect(skippedCount).toBeGreaterThan(0);
+
+    // Pin the first-party openai mapping so dropping
+    // `openai: "openai-compatible"` cannot leave the suite green while
+    // openai streaming captures silently skip as no_adapter_registered.
+    const openaiResults = results.filter((r) => r.entry.provider === "openai");
+    expect(openaiResults.length).toBeGreaterThan(0);
+    const openaiReplayed = openaiResults.filter((r) => r.kind === "replayed");
+    expect(openaiReplayed.length).toBeGreaterThan(0);
+    const openaiNoAdapter = openaiResults.filter(
+      (r) => r.kind === "skipped" && r.reason === "no_adapter_registered",
+    );
+    expect(openaiNoAdapter).toEqual([]);
   });
 });
