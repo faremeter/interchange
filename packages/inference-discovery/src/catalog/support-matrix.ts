@@ -116,16 +116,17 @@ const OPENCODE_NON_VISION_CAPABILITIES = [
 ] as const satisfies readonly SupportEntry["capability"][];
 
 // The first-party api.openai.com deployment covers what the OpenAI-protocol
-// body builder builds. The streaming multi-turn and vision-streaming variants
-// are not built by that builder, so they carry no rows at all: their absence is
-// a rig limitation, not a provider outcome, and marking them unsupported would
-// wrongly attribute it to the model.
+// body builder builds. The streaming multi-turn, vision-streaming, and
+// document-input-streaming variants are not built by that builder, so they
+// carry no rows at all: their absence is a rig limitation, not a provider
+// outcome, and marking them unsupported would wrongly attribute it to the model.
 const OPENAI_CAPTURED_CAPABILITIES = [
   "plain-text",
   "plain-text-streaming",
   "function-calling",
   "function-calling-multi-turn",
   "vision-input",
+  "document-input",
   "structured-output",
   "structured-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];

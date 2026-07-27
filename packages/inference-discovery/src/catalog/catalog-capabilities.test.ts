@@ -110,9 +110,10 @@ describe("catalogCapabilitiesFor over the production support matrix", () => {
     const result = catalogCapabilitiesFor("openai", "gpt-5.5");
     expect(result).toContain("function-calling");
     expect(result).toContain("vision-input");
+    expect(result).toContain("document-input");
     expect(result).toContain("structured-output-streaming");
     expect(result).not.toContain("reasoning-content");
-    expect(result).toHaveLength(7);
+    expect(result).toHaveLength(8);
   });
 
   test("projects claude-sonnet-5's thinking and code-execution flows", () => {

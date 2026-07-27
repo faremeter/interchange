@@ -83,14 +83,15 @@ const plugin = createOpenAIPlugin({ apiKey: process.env.OPENAI_API_KEY });
 Models: `gpt-5.5`.
 
 `gpt-5.5` captures `plain-text`, `function-calling`,
-`function-calling-multi-turn`, `vision-input`, and `structured-output`
-(plus the streaming variants the OpenAI-protocol body builder emits).
-`reasoning-content` is marked `unsupported`: first-party
+`function-calling-multi-turn`, `vision-input`, `document-input`, and
+`structured-output` (plus the streaming variants the OpenAI-protocol body
+builder emits). `reasoning-content` is marked `unsupported`: first-party
 `api.openai.com` Chat Completions responses carry no reasoning field for
 the gpt-5 series (OpenAI surfaces reasoning only via the Responses API,
-which this plug-in does not probe). The `function-calling-multi-turn`
-and `vision-input` streaming variants carry no rows because the body
-builder does not build them — a rig gap, not a provider limitation.
+which this plug-in does not probe). The `function-calling-multi-turn`,
+`vision-input`, and `document-input` streaming variants carry no rows
+because the body builder does not build them — a rig gap, not a provider
+limitation.
 
 ### Environment
 
