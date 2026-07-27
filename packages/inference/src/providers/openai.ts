@@ -185,7 +185,17 @@ function toOpenAIMessage(
     if (parts.every((p) => typeof p === "string")) {
       return [{ role: "user", content: parts.join("") }];
     }
-    return [{ role: "user", content: parts }];
+    // Multimodal messages must use typed content parts. Bare strings next
+    // to image_url / file parts are not the Chat Completions wire shape
+    // (live vision and document captures use { type: "text", text }).
+    return [
+      {
+        role: "user",
+        content: parts.map((p) =>
+          typeof p === "string" ? { type: "text", text: p } : p,
+        ),
+      },
+    ];
   }
 
   if (msg.role === "assistant") {
@@ -256,6 +266,14 @@ function toOpenAIMessage(
   return [{ role: msg.role, content: "" }];
 }
 
+function filenameForDocumentMime(mimeType: string): string {
+  if (mimeType === "application/pdf") return "document.pdf";
+  throw new Error(
+    `OpenAI Chat Completions document input currently supports ` +
+      `application/pdf only; received mimeType: ${mimeType}`,
+  );
+}
+
 function toOpenAIContentPart(block: ContentBlock): unknown {
   switch (block.type) {
     case "text":
@@ -308,20 +326,41 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       throw new Error(
         `OpenAI adapter does not yet handle ${block.type} content blocks.`,
       );
-    case "document":
-      // OpenAI's Chat Completions added a `file` content type with
-      // `file_data`/`file_id` for PDF inputs, but the exact field
-      // names and required metadata (filename, content disposition)
-      // are version-sensitive and the OpenCode-Zen capture corpus
-      // carries no OpenAI document-input fixtures to ground-truth
-      // against. Surface the failure with explicit context rather
-      // than emitting an unverified wire shape that may 400 or — worse
-      // — silently land as malformed input the model ignores.
-      throw new Error(
-        "OpenAI adapter does not yet emit document content blocks; the " +
-          "Chat Completions file-content-type wire shape needs a captured " +
-          "fixture before the adapter can be wired against it.",
-      );
+    case "document": {
+      // Grounded on packages/inference-discovery-openai/wire/openai/
+      // gpt-5.5/document-input: Chat Completions takes
+      // { type: "file", file: { filename, file_data } } with file_data
+      // as a data URI. MediaSource has no filename field, so base64
+      // inputs synthesize a deterministic name from mimeType.
+      const source = block.source;
+      if (source.kind === "base64") {
+        return {
+          type: "file",
+          file: {
+            filename: filenameForDocumentMime(source.mimeType),
+            file_data: `data:${source.mimeType};base64,${source.data}`,
+          },
+        };
+      }
+      if (source.kind === "file-reference") {
+        // Only meaningful when `reference` is an OpenAI Files API
+        // file_id. Handles minted by other providers will 400; that
+        // is correct — the adapter does not translate across providers.
+        return {
+          type: "file",
+          file: { file_id: source.reference },
+        };
+      }
+      if (source.kind === "url") {
+        throw new Error(
+          `OpenAI Chat Completions does not accept url document sources; ` +
+            `the file content type only takes base64 data URIs (file_data) ` +
+            `or uploaded file_id handles. Received url: ${source.url}`,
+        );
+      }
+      source satisfies never;
+      throw new Error(`unreachable: unknown MediaSource kind`);
+    }
     case "citation":
       // Citation blocks are server-emitted attribution metadata for
       // content the model already produced; they're not part of the
