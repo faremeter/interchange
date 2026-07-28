@@ -129,6 +129,34 @@ describe("OpenAI adapter: buildRequest", () => {
     expect(body.messages[0]?.content).toBe("What is 2+2?");
   });
 
+  test("rewrites safety_rating history to assistant text content", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "blocked prompt" }],
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
+        model: "gemini-2.5-flash",
+        timestamp: 2,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "try again" }],
+        timestamp: 3,
+      },
+    ];
+    const req = adapter.buildRequest(messages, "gpt-5.5", {});
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.messages).toHaveLength(3);
+    expect(body.messages[1]?.role).toBe("assistant");
+    expect(body.messages[1]?.content).toBe(
+      "Request blocked: PROHIBITED_CONTENT",
+    );
+  });
+
   test("converts system messages to system role", () => {
     const messages: ConversationTurn[] = [
       {

@@ -208,7 +208,7 @@ When conversations cross provider boundaries (model switch, agent handoff, sessi
 
 Transformations:
 
-- **SafetyRatingBlock** — prompt-level structured safety is output-only. On cross-provider transform, each `safety_rating` block is rewritten as a text block carrying `Request blocked: {blockReason}` so role alternation and human-readable context survive without requiring every adapter to accept the block on input. Same-provider Gemini continues to omit pure-safety turns from request marshaling (no input wire shape).
+- **SafetyRatingBlock** — prompt-level structured safety is output-only. Adapters rewrite each `safety_rating` block to text via `formatSafetyRatingText` when marshaling request history (Gemini, Anthropic, OpenAI). `transformMessages` applies the same rewrite when a caller invokes it for a model switch; today transform is not wired automatically into the reactor — adapter-side marshaling is the live path.
 - **Tool call ID normalization** — Provider ID formats vary (OpenAI Responses API generates 450+ character IDs with pipes; Anthropic has strict format requirements). IDs are normalized to a portable format with a bidirectional mapping for round-trip fidelity.
 - **Thinking block handling** — Encrypted/redacted reasoning blocks are valid only for the originating model. Stripped when replaying to a different provider.
 - **Thinking signature preservation** — Opaque signatures for multi-turn reasoning continuity are kept for same-model, dropped for cross-model.
@@ -216,7 +216,7 @@ Transformations:
 - **Orphaned tool call recovery** — Interrupted conversations show tool calls without results. Synthetic error results are injected so the target model sees a complete tool sequence.
 - **Incomplete turn filtering** — Error/aborted assistant messages are filtered during replay to prevent "reasoning without output" errors on the target model.
 
-Transformation runs automatically when the target model differs from a message's originating model. The originating model is tracked per-message, not per-conversation, because model switches can happen mid-conversation.
+`transformMessages` is the shared helper for those rewrites when a caller invokes it for a model switch. Adapter `buildRequest` paths also apply provider-specific history fixes (including SafetyRatingBlock → text) on every request. The originating model is tracked per-message, not per-conversation, because model switches can happen mid-conversation.
 
 ## Structured Outputs
 

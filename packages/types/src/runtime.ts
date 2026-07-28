@@ -908,6 +908,16 @@ export const SafetyRatingBlock = type({
 export type SafetyRatingBlock = typeof SafetyRatingBlock.infer;
 
 /**
+ * Human-readable rendering of a SafetyRatingBlock for reply text,
+ * timeline summaries, and request-history rewrites when a provider
+ * has no input wire shape for safety_rating. Single owner of the
+ * display string so reply / history / transform stay in lockstep.
+ */
+export function formatSafetyRatingText(block: SafetyRatingBlock): string {
+  return `Request blocked: ${block.blockReason}`;
+}
+
+/**
  * The model's request to execute code via a server-side execution tool.
  * Paired with a CodeExecutionResultBlock carrying the same `id` as the
  * result's `requestId`. Streaming order within a single execution is

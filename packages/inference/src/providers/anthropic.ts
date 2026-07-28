@@ -10,7 +10,10 @@ import type {
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
-import { CitationBlock as CitationBlockType } from "@intx/types/runtime";
+import {
+  CitationBlock as CitationBlockType,
+  formatSafetyRatingText,
+} from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
@@ -142,7 +145,7 @@ function toAnthropicMessage(
     if (block.type === "safety_rating") {
       return toAnthropicBlock({
         type: "text",
-        text: `Request blocked: ${block.blockReason}`,
+        text: formatSafetyRatingText(block),
       });
     }
     return toAnthropicBlock(block);

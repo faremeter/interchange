@@ -5,6 +5,7 @@ import {
   APPROVAL_SNAPSHOT_MAX_BYTES,
   BoundedApprovalSnapshot,
   ContentBlock,
+  formatSafetyRatingText,
   InferenceEvent,
   MediaSource,
   TransformRecord,
@@ -767,6 +768,15 @@ describe("SafetyRatingBlock", () => {
       content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
     });
     expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("formatSafetyRatingText owns the display string", () => {
+    expect(
+      formatSafetyRatingText({
+        type: "safety_rating",
+        blockReason: "PROHIBITED_CONTENT",
+      }),
+    ).toBe("Request blocked: PROHIBITED_CONTENT");
   });
 });
 

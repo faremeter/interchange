@@ -9,6 +9,7 @@ import type {
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
+import { formatSafetyRatingText } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { BEARER_CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
@@ -239,7 +240,7 @@ function toOpenAIMessage(
     // that confuses multi-turn Chat Completions history.
     const textContent = [
       ...textBlocks.map((b) => b.text),
-      ...safetyBlocks.map((b) => `Request blocked: ${b.blockReason}`),
+      ...safetyBlocks.map((b) => formatSafetyRatingText(b)),
     ].join("");
 
     // Skip empty assistant turns that only carried dropped metadata.

@@ -686,6 +686,49 @@ describe("Anthropic adapter: buildRequest", () => {
     },
   );
 
+  test("rewrites safety_rating history to text for request marshaling", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "blocked prompt" }],
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
+        model: "gemini-2.5-flash",
+        timestamp: 2,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "try again" }],
+        timestamp: 3,
+      },
+    ];
+    const req = adapter.buildRequest(
+      messages,
+      "claude-3-5-sonnet-20241022",
+      {},
+    );
+    const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+    expect(body.messages).toHaveLength(3);
+    expect(body.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
+    const assistant = body.messages[1];
+    if (assistant === undefined || !Array.isArray(assistant.content)) {
+      throw new Error("expected assistant content array");
+    }
+    const TextBlock = type({ type: "'text'", text: "string" });
+    const texts = assistant.content.flatMap((b) => {
+      const parsed = TextBlock(b);
+      return parsed instanceof type.errors ? [] : [parsed.text];
+    });
+    expect(texts).toContain("Request blocked: PROHIBITED_CONTENT");
+  });
+
   test("echoes a redacted_thinking content block back verbatim", () => {
     // Anthropic delivers redacted_thinking as a one-shot start event
     // carrying an opaque `data` blob. That blob must echo back
