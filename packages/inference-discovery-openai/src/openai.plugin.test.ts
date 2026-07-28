@@ -12,7 +12,12 @@ describe("createOpenAIPlugin", () => {
   test("declares provider name, model, and redaction lists", () => {
     const plugin = makePlugin();
     expect(plugin.name).toBe("openai");
-    expect([...plugin.models]).toEqual(["gpt-5.5"]);
+    expect([...plugin.models]).toEqual([
+      "gpt-5.5",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ]);
     expect(plugin.redactRequestHeaders).toEqual(["authorization"]);
     expect(plugin.redactResponseHeaders).toEqual([
       "set-cookie",

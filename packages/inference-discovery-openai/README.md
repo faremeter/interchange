@@ -80,9 +80,9 @@ const plugin = createOpenAIPlugin({ apiKey: process.env.OPENAI_API_KEY });
 // Hand off to runCapture from @intx/inference-discovery.
 ```
 
-Models: `gpt-5.5`.
+Models: `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`.
 
-`gpt-5.5` captures `plain-text`, `function-calling`,
+Each first-party model captures `plain-text`, `function-calling`,
 `function-calling-multi-turn`, `vision-input`, `document-input`, and
 `structured-output` (plus the streaming variants the OpenAI-protocol body
 builder emits). `reasoning-content` is marked `unsupported`: first-party

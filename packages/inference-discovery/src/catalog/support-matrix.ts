@@ -57,6 +57,12 @@ const GEMINI_IMAGE_MODELS = [
 
 const OPENCODE_PROVIDER = "opencode-zen";
 const OPENAI_PROVIDER = "openai";
+const OPENAI_FIRST_PARTY_MODELS = [
+  "gpt-5.5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+] as const;
 
 // The structured-output capability pair, shared by the rows whose entire
 // capability list is exactly this pair — several opencode models with outcome
@@ -409,27 +415,27 @@ const MATRIX: SupportEntry[] = [
     notes:
       "OpenAI-style multimodal messages[].content elicits HTTP 400 invalid_request_error \"unknown variant 'image_url', expected 'text'\"; recorded as 'http-error' here so no capture is attempted.",
   },
-  ...rows(OPENAI_PROVIDER, "gpt-5.5", OPENAI_CAPTURED_CAPABILITIES, "captured"),
-  ...rows(
-    OPENAI_PROVIDER,
-    "gpt-5.5",
-    OPENAI_UNSUPPORTED_REASONING,
-    "unsupported",
-    "OpenAI's first-party api.openai.com Chat Completions responses for the gpt-5 series carry no reasoning or reasoning_content field; the assistant message holds only role, content, refusal, and annotations. OpenAI exposes reasoning tokens solely through the Responses API, which this Chat-Completions plug-in does not probe. The OpenAI-protocol opencode-zen relays do surface reasoning_content on this same wire, so this is a first-party OpenAI behavior, not a protocol limitation.",
+  ...OPENAI_FIRST_PARTY_MODELS.flatMap((model) =>
+    rows(OPENAI_PROVIDER, model, OPENAI_CAPTURED_CAPABILITIES, "captured"),
   ),
-  {
-    provider: OPENAI_PROVIDER,
-    model: "gpt-5.5",
-    capability: "structured-output-refusal-streaming",
-    outcome: "misled",
-    notes:
-      "Live gpt-5.5 stream under strict json_schema + a policy-declining " +
-      "prompt never emitted a non-null delta.refusal field. The assistant " +
-      "instead streamed schema-conformant JSON whose steps array carried a " +
-      "textual decline (content fragments; finish_reason stop). The fixture " +
-      "is retained as evidence of this wire behavior; synthetic SSE unit " +
-      "tests cover the adapter's delta.refusal parser independently.",
-  },
+  ...OPENAI_FIRST_PARTY_MODELS.flatMap((model) =>
+    rows(
+      OPENAI_PROVIDER,
+      model,
+      OPENAI_UNSUPPORTED_REASONING,
+      "unsupported",
+      "OpenAI's first-party api.openai.com Chat Completions responses for the gpt-5 series carry no reasoning or reasoning_content field; the assistant message holds only role, content, refusal, and annotations. OpenAI exposes reasoning tokens solely through the Responses API, which this Chat-Completions plug-in does not probe. The OpenAI-protocol opencode-zen relays do surface reasoning_content on this same wire, so this is a first-party OpenAI behavior, not a protocol limitation.",
+    ),
+  ),
+  ...OPENAI_FIRST_PARTY_MODELS.flatMap((model) =>
+    rows(
+      OPENAI_PROVIDER,
+      model,
+      ["structured-output-refusal-streaming"] as const,
+      "misled",
+      "Live stream under strict json_schema + a policy-declining prompt never emitted a non-null delta.refusal field. The assistant instead streamed schema-conformant JSON whose steps array carried a textual decline (content fragments; finish_reason stop). The fixture is retained as evidence of this wire behavior; synthetic SSE unit tests cover the adapter's delta.refusal parser independently.",
+    ),
+  ),
 ];
 
 export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;

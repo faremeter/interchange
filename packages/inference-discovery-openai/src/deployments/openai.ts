@@ -9,7 +9,12 @@ const PROVIDER_NAME = "openai";
 // and always talks to api.openai.com.
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 
-const OPENAI_MODELS: readonly string[] = ["gpt-5.5"];
+const OPENAI_MODELS: readonly string[] = [
+  "gpt-5.5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+];
 
 const REDACT_REQUEST_HEADERS: readonly string[] = ["authorization"];
 const REDACT_RESPONSE_HEADERS: readonly string[] = [

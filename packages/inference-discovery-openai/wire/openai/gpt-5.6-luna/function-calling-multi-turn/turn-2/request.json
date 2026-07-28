@@ -1,0 +1,50 @@
+{
+  "model": "gpt-5.6-luna",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_ae1Vht6as7Qj8JpFIP9YJyXO",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"Boston, MA\"}"
+          }
+        }
+      ],
+      "refusal": null,
+      "annotations": []
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_ae1Vht6as7Qj8JpFIP9YJyXO",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "reasoning_effort": "none"
+}
