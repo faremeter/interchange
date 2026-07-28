@@ -3,10 +3,24 @@ name: Continuous Integration
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # Push to main is a post-merge canary: it re-runs make all against the tip of
+  # main to catch a break that no PR check saw (e.g. two green PRs that conflict
+  # semantically once both land). It reports a broken main; it cannot prevent
+  # the commit landing — that guarantee is branch protection requiring this check.
+  push:
+    branches: [main]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # PRs group by number so a newer push supersedes and cancels the stale run.
+  # Pushes to main group by commit SHA, giving every commit its own group. A
+  # constant refs/heads/main key would place all main pushes in one group,
+  # where a group holds only one pending run: a newer push would evict the
+  # pending run of a commit still queued behind an in-flight one, and that
+  # mid-flight commit would never be validated. Per-SHA grouping is what
+  # guarantees every commit on main runs; cancel-in-progress only governs PR
+  # supersession (it does not protect a pending run, so it cannot carry this).
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
