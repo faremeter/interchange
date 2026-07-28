@@ -53,21 +53,15 @@ function buildRequest(
     ? options.systemPrompt
     : systemText || undefined;
 
-  // Drop turns that are only safety_rating (output-only metadata with
-  // no Anthropic input shape). Mixed turns keep their non-safety blocks.
-  const echoableMessages = conversationMessages.filter((msg) =>
-    msg.content.some((b) => b.type !== "safety_rating"),
-  );
-
   const body: Record<string, unknown> = {
     model,
     max_tokens: options.maxTokens ?? 4096,
-    messages: echoableMessages.map((msg, i) => {
+    messages: conversationMessages.map((msg, i) => {
       // Place a cache breakpoint on the last user message so all prior
       // turns are cached on the next request.
       const isLastUser =
         msg.role !== "assistant" &&
-        echoableMessages.slice(i + 1).every((m) => m.role === "assistant");
+        conversationMessages.slice(i + 1).every((m) => m.role === "assistant");
       return toAnthropicMessage(msg, isLastUser);
     }),
     stream: true,
@@ -141,12 +135,18 @@ function toAnthropicMessage(
   cacheLastBlock?: boolean,
 ): Record<string, unknown> {
   const role = msg.role === "assistant" ? "assistant" : "user";
-  // safety_rating is output-only metadata (Gemini promptFeedback). Drop
-  // it when marshaling Anthropic history so a blocked prior turn does
-  // not throw or produce empty content.
-  const content = msg.content
-    .filter((b) => b.type !== "safety_rating")
-    .map(toAnthropicBlock);
+  // safety_rating is Gemini output-only metadata. Rewrite as text so
+  // role alternation and the block reason survive Anthropic history
+  // without a native safety_rating input shape.
+  const content = msg.content.map((block) => {
+    if (block.type === "safety_rating") {
+      return toAnthropicBlock({
+        type: "text",
+        text: `Request blocked: ${block.blockReason}`,
+      });
+    }
+    return toAnthropicBlock(block);
+  });
   if (cacheLastBlock) {
     const lastBlock = content[content.length - 1];
     if (lastBlock !== undefined) {
@@ -340,10 +340,10 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
       );
 
     case "safety_rating":
-      // Filtered out of history before toAnthropicBlock is called.
+      // Rewritten to text in toAnthropicMessage before this switch.
       throw new Error(
-        "Anthropic adapter: safety_rating blocks must be filtered from " +
-          "conversation history before marshaling.",
+        "Anthropic adapter: safety_rating blocks must be rewritten to " +
+          "text before toAnthropicBlock.",
       );
 
     case "code_execution_request":

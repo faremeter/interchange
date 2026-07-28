@@ -31,12 +31,26 @@ export function transformMessages(
         const isSameModel = msg.model === targetModel;
         const keepThinking = keepThinkingForSameModel && isSameModel;
 
-        const filteredContent = msg.content.filter((block) => {
-          if (block.type === "thinking") {
-            return keepThinking;
-          }
-          return true;
-        });
+        const filteredContent = msg.content
+          .filter((block) => {
+            if (block.type === "thinking") {
+              return keepThinking;
+            }
+            return true;
+          })
+          // safety_rating is output-only metadata. Convert it to text
+          // so cross-provider history keeps role alternation and a
+          // human-readable block reason without requiring every
+          // adapter to special-case the block.
+          .map((block): ContentBlock => {
+            if (block.type === "safety_rating") {
+              return {
+                type: "text",
+                text: `Request blocked: ${block.blockReason}`,
+              };
+            }
+            return block;
+          });
 
         // Filter out assistant messages that have no text or tool calls
         // (aborted/error messages with only thinking blocks removed).
