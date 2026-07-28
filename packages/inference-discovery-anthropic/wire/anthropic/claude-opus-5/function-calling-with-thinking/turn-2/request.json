@@ -1,0 +1,62 @@
+{
+  "model": "claude-opus-5",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "I'll think through this step by step:\n\n1. The user is asking about current weather conditions in a specific city.\n2. I have a `get_weather` function available that looks up current weather for a city.\n3. The function requires a `location` parameter, formatted as \"City and optional region.\"\n4. The user gave me \"Boston, MA\" — which already matches that format exactly (city plus state region).\n5. This is a single, independent lookup, so one function call is all I need.\n\nCalling `get_weather` now:"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_015BoW9ecoqF7sdRuXBRwmJD",
+          "name": "get_weather",
+          "input": {
+            "location": "Boston, MA"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_015BoW9ecoqF7sdRuXBRwmJD",
+          "content": "{}"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Look up the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": ["location"]
+      }
+    }
+  ],
+  "thinking": {
+    "type": "adaptive"
+  },
+  "output_config": {
+    "effort": "max"
+  }
+}

@@ -38,8 +38,8 @@ export type SupportEntry = typeof SupportEntry.infer;
 const ANTHROPIC_PROVIDER = "anthropic";
 const ANTHROPIC_MODELS = [
   "claude-sonnet-5",
-  "claude-sonnet-4-5-20250929",
-  "claude-opus-4-1-20250805",
+  "claude-opus-5",
+  "claude-fable-5",
   "claude-haiku-4-5-20251001",
 ] as const;
 
@@ -184,12 +184,19 @@ const ANTHROPIC_REDACTED_THINKING_CAPABILITIES = [
   "redacted-thinking-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-// Models that returned real redacted_thinking blocks on the 2026-07-28
-// re-capture. claude-sonnet-5 remains misled (regular thinking only).
+// Models that returned real redacted_thinking blocks. Adaptive-thinking
+// models (claude-sonnet-5, and any new model that follows the same wire)
+// remain misled when the canary still yields regular thinking only.
 const ANTHROPIC_REDACTED_CAPTURED_MODELS = [
-  "claude-sonnet-4-5-20250929",
-  "claude-opus-4-1-20250805",
   "claude-haiku-4-5-20251001",
+] as const;
+
+// Adaptive models re-probed for redacted_thinking that still returned
+// regular thinking blocks rather than redacted_thinking (HTTP 200 with
+// a normal text reply and no refusal).
+const ANTHROPIC_REDACTED_MISLED_MODELS = [
+  "claude-sonnet-5",
+  "claude-opus-5",
 ] as const;
 
 const ANTHROPIC_UNSUPPORTED_INPUT_MODALITIES = [
@@ -221,12 +228,21 @@ const MATRIX: SupportEntry[] = [
       "captured",
     ),
   ),
+  ...ANTHROPIC_REDACTED_MISLED_MODELS.flatMap((model) =>
+    rows(
+      ANTHROPIC_PROVIDER,
+      model,
+      ANTHROPIC_REDACTED_THINKING_CAPABILITIES,
+      "misled",
+      "Redacted-thinking canary returned a regular thinking block (empty or partial thinking text plus signature and a normal text reply), not redacted_thinking. These models use adaptive thinking with output_config.effort; Haiku 4.5 on classic budget_tokens thinking still captures real redacted_thinking. Fixture documents the wire that was returned.",
+    ),
+  ),
   ...rows(
     ANTHROPIC_PROVIDER,
-    "claude-sonnet-5",
+    "claude-fable-5",
     ANTHROPIC_REDACTED_THINKING_CAPABILITIES,
-    "misled",
-    "Re-capture 2026-07-28 with Anthropic's documented redacted-thinking canary still returned a regular thinking block (empty thinking text plus signature and a normal text reply), not redacted_thinking. The three classic-path models (Sonnet 4.5, Opus 4.1, Haiku 4.5 with budget_tokens thinking) captured real redacted_thinking on the same day; this model used adaptive thinking with output_config.effort, which is a co-occurring request difference rather than a proven cause. Fixture documents the wire that was returned.",
+    "refused",
+    "Redacted-thinking canary ended with stop_reason refusal (stop_details.type=refusal, category=cyber) under adaptive thinking. No normal text reply and no redacted_thinking block. Anthropic Usage Policy cyber restriction; no fixture by convention.",
   ),
   ...ANTHROPIC_MODELS.flatMap((model) =>
     rows(

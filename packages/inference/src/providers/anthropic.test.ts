@@ -250,13 +250,12 @@ describe("Anthropic parser — required-index schema enforcement", () => {
   });
 });
 
-// Happy-path redacted_thinking fixtures use a real `data` blob copied
-// from the Anthropic discovery corpus
-// (`…/claude-sonnet-4-5-20250929/redacted-thinking/turn-1/response.json`,
-// capture 2026-07-28). Captured wire is `{ type, data }` only — no
-// signature, no thinking text. Streaming captures deliver each block as
-// a one-shot `content_block_start` (no thinking_delta) and may open
-// multiple redacted blocks before text.
+// Happy-path redacted_thinking fixtures use a realistic opaque `data`
+// blob shaped like Anthropic wire (`{ type, data }` only — no
+// signature, no thinking text). Streaming captures deliver each block
+// as a one-shot `content_block_start` (no thinking_delta) and may open
+// multiple redacted blocks before text. This constant is test material,
+// not a live re-export of a corpus fixture path.
 //
 // Adversarial unit cases (missing data, whitespace-preserving blobs)
 // stay synthetic: the corpus does not cover those failure modes. Corpus
@@ -346,7 +345,7 @@ describe("Anthropic parser — redacted_thinking content_block_start", () => {
 
   test("emits one redacted event per content_block_start when multiple appear", () => {
     // Streaming captures open several redacted_thinking blocks before
-    // text (Sonnet 4.5 turn-1 streaming had multiple). Each start is
+    // text (Haiku turn-1 streaming had multiple). Each start is
     // independent and carries its own data + index.
     const adapter = createAnthropicAdapter(TEST_SOURCE);
     const first = parse(adapter, {

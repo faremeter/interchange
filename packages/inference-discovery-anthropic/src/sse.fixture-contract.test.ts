@@ -31,12 +31,10 @@ const REPO_ROOT = resolve(
 );
 
 const FIXTURES = [
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-opus-4-1-20250805/grounding-streaming/response.sse",
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-4-5-20250929/grounding-streaming/response.sse",
   "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/grounding-streaming/response.sse",
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-opus-4-1-20250805/code-execution-streaming/response.sse",
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-4-5-20250929/code-execution-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-5/grounding-streaming/response.sse",
   "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/code-execution-streaming/response.sse",
+  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-5/code-execution-streaming/response.sse",
 ];
 
 describe("extractContentBlocksFromSSE — server-side tool fixture contract", () => {
