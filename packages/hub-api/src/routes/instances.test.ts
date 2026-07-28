@@ -23,10 +23,13 @@ import {
 } from "@intx/db/schema";
 import {
   createSidecarEmitter,
+  type AssetService,
   type EventCollectorRegistry,
+  type RepoStore,
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
+import { synthesizeFoldedWorkflow } from "@intx/workflow-deploy";
 import type { GetSession } from "../session";
 
 // ---------------------------------------------------------------------------
@@ -1427,6 +1430,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
           status?: string;
           modelRequirements?: unknown;
           originAgentId?: string | null;
+          assetId?: string | null;
         }
       | undefined;
   };
@@ -1592,6 +1596,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
   }
 
   const DEFAULT_FOLDED_DEF_ID = "wfd_default";
+  const LAUNCH_ASSET_ID = "ast_launch";
 
   // The `workflow_definition` row the fold produces for an agent: status,
   // model_requirements, and grant_requirements are copied off the agent
@@ -1605,13 +1610,17 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       status?: string;
       modelRequirements?: unknown;
       originAgentId?: string | null;
+      assetId?: string | null;
     },
   ): Record<string, unknown> {
     return {
       id: overrides?.id ?? DEFAULT_FOLDED_DEF_ID,
       tenantId: agent["tenantId"],
       creatorPrincipalId: agent["creatorPrincipalId"],
-      assetId: null,
+      assetId:
+        overrides !== undefined && "assetId" in overrides
+          ? overrides.assetId
+          : LAUNCH_ASSET_ID,
       originAgentId:
         overrides !== undefined && "originAgentId" in overrides
           ? overrides.originAgentId
@@ -1691,6 +1700,35 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     };
   }
 
+  // The materialized `workflow.json` a launch hydrates its body from. Built by
+  // the same synthesis the fold uses, so the envelope validates and
+  // `extractFoldedBody` reads it back. The launch sources systemPrompt / tool
+  // pins / grant requirements from HERE, not the agent row.
+  function foldedWorkflowJson(overrides?: { systemPrompt?: string }): string {
+    return JSON.stringify(
+      synthesizeFoldedWorkflow({
+        workflowId: "wf_launch",
+        mailAddress: "launch@test.example",
+        systemPrompt: overrides?.systemPrompt ?? "You are a test agent.",
+        description: null,
+        inferencePreferences: [],
+        toolPackagePins: [],
+      }),
+    );
+  }
+
+  function mockLaunchAssetService(json: string): AssetService {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the launch only exercises readAssetBlob
+    return {
+      readAssetBlob: async () => new TextEncoder().encode(json),
+    } as unknown as AssetService;
+  }
+
+  // The launch never calls the repo store; it exists only to satisfy the
+  // asset/repo XOR so the asset service can be present.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused stub
+  const LAUNCH_STUB_REPO_STORE = {} as unknown as RepoStore;
+
   function createCapturingSessionService(): SessionService {
     return {
       stageWorkflowStep: async () => undefined,
@@ -1755,8 +1793,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createCapturingSessionService(),
       eventCollectors: createCapturingEventCollectors(),
-      assetService: null,
-      repoStore: null,
+      assetService: mockLaunchAssetService(foldedWorkflowJson()),
+      repoStore: LAUNCH_STUB_REPO_STORE,
       maxTarballBytes: 10_000_000,
     });
 
@@ -1829,8 +1867,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createCapturingSessionService(),
       eventCollectors: createCapturingEventCollectors(collectorCreates),
-      assetService: null,
-      repoStore: null,
+      assetService: mockLaunchAssetService(foldedWorkflowJson()),
+      repoStore: LAUNCH_STUB_REPO_STORE,
       maxTarballBytes: 10_000_000,
     });
 
@@ -1897,8 +1935,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       sidecarRouter: createMockSidecarRouter(),
       sessionService: createCapturingSessionService(),
       eventCollectors: createCapturingEventCollectors(),
-      assetService: null,
-      repoStore: null,
+      assetService: mockLaunchAssetService(foldedWorkflowJson()),
+      repoStore: LAUNCH_STUB_REPO_STORE,
       maxTarballBytes: 10_000_000,
     });
 
@@ -1941,17 +1979,21 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     expect(sawStateGrantAfterInstance).toBe(true);
   });
 
-  function launchApp(db: ReturnType<typeof createLaunchMockDB>) {
+  function launchApp(
+    db: ReturnType<typeof createLaunchMockDB>,
+    opts?: { sessionService?: SessionService; assetService?: AssetService },
+  ) {
     return createApp({
       getSession: createMockGetSession(USER_ID),
       authHandler: () => new Response("", { status: 404 }),
       db,
       grantStore: createLaunchGrantStore(),
       sidecarRouter: createMockSidecarRouter(),
-      sessionService: createCapturingSessionService(),
+      sessionService: opts?.sessionService ?? createCapturingSessionService(),
       eventCollectors: createCapturingEventCollectors(),
-      assetService: null,
-      repoStore: null,
+      assetService:
+        opts?.assetService ?? mockLaunchAssetService(foldedWorkflowJson()),
+      repoStore: LAUNCH_STUB_REPO_STORE,
       maxTarballBytes: 10_000_000,
     });
   }
@@ -2007,6 +2049,60 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     expect(JSON.stringify(await res.json())).toContain(
       "no launchable agent body",
     );
+  });
+
+  test("sources the launch body from the materialized asset, not the agent row", async () => {
+    // The agent row's prompt and the asset's prompt diverge; the launch must
+    // deploy the asset's, proving the body is sourced from the materialization
+    // rather than the (soon-to-be-dropped) agent row.
+    const agent = makeAgentDef();
+    agent["systemPrompt"] = "STALE AGENT-ROW PROMPT";
+    let deployedPrompt: string | undefined;
+    const sessionService: SessionService = {
+      ...createCapturingSessionService(),
+      deployInstanceAtHead: async (params) => {
+        deployedPrompt = params.config.systemPrompt;
+        return { publicKey: "pk-instance-mock" };
+      },
+    };
+    const res = await launchApp(
+      createLaunchMockDB({
+        agent,
+        credential: makeCredential(),
+        model: makeCatalogModel(),
+        modelProvider: makeCatalogProvider(),
+        modelOffering: makeCatalogOffering(),
+        inserts: [],
+      }),
+      {
+        sessionService,
+        assetService: mockLaunchAssetService(
+          foldedWorkflowJson({ systemPrompt: "FRESH ASSET PROMPT" }),
+        ),
+      },
+    ).request(`/api/tenants/${TENANT_ID}/agents/instances`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
+    });
+    expect(res.status).toBe(201);
+    expect(deployedPrompt).toBe("FRESH ASSET PROMPT");
+  });
+
+  test("rejects launch when the definition is not materialized", async () => {
+    // A null asset id means the body was never frozen. Materialization runs
+    // before any launch, so this is a broken invariant, rejected loudly rather
+    // than launched body-less.
+    const res = await launch(
+      createLaunchMockDB({
+        agent: makeAgentDef(),
+        credential: makeCredential(),
+        inserts: [],
+        foldedDefinition: { assetId: null },
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain("not been materialized");
   });
 
   test("resolves models from the folded definition, not the agent", async () => {
@@ -2091,8 +2187,8 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       sidecarRouter: createMockSidecarRouter(),
       sessionService,
       eventCollectors: createCapturingEventCollectors(),
-      assetService: null,
-      repoStore: null,
+      assetService: mockLaunchAssetService(foldedWorkflowJson()),
+      repoStore: LAUNCH_STUB_REPO_STORE,
       maxTarballBytes: 10_000_000,
     });
 

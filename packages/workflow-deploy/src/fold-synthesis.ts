@@ -86,3 +86,40 @@ export function synthesizeFoldedWorkflow(
       : {}),
   });
 }
+
+/** The launch-relevant body a folded definition carries. */
+export interface FoldedBody {
+  readonly systemPrompt: string;
+  readonly toolPackagePins: readonly ToolPackagePin[];
+  readonly grantRequirements: readonly GrantRequirement[];
+}
+
+/**
+ * Read the launch body back out of a folded workflow definition -- the inverse
+ * of `synthesizeFoldedWorkflow`. A folded definition is a single `step`-kind
+ * primitive carrying the agent; the system prompt and tool-package pins live on
+ * that agent, the grant requirements on the envelope. Raises if the definition
+ * is not that single-step shape, so a malformed `workflow.json` surfaces here
+ * rather than launching a broken instance.
+ */
+export function extractFoldedBody(definition: WorkflowDefinition): FoldedBody {
+  const [stepId, ...rest] = definition.stepOrder;
+  if (stepId === undefined || rest.length > 0) {
+    throw new Error(
+      `folded definition ${definition.id} is not single-step (${String(
+        definition.stepOrder.length,
+      )} steps)`,
+    );
+  }
+  const primitive = definition.steps[stepId];
+  if (primitive === undefined || primitive.kind !== "step") {
+    throw new Error(
+      `folded definition ${definition.id} step ${stepId} is not a step primitive`,
+    );
+  }
+  return {
+    systemPrompt: primitive.agent.systemPrompt,
+    toolPackagePins: primitive.agent.toolPackagePins ?? [],
+    grantRequirements: definition.grantRequirements ?? [],
+  };
+}

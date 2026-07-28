@@ -5,6 +5,7 @@ import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 import {
   synthesizeFoldedWorkflow,
+  extractFoldedBody,
   type FoldedWorkflowInput,
 } from "./fold-synthesis";
 
@@ -75,5 +76,33 @@ describe("synthesizeFoldedWorkflow", () => {
     expect(() =>
       synthesizeFoldedWorkflow({ ...BASE, systemPrompt: null }),
     ).toThrow(/no system prompt/);
+  });
+});
+
+describe("extractFoldedBody", () => {
+  test("round-trips the synthesized body", () => {
+    const grantRequirements = [
+      { resource: "secret:vault", action: "use", source: "creator" as const },
+    ];
+    const body = extractFoldedBody(
+      synthesizeFoldedWorkflow({ ...BASE, grantRequirements }),
+    );
+    expect(body.systemPrompt).toBe("You are the folded agent.");
+    expect(body.toolPackagePins).toEqual(BASE.toolPackagePins);
+    expect(body.grantRequirements).toEqual(grantRequirements);
+  });
+
+  test("defaults grantRequirements to empty when the envelope has none", () => {
+    const body = extractFoldedBody(synthesizeFoldedWorkflow(BASE));
+    expect(body.grantRequirements).toEqual([]);
+  });
+
+  test("raises when the definition is not single-step", () => {
+    const wf = synthesizeFoldedWorkflow(BASE);
+    const twoStep: WorkflowDefinition = {
+      ...wf,
+      stepOrder: [...wf.stepOrder, "extra"],
+    };
+    expect(() => extractFoldedBody(twoStep)).toThrow(/single-step/);
   });
 });

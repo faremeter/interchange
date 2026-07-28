@@ -20,11 +20,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import {
-  parseAgentRow,
-  parseWorkflowDefinitionRow,
-  resolveModelSources,
-} from "@intx/db";
+import { parseWorkflowDefinitionRow, resolveModelSources } from "@intx/db";
 import type { DB } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -52,12 +48,17 @@ import {
   resolveRunIdForSession,
   resolveRunSessionId,
   SessionLaunchError,
+  type AssetService,
   type EventCollectorRegistry,
   type RoutableRecord,
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
-import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
+import {
+  extractFoldedBody,
+  isWorkflowDerivedAddress,
+} from "@intx/workflow-deploy";
+import { hydrateDefinition } from "../run-grant-materialization";
 import { formatOffering } from "./offerings";
 import { formatInstanceView, instanceStatusOf } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
@@ -230,6 +231,7 @@ export type CreateInstanceRoutesDeps = {
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
+  assetService: AssetService | null;
 };
 
 export function createInstanceRoutes({
@@ -240,6 +242,7 @@ export function createInstanceRoutes({
   grantStore,
   conditionRegistry,
   requireGrant,
+  assetService,
 }: CreateInstanceRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -312,10 +315,11 @@ export function createInstanceRoutes({
         );
       }
 
-      // The launch still sources its body (system prompt, tool packages) from
-      // the folded definition's origin agent row. A native workflow-origin
-      // definition has no origin agent -- it deploys through the workflow path,
-      // not here -- so reject it rather than launch a body-less instance.
+      // Only a folded definition -- one carrying an origin agent -- launches as
+      // an instance here; a native workflow-origin definition deploys through
+      // the workflow path instead. The launch body is sourced from the
+      // materialized asset below, but the origin-agent marker still separates
+      // the two launch surfaces.
       if (definition.originAgentId === null) {
         return c.json(
           {
@@ -339,14 +343,45 @@ export function createInstanceRoutes({
           {
             error: {
               code: "conflict",
-              message: "This definition's agent body is unavailable",
+              message: "This definition's origin agent is unavailable",
             },
           },
           409,
         );
       }
 
-      if (!row.systemPrompt) {
+      // Source the launch body from the definition's materialized asset (the
+      // frozen `workflow.json`), not the origin agent row. The materialization
+      // cliff runs before any launch, so a null asset id is a broken invariant,
+      // not a normal state -- reject loudly rather than launch a body-less
+      // instance.
+      if (definition.assetId === null) {
+        return c.json(
+          {
+            error: {
+              code: "conflict",
+              message: "This definition has not been materialized",
+            },
+          },
+          409,
+        );
+      }
+      if (assetService === null) {
+        return c.json(
+          {
+            error: {
+              code: "unavailable",
+              message:
+                "Asset service is not configured; cannot hydrate the body",
+            },
+          },
+          503,
+        );
+      }
+      const foldedBody = extractFoldedBody(
+        await hydrateDefinition(assetService, definition.assetId),
+      );
+      if (!foldedBody.systemPrompt) {
         return c.json(
           {
             error: {
@@ -364,7 +399,21 @@ export function createInstanceRoutes({
 
       // --- Inference source resolution (catalog) ---
 
-      const creatorPrincipalId = row.creatorPrincipalId;
+      // The definition carries the creator the fold copied off its agent. It is
+      // a nullable column but always set for a folded definition; a null here is
+      // corruption, so fail loud rather than resolve grants against no creator.
+      const creatorPrincipalId = definition.creatorPrincipalId;
+      if (creatorPrincipalId === null) {
+        return c.json(
+          {
+            error: {
+              code: "conflict",
+              message: "This definition has no creator principal",
+            },
+          },
+          409,
+        );
+      }
 
       const modelRequirements = definition.modelRequirements ?? [];
 
@@ -434,7 +483,7 @@ export function createInstanceRoutes({
 
       const now = new Date();
 
-      const parsedGrantReqs = GrantRequirements(row.grantRequirements ?? []);
+      const parsedGrantReqs = GrantRequirements(foldedBody.grantRequirements);
       if (parsedGrantReqs instanceof type.errors) {
         return c.json(
           {
@@ -611,15 +660,15 @@ export function createInstanceRoutes({
             tenantId: tenant.id,
             principalId: instancePrincipalId,
             agentAddress,
-            systemPrompt: row.systemPrompt,
+            systemPrompt: foldedBody.systemPrompt,
             tools: [],
             grants,
             sources,
             defaultSource,
           },
-          toolPackagePins: parseAgentRow(row).toolPackages,
+          toolPackagePins: foldedBody.toolPackagePins,
           deployContent: {
-            systemPrompt: row.systemPrompt,
+            systemPrompt: foldedBody.systemPrompt,
           },
         });
       } catch (err) {

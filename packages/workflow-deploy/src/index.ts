@@ -26,7 +26,9 @@ export {
 } from "./capability-approval";
 export {
   synthesizeFoldedWorkflow,
+  extractFoldedBody,
   type FoldedWorkflowInput,
+  type FoldedBody,
 } from "./fold-synthesis";
 export {
   assertChainHeadIsDefault,

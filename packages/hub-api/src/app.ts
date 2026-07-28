@@ -242,6 +242,7 @@ export function mountHubRoutes(
       grantStore,
       conditionRegistry,
       requireGrant,
+      assetService,
     }),
   );
 
