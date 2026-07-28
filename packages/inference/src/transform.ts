@@ -5,9 +5,9 @@
 // calls receive synthetic error results, and tool call IDs are normalized to
 // a portable format.
 //
-// Transformation runs automatically when the target model differs from a
-// message's originating model. The originating model is tracked per-message,
-// not per-conversation.
+// Callers invoke transformMessages when switching models. Adapter
+// buildRequest paths also apply provider-specific history fixes. The
+// originating model is tracked per-message, not per-conversation.
 
 import {
   formatSafetyRatingText,

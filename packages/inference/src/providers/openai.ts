@@ -396,8 +396,11 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       // Transformation for the general policy on history-drop fields.
       return "";
     case "safety_rating":
-      // Safety signals annotate model/request filtering; OpenAI has
-      // no input wire shape for them. Drop when serializing history.
+      // Assistant history rewrites safety_rating via
+      // formatSafetyRatingText before this multimodal path. A
+      // safety_rating on a user multimodal turn has no input wire
+      // shape; return empty rather than throw so mixed user content
+      // can still marshal (same silent skip as citation).
       return "";
     case "code_execution_request":
     case "code_execution_result":
