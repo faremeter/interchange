@@ -294,40 +294,13 @@ const MATRIX: SupportEntry[] = [
   ...GEMINI_IMAGE_MODELS.flatMap((model) =>
     rows(GEMINI_PROVIDER, model, GEMINI_IMAGE_CAPABILITIES, "captured"),
   ),
+  // OpenCode Zen inventory (INTR-384): keep kimi line + deepseek-v4-pro +
+  // gpt-5.4-mini; replace glm-5.1 / qwen3.6-plus / mimo-v2-omni with current
+  // glm-5.2 / qwen3.7-plus / mimo-v2.5; add deepseek-v4-flash.
   ...rows(
     OPENCODE_PROVIDER,
     "kimi-k2.6",
     OPENCODE_FULL_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    OPENCODE_PROVIDER,
-    "mimo-v2-omni",
-    OPENCODE_FULL_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    OPENCODE_PROVIDER,
-    "qwen3.6-plus",
-    OPENCODE_FULL_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    OPENCODE_PROVIDER,
-    "glm-5.1",
-    OPENCODE_NON_VISION_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    OPENCODE_PROVIDER,
-    "deepseek-v4-pro",
-    OPENCODE_NON_VISION_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    OPENCODE_PROVIDER,
-    "gpt-5.4-mini",
-    STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(
@@ -357,13 +330,49 @@ const MATRIX: SupportEntry[] = [
   ),
   ...rows(
     OPENCODE_PROVIDER,
-    "glm-5.1",
+    "qwen3.7-plus",
+    OPENCODE_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "qwen3.7-plus",
     STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
   ...rows(
     OPENCODE_PROVIDER,
-    "qwen3.6-plus",
+    "mimo-v2.5",
+    OPENCODE_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "glm-5.2",
+    OPENCODE_NON_VISION_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "glm-5.2",
+    STRUCTURED_OUTPUT_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "deepseek-v4-pro",
+    OPENCODE_NON_VISION_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "deepseek-v4-flash",
+    OPENCODE_NON_VISION_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "gpt-5.4-mini",
     STRUCTURED_OUTPUT_CAPABILITIES,
     "captured",
   ),
@@ -382,30 +391,6 @@ const MATRIX: SupportEntry[] = [
     outcome: "http-error",
     notes:
       "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model deepseek-v4-pro is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; deepseek-v4-pro's reasoning-content captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
-  },
-  {
-    provider: OPENCODE_PROVIDER,
-    model: "mimo-v2-omni",
-    capability: "structured-output",
-    outcome: "http-error",
-    notes:
-      "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model mimo-v2-omni is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
-  },
-  {
-    provider: OPENCODE_PROVIDER,
-    model: "mimo-v2-omni",
-    capability: "structured-output-streaming",
-    outcome: "http-error",
-    notes:
-      "Probe against /zen/v1 returned HTTP 401 with body {type:'error',error:{type:'ModelError',message:'Model mimo-v2-omni is not supported'}}. The HTTP status is the relay's chosen code for the routing miss, not an auth failure; mimo-v2-omni's other captures live on the older /zen/go/v1 tier and the v1 tier does not route the model.",
-  },
-  {
-    provider: OPENCODE_PROVIDER,
-    model: "glm-5.1",
-    capability: "vision-input",
-    outcome: "refused",
-    notes:
-      "Probe returned HTTP 200 with the textual refusal 'Please provide an image so I can describe it for you' rather than a real image description; recorded as 'refused' here so no capture is attempted.",
   },
   {
     provider: OPENCODE_PROVIDER,
@@ -414,6 +399,28 @@ const MATRIX: SupportEntry[] = [
     outcome: "http-error",
     notes:
       "OpenAI-style multimodal messages[].content elicits HTTP 400 invalid_request_error \"unknown variant 'image_url', expected 'text'\"; recorded as 'http-error' here so no capture is attempted.",
+  },
+  ...rows(
+    OPENCODE_PROVIDER,
+    "mimo-v2.5",
+    STRUCTURED_OUTPUT_CAPABILITIES,
+    "captured",
+  ),
+  {
+    provider: OPENCODE_PROVIDER,
+    model: "deepseek-v4-flash",
+    capability: "structured-output",
+    outcome: "http-error",
+    notes:
+      "Probe against the configured OpenCode base URL returned invalid_request_error with message 'Error from provider (Console Go): Upstream request failed'. No fixture; the upstream/routing failure is recorded as http-error.",
+  },
+  {
+    provider: OPENCODE_PROVIDER,
+    model: "deepseek-v4-flash",
+    capability: "structured-output-streaming",
+    outcome: "http-error",
+    notes:
+      "Probe against the configured OpenCode base URL returned invalid_request_error with message 'Error from provider (Console Go): Upstream request failed'. No fixture; the upstream/routing failure is recorded as http-error.",
   },
   ...OPENAI_FIRST_PARTY_MODELS.flatMap((model) =>
     rows(OPENAI_PROVIDER, model, OPENAI_CAPTURED_CAPABILITIES, "captured"),

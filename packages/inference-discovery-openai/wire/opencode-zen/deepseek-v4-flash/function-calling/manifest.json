@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "deepseek-v4-flash",
+  "capability": "function-calling",
+  "capturedAt": "2026-07-28T20:17:59.519Z",
+  "schemaVersion": "1"
+}

@@ -27,20 +27,14 @@ The fixtures are the ground truth: where the docs and the wire
 disagree, the wire wins. This document is the narrative companion
 to those bytes.
 
-The originally-committed corpus held thirty-three capture
-directories spanning text (streaming and non-streaming), function
-calling (single-turn and multi-turn), reasoning (streaming and
-non-streaming), and vision input across five models: `kimi-k2.6`,
-`glm-5.1`, `deepseek-v4-pro`, `qwen3.6-plus`, and `mimo-v2-omni`.
-Vision input was captured for the three models that `SUPPORT_MATRIX`
-marks as vision-capable; the other two have non-captured outcomes
-recorded for vision-input and the discover CLI filters them out of
-its run set. Subsequent work added structured-output coverage on
-the `/zen/v1` tier for `gpt-5.4-mini`, `kimi-k2.6`, `glm-5.1`, and
-`qwen3.6-plus` (`deepseek-v4-pro` and `mimo-v2-omni` are not routed
-on the v1 tier and carry `http-error` rows). The current matrix is
-the authoritative inventory; this narrative is provenance for the
-original campaign and does not enumerate later additions.
+The originally-committed corpus held captures across five models
+(`kimi-k2.6`, `glm-5.1`, `deepseek-v4-pro`, `qwen3.6-plus`,
+`mimo-v2-omni`). Later inventory expansions added structured-output
+coverage, kimi-k3 / kimi-k2.7-code / gpt-5.4-mini, and replaced the
+retired glm-5.1 / qwen3.6-plus / mimo-v2-omni line with glm-5.2 /
+qwen3.7-plus / mimo-v2.5 plus deepseek-v4-flash. The current matrix
+is the authoritative inventory; sections below for retired model ids
+remain as provenance for the original campaign.
 The companion taxonomy document at
 `docs/INFERENCE.md` (the "Generalized Multimodal Taxonomy" section)
 generalises these observations into the cross-provider abstractions
@@ -60,29 +54,25 @@ wins.
 
 ## Models in scope
 
-The five models in scope and the capability classes captured for
-each, derived from the `SUPPORT_MATRIX` export of
-`@intx/inference-discovery/catalog`
-(`packages/inference-discovery/src/catalog/support-matrix.ts`):
+Current inventory is defined by `SUPPORT_MATRIX` (not this table).
+Representative fixture-bearing models after the INTR-384 expansion:
 
-| Model             | Vendor         | text | functionCalling | reasoning | vision |
-| ----------------- | -------------- | ---- | --------------- | --------- | ------ |
-| `kimi-k2.6`       | Moonshot       | yes  | yes             | yes       | yes    |
-| `glm-5.1`         | Z.AI (zhipuai) | yes  | yes             | yes       | no     |
-| `deepseek-v4-pro` | DeepSeek       | yes  | yes             | yes       | no     |
-| `qwen3.6-plus`    | Alibaba        | yes  | yes             | yes       | yes    |
-| `mimo-v2-omni`    | Xiaomi MiMo    | yes  | yes             | yes       | yes    |
+| Model               | Notes                                   |
+| ------------------- | --------------------------------------- |
+| `kimi-k2.6`         | Full + structured-output                |
+| `kimi-k3`           | Full + structured-output                |
+| `kimi-k2.7-code`    | Full + structured-output                |
+| `qwen3.7-plus`      | Full + structured-output                |
+| `mimo-v2.5`         | Full + structured-output                |
+| `glm-5.2`           | Non-vision core + structured-output     |
+| `deepseek-v4-pro`   | Non-vision core; SO/vision `http-error` |
+| `deepseek-v4-flash` | Non-vision core; SO `http-error`        |
+| `gpt-5.4-mini`      | Structured-output only                  |
 
-The `vision: false` entries for `glm-5.1` and `deepseek-v4-pro` are
-recorded in `SUPPORT_MATRIX` as deliberate non-captures: `glm-5.1`
-carries `outcome: "refused"` because the model's probe returned
-HTTP 200 with a textual refusal ("Please provide an image so I can
-describe it for you") rather than a real description, and
-`deepseek-v4-pro` carries `outcome: "http-error"` because
-submitting an OpenAI-style multimodal `messages[].content` array
-elicits HTTP 400 `invalid_request_error: unknown variant
-'image_url'`. The discover CLI filters non-captured entries out of
-its run set, so no HTTP request is dispatched for either pair.
+`deepseek-v4-pro` vision remains `http-error` (unknown `image_url`
+variant). Structured-output probes for deepseek models on the
+configured tier return provider routing/upstream errors and stay
+`http-error` with notes.
 
 ## kimi-k2.6 (Moonshot)
 

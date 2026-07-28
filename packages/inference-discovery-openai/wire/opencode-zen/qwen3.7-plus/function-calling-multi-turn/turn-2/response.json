@@ -1,0 +1,25 @@
+{
+  "model": "qwen3.7-plus",
+  "id": "chatcmpl-674098ed-c858-4980-afd7-3bd4fb1ce42d",
+  "choices": [
+    {
+      "message": {
+        "content": "The current weather in Boston, MA is 68°F with clear conditions.",
+        "reasoning_content": "The tool returned the weather data for Boston, MA: 68°F and clear conditions. I will now present this information to the user in a clear and concise way.",
+        "role": "assistant"
+      },
+      "index": 0,
+      "finish_reason": "stop"
+    }
+  ],
+  "created": 1785269728,
+  "object": "chat.completion",
+  "usage": {
+    "total_tokens": 516,
+    "completion_tokens": 56,
+    "prompt_tokens": 460,
+    "completion_tokens_details": { "reasoning_tokens": 35, "text_tokens": 56 },
+    "prompt_tokens_details": { "cached_tokens": 0, "text_tokens": 460 }
+  },
+  "cost": "0"
+}

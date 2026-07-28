@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "glm-5.2",
+  "capability": "structured-output-streaming",
+  "capturedAt": "2026-07-28T20:17:49.638Z",
+  "schemaVersion": "1"
+}

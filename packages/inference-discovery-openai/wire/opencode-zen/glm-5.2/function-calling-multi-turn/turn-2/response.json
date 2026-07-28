@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-RvQkqo9JOQ2qa99x15H033Fu",
+  "object": "chat.completion",
+  "created": 1785269858,
+  "model": "glm-5.2",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "The current weather in **Boston, MA** is:\n\n- 🌡️ **Temperature:** 68°F\n- ☀️ **Conditions:** Clear\n\nIt's a beautiful day in Boston with clear skies! Let me know if there's anything else you'd like to know.",
+        "name": null,
+        "reasoning_content": "The weather result shows Boston, MA has a temperature of 68°F with clear conditions.",
+        "tool_calls": []
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 243,
+    "completion_tokens": 77,
+    "total_tokens": 320,
+    "prompt_tokens_details": { "cached_tokens": 192 }
+  },
+  "cost": "0"
+}
