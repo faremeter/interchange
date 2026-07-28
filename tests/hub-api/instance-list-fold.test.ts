@@ -168,12 +168,14 @@ beforeEach(async () => {
       tenantId: TENANT_ID,
       name: "def-a",
       originAgentId: AGENT_A,
+      kind: "instance",
     },
     {
       id: definitionIdFor(AGENT_B),
       tenantId: TENANT_ID,
       name: "def-b",
       originAgentId: AGENT_B,
+      kind: "instance",
     },
   ]);
 });
@@ -219,10 +221,10 @@ async function insertFoldedRun(opts: {
   });
 }
 
-// A definition that names no origin agent (backfill corruption). Its id is
-// caller-supplied so the run can anchor on it; `originAgentId` null is allowed
-// alongside the unique index, which is partial on non-null values.
-async function insertOriginlessDefinition(id: string): Promise<void> {
+// A workflow-kind (native) definition -- the list gate excludes its runs from
+// the instance surface. Its id is caller-supplied so a run can anchor on it;
+// `kind` defaults to `workflow`.
+async function insertNativeDefinition(id: string): Promise<void> {
   await h.db.insert(workflowDefinition).values({
     id,
     tenantId: TENANT_ID,
@@ -351,7 +353,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(deployed.ids).toEqual([]);
     });
 
-    test("excludes a deployment-anchored run and a run whose definition names no agent", async () => {
+    test("excludes an address-less run and a run on a native definition", async () => {
       // Address-less: a native deployment-anchored run, not a folded instance.
       await insertFoldedRun({
         id: "ins_native",
@@ -359,9 +361,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
         address: null,
       });
-      // Address present but the definition names no origin agent: backfill
-      // corruption; the origin-agent join drops it.
-      await insertOriginlessDefinition("wfd_corrupt");
+      // Address present but the definition is workflow-kind (native): the
+      // instance-kind list gate drops it.
+      await insertNativeDefinition("wfd_corrupt");
       await insertFoldedRun({
         id: "ins_corrupt",
         originAgentId: AGENT_A,

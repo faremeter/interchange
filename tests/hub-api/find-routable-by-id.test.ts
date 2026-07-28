@@ -59,6 +59,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       tenantId: "tnt_root",
       name: "folded",
       originAgentId: "agt_1",
+      kind: "instance",
     });
     await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
     await h.db.insert(agentSession).values({
@@ -97,6 +98,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       tenantId: "tnt_root",
       name: "done",
       originAgentId: "agt_1",
+      kind: "instance",
     });
     await h.db.insert(workflowRun).values({
       id: "ins_done",
@@ -131,15 +133,16 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     ).toBeUndefined();
   });
 
-  test("returns undefined for a run with an address but no origin agent", async () => {
+  test("returns undefined for a run whose definition is not instance-kind", async () => {
     await seedBase();
-    // A native definition (originAgentId null) that a run with an address
-    // points at: backfill corruption. Resolves to not-found, not a bad record.
+    // A workflow-kind (native) definition that a run with an address points at:
+    // backfill corruption. Resolves to not-found, not a bad record.
     await h.db.insert(workflowDefinition).values({
       id: "wfd_native",
       tenantId: "tnt_root",
       name: "native",
       originAgentId: null,
+      kind: "workflow",
     });
     await h.db.insert(workflowRun).values({
       id: "ins_corrupt",
@@ -160,15 +163,15 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     // The deployment's anchor run owns a workflow-derived address and its id is
     // the deployment id. It is a routing/key anchor, not a folded instance, so
     // the read surface never serves it. The address alone excludes it: even
-    // pointed at a definition that DOES name an origin agent -- so absent the
-    // workflow-derived guard it would resolve as a run -- it still returns
-    // not-found, and without the corruption warning the plain-address case
-    // above emits.
+    // pointed at an instance-kind definition -- so absent the workflow-derived
+    // guard it would resolve as a run -- it still returns not-found, and without
+    // the corruption warning the plain-address case above emits.
     await h.db.insert(workflowDefinition).values({
       id: "wfd_anchor",
       tenantId: "tnt_root",
       name: "anchor-def",
       originAgentId: "agt_1",
+      kind: "instance",
     });
     await h.db.insert(workflowRun).values({
       id: "dep_anchor",
@@ -207,6 +210,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
         tenantId: "tnt_root",
         name: "run",
         originAgentId: "agt_1",
+        kind: "instance",
       });
     }
 

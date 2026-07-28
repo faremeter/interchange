@@ -120,11 +120,10 @@ const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
 };
 
 // The row shape the folded-run list sub-query projects: the run columns the
-// instance view needs, plus the origin agent the definition names (used only to
-// gate a native run out of the instance surface, not part of the record).
+// instance view needs, plus the definition name. The sub-query already gates on
+// an instance-kind definition, so the kind is not carried on the row.
 type FoldedRunListRow = {
   run: typeof workflowRun.$inferSelect;
-  originAgentId: string | null;
   agentName: string;
 };
 
@@ -132,13 +131,11 @@ type FoldedRunListRow = {
 // The list does not resolve a per-run session: a scan must not issue a session
 // lookup per row, and `formatInstanceView` never reads `sessionId`, so it stays
 // null. `updatedAt` mirrors `findRoutableById`'s run branch (`endedAt ??
-// createdAt`). The sub-query filters `address` non-null and inner-joins the
-// origin agent, so a null in either is a broken invariant and surfaces loudly.
+// createdAt`). The sub-query filters `address` non-null, so a null here is a
+// broken invariant and surfaces loudly.
 function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
-  if (row.run.address === null || row.originAgentId === null) {
-    throw new Error(
-      `folded run ${row.run.id} listed with null address or origin agent`,
-    );
+  if (row.run.address === null) {
+    throw new Error(`folded run ${row.run.id} listed with a null address`);
   }
   return {
     id: row.run.id,
@@ -696,10 +693,10 @@ export function createInstanceRoutes({
       });
 
       // Instances are folded `workflow_run` rows: a run presents as an instance
-      // when it owns a routing address and its definition names an origin agent.
-      // The address and origin_agent_id predicates enforce that, dropping a
-      // deployment-anchored or corrupt run. When a status filter selects no run
-      // statuses (`deployed`/`updating`), skip the query entirely.
+      // when it owns a routing address and its definition is instance-kind. The
+      // address and kind predicates enforce that, dropping a deployment-anchored
+      // or native run. When a status filter selects no run statuses
+      // (`deployed`/`updating`), skip the query entirely.
       const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
 
       const runStatuses =
@@ -711,7 +708,7 @@ export function createInstanceRoutes({
         const runConditions = [
           eq(workflowRun.tenantId, tenantCtx.id),
           isNotNull(workflowRun.address),
-          isNotNull(workflowDefinition.originAgentId),
+          eq(workflowDefinition.kind, "instance"),
         ];
         if (definitionId !== undefined) {
           runConditions.push(eq(workflowRun.definitionId, definitionId));
@@ -728,7 +725,6 @@ export function createInstanceRoutes({
         runRows = await db
           .select({
             run: workflowRun,
-            originAgentId: workflowDefinition.originAgentId,
             agentName: workflowDefinition.name,
           })
           .from(workflowRun)

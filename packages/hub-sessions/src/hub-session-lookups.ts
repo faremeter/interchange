@@ -644,7 +644,7 @@ export interface RoutableRecord {
 /**
  * Resolve a plain run id to its instance-shaped record. A run resolves only
  * when it presents as an instance: it owns a routing address AND its definition
- * names an origin agent. A run with no address is deployment-anchored, not an
+ * is instance-kind. A run with no address is deployment-anchored, not an
  * instance, and returns undefined (mirroring the stop route).
  */
 export async function findRoutableById(
@@ -665,9 +665,9 @@ export async function findRoutableById(
       kernelId: workflowRun.kernelId,
       sidecarId: workflowRun.sidecarId,
       definitionId: workflowRun.definitionId,
-      // The origin agent is not part of the record; it only gates whether a
-      // run presents as an instance (a native run's definition has none).
-      originAgentId: workflowDefinition.originAgentId,
+      // The definition kind is not part of the record; it only gates whether a
+      // run presents as an instance (a native run's definition is workflow-kind).
+      definitionKind: workflowDefinition.kind,
     })
     .from(workflowRun)
     .leftJoin(
@@ -687,15 +687,14 @@ export async function findRoutableById(
       // A deployment's anchor run owns a workflow-derived address. Like an
       // address-less deployment-anchored run it is not a folded instance and is
       // not served on the instance read surface -- and unlike a plain-address
-      // run with no origin agent below, its missing origin agent is expected,
-      // not corruption, so it must not warn.
+      // native-kind run below, its workflow-kind definition is expected, not
+      // corruption, so it must not warn.
       return undefined;
     }
-    if (runRow.originAgentId === null) {
-      // A folded run owns a plain address but its definition names no origin
-      // agent: backfill corruption. Surface it rather than bury it as a silent
-      // 404.
-      logger.warn`Run ${runRow.id} owns a routing address but its definition has no origin agent; treating as not found`;
+    if (runRow.definitionKind !== "instance") {
+      // A run owns a plain address but its definition is not instance-kind:
+      // backfill corruption. Surface it rather than bury it as a silent 404.
+      logger.warn`Run ${runRow.id} owns a routing address but its definition is not instance-kind; treating as not found`;
       return undefined;
     }
     return {

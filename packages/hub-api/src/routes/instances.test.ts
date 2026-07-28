@@ -75,9 +75,10 @@ const testDefinition = {
 };
 
 // A folded workflow_run as `findRoutableById`'s run query projects it: it
-// shares the instance id space and reaches its origin agent through the
-// definition (surfaced here as `originAgentId`). Its status is the run enum,
-// which the read routes map onto the instance vocabulary.
+// shares the instance id space and carries its definition's kind (surfaced here
+// as `definitionKind`), which gates whether it presents as an instance. Its
+// status is the run enum, which the read routes map onto the instance
+// vocabulary.
 function makeTestRun(overrides: Record<string, unknown> = {}) {
   return {
     id: INSTANCE_ID,
@@ -91,7 +92,7 @@ function makeTestRun(overrides: Record<string, unknown> = {}) {
     kernelId: null,
     sidecarId: null,
     definitionId: "wfd_test",
-    originAgentId: AGENT_ID,
+    definitionKind: "instance",
     ...overrides,
   };
 }
@@ -125,8 +126,8 @@ type MockDBOpts = {
   principal?: typeof testPrincipal | undefined;
   agent?: typeof testAgent | undefined;
   definition?: typeof testDefinition | undefined;
-  /** A folded workflow_run row `findRoutableById`'s run query returns (with an
-   * `originAgentId`). */
+  /** A folded workflow_run row `findRoutableById`'s run query returns (with a
+   * `definitionKind`). */
   run?: Record<string, unknown> | undefined;
   /** The session id `resolveRunSessionId` finds for a run's principal (used by
    * the mail routes). */
