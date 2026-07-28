@@ -16,11 +16,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
-import {
-  agentInstance,
-  workflowDefinition,
-  workflowRun,
-} from "@intx/db/schema";
+import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -28,11 +24,11 @@ import {
 } from "@intx/test-harness/db-harness";
 import { seedAgent, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
-// Exercises the fold-aware GET /instances list against a real migrated schema.
-// The list merges two keyset heads -- legacy agent_instance rows and folded
-// workflow_run rows -- into a single page. Only a real database exercises the
-// cross-table merge order, the origin-agent join that surfaces a folded run,
-// and cursor resumption across both tables.
+// Exercises the GET /workflows/runs list against a real migrated schema. The
+// list surfaces the folded workflow_run rows that present as instances (an
+// address plus an origin-agent definition). Only a real database exercises the
+// origin-agent join that surfaces a folded run and cursor resumption over the
+// keyset.
 
 const TENANT_ID = "tnt_list";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -201,29 +197,6 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-async function insertInstance(opts: {
-  id: string;
-  agentId: string;
-  status?: "deployed" | "running" | "updating" | "error" | "stopped";
-  createdAt: Date;
-}): Promise<void> {
-  await seedPrincipal(h.db, {
-    id: `prn_${opts.id}`,
-    tenantId: TENANT_ID,
-    kind: "agent",
-    refId: opts.id,
-  });
-  await h.db.insert(agentInstance).values({
-    id: opts.id,
-    agentId: opts.agentId,
-    tenantId: TENANT_ID,
-    principalId: `prn_${opts.id}`,
-    address: `${opts.id}@list.example`,
-    status: opts.status ?? "running",
-    createdAt: opts.createdAt,
-  });
-}
-
 // A folded run owning a routing address, anchored on its origin agent's shared
 // definition (or an explicit definition for the corruption case). principalId
 // is left null -- the list never reads it.
@@ -292,10 +265,10 @@ async function fetchList(
 describe.skipIf(!harnessDbEnvAvailable())(
   "GET /workflows/runs (fold-aware list)",
   () => {
-    test("lists a folded run alongside a legacy instance", async () => {
-      await insertInstance({
+    test("lists folded runs newest first", async () => {
+      await insertFoldedRun({
         id: "ins_1",
-        agentId: AGENT_A,
+        originAgentId: AGENT_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       await insertFoldedRun({
@@ -304,7 +277,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
       const { ids } = await fetchList(buildApp());
-      // Newest first: the folded run (later createdAt) leads.
+      // Newest first: the later createdAt leads.
       expect(ids).toEqual(["ins_2", "ins_1"]);
     });
 
@@ -399,11 +372,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(ids).toEqual([]);
     });
 
-    test("orders a createdAt tie across the two tables by id and pages it cleanly", async () => {
+    test("orders a createdAt tie by id and pages it cleanly", async () => {
       const tie = new Date("2025-03-01T00:00:00.000Z");
-      // Same createdAt across the two tables; id DESC breaks the tie, so
-      // `ins_z` (run) precedes `ins_a` (instance).
-      await insertInstance({ id: "ins_a", agentId: AGENT_A, createdAt: tie });
+      // Same createdAt; id DESC breaks the tie, so `ins_z` precedes `ins_a`.
+      await insertFoldedRun({
+        id: "ins_a",
+        originAgentId: AGENT_A,
+        createdAt: tie,
+      });
       await insertFoldedRun({
         id: "ins_z",
         originAgentId: AGENT_A,
@@ -421,17 +397,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(second.ids).toEqual(["ins_a"]);
     });
 
-    test("resumes an interleaved page across both tables without drops or duplicates", async () => {
-      // Interleave the two tables in createdAt order so a two-page fetch must
-      // resume both heads at the seam.
+    test("resumes a page across runs without drops or duplicates", async () => {
       await insertFoldedRun({
         id: "ins_4run",
         originAgentId: AGENT_A,
         createdAt: new Date("2025-03-04T00:00:00.000Z"),
       });
-      await insertInstance({
-        id: "ins_3ins",
-        agentId: AGENT_A,
+      await insertFoldedRun({
+        id: "ins_3run",
+        originAgentId: AGENT_A,
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
       });
       await insertFoldedRun({
@@ -439,13 +413,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         originAgentId: AGENT_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
-      await insertInstance({
-        id: "ins_1ins",
-        agentId: AGENT_A,
+      await insertFoldedRun({
+        id: "ins_1run",
+        originAgentId: AGENT_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
 
-      const expectedOrder = ["ins_4run", "ins_3ins", "ins_2run", "ins_1ins"];
+      const expectedOrder = ["ins_4run", "ins_3run", "ins_2run", "ins_1run"];
       const collected: string[] = [];
       let cursor: string | null = null;
       for (let page = 0; page < 5; page++) {
@@ -463,30 +437,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(new Set(collected).size).toBe(expectedOrder.length);
     });
 
-    test("pages a run of rows deeper than the limit in each head without drops", async () => {
-      // Three runs and three instances densely interleaved by createdAt, walked
-      // at limit 2. Each head holds more than `limit` rows, so every page but
-      // the last truncates both heads and resumes them mid-run -- the case the
-      // merge's head-cap argument rests on.
-      const rows: { id: string; kind: "run" | "instance"; day: number }[] = [
-        { id: "ins_6run", kind: "run", day: 6 },
-        { id: "ins_5ins", kind: "instance", day: 5 },
-        { id: "ins_4run", kind: "run", day: 4 },
-        { id: "ins_3ins", kind: "instance", day: 3 },
-        { id: "ins_2run", kind: "run", day: 2 },
-        { id: "ins_1ins", kind: "instance", day: 1 },
+    test("pages rows deeper than the limit without drops", async () => {
+      // Six runs densely ordered by createdAt, walked at limit 2, so every page
+      // but the last truncates the keyset and resumes it mid-run.
+      const rows: { id: string; day: number }[] = [
+        { id: "ins_6run", day: 6 },
+        { id: "ins_5run", day: 5 },
+        { id: "ins_4run", day: 4 },
+        { id: "ins_3run", day: 3 },
+        { id: "ins_2run", day: 2 },
+        { id: "ins_1run", day: 1 },
       ];
       for (const r of rows) {
-        const createdAt = new Date(`2025-03-0${r.day}T00:00:00.000Z`);
-        if (r.kind === "run") {
-          await insertFoldedRun({
-            id: r.id,
-            originAgentId: AGENT_A,
-            createdAt,
-          });
-        } else {
-          await insertInstance({ id: r.id, agentId: AGENT_A, createdAt });
-        }
+        await insertFoldedRun({
+          id: r.id,
+          originAgentId: AGENT_A,
+          createdAt: new Date(`2025-03-0${r.day}T00:00:00.000Z`),
+        });
       }
 
       const expectedOrder = rows.map((r) => r.id);

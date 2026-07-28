@@ -14,7 +14,6 @@ import {
   createWorkflowRunStore,
 } from "@intx/db";
 import {
-  agentInstance,
   agentSession,
   principal,
   sessionMail,
@@ -83,14 +82,12 @@ export function createHubSessionLookups(
     },
 
     async lookupDeployRef(agentAddress) {
-      // The reconnect deploy-ref catch-up runs only for legacy agent instances.
-      // A folded run is a supervised workflow-process child, pinned forever like
-      // a native deployment: it keeps its launch-time deploy tree and never
-      // reconciles. Resolve the address and report no ref for a run, so the
-      // caller's null short-circuit skips it -- leaving only a legacy
-      // agent_instance to reconcile. (Its deploy write is keyed by the instance
-      // id, so this read would otherwise resolve, newly enrolling the run in a
-      // reconcile path the pinned-forever contract forbids.)
+      // A folded run is a supervised workflow-process child, pinned forever
+      // like a native deployment: it keeps its launch-time deploy tree and
+      // never reconciles, so it reports no ref and the caller's null
+      // short-circuit skips it. A plain address now resolves only to a folded
+      // run, so the ref lookup below is unreachable; it is retained until the
+      // routable-endpoint kind union collapses to a single member.
       const endpoint = await resolveRoutableAddress(db, agentAddress);
       if (endpoint === undefined || endpoint.kind === "run") {
         return null;
@@ -510,14 +507,9 @@ export interface RoutableEndpoint {
 }
 
 /**
- * Resolve a plain (non-workflow-derived) agent address to the routing endpoint
- * backing it. Under the fold a plain `ins_<hex>` address is prefix-
- * indistinguishable between a legacy `agent_instance` and a folded
- * `workflow_run`, so this queries BOTH tables. A given launch writes exactly
- * one, so at most one matches; a match in both is a corruption signal and
- * throws rather than silently picking a table (the two ids are drawn from the
- * same random space, so a real collision cannot happen by construction).
- * Callers must NOT reintroduce a blind single-table fallback.
+ * Resolve a plain (non-workflow-derived) agent address to the folded
+ * `workflow_run` endpoint backing it. A plain `ins_<hex>` address that a launch
+ * produces is owned by exactly one folded run, keyed by the run's `address`.
  */
 export async function resolveRoutableAddress(
   db: DB["db"],
@@ -532,68 +524,32 @@ export async function resolveRoutableAddress(
   if (isWorkflowDerivedAddress(address)) {
     return undefined;
   }
-  const [instanceRows, runRows] = await Promise.all([
-    db
-      .select({
-        id: agentInstance.id,
-        tenantId: agentInstance.tenantId,
-        publicKey: agentInstance.publicKey,
-        status: agentInstance.status,
-        sessionId: agentInstance.sessionId,
-      })
-      .from(agentInstance)
-      .where(
-        and(eq(agentInstance.address, address), isNull(agentInstance.endedAt)),
-      )
-      .limit(1),
-    db
-      .select({
-        id: workflowRun.id,
-        tenantId: workflowRun.tenantId,
-        publicKey: workflowRun.publicKey,
-        status: workflowRun.status,
-        principalId: workflowRun.principalId,
-      })
-      .from(workflowRun)
-      .where(and(eq(workflowRun.address, address), isNull(workflowRun.endedAt)))
-      .limit(1),
-  ]);
+  const runRow = await db
+    .select({
+      id: workflowRun.id,
+      tenantId: workflowRun.tenantId,
+      publicKey: workflowRun.publicKey,
+      status: workflowRun.status,
+      principalId: workflowRun.principalId,
+    })
+    .from(workflowRun)
+    .where(and(eq(workflowRun.address, address), isNull(workflowRun.endedAt)))
+    .limit(1)
+    .then((rows) => rows[0]);
 
-  const instanceRow = instanceRows[0];
-  const runRow = runRows[0];
-
-  if (instanceRow !== undefined && runRow !== undefined) {
-    throw new Error(
-      `address "${address}" resolves to both an agent instance (${instanceRow.id}) ` +
-        `and a workflow run (${runRow.id}); refusing to route an ambiguous address`,
-    );
+  if (runRow === undefined) {
+    return undefined;
   }
 
-  if (instanceRow !== undefined) {
-    return {
-      kind: "instance",
-      id: instanceRow.id,
-      tenantId: instanceRow.tenantId,
-      address,
-      publicKey: instanceRow.publicKey,
-      status: instanceRow.status,
-      sessionId: instanceRow.sessionId,
-    };
-  }
-
-  if (runRow !== undefined) {
-    return {
-      kind: "run",
-      id: runRow.id,
-      tenantId: runRow.tenantId,
-      address,
-      publicKey: runRow.publicKey,
-      status: runRow.status,
-      sessionId: await resolveRunSessionId(db, runRow.principalId),
-    };
-  }
-
-  return undefined;
+  return {
+    kind: "run",
+    id: runRow.id,
+    tenantId: runRow.tenantId,
+    address,
+    publicKey: runRow.publicKey,
+    status: runRow.status,
+    sessionId: await resolveRunSessionId(db, runRow.principalId),
+  };
 }
 
 /**
@@ -701,98 +657,41 @@ export interface RoutableRecord {
 }
 
 /**
- * Resolve a plain instance/run id to its instance-shaped record. Queries BOTH
- * tables (a launch writes exactly one, so at most one matches; a match in both
- * is corruption and throws, as in `resolveRoutableAddress`). A run resolves
- * only when it presents as an instance: it owns a routing address AND its
- * definition names an origin agent. A run with no address is deployment-
- * anchored, not an instance, and returns undefined (mirroring the stop route).
+ * Resolve a plain run id to its instance-shaped record. A run resolves only
+ * when it presents as an instance: it owns a routing address AND its definition
+ * names an origin agent. A run with no address is deployment-anchored, not an
+ * instance, and returns undefined (mirroring the stop route).
  */
 export async function findRoutableById(
   db: DB["db"],
   id: string,
   tenantId: string,
 ): Promise<RoutableRecord | undefined> {
-  const [instanceRows, runRows] = await Promise.all([
-    db
-      .select({
-        id: agentInstance.id,
-        tenantId: agentInstance.tenantId,
-        address: agentInstance.address,
-        publicKey: agentInstance.publicKey,
-        status: agentInstance.status,
-        createdAt: agentInstance.createdAt,
-        updatedAt: agentInstance.updatedAt,
-        endedAt: agentInstance.endedAt,
-        definitionId: workflowDefinition.id,
-        principalId: agentInstance.principalId,
-        sessionId: agentInstance.sessionId,
-        kernelId: agentInstance.kernelId,
-        sidecarId: agentInstance.sidecarId,
-      })
-      .from(agentInstance)
-      .innerJoin(
-        workflowDefinition,
-        eq(agentInstance.agentId, workflowDefinition.originAgentId),
-      )
-      .where(
-        and(eq(agentInstance.id, id), eq(agentInstance.tenantId, tenantId)),
-      )
-      .limit(1),
-    db
-      .select({
-        id: workflowRun.id,
-        tenantId: workflowRun.tenantId,
-        address: workflowRun.address,
-        publicKey: workflowRun.publicKey,
-        status: workflowRun.status,
-        createdAt: workflowRun.createdAt,
-        endedAt: workflowRun.endedAt,
-        principalId: workflowRun.principalId,
-        kernelId: workflowRun.kernelId,
-        sidecarId: workflowRun.sidecarId,
-        definitionId: workflowRun.definitionId,
-        // The origin agent is not part of the record; it only gates whether a
-        // run presents as an instance (a native run's definition has none).
-        originAgentId: workflowDefinition.originAgentId,
-      })
-      .from(workflowRun)
-      .leftJoin(
-        workflowDefinition,
-        eq(workflowRun.definitionId, workflowDefinition.id),
-      )
-      .where(and(eq(workflowRun.id, id), eq(workflowRun.tenantId, tenantId)))
-      .limit(1),
-  ]);
-
-  const instanceRow = instanceRows[0];
-  const runRow = runRows[0];
-
-  if (instanceRow !== undefined && runRow !== undefined) {
-    throw new Error(
-      `id "${id}" resolves to both an agent instance and a workflow run; ` +
-        `refusing to resolve an ambiguous instance record`,
-    );
-  }
-
-  if (instanceRow !== undefined) {
-    return {
-      kind: "instance",
-      id: instanceRow.id,
-      tenantId: instanceRow.tenantId,
-      address: instanceRow.address,
-      publicKey: instanceRow.publicKey,
-      status: instanceRow.status,
-      createdAt: instanceRow.createdAt,
-      updatedAt: instanceRow.updatedAt,
-      endedAt: instanceRow.endedAt,
-      definitionId: instanceRow.definitionId,
-      principalId: instanceRow.principalId,
-      sessionId: instanceRow.sessionId,
-      kernelId: instanceRow.kernelId,
-      sidecarId: instanceRow.sidecarId,
-    };
-  }
+  const runRow = await db
+    .select({
+      id: workflowRun.id,
+      tenantId: workflowRun.tenantId,
+      address: workflowRun.address,
+      publicKey: workflowRun.publicKey,
+      status: workflowRun.status,
+      createdAt: workflowRun.createdAt,
+      endedAt: workflowRun.endedAt,
+      principalId: workflowRun.principalId,
+      kernelId: workflowRun.kernelId,
+      sidecarId: workflowRun.sidecarId,
+      definitionId: workflowRun.definitionId,
+      // The origin agent is not part of the record; it only gates whether a
+      // run presents as an instance (a native run's definition has none).
+      originAgentId: workflowDefinition.originAgentId,
+    })
+    .from(workflowRun)
+    .leftJoin(
+      workflowDefinition,
+      eq(workflowRun.definitionId, workflowDefinition.id),
+    )
+    .where(and(eq(workflowRun.id, id), eq(workflowRun.tenantId, tenantId)))
+    .limit(1)
+    .then((rows) => rows[0]);
 
   if (runRow !== undefined) {
     if (runRow.address === null) {

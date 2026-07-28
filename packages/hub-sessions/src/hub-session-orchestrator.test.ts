@@ -1,14 +1,13 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
 import { getTableName, is, Table, type SQL } from "drizzle-orm";
-import { PgDialect } from "drizzle-orm/pg-core";
 import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { RepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
-import { agentInstance, agentSession, workflowRun } from "@intx/db/schema";
+import { agentSession, workflowRun } from "@intx/db/schema";
 
 import { createHubSessionOrchestrator } from "./hub-session-orchestrator";
 import {
@@ -21,44 +20,9 @@ import {
 // ---------------------------------------------------------------------------
 
 const TENANT_ID = "tnt_1";
-const PRINCIPAL_ID = "prn_1";
 const INSTANCE_ID = "ins_1";
-const AGENT_ID = "agt_1";
 const AGENT_ADDRESS = "ins_1@tenant.local";
 const SESSION_ID = "ses_1";
-
-type InstanceStatus = "deployed" | "running" | "updating" | "error" | "stopped";
-
-type InstanceRow = {
-  id: string;
-  agentId: string;
-  tenantId: string;
-  principalId: string;
-  address: string;
-  status: InstanceStatus;
-  sessionId: string | null;
-  publicKey: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  endedAt: Date | null;
-};
-
-function makeInstance(overrides: Partial<InstanceRow> = {}): InstanceRow {
-  return {
-    id: INSTANCE_ID,
-    agentId: AGENT_ID,
-    tenantId: TENANT_ID,
-    principalId: PRINCIPAL_ID,
-    address: AGENT_ADDRESS,
-    status: "running",
-    sessionId: SESSION_ID,
-    publicKey: null,
-    createdAt: new Date("2026-01-01"),
-    updatedAt: new Date("2026-01-01"),
-    endedAt: null,
-    ...overrides,
-  };
-}
 
 const RUN_PRINCIPAL_ID = "prn_run";
 const RUN_SESSION_ID = "ses_run";
@@ -94,7 +58,6 @@ type UpdateCall = {
 };
 
 type MockDBOpts = {
-  instance?: InstanceRow | undefined;
   run?: RunRow | undefined;
   // The live agent_session id `resolveRunSessionId` finds for a run's
   // principal; null/undefined leaves the run session-less.
@@ -113,9 +76,6 @@ function createMockDB(opts: MockDBOpts) {
    * drizzle PgDatabase type cannot be structurally satisfied in tests */
   return {
     query: {
-      agentInstance: {
-        findFirst: async () => opts.instance,
-      },
       agent: { findFirst: async () => undefined },
       agentSession: { findFirst: async () => undefined },
       provider: { findFirst: async () => undefined, findMany: async () => [] },
@@ -143,13 +103,10 @@ function createMockDB(opts: MockDBOpts) {
       return {
         from: (t: unknown) => {
           // `resolveRoutableAddress` selects the routing endpoint from
-          // `agent_instance` and `workflow_run`; `resolveRunSessionId` then
-          // reads the run principal's live `agent_session`. Back whichever the
-          // test seeded.
+          // `workflow_run`; `resolveRunSessionId` then reads the run principal's
+          // live `agent_session`. Back whichever the test seeded.
           let rows: unknown[] = [];
-          if (t === agentInstance && opts.instance !== undefined) {
-            rows = [opts.instance];
-          } else if (t === workflowRun && opts.run !== undefined) {
+          if (t === workflowRun && opts.run !== undefined) {
             rows = [opts.run];
           } else if (t === agentSession && opts.runSessionId != null) {
             rows = [{ id: opts.runSessionId }];
@@ -347,7 +304,7 @@ describe("createHubSessionOrchestrator", () => {
   let harness: Harness;
 
   beforeEach(() => {
-    harness = setup({ instance: makeInstance() });
+    harness = setup({ run: makeRun(), runSessionId: RUN_SESSION_ID });
   });
 
   describe("agent.event", () => {
@@ -392,17 +349,18 @@ describe("createHubSessionOrchestrator", () => {
   });
 
   describe("agent.deploy.ack", () => {
-    test("stores the public key on the active instance", async () => {
+    test("stores the public key on the active run", async () => {
       await harness.events.emitAndAwait("agent.deploy.ack", {
         agentAddress: AGENT_ADDRESS,
         publicKey: "deadbeef",
       });
       expect(harness.updates).toHaveLength(1);
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
+      expect(harness.updates[0]?.table).toBe("workflow_run");
     });
 
     test("persists the public key for a workflow-derived deployment address", async () => {
-      harness = setup({ instance: undefined });
+      harness = setup({});
       await harness.events.emitAndAwait("agent.deploy.ack", {
         agentAddress: "ins_dep_abc@workflow.interchange",
         publicKey: "deadbeef",
@@ -417,7 +375,7 @@ describe("createHubSessionOrchestrator", () => {
     });
 
     test("throws when a plain address resolves to no endpoint", async () => {
-      harness = setup({ instance: undefined });
+      harness = setup({});
       await expect(
         harness.events.emitAndAwait("agent.deploy.ack", {
           agentAddress: AGENT_ADDRESS,
@@ -428,57 +386,8 @@ describe("createHubSessionOrchestrator", () => {
   });
 
   describe("agent.reconnected", () => {
-    test("flips a non-running instance to running and restores its collector", async () => {
-      harness = setup({ instance: makeInstance({ status: "deployed" }) });
-
-      await harness.events.emitAndAwait("agent.reconnected", {
-        agentAddress: AGENT_ADDRESS,
-      });
-
-      // A supervised deployment refreshes grants/sources over the supervisor
-      // IPC snapshot, not a reconnect wire push, so no router call fires.
-      expect(harness.router.calls).toHaveLength(0);
-
-      const statusUpdate = harness.updates.find(
-        (u) => u.set["status"] === "running",
-      );
-      expect(statusUpdate).toBeDefined();
-
-      const created = harness.collectors.calls.find((c) => c.kind === "create");
-      expect(created).toBeDefined();
-      if (created?.kind === "create") {
-        expect(created.addr).toBe(AGENT_ADDRESS);
-        expect(created.sessionId).toBe(SESSION_ID);
-      }
-    });
-
-    test("guards the instance flip so an already-running row is untouched", async () => {
-      harness = setup({ instance: makeInstance() });
-
-      await harness.events.emitAndAwait("agent.reconnected", {
-        agentAddress: AGENT_ADDRESS,
-      });
-
-      // The flip is issued unconditionally but carries a `status != running`
-      // guard, so the DB leaves an already-running row untouched -- the
-      // idempotency lives in the where-clause, not a read-then-skip. Render
-      // the captured condition to SQL to prove the guard encodes that
-      // predicate, so dropping the `ne` term fails here rather than silently
-      // reintroducing the leaked-run resurrection risk on the instance path.
-      const statusUpdate = harness.updates.find(
-        (u) => u.set["status"] === "running",
-      );
-      if (statusUpdate === undefined) {
-        throw new Error("expected a status-running update to be issued");
-      }
-      const rendered = new PgDialect().sqlToQuery(statusUpdate.guard);
-      expect(rendered.sql).toContain("status");
-      expect(rendered.sql).toContain("<>");
-      expect(rendered.params).toContain("running");
-    });
-
     test("throws when the endpoint has no active session", async () => {
-      harness = setup({ instance: makeInstance({ sessionId: null }) });
+      harness = setup({ run: makeRun(), runSessionId: null });
 
       await expect(
         harness.events.emitAndAwait("agent.reconnected", {
@@ -488,7 +397,7 @@ describe("createHubSessionOrchestrator", () => {
     });
 
     test("throws when the address resolves to no endpoint", async () => {
-      harness = setup({ instance: undefined });
+      harness = setup({});
 
       await expect(
         harness.events.emitAndAwait("agent.reconnected", {
@@ -499,7 +408,6 @@ describe("createHubSessionOrchestrator", () => {
 
     test("a folded run restores its collector without a status write", async () => {
       harness = setup({
-        instance: undefined,
         run: makeRun(),
         runSessionId: RUN_SESSION_ID,
       });
@@ -508,9 +416,8 @@ describe("createHubSessionOrchestrator", () => {
         agentAddress: AGENT_ADDRESS,
       });
 
-      // A run is born running, so reconnect writes no status (the flip is
-      // instance-only). Its inference-turn collector is restored just like an
-      // instance's, keyed by the run's session.
+      // A run is born running, so reconnect writes no status. Its inference-turn
+      // collector is restored, keyed by the run's session.
       expect(harness.updates).toHaveLength(0);
       const created = harness.collectors.calls.find((c) => c.kind === "create");
       expect(created).toBeDefined();
@@ -527,9 +434,8 @@ describe("createHubSessionOrchestrator", () => {
       // rather than throwing (a throw would roll the just-verified address back
       // out of routing, the opposite of the keep-inspectable intent) and
       // restores no collector -- there is no live session to collect into --
-      // and writes no status, mirroring a leaked agent_instance.
+      // and writes no status.
       harness = setup({
-        instance: undefined,
         run: makeRun({ status: "failed" }),
         runSessionId: null,
       });

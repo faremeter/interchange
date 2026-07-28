@@ -64,22 +64,6 @@ const testPrincipal = {
   updatedAt: new Date("2025-01-01"),
 };
 
-const testInstance = {
-  id: INSTANCE_ID,
-  agentId: AGENT_ID,
-  tenantId: TENANT_ID,
-  address: ADDRESS,
-  status: "running" as const,
-  principalId: "prn_agent",
-  kernelId: null,
-  sidecarId: null,
-  sessionId: "ses_test",
-  publicKey: null,
-  createdAt: new Date("2025-01-01"),
-  updatedAt: new Date("2025-01-01"),
-  endedAt: null,
-};
-
 const testAgent = { id: AGENT_ID, name: "Test Agent" };
 // The folded definition for `testAgent`: offerings key on it now, and it
 // carries the agent's name (the fold copies it).
@@ -136,19 +120,13 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
 // If a test wants a 404, it omits the relevant data from the mock.
 // ---------------------------------------------------------------------------
 
-type TestInstance = Omit<typeof testInstance, "status" | "endedAt"> & {
-  status: string;
-  endedAt: Date | null;
-};
-
 type MockDBOpts = {
   tenant?: typeof testTenant | undefined;
   principal?: typeof testPrincipal | undefined;
-  instance?: TestInstance | undefined;
   agent?: typeof testAgent | undefined;
   definition?: typeof testDefinition | undefined;
   /** A folded workflow_run row `findRoutableById`'s run query returns (with an
-   * `originAgentId`), or undefined for the instance-only tests. */
+   * `originAgentId`). */
   run?: Record<string, unknown> | undefined;
   /** The session id `resolveRunSessionId` finds for a run's principal (used by
    * the mail routes). */
@@ -192,28 +170,11 @@ function createMockDB(opts: MockDBOpts) {
   const sessionMailRows = opts.sessionMail ?? [];
 
   // Builder chain, distinguished by the target table `t`:
-  //   - agentInstance: `findRoutableById`'s instance query (.where().limit()
-  //     -> the seeded instance) AND the list route's .innerJoin(agent) join.
   //   - workflowRun: `findRoutableById`'s run query (.leftJoin().where()
-  //     .limit() -> the seeded run, or empty in instance-only tests).
+  //     .limit() -> the seeded run, or empty when none is seeded).
   //   - anything else (sessionMail): the priorMail query used by POST mail
   //     (.where().orderBy().limit()).
   function selectChain() {
-    // The list route joins the definition and projects its id + name.
-    const joinedRows =
-      opts.instance && opts.agent
-        ? [
-            {
-              instance: opts.instance,
-              definitionId: opts.definition?.id,
-              agentName: opts.agent.name,
-            },
-          ]
-        : [];
-    // findRoutableById's instance branch joins the definition to yield its id.
-    const instanceRows = opts.instance
-      ? [{ ...opts.instance, definitionId: opts.definition?.id }]
-      : [];
     const runRows = opts.run ? [opts.run] : [];
 
     return {
@@ -258,17 +219,6 @@ function createMockDB(opts: MockDBOpts) {
           };
         }
         return {
-          // agentInstance joined to its definition: findRoutableById's instance
-          // branch (.where().limit()) and the list route
-          // (.where().orderBy().limit()).
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve(instanceRows),
-              orderBy: (..._args: unknown[]) => ({
-                limit: () => Promise.resolve(joinedRows),
-              }),
-            }),
-          }),
           // priorMail (sessionMail): .where().orderBy().limit().
           where: () => ({
             orderBy: (..._args: unknown[]) => ({
@@ -293,10 +243,6 @@ function createMockDB(opts: MockDBOpts) {
       principal: {
         findFirst: async () => opts.principal,
         findMany: notImplemented("db.query.principal.findMany"),
-      },
-      agentInstance: {
-        findFirst: async () => opts.instance,
-        findMany: notImplemented("db.query.agentInstance.findMany"),
       },
       agent: {
         findFirst: async () => opts.agent,
@@ -468,8 +414,10 @@ function createTestApp(opts: TestAppOpts = {}) {
     opts.db ?? {
       tenant: testTenant,
       principal: testPrincipal,
-      instance: testInstance,
+      run: makeTestRun({ principalId: "prn_agent" }),
+      runSessionId: "ses_test",
       agent: testAgent,
+      definition: testDefinition,
     },
   );
 
@@ -585,12 +533,11 @@ describe("GET /workflows/runs/:instanceId/health", () => {
     });
   });
 
-  test("returns 404 when instance does not exist", async () => {
+  test("returns 404 when the run does not exist", async () => {
     const app = createTestApp({
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
       },
     });
@@ -600,29 +547,6 @@ describe("GET /workflows/runs/:instanceId/health", () => {
 
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "not_found" } });
-  });
-
-  test("returns 410 when instance is stopped", async () => {
-    const stoppedInstance = {
-      ...testInstance,
-      status: "stopped" as const,
-      endedAt: new Date("2025-06-01"),
-    };
-
-    const app = createTestApp({
-      db: {
-        tenant: testTenant,
-        principal: testPrincipal,
-        instance: stoppedInstance,
-        agent: testAgent,
-      },
-    });
-
-    const res = await app.request(`${instanceURL()}/health`);
-    expect(res.status).toBe(410);
-
-    const body: unknown = await res.json();
-    expect(body).toMatchObject({ error: { code: "gone" } });
   });
 });
 
@@ -661,7 +585,7 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: testInstance,
+        run: makeTestRun(),
         agent: testAgent,
         definition: testDefinition,
         offerings,
@@ -684,7 +608,7 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: testInstance,
+        run: makeTestRun(),
         agent: testAgent,
         definition: testDefinition,
         offerings: [],
@@ -698,12 +622,11 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
     expect(body).toEqual([]);
   });
 
-  test("returns 404 when instance does not exist", async () => {
+  test("returns 404 when the run does not exist", async () => {
     const app = createTestApp({
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: undefined,
       },
     });
@@ -715,13 +638,7 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
     expect(body).toMatchObject({ error: { code: "not_found" } });
   });
 
-  test("returns offerings for stopped instances", async () => {
-    const stoppedInstance = {
-      ...testInstance,
-      status: "stopped" as const,
-      endedAt: new Date("2025-06-01"),
-    };
-
+  test("returns offerings for a stopped run", async () => {
     const offerings = [
       {
         id: "off_1",
@@ -740,7 +657,10 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: stoppedInstance,
+        run: makeTestRun({
+          status: "completed",
+          endedAt: new Date("2025-06-01"),
+        }),
         agent: testAgent,
         definition: testDefinition,
         offerings,
@@ -767,7 +687,6 @@ describe("read routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         definition: testDefinition,
         run,
@@ -802,6 +721,8 @@ describe("read routes serve a folded run", () => {
       `${instanceURL()}/health`,
     );
     expect(res.status).toBe(410);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({ error: { code: "gone" } });
   });
 
   test("health serves a live run", async () => {
@@ -809,7 +730,6 @@ describe("read routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         run: makeTestRun(),
       },
@@ -826,7 +746,6 @@ describe("read routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         definition: testDefinition,
         run: makeTestRun(),
@@ -896,7 +815,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         run: makeTestRun({ principalId: "prn_run" }),
         runSessionId: "ses_run",
@@ -928,7 +846,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         run: makeTestRun({ status: "completed", principalId: "prn_run" }),
         runSessionId: "ses_run",
@@ -949,7 +866,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         run: makeTestRun({
           status: "cancelled",
@@ -975,7 +891,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: undefined,
         agent: testAgent,
         run: makeTestRun({ principalId: "prn_run" }),
         turns: [
@@ -1165,7 +1080,8 @@ describe("POST /workflows/runs/:instanceId/mail", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        instance: testInstance,
+        run: makeTestRun({ principalId: "prn_agent" }),
+        runSessionId: "ses_test",
         agent: testAgent,
         sessionMail: [{ id: "prior-1" }],
       },

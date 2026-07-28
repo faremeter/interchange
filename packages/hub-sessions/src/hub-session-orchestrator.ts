@@ -10,10 +10,10 @@
 // than the full SidecarRouter, so tests can drive subscriber behavior
 // with a small stub and an isolated emitter.
 
-import { and, eq, ne } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { type } from "arktype";
 import type { DB } from "@intx/db";
-import { agentInstance, workflowRun } from "@intx/db/schema";
+import { workflowRun } from "@intx/db/schema";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
@@ -111,34 +111,25 @@ export function createHubSessionOrchestrator(
           .where(eq(workflowRun.address, agentAddress));
         return;
       }
-      // A plain address is backed by either a launched agent_instance or a
-      // folded workflow_run; persist the acked key on whichever the address
-      // resolves to. A missing endpoint is a bug to surface, not to drop.
+      // A plain address is backed by a folded workflow_run; persist the acked
+      // key on it. A missing endpoint is a bug to surface, not to drop.
       const endpoint = await resolveRoutableAddress(db, agentAddress);
       if (endpoint === undefined) {
         throw new Error(
           `No active endpoint found for deploy ack on address "${agentAddress}"`,
         );
       }
-      if (endpoint.kind === "instance") {
-        await db
-          .update(agentInstance)
-          .set({ publicKey })
-          .where(eq(agentInstance.id, endpoint.id));
-      } else {
-        await db
-          .update(workflowRun)
-          .set({ publicKey })
-          .where(eq(workflowRun.id, endpoint.id));
-      }
+      await db
+        .update(workflowRun)
+        .set({ publicKey })
+        .where(eq(workflowRun.id, endpoint.id));
     }),
   );
 
   unsubscribers.push(
     events.on("agent.reconnected", async ({ agentAddress }) => {
-      // A plain address is backed by either a launched agent_instance or a
-      // folded workflow_run; resolve across both. A missing endpoint is a bug
-      // to surface, not to drop.
+      // A plain address is backed by a folded workflow_run; resolve it. A
+      // missing endpoint is a bug to surface, not to drop.
       const endpoint = await resolveRoutableAddress(db, agentAddress);
       if (endpoint === undefined) {
         throw new Error(
@@ -146,13 +137,13 @@ export function createHubSessionOrchestrator(
         );
       }
       // A leaked or terminal folded run is deliberately kept routable (terminal
-      // status, null endedAt) so it stays reachable to inspect or clean up --
-      // exactly as a leaked agent_instance does. A run resolves its session
-      // live-only, so once that session has ended it has no session to collect
-      // into. Keep the address routable (return rather than throw, which would
-      // roll the just-verified address back out of routing) and restore no
-      // collector; no status flip either, since a failed -> running flip would
-      // claim a running session that does not exist.
+      // status, null endedAt) so it stays reachable to inspect or clean up. A
+      // run resolves its session live-only, so once that session has ended it
+      // has no session to collect into. Keep the address routable (return
+      // rather than throw, which would roll the just-verified address back out
+      // of routing) and restore no collector; no status flip either, since a
+      // folded run is born running and a failed -> running flip would claim a
+      // running session that does not exist.
       if (endpoint.kind === "run" && endpoint.status !== "running") {
         return;
       }
@@ -168,30 +159,9 @@ export function createHubSessionOrchestrator(
       // credentials snapshot at spawn and recycle, so reconnect does not
       // re-push them over the wire.
 
-      if (endpoint.kind === "instance") {
-        // Advance a non-running instance (e.g. `deployed`) to running; the
-        // guard leaves an already-running row untouched. A folded run is born
-        // running and has no non-terminal-non-running state, so it needs no
-        // flip -- and a guarded write would resurrect a leaked terminal run,
-        // which a failed launch leaves `failed` with a null `endedAt` to keep
-        // routable.
-        const now = new Date();
-        await db
-          .update(agentInstance)
-          .set({ status: "running", updatedAt: now })
-          .where(
-            and(
-              eq(agentInstance.id, endpoint.id),
-              ne(agentInstance.status, "running"),
-            ),
-          );
-      }
-
-      // Restore the inference-turn collector for either kind. It records turns
-      // under endpoint.id -- an instance id or a folded run id from the shared
-      // id space -- which inference_turn.instanceId stores without a foreign
-      // key. The status flip above stays instance-only, but a run collects
-      // turns just as an instance does.
+      // Restore the inference-turn collector. It records turns under endpoint.id
+      // -- a folded run id -- which inference_turn.instanceId stores without a
+      // foreign key.
       if (!eventCollectors.has(agentAddress)) {
         eventCollectors.create(
           agentAddress,

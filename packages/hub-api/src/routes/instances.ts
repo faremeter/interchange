@@ -6,7 +6,6 @@ import { streamSSE } from "hono/streaming";
 import { type } from "arktype";
 
 import {
-  agentInstance,
   agentRole,
   agentSession,
   grant as grantTable,
@@ -67,7 +66,6 @@ import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { generateId } from "@intx/hub-common";
-import { ts } from "../format";
 import {
   parsePageParams,
   cursorCondition,
@@ -84,27 +82,6 @@ const GrantRequirements = GrantRequirement.array();
 // by the handler with a structured error, while genuine garbage is
 // rejected here before the JSON parser allocates a giant string.
 const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
-
-function formatInstance(
-  row: typeof agentInstance.$inferSelect,
-  definitionId: string,
-  agentName: string,
-) {
-  return {
-    id: row.id,
-    definitionId,
-    agentName,
-    tenantId: row.tenantId,
-    address: row.address,
-    status: row.status,
-    publicKey: row.publicKey ?? null,
-    kernelId: row.kernelId ?? null,
-    sidecarId: row.sidecarId ?? null,
-    createdAt: ts(row.createdAt),
-    updatedAt: ts(row.updatedAt),
-    endedAt: row.endedAt ? ts(row.endedAt) : null,
-  };
-}
 
 type InstanceStatusFilter =
   | "deployed"
@@ -179,47 +156,6 @@ function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
     kernelId: row.run.kernelId,
     sidecarId: row.run.sidecarId,
   };
-}
-
-// A formatted list entry carried alongside its sort key so the two keyset heads
-// (agent instances and folded runs) merge into one page.
-type ListEntry = {
-  item:
-    | ReturnType<typeof formatInstance>
-    | ReturnType<typeof formatInstanceView>;
-  createdAt: Date;
-  id: string;
-};
-
-// Impose the identical total order the DB applied to each head -- createdAt
-// DESC, then id DESC -- so the merged page matches keyset resumption exactly.
-// createdAt is compared at millisecond precision (the `Date` the driver
-// returns, matching the cursor's `toISOString` milliseconds). This is exact
-// only because every list-visible row is inserted with an explicit
-// millisecond-precision `createdAt` (a JS `Date`): both the launch's instance
-// insert and its address-bearing run insert do so, and the sub-millisecond
-// `defaultNow()` rows are all address-less and excluded. A future address-
-// bearing insert that let `createdAt` fall to `defaultNow()` would store a
-// sub-millisecond value the millisecond cursor cannot address, silently
-// dropping rows at a page boundary -- keep such inserts on an explicit `Date`.
-// id is compared by raw code units, NOT `localeCompare`: every id is `ins_` +
-// 32 lowercase hex chars from one shared id space, so code-unit order equals
-// Postgres's text order, while `localeCompare` could diverge from the DB.
-// Revisit if the id scheme ever gains mixed case, variable length, or a
-// non-hex charset.
-function compareListEntriesDesc(a: ListEntry, b: ListEntry): number {
-  const at = a.createdAt.getTime();
-  const bt = b.createdAt.getTime();
-  if (at !== bt) {
-    return bt - at;
-  }
-  if (a.id < b.id) {
-    return 1;
-  }
-  if (a.id > b.id) {
-    return -1;
-  }
-  return 0;
 }
 
 export type CreateInstanceRoutesDeps = {
@@ -761,49 +697,13 @@ export function createInstanceRoutes({
         limit: c.req.query("limit"),
       });
 
-      // The list spans the fold: a legacy `agent_instance` and a folded
-      // `workflow_run` both present as instances. Each table is queried as its
-      // own keyset head (same tenant/agent/status filters, cursor, order, and
-      // limit), then the two heads are merged in application code into a single
-      // page. A DB UNION is avoided because the two sides need different agent
-      // joins; the merge is exact because each head returns its own first
-      // `limit` post-cursor rows in the global order, so the global first
-      // `limit` is a subset of the two heads combined.
+      // Instances are folded `workflow_run` rows: a run presents as an instance
+      // when it owns a routing address and its definition names an origin agent.
+      // The address and origin_agent_id predicates enforce that, dropping a
+      // deployment-anchored or corrupt run. When a status filter selects no run
+      // statuses (`deployed`/`updating`), skip the query entirely.
       const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
 
-      const instanceConditions = [eq(agentInstance.tenantId, tenantCtx.id)];
-      if (definitionId !== undefined) {
-        instanceConditions.push(eq(workflowDefinition.id, definitionId));
-      }
-      if (statusFilter !== undefined) {
-        instanceConditions.push(eq(agentInstance.status, statusFilter));
-      }
-      if (cursor) {
-        instanceConditions.push(
-          cursorCondition(agentInstance.createdAt, agentInstance.id, cursor),
-        );
-      }
-
-      const instanceRows = await db
-        .select({
-          instance: agentInstance,
-          definitionId: workflowDefinition.id,
-          agentName: workflowDefinition.name,
-        })
-        .from(agentInstance)
-        .innerJoin(
-          workflowDefinition,
-          eq(agentInstance.agentId, workflowDefinition.originAgentId),
-        )
-        .where(and(...instanceConditions))
-        .orderBy(...pageOrder(agentInstance.createdAt, agentInstance.id))
-        .limit(limit);
-
-      // A folded run presents as an instance only when it owns a routing
-      // address and its definition names an origin agent; the address and
-      // origin_agent_id predicates enforce that, dropping a definition-anchored
-      // or corrupt run. When a status filter selects no run statuses
-      // (`deployed`/`updating`), skip the run query entirely.
       const runStatuses =
         statusFilter === undefined
           ? undefined
@@ -843,25 +743,12 @@ export function createInstanceRoutes({
           .limit(limit);
       }
 
-      const entries: ListEntry[] = [
-        ...instanceRows.map((r) => ({
-          item: formatInstance(r.instance, r.definitionId, r.agentName),
-          createdAt: r.instance.createdAt,
-          id: r.instance.id,
-        })),
-        ...runRows.map((r) => ({
-          item: formatInstanceView(foldedRunToRecord(r), r.agentName),
-          createdAt: r.run.createdAt,
-          id: r.run.id,
-        })),
-      ];
-      entries.sort(compareListEntriesDesc);
-      const page = entries.slice(0, limit);
-
       return c.json(
         paginatedResponse(
-          page.map((e) => e.item),
-          page.map((e) => ({ createdAt: e.createdAt, id: e.id })),
+          runRows.map((r) =>
+            formatInstanceView(foldedRunToRecord(r), r.agentName),
+          ),
+          runRows.map((r) => ({ createdAt: r.run.createdAt, id: r.run.id })),
           limit,
         ),
       );
@@ -1226,7 +1113,6 @@ export function createInstanceRoutes({
       const instanceId = c.req.param("runId");
 
       // A folded agent runs as a workflow_run under the same id; stop it there.
-      // A legacy instance falls through to the agent_instance path below.
       const [run] = await db
         .select()
         .from(workflowRun)
@@ -1327,89 +1213,11 @@ export function createInstanceRoutes({
         return c.body(null, 204);
       }
 
-      const row = await db.query.agentInstance.findFirst({
-        where: and(
-          eq(agentInstance.id, instanceId),
-          eq(agentInstance.tenantId, tenantCtx.id),
-        ),
-      });
-
-      if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      if (row.status === "stopped") {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Instance is already stopped",
-            },
-          },
-          409,
-        );
-      }
-
-      try {
-        await sessionService.endSession(row.address, "instance_stopped");
-      } catch (err) {
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to reach sidecar for instance teardown",
-            },
-          },
-          502,
-        );
-      }
-
-      const endedAt = new Date();
-
-      await db
-        .update(agentInstance)
-        .set({
-          status: "stopped",
-          sessionId: null,
-          updatedAt: endedAt,
-          endedAt,
-        })
-        .where(eq(agentInstance.id, instanceId));
-
-      // Deactivate the per-instance principal. The refId guard ensures we
-      // only deactivate the principal created for this specific instance.
-      await db
-        .update(principalTable)
-        .set({ status: "deactivated", updatedAt: endedAt })
-        .where(
-          and(
-            eq(principalTable.id, row.principalId),
-            eq(principalTable.refId, instanceId),
-          ),
-        );
-
-      // End associated session rows.
-      if (row.sessionId) {
-        await db
-          .update(agentSession)
-          .set({ status: "ended", endedAt, updatedAt: endedAt })
-          .where(eq(agentSession.id, row.sessionId));
-      }
-
-      eventCollectors.abandon(row.address);
-      instanceKeyCache.delete(instanceId);
-
-      sidecarRouter.dispatchAgentEvent(row.address, {
-        type: "session.ended",
-      });
-
-      return c.body(null, 204);
+      // No folded run owns this id in the tenant.
+      return c.json(
+        { error: { code: "not_found", message: "Instance not found" } },
+        404,
+      );
     },
   );
 

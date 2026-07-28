@@ -16,13 +16,7 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import {
-  seedAgent,
-  seedAgentInstance,
-  seedPrincipal,
-  seedTenants,
-  seedWorkflowRun,
-} from "@intx/test-harness/seed";
+import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 
 // The reconnect ownership challenge verifies a deployment address against a
 // public key resolved by `lookupPublicKey`. These tests pin the workflow-
@@ -167,8 +161,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 // A folded run is a supervised workflow-process child, pinned forever: the
 // reconnect deploy-ref catch-up must skip it. `lookupDeployRef` resolves the
 // address and returns null for a run WITHOUT reading the repo store, so the
-// caller's null short-circuit excludes it; a legacy agent_instance still
-// resolves to its deploy ref and reconciles.
+// caller's null short-circuit excludes it.
 describe.skipIf(!harnessDbEnvAvailable())(
   "lookupDeployRef fold-aware reconcile guard (real DB)",
   () => {
@@ -211,32 +204,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentRepoStore: throwingRepoStore,
       }).lookupDeployRef("ins_folded@wf.example");
       expect(ref).toBeNull();
-    });
-
-    test("returns the deploy ref for a legacy agent instance", async () => {
-      await seedPrincipal(h.db, { id: "prn", tenantId: "t1" });
-      await seedAgent(h.db, {
-        id: "agt",
-        tenantId: "t1",
-        creatorPrincipalId: "prn",
-      });
-      await seedAgentInstance(h.db, {
-        id: "ins_legacy",
-        tenantId: "t1",
-        agentId: "agt",
-        principalId: "prn",
-        address: "ins_legacy@wf.example",
-      });
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub returning a canned deploy ref
-      const refRepoStore = {
-        getDeployRef: async () => "deadbeef",
-      } as unknown as AgentRepoStore;
-
-      const ref = await createHubSessionLookups({
-        db: h.db,
-        agentRepoStore: refRepoStore,
-      }).lookupDeployRef("ins_legacy@wf.example");
-      expect(ref).toBe("deadbeef");
     });
   },
 );

@@ -19,7 +19,6 @@ import {
 } from "@intx/test-harness/seed";
 import {
   agent,
-  agentInstance,
   agentSession,
   workflowDefinition,
   workflowRun,
@@ -52,42 +51,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       systemPrompt: "p",
     });
   }
-
-  test("resolves a legacy agent instance by id", async () => {
-    await seedBase();
-    await h.db.insert(workflowDefinition).values({
-      id: "wfd_legacy",
-      tenantId: "tnt_root",
-      name: "legacy",
-      originAgentId: "agt_1",
-    });
-    await h.db.insert(agentSession).values({
-      id: "ses_legacy",
-      tenantId: "tnt_root",
-      agentId: "wfd_legacy",
-      principalId: "prn_creator",
-      status: "active",
-    });
-    await h.db.insert(agentInstance).values({
-      id: "ins_legacy",
-      agentId: "agt_1",
-      tenantId: "tnt_root",
-      principalId: "prn_creator",
-      address: "ins_legacy@root.example",
-      sessionId: "ses_legacy",
-      status: "running",
-      publicKey: "pk-instance",
-    });
-
-    const record = await findRoutableById(h.db, "ins_legacy", "tnt_root");
-    expect(record?.kind).toBe("instance");
-    expect(record?.id).toBe("ins_legacy");
-    // The definition the instance's agent folds to (joined via origin_agent_id).
-    expect(record?.definitionId).toBe("wfd_legacy");
-    expect(record?.address).toBe("ins_legacy@root.example");
-    expect(record?.status).toBe("running");
-    expect(record?.sessionId).toBe("ses_legacy");
-  });
 
   test("resolves a folded run by id, agent via the definition's origin agent", async () => {
     await seedBase();
@@ -153,29 +116,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     expect(record?.status).toBe("completed");
     expect(record?.updatedAt).toEqual(new Date("2026-01-05T00:00:00Z"));
     expect(record?.sessionId).toBeNull();
-  });
-
-  test("serves a terminated instance (no endedAt filter)", async () => {
-    await seedBase();
-    await h.db.insert(workflowDefinition).values({
-      id: "wfd_stopped",
-      tenantId: "tnt_root",
-      name: "stopped",
-      originAgentId: "agt_1",
-    });
-    await h.db.insert(agentInstance).values({
-      id: "ins_stopped",
-      agentId: "agt_1",
-      tenantId: "tnt_root",
-      principalId: "prn_creator",
-      address: "ins_stopped@root.example",
-      status: "stopped",
-      endedAt: new Date("2026-01-05T00:00:00Z"),
-    });
-
-    const record = await findRoutableById(h.db, "ins_stopped", "tnt_root");
-    expect(record?.kind).toBe("instance");
-    expect(record?.status).toBe("stopped");
   });
 
   test("returns undefined for a deployment-anchored native run (no address)", async () => {
@@ -251,37 +191,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     expect(
       await findRoutableById(h.db, "ins_missing", "tnt_root"),
     ).toBeUndefined();
-  });
-
-  test("throws when an id matches both an instance and a run", async () => {
-    await seedBase();
-    await h.db.insert(workflowDefinition).values({
-      id: "wfd_dup",
-      tenantId: "tnt_root",
-      name: "dup",
-      originAgentId: "agt_1",
-    });
-    await h.db.insert(agentInstance).values({
-      id: "ins_dup",
-      agentId: "agt_1",
-      tenantId: "tnt_root",
-      principalId: "prn_creator",
-      address: "ins_dup_a@root.example",
-      status: "running",
-    });
-    await h.db.insert(workflowRun).values({
-      id: "ins_dup",
-      tenantId: "tnt_root",
-      definitionId: "wfd_dup",
-      deploymentId: null,
-      principalId: null,
-      address: "ins_dup_b@root.example",
-      status: "running",
-    });
-
-    await expect(findRoutableById(h.db, "ins_dup", "tnt_root")).rejects.toThrow(
-      /both an agent instance and a workflow run/,
-    );
   });
 
   describe("resolveRunSessionId includeEnded", () => {

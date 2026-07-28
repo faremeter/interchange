@@ -17,12 +17,7 @@ import {
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
-import {
-  agent,
-  agentInstance,
-  agentSession,
-  workflowDefinition,
-} from "@intx/db/schema";
+import { agent, agentSession, workflowDefinition } from "@intx/db/schema";
 import { resolveRoutableAddress } from "@intx/hub-sessions";
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -53,43 +48,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "p",
       });
     }
-
-    test("resolves a legacy agent-instance address to kind instance", async () => {
-      await seedBase();
-      await h.db.insert(workflowDefinition).values({
-        id: "wfd_i",
-        tenantId: "tnt_root",
-        name: "instance",
-        originAgentId: "agt_1",
-      });
-      await h.db.insert(agentSession).values({
-        id: "ses_i",
-        tenantId: "tnt_root",
-        agentId: "wfd_i",
-        principalId: "prn_creator",
-        status: "active",
-      });
-      await h.db.insert(agentInstance).values({
-        id: "ins_legacy",
-        agentId: "agt_1",
-        tenantId: "tnt_root",
-        principalId: "prn_creator",
-        address: "ins_legacy@root.example",
-        sessionId: "ses_i",
-        status: "deployed",
-        publicKey: "pk-instance",
-      });
-
-      const endpoint = await resolveRoutableAddress(
-        h.db,
-        "ins_legacy@root.example",
-      );
-      expect(endpoint?.kind).toBe("instance");
-      expect(endpoint?.id).toBe("ins_legacy");
-      expect(endpoint?.tenantId).toBe("tnt_root");
-      expect(endpoint?.publicKey).toBe("pk-instance");
-      expect(endpoint?.sessionId).toBe("ses_i");
-    });
 
     test("resolves a folded workflow-run address to kind run, session via the run principal", async () => {
       await seedBase();
@@ -173,22 +131,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeUndefined();
     });
 
-    test("skips a terminated instance (endedAt set)", async () => {
-      await seedBase();
-      await h.db.insert(agentInstance).values({
-        id: "ins_gone",
-        agentId: "agt_1",
-        tenantId: "tnt_root",
-        principalId: "prn_creator",
-        address: "ins_gone@root.example",
-        status: "stopped",
-        endedAt: new Date(0),
-      });
-      expect(
-        await resolveRoutableAddress(h.db, "ins_gone@root.example"),
-      ).toBeUndefined();
-    });
-
     test("resolves a run with no principal to a null session", async () => {
       await seedBase();
       await seedWorkflowRun(h.db, {
@@ -243,45 +185,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(endpoint?.kind).toBe("run");
       expect(endpoint?.sessionId).toBeNull();
-    });
-
-    test("throws when an address matches both an instance and a run", async () => {
-      await seedBase();
-      const address = "ins_dup@root.example";
-      await h.db.insert(workflowDefinition).values({
-        id: "wfd_dup",
-        tenantId: "tnt_root",
-        name: "dup",
-        originAgentId: "agt_1",
-      });
-      await h.db.insert(agentSession).values({
-        id: "ses_d",
-        tenantId: "tnt_root",
-        agentId: "wfd_dup",
-        principalId: "prn_creator",
-        status: "active",
-      });
-      await h.db.insert(agentInstance).values({
-        id: "ins_dup",
-        agentId: "agt_1",
-        tenantId: "tnt_root",
-        principalId: "prn_creator",
-        address,
-        sessionId: "ses_d",
-        status: "deployed",
-      });
-      await seedWorkflowRun(h.db, {
-        id: "run_dup",
-        tenantId: "tnt_root",
-        deploymentId: null,
-        principalId: "prn_creator",
-        address,
-        status: "running",
-      });
-
-      await expect(resolveRoutableAddress(h.db, address)).rejects.toThrow(
-        /both an agent instance/,
-      );
     });
   },
 );
