@@ -82,12 +82,15 @@ const OPENAI_REASONING_QUIRKS: Record<string, unknown> = {
 
 export const catalogModels: CatalogModelSpec[] = [
   { canonicalName: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+  { canonicalName: "claude-opus-5", displayName: "Claude Opus 5" },
   {
     canonicalName: "claude-haiku-4-5-20251001",
     displayName: "Claude Haiku 4.5",
   },
   { canonicalName: "gpt-5.5", displayName: "GPT-5.5" },
+  { canonicalName: "gpt-5.6-sol", displayName: "GPT-5.6 Sol" },
   { canonicalName: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro" },
+  { canonicalName: "gemini-3.6-flash", displayName: "Gemini 3.6 Flash" },
   { canonicalName: "kimi-k3", displayName: "Kimi K3" },
   { canonicalName: "kimi-k2.7-code", displayName: "Kimi K2.7 Code" },
 ];
@@ -117,6 +120,14 @@ export const catalogProviders: CatalogProviderSpec[] = [
         price: { input: "0.000003", output: "0.000015" },
       },
       {
+        model: "claude-opus-5",
+        priority: 5,
+        discoverySource: { provider: "anthropic", model: "claude-opus-5" },
+        curatedCapabilities: ["long-context"],
+        quirks: {},
+        price: { input: "0.000005", output: "0.000025" },
+      },
+      {
         model: "claude-haiku-4-5-20251001",
         priority: 10,
         discoverySource: {
@@ -144,6 +155,14 @@ export const catalogProviders: CatalogProviderSpec[] = [
         quirks: {},
         price: { input: "0.0000025", output: "0.00001" },
       },
+      {
+        model: "gpt-5.6-sol",
+        priority: 5,
+        discoverySource: { provider: "openai", model: "gpt-5.6-sol" },
+        curatedCapabilities: [],
+        quirks: {},
+        price: { input: "0.000003", output: "0.000012" },
+      },
     ],
   },
   {
@@ -160,6 +179,17 @@ export const catalogProviders: CatalogProviderSpec[] = [
         curatedCapabilities: ["long-context"],
         quirks: {},
         price: { input: "0.00000125", output: "0.00001" },
+      },
+      {
+        model: "gemini-3.6-flash",
+        priority: 5,
+        discoverySource: {
+          provider: "google-genai",
+          model: "gemini-3.6-flash",
+        },
+        curatedCapabilities: ["long-context"],
+        quirks: {},
+        price: { input: "0.0000005", output: "0.000003" },
       },
     ],
   },
