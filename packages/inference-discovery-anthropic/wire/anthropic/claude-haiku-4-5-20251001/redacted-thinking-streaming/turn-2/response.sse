@@ -1,51 +1,66 @@
 event: message_start
-data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_01FKuJ6owrgtTfNniW535HmP","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":218,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"not_available"}}}
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011CdUovUNQGXEbRx7tD5GGp","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":199,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"not_available"}}            }
 
 event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}          }
+data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"Ev4BCpMBCBAYAipA072s7SF3R2MEF7V6RjWZjqAyf1pvJ0UhG0E/yloUS36ysANfS3KsrPpPUV9s/SKSsiscE4UVvGTSvThmP2tWJzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgwHxmNNqJVNRQJzxrAaDBJF0XPdZowEAfASvyIwVwk7zl+4Um5yTqpjJigveIL2W6M/MPMD5DgHum6Le2SStSbDnQ6KuBSZzTIIYwnAKhjzcZTA0HbqUQsFMsO9oNYFUxtSWdFEQVcYAQ=="}      }
 
 event: ping
 data: {"type": "ping"}
 
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user"}              }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is asking me to summarize my previous response in one sentence. This is a straightforward request. I should provide a concise summary of what I said, which"}  }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" was that there are no magic strings or hidden triggers that can unlock special behaviors in me.\n\nA good one-sentence summary would be something like: \"There are no magic strings or hidden commands"}           }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" that activate special modes in me—I work the same way regardless of what you input"} }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\"\n\nOr more simply: \"No magic strings can trigger hidden behaviors in me;"}    }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I function consistently regardless of the input.\""}   }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EokGCm0IDhgCKkAHpfRdc1Gn71qIz1cA6/3keqW3kDHy/3RNJF+6yEaL0ovsknBzFbE9GKpsrEZ/GKjqPfhOJ97aHlTnZWGft5fsMhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgzXANv0mWzuspu5d6MaDFd1ZI8ayqTmm+uCyCIw7iFF4tkpvtp28Kf0FZSVUrAkBqtraOpQw/lBlZTdyIrgpwIEjPKE59155OgnwI/jKskEb1zm2d3m9BfoMGFmNtZq8h6Ds3RBAWWoyKV37niDZnSJrkJW7E4USfLvYqw+mPBeKjX3sDrmdDnsRI/oU3MtS3n3GWbhBz7XFBpqrw5ABfNa40qixx7LI+R+ShHLq7kIAKc9QzcXrI3baAtFNOn5LIRQ0SINHocdqHlr3D31E109P8Y+2YcYn9Ap9y7R1PM48MOVNnGXg48afJjwWoZfO0NW+NDxMeAeDaQc+9EPWAARDZMPlZFQaE0CI3tBpag2hWMypsD2HRoiQ0o4bY0sY44Ioga8ndhuGg52QN/KwzWoItYD2WOKs1yuYoLj5CBa/2h2cYzsHfu7DtgJ8sgb0WQzNjflBrOsJdBeSxF1obSx78aeQ5VQcEOlwB16PFKDa5du0A6uPkIoTyyljKo/uNdAnQrNr+u4L9lZcMJFHxs8OirUNAUuhYZJYkW77/2gFBt/EOcsIsUhgzixAVLJguSkqTKaMFrPNyRwskpDgpQa7ndMCwybV4MK0tB1mL91hGRyXjiEz7W4P5dvwh1OcVo4Rc5lX2nbzvEMli56gQd4dfWc8vrS4bnZJPhysRXnQybQkYGJ2xyL/kiS8MXbpk4s6GCpW7CiYp014PjWlzqZFXAogMzr7oI5W63ctPBe55q7HPrAraxAsDaij46YgzDCiNhtKkS0XTy7iZ2gknujwFm2ZJcjKJCDD5q4l7GkkTNSQMQdv3iekGHBgXaGCaIa+Hje33NPp4w74MG9vdSH82UqZJIGJNZXRtLkMg/p94V9NOJOHl4XGAE="}}
-
 event: content_block_stop
-data: {"type":"content_block_stop","index":0              }
+data: {"type":"content_block_stop","index":0  }
 
 event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}    }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"There are no magic strings or hidden triggers that can unlock"}      }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" special behaviors in me."}     }
+data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"EvgCCpMBCBAYAipAz2hI0DXnDpIN1AGMMGp+2d5uxgSo7eMHpmVcXuDeDuOvUww8oArqmWPosN8eVGl0Sk/QyR73Ap6pgWKkpO+woTIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgxW0jkohfTq4m6hCgAaDFi/Vn5AXQLJ5p8oqyIwLYy8n4QYuETWGoy7PVWpx5Y3NUuWaObVxQ78rh9JWrbR2ZpyhR1D/hL/wTq2IjcfKpEBxmgQnvW74CEQ646EUzC7bhi/4AxzatdamKsBki8+mr2MDXA0HSIzHkcsYO/p5d2TXS9bt6ZZLzu4ekS61juJneboh/Bsmbv75cZ2D0w3CfADgJ+sS0nRexIgtw0Y1xHuTdrs8seJ+FyVuR2zJXLpb/ii2WGYtoVJiOH9cNmCyRHiA42d79DPc1zAEOlJl/LznhgB"}       }
 
 event: content_block_stop
-data: {"type":"content_block_stop","index":1        }
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"EvQCCpMBCBAYAipAjqQdq3mdwEUfvv9KBizRzZQaXqnIG59WVqPAlf5KmrsoAglVK11vu87XjOMG+4dr2uesRsj/uviep0zwDhApfjIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgzXS76rvrZOLomQWtwaDBmfQ7+f0/ROoN9tUyIwVLjiRVoqvwl6VU56hfSFWcCNC9PBI4bjNv7SmQU1ImEpJGlrYHFSZLtwaNQ64lOMKo0BwmBVB8XIfYSnRxyb0PmdhYzfMKrwXNwUZKYSFwlduq6hmTA4bmMBqujArRgRSJSWDNgoawBbqyC9BqO38XkuIgPaBQu6+FO8Sswsd51HwEybwVreZQywmYMTUUFl8Qo0MAjCuL7ELV9re+xCHsxm1P8WJUhiqPlOwzCa0XqFqklfZefOc+q+jFngB0EpGAE="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"redacted_thinking","data":"Et0CCpMBCBAYAipAKFOUx/aX6fP3wsYrhxVd8WYCV3WWXbHK8xLxNnYYhKwLWaC9XGV2cfqNIkwPh0M7X4RlwaGBrc48xl2SChDAbjIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgw3KE4of7do3qRvIyIaDAatQDHAb/DXD168eyIwFeMWneZ885UMv6nYoeFV2Qhx4q7YunZe5fuiRGoM5X6ZfjBgVecEt2pCKCca/ZEGKnf2OT5l7MTQdrgoKIzQBxOv0TPDJSrjiM1rfvsiRNAMNhj1PtWhf2YBUS/oyoiSA/Nr2E8WZ8LtnHklA+Uo5ehHLN3qCs2v0s7LaI6Xc9icgcJNOxFeN9yIrMW3w7pDZF9ArDx70jNq/BNagmE55ewvCTWjHfOtHRgB"}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"redacted_thinking","data":"EvgCCpMBCBAYAipAG+CMaWlvV5Pu2wDwwbmi46OmsgLGXzzxJXt9/GSQ8mHrxMgbOU2OCKcGTGkpWZpuIUN18BB7xIG2DVfLDB8wbDIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgwyJA9/MROEN+9P2XoaDOOIUJIrRyPKUHHjrCIwXVU0R09h523N+u6OCgaOMZe0Rz8Cpvpb8bUIA5Q37jrWIN3pcOyJRoMO90hOIig8KpEB1UHhsHHjReiDPOzR61NLCUAvQvBSDGnqJg3gG4jWlXbf5HLr28CKNIjN09J9U9Scy1TABkKXUAuYboEz4yAS7AAYbSYijBXzPPKTwBgdH3VG47rgazkDr9TJSPUoqTJtHgXV1lw6Z+DrxEh9XmcYqr0rG1MUDX2UvyhmUE4IdMyX4zWZSa+ggwilKuBZRwWcfxgB"}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":5,"content_block":{"type":"redacted_thinking","data":"EsUCCpMBCBAYAipA52fcqERs7QecL9A1cKcMnk1+TimKeoEs/Ibq+AwBhIQtb+x2+RJbrPeeGThksfin0H5VzNJxqvXIgYmrB8WYbzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgwpMCEac9S9DP5NQk4aDLk5nO6pFDBPud4snyIw5doL3aS9OtWwRGNBe7SfA9L1yDpHgR93fZiVpKbVQbH7RyvhewmWDU2EKV1ks2w4Kl9ai2MI5LAWXyo6dqPsCyEY4XNR4x41prSkmfIOUKAOcJowcS89hCCbqcFxkxo3N8uiUSe2JlzFg8vEDNMDADl+eH3xlKNBUTl2gnpBeEP20HJUs+ndT1lI3m4Kjtk1LhgB"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":5        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":6,"content_block":{"type":"redacted_thinking","data":"EvYBCpMBCBAYAipA52fcqERs7QecL9A1cKcMnk1+TimKeoEs/Ibq+AwBhIQtb+x2+RJbrPeeGThksfin0H5VzNJxqvXIgYmrB8WYbzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgx8ZzyKNen8+ZfGVN4aDD7oBvqDZzhM4fSC1yIw22tmc/zYVJzHK7uLB0Eojp2CRSpk3D5ww9RWue40YQIVDvT8CBEHaG6zJ2g+kRalKhD8vOtQLWqmYvPZ2scphIE4GAE="}               }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":6     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":7,"content_block":{"type":"text","text":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"No special prompt can override my values—I'm Claude, designed"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" to be helpful, harmless, and honest in all interactions."}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":7 }
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":218,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":143}        }
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":199,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":166,"output_tokens_details":{"thinking_tokens":134}}}
 
 event: message_stop
-data: {"type":"message_stop"             }
+data: {"type":"message_stop"   }
 

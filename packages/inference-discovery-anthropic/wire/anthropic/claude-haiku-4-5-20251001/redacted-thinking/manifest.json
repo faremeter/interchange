@@ -2,6 +2,6 @@
   "provider": "anthropic",
   "model": "claude-haiku-4-5-20251001",
   "capability": "redacted-thinking",
-  "capturedAt": "2026-05-23T21:48:58.030Z",
+  "capturedAt": "2026-07-28T16:57:47.960Z",
   "schemaVersion": "1"
 }

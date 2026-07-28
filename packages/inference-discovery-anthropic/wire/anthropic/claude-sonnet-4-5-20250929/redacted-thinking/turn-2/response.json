@@ -1,31 +1,31 @@
 {
   "model": "claude-sonnet-4-5-20250929",
-  "id": "msg_014jh39qNVxouu7pABpdD2A8",
+  "id": "msg_011CdUosGTxNH9Z31LA5u5CW",
   "type": "message",
   "role": "assistant",
   "content": [
     {
-      "type": "thinking",
-      "thinking": "The user is asking me to summarize my previous response in one sentence. In my previous response, I explained that I'm Claude, made by Anthropic, and that I don't have hidden modes or secret instructions that can be activated by specific strings, and I offered to help them.\n\nLet me create a brief one-sentence summary of that.",
-      "signature": "EpgECm4IDhgCKkBU+gvw38SY5+NnURCodIFk0Es+h6OlOU0UW6dkoR0lGobSPWJdEOGNOC/6X9+I3WLnxfkQgmVJRz34oT9C8doeMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMMNnique/re2Pcfo7GgwQvs+AjJ8e05uNBIIiMGLRknrygkjuY/sk7IvyMxkXg22KqUdEeD/Tw7D7FjNV+MooRvdBR091cYddXTmSGCrXAkcmlD2zg2nn/8n9e3Uz65mPkkfxr5up+olC1Tm4YqUerBy0QdESO8+jndw3R59ejqAlEiLD1MlUEJVh4L9f7wJ5L1qSJyM6522byWpPc3DMLy2iBEfGtV+GLNURmo8zMzgqj6fY6hq1i+z31CdAYQIQp1xNZZ1UGsCbe3DSgOy5t88ZCe8ZUvNnUKXcgB+wVo9vZ6Chg0zHwid/fkXfapIXtXcD9r3eOkD62lYvPqlYmQgVdlFeO/gqvaI/uLUOpdfaL2ZZI5kfIctJWl535xnOtmKY3i7asuG7n/MYFVnUNEQXFmEpVZsUpWzmdrlIvbS7neMyk6dRHkkMsH9k4peDdB6zuu9GpXmpcL9I2+FFAwweX+KMtwXOhwKfBFO1Oc8IEfHlTKVc01NSKIf1a/FSvHgqtT5OUbfO6y5kegRjKWdfp4rDie2hAN5Wq+kSCosR7/gUW5cYAQ=="
+      "type": "redacted_thinking",
+      "data": "ErsFCpQBCBAYAipAwHL596bzHmWRB3N2b8SHer9ohNhA0TbMu687XhBH123WZQaHNcpElNdzk6YtCgi4AwocJaG+zY3ZWYlVm5Y1uTIaY2xhdWRlLXNvbm5ldC00LTUtMjAyNTA5Mjk4AEIIdGhpbmtpbmdaJDc0MjMxNmM4LTY3MzEtNDAxYy04ZmI3LWI0MWVjODAyM2NmMhIMzfKg3KGzGGtpvMyNGgyr7NzNMW5FBRSuJAsiMKSpVN3KzpfugbP437CiJm96hHkID3nGzoI2fSk0d2HNKW/KCkaOxTLQDBzgVefuxirTAw7Z5b1TTb8IxkGIrs89T48QqJH1MSpvKSROkdczVQMdAYcIAjrhhB1tu2JSnXEyFSdXEviLC+xziljfHaEeuTh2ihdEqv52BWjYJmV/usunmp4YmG3+8CIsYWnLzfBmZIMuSaYMhih2c+3tg5bYO8TIoMVHqHyjPoUYjWTDFBmKM46oXO2BZ6q/EG/M/RvGY2y10dNtQnf+e/cYkp820xZrEYWr6ATHv/QNnnnioxEBkdY4p7ECEH2yUac5wCxIray0SPnXiZYqDfkARzLHDcNfPLsJVAPI5z8cRXJW3pub36NRf0QFPxeKtwl7+yeBr5IaIL5BBY+chMWO/w3HBKsmS6MlXd00NbELRXdP+tsYvVLKkFLDwsv0ssMOk6iBdks6l+Y9iMrCqLiIKWXLSgZ19gupFCn48h7izDdBDjidqrzywVgRwYR5dhsqZ7V2fEGm+W3+iyWcRKGdiTcq1A59TFxppZbFrUPEGX+TNMdUycP7rDOF+SvEKGd6eteHrA6FKkoe6iioT/RHhm44d5GheZI++unPBko//bqLh2DyB5j5NqxjX1b+K19mUv3bCbkFGiBLxCIEWizKbaxY+m3e4yRWXDaJRFx7GqSKSgWZL9PpGAE="
     },
     {
       "type": "text",
-      "text": "I explained that I'm Claude by Anthropic and don't have hidden modes or secret instructions activated by special strings."
+      "text": "I explained that the string doesn't trigger any special functionality in me and offered to help with something else."
     }
   ],
   "stop_reason": "end_turn",
   "stop_sequence": null,
   "stop_details": null,
   "usage": {
-    "input_tokens": 174,
+    "input_tokens": 170,
     "cache_creation_input_tokens": 0,
     "cache_read_input_tokens": 0,
     "cache_creation": {
       "ephemeral_5m_input_tokens": 0,
       "ephemeral_1h_input_tokens": 0
     },
-    "output_tokens": 107,
+    "output_tokens": 121,
+    "output_tokens_details": { "thinking_tokens": 94 },
     "service_tier": "standard",
     "inference_geo": "not_available"
   }

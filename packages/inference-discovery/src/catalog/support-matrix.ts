@@ -179,10 +179,18 @@ const ANTHROPIC_CAPTURED_CAPABILITIES = [
   "grounding-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-const ANTHROPIC_MISLED_CAPABILITIES = [
+const ANTHROPIC_REDACTED_THINKING_CAPABILITIES = [
   "redacted-thinking",
   "redacted-thinking-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
+
+// Models that returned real redacted_thinking blocks on the 2026-07-28
+// re-capture. claude-sonnet-5 remains misled (regular thinking only).
+const ANTHROPIC_REDACTED_CAPTURED_MODELS = [
+  "claude-sonnet-4-5-20250929",
+  "claude-opus-4-1-20250805",
+  "claude-haiku-4-5-20251001",
+] as const;
 
 const ANTHROPIC_UNSUPPORTED_INPUT_MODALITIES = [
   "audio-input",
@@ -205,14 +213,20 @@ const MATRIX: SupportEntry[] = [
       "captured",
     ),
   ),
-  ...ANTHROPIC_MODELS.flatMap((model) =>
+  ...ANTHROPIC_REDACTED_CAPTURED_MODELS.flatMap((model) =>
     rows(
       ANTHROPIC_PROVIDER,
       model,
-      ANTHROPIC_MISLED_CAPABILITIES,
-      "misled",
-      "Anthropic's documentation describes the canary prompt as a deterministic trigger for a redacted_thinking content block. On capture day the safety classifier did not fire on any first-party model; the assistant response carries a regular thinking block instead. The fixture on disk documents what the wire actually returned for the documented input. The plug-in and SSE parser already accept redacted_thinking blocks, so a future re-capture on a day the classifier does fire will flip this row to captured without code changes.",
+      ANTHROPIC_REDACTED_THINKING_CAPABILITIES,
+      "captured",
     ),
+  ),
+  ...rows(
+    ANTHROPIC_PROVIDER,
+    "claude-sonnet-5",
+    ANTHROPIC_REDACTED_THINKING_CAPABILITIES,
+    "misled",
+    "Re-capture 2026-07-28 with Anthropic's documented redacted-thinking canary still returned a regular thinking block (empty thinking text plus signature and a normal text reply), not redacted_thinking. The three classic-path models (Sonnet 4.5, Opus 4.1, Haiku 4.5 with budget_tokens thinking) captured real redacted_thinking on the same day; this model used adaptive thinking with output_config.effort, which is a co-occurring request difference rather than a proven cause. Fixture documents the wire that was returned.",
   ),
   ...ANTHROPIC_MODELS.flatMap((model) =>
     rows(
