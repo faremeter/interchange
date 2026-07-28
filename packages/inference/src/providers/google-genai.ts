@@ -338,6 +338,12 @@ function toGeminiPart(
           "they are Anthropic-specific.",
       );
 
+    case "safety_rating":
+      throw new Error(
+        "Google GenAI adapter does not echo safety_rating blocks on " +
+          "follow-up requests; they annotate model/request filtering, " +
+          "not conversation history that the wire re-accepts.",
+      );
     case "citation":
       // Citations are output-only blocks: the model produces them as
       // grounding/source references for its own text. Echoing one
@@ -742,9 +748,17 @@ const GeminiUsageMetadata = type({
   "cachedContentTokenCount?": "number",
 });
 
+// Prompt-level safety signal. Captured 2026-07-28 on
+// safety-classification fixtures: `{ blockReason: "PROHIBITED_CONTENT" }`
+// with no candidates. Only fields we consume are validated.
+const GeminiPromptFeedback = type({
+  "blockReason?": "string > 0",
+});
+
 const GeminiSSEEvent = type({
   "candidates?": GeminiCandidate.array(),
   "usageMetadata?": GeminiUsageMetadata,
+  "promptFeedback?": GeminiPromptFeedback,
   // `modelVersion` and `responseId` are dropped at this layer. The
   // harness's `AssistantTurn.model` is set from the requested model
   // string, not from the served `modelVersion` -- which can differ
@@ -1468,6 +1482,49 @@ function parseResponse(
     );
   }
 
+  // Prompt-level structured safety signal. Observed capture shape
+  // (safety-classification fixtures, 2026-07-28): HTTP 200 with
+  // `promptFeedback.blockReason` and zero candidates. Treat as a
+  // terminal parse path: emit the safety event, then usage from
+  // `usageMetadata` (which is present on the capture). This is not
+  // an `inference.error` — the transport succeeded and the wire
+  // carries a structured signal.
+  const blockReason = event.promptFeedback?.blockReason;
+  if (blockReason !== undefined) {
+    out.push({
+      type: "inference.safety_rating",
+      seq,
+      data: {
+        safetyRating: {
+          type: "safety_rating",
+          blockReason,
+        },
+      },
+    });
+    const usage = event.usageMetadata;
+    if (usage === undefined) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: promptFeedback.blockReason terminal event missing usageMetadata.`,
+        parsed,
+      );
+    }
+    out.push({
+      type: "inference.usage",
+      seq,
+      data: {
+        usage: {
+          input: usage.promptTokenCount ?? 0,
+          output: usage.candidatesTokenCount ?? 0,
+          cacheRead: usage.cachedContentTokenCount ?? 0,
+          cacheWrite: 0,
+          thinking: usage.thoughtsTokenCount ?? 0,
+        },
+        source,
+      },
+    });
+    return out;
+  }
+
   // `finishReason` arrives only on the terminal event. Emit usage at
   // exactly that point: Gemini's `usageMetadata` is cumulative in
   // every event, so the terminal-event snapshot is the final count
@@ -1477,7 +1534,9 @@ function parseResponse(
   // `MAX_TOKENS`, `SAFETY`, `RECITATION`, and `OTHER` reach this
   // layer but do not yet surface as `inference.error` -- emitting
   // those needs fixtures showing the full error envelope shape,
-  // which the plain-text path does not exercise.
+  // which the plain-text path does not exercise. Candidate-level
+  // `safetyRatings` arrays have also not been observed on the
+  // discovery corpus; extend emission when a capture carries them.
   if (candidate?.finishReason !== undefined) {
     const usage = event.usageMetadata;
     if (usage === undefined) {

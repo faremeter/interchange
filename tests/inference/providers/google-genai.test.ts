@@ -1603,6 +1603,44 @@ describe("Google GenAI adapter: parseResponse plain text", () => {
   });
 });
 
+describe("Google GenAI adapter: parseResponse safety_rating", () => {
+  test("safety-classification-streaming fixture emits safety_rating + usage", async () => {
+    // Captured 2026-07-28: promptFeedback.blockReason PROHIBITED_CONTENT,
+    // zero candidates, usageMetadata with prompt tokens only.
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "safety-classification-streaming",
+        "response.sse",
+      ),
+    );
+    const events = await parseWire(adapter, [sseBytes]);
+    const safety = events.filter((e) => e.type === "inference.safety_rating");
+    expect(safety).toHaveLength(1);
+    if (safety[0]?.type === "inference.safety_rating") {
+      expect(safety[0].data.safetyRating).toEqual({
+        type: "safety_rating",
+        blockReason: "PROHIBITED_CONTENT",
+      });
+    }
+    const usage = events.filter((e) => e.type === "inference.usage");
+    expect(usage).toHaveLength(1);
+    if (usage[0]?.type === "inference.usage") {
+      expect(usage[0].data.usage.input).toBe(18);
+      expect(usage[0].data.usage.output).toBe(0);
+    }
+  });
+
+  test("promptFeedback.blockReason without usageMetadata throws", () => {
+    const bad = JSON.stringify({
+      promptFeedback: { blockReason: "PROHIBITED_CONTENT" },
+    });
+    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
+    expect(() => adapter.parseResponse(bad)).toThrow(/missing usageMetadata/);
+  });
+});
+
 describe("Google GenAI adapter: parseResponse error surface", () => {
   test("malformed JSON in SSE payload throws ProtocolMismatchError", () => {
     expect(() => adapter.parseResponse("{not json}")).toThrow(

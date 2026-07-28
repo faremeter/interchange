@@ -373,6 +373,10 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
       // directly. See INFERENCE.md § Cross-Provider Message
       // Transformation for the general policy on history-drop fields.
       return "";
+    case "safety_rating":
+      // Safety signals annotate model/request filtering; OpenAI has
+      // no input wire shape for them. Drop when serializing history.
+      return "";
     case "code_execution_request":
     case "code_execution_result":
       // Code execution blocks are first-class semantic content; silently
