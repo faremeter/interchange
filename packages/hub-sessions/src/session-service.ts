@@ -832,13 +832,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * -- so the head address IS the instance address and the deploy runs as a
    * supervised workflow-process child.
    *
-   * Unlike the orchestrator's `runSingleStepAtHead`, this calls
-   * `deploySingleStepAtHead` directly with the route's real `agentId`
-   * (`row.id`), NOT a `deriveDeploymentAgentId(deploymentId)` -- the child
-   * resolves skills, deploy tree, and tool-package pins by `agentId`, so
-   * collapsing it to the deployment id would strip the instance's attachments.
-   * It records no deployment anchor run (a plain instance has no workflow
-   * asset). Returns the head's agent-key ack.
+   * Unlike the orchestrator's `runSingleStepAtHead` (which derives its deploy
+   * key from the deployment), this passes the instance id as the `agentId`
+   * deploy key -- the id the head address encodes and every deploy-ref reader
+   * resolves by, so the hub-written deploy tree and the sidecar's state
+   * writeback share one repo. The child resolves its skills and tool-package
+   * pins by mailbox address, not by this key. It records no deployment anchor
+   * run (a plain instance has no workflow asset). Returns the head's agent-key
+   * ack.
    */
   async function deployInstanceAtHead(params: {
     agentAddress: string;

@@ -16,7 +16,13 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedAgent,
+  seedAgentInstance,
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 // The reconnect ownership challenge verifies a deployment address against a
 // public key resolved by `lookupPublicKey`. These tests pin the workflow-
@@ -154,6 +160,83 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(await lookupPublicKey("ins_dep_one@wf.example")).toBe("pk-one");
       expect(await lookupPublicKey("ins_dep_two@wf.example")).toBe("pk-two");
+    });
+  },
+);
+
+// A folded run is a supervised workflow-process child, pinned forever: the
+// reconnect deploy-ref catch-up must skip it. `lookupDeployRef` resolves the
+// address and returns null for a run WITHOUT reading the repo store, so the
+// caller's null short-circuit excludes it; a legacy agent_instance still
+// resolves to its deploy ref and reconciles.
+describe.skipIf(!harnessDbEnvAvailable())(
+  "lookupDeployRef fold-aware reconcile guard (real DB)",
+  () => {
+    let h: TestDb;
+
+    beforeAll(async () => {
+      h = await createTestDb();
+    });
+
+    afterAll(async () => {
+      await h.close();
+    });
+
+    beforeEach(async () => {
+      await h.reset();
+      await seedTenants(h.db, [{ id: "t1" }]);
+    });
+
+    test("returns null for a folded run without reading the repo store", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "ins_folded",
+        tenantId: "t1",
+        address: "ins_folded@wf.example",
+        status: "running",
+      });
+      // Any repo-store access is a bug: a run short-circuits to null before the
+      // deploy-ref read, so a throwing stub proves the short-circuit.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- throwing stub; the run path must not read the repo store
+      const throwingRepoStore = new Proxy(
+        {},
+        {
+          get() {
+            throw new Error("agentRepoStore must not be read for a folded run");
+          },
+        },
+      ) as AgentRepoStore;
+
+      const ref = await createHubSessionLookups({
+        db: h.db,
+        agentRepoStore: throwingRepoStore,
+      }).lookupDeployRef("ins_folded@wf.example");
+      expect(ref).toBeNull();
+    });
+
+    test("returns the deploy ref for a legacy agent instance", async () => {
+      await seedPrincipal(h.db, { id: "prn", tenantId: "t1" });
+      await seedAgent(h.db, {
+        id: "agt",
+        tenantId: "t1",
+        creatorPrincipalId: "prn",
+      });
+      await seedAgentInstance(h.db, {
+        id: "ins_legacy",
+        tenantId: "t1",
+        agentId: "agt",
+        principalId: "prn",
+        address: "ins_legacy@wf.example",
+      });
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- stub returning a canned deploy ref
+      const refRepoStore = {
+        getDeployRef: async () => "deadbeef",
+      } as unknown as AgentRepoStore;
+
+      const ref = await createHubSessionLookups({
+        db: h.db,
+        agentRepoStore: refRepoStore,
+      }).lookupDeployRef("ins_legacy@wf.example");
+      expect(ref).toBe("deadbeef");
     });
   },
 );

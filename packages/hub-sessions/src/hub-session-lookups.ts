@@ -83,8 +83,19 @@ export function createHubSessionLookups(
     },
 
     async lookupDeployRef(agentAddress) {
-      const agentId = parseAgentId(agentAddress);
-      return agentRepoStore.getDeployRef(agentId);
+      // The reconnect deploy-ref catch-up runs only for legacy agent instances.
+      // A folded run is a supervised workflow-process child, pinned forever like
+      // a native deployment: it keeps its launch-time deploy tree and never
+      // reconciles. Resolve the address and report no ref for a run, so the
+      // caller's null short-circuit skips it -- leaving only a legacy
+      // agent_instance to reconcile. (Its deploy write is keyed by the instance
+      // id, so this read would otherwise resolve, newly enrolling the run in a
+      // reconcile path the pinned-forever contract forbids.)
+      const endpoint = await resolveRoutableAddress(db, agentAddress);
+      if (endpoint === undefined || endpoint.kind === "run") {
+        return null;
+      }
+      return agentRepoStore.getDeployRef(parseAgentId(agentAddress));
     },
 
     async persistMail({ senderAddress, recipients, raw }) {

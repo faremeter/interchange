@@ -6,7 +6,6 @@ import { streamSSE } from "hono/streaming";
 import { type } from "arktype";
 
 import {
-  agent,
   agentInstance,
   agentRole,
   agentSession,
@@ -332,23 +331,6 @@ export function createInstanceRoutes({
           409,
         );
       }
-      const row = await db.query.agent.findFirst({
-        where: and(
-          eq(agent.id, definition.originAgentId),
-          eq(agent.tenantId, tenant.id),
-        ),
-      });
-      if (row === undefined) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "This definition's origin agent is unavailable",
-            },
-          },
-          409,
-        );
-      }
 
       // Source the launch body from the definition's materialized asset (the
       // frozen `workflow.json`), not the origin agent row. The materialization
@@ -645,18 +627,19 @@ export function createInstanceRoutes({
 
       try {
         // Deploy the instance as a single-step workflow at the head: it runs
-        // as a supervised workflow-process child. The real `agentId` (row.id)
-        // is passed so the child resolves the instance's skills and pinned
-        // tool packages. The returned head public key is surfaced
-        // separately via the sidecar's `agent.deploy.ack`, so the route
-        // discards it here.
+        // as a supervised workflow-process child. The deploy keys by the
+        // instance id -- the surviving id the address encodes and every
+        // deploy-ref reader resolves by (the child resolves its skills and
+        // pinned tool packages by mailbox address, not this id). The returned
+        // head public key is surfaced separately via the sidecar's
+        // `agent.deploy.ack`, so the route discards it here.
         await sessionService.deployInstanceAtHead({
           agentAddress,
-          agentId: row.id,
+          agentId: instanceId,
           instanceId,
           config: {
             sessionId,
-            agentId: row.id,
+            agentId: instanceId,
             tenantId: tenant.id,
             principalId: instancePrincipalId,
             agentAddress,
@@ -735,7 +718,7 @@ export function createInstanceRoutes({
         kernelId: null,
         sidecarId: null,
       };
-      return c.json(formatInstanceView(runRecord, row.name), 201);
+      return c.json(formatInstanceView(runRecord, definition.name), 201);
     },
   );
 
