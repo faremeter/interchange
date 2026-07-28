@@ -473,7 +473,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("resolves from the folded definition's persisted modelRequirements", async () => {
         await seedAgentWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
         expect(result.ok).toBe(true);
@@ -485,7 +485,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("applies the invoker preferences persisted on the instance", async () => {
         await seedAgentWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: [
             { model: "opus", providers: { mode: "pin", order: ["relay"] } },
           ],
@@ -499,7 +499,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("returns no_requirements when the definition has none", async () => {
         await seedAgentWithRelay(null);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
@@ -508,7 +508,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("returns no_requirements when no definition matches in the tenant", async () => {
         await seedAgentWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          agentId: "agt_missing",
+          definitionId: "wfd_missing",
           modelPreferences: null,
         });
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
@@ -518,7 +518,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedAgentWithRelay([{ model: "opus" }]);
         await expect(
           resolveInstanceModelSources(h.db, "tnt_root", {
-            agentId: "agt_1",
+            definitionId: "wfd_1",
             modelPreferences: [{ model: "opus", providers: { mode: "force" } }],
           }),
         ).rejects.toThrow();

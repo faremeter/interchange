@@ -2,11 +2,12 @@
 // the catalog and pushing the update to its sidecar.
 //
 // Used after a credential secret rotation (a model provider's credential
-// changes the resolved source's apiKey) and on sidecar reconnect.
+// changes the resolved source's apiKey) and after a catalog edit in a tenant
+// or its subtree.
 
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
 import { getLogger } from "@intx/log";
-import { agentInstance } from "@intx/db/schema";
+import { workflowRun } from "@intx/db/schema";
 import { resolveInstanceModelSources, getDescendantTenants } from "@intx/db";
 import type { DB } from "@intx/db";
 
@@ -16,8 +17,8 @@ const log = getLogger(["hub", "credentials"]);
 
 /**
  * Re-resolve a single running instance's inference sources from the catalog
- * (the agent's model requirements plus the invoker preferences persisted on
- * the instance) and push the ordered list to its sidecar. The head of the
+ * (the definition's model requirements plus the invoker preferences persisted
+ * on the instance) and push the ordered list to its sidecar. The head of the
  * catalog-priority-ordered list is the active default; the tail is the
  * failover chain.
  *
@@ -29,7 +30,7 @@ export async function pushInstanceSourceUpdate(
   sidecarRouter: Pick<SidecarRouter, "sendSourcesUpdate">,
   instance: {
     address: string;
-    agentId: string;
+    definitionId: string;
     tenantId: string;
     modelPreferences: unknown;
   },
@@ -51,9 +52,13 @@ export async function pushInstanceSourceUpdate(
 
 /**
  * Re-resolve every running instance in the given tenants against the catalog
- * and push the updates to sidecars. Each instance re-resolves from its own
- * tenant's context (its ancestor chain), so the rotated/edited upstream entry
- * flows through. Errors are logged per-instance but do not propagate.
+ * and push the updates to sidecars. The running instances are the folded runs
+ * a launch produces: born running, with a routing address and no deployment.
+ * Deployment-anchor runs (which own a deployment id and a workflow-derived
+ * address) and address-less child runs route via the deployment, not this
+ * per-instance push, so they are excluded. Each instance re-resolves from its
+ * own tenant's context (its ancestor chain), so the rotated/edited upstream
+ * entry flows through. Errors are logged per-instance but do not propagate.
  */
 async function pushSourceUpdatesToTenants(
   db: DB["db"],
@@ -67,19 +72,40 @@ async function pushSourceUpdatesToTenants(
   // rejection. The push is best effort — the next mutation or a sidecar
   // reconnect re-resolves sources.
   try {
-    const instances = await db.query.agentInstance.findMany({
+    // The instance-shaped runs: running, addressable, and not anchored on a
+    // deployment. `deploymentId IS NULL` excludes the deployment-anchor runs
+    // (which set it to their own id), so no workflow-derived `ins_dep_` address
+    // -- the only kind an anchor carries -- can reach the address-targeted push
+    // below. Mirrors the /me/workflows/runs and tenant run-list predicate.
+    const instances = await db.query.workflowRun.findMany({
       where: and(
-        inArray(agentInstance.tenantId, tenantIds),
-        eq(agentInstance.status, "running"),
+        inArray(workflowRun.tenantId, tenantIds),
+        eq(workflowRun.status, "running"),
+        isNull(workflowRun.deploymentId),
+        isNotNull(workflowRun.address),
       ),
     });
 
     if (instances.length === 0) return;
 
     const results = await Promise.allSettled(
-      instances.map((instance) =>
-        pushInstanceSourceUpdate(db, sidecarRouter, instance),
-      ),
+      instances.map(async (instance) => {
+        // The isNotNull(address) filter guarantees a value; a null here is a
+        // broken invariant. The callback is async, so this throw becomes a
+        // rejected promise captured per-instance by allSettled and logged
+        // below -- one bad row is surfaced, not fatal to the whole batch.
+        if (instance.address === null) {
+          throw new Error(
+            `running run ${instance.id} matched the non-null-address filter but has a null address`,
+          );
+        }
+        return pushInstanceSourceUpdate(db, sidecarRouter, {
+          address: instance.address,
+          definitionId: instance.definitionId,
+          tenantId: instance.tenantId,
+          modelPreferences: instance.modelPreferences,
+        });
+      }),
     );
 
     for (const result of results) {

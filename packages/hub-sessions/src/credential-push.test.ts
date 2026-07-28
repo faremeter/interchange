@@ -15,7 +15,7 @@ function rejectingDB(): DB["db"] {
   return {
     query: {
       tenant: { findMany: reject },
-      agentInstance: { findMany: reject },
+      workflowRun: { findMany: reject },
     },
   } as unknown as DB["db"];
 }

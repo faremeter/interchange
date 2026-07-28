@@ -177,7 +177,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedOwnerWithParentGrant();
 
         const result = await resolveInstanceModelSources(h.db, "tnt_child", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
 
@@ -229,7 +229,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedChildOwnerWithWildcard();
 
         const result = await resolveInstanceModelSources(h.db, "tnt_child", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
 
@@ -279,7 +279,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedUnauthorizedCreator();
 
         const result = await resolveInstanceModelSources(h.db, "tnt_child", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
 

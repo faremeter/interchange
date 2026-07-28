@@ -331,28 +331,27 @@ export async function resolveInferencePreferences(
 
 /**
  * Resolves the ordered sources for a running instance from persisted state:
- * the agent definition's model requirements and the invoker's launch-time
- * preferences stored on the instance row. Launch, credential-rotation push,
- * and sidecar reconnect all resolve through this, so a running instance's
+ * the definition's model requirements and the invoker's launch-time
+ * preferences stored on the instance row. The credential-rotation and
+ * catalog-edit source push resolves through this, so a running instance's
  * source list is a pure function of persisted state — re-resolution
  * reproduces the launch ordering, including the invoker's reorder/restrict.
  */
 export async function resolveInstanceModelSources(
   db: DB["db"],
   tenantId: string,
-  instance: { agentId: string; modelPreferences: unknown },
+  instance: { definitionId: string; modelPreferences: unknown },
 ): Promise<CatalogSourceResolution> {
-  // Resolve from the folded definition, keyed by the legacy agent id it was
-  // folded from (`origin_agent_id`, partial-unique, so at most one row). This
-  // is the SAME row the launch resolves its requirements from, so a rotation
-  // or reconnect reproduces the launch's model resolution rather than drifting.
-  // Scope to the resolving tenant, matching the launch route: a cross-tenant
-  // agentId resolves to nothing rather than contributing another tenant's
-  // models. A definition with no creator principal cannot authorize a
-  // credential-backed source, so it fails closed like a missing definition.
+  // Resolve from the run's own definition by primary key. This is the SAME row
+  // the launch resolves its requirements from, so a rotation or catalog edit
+  // reproduces the launch's model resolution rather than drifting. Scope to the
+  // resolving tenant, matching the launch route: a definition in another tenant
+  // resolves to nothing rather than contributing another tenant's models. A
+  // definition with no creator principal cannot authorize a credential-backed
+  // source, so it fails closed like a missing definition.
   const definitionRow = await db.query.workflowDefinition.findFirst({
     where: and(
-      eq(workflowDefinition.originAgentId, instance.agentId),
+      eq(workflowDefinition.id, instance.definitionId),
       eq(workflowDefinition.tenantId, tenantId),
     ),
   });

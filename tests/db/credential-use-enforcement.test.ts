@@ -202,7 +202,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedAgentWithCreator(false);
 
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
 
@@ -221,7 +221,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedAgentWithCreator(true);
 
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          agentId: "agt_1",
+          definitionId: "wfd_1",
           modelPreferences: null,
         });
 
