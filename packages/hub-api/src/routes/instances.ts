@@ -141,7 +141,6 @@ function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
     );
   }
   return {
-    kind: "run",
     id: row.run.id,
     tenantId: row.run.tenantId,
     address: row.run.address,
@@ -638,7 +637,6 @@ export function createInstanceRoutes({
       // identically to a later GET: the run has no `updatedAt` (it mirrors
       // `createdAt`), and its public key is null until deploy-ack lands it.
       const runRecord: RoutableRecord = {
-        kind: "run",
         id: instanceId,
         tenantId: tenant.id,
         address: agentAddress,
@@ -827,14 +825,13 @@ export function createInstanceRoutes({
         );
       }
 
-      // The authorization subject is the mail's owning routable. An instance's
-      // mail carries its indexed instanceId; a folded run's mail carries a null
-      // instanceId (both write sites derive it from kind, so null marks a run)
-      // and keys on its session, so recover the run id from the session. Route
-      // the run resolution through workflow_run so the subject is proven to
-      // name a real run of this tenant -- a session held by any non-run
-      // principal fails closed to 404 rather than authorizing a fabricated
-      // subject.
+      // The authorization subject is the mail's owning routable. A folded run's
+      // mail carries a null instanceId and keys on its session, so recover the
+      // run id from the session; a legacy row's non-null instanceId is used
+      // directly. Route the run resolution through workflow_run so the subject
+      // is proven to name a real run of this tenant -- a session held by any
+      // non-run principal fails closed to 404 rather than authorizing a
+      // fabricated subject.
       const resolvedInstanceId =
         mailRow.instanceId ??
         (await resolveRunIdForSession(db, mailRow.sessionId, tenant.id));
@@ -1465,12 +1462,9 @@ export function createInstanceRoutes({
       const mimeMessageId = `<${mailId}@${tenant.domain}>`;
 
       // Fetch recent delivered inbound mail for the MIME References chain. A
-      // run's mail carries a null instanceId, so it is keyed on the session; an
-      // instance keys on its indexed instanceId. GET history keys the same way.
-      const mailScope =
-        record.kind === "instance"
-          ? eq(sessionMail.instanceId, record.id)
-          : eq(sessionMail.sessionId, sessionId);
+      // run's mail carries a null instanceId, so it is keyed on the session.
+      // GET history keys the same way.
+      const mailScope = eq(sessionMail.sessionId, sessionId);
       const priorMail = await db
         .select({ id: sessionMail.id })
         .from(sessionMail)
@@ -1518,7 +1512,7 @@ export function createInstanceRoutes({
 
       // A run's mail is not an instance's, so it records a null instanceId and
       // anchors on the session (mirroring the sidecar mail-persist path).
-      const mailInstanceId = record.kind === "instance" ? record.id : null;
+      const mailInstanceId = null;
 
       let rawMIME: Uint8Array;
       try {
@@ -1635,24 +1629,16 @@ export function createInstanceRoutes({
         );
       }
 
-      // History must serve a terminated endpoint, and the key differs by kind.
-      // An instance keys on its indexed instanceId -- durable even after stop,
-      // when its session column is nulled and its invoker-keyed session is
-      // unrecoverable. A run's mail carries a null instanceId; its principal is
-      // 1:1 with its single session, so resolve that session (ended included)
-      // and key on it.
-      let mailScope;
-      if (record.kind === "instance") {
-        mailScope = eq(sessionMail.instanceId, record.id);
-      } else {
-        const runSessionId = await resolveRunSessionId(db, record.principalId, {
-          includeEnded: true,
-        });
-        if (runSessionId === null) {
-          return c.json(paginatedResponse([], [], limit));
-        }
-        mailScope = eq(sessionMail.sessionId, runSessionId);
+      // History must serve a terminated run. A run's mail carries a null
+      // instanceId; its principal is 1:1 with its single session, so resolve
+      // that session (ended included) and key on it.
+      const runSessionId = await resolveRunSessionId(db, record.principalId, {
+        includeEnded: true,
+      });
+      if (runSessionId === null) {
+        return c.json(paginatedResponse([], [], limit));
       }
+      const mailScope = eq(sessionMail.sessionId, runSessionId);
 
       const conditions = [mailScope];
       if (cursor) {

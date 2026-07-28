@@ -144,7 +144,7 @@ export function createHubSessionOrchestrator(
       // of routing) and restore no collector; no status flip either, since a
       // folded run is born running and a failed -> running flip would claim a
       // running session that does not exist.
-      if (endpoint.kind === "run" && endpoint.status !== "running") {
+      if (endpoint.status !== "running") {
         return;
       }
       if (endpoint.sessionId === null) {

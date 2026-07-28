@@ -82,7 +82,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         h.db,
         "ins_folded@root.example",
       );
-      expect(endpoint?.kind).toBe("run");
       expect(endpoint?.id).toBe("run_folded");
       expect(endpoint?.tenantId).toBe("tnt_root");
       expect(endpoint?.publicKey).toBe("pk-run");
@@ -145,7 +144,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         h.db,
         "ins_noprincipal@root.example",
       );
-      expect(endpoint?.kind).toBe("run");
       expect(endpoint?.sessionId).toBeNull();
     });
 
@@ -183,7 +181,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         h.db,
         "ins_sessionless@root.example",
       );
-      expect(endpoint?.kind).toBe("run");
       expect(endpoint?.sessionId).toBeNull();
     });
   },

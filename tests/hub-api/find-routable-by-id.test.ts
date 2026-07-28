@@ -80,7 +80,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     });
 
     const record = await findRoutableById(h.db, "ins_folded", "tnt_root");
-    expect(record?.kind).toBe("run");
     expect(record?.id).toBe("ins_folded");
     // definitionId is the run's own definition.
     expect(record?.definitionId).toBe("wfd_folded");
@@ -112,7 +111,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     });
 
     const record = await findRoutableById(h.db, "ins_done", "tnt_root");
-    expect(record?.kind).toBe("run");
     expect(record?.status).toBe("completed");
     expect(record?.updatedAt).toEqual(new Date("2026-01-05T00:00:00Z"));
     expect(record?.sessionId).toBeNull();

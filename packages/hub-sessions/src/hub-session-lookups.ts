@@ -51,11 +51,10 @@ export function createHubSessionLookups(
     async lookupPublicKey(agentAddress) {
       // Route by address space. A workflow-derived address's key lives on the
       // deployment's anchor workflow_run row; a plain `ins_<hex>` address is
-      // backed by either a launched agent_instance or a folded workflow_run --
-      // the two share that address space under the fold -- and
-      // `resolveRoutableAddress` resolves both together. A missing endpoint (or
-      // a null key) returns null so the reconnect challenge fails closed and
-      // the address stays unrouted rather than routing without ownership proof.
+      // backed by a folded workflow_run, resolved through
+      // `resolveRoutableAddress`. A missing endpoint (or a null key) returns
+      // null so the reconnect challenge fails closed and the address stays
+      // unrouted rather than routing without ownership proof.
       if (isWorkflowDerivedAddress(agentAddress)) {
         // Read the key off the deployment's anchor run, gated on a live
         // ("running") run so a decommissioned deployment's key can no longer
@@ -81,26 +80,19 @@ export function createHubSessionLookups(
       return endpoint?.publicKey ?? null;
     },
 
-    async lookupDeployRef(agentAddress) {
-      // A folded run is a supervised workflow-process child, pinned forever
-      // like a native deployment: it keeps its launch-time deploy tree and
-      // never reconciles, so it reports no ref and the caller's null
-      // short-circuit skips it. A plain address now resolves only to a folded
-      // run, so the ref lookup below is unreachable; it is retained until the
-      // routable-endpoint kind union collapses to a single member.
-      const endpoint = await resolveRoutableAddress(db, agentAddress);
-      if (endpoint === undefined || endpoint.kind === "run") {
-        return null;
-      }
-      return agentRepoStore.getDeployRef(parseAgentId(agentAddress));
+    async lookupDeployRef() {
+      // A plain address now resolves only to a folded run, and a folded run is
+      // a supervised workflow-process child pinned forever like a native
+      // deployment: it keeps its launch-time deploy tree and never reconciles.
+      // So no plain address enrolls in the reconnect deploy-ref catch-up.
+      return null;
     },
 
     async persistMail({ senderAddress, recipients, raw }) {
-      // The sender and recipients are plain addresses backed by either a
-      // launched agent_instance or a folded workflow_run; resolve each through
-      // the fold-aware resolver. A mail record's `instanceId` is the agent
-      // instance's id, or null when the endpoint is a folded run (which is not
-      // an instance) -- the record still anchors on its session either way.
+      // The sender and recipients are plain addresses backed by a folded
+      // workflow_run; resolve each through the resolver. A mail record's
+      // `instanceId` is always null for a run -- it is not an instance -- and
+      // the record anchors on the run's session instead.
       const sender = await resolveRoutableAddress(db, senderAddress);
       if (sender === undefined) {
         throw new Error(
@@ -113,7 +105,7 @@ export function createHubSessionLookups(
         );
       }
       const createdAt = new Date();
-      const senderInstanceId = sender.kind === "instance" ? sender.id : null;
+      const senderInstanceId = null;
 
       // Outbound record on the sender's session.
       const outboundId = generateId("sessionMail");
@@ -150,7 +142,8 @@ export function createHubSessionLookups(
       const inboundEntries = recipientEndpoints.map(
         ({ addr, endpoint, sessionId }) => {
           const id = generateId("sessionMail");
-          const instanceId = endpoint.kind === "instance" ? endpoint.id : null;
+          // A folded run is not an instance, so its mail records no instanceId.
+          const instanceId = null;
           return {
             record: {
               id,
@@ -477,31 +470,27 @@ export function parseAgentId(agentAddress: string): string {
 }
 
 /**
- * A live routing endpoint backing a plain `ins_<hex>` agent address, normalized
- * across the agent-instance -> workflow-run fold. Both a legacy launched
- * instance (`agent_instance`) and a folded run (`workflow_run`) share that
- * address space, so callers work against this shape rather than a specific
- * table.
+ * A live routing endpoint backing a plain `ins_<hex>` agent address. A launch
+ * produces a folded `workflow_run`, so the endpoint is always that run.
  */
 export interface RoutableEndpoint {
-  readonly kind: "instance" | "run";
   readonly id: string;
   readonly tenantId: string;
   readonly address: string;
   readonly publicKey: string | null;
   /**
-   * The endpoint's raw table status (the instance or run enum). Resolution is
-   * `endedAt`-filtered, so a resolved endpoint is not necessarily live: a
-   * leaked run/instance is deliberately kept routable (terminal status, null
-   * `endedAt`) to stay reachable, and the reconnect reaction reads this to keep
-   * such an endpoint routable without restoring a collector.
+   * The endpoint's raw run status. Resolution is `endedAt`-filtered, so a
+   * resolved endpoint is not necessarily live: a leaked run is deliberately
+   * kept routable (terminal status, null `endedAt`) to stay reachable, and the
+   * reconnect reaction reads this to keep such an endpoint routable without
+   * restoring a collector.
    */
   readonly status: string;
   /**
-   * The live session backing this endpoint. An instance carries its own
-   * `sessionId`; a folded run has no session column, so this is the run's
-   * not-yet-ended `agent_session`, keyed by the run's principal. Transitional
-   * -- it retires when mail record-keeping moves off `agent_session`.
+   * The live session backing this endpoint. A folded run has no session column,
+   * so this is the run's not-yet-ended `agent_session`, keyed by the run's
+   * principal. Transitional -- it retires when mail record-keeping moves off
+   * `agent_session`.
    */
   readonly sessionId: string | null;
 }
@@ -542,7 +531,6 @@ export async function resolveRoutableAddress(
   }
 
   return {
-    kind: "run",
     id: runRow.id,
     tenantId: runRow.tenantId,
     address,
@@ -624,31 +612,28 @@ export async function resolveRunIdForSession(
 }
 
 /**
- * A routing endpoint resolved BY ID for the instance read/interact surface,
- * normalized across the agent-instance -> workflow-run fold into one
- * instance-shaped record. Unlike `resolveRoutableAddress` (keyed by address,
- * live-only), this is keyed by the path id and does NOT filter terminated rows
- * -- a stopped instance's detail, mail history, and turns are still served.
- * Keep the two separate: routing must never reach a dead endpoint, while the
- * read surface must still render one.
+ * A folded run resolved BY ID for the instance read/interact surface, shaped
+ * into one instance-shaped record. Unlike `resolveRoutableAddress` (keyed by
+ * address, live-only), this is keyed by the path id and does NOT filter
+ * terminated rows -- a stopped run's detail, mail history, and turns are still
+ * served. Keep the two separate: routing must never reach a dead endpoint,
+ * while the read surface must still render one.
  */
 export interface RoutableRecord {
-  readonly kind: "instance" | "run";
   readonly id: string;
   readonly tenantId: string;
-  /** The routing address. Non-null for both kinds: an instance's column is
-   * not-null, and a run resolves here only when it owns an address. */
+  /** The routing address. Non-null: a run resolves here only when it owns an
+   * address. */
   readonly address: string;
   readonly publicKey: string | null;
-  /** Raw table status (instance or run enum). The wire mapping onto the
-   * instance status enum is a hub-api concern, done by the response shaper. */
+  /** Raw run status. The wire mapping onto the instance status enum is a
+   * hub-api concern, done by the response shaper. */
   readonly status: string;
   readonly createdAt: Date;
   /** A run has no `updatedAt` column, so it reports `endedAt ?? createdAt`. */
   readonly updatedAt: Date;
   readonly endedAt: Date | null;
-  /** The folded definition this instance/run belongs to (`workflow_definition.id`).
-   * Non-null for both kinds. */
+  /** The folded definition this run belongs to (`workflow_definition.id`). */
   readonly definitionId: string;
   readonly principalId: string | null;
   readonly sessionId: string | null;
@@ -714,7 +699,6 @@ export async function findRoutableById(
       return undefined;
     }
     return {
-      kind: "run",
       id: runRow.id,
       tenantId: runRow.tenantId,
       address: runRow.address,

@@ -9,7 +9,6 @@ import {
 
 function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
   return {
-    kind: "run",
     id: "ins_1",
     tenantId: "tnt_1",
     address: "ins_1@tenant.example",
@@ -78,23 +77,6 @@ describe("formatInstanceView", () => {
     expect(
       formatInstanceView(makeRecord({ status: "cancelled" }), "A").status,
     ).toBe("stopped");
-  });
-
-  test("passes a legacy instance status through unchanged", () => {
-    const view = formatInstanceView(
-      makeRecord({ kind: "instance", status: "deployed" }),
-      "A",
-    );
-    expect(view.status).toBe("deployed");
-  });
-
-  test("throws on an unknown instance status rather than leak it", () => {
-    expect(() =>
-      formatInstanceView(
-        makeRecord({ kind: "instance", status: "bogus" }),
-        "A",
-      ),
-    ).toThrow(/unknown agent_instance status/);
   });
 
   test("includes runtimeStatus only when supplied", () => {
