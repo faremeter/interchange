@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-3.5-flash",
+  "capability": "function-calling-multi-turn",
+  "capturedAt": "2026-07-28T20:00:11.258Z",
+  "schemaVersion": "1"
+}

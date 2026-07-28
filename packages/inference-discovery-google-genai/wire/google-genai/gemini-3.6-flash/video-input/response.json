@@ -1,0 +1,36 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The video depicts rotating globes comparing the Moon's surface albedo with its mapped water signatures.",
+            "thoughtSignature": "Eu0GCuoGARFNMg/+sVGkLMH6yktZzXkGhWLcraP7x4xGBVLGtUapz28l2CqykpbiWAVUOS7mbiWV7ZJtJS0wcaR6SJRFYWloS6LN189vikngVUnmldynod5S+aIcCNZatoZq2PtMDdhTv/X9KoDoJx9zqbiexdZiySyzYr0WEPW+jvvaj+vo/jEXU9E8ZXKbRP7x3q6M1UgLj75tC5Ci0IqtLd/wJt7fruTNM7h0FtfJzdZb1kdWgPGzYkOJkswPFvsOgmgpRJ7evsJk0+cak3nvoIIIPX+EAoXbSX0qX2FCWsNoDNlWyFB+IQou5ibyRiK1TQz2YZGCOSuOa4gWKINHaoJYz54MyBgR2H/43HJfWtIzRkcqQMON/iWmYmWvxCpGr43z2PDNQw3nhO6i+IP9LXzkfYhCgORdg4I5jzMeT9JNHbtf8rIKPL3fCRW80oDJBo02urdqqrIM+2g4YWU8B7txHdp655I8A1wOrtedpW1JeqenM8mGe3nyLM4spB+AX/viAGufEtssdBj7alqdix0F07wwgf9zlz5MYAqyEPezyJtRPe3m2PndJ8z9rr4aOnaj82t6lSkhkWt5R0hdWashzpA7FPX7IBRfZnCjxQw/UB8QwBA6Afb9X/99diWy+CWRsVToXOiM53T9UkpDuRFamuU4WU49A+hXB1CHS6AvM4vlAHMDRGHIVX4hNDaHseK4RDWf43gOXfbtyj3S/ONeUO+cuV9S/FzYp1DRHcVgcsCiQpX2BymJMk5bj2iZHNoL116A6UtzAFxRnSUobfyFhhF33YEGSgJXvWlI48Oab8QrjbTlJAyrQXRHHhUfaaSprCDrYxh9mxjwGs3DY2Kew0Rfp7LV1i6nTvB+vcIk0+0ohzXYaTWvWAWKD+vaNS4zObneFeHsU6AS3pQ7Ampk2JOvvxwNMjVEo4D/uuubU8z6G9as+Mh0ujJUF4QMWQolwAxgG+NRDbu+KXnfwQXYIUsI+NsmAZ2m+FiHh5CcFP+dKHb2eEJVVNlAyHuc5JHPq4sNx8J3e4PweTwo0Nq2/sscrDQ5QDStwnrK7BBlGkY6MgtEVrUf5AAaoQzqDZfJKofB/dyB3Yqidph4rkqYzT8attMJLpbOnYaSF2OI01vKmI4Zf045h68shzuxLZBVjF5OGwBzVesodg=="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 393,
+    "candidatesTokenCount": 20,
+    "totalTokenCount": 591,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 380
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      }
+    ],
+    "thoughtsTokenCount": 178,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.6-flash",
+  "responseId": "EQppavGbNNnRz7IP8d7Q-Q8"
+}

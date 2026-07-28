@@ -1,0 +1,14 @@
+{
+  "file": {
+    "name": "files/2vcon78s345c",
+    "mimeType": "application/pdf",
+    "sizeBytes": "4193",
+    "createTime": "2026-07-28T20:01:21.763699Z",
+    "updateTime": "2026-07-28T20:01:21.763699Z",
+    "expirationTime": "2026-07-30T20:01:21.581349320Z",
+    "sha256Hash": "YmU5ZmVkZTMzMTk5NDhlZjRkZGFiNzU2MGI0NDNlZjg3ZTUyMGY2NzA4OGIzZWE1OGI0MzU3MWQxOTEzMjNkNg==",
+    "uri": "https://generativelanguage.googleapis.com/v1beta/files/2vcon78s345c",
+    "state": "ACTIVE",
+    "source": "UPLOADED"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+  "content-length": "508",
+  "content-type": "application/json; charset=UTF-8",
+  "date": "Tue, 28 Jul 2026 19:59:51 GMT",
+  "server": "UploadServer",
+  "vary": "Origin, X-Origin, Referer",
+  "x-guploader-uploadid": "AKhXX7JVCqA9631D-86DVXkCgRsXSxb7sXICCTtOrj_L_rKo7QfQduYKU7aguypxJGDjumci_570yw"
+}

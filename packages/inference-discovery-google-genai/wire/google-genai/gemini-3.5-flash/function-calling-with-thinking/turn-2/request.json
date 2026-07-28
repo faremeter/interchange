@@ -1,0 +1,68 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "text": "**My Approach to Gathering Boston Weather Data**\n\nOkay, so the user needs the weather in Boston. Simple enough! I have a tool called `default_api:get_weather`. It's designed specifically for this kind of request – it has a `location` parameter, which is precisely what I need. Therefore, my next step is clear: I need to call the `default_api:get_weather` function and provide \"Boston, MA\" as the value for the `location` parameter. That should give me the weather information they're looking for. It's a straightforward application of the tool, and the logic flows naturally from the user's request.\n\n\n",
+          "thought": true
+        },
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "3ce4l3kv"
+          },
+          "thoughtSignature": "EvwBCvkBARFNMg+jFXG6+PGfp4wV9YNLf8bN4c6lORksYtlgFIrbz9d3aWGdCDDCu9BPAF+0otHiBkJT6gGoCgFP3ZZvozw3PDvnFLuFZu9qPi8A/9F996DhxNmlzblwlS2Fuhy3tHW5c0rSC51FgppCfbEVW78SYRKHeI7DOzUuUiTvwTOxRyrLo1NMoIMdKnTQklj89Od+xHePZSxMSM7UDLIoJK9D9xbkhbXrafISwKkptUjxX/Maeb53RwRciK7G6XJdxriPD8hlRNFLUvi06dHmN3AqEWzJD3PwC5+S2d49lIUza7poCbmCrcDhpAl80AuUnBzbjcN/trsH"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {}
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}
