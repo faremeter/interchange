@@ -1639,6 +1639,39 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
     expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
     expect(() => adapter.parseResponse(bad)).toThrow(/missing usageMetadata/);
   });
+
+  test("safety_rating-only prior turns are omitted from follow-up request history", () => {
+    // A prompt-blocked turn finalizes with only SafetyRatingBlock(s).
+    // Echoing them has no wire shape; omitting empty model contents
+    // keeps the next turn buildable.
+    const history: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "blocked prompt" }],
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
+        model: "gemini-2.5-flash",
+        timestamp: 2,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "try again safely" }],
+        timestamp: 3,
+      },
+    ];
+    const req = adapter.buildRequest(history, "gemini-2.5-flash", {
+      maxTokens: 100,
+    });
+    const ContentsRoles = type({
+      contents: type({ role: "string", parts: "unknown" }).array(),
+    });
+    const body = ContentsRoles.assert(JSON.parse(req.body));
+    expect(body.contents).toHaveLength(2);
+    expect(body.contents.map((c) => c.role)).toEqual(["user", "user"]);
+  });
 });
 
 describe("Google GenAI adapter: parseResponse error surface", () => {

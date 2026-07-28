@@ -194,6 +194,33 @@ describe("EventCollector", () => {
     expect(at(parts, 2).values.content).toBe("I cannot help with that.");
   });
 
+  test("safety_rating content blocks insert a safety_rating part carrying the reason", async () => {
+    // SafetyRatingBlock lands as prompt-level structured safety
+    // (Gemini promptFeedback.blockReason). The collector must persist
+    // it explicitly or a blocked turn looks empty in the audit trail.
+    await collector.onEvent(
+      event("inference.start", 1, { model: "gemini-2.5-flash" }),
+    );
+    await collector.onEvent(
+      event("inference.done", 5, {
+        turn: {
+          role: "assistant",
+          content: [
+            { type: "safety_rating", blockReason: "PROHIBITED_CONTENT" },
+          ],
+          model: "gemini-2.5-flash",
+          timestamp: 1234,
+        },
+        usage: { input: 18, output: 0 },
+      }),
+    );
+
+    const parts = fakeDB.inserts.filter((i) => i.table === "turn_part");
+    expect(parts).toHaveLength(3);
+    expect(at(parts, 1).values.type).toBe("safety_rating");
+    expect(at(parts, 1).values.content).toBe("PROHIBITED_CONTENT");
+  });
+
   test("media content blocks insert a file part keyed by source kind", async () => {
     await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
     await collector.onEvent(

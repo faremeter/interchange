@@ -254,6 +254,14 @@ export function createEventCollector(
           // declines differently from regular assistant output.
           await insertPart("refusal", block.reason, null);
           break;
+        case "safety_rating":
+          // Structured safety signals (e.g. Gemini
+          // promptFeedback.blockReason). Persist the reason under a
+          // dedicated part kind so a blocked turn is not empty in
+          // the audit trail. Content is the provider-native reason
+          // string (observed: PROHIBITED_CONTENT).
+          await insertPart("safety_rating", block.blockReason, null);
+          break;
         case "tool_call":
           callNames.set(block.id, block.name);
           callArgs.set(block.id, block.arguments);

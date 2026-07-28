@@ -99,6 +99,7 @@ const turnPartTypes = [
   "file",
   "error",
   "refusal",
+  "safety_rating",
   "step-start",
   "step-finish",
   "snapshot",

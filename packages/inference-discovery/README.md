@@ -77,8 +77,9 @@ error, or a capability the provider does not implement (see the
 for examples). A `misled` entry is an HTTP 200 whose body did not
 carry the documented shape the capability implies — the model
 responded but the contract did not fire — so its fixture records
-what the wire actually returned (see the `gemini-2.5-flash`
-safety-classification entry).
+what the wire actually returned (see the Anthropic
+`claude-sonnet-5` redacted-thinking entry, which still returns
+regular thinking for the documented canary).
 
 `INTENTS` maps each capability to the prompt, tools, follow-up
 turns, and media references the plug-in uses to assemble the
