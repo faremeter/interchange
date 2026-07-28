@@ -12,6 +12,7 @@ const OPENCODE_ZEN_MODELS: readonly string[] = [
   "deepseek-v4-pro",
   "qwen3.6-plus",
   "mimo-v2-omni",
+  "gpt-5.4-mini",
 ];
 
 const REDACT_REQUEST_HEADERS: readonly string[] = ["authorization"];
