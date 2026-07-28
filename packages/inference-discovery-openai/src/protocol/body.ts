@@ -30,6 +30,27 @@ export interface ChatCompletionsRequest {
   stream?: boolean;
   tools?: unknown[];
   response_format?: unknown;
+  // Required as "none" for gpt-5.6 Chat Completions tool calls; OpenAI
+  // rejects function tools with the default reasoning_effort on that series.
+  reasoning_effort?: "none";
+}
+
+// gpt-5.6 Chat Completions rejects function tools unless reasoning_effort
+// is explicitly "none" (use Responses API for reasoned tool use). Add a
+// model here when tool calls fail with the reasoning_effort invalid_request.
+const TOOL_CALL_REASONING_NONE_MODELS: ReadonlySet<string> = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
+
+function applyToolCallingEffort(
+  body: ChatCompletionsRequest,
+  model: string,
+): void {
+  if (TOOL_CALL_REASONING_NONE_MODELS.has(model)) {
+    body.reasoning_effort = "none";
+  }
 }
 
 function mimeTypeFor(ref: MediaRef): string {
@@ -78,22 +99,26 @@ function buildFunctionCallingBody(
   model: string,
   intent: CapabilityIntent,
 ): ChatCompletionsRequest {
-  return {
+  const body: ChatCompletionsRequest = {
     model,
     messages: [{ role: "user", content: intent.prompt }],
     tools: buildToolDecl(intent),
   };
+  applyToolCallingEffort(body, model);
+  return body;
 }
 
 export function buildMultiTurnTurn1Body(opts: {
   model: string;
   intent: CapabilityIntent;
 }): ChatCompletionsRequest {
-  return {
+  const body: ChatCompletionsRequest = {
     model: opts.model,
     messages: [{ role: "user", content: opts.intent.prompt }],
     tools: buildToolDecl(opts.intent),
   };
+  applyToolCallingEffort(body, opts.model);
+  return body;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -181,6 +206,7 @@ export function buildMultiTurnTurn2Body(opts: {
   if (tools !== undefined) {
     body.tools = tools;
   }
+  applyToolCallingEffort(body, opts.model);
   return body;
 }
 
