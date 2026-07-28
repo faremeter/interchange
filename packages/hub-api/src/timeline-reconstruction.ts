@@ -6,7 +6,10 @@ import {
   listMail,
   type MailDirection,
 } from "@intx/storage-isogit";
-import type { ConversationTurn } from "@intx/types/runtime";
+import {
+  formatSafetyRatingText,
+  type ConversationTurn,
+} from "@intx/types/runtime";
 import {
   ErrorRecord,
   type ErrorRecord as ErrorRecordType,
@@ -107,7 +110,7 @@ function extractTextContent(msg: ConversationTurn): string {
       if (b.type === "text") return b.text;
       if (b.type === "refusal") return b.reason;
       if (b.type === "safety_rating") {
-        return `Request blocked: ${b.blockReason}`;
+        return formatSafetyRatingText(b);
       }
       return "";
     })

@@ -27,6 +27,26 @@ describe("transformMessages", () => {
     expect(firstMsg?.content[0]?.type).toBe("thinking");
   });
 
+  test("rewrites safety_rating blocks to text for cross-provider history", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "assistant",
+        model: "gemini-2.5-flash",
+        content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
+        timestamp: 1000,
+      },
+    ];
+
+    const result = transformMessages(messages, {
+      targetModel: "claude-sonnet-4-5-20250929",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.content).toEqual([
+      { type: "text", text: "Request blocked: PROHIBITED_CONTENT" },
+    ]);
+  });
+
   test("strips thinking blocks when replaying to a different model", () => {
     const messages: ConversationTurn[] = [
       {

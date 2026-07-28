@@ -1640,10 +1640,9 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
     expect(() => adapter.parseResponse(bad)).toThrow(/missing usageMetadata/);
   });
 
-  test("safety_rating-only prior turns are omitted from follow-up request history", () => {
+  test("safety_rating-only prior turns rewrite to text on follow-up request history", () => {
     // A prompt-blocked turn finalizes with only SafetyRatingBlock(s).
-    // Echoing them has no wire shape; omitting empty model contents
-    // keeps the next turn buildable.
+    // Rewrite to text keeps role alternation and a model-visible reason.
     const history: ConversationTurn[] = [
       {
         role: "user",
@@ -1665,12 +1664,83 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
     const req = adapter.buildRequest(history, "gemini-2.5-flash", {
       maxTokens: 100,
     });
-    const ContentsRoles = type({
-      contents: type({ role: "string", parts: "unknown" }).array(),
+    const ContentsShape = type({
+      contents: type({
+        role: "string",
+        parts: type({ "text?": "string" }).array(),
+      }).array(),
     });
-    const body = ContentsRoles.assert(JSON.parse(req.body));
-    expect(body.contents).toHaveLength(2);
-    expect(body.contents.map((c) => c.role)).toEqual(["user", "user"]);
+    const body = ContentsShape.assert(JSON.parse(req.body));
+    expect(body.contents).toHaveLength(3);
+    expect(body.contents.map((c) => c.role)).toEqual(["user", "model", "user"]);
+    expect(body.contents[1]?.parts[0]?.text).toBe(
+      "Request blocked: PROHIBITED_CONTENT",
+    );
+  });
+
+  test("safety-classification-streaming harness lands safety_rating on inference.done", async () => {
+    const sseBytes = readFileSync(
+      join(
+        FIXTURE_ROOT,
+        "gemini-2.5-flash",
+        "safety-classification-streaming",
+        "response.sse",
+      ),
+    );
+    const SOURCE: InferenceSource = {
+      id: "google-genai:gemini-2.5-flash",
+      provider: "google-genai",
+      baseURL: "https://generativelanguage.googleapis.com",
+      apiKey: "test-key",
+      model: "gemini-2.5-flash",
+    };
+    const inertScheduler: Scheduler = {
+      setTimeout: () => () => {
+        /* no timers */
+      },
+      now: () => 0,
+    };
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "probe" }],
+          timestamp: 0,
+        },
+      ],
+      source: SOURCE,
+      nextSeq: () => seq++,
+      deps: {
+        fetch: () =>
+          Promise.resolve(
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(sseBytes);
+                  controller.close();
+                },
+              }),
+              {
+                status: 200,
+                headers: { "content-type": "text/event-stream" },
+              },
+            ),
+          ),
+        scheduler: inertScheduler,
+        adapters: createBuiltinRegistry(),
+      },
+    })) {
+      events.push(ev);
+    }
+    const done = events.find((e) => e.type === "inference.done");
+    expect(done?.type).toBe("inference.done");
+    if (done?.type === "inference.done") {
+      expect(done.data.turn.content).toEqual([
+        { type: "safety_rating", blockReason: "PROHIBITED_CONTENT" },
+      ]);
+    }
   });
 });
 

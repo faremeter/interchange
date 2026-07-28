@@ -12,6 +12,7 @@ import type {
   PartialMessage,
   TokenUsage,
 } from "@intx/types/runtime";
+import { formatSafetyRatingText } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
 import { ProtocolMismatchError } from "../errors";
@@ -43,10 +44,6 @@ const ParsedJSONObject = type("Record<string, unknown>");
 // Translates the internal ConversationTurn[] format into Gemini's
 // `generateContent` / `streamGenerateContent` request body. The harness
 // always streams, so the URL pins `:streamGenerateContent?alt=sse`.
-//
-// `parseResponse` throws unconditionally: a live call surfaces the
-// missing parser via the harness's standard inference.error path
-// rather than silently dropping events.
 // ---------------------------------------------------------------------------
 
 function buildRequest(
@@ -88,17 +85,19 @@ function buildRequest(
   // walk would be O(N^2) in turn count.
   const callIdToFunctionName = buildCallIdToFunctionName(messages);
 
-  // Drop output-only safety_rating blocks before marshaling. A
-  // prompt-blocked turn may contain only SafetyRatingBlock(s); echoing
-  // them throws, and an empty model content is invalid. Skip such
-  // turns entirely so multi-turn history after a block remains usable.
-  const contents: GeminiContent[] = conversationMessages.flatMap((msg) => {
-    const filtered: ConversationTurn = {
+  // safety_rating is output-only. Rewrite to text so multi-turn history
+  // keeps role alternation and a model-visible block reason (same
+  // policy as Anthropic/OpenAI/transform).
+  const contents: GeminiContent[] = conversationMessages.map((msg) => {
+    const rewritten: ConversationTurn = {
       ...msg,
-      content: msg.content.filter((b) => b.type !== "safety_rating"),
+      content: msg.content.map((b) =>
+        b.type === "safety_rating"
+          ? { type: "text" as const, text: formatSafetyRatingText(b) }
+          : b,
+      ),
     };
-    if (filtered.content.length === 0) return [];
-    return [toGeminiContent(filtered, callIdToFunctionName)];
+    return toGeminiContent(rewritten, callIdToFunctionName);
   });
 
   const body: Record<string, unknown> = { contents };
@@ -348,11 +347,10 @@ function toGeminiPart(
       );
 
     case "safety_rating":
-      // Filtered out of history before toGeminiPart is called.
+      // Rewritten to text in buildRequest before toGeminiPart is called.
       throw new Error(
-        "Google GenAI adapter: safety_rating blocks must be filtered " +
-          "from conversation history before marshaling; they annotate " +
-          "model/request filtering and have no input wire shape.",
+        "Google GenAI adapter: safety_rating blocks must be rewritten " +
+          "to text before toGeminiPart.",
       );
     case "citation":
       // Citations are output-only blocks: the model produces them as

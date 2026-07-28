@@ -21,15 +21,16 @@
 // reply so the problem is visible, and the agent remains alive for retries.
 
 import { getLogger } from "@intx/log";
-import type {
-  ReactorDirector,
-  ReactorInboundEvent,
-  ReactorState,
-  ReactorCapabilities,
-  ReactorAction,
-  AssistantTurn,
-  ToolCall,
-  ToolDefinition,
+import {
+  formatSafetyRatingText,
+  type ReactorDirector,
+  type ReactorInboundEvent,
+  type ReactorState,
+  type ReactorCapabilities,
+  type ReactorAction,
+  type AssistantTurn,
+  type ToolCall,
+  type ToolDefinition,
 } from "@intx/types/runtime";
 
 const logger = getLogger(["interchange", "inference", "default-director"]);
@@ -166,7 +167,7 @@ function extractTextContent(turn: AssistantTurn): string {
     } else if (block.type === "refusal") {
       parts.push(block.reason);
     } else if (block.type === "safety_rating") {
-      parts.push(`Request blocked: ${block.blockReason}`);
+      parts.push(formatSafetyRatingText(block));
     }
   }
   return parts.join("\n").trim();

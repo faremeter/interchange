@@ -9,7 +9,11 @@
 // message's originating model. The originating model is tracked per-message,
 // not per-conversation.
 
-import type { ConversationTurn, ContentBlock } from "@intx/types/runtime";
+import {
+  formatSafetyRatingText,
+  type ConversationTurn,
+  type ContentBlock,
+} from "@intx/types/runtime";
 
 export type TransformOptions = {
   targetModel: string;
@@ -46,7 +50,7 @@ export function transformMessages(
             if (block.type === "safety_rating") {
               return {
                 type: "text",
-                text: `Request blocked: ${block.blockReason}`,
+                text: formatSafetyRatingText(block),
               };
             }
             return block;

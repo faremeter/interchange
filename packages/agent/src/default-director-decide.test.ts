@@ -352,6 +352,36 @@ describe("defaultDirector decide()", () => {
     expect(replyAction.content).toBe("I cannot help with that.");
   });
 
+  test("inference.done with a safety-only turn replies with the block reason", async () => {
+    // SafetyRatingBlock is the Gemini promptFeedback.blockReason shape.
+    // The director must surface the reason on the reply path, not route
+    // through the empty-response branch.
+    const director = buildDirector();
+    const caps = makeCapabilities();
+    const state = makeState();
+
+    const event: ReactorInboundEvent = {
+      type: "inference.done",
+      turn: {
+        role: "assistant",
+        model: "gemini-2.5-flash",
+        content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
+        timestamp: 1000,
+      },
+      usage: emptyUsage(),
+      source: TEST_SOURCE,
+    };
+
+    const actions = await director.decide(event, state, caps);
+    const normalized = Array.isArray(actions) ? actions : [actions];
+    expect(normalized.some((a) => a.type === "checkpoint")).toBe(true);
+    const replyAction = normalized.find((a) => a.type === "reply");
+    if (replyAction === undefined || replyAction.type !== "reply") {
+      throw new Error("expected reply action");
+    }
+    expect(replyAction.content).toBe("Request blocked: PROHIBITED_CONTENT");
+  });
+
   test("inference.done with whitespace-only text returns checkpoint and wait", async () => {
     const director = buildDirector();
     const caps = makeCapabilities();

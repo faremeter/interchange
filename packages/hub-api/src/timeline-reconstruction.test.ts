@@ -153,6 +153,32 @@ describe("reconstructTimeline", () => {
     expect(turns[0]?.timestamp).toBe(t + 1000);
   });
 
+  test("surfaces safety-only assistant turns in the timeline summary", async () => {
+    const dir = await makeTempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    const t = 1700000000000;
+    const messages: ConversationTurn[] = [
+      userMessage("Describe prohibited content.", t),
+      {
+        role: "assistant",
+        content: [{ type: "safety_rating", blockReason: "PROHIBITED_CONTENT" }],
+        model: "gemini-2.5-flash",
+        timestamp: t + 1000,
+      },
+    ];
+    await store.writeTurns(messages);
+
+    await store.commit({ message: "checkpoint: inference-done" });
+
+    const result = await reconstructTimeline(dir);
+    const turns = result.events.filter((e) => e.kind === "turn");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.content).toBe("Request blocked: PROHIBITED_CONTENT");
+    expect(turns[0]?.timestamp).toBe(t + 1000);
+  });
+
   test("reconstructs multi-turn conversations across checkpoints", async () => {
     const dir = await makeTempDir();
     await initAgentRepo(dir);
