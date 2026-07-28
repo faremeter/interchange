@@ -38,7 +38,7 @@ describe("transformMessages", () => {
     ];
 
     const result = transformMessages(messages, {
-      targetModel: "claude-sonnet-4-5-20250929",
+      targetModel: "claude-sonnet-5",
     });
 
     expect(result).toHaveLength(1);

@@ -1,7 +1,0 @@
-{
-  "provider": "anthropic",
-  "model": "claude-opus-4-1-20250805",
-  "capability": "redacted-thinking-streaming",
-  "capturedAt": "2026-07-28T16:57:43.199Z",
-  "schemaVersion": "1"
-}

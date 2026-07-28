@@ -55,16 +55,16 @@ describe("runCompatReplay — single-turn streaming SSE", () => {
   });
 
   test("anthropic redacted-thinking-streaming turn-1: redacted events + clean invariants", async () => {
-    // Real capture (Sonnet 4.5, 2026-07-28): multiple one-shot
+    // Real capture (Haiku 4.5): multiple one-shot
     // redacted_thinking content_block_start events before text.
     const fixtureDir = path.join(
       WORKSPACE_ROOT,
-      "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-4-5-20250929/redacted-thinking-streaming/turn-1",
+      "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/redacted-thinking-streaming/turn-1",
     );
     const result = await runCompatReplay({
       fixtureDir,
       provider: "anthropic",
-      model: "claude-sonnet-4-5-20250929",
+      model: "claude-haiku-4-5-20251001",
     });
 
     if (result.kind !== "replayed") {

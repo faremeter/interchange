@@ -126,6 +126,8 @@ export interface AnthropicRequestBody {
 // signal. Add a model here when its API rejects the classic shape.
 const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-5",
+  "claude-opus-5",
+  "claude-fable-5",
 ]);
 
 // Adaptive thinking is the model's own per-request choice; empirically only
@@ -650,9 +652,9 @@ export function buildFilesApiGenerateBody(opts: {
   return body;
 }
 
-// Capability-keyed model-supports check. Anthropic's three current
-// models (Sonnet, Opus, Haiku) all expose the same surface; if that
-// stops being true, this gate is where to encode the divergence.
+// Capability-keyed model-supports check. The four current Anthropic
+// discovery models (Fable, Opus, Sonnet, Haiku) share this surface; if
+// that stops being true, this gate is where to encode the divergence.
 const SUPPORTED_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "plain-text",
   "plain-text-streaming",
