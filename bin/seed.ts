@@ -19,7 +19,6 @@ import {
   AssetWithOriginResponse,
   PrincipalResponse,
   PrincipalSummary,
-  AgentSummary,
   RoleResponse,
   ProviderResponse,
   ModelResponse,
@@ -1355,17 +1354,6 @@ const { status: mePrincipals, data: mePrinData } = await api(
 check("get alice principals", mePrincipals, 200, mePrinData);
 log(
   `  Alice has ${parse(paginatedSchema(PrincipalSummary), mePrinData, "alice principals response").data.length} principal(s) across tenants`,
-);
-
-const { status: meAgents, data: meAgentData } = await api(
-  "GET",
-  "/api/me/agents",
-  undefined,
-  aliceCookies,
-);
-check("get alice agents", meAgents, 200, meAgentData);
-log(
-  `  Alice can see ${parse(paginatedSchema(AgentSummary), meAgentData, "alice agents response").data.length} agent(s)`,
 );
 
 // Verify Bob's view

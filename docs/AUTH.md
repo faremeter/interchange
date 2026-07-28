@@ -20,7 +20,7 @@ A user can belong to many tenants. Tenant context is always encoded in the URL p
 | Path scope                 | Example                        | Behavior                                                                             |
 | -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ |
 | Tenant-scoped              | `/api/tenants/tnt_abc/agents`  | Principal resolved from `(user_id, tnt_abc)`, grants evaluated                       |
-| User-scoped (cross-tenant) | `/api/me/agents`               | All of the user's principals resolved, results aggregated and tagged with `tenantId` |
+| User-scoped (cross-tenant) | `/api/me/principals`           | All of the user's principals resolved, results aggregated and tagged with `tenantId` |
 | Global                     | `/api/tenants`, `/api/auth/**` | No tenant context needed                                                             |
 
 ## Principals

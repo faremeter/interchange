@@ -2,13 +2,12 @@ import { type SQL, eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
-import { agentInstance, principal, workflowDefinition } from "@intx/db/schema";
-import { parsePrincipalRow, parseWorkflowDefinitionRow } from "@intx/db";
+import { agentInstance, principal } from "@intx/db/schema";
+import { parsePrincipalRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   UserProfile,
   PrincipalSummary,
-  AgentSummary,
   InstanceSummary,
   SessionSummary,
   ApprovalSummary,
@@ -180,96 +179,6 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
           kind: p.kind,
           status: p.status,
           roles: assignmentsByPrincipal.get(p.id) ?? [],
-        };
-      });
-
-      return c.json(paginatedResponse(items, rows, limit));
-    },
-  );
-
-  app.get(
-    "/agents",
-    describeRoute({
-      tags: ["User"],
-      summary: "List agents across all tenants",
-      description:
-        "Aggregates agents from all tenants the user belongs to. Each result is tagged with tenantId.",
-      parameters: [...pageParameters],
-      responses: {
-        200: {
-          description: "Agents across tenants",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(AgentSummary)),
-            },
-          },
-        },
-      },
-    }),
-    async (c) => {
-      const user = c.get("user");
-      if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
-      }
-      const { limit, cursor } = parsePageParams({
-        cursor: c.req.query("cursor"),
-        limit: c.req.query("limit"),
-      });
-
-      const principals = await db.query.principal.findMany({
-        where: and(eq(principal.kind, "user"), eq(principal.refId, user.id)),
-      });
-
-      const tenantIds = principals.map((p) => p.tenantId);
-      if (tenantIds.length === 0) {
-        return c.json({ data: [], nextCursor: null });
-      }
-
-      const tenants = await db.query.tenant.findMany({
-        where: (t, { inArray }) => inArray(t.id, tenantIds),
-      });
-      const tenantMap = new Map(tenants.map((t) => [t.id, t]));
-
-      const conditions: SQL[] = [];
-      if (cursor) {
-        conditions.push(
-          cursorCondition(
-            workflowDefinition.createdAt,
-            workflowDefinition.id,
-            cursor,
-          ),
-        );
-      }
-
-      // Agents are folded onto workflow_definition; this endpoint lists the
-      // folded population (origin_agent_id not null), so a native
-      // workflow-origin definition -- which the workflow surface owns -- does
-      // not surface here.
-      const rows = await db.query.workflowDefinition.findMany({
-        where: (d, { inArray, isNotNull }) =>
-          and(
-            inArray(d.tenantId, tenantIds),
-            isNotNull(d.originAgentId),
-            ...conditions,
-          ),
-        orderBy: pageOrder(workflowDefinition.createdAt, workflowDefinition.id),
-        limit,
-      });
-
-      const items = rows.map((row) => {
-        const def = parseWorkflowDefinitionRow(row);
-        return {
-          id: def.id,
-          tenantId: def.tenantId,
-          tenantName: tenantMap.get(def.tenantId)?.name ?? "Unknown",
-          name: def.name,
-          description: def.description ?? null,
-          status: def.status,
         };
       });
 

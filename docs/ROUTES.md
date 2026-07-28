@@ -43,9 +43,9 @@ Runtime state — data, history, branches, health, logs, metrics — lives on ag
 
 A user who belongs to multiple tenants needs dashboard views: "all my definitions across all orgs", "all my running agents", "all pending approvals". Rather than making the tenant-scoped endpoints optionally cross-tenant (via an absent header or special parameter), we provide explicit endpoints under `/api/me/...`.
 
-This is clearer for clients: `/api/me/agents` aggregates a user's agents across every tenant they belong to and tags each result with `tenantId` — a cross-tenant view rather than a per-tenant one. No mode-switching, no ambiguity about what "list agents" means in a given context.
+This is clearer for clients: `/api/me/principals` aggregates a user's principals across every tenant they belong to and tags each result with `tenantId` — a cross-tenant view rather than a per-tenant one. No mode-switching, no ambiguity about what "list principals" means in a given context.
 
-Cross-tenant `/api/me/...` endpoints exist for the dashboard resources — agents, running instances, approvals, principals, and sessions — the cross-tenant views of what's defined, what's running, and what needs a user's attention. The agents, instances, and principals views aggregate live across tenants; the approvals and sessions endpoints are deferred stubs that currently return an empty array.
+Cross-tenant `/api/me/...` endpoints exist for the dashboard resources — running instances, approvals, principals, and sessions — the cross-tenant views of what's running and what needs a user's attention. The instances and principals views aggregate live across tenants; the approvals and sessions endpoints are deferred stubs that currently return an empty array.
 
 ## Conventions
 

@@ -23,15 +23,6 @@ export const PrincipalSummary = type({
   }).array(),
 });
 
-export const AgentSummary = type({
-  id: "string",
-  tenantId: "string",
-  tenantName: "string",
-  name: "string",
-  "description?": "string | null",
-  status: "'deployed' | 'stopped' | 'updating' | 'error'",
-});
-
 export const InstanceSummary = type({
   id: "string",
   tenantId: "string",
