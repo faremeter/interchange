@@ -8,10 +8,11 @@ const OPENCODE_ZEN_MODELS: readonly string[] = [
   "kimi-k2.6",
   "kimi-k2.7-code",
   "kimi-k3",
-  "glm-5.1",
+  "glm-5.2",
   "deepseek-v4-pro",
-  "qwen3.6-plus",
-  "mimo-v2-omni",
+  "deepseek-v4-flash",
+  "qwen3.7-plus",
+  "mimo-v2.5",
   "gpt-5.4-mini",
 ];
 

@@ -1,0 +1,58 @@
+{
+  "model": "mimo-v2.5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "refusal": null,
+      "reasoning": "The user wants to know the current weather in Boston, MA. I have a tool called `get_weather` that can look up the current weather for a city. I will use that tool with the location \"Boston, MA\".",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The user wants to know the current weather in Boston, MA. I have a tool called `get_weather` that can look up the current weather for a city. I will use that tool with the location \"Boston, MA\".",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "call_c832d8a56c8844f695b334d0",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\": \"Boston, MA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_c832d8a56c8844f695b334d0",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ]
+}

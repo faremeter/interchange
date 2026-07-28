@@ -1,0 +1,7 @@
+{
+  "provider": "opencode-zen",
+  "model": "qwen3.7-plus",
+  "capability": "reasoning-content",
+  "capturedAt": "2026-07-28T20:15:41.756Z",
+  "schemaVersion": "1"
+}

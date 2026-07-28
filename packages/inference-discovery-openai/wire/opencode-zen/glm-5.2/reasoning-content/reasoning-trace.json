@@ -1,0 +1,4 @@
+{
+  "fieldPath": "choices.0.message.reasoning_content",
+  "sample": "The cost of the bat and ball is $1.10.\nBat = Ball + $1.00\nBat + Ball = $1.10\n(Ball + $1.00) + Ball = $1.10\n2 * Ball + $1.00 = $1.10\n2 * Ball = $0.10\nBall = $0.05\n\nLet's check:\nBat = $1.05\nBall = $0.05\nSum = $1.10\nDifference = $1.00\n\nReasoning looks solid."
+}

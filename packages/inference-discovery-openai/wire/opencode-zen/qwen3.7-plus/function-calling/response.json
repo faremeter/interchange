@@ -1,0 +1,39 @@
+{
+  "model": "qwen3.7-plus",
+  "id": "chatcmpl-8b088250-9885-4104-937a-e3c6b34c981e",
+  "choices": [
+    {
+      "message": {
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "call_5a1f7c17ed6c4fb3b9f4b2e2",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ],
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "Thinking Process:\n\n1.  **Identify the core request:** The user wants to know the current weather in Boston, MA.\n2.  **Identify the available tool:** `get_weather(location)`.\n3.  **Extract the parameter:** The user provided the location as \"Boston, MA\".\n4.  **Execute the tool:** Call `get_weather` with `location=\"Boston, MA\"`.\n5.  **Formulate the response:** Present the weather information returned by the tool to the user.\n\n*Self-Correction/Edge Case Check:* The user explicitly asked to use the provided tool and gave the exact location string. No ambiguity. Proceed with the tool call.\n\n*Tool Call:*\n`get_weather(location=\"Boston, MA\")`"
+      },
+      "index": 0,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "created": 1785269719,
+  "object": "chat.completion",
+  "usage": {
+    "total_tokens": 495,
+    "completion_tokens": 193,
+    "prompt_tokens": 302,
+    "completion_tokens_details": {
+      "reasoning_tokens": 161,
+      "text_tokens": 193
+    },
+    "prompt_tokens_details": { "cached_tokens": 0, "text_tokens": 302 }
+  },
+  "cost": "0"
+}
