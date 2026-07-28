@@ -631,19 +631,10 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     const p = (async () => {
-      // Per-source attempt budget for transient errors (quota/retryable/
-      // timeout). Kept small because failover, not flogging one source, is
-      // the recovery path: the harness already does its own mechanical
-      // retry under each attempt, so this caps reactor-level same-source
-      // retries at one before moving to the next source.
-      const sameSourceAttempts = 2;
-      const defaultRetryMs = 60_000;
-
       // Each cycle starts at the most-preferred source; a failover in a
       // prior cycle must not leave the agent permanently demoted.
       resetToPreferredSource();
 
-      let attempt = 0;
       for (;;) {
         const harnessOpts = buildHarnessOpts(
           prompt,
@@ -725,48 +716,17 @@ export function createReactor(config: ReactorConfig): Reactor {
           return;
         }
 
-        // A rate limit is the one category worth waiting out on the same
-        // source: it clears with time, and the reactor's backoff is longer
-        // than the harness's own per-call retry. The harness has already
-        // exhausted its internal mechanical retries for retryable/timeout
-        // by the time the reactor sees them, so those fail over rather than
-        // re-running the same source (which would just retry-compound).
-        if (err.category === "quota_exhausted") {
-          attempt += 1;
-          if (attempt < sameSourceAttempts && !signal.aborted) {
-            const delayMs = err.retryAfterMs ?? defaultRetryMs;
-            logger.warn`Rate limited, retrying same source after ${String(delayMs)}ms`;
-            await new Promise<void>((resolve) => {
-              const timer = setTimeout(resolve, delayMs);
-              const onAbort = () => {
-                clearTimeout(timer);
-                resolve();
-              };
-              signal.addEventListener("abort", onAbort, { once: true });
-            });
-            if (signal.aborted) {
-              enqueue({
-                type: "inference.error",
-                error: {
-                  category: "aborted",
-                  message: "inference aborted during rate limit backoff",
-                },
-                partial,
-              });
-              return;
-            }
-            continue;
-          }
-        }
-
-        // Same-source rate-limit budget exhausted, or a source-specific
-        // failure (credential, protocol mismatch, retryable, timeout): fail
-        // over to the next source. A pacing delay the leaving source asked
-        // for must not gate the next source.
+        // Any remaining error (quota, credential, protocol mismatch,
+        // retryable, timeout) is source-specific. The harness wrapper owns
+        // mechanical retry and has already exhausted it against this source
+        // by the time the reactor sees the error, including honoring a
+        // provider Retry-After for quota, so re-running the same source
+        // would only retry-compound. Fail over to the next source instead.
+        // A pacing delay the leaving source asked for must not gate the
+        // next source.
         pendingPacingDelayMs = 0;
         if (failOverToNextSource()) {
           logger.warn`Failing over to next inference source after ${err.category}`;
-          attempt = 0;
           continue;
         }
 

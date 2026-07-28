@@ -834,7 +834,7 @@ Provider errors are classified into categories that determine the reactor's resp
 - **Retryable** — Rate limits (429), server errors (500, 502, 503, 504), overload, network failures. Response: exponential backoff with retry.
 - **Context overflow** — Request exceeds the model's context window. Each provider phrases this differently (20+ known patterns). Response: trigger compaction, not retry.
 - **Credential failure** — Authentication rejected, token expired. Response: emit a credential gate, suspend the reactor for credential refresh. In a platform with managed credentials, expiry is expected and recoverable.
-- **Quota exhausted** — Provider-level usage limit hit (distinct from transient rate limits). Response: fail or switch model, depending on director policy.
+- **Quota exhausted** — Provider-level usage limit hit (distinct from transient rate limits). The `runInference` wrapper retries it mechanically (see Retry Behavior); once the wrapper gives up, the reactor fails over to the next inference source rather than re-running the exhausted one.
 - **Fatal** — Invalid request, unsupported model, malformed content. Response: fail immediately with diagnostic information.
 - **Aborted** — Caller cancelled via AbortSignal. Response: clean termination.
 - **Timeout** — Per-call inactivity or total wall-clock cap fired (see Per-Call Timeouts). The call produced no usable response. Response: treat as transient infrastructure failure and retry per director policy rather than as a model decision.
@@ -859,6 +859,10 @@ The retry delay is awaited against `Dependencies.scheduler.setTimeout`; the call
 Between attempts the wrapper emits one `inference.retry` event carrying the failed attempt's number, the policy-chosen `delayMs`, and the classified error. Consumers that want telemetry on retry frequency or tuning data subscribe to this event; consumers that do not care can ignore it.
 
 If a custom policy throws synchronously or its returned Promise rejects, the wrapper treats the failure as `{ kind: "abort" }` and surfaces the original `inference.error` to the caller. The policy's own exception is logged at `warn` (so a misbehaving custom policy is not invisible) and dropped — the inference error is what the caller needs to act on, not the bug in the policy callback.
+
+Mechanical retry for `quota_exhausted` is owned solely by this wrapper. The reactor drives one wrapper pass per inference source and then fails over to the next source on any non-source-invariant error, including quota; it adds no same-source retry of its own. The worst case for a sustained `quota_exhausted` response that omits `retryAfterMs` is therefore the wrapper's cap of **3 HTTP calls per source** (a flat 1000 ms baseline between attempts), repeated across at most the configured failover sources — 3 calls times the number of sources, with no reactor-level multiplier on top.
+
+One consequence: a quota error now fails over immediately once the wrapper's attempts are spent. For a multi-source agent this is the intended behaviour — move to a healthy source rather than sit on a throttled one. For a single-source agent whose provider returns `quota_exhausted` without a `Retry-After`, the error surfaces after the wrapper's few short attempts instead of a long same-source wait; operators who need extended pacing for that case supply a custom `RetryPolicy` via `InferenceOptions.retryPolicy`.
 
 ## Per-Call Timeouts
 
