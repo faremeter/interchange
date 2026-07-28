@@ -253,13 +253,11 @@ non-streaming responses.
   identifiers (`frank/GLM-5.1` for non-streaming,
   `accounts/fireworks/models/glm-5p1` for streaming). The shape is
   the same, but the upstream-identifier metadata is not.
-- The `SUPPORT_MATRIX` entry for `glm-5.1` vision-input carries
-  `outcome: "refused"` because the model's probe returned an HTTP
-  200 textual refusal rather than describing the image. The
-  discover CLI filters non-captured entries out of its run set, so
-  no HTTP request is dispatched. No fixture under
-  (historical fixture path for `glm-5.1`, since retired from the matrix) exists
-  for vision-input.
+- A historical `SUPPORT_MATRIX` entry for `glm-5.1` vision-input
+  carried `outcome: "refused"` because the model's probe returned an
+  HTTP 200 textual refusal rather than describing the image. That
+  model id has since been retired from the matrix; no current fixture
+  exists for that pair.
 
 ## deepseek-v4-pro (DeepSeek)
 
@@ -608,11 +606,11 @@ capture; the relay flattens any multimodal response back to plain
 text on the way out, and consumers will not see content-parts
 arrays in the response. Image cost is reported in
 `usage.prompt_tokens_details.image_tokens` (or vendor-specific
-sibling fields). `glm-5.1` and `deepseek-v4-pro` are not
-vision-capable on this relay; their `SUPPORT_MATRIX` entries for
-vision-input carry non-captured outcomes (`refused` and
-`http-error` respectively) and the discover CLI filters them out
-of its run set, so no capture is attempted against them.
+sibling fields). `deepseek-v4-pro` is not vision-capable on this relay; its
+`SUPPORT_MATRIX` entry for vision-input is `http-error` and the
+discover CLI filters it out of the run set. `glm-5.1` historically
+carried a vision `refused` row and has since been retired from the
+matrix.
 
 **Authentication is `Authorization: Bearer <key>`.** Every
 captured request carries this header; in the fixtures the value is

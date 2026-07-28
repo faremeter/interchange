@@ -44,9 +44,9 @@ For the per-model, per-capability behaviour observed at capture
 time — including the discrepancies between vendor documentation
 and the actual wire bytes — see
 [`docs/discovery.md`](./docs/discovery.md).
-The matrix entries for this deployment live in `SUPPORT_MATRIX`;
-two vision entries are marked `refused` and `http-error` and so
-produce no fixtures.
+The matrix entries for this deployment live in `SUPPORT_MATRIX`.
+`deepseek-v4-pro` vision-input is `http-error` and produces no
+fixture; other non-vision models simply omit vision rows.
 
 ### Reasoning trace extraction
 
