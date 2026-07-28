@@ -250,24 +250,36 @@ describe("Anthropic parser — required-index schema enforcement", () => {
   });
 });
 
-// All redacted_thinking test fixtures below are SYNTHETIC: derived
-// from Anthropic's documented wire shape rather than from a real
-// captured response. The fixture corpus carries no captured
-// redacted_thinking bytes today because Anthropic's documented canary
-// did not trigger the safety classifier on capture day — every
-// `redacted-thinking[-streaming]` row landed in the corpus with
-// `outcome: "misled"` and contains regular `thinking` blocks instead.
+// Happy-path redacted_thinking fixtures use a real `data` blob copied
+// from the Anthropic discovery corpus
+// (`…/claude-sonnet-4-5-20250929/redacted-thinking/turn-1/response.json`,
+// capture 2026-07-28). Captured wire is `{ type, data }` only — no
+// signature, no thinking text. Streaming captures deliver each block as
+// a one-shot `content_block_start` (no thinking_delta) and may open
+// multiple redacted blocks before text.
 //
-// The opaque `data` payload below mimics Anthropic's format
-// (long base64-looking string) but carries no real cryptographic
-// content. Round-trip tests assert the harness/adapter pass the
-// bytes verbatim — the actual contents are irrelevant to the
-// invariant being tested.
-const SYNTHETIC_REDACTED_DATA =
-  "ErUBCkYIBxgCKkABEHk1RmZpaWlsOXJxN0Z6cVB" +
-  "QcjBQYS9wQUdBQUFBQUFBQUFBQUFRQUFBQUFBQU" +
-  "FBQUFBQUFBQUFBQT09EhJYWXpBOXJxN0Z6cVBQc" +
-  "jBQYS9wAAA=";
+// Adversarial unit cases (missing data, whitespace-preserving blobs)
+// stay synthetic: the corpus does not cover those failure modes. Corpus
+// smoke lives in compat-replay (streaming leaves once outcome is
+// `captured`).
+const CAPTURED_REDACTED_DATA =
+  "EuMFCpQBCBAYAipAk6yhHbnY8TlQ7bUY2Ji/24unHQHqjdggHcUEqfwJ30Aw" +
+  "0/MEN7OxckAJk+w8kg0Gb7Wa4bUBHooVkOAYSFI7TTIaY2xhdWRlLXNvbm5l" +
+  "dC00LTUtMjAyNTA5Mjk4AEIIdGhpbmtpbmdaJDc0MjMxNmM4LTY3MzEtNDAx" +
+  "Yy04ZmI3LWI0MWVjODAyM2NmMhIMseVAbj6HOCNWLgCXGgxw2hQLnMP7Yg2X" +
+  "gO0iMM1+zDaFQSBikq5VRaynjx4TvWDT6Oi4q17HK31nb1e2VuyxWZ9Z7eqj" +
+  "fdt/SudU5Cr7AzsIr6Z5Zc6fq2RyvXr6HLUBNkXZychED/tHcFDSIDQgjhJ4" +
+  "vUxWMezGrtdQEsusCyYwnyRDKoZx7DpKUMPiIRksfaF+rom+wqrCSVY73qZ/" +
+  "NJUEMmAVi+nnRisMgiwENaBJAKaT5fqa7x1BVybPsG+ZLNoDOze4F5sacFbz" +
+  "uT3bRBod6Jo7gf4MueX5eKE7zegLIQK4frHtxeCKCBbkVjCFICasdTZmK6Fw" +
+  "IP42peQjuyMLevmw+1jD860CSMOI0EUVXjsGbfMOd8Wu6J0myLPF59ca9xAz" +
+  "4cZp4nUazbUz7WGJ4Zi8rOIC2Ebx1mQIvu02mRla3wphm48z9UgKhMThVn3q" +
+  "5+sJPZhuQ8d5UbIM5ZJvlQ4Kho+XE+H7GjMi8iArTh2GbhXNA7y2y/uYfOQW" +
+  "XRnro7oIfHJ6CpIIZWp4nQ1vHA+kRyNa4yB5JXUSuwVhTCmaFroP3AT3ydrp" +
+  "OnTnMPt06DY4p+SarntDeHp5XB3n7Gf6Zmk+rnAFC+EA9nnIk/IYmeCRJaSv" +
+  "fMnBoAcLAj99bZoH3K9/AKcc4M2t63j9lrcjOfg1Ozy/rvBeUH4R0uqRM55G" +
+  "5aau5fmxAp1ERjs9RAdPGcqdeWqlvebTeMXTrPnWfXf2l+hQrs5f1+grwmsa" +
+  "OO4UA7P9uJJj6FbOD1z4bVuya9ZrhxgB";
 
 function pickFirstThinkingRedacted(
   events: InferenceEvent[],
@@ -288,21 +300,20 @@ describe("Anthropic parser — redacted_thinking content_block_start", () => {
       index: 0,
       content_block: {
         type: "redacted_thinking",
-        data: SYNTHETIC_REDACTED_DATA,
+        data: CAPTURED_REDACTED_DATA,
       },
     });
     expect(events).toHaveLength(1);
     const ev = pickFirstThinkingRedacted(events);
     expect(ev.data.index).toBe(0);
     expect(ev.data.redactedThinking.type).toBe("redacted_thinking");
-    expect(ev.data.redactedThinking.data).toBe(SYNTHETIC_REDACTED_DATA);
+    expect(ev.data.redactedThinking.data).toBe(CAPTURED_REDACTED_DATA);
   });
 
   test("preserves the data verbatim — no normalization or transformation", () => {
     const adapter = createAnthropicAdapter(TEST_SOURCE);
-    // The data is an opaque blob; any mutation breaks the round-trip.
-    // Use a string with characters that an over-eager normalizer would
-    // touch (newlines, whitespace, base64 padding).
+    // Adversarial: the corpus never delivers whitespace-laden data;
+    // this unit case still pins the no-mutation invariant.
     const adversarial = "abc\n  ==\r\n\tdef==";
     const events = parse(adapter, {
       type: "content_block_start",
@@ -332,6 +343,37 @@ describe("Anthropic parser — redacted_thinking content_block_start", () => {
       expect(thrown.message).toMatch(/index 4/);
     }
   });
+
+  test("emits one redacted event per content_block_start when multiple appear", () => {
+    // Streaming captures open several redacted_thinking blocks before
+    // text (Sonnet 4.5 turn-1 streaming had multiple). Each start is
+    // independent and carries its own data + index.
+    const adapter = createAnthropicAdapter(TEST_SOURCE);
+    const first = parse(adapter, {
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "redacted_thinking",
+        data: CAPTURED_REDACTED_DATA,
+      },
+    });
+    const second = parse(adapter, {
+      type: "content_block_start",
+      index: 1,
+      content_block: {
+        type: "redacted_thinking",
+        data: CAPTURED_REDACTED_DATA + "x",
+      },
+    });
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    const a = pickFirstThinkingRedacted(first);
+    const b = pickFirstThinkingRedacted(second);
+    expect(a.data.index).toBe(0);
+    expect(b.data.index).toBe(1);
+    expect(a.data.redactedThinking.data).toBe(CAPTURED_REDACTED_DATA);
+    expect(b.data.redactedThinking.data).toBe(CAPTURED_REDACTED_DATA + "x");
+  });
 });
 
 describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip", () => {
@@ -348,7 +390,7 @@ describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip",
       index: 0,
       content_block: {
         type: "redacted_thinking",
-        data: SYNTHETIC_REDACTED_DATA,
+        data: CAPTURED_REDACTED_DATA,
       },
     });
     const ev = pickFirstThinkingRedacted(events);
@@ -362,12 +404,8 @@ describe("Anthropic adapter — redacted_thinking parser-to-builder round-trip",
     });
     // The structural shape of the body is asserted elsewhere — here
     // we care only that the opaque `data` survives the round-trip.
-    // Use a structural extraction via JSON.parse + cast through unknown
-    // because the integration-style assertion lives in the broader
-    // tests/inference/providers/anthropic.test.ts and is already
-    // exercised.
     const bodyText = req.body;
-    expect(bodyText).toContain(SYNTHETIC_REDACTED_DATA);
+    expect(bodyText).toContain(CAPTURED_REDACTED_DATA);
     expect(bodyText).toContain(`"type":"redacted_thinking"`);
   });
 });
