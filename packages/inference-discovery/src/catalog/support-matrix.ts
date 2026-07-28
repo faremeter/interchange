@@ -86,7 +86,7 @@ const GEMINI_TEXT_CAPABILITIES = [
   "structured-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
-const GEMINI_TEXT_MISLED_CAPABILITIES = [
+const GEMINI_TEXT_SAFETY_CAPABILITIES = [
   "safety-classification",
   "safety-classification-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
@@ -270,9 +270,8 @@ const MATRIX: SupportEntry[] = [
   ...rows(
     GEMINI_PROVIDER,
     GEMINI_TEXT_MODEL,
-    GEMINI_TEXT_MISLED_CAPABILITIES,
-    "misled",
-    'Probe prompt did not engage Gemini\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture (different prompt, different classifier thresholds, or different model behavior) may flip this row to captured without code changes once a structured safety signal materializes.',
+    GEMINI_TEXT_SAFETY_CAPABILITIES,
+    "captured",
   ),
   ...rows(
     GEMINI_PROVIDER,
@@ -283,9 +282,8 @@ const MATRIX: SupportEntry[] = [
   ...rows(
     GEMINI_PROVIDER,
     "gemini-2.5-pro",
-    GEMINI_TEXT_MISLED_CAPABILITIES,
-    "misled",
-    'Probe prompt did not engage gemini-2.5-pro\'s structured safety classifier on capture day. The model self-refused via response text content but `safetyRatings`, `promptFeedback`, and `finishReason: "SAFETY"` are all absent from the response. The fixture on disk documents what the wire actually returned for the documented probe input. A future re-capture may flip this row to captured once a structured safety signal materializes.',
+    GEMINI_TEXT_SAFETY_CAPABILITIES,
+    "captured",
   ),
   ...rows(
     OPENCODE_PROVIDER,
