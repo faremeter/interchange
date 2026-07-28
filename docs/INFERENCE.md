@@ -186,6 +186,7 @@ The event protocol extensions that surface multimodal content:
 
 - `inference.citation` — emitted when a provider streams citation metadata attached to a text region. The optional `index` field on the event payload names the source content block; when present, the harness interleaves the citation immediately after the block at that index in the finalized turn's `content[]`.
 - `inference.thinking.redacted` — emitted when the provider delivers a redacted_thinking block (one-shot, no delta stream).
+- `inference.safety_rating` — emitted when a provider surfaces a structured safety signal. The first landed shape is Gemini `promptFeedback.blockReason` (prompt-level block with no candidates); the payload is a `SafetyRatingBlock` carrying the provider-native reason string. The harness appends the block to the finalized turn's `content[]`.
 - `inference.image_output` — emitted mid-stream when an adapter finalizes an image-output block, signaling that the image is ready for downstream handoff before the full `inference.done` lands.
 - `inference.code_execution.{start,delta,result}` — emitted when the model invokes a server-side code-execution tool; results pair to requests by `requestId`.
 
@@ -197,6 +198,7 @@ The adapter retrofits land:
 
 - **Anthropic** — image input (base64 + file-reference + url), document input (base64 + file-reference + url) with optional `title`/`context` emitted as siblings of `source` when present and dropped when absent, `redacted_thinking` round-trip (parser + builder), citation streaming (`citations_delta` to `inference.citation`), full per-index propagation on every delta.
 - **OpenAI** — image input via the `image_url` shape (base64 data URL + public url passed verbatim); file-reference rejection with explicit messaging because Chat Completions only accepts data URLs and public URLs; document input via the Chat Completions `file` content type (base64 → data-URI `file_data` with a mime-derived `document.pdf` filename; file-reference → `file_id`; url rejected — no URL form on `file`); `DocumentBlock` `title`/`context` are not on this wire; per-index `tool_calls[]` propagation namespaced into the same counter as text/thinking so a tool_call streamed before text doesn't collide with the later text block.
+- **Google GenAI** — `inference.safety_rating` from `promptFeedback.blockReason` on prompt-blocked responses (no candidates); usage is emitted on that terminal path from `usageMetadata`. `SafetyRatingBlock` is dropped from follow-up request history (output-only). Candidate-level `safetyRatings` arrays and `finishReason: "SAFETY"` are not yet observed in the discovery corpus.
 
 The wire shapes for both adapters are exercised end-to-end via the compat-replay infrastructure (`packages/inference-testing/src/compat-replay.ts`), which walks the discovery `SUPPORT_MATRIX` and replays every captured fixture through the current adapter with the full Invariant list applied.
 

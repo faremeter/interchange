@@ -88,9 +88,18 @@ function buildRequest(
   // walk would be O(N^2) in turn count.
   const callIdToFunctionName = buildCallIdToFunctionName(messages);
 
-  const contents: GeminiContent[] = conversationMessages.map((msg) =>
-    toGeminiContent(msg, callIdToFunctionName),
-  );
+  // Drop output-only safety_rating blocks before marshaling. A
+  // prompt-blocked turn may contain only SafetyRatingBlock(s); echoing
+  // them throws, and an empty model content is invalid. Skip such
+  // turns entirely so multi-turn history after a block remains usable.
+  const contents: GeminiContent[] = conversationMessages.flatMap((msg) => {
+    const filtered: ConversationTurn = {
+      ...msg,
+      content: msg.content.filter((b) => b.type !== "safety_rating"),
+    };
+    if (filtered.content.length === 0) return [];
+    return [toGeminiContent(filtered, callIdToFunctionName)];
+  });
 
   const body: Record<string, unknown> = { contents };
 
@@ -339,10 +348,11 @@ function toGeminiPart(
       );
 
     case "safety_rating":
+      // Filtered out of history before toGeminiPart is called.
       throw new Error(
-        "Google GenAI adapter does not echo safety_rating blocks on " +
-          "follow-up requests; they annotate model/request filtering, " +
-          "not conversation history that the wire re-accepts.",
+        "Google GenAI adapter: safety_rating blocks must be filtered " +
+          "from conversation history before marshaling; they annotate " +
+          "model/request filtering and have no input wire shape.",
       );
     case "citation":
       // Citations are output-only blocks: the model produces them as
