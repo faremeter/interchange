@@ -60,7 +60,6 @@ import {
 } from "./routes/assets";
 import {
   AGENT_STATE_OPENAPI_EXCLUDE_GLOBS,
-  createAgentStateDefinitionGitRoutes,
   createAgentStateInstanceGitRoutes,
   createAgentStateReceivePackDeny,
 } from "./routes/agent-state-git";
@@ -195,15 +194,7 @@ export function mountHubRoutes(
       createAgentStateReceivePackDeny(),
     );
     app.use(
-      "/api/tenants/:tenantId/agents/definitions/:agentId/state.git/*",
-      createAgentStateReceivePackDeny(),
-    );
-    app.use(
       "/api/tenants/:tenantId/agents/instances/:instanceId/state.git/*",
-      createGitTokenAuth({ db }),
-    );
-    app.use(
-      "/api/tenants/:tenantId/agents/definitions/:agentId/state.git/*",
       createGitTokenAuth({ db }),
     );
   }
@@ -365,15 +356,6 @@ export function mountHubRoutes(
     app.route(
       "/api/tenants/:tenantId/agents/instances",
       createAgentStateInstanceGitRoutes({
-        db,
-        repoStore,
-        grantStore,
-        conditionRegistry,
-      }),
-    );
-    app.route(
-      "/api/tenants/:tenantId/agents/definitions",
-      createAgentStateDefinitionGitRoutes({
         db,
         repoStore,
         grantStore,

@@ -1,11 +1,11 @@
-// `git push -v` against either agent-state URL group returns 403
+// `git push -v` against the per-instance agent-state URL returns 403
 // at the advertise step. The denial message names "read-only" so
 // support can recognise it.
 //
 // The receive-pack denial routes are registered BEFORE the bearer
 // middleware, so the test does not need to mint a token: an
-// unauthenticated `git push -v` against the per-instance or
-// per-definition URL still parses the pkt-line ERR record cleanly.
+// unauthenticated `git push -v` against the per-instance URL still
+// parses the pkt-line ERR record cleanly.
 //
 // We also verify the raw advertise body shape (the locked
 // `ERR agent-state is read-only over HTTP\n` payload) via a direct
@@ -22,11 +22,7 @@ import {
   startHub,
   type HubHandle,
 } from "./lib/git-harness";
-import {
-  createTenant,
-  seedAgentDefinition,
-  signUpUser,
-} from "./lib/git-asset-fixtures";
+import { createTenant, signUpUser } from "./lib/git-asset-fixtures";
 
 const stops: (() => Promise<void>)[] = [];
 const tempDirs: string[] = [];
@@ -89,86 +85,21 @@ function instanceStateGitUrl(
   return `${hubUrl}/api/tenants/${tenantId}/agents/instances/${instanceId}/state.git`;
 }
 
-function definitionStateGitUrl(
-  hubUrl: string,
-  tenantId: string,
-  agentId: string,
-): string {
-  return `${hubUrl}/api/tenants/${tenantId}/agents/definitions/${agentId}/state.git`;
-}
-
 describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
   test("advertise deny body names read-only", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
-    const agent = await seedAgentDefinition(
-      hub.schema,
-      user,
-      tenant,
-      "push-deny-agent",
-    );
 
     // The receive-pack advertise deny middleware runs ahead of the
-    // bearer middleware. An unauthenticated probe on either URL
-    // group should yield the locked 403 body verbatim.
-    for (const url of [
-      `${definitionStateGitUrl(hub.url, tenant.tenantId, agent.agentId)}/info/refs?service=git-receive-pack`,
-      `${definitionStateGitUrl(hub.url, tenant.tenantId, "ins_doesnotexist")}/info/refs?service=git-receive-pack`,
+    // bearer middleware and the resolver, so an unauthenticated probe
+    // on a bogus instance id still yields the locked 403 body verbatim.
+    const res = await fetch(
       `${instanceStateGitUrl(hub.url, tenant.tenantId, "ins_doesnotexist")}/info/refs?service=git-receive-pack`,
-    ]) {
-      const res = await fetch(url);
-      expect(res.status).toBe(403);
-      const body = await res.text();
-      expect(body).toContain("agent-state is read-only over HTTP");
-    }
-  }, 90_000);
-
-  test("git push -v against per-definition URL returns 403 with read-only message", async () => {
-    const hub = await startHubTracked();
-    const user = await signUpUser(hub.url);
-    const tenant = await createTenant(hub.url, user);
-    const agent = await seedAgentDefinition(
-      hub.schema,
-      user,
-      tenant,
-      "push-def-agent",
     );
-
-    const workDir = await mkTemp("agent-state-push-def-");
-    await prepareLocalPushSource(workDir);
-
-    const remote = definitionStateGitUrl(
-      hub.url,
-      tenant.tenantId,
-      agent.agentId,
-    );
-    const push = await runGit(
-      [
-        "-c",
-        "credential.helper=",
-        "push",
-        "-v",
-        remote,
-        "refs/heads/deploy:refs/heads/deploy",
-      ],
-      { cwd: workDir },
-    );
-    expect(push.status).not.toBe(0);
-    const combined = `${push.stdout}\n${push.stderr}`.toLowerCase();
-    // 403 on the receive-pack advertise step surfaces as `http 403`
-    // / `forbidden` in stderr. The verb "read-only" appears either
-    // via the pkt-line `ERR` payload git prints under `remote:`, or
-    // via the `# service=git-receive-pack` header text. We require
-    // the 403 unambiguously; the read-only marker is best-effort
-    // depending on how git renders the body.
-    // Stock git surfaces an HTTP 403 advertise denial as
-    // `the requested url returned error: 403` in stderr. The
-    // `read-only`/`agent-state` substring is best-effort: git
-    // strips most of the body unless the server emits a properly
-    // pkt-line-framed `ERR` record on the wire. The advertise body
-    // is verified separately via the direct-fetch test above.
-    expect(combined).toMatch(/error: 403|http 403|forbidden/);
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).toContain("agent-state is read-only over HTTP");
   }, 90_000);
 
   test("git push -v against per-instance URL returns 403 with read-only message", async () => {
