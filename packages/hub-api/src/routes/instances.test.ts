@@ -491,7 +491,7 @@ function createTestApp(opts: TestAppOpts = {}) {
 }
 
 function instanceURL(tenantId = TENANT_ID, instanceId = INSTANCE_ID): string {
-  return `/api/tenants/${tenantId}/agents/instances/${instanceId}`;
+  return `/api/tenants/${tenantId}/workflows/runs/${instanceId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +516,7 @@ describe("instance route test infrastructure", () => {
 // Health endpoint tests
 // ---------------------------------------------------------------------------
 
-describe("GET /agents/instances/:instanceId/health", () => {
+describe("GET /workflows/runs/:instanceId/health", () => {
   test("returns ok/ok when address is routable and collector exists", async () => {
     const app = createTestApp({
       routableAddresses: [ADDRESS],
@@ -630,7 +630,7 @@ describe("GET /agents/instances/:instanceId/health", () => {
 // Offerings endpoint tests
 // ---------------------------------------------------------------------------
 
-describe("GET /agents/instances/:instanceId/offerings", () => {
+describe("GET /workflows/runs/:instanceId/offerings", () => {
   test("returns offerings for the instance's agent definition", async () => {
     const offerings = [
       {
@@ -1006,10 +1006,10 @@ describe("interact routes serve a folded run", () => {
 // Blob endpoint routing test
 // ---------------------------------------------------------------------------
 
-describe("GET /agents/instances/blobs/:blobId", () => {
+describe("GET /workflows/runs/blobs/:blobId", () => {
   test("blob route is reachable and not shadowed by /:instanceId", async () => {
     const app = createTestApp();
-    const url = `/api/tenants/${TENANT_ID}/agents/instances/blobs/bad-format`;
+    const url = `/api/tenants/${TENANT_ID}/workflows/runs/blobs/bad-format`;
     const res = await app.request(url);
 
     // The blob handler rejects malformed IDs with 400.
@@ -1024,7 +1024,7 @@ describe("GET /agents/instances/blobs/:blobId", () => {
 // POST /:instanceId/mail — threading-header policy
 // ---------------------------------------------------------------------------
 
-describe("POST /agents/instances/:instanceId/mail", () => {
+describe("POST /workflows/runs/:instanceId/mail", () => {
   // The user's bare addr-spec is `${principal.refId}@${tenant.domain}`.
   const USER_ADDR = `${USER_ID}@${testTenant.domain}`;
 
@@ -1183,7 +1183,7 @@ describe("POST /agents/instances/:instanceId/mail", () => {
 // POST /:instanceId/mail — attachment validation
 // ---------------------------------------------------------------------------
 
-describe("POST /agents/instances/:instanceId/mail attachments", () => {
+describe("POST /workflows/runs/:instanceId/mail attachments", () => {
   function makeMailGrant(): GrantRule {
     return makeGrant({ resource: "workflow-run:*", action: "write" });
   }
@@ -1392,7 +1392,7 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /agents/instances — creator-grant seed on launch
+// POST /workflows/runs — creator-grant seed on launch
 //
 // These tests exercise the launch transaction directly. The mock DB below is
 // independent of the smaller mock used by the other suites in this file: it
@@ -1403,7 +1403,7 @@ describe("POST /agents/instances/:instanceId/mail attachments", () => {
 // assert on the grant row written for resource `agent-state:<instanceId>`.
 // ---------------------------------------------------------------------------
 
-describe("POST /agents/instances seeds creator agent-state grant", () => {
+describe("POST /workflows/runs seeds creator agent-state grant", () => {
   const CREATOR_ID = "prn_creator";
   const PROVIDER_ID = "prv_test";
   const CREDENTIAL_ID = "cred_test";
@@ -1802,14 +1802,11 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       maxTarballBytes: 10_000_000,
     });
 
-    const res = await app.request(
-      `/api/tenants/${TENANT_ID}/agents/instances`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
-      },
-    );
+    const res = await app.request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
+    });
 
     expect(res.status).toBe(201);
 
@@ -1876,14 +1873,11 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       maxTarballBytes: 10_000_000,
     });
 
-    const res = await app.request(
-      `/api/tenants/${TENANT_ID}/agents/instances`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
-      },
-    );
+    const res = await app.request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
+    });
 
     expect(res.status).toBe(201);
 
@@ -1944,14 +1938,11 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       maxTarballBytes: 10_000_000,
     });
 
-    const res = await app.request(
-      `/api/tenants/${TENANT_ID}/agents/instances`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
-      },
-    );
+    const res = await app.request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
+    });
 
     expect(res.status).toBe(201);
 
@@ -2003,7 +1994,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
   }
 
   async function launch(db: ReturnType<typeof createLaunchMockDB>) {
-    return launchApp(db).request(`/api/tenants/${TENANT_ID}/agents/instances`, {
+    return launchApp(db).request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
@@ -2084,7 +2075,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
           foldedWorkflowJson({ systemPrompt: "FRESH ASSET PROMPT" }),
         ),
       },
-    ).request(`/api/tenants/${TENANT_ID}/agents/instances`, {
+    ).request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
@@ -2202,17 +2193,14 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
         providers: { mode: "prefer", order: ["test-provider"] },
       },
     ];
-    const res = await app.request(
-      `/api/tenants/${TENANT_ID}/agents/instances`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          definitionId: DEFAULT_FOLDED_DEF_ID,
-          modelPreferences: preferences,
-        }),
-      },
-    );
+    const res = await app.request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        definitionId: DEFAULT_FOLDED_DEF_ID,
+        modelPreferences: preferences,
+      }),
+    });
 
     expect(res.status).toBe(201);
     // The catalog-resolved source reaches the harness config verbatim, and
@@ -2239,7 +2227,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
 // DELETE /:instanceId — folded run (workflow_run) stop path
 // ---------------------------------------------------------------------------
 
-describe("DELETE /agents/instances/:instanceId (folded run)", () => {
+describe("DELETE /workflows/runs/:instanceId (folded run)", () => {
   type Update = { table: string; set: Record<string, unknown> };
   type EndCall = { address: string; reason: string };
 
@@ -2381,7 +2369,7 @@ describe("DELETE /agents/instances/:instanceId (folded run)", () => {
   }
 
   async function stop(app: ReturnType<typeof stopApp>) {
-    return app.request(`/api/tenants/${TENANT_ID}/agents/instances/${RUN_ID}`, {
+    return app.request(`/api/tenants/${TENANT_ID}/workflows/runs/${RUN_ID}`, {
       method: "DELETE",
     });
   }

@@ -9,7 +9,7 @@ import type { Transport } from "./transport";
 
 const TENANT_ID = "ten_1";
 const INSTANCE_ID = "ins_abc123";
-const BASE_PATH = `/api/tenants/${TENANT_ID}/agents/instances/${INSTANCE_ID}`;
+const BASE_PATH = `/api/tenants/${TENANT_ID}/workflows/runs/${INSTANCE_ID}`;
 
 const AGENT_ADDR = `${INSTANCE_ID}@tenant.example`;
 const HUMAN_ADDR = "user@tenant.example";

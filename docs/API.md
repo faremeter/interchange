@@ -35,17 +35,17 @@
 | PATCH | /api/tenants/:tenantId/grants/:grantId | Update a grant |
 | DELETE | /api/tenants/:tenantId/grants/:grantId | Revoke a grant |
 | POST | /api/tenants/:tenantId/principals/:principalId/evaluate | Evaluate grants for a principal |
-| POST | /api/tenants/:tenantId/agents/instances | Deploy an agent instance |
-| GET | /api/tenants/:tenantId/agents/instances | List agent instances |
-| GET | /api/tenants/:tenantId/agents/instances/blobs/:blobId | Fetch a blob by ID |
-| GET | /api/tenants/:tenantId/agents/instances/:instanceId | Get instance detail |
-| DELETE | /api/tenants/:tenantId/agents/instances/:instanceId | Stop an instance |
-| GET | /api/tenants/:tenantId/agents/instances/:instanceId/health | Get instance health |
-| GET | /api/tenants/:tenantId/agents/instances/:instanceId/offerings | List instance offerings |
-| GET | /api/tenants/:tenantId/agents/instances/:instanceId/events | SSE event stream |
-| POST | /api/tenants/:tenantId/agents/instances/:instanceId/mail | Send mail to the agent |
-| GET | /api/tenants/:tenantId/agents/instances/:instanceId/mail | List mail for an instance |
-| GET | /api/tenants/:tenantId/agents/instances/:instanceId/turns | List inference turns for an instance |
+| POST | /api/tenants/:tenantId/workflows/runs | Deploy an agent instance |
+| GET | /api/tenants/:tenantId/workflows/runs | List agent instances |
+| GET | /api/tenants/:tenantId/workflows/runs/blobs/:blobId | Fetch a blob by ID |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId | Get instance detail |
+| DELETE | /api/tenants/:tenantId/workflows/runs/:runId | Stop an instance |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get instance health |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List instance offerings |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/events | SSE event stream |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to the agent |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for an instance |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List inference turns for an instance |
 | GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
@@ -442,7 +442,7 @@ Body: EvaluateRequest
 
 ## Instances
 
-### POST /api/tenants/:tenantId/agents/instances
+### POST /api/tenants/:tenantId/workflows/runs
 Deploy an agent instance
 
 Creates a new running instance of the specified agent definition. Resolves the definition's model requirements against the tenant catalog into an ordered inference-source list, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, and modelPreferences to reorder or restrict the resolved providers for the session.
@@ -454,7 +454,7 @@ Body: CreateAgentInstance
 409: ErrorResponse -- Agent not launchable
 502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/agents/instances
+### GET /api/tenants/:tenantId/workflows/runs
 List agent instances
 
 Lists agent instances in the tenant. Filterable by definitionId and status.
@@ -463,7 +463,7 @@ Query: definitionId?, status?: deployed|running|updating|error|stopped, cursor?,
 
 200: unknown -- List of instances
 
-### GET /api/tenants/:tenantId/agents/instances/blobs/:blobId
+### GET /api/tenants/:tenantId/workflows/runs/blobs/:blobId
 Fetch a blob by ID
 
 Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.
@@ -473,7 +473,7 @@ Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer
 403: ErrorResponse -- Forbidden
 404: ErrorResponse -- Blob not found
 
-### GET /api/tenants/:tenantId/agents/instances/:instanceId
+### GET /api/tenants/:tenantId/workflows/runs/:runId
 Get instance detail
 
 Returns instance runtime state including status, public key, and sidecar assignment.
@@ -481,7 +481,7 @@ Returns instance runtime state including status, public key, and sidecar assignm
 200: AgentInstanceResponse -- Instance detail
 404: ErrorResponse -- Instance not found
 
-### DELETE /api/tenants/:tenantId/agents/instances/:instanceId
+### DELETE /api/tenants/:tenantId/workflows/runs/:runId
 Stop an instance
 
 Stops the running instance and undeploys the agent from the sidecar.
@@ -491,7 +491,7 @@ Stops the running instance and undeploys the agent from the sidecar.
 409: ErrorResponse -- Instance already stopped
 502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/agents/instances/:instanceId/health
+### GET /api/tenants/:tenantId/workflows/runs/:runId/health
 Get instance health
 
 Returns liveness and readiness for a running instance. Liveness reflects whether the instance's sidecar connection is active. Readiness reflects whether the instance has an active event collector and can process work.
@@ -500,7 +500,7 @@ Returns liveness and readiness for a running instance. Liveness reflects whether
 404: ErrorResponse -- Instance not found
 410: ErrorResponse -- Instance stopped
 
-### GET /api/tenants/:tenantId/agents/instances/:instanceId/offerings
+### GET /api/tenants/:tenantId/workflows/runs/:runId/offerings
 List instance offerings
 
 Returns the offerings associated with the instance's agent definition. These represent the capabilities the instance can provide.
@@ -508,7 +508,7 @@ Returns the offerings associated with the instance's agent definition. These rep
 200: OfferingDetail[] -- List of offerings
 404: ErrorResponse -- Instance not found
 
-### GET /api/tenants/:tenantId/agents/instances/:instanceId/events
+### GET /api/tenants/:tenantId/workflows/runs/:runId/events
 SSE event stream
 
 Server-Sent Events stream for agent events. Use POST .../messages for client-to-server messaging.
@@ -517,7 +517,7 @@ Server-Sent Events stream for agent events. Use POST .../messages for client-to-
 404: ErrorResponse -- Instance not found
 410: ErrorResponse -- Instance stopped
 
-### POST /api/tenants/:tenantId/agents/instances/:instanceId/mail
+### POST /api/tenants/:tenantId/workflows/runs/:runId/mail
 Send mail to the agent
 
 Persists the user message as a mail record and dispatches it to the running agent. Returns JMAP Email-shaped response.
@@ -531,7 +531,7 @@ Body: SendMessage
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/agents/instances/:instanceId/mail
+### GET /api/tenants/:tenantId/workflows/runs/:runId/mail
 List mail for an instance
 
 Returns parsed JMAP Email objects in reverse chronological order. Cursor-paginated.
@@ -541,7 +541,7 @@ Query: cursor?, limit?
 200: unknown -- List of mail
 404: ErrorResponse -- Instance not found
 
-### GET /api/tenants/:tenantId/agents/instances/:instanceId/turns
+### GET /api/tenants/:tenantId/workflows/runs/:runId/turns
 List inference turns for an instance
 
 Returns inference turns with their parts in reverse chronological order. Cursor-paginated.

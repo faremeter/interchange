@@ -43,7 +43,7 @@ export function createInstanceSession(opts: {
   const { tenantId, instanceId, transport, onChange, onSessionEnded, onError } =
     opts;
 
-  const basePath = `/api/tenants/${tenantId}/agents/instances/${instanceId}`;
+  const basePath = `/api/tenants/${tenantId}/workflows/runs/${instanceId}`;
 
   let events: InstanceEvent[] = [];
   let streaming = "";

@@ -232,8 +232,13 @@ export function mountHubRoutes(
     "/api/tenants/:tenantId/principals/:principalId/evaluate",
     createEvaluateRoutes({ db, grantStore, conditionRegistry }),
   );
+  // The run management surface -- launch, list, observe, stop, mail a single
+  // run. Mounted as `/workflows/runs` (tenant-wide runs) before the `/workflows`
+  // deploy router below, and its literal `runs` segment out-prioritizes that
+  // router's `:deploymentId`, so `/workflows/runs` never resolves as a
+  // deployment id.
   app.route(
-    "/api/tenants/:tenantId/agents/instances",
+    "/api/tenants/:tenantId/workflows/runs",
     createInstanceRoutes({
       db,
       sessionService,

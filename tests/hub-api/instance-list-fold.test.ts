@@ -269,7 +269,7 @@ async function fetchList(
   query = "",
 ): Promise<{ ids: string[]; rows: ListRow[]; nextCursor: string | null }> {
   const res = await app.request(
-    `/api/tenants/${TENANT_ID}/agents/instances${query}`,
+    `/api/tenants/${TENANT_ID}/workflows/runs${query}`,
   );
   expect(res.status).toBe(200);
   const body: unknown = await res.json();
@@ -290,7 +290,7 @@ async function fetchList(
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "GET /agents/instances (fold-aware list)",
+  "GET /workflows/runs (fold-aware list)",
   () => {
     test("lists a folded run alongside a legacy instance", async () => {
       await insertInstance({

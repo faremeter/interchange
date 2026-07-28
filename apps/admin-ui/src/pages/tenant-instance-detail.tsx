@@ -425,7 +425,7 @@ export function TenantInstanceDetailPage() {
                           {msg.attachments.map((att) => (
                             <a
                               key={att.blobId}
-                              href={`/api/tenants/${tenantId}/agents/instances/blobs/${att.blobId}`}
+                              href={`/api/tenants/${tenantId}/workflows/runs/blobs/${att.blobId}`}
                               target="_blank"
                               rel="noreferrer"
                               className="inline-flex items-center gap-1 text-xs text-primary underline"

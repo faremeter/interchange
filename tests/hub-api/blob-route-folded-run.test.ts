@@ -266,11 +266,11 @@ async function insertMail(opts: {
 }
 
 function blobUrl(mailId: string): string {
-  return `/api/tenants/${TENANT_ID}/agents/instances/blobs/blob_${mailId}_1`;
+  return `/api/tenants/${TENANT_ID}/workflows/runs/blobs/blob_${mailId}_1`;
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "GET /agents/instances/blobs/:blobId (folded run)",
+  "GET /workflows/runs/blobs/:blobId (folded run)",
   () => {
     test("serves a folded run's mail blob when the caller holds the run grant", async () => {
       await seedFoldedRun();

@@ -344,7 +344,7 @@ export function tenantInstancesQuery(tenantId: string) {
     queryFn: async () => {
       const res = await api<{ data: AgentInstanceResponse[] }>(
         "GET",
-        `/api/tenants/${tenantId}/agents/instances?status=running`,
+        `/api/tenants/${tenantId}/workflows/runs?status=running`,
       );
       return res.data;
     },
@@ -354,7 +354,7 @@ export function tenantInstancesQuery(tenantId: string) {
 export function tenantInstancesInfiniteQuery(tenantId: string) {
   return infiniteListQuery<AgentInstanceResponse>(
     ["tenants", tenantId, "instances", INFINITE_LIST_KEY],
-    `/api/tenants/${tenantId}/agents/instances?status=running`,
+    `/api/tenants/${tenantId}/workflows/runs?status=running`,
   );
 }
 
@@ -364,7 +364,7 @@ export function instanceDetailQuery(tenantId: string, instanceId: string) {
     queryFn: () =>
       api<AgentInstanceResponse>(
         "GET",
-        `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
+        `/api/tenants/${tenantId}/workflows/runs/${instanceId}`,
       ),
     refetchInterval: 3000,
   });
@@ -683,7 +683,7 @@ export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
     mutationFn: (instanceId: string) =>
       api<undefined>(
         "DELETE",
-        `/api/tenants/${tenantId}/agents/instances/${instanceId}`,
+        `/api/tenants/${tenantId}/workflows/runs/${instanceId}`,
       ),
     onSuccess: () => invalidate(qc, tenantId, "instances"),
   };

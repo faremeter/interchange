@@ -1006,8 +1006,8 @@ export function createInstanceRoutes({
   );
 
   app.get(
-    "/:instanceId",
-    requireGrant(idResource("workflow-run", "instanceId"), "read"),
+    "/:runId",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "Get instance detail",
@@ -1030,7 +1030,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
 
       // Resolve across the fold: a legacy agent instance or a folded run. The
       // origin agent supplies the display name for either kind.
@@ -1067,8 +1067,8 @@ export function createInstanceRoutes({
   );
 
   app.get(
-    "/:instanceId/health",
-    requireGrant(idResource("workflow-run", "instanceId"), "read"),
+    "/:runId/health",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "Get instance health",
@@ -1097,7 +1097,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
 
       const record = await findRoutableById(db, instanceId, tenantCtx.id);
       if (record === undefined) {
@@ -1127,8 +1127,8 @@ export function createInstanceRoutes({
   );
 
   app.get(
-    "/:instanceId/offerings",
-    requireGrant(idResource("workflow-run", "instanceId"), "read"),
+    "/:runId/offerings",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List instance offerings",
@@ -1153,7 +1153,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
 
       const record = await findRoutableById(db, instanceId, tenantCtx.id);
       if (record === undefined) {
@@ -1190,8 +1190,8 @@ export function createInstanceRoutes({
   );
 
   app.delete(
-    "/:instanceId",
-    requireGrant(idResource("workflow-run", "instanceId"), "manage"),
+    "/:runId",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
     describeRoute({
       tags: ["Instances"],
       summary: "Stop an instance",
@@ -1223,7 +1223,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
 
       // A folded agent runs as a workflow_run under the same id; stop it there.
       // A legacy instance falls through to the agent_instance path below.
@@ -1414,8 +1414,8 @@ export function createInstanceRoutes({
   );
 
   app.get(
-    "/:instanceId/events",
-    requireGrant(idResource("workflow-run", "instanceId"), "read"),
+    "/:runId/events",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "SSE event stream",
@@ -1444,7 +1444,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
 
       const record = await findRoutableById(db, instanceId, tenantCtx.id);
       if (record === undefined) {
@@ -1534,8 +1534,8 @@ export function createInstanceRoutes({
   }
 
   app.post(
-    "/:instanceId/mail",
-    requireGrant(idResource("workflow-run", "instanceId"), "write"),
+    "/:runId/mail",
+    requireGrant(idResource("workflow-run", "runId"), "write"),
     describeRoute({
       tags: ["Instances"],
       summary: "Send mail to the agent",
@@ -1598,7 +1598,7 @@ export function createInstanceRoutes({
     async (c) => {
       const tenant = c.get("tenant");
       const principal = c.get("principal");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
       const body = c.req.valid("json");
 
       // Decode and validate attachments at the boundary, emitting ordered,
@@ -1786,8 +1786,8 @@ export function createInstanceRoutes({
   );
 
   app.get(
-    "/:instanceId/mail",
-    requireGrant(idResource("workflow-run", "instanceId"), "read"),
+    "/:runId/mail",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List mail for an instance",
@@ -1813,7 +1813,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
         limit: c.req.query("limit"),
@@ -1878,8 +1878,8 @@ export function createInstanceRoutes({
   );
 
   app.get(
-    "/:instanceId/turns",
-    requireGrant(idResource("workflow-run", "instanceId"), "read"),
+    "/:runId/turns",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Instances"],
       summary: "List inference turns for an instance",
@@ -1905,7 +1905,7 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const instanceId = c.req.param("instanceId");
+      const instanceId = c.req.param("runId");
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
         limit: c.req.query("limit"),
