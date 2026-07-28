@@ -193,32 +193,35 @@ deterministically triggers a `redacted_thinking` content block carrying
 an opaque encrypted `data` field. Clients must echo the block back
 verbatim on subsequent turns or the conversation breaks.
 
-**Observed** (`wire/anthropic/claude-sonnet-4-5-20250929/redacted-thinking/turn-1/`,
-streaming variant at `…redacted-thinking-streaming/turn-1/`): in the
-current captures (Sonnet 4.5, Opus 4.1, Haiku 4.5 on `2026-05-23`), the
-documented canary did **not** trigger a `redacted_thinking` block on
-any model. Each model returned a regular `thinking` block in which
-Claude recognized the input as a probe ("This appears to be a trigger
-string … I'll respond normally") and explained itself in a follow-up
-`text` block. The provider's documented behavior for the canary input
-did not materialize.
+**Observed** (re-capture `2026-07-28`): three of four first-party models
+returned real `redacted_thinking` blocks for the documented canary.
 
-The six rows in `SUPPORT_MATRIX` for the two redacted-thinking
-capabilities carry `outcome: "misled"` (see the outcome vocabulary
-comment in `packages/inference-discovery/src/catalog/support-matrix.ts`):
-HTTP succeeded, the model responded normally, the wire shape the
-capability's name implies did not appear. The fixture on disk
-documents what the wire actually returned for the documented input,
-not what the documentation said it would return.
+| Model                        | Outcome    | Notes                         |
+| ---------------------------- | ---------- | ----------------------------- |
+| `claude-sonnet-4-5-20250929` | `captured` | non-stream and streaming      |
+| `claude-opus-4-1-20250805`   | `captured` | non-stream and streaming      |
+| `claude-haiku-4-5-20251001`  | `captured` | non-stream and streaming      |
+| `claude-sonnet-5`            | `misled`   | still regular `thinking` only |
 
-The plug-in and SSE parser are already set up for the `redacted_thinking`
-shape — `packages/inference-discovery-anthropic/src/sse.ts` accumulates
-`redacted_thinking` as one-shot at `content_block_start` (no deltas),
-and the turn-2 builder echoes the assistant content array verbatim,
-including any `redacted_thinking` blocks. A re-capture on a day the
-safety classifier does fire (`bin/discover --provider anthropic --only redacted-thinking --only redacted-thinking-streaming`)
-will land the redacted shape without code changes and will flip these
-six rows from `misled` to `captured`.
+Non-stream redacted blocks carry only `{ type: "redacted_thinking", data }`
+(no `signature`, no thinking text). Streaming delivers each redacted
+block as a one-shot `content_block_start` with `data` inline — no
+`thinking_delta` for redacted blocks. A single stream can open **multiple**
+`redacted_thinking` content blocks before the text block (Sonnet 4.5
+turn-1 streaming showed several).
+
+`claude-sonnet-5` still returned a regular `thinking` block (empty text
+plus signature) under adaptive thinking + `output_config.effort`; the
+three captured models used classic `budget_tokens` thinking on the same
+day. That request-shape difference is a co-occurrence, not a proven
+cause. Its matrix rows remain `misled` with notes; the fixture documents
+the wire that was returned.
+
+`SUPPORT_MATRIX` holds eight redacted-thinking rows (4 models × 2
+capabilities): six `captured`, two `misled` (sonnet-5 only). The
+plug-in and SSE parser already treat `redacted_thinking` as one-shot at
+`content_block_start` and the turn-2 builder echoes assistant content
+verbatim, including redacted blocks.
 
 ## Cross-cutting observations
 
