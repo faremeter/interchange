@@ -53,6 +53,45 @@ describe("runCompatReplay — single-turn streaming SSE", () => {
     expect(textDeltas.length).toBeGreaterThan(0);
     expect(dones).toHaveLength(1);
   });
+
+  test("anthropic redacted-thinking-streaming turn-1: redacted events + clean invariants", async () => {
+    // Real capture (Sonnet 4.5, 2026-07-28): multiple one-shot
+    // redacted_thinking content_block_start events before text.
+    const fixtureDir = path.join(
+      WORKSPACE_ROOT,
+      "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-4-5-20250929/redacted-thinking-streaming/turn-1",
+    );
+    const result = await runCompatReplay({
+      fixtureDir,
+      provider: "anthropic",
+      model: "claude-sonnet-4-5-20250929",
+    });
+
+    if (result.kind !== "replayed") {
+      throw new Error(
+        `expected replay to complete, got skipped: ${result.reason}`,
+      );
+    }
+
+    expect(result.violations).toEqual([]);
+    const redacted = result.events.filter(
+      (e) => e.type === "inference.thinking.redacted",
+    );
+    expect(redacted.length).toBeGreaterThan(0);
+    for (const ev of redacted) {
+      if (ev.type !== "inference.thinking.redacted") continue;
+      expect(ev.data.redactedThinking.type).toBe("redacted_thinking");
+      expect(ev.data.redactedThinking.data.length).toBeGreaterThan(0);
+    }
+    const dones = result.events.filter((e) => e.type === "inference.done");
+    expect(dones).toHaveLength(1);
+    if (dones[0]?.type === "inference.done") {
+      const redactedBlocks = dones[0].data.turn.content.filter(
+        (b) => b.type === "redacted_thinking",
+      );
+      expect(redactedBlocks.length).toBe(redacted.length);
+    }
+  });
 });
 
 describe("runCompatReplay — skip behavior", () => {

@@ -318,10 +318,13 @@ export function unknownDelta(index = 0): Uint8Array {
 }
 
 /**
- * Convenience: emit a complete redacted_thinking content block. Anthropic
- * delivers redacted thinking as a one-shot inside `content_block_start`
- * carrying an opaque `data` blob — no delta stream. The block must echo
- * back verbatim on follow-up turns or the API rejects the request.
+ * Convenience: emit a complete redacted_thinking content block. Captured
+ * Anthropic streams deliver each redacted block as a one-shot inside
+ * `content_block_start` carrying an opaque `data` blob — no thinking_delta
+ * stream for redacted blocks. Real streams may open multiple redacted
+ * blocks before text; call this helper once per block with distinct
+ * `index` values. The block must echo back verbatim on follow-up turns
+ * or the API rejects the request.
  *
  * `index` defaults to 0; supply a higher index when interleaving with
  * other content blocks.
