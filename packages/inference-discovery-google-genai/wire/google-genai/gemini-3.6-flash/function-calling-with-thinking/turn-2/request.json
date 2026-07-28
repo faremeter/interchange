@@ -1,0 +1,68 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "text": "**My Process: Weather in Boston**\n\nOkay, the user wants the current weather for Boston, MA. They've specifically asked me to think step-by-step about which tool to use, so let's break it down. First, I need to understand the request: weather in Boston. Simple enough. Now, I have to consider the available tools. I see `get_weather`. Aha! It takes a `location` parameter, a string, and gives back weather data. Perfect fit! The user provided \"Boston, MA,\" which maps directly to the `location` parameter. Therefore, I need to call `get_weather(location=\"Boston, MA\")`.\n\nHere's that thought process in a step-by-step format, as requested:\n\n*   **Step 1:** The user is asking for weather information in Boston, MA.\n*   **Step 2:** The `get_weather` tool is available and designed to retrieve weather data for a specified location.\n*   **Step 3:** The location is \"Boston, MA.\"\n*   **Step 4:** The appropriate action is to execute `get_weather` with the location \"Boston, MA\".\n\n```tool_code\nget_weather(location=\"Boston, MA\")\n```\n\n\n",
+          "thought": true
+        },
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "cNCOoxNl"
+          },
+          "thoughtSignature": "Eq0HCqoHARFNMg+T0HEvR5exjas511tZ/9HpO6N+n+n+bbUPMT6+QwiVrX6BlN3AV2ZOff4blqcDz4uXLxqyamxJFK9R0p66UG85svuKiSNWywpK8Kwxr8FmbNDCeJAeeczXf5zjlkvpLeNpN5eBGjkbFLEnP2mFPIzMQy19J8rkMGFVy1QbWID3MHakQmeK3iR1MCYFeWQuPGkrADCfJSEsoqeG5pmsRNeos8gCEYRiyWziIi6QJD+0XqjvZpRyM7aaRTF1Byb7epgEu4GnsceUTyx1yr115kZS7S1mREvh3LgBX8fgbo12wYxxIFOYSlQT3/f0vsFYgqIOOWb2IWUvEwJdWx3K0roBl4LiAoufi7ydohAl/C0/8aULFLvMIFWn8nhqXxs44SUTwXiO7h2HKjTuOg3o1Kyba1sABwpGUeq7Q111/BtyoUEKzqmq4gz4HPoQz5ItLP3+XrpMmxioxOEmENKp4bl1FsKiFOwL1gE38+Ng1Y90C2A3SCvGHIPwB2atc3erjpop3y8bDDE3IPbnfc0QUKPeg63mLgpX+/xQcy43O5zs1PJ/1+2OhE1pK5IL8CLYB8ikyL98HDqZsL7AWgMuSeybbljWTRL0jqjc0jSEnnP+4oWp8hO6k3jMemdz1cg39TNVyvC2BA1IMaR5CJgwNMHJ8RgyfIvpy61NFTSw2ee1REws5pCYrZAfzgvWrIQ12BqTuGnNcXBtQwb0Kns4SMYpI7GBWmkJ7QM1+3LKs77JSOPlLxTc27Rw0g6PsliRT6WuFxhJd1EqqCxGfu36OxPOlUbjS4l1AcFfgxbNlMy4GXcaDQ9gpXzh560kIuzuNyH2EG7fhRlyRPAIka2FLTf2OmBeLYN8o+UtJZxBPaMUEb1CRfjiu/u+wJHFyXNkdO6nOOWVmjnrNh1jb8pkeST4MqQUMwT4L3kVLyqjvsOod75BwZ2jmDo08Ir8vo+tZ4eDAe15zPT0ocTjmo46c7for7kQK1AjwJoXthz81axyCOWtwFF0YK+3G8YbdfsiXFIyMnN0v7/Al8V1029uUHRoeMWSp/YYI4a2h39n1Qk6u9u5/UiEjPZKerXcVKv1MYOV2kACTH0t6jgQpgBhQ6bs8RlPonOOK5RwPnYPBB/VHZg4jFMG+2gpVNJxyDVcHTYYK8jJBc6uix8bLj80akrkP5C2hXv0PQFy+ltt9bdE60uw0yx+0eZzA+37ywEZrv8LR9A1I+9LitKtLfdlENk6pCyYvro="
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {}
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

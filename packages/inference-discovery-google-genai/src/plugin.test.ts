@@ -188,6 +188,9 @@ describe("createGoogleGenaiPlugin", () => {
       "gemini-2.5-flash",
       "gemini-2.5-flash-image",
       "gemini-2.5-pro",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-image",
     ]);
     expect(plugin.redactRequestHeaders).toEqual(["x-goog-api-key"]);
     expect(plugin.redactResponseHeaders).toEqual([]);
@@ -409,79 +412,81 @@ describe("buildRequestBody — wire-shape spot checks", () => {
     });
   });
 
-  test("a thinking-mandatory model uses the dynamic budget where flash disables thinking", () => {
-    const streaming = buildRequestBody({
-      model: "gemini-2.5-pro",
-      capability: "plain-text-streaming",
-      intent: INTENTS["plain-text-streaming"],
-    });
-    expect(streaming).toEqual({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: INTENTS["plain-text-streaming"].prompt }],
+  test("thinking-mandatory models use the dynamic budget where flash disables thinking", () => {
+    for (const model of ["gemini-2.5-pro", "gemini-3.6-flash"] as const) {
+      const streaming = buildRequestBody({
+        model,
+        capability: "plain-text-streaming",
+        intent: INTENTS["plain-text-streaming"],
+      });
+      expect(streaming).toEqual({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: INTENTS["plain-text-streaming"].prompt }],
+          },
+        ],
+        generationConfig: {
+          maxOutputTokens: 400,
+          thinkingConfig: { thinkingBudget: -1 },
         },
-      ],
-      generationConfig: {
-        maxOutputTokens: 400,
-        thinkingConfig: { thinkingBudget: -1 },
-      },
-    });
+      });
 
-    const capability: Capability = "function-calling-multi-turn";
-    const multiTurn = buildRequestBody({
-      model: "gemini-2.5-pro",
-      capability,
-      intent: INTENTS[capability],
-    });
-    const tool = firstToolFor(capability);
-    expect(multiTurn).toEqual({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: INTENTS[capability].prompt }],
+      const capability: Capability = "function-calling-multi-turn";
+      const multiTurn = buildRequestBody({
+        model,
+        capability,
+        intent: INTENTS[capability],
+      });
+      const tool = firstToolFor(capability);
+      expect(multiTurn).toEqual({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: INTENTS[capability].prompt }],
+          },
+        ],
+        tools: [
+          {
+            functionDeclarations: [
+              {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+              },
+            ],
+          },
+        ],
+        toolConfig: {
+          functionCallingConfig: {
+            mode: "ANY",
+            allowedFunctionNames: [tool.name],
+          },
         },
-      ],
-      tools: [
-        {
-          functionDeclarations: [
-            {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.parameters,
-            },
-          ],
+        // thinkingBudget -1 (dynamic), and no includeThoughts key: thoughts stay
+        // suppressed on the disable path even where thinking cannot be turned off.
+        generationConfig: {
+          thinkingConfig: { thinkingBudget: -1 },
         },
-      ],
-      toolConfig: {
-        functionCallingConfig: {
-          mode: "ANY",
-          allowedFunctionNames: [tool.name],
-        },
-      },
-      // thinkingBudget -1 (dynamic), and no includeThoughts key: thoughts stay
-      // suppressed on the disable path even where thinking cannot be turned off.
-      generationConfig: {
-        thinkingConfig: { thinkingBudget: -1 },
-      },
-    });
+      });
 
-    // The streaming multi-turn variant shares the same switch case, so the
-    // dynamic budget must apply identically; pin it so a future split of the
-    // case cannot silently drop the fix.
-    const streamingCapability: Capability =
-      "function-calling-multi-turn-streaming";
-    const multiTurnStreaming = buildRequestBody({
-      model: "gemini-2.5-pro",
-      capability: streamingCapability,
-      intent: INTENTS[streamingCapability],
-    });
-    if (multiTurnStreaming.generationConfig === undefined) {
-      throw new Error("expected a generationConfig on the streaming variant");
+      // The streaming multi-turn variant shares the same switch case, so the
+      // dynamic budget must apply identically; pin it so a future split of the
+      // case cannot silently drop the fix.
+      const streamingCapability: Capability =
+        "function-calling-multi-turn-streaming";
+      const multiTurnStreaming = buildRequestBody({
+        model,
+        capability: streamingCapability,
+        intent: INTENTS[streamingCapability],
+      });
+      if (multiTurnStreaming.generationConfig === undefined) {
+        throw new Error("expected a generationConfig on the streaming variant");
+      }
+      expect(multiTurnStreaming.generationConfig.thinkingConfig).toEqual({
+        thinkingBudget: -1,
+      });
     }
-    expect(multiTurnStreaming.generationConfig.thinkingConfig).toEqual({
-      thinkingBudget: -1,
-    });
   });
 
   test("code-execution declares the codeExecution tool", () => {

@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The current weather in Boston, MA is clear with a temperature of 68°F.",
+            "thoughtSignature": "EswBCskBARFNMg9Gk+QF04RUXqWz4viPnYCZprg9bxvzeCbPvmZ9r40sfDUNu5NVjlUOgXeYC9NwERFlAWvsZDJ2mJioF4eniQolAVKSaJUgGUiTr3fqm3nwftwo5dpAEvTQCMY1iX1NPBRLYUdMhYvrVWhuupf9/gRMIhb8jGFYCW8f31UFjDBNszkC86gGLCiXyx3cvxbPOr/C5IbzvmpsRFsplJ60I+ZMLtgFf8zh1d+eXQNZXCJDimQ7EShIPJa8to260/vyRzn6xB7o"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 191,
+    "candidatesTokenCount": 19,
+    "totalTokenCount": 244,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 191
+      }
+    ],
+    "thoughtsTokenCount": 34,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.6-flash",
+  "responseId": "-AlpasPjI7Plz7IPlfGc0AE"
+}

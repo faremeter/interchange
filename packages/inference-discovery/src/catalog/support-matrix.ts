@@ -44,8 +44,16 @@ const ANTHROPIC_MODELS = [
 ] as const;
 
 const GEMINI_PROVIDER = "google-genai";
-const GEMINI_TEXT_MODEL = "gemini-2.5-flash";
-const GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
+const GEMINI_TEXT_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+] as const;
+const GEMINI_IMAGE_MODELS = [
+  "gemini-2.5-flash-image",
+  "gemini-3.1-flash-image",
+] as const;
 
 const OPENCODE_PROVIDER = "opencode-zen";
 const OPENAI_PROVIDER = "openai";
@@ -271,35 +279,14 @@ const MATRIX: SupportEntry[] = [
       "Anthropic's Messages API has no native structured-outputs surface. The internal adapter rejects responseFormat values of json and json-schema at the marshaling boundary rather than synthesizing a hidden tool-input wrapper; callers needing structured output route through a provider with native support.",
     ),
   ),
-  ...rows(
-    GEMINI_PROVIDER,
-    GEMINI_TEXT_MODEL,
-    GEMINI_TEXT_CAPABILITIES,
-    "captured",
+  ...GEMINI_TEXT_MODELS.flatMap((model) =>
+    rows(GEMINI_PROVIDER, model, GEMINI_TEXT_CAPABILITIES, "captured"),
   ),
-  ...rows(
-    GEMINI_PROVIDER,
-    GEMINI_IMAGE_MODEL,
-    GEMINI_IMAGE_CAPABILITIES,
-    "captured",
+  ...GEMINI_TEXT_MODELS.flatMap((model) =>
+    rows(GEMINI_PROVIDER, model, GEMINI_TEXT_SAFETY_CAPABILITIES, "captured"),
   ),
-  ...rows(
-    GEMINI_PROVIDER,
-    GEMINI_TEXT_MODEL,
-    GEMINI_TEXT_SAFETY_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    GEMINI_PROVIDER,
-    "gemini-2.5-pro",
-    GEMINI_TEXT_CAPABILITIES,
-    "captured",
-  ),
-  ...rows(
-    GEMINI_PROVIDER,
-    "gemini-2.5-pro",
-    GEMINI_TEXT_SAFETY_CAPABILITIES,
-    "captured",
+  ...GEMINI_IMAGE_MODELS.flatMap((model) =>
+    rows(GEMINI_PROVIDER, model, GEMINI_IMAGE_CAPABILITIES, "captured"),
   ),
   ...rows(
     OPENCODE_PROVIDER,

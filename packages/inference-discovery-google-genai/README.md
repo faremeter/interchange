@@ -9,17 +9,17 @@ for the runtime, the plug-in contract, and the `discover` CLI.
 
 ## Models
 
-- `gemini-2.5-flash` — text, vision, audio, video, document,
-  function calling (multi-turn and with-thinking), code execution,
-  grounding, and the files API. Streaming and non-streaming
-  variants of each.
-- `gemini-2.5-flash-image` — image output, streaming and
-  non-streaming.
-- `gemini-2.5-pro` — the same text, vision, audio, video, document,
-  function-calling, code-execution, grounding, and files-API surface
-  as `gemini-2.5-flash`. It only runs in thinking mode (a zero
-  thinking budget is rejected), so the request builder uses the
-  dynamic thinking budget where flash disables thinking.
+- `gemini-2.5-flash` / `gemini-3.6-flash` / `gemini-3.5-flash` —
+  text, vision, audio, video, document, function calling (multi-turn
+  and with-thinking), code execution, grounding, safety
+  classification, structured output, and the files API. Streaming
+  and non-streaming variants of each.
+- `gemini-2.5-flash-image` / `gemini-3.1-flash-image` — image
+  output, streaming and non-streaming.
+- `gemini-2.5-pro` — the same text multimodal surface as the flash
+  text models. It only runs in thinking mode (a zero thinking budget
+  is rejected), so the request builder uses the dynamic thinking
+  budget where flash disables thinking.
 
 The full per-capability list is in `SUPPORT_MATRIX` in
 `@intx/inference-discovery/catalog`.

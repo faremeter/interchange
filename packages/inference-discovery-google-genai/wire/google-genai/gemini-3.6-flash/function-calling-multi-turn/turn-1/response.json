@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "location": "Boston, MA"
+              },
+              "id": "S1YxNNHO"
+            },
+            "thoughtSignature": "EpECCo4CARFNMg+RvMSgIDLs01eJ3g0rPiTXT7Z2Ru04vjQOeTNR4SAFDXZBzCrMhQkIapWWKZHAAHWzARr1/PZeimD1MwfDJtHtPwLzJjTgoC1slHnh9ibwCWkg28uEbxlTXW+wYJjUm8gg4nvgenpbV+GPHGlF/xtQ2+Nb1bYZw3NtpXwZkpfYVGY1PwWNZSSu/IFkpRVhzyl6grJDqKqXjZYDSrcA5lbfoCn9vJf0lJ1wQIIwojl/f41wFV9jMTHQKtiJoaNGD4SoKPkscnTcXiDAgYVP/EOCAwvuww1Oc+ctEfVoHdFJloWaXwKLXa4Cjsjtmqt4Dpsnpirww9Hop/FGqRVmtNu/XBOGJQ0wAbob"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "finishMessage": "Model generated function call(s)."
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 80,
+    "candidatesTokenCount": 18,
+    "totalTokenCount": 163,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 80
+      }
+    ],
+    "thoughtsTokenCount": 65,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.6-flash",
+  "responseId": "9wlpauq3Fc3sz7IP9Zv2iAk"
+}

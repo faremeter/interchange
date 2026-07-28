@@ -7,14 +7,19 @@ import {
   type ToolDecl,
 } from "@intx/inference-discovery/catalog";
 
-// gemini-2.5-pro shares gemini-2.5-flash's text capability surface, so both are
-// recognized as text models; only their thinking-budget handling differs (pro
-// cannot disable thinking — see minimalThinkingBudget).
+// Text models share the full multimodal text capability surface; only
+// thinking-budget handling differs for models that cannot disable thinking
+// (see minimalThinkingBudget). Image models are output-only.
 const TEXT_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-flash",
   "gemini-2.5-pro",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
 ]);
-const IMAGE_MODEL = "gemini-2.5-flash-image";
+const IMAGE_MODELS: ReadonlySet<string> = new Set([
+  "gemini-2.5-flash-image",
+  "gemini-3.1-flash-image",
+]);
 
 const TEXT_MODEL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "plain-text",
@@ -148,7 +153,7 @@ function modelSupportsCapability(model: string, capability: Capability): void {
     }
     return;
   }
-  if (model === IMAGE_MODEL) {
+  if (IMAGE_MODELS.has(model)) {
     if (!IMAGE_MODEL_CAPABILITIES.has(capability)) {
       throw new Error(
         `google-genai: model ${model} does not support capability ${capability}`,
@@ -244,6 +249,7 @@ const DYNAMIC_THINKING_BUDGET = -1;
 // API rejects a zero thinking budget.
 const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-pro",
+  "gemini-3.6-flash",
 ]);
 
 // The thinking budget to request when a probe wants thinking suppressed: 0

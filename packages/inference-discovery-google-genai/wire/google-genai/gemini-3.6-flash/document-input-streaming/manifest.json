@@ -1,0 +1,7 @@
+{
+  "provider": "google-genai",
+  "model": "gemini-3.6-flash",
+  "capability": "document-input-streaming",
+  "capturedAt": "2026-07-28T19:59:27.227Z",
+  "schemaVersion": "1"
+}

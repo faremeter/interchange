@@ -1,0 +1,54 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "executableCode": {
+              "language": "PYTHON",
+              "code": "def fib(n):\n    if n \u003c= 0:\n        return 0\n    elif n == 1:\n        return 1\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n\nprint(\"F_12 (with F_0=0, F_1=1):\", fib(12))\n",
+              "id": "3uyax20x"
+            },
+            "thoughtSignature": "ErcFCrQFARFNMg889jGfegPRFPSvbIjYTx6AJyk5gWoLcCReLncIzEzAwbSPsMNGrwTzDeWRgNam/do1Gn/0Z+Y5U1so1wdz4tttVatsj8w20xgTJMIULQ6/WAD/cMs/aPGFZBnQlJzyl0bszJvD7+L5Rm//NQndR+mW143/JiG4PXZlDABXA50DVCpwa2oEZadBAlFsQiZY2Igekhk2x7ivox365MrC5o3Wgu1/EjYqgOEnDohOCTcoWFnYKkybSKqtjXcKrwuHzda1zxjaUXi9c3qzS/D1gEpd9UGr6RAw74jwc1P949+CtTwz9BgKlGpARuPN5nK5IIsmvrYlsQmZD0LENATDlo00eC5xZqYZXglTAceb8HJjI5ZEFaoGauWZvERT+TFeuOK4Nm1LYMeL71tgTX+vUiyJ8Kfk/a2yTGm+bp51o0d2KGkHUmnf9YXVA6duziajyqrxjK+vYSUM8Tf8BP6/CsdU6f8orHtbA0jHbe4ZNLCVPu9E+nkehRAR2jehklxfWZQjjCRnwmIwvxWg07y9wVA0h685Bw3h07HeMWxBBxcqp/a1Aw5OCwquVeTo7Px4DL13uijkRG1icuuftrNWqKtAqWHX+H1xQQ1WLxigdNu/eIbH/ge7IWy+jQkGnuiNSx1GczfVmXXlLUR818TfclH//Mp7uogBdYeXvF9KCUe8+rab7+jpvPbPdEDBdfgAZNAxMfeUddB3AFA4pwcqhqPHEiBv2RvWnhQ/zYr7+fYsl+ea0qQUhREwxjRXh3GNT7Taei535BLmIQMaKA/G3nGUVyKMdg9QC/K0LErnZZeoO3yS8xcNd7S7ExKz7LYQwDGTyHhnCIkAFyKg7fi/Z8zCB3DNpxhgUPTAQT+ibbnRn9FAkwHIEfn2DxCBLBj0YbNE52tO3I14NxIr5mSVH40="
+          },
+          {
+            "codeExecutionResult": {
+              "outcome": "OUTCOME_OK",
+              "output": "F_12 (with F_0=0, F_1=1): 144\n",
+              "id": "3uyax20x"
+            }
+          },
+          {
+            "text": "To find the 12th Fibonacci number, we can define the Fibonacci sequence where $F_0 = 0$, $F_1 = 1$, and $F_n = F_{n-1} + F_{n-2}$ for $n \\ge 2$. \n\nRunning the Python code to compute this:\n\n```python\ndef fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n\nprint(fibonacci(12))\n```\n\nThe 12th Fibonacci number ($F_{12}$) is **144** (assuming the sequence starts with $F_0 = 0, F_1 = 1, F_2 = 1, \\dots$).",
+            "thoughtSignature": "Ep8BCpwBARFNMg/DnfoyL4UUU5Ih/jyD4XoSzZjRG2Amn4qfEAJ7p8VLsGVRJrJyi54ktsSzGPlRRgmO3B2oyI9h41zDukbbQWvl7bZe+KUCXQYrjOcGLKcLFF4WXXziwHqQyLnRPX33HlE/InpSRjPBJzBYZTyAtrqx2Fi8EGQ98yfRE/MrSUoLxoSdAQXGflYOwGRcYLYihMcxcW7MDUVF"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 313,
+    "candidatesTokenCount": 289,
+    "totalTokenCount": 1377,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 313
+      }
+    ],
+    "toolUsePromptTokenCount": 446,
+    "toolUsePromptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 446
+      }
+    ],
+    "thoughtsTokenCount": 329,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.5-flash",
+  "responseId": "agppaq6vGujSz7IPh56UIQ"
+}
