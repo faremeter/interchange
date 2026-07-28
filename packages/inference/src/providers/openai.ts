@@ -95,6 +95,17 @@ function buildRequest(
         parameters: t.inputSchema,
       },
     }));
+    // gpt-5.6 Chat Completions rejects function tools unless
+    // reasoning_effort is explicitly "none" (reasoned tool use is on
+    // the Responses API). Keep this list aligned with the discovery
+    // protocol builder's TOOL_CALL_REASONING_NONE_MODELS set.
+    if (
+      model === "gpt-5.6-sol" ||
+      model === "gpt-5.6-terra" ||
+      model === "gpt-5.6-luna"
+    ) {
+      body["reasoning_effort"] = "none";
+    }
   }
 
   if (options.systemPrompt) {

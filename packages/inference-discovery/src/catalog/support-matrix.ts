@@ -294,9 +294,6 @@ const MATRIX: SupportEntry[] = [
   ...GEMINI_IMAGE_MODELS.flatMap((model) =>
     rows(GEMINI_PROVIDER, model, GEMINI_IMAGE_CAPABILITIES, "captured"),
   ),
-  // OpenCode Zen inventory (INTR-384): keep kimi line + deepseek-v4-pro +
-  // gpt-5.4-mini; replace glm-5.1 / qwen3.6-plus / mimo-v2-omni with current
-  // glm-5.2 / qwen3.7-plus / mimo-v2.5; add deepseek-v4-flash.
   ...rows(
     OPENCODE_PROVIDER,
     "kimi-k2.6",

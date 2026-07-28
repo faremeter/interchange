@@ -73,7 +73,7 @@ Each entry carries an outcome of `captured`, `misled`, `refused`,
 produce fixtures; the others are negative documentation recording
 why no fixture exists — a deliberate refusal, an observed upstream
 error, or a capability the provider does not implement (see the
-`glm-5.1` refusal and `deepseek-v4-pro` HTTP-error vision entries
+`deepseek-v4-pro` HTTP-error vision and structured-output entries
 for examples). A `misled` entry is an HTTP 200 whose body did not
 carry the documented shape the capability implies — the model
 responded but the contract did not fire — so its fixture records

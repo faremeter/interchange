@@ -200,7 +200,7 @@ output.
 The relay surfaces `glm-5.1` consistently across all four captured
 capabilities: every response carries `model: "frank/GLM-5.1"` and
 the same message envelope. The non-streaming text response
-(`packages/inference-discovery-openai/wire/opencode-zen/glm-5.1/plain-text/response.json`)
+((historical fixture path for `glm-5.1`, since retired from the matrix))
 returns a single choice with
 `message: {role, content, reasoning_content, name: null,
 tool_calls: []}`. `usage` includes an `estimated_cost: 0` field that
@@ -208,21 +208,21 @@ no other vendor in this corpus emits, plus
 `prompt_tokens_details.cache_write_tokens: null`.
 
 The function-calling single-turn response
-(`packages/inference-discovery-openai/wire/opencode-zen/glm-5.1/function-calling/response.json`)
+((historical fixture path for `glm-5.1`, since retired from the matrix))
 keeps the `message.name: null` slot and adds a non-empty
 `tool_calls` array. Each `tool_calls[]` entry omits the `index` key
 that the other tool-calling vendors include, and the `id` follows a
 short `call_<4-hex>` form (`call_6b0b`) rather than the longer
 opaque IDs the other vendors emit. The multi-turn turn-2 request
-(`packages/inference-discovery-openai/wire/opencode-zen/glm-5.1/function-calling-multi-turn/turn-2/request.json`)
+((historical fixture path for `glm-5.1`, since retired from the matrix))
 echoes the assistant message verbatim, including the spurious
 `name: null` slot, and turn 2 succeeds with `finish_reason: "stop"`.
 
 The reasoning non-streaming response
-(`packages/inference-discovery-openai/wire/opencode-zen/glm-5.1/reasoning-content/response.json`)
+((historical fixture path for `glm-5.1`, since retired from the matrix))
 carries `message.reasoning_content` matching the documented thinking
 mode. The streaming counterpart
-(`packages/inference-discovery-openai/wire/opencode-zen/glm-5.1/reasoning-content-streaming/response.sse`)
+((historical fixture path for `glm-5.1`, since retired from the matrix))
 emits `delta.reasoning_content` deltas without a `content` key
 during the reasoning phase, then transitions to `delta.content`
 deltas, and terminates with the same `data: [DONE]` plus trailing
@@ -258,7 +258,7 @@ non-streaming responses.
   200 textual refusal rather than describing the image. The
   discover CLI filters non-captured entries out of its run set, so
   no HTTP request is dispatched. No fixture under
-  `packages/inference-discovery-openai/wire/opencode-zen/glm-5.1/` exists
+  (historical fixture path for `glm-5.1`, since retired from the matrix) exists
   for vision-input.
 
 ## deepseek-v4-pro (DeepSeek)
@@ -373,7 +373,7 @@ differs from the OpenAI convention — `choices` appears before
 `id`, `cost` — but the field set is OpenAI-compatible.
 
 The non-streaming text response
-(`packages/inference-discovery-openai/wire/opencode-zen/qwen3.6-plus/plain-text/response.json`)
+((historical fixture path for `qwen3.6-plus`, since retired from the matrix))
 returns `message: {content, reasoning_content, role}` with
 `reasoning_content` populated even on a single-word reply.
 `usage.completion_tokens_details` carries both
@@ -382,18 +382,18 @@ returns `message: {content, reasoning_content, role}` with
 breakdown (echoed as `image_tokens` in the vision capture).
 
 The function-calling single-turn response
-(`packages/inference-discovery-openai/wire/opencode-zen/qwen3.6-plus/function-calling/response.json`)
+((historical fixture path for `qwen3.6-plus`, since retired from the matrix))
 adds a `tool_calls` array whose entries carry `index`, `id` (long
 opaque `call_<24-hex>`), `type`, and `function`. The multi-turn
 turn-2 request
-(`packages/inference-discovery-openai/wire/opencode-zen/qwen3.6-plus/function-calling-multi-turn/turn-2/request.json`)
+((historical fixture path for `qwen3.6-plus`, since retired from the matrix))
 forwards the verbatim turn-1 assistant message, and turn 2 returns
 a natural-language answer with `finish_reason: "stop"`.
 
 The reasoning non-streaming response
-(`packages/inference-discovery-openai/wire/opencode-zen/qwen3.6-plus/reasoning-content/response.json`)
+((historical fixture path for `qwen3.6-plus`, since retired from the matrix))
 matches the documented shape. The streaming counterpart
-(`packages/inference-discovery-openai/wire/opencode-zen/qwen3.6-plus/reasoning-content-streaming/response.sse`)
+((historical fixture path for `qwen3.6-plus`, since retired from the matrix))
 emits `delta: {content: null, reasoning_content: "...", role:
 "assistant"}` for the first chunk, then varies between including
 `content: null` and omitting it across the rest of the reasoning
@@ -403,7 +403,7 @@ phase. The terminal chunk records
 `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
 
 The vision input response
-(`packages/inference-discovery-openai/wire/opencode-zen/qwen3.6-plus/vision-input/response.json`)
+((historical fixture path for `qwen3.6-plus`, since retired from the matrix))
 accepts the OpenAI multimodal request shape — a `content` array
 with a `{type: "text"}` part and a `{type: "image_url", image_url:
 {url}}` part where the URL is a `data:image/jpeg;base64,...`
@@ -452,14 +452,14 @@ and `cost`. There is no `system_fingerprint` and no `provider`
 field.
 
 The non-streaming text response
-(`packages/inference-discovery-openai/wire/opencode-zen/mimo-v2-omni/plain-text/response.json`)
+((historical fixture path for `mimo-v2-omni`, since retired from the matrix))
 returns `message: {content, role, tool_calls, reasoning_content}`
 where `tool_calls` is explicitly `null` on a plain text turn.
 `usage.completion_tokens_details.reasoning_tokens` is reported
 alongside `prompt_tokens_details.cached_tokens`.
 
 The function-calling single-turn response
-(`packages/inference-discovery-openai/wire/opencode-zen/mimo-v2-omni/function-calling/response.json`)
+((historical fixture path for `mimo-v2-omni`, since retired from the matrix))
 is the only capture in the corpus where
 `choices[0].message.content` is `null` rather than the empty string
 the other four vendors emit. Each `tool_calls[]` entry omits the
@@ -468,15 +468,15 @@ the other four vendors emit. Each `tool_calls[]` entry omits the
 follows a long opaque form (`call_125d361901104aea96ee1d44`).
 `reasoning_content` is emitted alongside the tool call. The
 multi-turn turn-2 request
-(`packages/inference-discovery-openai/wire/opencode-zen/mimo-v2-omni/function-calling-multi-turn/turn-2/request.json`)
+((historical fixture path for `mimo-v2-omni`, since retired from the matrix))
 forwards the verbatim turn-1 assistant message, and turn 2 returns
 a natural-language answer with `finish_reason: "stop"`.
 
 The reasoning non-streaming response
-(`packages/inference-discovery-openai/wire/opencode-zen/mimo-v2-omni/reasoning-content/response.json`)
+((historical fixture path for `mimo-v2-omni`, since retired from the matrix))
 matches the documented `reasoning_content` shape, with
 `tool_calls: null` slotted alongside it. The streaming counterpart
-(`packages/inference-discovery-openai/wire/opencode-zen/mimo-v2-omni/reasoning-content-streaming/response.sse`)
+((historical fixture path for `mimo-v2-omni`, since retired from the matrix))
 emits the most verbose delta shape of any model in the corpus —
 every delta carries `content`, `role`, `tool_calls`, and
 `reasoning_content` keys, with `content: null`, `role: null`,
@@ -486,7 +486,7 @@ The terminal usage chunk records
 with `data: [DONE]\n\ndata: {"choices":[],"cost":"0"}`.
 
 The vision input response
-(`packages/inference-discovery-openai/wire/opencode-zen/mimo-v2-omni/vision-input/response.json`)
+((historical fixture path for `mimo-v2-omni`, since retired from the matrix))
 accepts the OpenAI multimodal request shape and returns a
 single-string `message.content` plus `reasoning_content`. Image
 cost is reported in `usage.prompt_tokens_details.image_tokens` and

@@ -67,6 +67,7 @@ const OpenAIRequestBody = type({
   "temperature?": "number",
   "tools?": "unknown[]",
   "response_format?": "unknown",
+  "reasoning_effort?": "'none'",
 });
 
 // Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
@@ -1073,6 +1074,33 @@ describe("OpenAI adapter: responseFormat translation", () => {
     const req = adapter.buildRequest(conversation, "gpt-5.5", {});
     const body = OpenAIRequestBody.assert(JSON.parse(req.body));
     expect(body.response_format).toBeUndefined();
+  });
+
+  test("sets reasoning_effort none for gpt-5.6 tool calls and omits it for gpt-5.5", () => {
+    const tools = [
+      {
+        name: "get_weather",
+        description: "Look up weather",
+        inputSchema: {
+          type: "object",
+          properties: { location: { type: "string" } },
+          required: ["location"],
+        },
+      },
+    ];
+    for (const model of [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ] as const) {
+      const req = adapter.buildRequest(conversation, model, { tools });
+      const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+      expect(body.reasoning_effort).toBe("none");
+      expect(body.tools).toBeDefined();
+    }
+    const legacy = adapter.buildRequest(conversation, "gpt-5.5", { tools });
+    const legacyBody = OpenAIRequestBody.assert(JSON.parse(legacy.body));
+    expect(legacyBody.reasoning_effort).toBeUndefined();
   });
 
   test("translates responseFormat.kind=text to { type: 'text' }", () => {
