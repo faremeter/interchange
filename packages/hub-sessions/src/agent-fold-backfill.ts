@@ -222,6 +222,8 @@ async function foldAgents(
         creatorPrincipalId: a.creatorPrincipalId,
         assetId: null,
         originAgentId: a.id,
+        // A folded agent launches as a single instance, not a deployed workflow.
+        kind: "instance",
         name: a.name,
         description: a.description,
         grantRequirements: a.grantRequirements,

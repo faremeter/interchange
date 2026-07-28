@@ -235,9 +235,9 @@ export async function seedAgentDefinition(
     // The folded definition the definition-mode route resolves by
     // origin_agent_id, and that any session/run row keys on.
     await sql`insert into workflow_definition
-                (id, tenant_id, creator_principal_id, origin_agent_id, name)
+                (id, tenant_id, creator_principal_id, origin_agent_id, kind, name)
               values (${definitionId}, ${tenant.tenantId},
-                ${creatorPrincipal.id}, ${agentId}, ${name})`;
+                ${creatorPrincipal.id}, ${agentId}, 'instance', ${name})`;
     return { agentId, definitionId };
   } finally {
     await sql.end();

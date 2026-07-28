@@ -470,6 +470,13 @@
       "when": 1785280000000,
       "tag": "0066_rekey_agent_definition_principals_to_workflow",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1785400000000,
+      "tag": "0067_add_workflow_definition_kind",
+      "breakpoints": true
     }
   ]
 }

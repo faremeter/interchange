@@ -12,6 +12,7 @@ import {
   principalKinds,
   principalStatuses,
   signalKinds,
+  workflowDefinitionKinds,
   workflowDefinitionStatuses,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
@@ -70,6 +71,9 @@ const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
 
 const WorkflowDefinitionStatusValidator = type.enumerated(
   ...workflowDefinitionStatuses,
+);
+const WorkflowDefinitionKindValidator = type.enumerated(
+  ...workflowDefinitionKinds,
 );
 const WorkflowDefinitionVersionStatusValidator = type.enumerated(
   ...workflowDefinitionVersionStatuses,
@@ -159,6 +163,7 @@ export function parseWorkflowDefinitionRow(
   return {
     ...row,
     status: WorkflowDefinitionStatusValidator.assert(row.status),
+    kind: WorkflowDefinitionKindValidator.assert(row.kind),
     grantRequirements:
       row.grantRequirements !== null
         ? GrantRequirement.array().assert(row.grantRequirements)

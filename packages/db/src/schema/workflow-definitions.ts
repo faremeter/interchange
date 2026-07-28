@@ -72,6 +72,14 @@ export const workflowDefinition = pgTable(
     // the agent row. A null (or empty) manifest is legitimate -- it resolves to
     // an unlaunchable empty source chain, exactly as the agent field did.
     modelRequirements: jsonb("model_requirements"),
+    // Whether this definition launches as a single born-running instance
+    // (`instance`) or deploys as a multi-step workflow (`workflow`). The launch
+    // route gates on this rather than `origin_agent_id`, so the classification
+    // survives that column's removal: a folded (agent-origin) definition is an
+    // `instance`, a native workflow-origin definition is a `workflow`.
+    kind: text("kind", { enum: ["instance", "workflow"] })
+      .notNull()
+      .default("workflow"),
     currentVersion: text("current_version").notNull().default("1"),
     status: text("status", {
       enum: ["deployed", "stopped"],

@@ -13,8 +13,9 @@ import { generateId } from "@intx/hub-common";
  * absent. A native workflow carries its body in the asset it points at, so this
  * only projects a definition row -- plus its version "1" -- over that asset, so
  * a run can anchor on a first-class definition. `currentVersion`/`status`/
- * `originAgentId` are left to the table defaults (a native definition names no
- * origin agent).
+ * `kind`/`originAgentId` are left to the table defaults -- a native definition
+ * takes the `workflow` kind (deploy, not instance-launch) and names no origin
+ * agent.
  *
  * Idempotent and concurrency-safe: the definition insert conflicts on the
  * unique `assetId` and the version on `(definitionId, version)`, so two

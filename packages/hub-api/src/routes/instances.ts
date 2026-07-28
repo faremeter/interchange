@@ -314,18 +314,17 @@ export function createInstanceRoutes({
         );
       }
 
-      // Only a folded definition -- one carrying an origin agent -- launches as
-      // an instance here; a native workflow-origin definition deploys through
-      // the workflow path instead. The launch body is sourced from the
-      // materialized asset below, but the origin-agent marker still separates
-      // the two launch surfaces.
-      if (definition.originAgentId === null) {
+      // Only an `instance`-kind definition launches as a single instance here;
+      // a `workflow`-kind definition deploys through the workflow path instead.
+      // Gating on `kind` rather than the origin agent lets that identity column
+      // be dropped without losing the launchable/deployable distinction.
+      if (definition.kind !== "instance") {
         return c.json(
           {
             error: {
               code: "conflict",
               message:
-                "This definition has no launchable agent body; deploy it through the workflow path",
+                "This definition is not launchable as an instance; deploy it through the workflow path",
             },
           },
           409,

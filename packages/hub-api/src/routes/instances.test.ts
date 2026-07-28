@@ -1613,6 +1613,10 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
       assetId?: string | null;
     },
   ): Record<string, unknown> {
+    const originAgentId =
+      overrides !== undefined && "originAgentId" in overrides
+        ? overrides.originAgentId
+        : agent["id"];
     return {
       id: overrides?.id ?? DEFAULT_FOLDED_DEF_ID,
       tenantId: agent["tenantId"],
@@ -1621,10 +1625,10 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
         overrides !== undefined && "assetId" in overrides
           ? overrides.assetId
           : LAUNCH_ASSET_ID,
-      originAgentId:
-        overrides !== undefined && "originAgentId" in overrides
-          ? overrides.originAgentId
-          : agent["id"],
+      originAgentId,
+      // A folded definition (origin agent set) launches as an instance; a
+      // native one (origin agent null) is a workflow.
+      kind: originAgentId === null ? "workflow" : "instance",
       name: agent["name"],
       description: agent["description"],
       grantRequirements: agent["grantRequirements"],
@@ -2034,9 +2038,9 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     );
   });
 
-  test("rejects launching a native definition with no origin agent", async () => {
-    // A native workflow-origin definition (origin_agent_id null) has no
-    // launchable agent body; it deploys through the workflow path, not here.
+  test("rejects launching a workflow-kind definition", async () => {
+    // A native workflow-kind definition deploys through the workflow path, not
+    // as a single instance here.
     const res = await launch(
       createLaunchMockDB({
         agent: makeAgentDef(),
@@ -2047,7 +2051,7 @@ describe("POST /agents/instances seeds creator agent-state grant", () => {
     );
     expect(res.status).toBe(409);
     expect(JSON.stringify(await res.json())).toContain(
-      "no launchable agent body",
+      "not launchable as an instance",
     );
   });
 
