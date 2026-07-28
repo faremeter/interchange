@@ -222,6 +222,10 @@ function toOpenAIMessage(
     const textBlocks = msg.content.filter(
       (b): b is { type: "text"; text: string } => b.type === "text",
     );
+    const safetyBlocks = msg.content.filter(
+      (b): b is Extract<ContentBlock, { type: "safety_rating" }> =>
+        b.type === "safety_rating",
+    );
     const thinkingBlocks = msg.content.filter(
       (b): b is { type: "thinking"; thinking: string } => b.type === "thinking",
     );
@@ -230,10 +234,27 @@ function toOpenAIMessage(
         b.type === "tool_call",
     );
 
+    // safety_rating-only assistant turns become a textual content
+    // string so the turn is not a hollow `{content: null}` message
+    // that confuses multi-turn Chat Completions history.
+    const textContent = [
+      ...textBlocks.map((b) => b.text),
+      ...safetyBlocks.map((b) => `Request blocked: ${b.blockReason}`),
+    ].join("");
+
+    // Skip empty assistant turns that only carried dropped metadata.
+    if (
+      textContent.length === 0 &&
+      toolCalls.length === 0 &&
+      thinkingBlocks.length === 0
+    ) {
+      return [];
+    }
+
     const result: Record<string, unknown> = { role: "assistant" };
 
-    if (textBlocks.length > 0) {
-      result["content"] = textBlocks.map((b) => b.text).join("");
+    if (textContent.length > 0) {
+      result["content"] = textContent;
     } else {
       result["content"] = null;
     }
