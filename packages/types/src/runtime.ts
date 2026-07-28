@@ -878,6 +878,36 @@ export const CitationBlock = type({
 export type CitationBlock = typeof CitationBlock.infer;
 
 /**
+ * A structured safety signal on model output or request filtering.
+ *
+ * The name `SafetyRatingBlock` follows the issue vocabulary; the
+ * payload is derived from the first real Gemini capture that engaged
+ * the structured classifier (2026-07-28). That wire shape is
+ * prompt-level only:
+ *
+ *   `promptFeedback: { blockReason: "PROHIBITED_CONTENT" }`
+ *
+ * with no candidates and no per-category `safetyRatings` arrays. So
+ * this block carries `blockReason` and does **not** invent category /
+ * probability / blocked fields. When a future capture surfaces
+ * candidate-level ratings, extend the type from those bytes rather
+ * than from the API reference.
+ *
+ * Deliberately excluded from ToolResultBlock.content — safety
+ * signals annotate model/request filtering, not tool output.
+ *
+ * Exported because `inference.safety_rating` events reference it by
+ * name.
+ */
+export const SafetyRatingBlock = type({
+  type: "'safety_rating'",
+  // Provider-native block reason string (observed: "PROHIBITED_CONTENT").
+  // Open string so a new reason token does not force a type bump.
+  blockReason: "string > 0",
+});
+export type SafetyRatingBlock = typeof SafetyRatingBlock.infer;
+
+/**
  * The model's request to execute code via a server-side execution tool.
  * Paired with a CodeExecutionResultBlock carrying the same `id` as the
  * result's `requestId`. Streaming order within a single execution is
@@ -958,9 +988,10 @@ const ToolResultBlock = type({
   type: "'tool_result'",
   callId: "string",
   // Deliberately narrow: tool results carry user-facing media, not
-  // CitationBlocks (citations annotate the model's text output) and
-  // not CodeExecution blocks (server-side code execution is a
-  // distinct lifecycle from the user-tool round-trip).
+  // CitationBlocks (citations annotate the model's text output), not
+  // SafetyRatingBlocks (safety signals annotate model/request
+  // filtering), and not CodeExecution blocks (server-side code
+  // execution is a distinct lifecycle from the user-tool round-trip).
   content: TextBlock.or(ImageBlock)
     .or(AudioBlock)
     .or(VideoBlock)
@@ -978,6 +1009,7 @@ export const ContentBlock = TextBlock.or(ThinkingBlock)
   .or(VideoBlock)
   .or(DocumentBlock)
   .or(CitationBlock)
+  .or(SafetyRatingBlock)
   .or(CodeExecutionRequestBlock)
   .or(CodeExecutionResultBlock)
   .or(ToolCallBlock)
@@ -1211,6 +1243,15 @@ export const InferenceEvent = type({
     // `content[]` and consumers attribute them to the nearest
     // preceding TextBlock per the CitationBlock docstring.
     data: { citation: CitationBlock, "index?": "number" },
+  })
+  .or({
+    type: "'inference.safety_rating'",
+    seq: "number",
+    // Prompt-level structured safety signal (observed Gemini
+    // `promptFeedback.blockReason`). No candidate index: the first
+    // capture has zero candidates. Harness appends the block to the
+    // finalized turn's `content[]`.
+    data: { safetyRating: SafetyRatingBlock },
   })
   .or({
     type: "'inference.code_execution.start'",
@@ -1467,6 +1508,11 @@ export type InferenceEvent =
       type: "inference.citation";
       seq: number;
       data: { citation: CitationBlock; index?: number };
+    }
+  | {
+      type: "inference.safety_rating";
+      seq: number;
+      data: { safetyRating: SafetyRatingBlock };
     }
   | {
       type: "inference.code_execution.start";

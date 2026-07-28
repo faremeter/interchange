@@ -117,6 +117,8 @@ export function formatEventBrief(event: InferenceEvent): string {
     }
     case "inference.citation":
       return `${head} { citation: { citedText: ${abbreviateString(event.data.citation.citedText)} } }`;
+    case "inference.safety_rating":
+      return `${head} { safetyRating: { blockReason: ${JSON.stringify(event.data.safetyRating.blockReason)} } }`;
     case "inference.tool_call.start":
       return `${head} { callId: ${JSON.stringify(event.data.callId)}, name: ${JSON.stringify(event.data.name)} }`;
     case "inference.tool_call.delta":
@@ -391,6 +393,7 @@ const recognizedContentBlocks: Invariant = {
       "video",
       "document",
       "citation",
+      "safety_rating",
       "code_execution_request",
       "code_execution_result",
       "tool_call",

@@ -28,6 +28,7 @@ import type {
   LastCycleSource,
   PartialMessage,
   RetryDecision,
+  SafetyRatingBlock,
   TokenUsage,
   AssistantTurn,
   ContentBlock,
@@ -252,6 +253,9 @@ async function* runSingleAttempt(
   // different keys.
   const citationsByIndex = new Map<number, CitationBlock[]>();
   const unindexedCitations: CitationBlock[] = [];
+  // Prompt-level safety signals (no candidate index on the first
+  // capture). Appended to the finalized turn after indexed blocks.
+  const unindexedSafetyRatings: SafetyRatingBlock[] = [];
   let usageSeen: TokenUsage | null = null;
 
   // Tool call state: keyed by callId (or index for OpenAI).
@@ -639,6 +643,17 @@ async function* runSingleAttempt(
                   citationIndex !== undefined
                     ? { citation, index: citationIndex }
                     : { citation },
+              };
+              break;
+            }
+
+            case "inference.safety_rating": {
+              const safetyRating = raw.data.safetyRating;
+              unindexedSafetyRatings.push(safetyRating);
+              yield {
+                type: "inference.safety_rating",
+                seq: nextSeq(),
+                data: { safetyRating },
               };
               break;
             }
@@ -1144,6 +1159,7 @@ async function* runSingleAttempt(
       );
     }
     contentBlocks.push(...unindexedCitations);
+    contentBlocks.push(...unindexedSafetyRatings);
 
     const finalTurn: AssistantTurn = {
       role: "assistant",

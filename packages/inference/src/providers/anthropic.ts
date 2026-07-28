@@ -328,6 +328,12 @@ function toAnthropicBlock(block: ContentBlock): Record<string, unknown> {
         "Anthropic adapter does not yet emit citation content blocks.",
       );
 
+    case "safety_rating":
+      throw new Error(
+        "Anthropic adapter does not echo safety_rating content blocks; " +
+          "they annotate model/request filtering, not conversation history.",
+      );
+
     case "code_execution_request":
     case "code_execution_result":
       throw new Error(
