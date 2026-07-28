@@ -1,8 +1,8 @@
-import { type SQL, eq, and } from "drizzle-orm";
+import { type SQL, eq, and, inArray, isNotNull, isNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver } from "hono-openapi";
 
-import { agentInstance, principal } from "@intx/db/schema";
+import { principal, workflowDefinition, workflowRun } from "@intx/db/schema";
 import { parsePrincipalRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
@@ -187,16 +187,16 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
   );
 
   app.get(
-    "/instances",
+    "/workflows/runs",
     describeRoute({
       tags: ["User"],
-      summary: "List running agent instances across all tenants",
+      summary: "List running workflow runs across all tenants",
       description:
-        "Aggregates running agent instances from all tenants the user belongs to. Each result is tagged with tenantId.",
+        "Aggregates running workflow runs from all tenants the user belongs to. Each result is tagged with tenantId.",
       parameters: [...pageParameters],
       responses: {
         200: {
-          description: "Instances across tenants",
+          description: "Runs across tenants",
           content: {
             "application/json": {
               schema: resolver(paginatedSchema(InstanceSummary)),
@@ -230,65 +230,61 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
       }
 
       const tenants = await db.query.tenant.findMany({
-        where: (t, { inArray }) => inArray(t.id, tenantIds),
+        where: (t) => inArray(t.id, tenantIds),
       });
       const tenantMap = new Map(tenants.map((t) => [t.id, t]));
 
-      const conditions: SQL[] = [eq(agentInstance.status, "running")];
+      // The runs a launch produces directly: born running, with a routable
+      // address and no deployment. Deployment-anchor runs (which own a
+      // deployment id) and address-less child runs belong to the
+      // workflow-deploy surface, not this view.
+      const conditions: SQL[] = [
+        eq(workflowRun.status, "running"),
+        isNotNull(workflowRun.address),
+        isNull(workflowRun.deploymentId),
+      ];
       if (cursor) {
         conditions.push(
-          cursorCondition(agentInstance.createdAt, agentInstance.id, cursor),
+          cursorCondition(workflowRun.createdAt, workflowRun.id, cursor),
         );
       }
 
-      const rows = await db.query.agentInstance.findMany({
-        where: (ai, { inArray }) =>
-          and(inArray(ai.tenantId, tenantIds), ...conditions),
-        orderBy: pageOrder(agentInstance.createdAt, agentInstance.id),
-        limit,
-      });
+      const rows = await db
+        .select({
+          id: workflowRun.id,
+          tenantId: workflowRun.tenantId,
+          definitionId: workflowRun.definitionId,
+          address: workflowRun.address,
+          createdAt: workflowRun.createdAt,
+          definitionName: workflowDefinition.name,
+        })
+        .from(workflowRun)
+        .innerJoin(
+          workflowDefinition,
+          eq(workflowRun.definitionId, workflowDefinition.id),
+        )
+        .where(and(inArray(workflowRun.tenantId, tenantIds), ...conditions))
+        .orderBy(...pageOrder(workflowRun.createdAt, workflowRun.id))
+        .limit(limit);
 
-      // A running instance's agent_id is the legacy agent id; its folded
-      // definition (id + display name) is keyed by origin_agent_id.
-      const agentIds = [...new Set(rows.map((r) => r.agentId))];
-      const definitions =
-        agentIds.length > 0
-          ? await db.query.workflowDefinition.findMany({
-              where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
-            })
-          : [];
-      const defByAgentId = new Map(
-        definitions.flatMap((d) =>
-          d.originAgentId === null
-            ? []
-            : [[d.originAgentId, { id: d.id, name: d.name }] as const],
-        ),
-      );
-
-      // Drop an instance whose agent has no folded definition, matching the
-      // per-tenant instance surfaces (which inner-join the definition): every
-      // agent is folded, so this never elides a real row, and it emits no
-      // definition id it cannot resolve.
-      const items = rows.flatMap((r) => {
-        const def = defByAgentId.get(r.agentId);
-        if (def === undefined) return [];
-        return [
-          {
-            id: r.id,
-            tenantId: r.tenantId,
-            tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
-            definitionId: def.id,
-            agentName: def.name,
-            address: r.address,
-            status: r.status as
-              | "deployed"
-              | "running"
-              | "updating"
-              | "error"
-              | "stopped",
-            createdAt: ts(r.createdAt),
-          },
-        ];
+      const items = rows.map((r) => {
+        // The address filter above guarantees a value; a null here is a broken
+        // invariant, so surface it rather than emit a run with no address.
+        if (r.address === null) {
+          throw new Error(
+            `running run ${r.id} matched the non-null-address filter but has a null address`,
+          );
+        }
+        return {
+          id: r.id,
+          tenantId: r.tenantId,
+          tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
+          definitionId: r.definitionId,
+          agentName: r.definitionName,
+          address: r.address,
+          status: "running" as const,
+          createdAt: ts(r.createdAt),
+        };
       });
 
       return c.json(paginatedResponse(items, rows, limit));

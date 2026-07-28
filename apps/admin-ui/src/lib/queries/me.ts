@@ -46,5 +46,5 @@ type InstanceSummary = {
 
 export const meInstancesInfiniteQuery = infiniteListQuery<InstanceSummary>(
   ["me", "instances"],
-  "/api/me/instances",
+  "/api/me/workflows/runs",
 );

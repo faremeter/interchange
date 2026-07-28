@@ -8,7 +8,7 @@
 | ------ | ---- | ------- |
 | GET | /api/me | Get current user profile |
 | GET | /api/me/principals | List principals across all tenants |
-| GET | /api/me/instances | List running agent instances across all tenants |
+| GET | /api/me/workflows/runs | List running workflow runs across all tenants |
 | GET | /api/me/sessions | List sessions across all tenants |
 | GET | /api/me/approvals | List pending approvals across all tenants |
 | GET | /api/me/git-tokens | List personal git tokens |
@@ -145,14 +145,14 @@ Query: cursor?, limit?
 200: unknown -- List of principals across tenants
 401: ErrorResponse -- Not authenticated
 
-### GET /api/me/instances
-List running agent instances across all tenants
+### GET /api/me/workflows/runs
+List running workflow runs across all tenants
 
-Aggregates running agent instances from all tenants the user belongs to. Each result is tagged with tenantId.
+Aggregates running workflow runs from all tenants the user belongs to. Each result is tagged with tenantId.
 
 Query: cursor?, limit?
 
-200: unknown -- Instances across tenants
+200: unknown -- Runs across tenants
 
 ### GET /api/me/sessions
 List sessions across all tenants
