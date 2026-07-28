@@ -258,17 +258,50 @@ The adapter forwards the caller's schema verbatim. When Gemini rejects, the HTTP
 
 ### Refusal semantics
 
-OpenAI strict mode produces structured refusals when the safety classifier declines a request: the assistant message carries a `refusal` field instead of `content`, and the streaming wire surfaces refusal fragments through `delta.refusal` rather than `delta.content`. The adapter emits these as a new event variant:
+A model can decline a request on two different channels. They are not
+interchangeable in this runtime.
+
+**Structured wire refusal (OpenAI contract).** OpenAI's documented
+strict-mode structured-outputs path can surface a safety-policy decline
+through a dedicated `refusal` field instead of `content`. On the stream
+that appears as `delta.refusal` fragments rather than `delta.content`.
+When those bytes arrive, the OpenAI adapter emits:
 
 ```
 inference.refusal.delta — Refusal fragment (token: string, index?: number)
 ```
 
-The event shape mirrors `inference.text.delta` so the harness's existing per-index block accumulator routes refusal fragments without any new state. The finalized assistant turn carries a `RefusalBlock { type: "refusal", reason: string }` in its `content[]` array, so consumers can branch on the block type rather than scan event history. Refusal is semantically distinct from `inference.error`: the HTTP call succeeded and the model produced a coherent response, but that response is "I will not satisfy this schema" rather than schema-conformant content.
+The event shape mirrors `inference.text.delta` so the harness's per-index
+block accumulator routes the fragments without new state. The finalized
+assistant turn carries a `RefusalBlock { type: "refusal", reason: string }`
+so consumers can branch on block type. That path is distinct from
+`inference.error`: the HTTP call succeeded; the response is a coherent
+decline on the structured channel, not a transport or protocol failure.
 
-Parser coverage for that path is synthetic: wire-DSL `chunk({ refusal })` streams exercise the adapter and the harness end-to-end (see the OpenAI adapter refusal tests and `tests/inference/refusal-harness.test.ts`). A live discovery probe under `packages/inference-discovery-openai/wire/openai/gpt-5.5/structured-output-refusal-streaming/` is retained as a `misled` matrix row — the strict `json_schema` + policy-declining prompt never produced a non-null `delta.refusal` on gpt-5.5; the model streamed schema-conformant JSON whose `steps` array carried a textual decline instead. That fixture documents the observed classifier behavior; it does not replace the synthetic parser coverage.
+**Content-channel decline.** The model can also refuse in ordinary
+assistant text (or, under `json_schema`, in schema-conformant JSON whose
+fields hold a textual decline). Those bytes travel as normal
+`delta.content` / text content. The adapter does **not** promote them to
+`inference.refusal.delta` or `RefusalBlock`. Downstream code that only
+looks for `RefusalBlock` will not see a content-channel decline as a
+structured refusal.
 
-Gemini and Anthropic have no equivalent structured refusal field; declines from those providers surface as ordinary text content (with a textual refusal message) or as HTTP errors.
+**What is proven where.** Parser and harness coverage for the structured
+channel is synthetic: wire-DSL `chunk({ refusal })` streams drive the
+OpenAI adapter and `tests/inference/refusal-harness.test.ts` end-to-end.
+A live discovery probe under
+`packages/inference-discovery-openai/wire/openai/gpt-5.5/structured-output-refusal-streaming/`
+is retained as a support-matrix `misled` row: against gpt-5.5, a strict
+`json_schema` request plus a policy-sensitive prompt never produced a
+non-null `delta.refusal`. The model instead streamed schema-conformant
+JSON whose `steps` array carried a textual decline (`finish_reason:
+stop`). That fixture documents live classifier behavior on the content
+channel; it does not prove the structured `refusal` field and does not
+replace the synthetic parser coverage.
+
+Gemini and Anthropic have no equivalent structured refusal field;
+declines from those providers surface as ordinary text content or as
+HTTP errors — content-channel or error-path only.
 
 ## Agent Reactor
 
