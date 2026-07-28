@@ -315,7 +315,10 @@ export async function resolveInferencePreferences(
   }));
   const seen = new Set<string>();
   for (const preference of preferences) {
-    const key = `${preference.provider} ${preference.model}`;
+    // Join on a NUL: it cannot appear in a provider plugin or canonical model
+    // name, so the composite key is collision-free. Written as an explicit
+    // unicode escape rather than an invisible raw control byte in the source.
+    const key = `${preference.provider}\u0000${preference.model}`;
     if (seen.has(key)) {
       throw new Error(
         `cannot resolve inference preferences for the folded definition: ` +
