@@ -325,7 +325,7 @@ export function createInstanceRoutes({
         tenantId: tenant.id,
         creatorPrincipalId,
         modelRequirements: definition.modelRequirements,
-        fallbackModel: null,
+        fallbackModel: foldedBody.model,
         invokerPreferences,
       });
       if (!resolution.ok) {

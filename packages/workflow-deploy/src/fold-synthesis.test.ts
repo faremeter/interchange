@@ -97,6 +97,18 @@ describe("extractFoldedBody", () => {
     expect(body.grantRequirements).toEqual([]);
   });
 
+  test("surfaces the step agent's declared model", () => {
+    const body = extractFoldedBody(synthesizeFoldedWorkflow(BASE));
+    expect(body.model).toBe("opus");
+  });
+
+  test("surfaces a null model when the step declares no inference preference", () => {
+    const body = extractFoldedBody(
+      synthesizeFoldedWorkflow({ ...BASE, inferencePreferences: [] }),
+    );
+    expect(body.model).toBeNull();
+  });
+
   test("raises when the definition is not single-step", () => {
     const wf = synthesizeFoldedWorkflow(BASE);
     const twoStep: WorkflowDefinition = {

@@ -87,11 +87,17 @@ export function synthesizeFoldedWorkflow(
   });
 }
 
-/** The launch-relevant body a folded definition carries. */
+/** The launch-relevant body a single-step definition carries. */
 export interface FoldedBody {
   readonly systemPrompt: string;
   readonly toolPackagePins: readonly ToolPackagePin[];
   readonly grantRequirements: readonly GrantRequirement[];
+  /**
+   * The step agent's declared model, or null when it declares none. A
+   * definition with no `modelRequirements` manifest resolves its inference
+   * sources against the catalog from this model instead.
+   */
+  readonly model: string | null;
 }
 
 /**
@@ -121,5 +127,6 @@ export function extractFoldedBody(definition: WorkflowDefinition): FoldedBody {
     systemPrompt: primitive.agent.systemPrompt,
     toolPackagePins: primitive.agent.toolPackagePins ?? [],
     grantRequirements: definition.grantRequirements ?? [],
+    model: primitive.agent.inference.sources[0]?.model ?? null,
   };
 }

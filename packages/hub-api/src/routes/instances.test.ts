@@ -1582,14 +1582,20 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
   // the same synthesis the fold uses, so the envelope validates and
   // `extractFoldedBody` reads it back. The launch sources systemPrompt / tool
   // pins / grant requirements from HERE, not the agent row.
-  function foldedWorkflowJson(overrides?: { systemPrompt?: string }): string {
+  function foldedWorkflowJson(overrides?: {
+    systemPrompt?: string;
+    model?: string;
+  }): string {
     return JSON.stringify(
       synthesizeFoldedWorkflow({
         workflowId: "wf_launch",
         mailAddress: "launch@test.example",
         systemPrompt: overrides?.systemPrompt ?? "You are a test agent.",
         description: null,
-        inferencePreferences: [],
+        inferencePreferences:
+          overrides?.model !== undefined
+            ? [{ provider: "anthropic", model: overrides.model }]
+            : [],
         toolPackagePins: [],
       }),
     );
@@ -1974,6 +1980,32 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
         foldedDefinition: { modelRequirements: [{ model: "test-model" }] },
       }),
     );
+    expect(res.status).toBe(201);
+  });
+
+  test("resolves models from the step body when the definition has no manifest", async () => {
+    // A native single-step definition carries no modelRequirements manifest; its
+    // sources resolve against the catalog from the step's own declared model.
+    const res = await launchApp(
+      createLaunchMockDB({
+        agent: makeAgentDef(),
+        credential: makeCredential(),
+        model: makeCatalogModel(),
+        modelProvider: makeCatalogProvider(),
+        modelOffering: makeCatalogOffering(),
+        inserts: [],
+        foldedDefinition: { modelRequirements: null },
+      }),
+      {
+        assetService: mockLaunchAssetService(
+          foldedWorkflowJson({ model: "test-model" }),
+        ),
+      },
+    ).request(`/api/tenants/${TENANT_ID}/workflows/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ definitionId: DEFAULT_FOLDED_DEF_ID }),
+    });
     expect(res.status).toBe(201);
   });
 
