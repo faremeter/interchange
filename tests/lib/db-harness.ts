@@ -19,6 +19,7 @@ import {
 import { sql } from "drizzle-orm";
 
 import { REPO_ROOT, optionalKey, parseEnvFileSync, requireKey } from "./env";
+import { quoteIdent } from "./grants";
 
 /**
  * Returns true when the repo has the `.env` files this harness reads:
@@ -63,10 +64,6 @@ export function randomSchemaName(): string {
   // permissive, but we keep this conservative for diagnostics.
   const rand = Math.random().toString(36).slice(2, 10);
   return `t_${Date.now().toString(36)}_${rand}`;
-}
-
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
 }
 
 /**
