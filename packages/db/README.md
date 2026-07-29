@@ -31,8 +31,8 @@ const row = await db.query.agent.findFirst({
 });
 ```
 
-The `parseRow` functions (`parseAgentRow`, `parseGrantRow`, and so
-on) validate each table's `jsonb` columns once and return fully
+The `parseRow` functions (`parseWorkflowDefinitionRow`, `parseGrantRow`,
+and so on) validate each table's `jsonb` columns once and return fully
 typed values; downstream code uses those values without
 re-casting. See `CONVENTIONS.md` for the project-wide rule against
 cast-at-callsite in DB consumers.

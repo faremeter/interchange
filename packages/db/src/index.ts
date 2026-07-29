@@ -61,8 +61,6 @@ export {
   type SourceSkip,
 } from "./model-source-resolution";
 export {
-  parseAgentRow,
-  parseAgentVersionRow,
   parseGrantRow,
   parseApprovalRow,
   parsePrincipalRow,

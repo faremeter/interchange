@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveBackfillDbConfig } from "./db-config";
+import { resolveDbConfig } from "./db-config";
 
 const baseEnv = {
   DB_HOST: "db.example",
@@ -10,9 +10,9 @@ const baseEnv = {
   DB_NAME: "interchange",
 };
 
-describe("resolveBackfillDbConfig", () => {
+describe("resolveDbConfig", () => {
   test("resolves a fully-specified environment", () => {
-    expect(resolveBackfillDbConfig(baseEnv)).toEqual({
+    expect(resolveDbConfig(baseEnv)).toEqual({
       host: "db.example",
       port: 5432,
       user: "postgres",
@@ -22,33 +22,33 @@ describe("resolveBackfillDbConfig", () => {
   });
 
   test("threads PG_SCHEMA when set", () => {
-    expect(
-      resolveBackfillDbConfig({ ...baseEnv, PG_SCHEMA: "tenant_x" }).schema,
-    ).toBe("tenant_x");
+    expect(resolveDbConfig({ ...baseEnv, PG_SCHEMA: "tenant_x" }).schema).toBe(
+      "tenant_x",
+    );
   });
 
   test("omits the schema when PG_SCHEMA is unset or empty", () => {
-    expect("schema" in resolveBackfillDbConfig(baseEnv)).toBe(false);
-    expect(
-      "schema" in resolveBackfillDbConfig({ ...baseEnv, PG_SCHEMA: "" }),
-    ).toBe(false);
+    expect("schema" in resolveDbConfig(baseEnv)).toBe(false);
+    expect("schema" in resolveDbConfig({ ...baseEnv, PG_SCHEMA: "" })).toBe(
+      false,
+    );
   });
 
   test("throws naming a missing required variable", () => {
-    expect(() =>
-      resolveBackfillDbConfig({ ...baseEnv, DB_HOST: undefined }),
-    ).toThrow("DB_HOST is required");
-    expect(() => resolveBackfillDbConfig({ ...baseEnv, DB_NAME: "" })).toThrow(
+    expect(() => resolveDbConfig({ ...baseEnv, DB_HOST: undefined })).toThrow(
+      "DB_HOST is required",
+    );
+    expect(() => resolveDbConfig({ ...baseEnv, DB_NAME: "" })).toThrow(
       "DB_NAME is required",
     );
   });
 
   test("rejects a non-positive-integer DB_PORT", () => {
-    expect(() => resolveBackfillDbConfig({ ...baseEnv, DB_PORT: "0" })).toThrow(
+    expect(() => resolveDbConfig({ ...baseEnv, DB_PORT: "0" })).toThrow(
       "DB_PORT must be a positive integer",
     );
     expect(() =>
-      resolveBackfillDbConfig({ ...baseEnv, DB_PORT: "not-a-number" }),
+      resolveDbConfig({ ...baseEnv, DB_PORT: "not-a-number" }),
     ).toThrow("DB_PORT must be a positive integer");
   });
 });

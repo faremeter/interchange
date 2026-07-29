@@ -1,12 +1,10 @@
-// Validated database connection inputs for `bin/db-backfill`.
+// Validated database connection inputs for the bin scripts that open a direct
+// `db` handle (bin/seed's workflow-definition seeding).
 //
-// The `DB_*` parse lives here, apart from `bin/db-backfill.ts`, so it can be
-// unit-tested without importing the entry point: the entry shares a basename
-// with the `bin/db-backfill` launcher wrapper, and a test importing
-// `./db-backfill` would resolve to the extensionless bash wrapper rather than
-// the `.ts`. A `bin/lib` helper has no such twin.
+// The `DB_*` parse lives in `bin/lib` so it can be unit-tested without
+// importing an entry point.
 
-export type BackfillDbConfig = {
+export type DbConfig = {
   host: string;
   port: number;
   user: string;
@@ -23,9 +21,9 @@ export type BackfillDbConfig = {
  * database-config error. `PG_SCHEMA` is threaded through only when set,
  * matching how the hub pins its connection schema.
  */
-export function resolveBackfillDbConfig(
+export function resolveDbConfig(
   env: Record<string, string | undefined>,
-): BackfillDbConfig {
+): DbConfig {
   const requireVar = (name: string): string => {
     const value = env[name];
     if (value === undefined || value === "") {

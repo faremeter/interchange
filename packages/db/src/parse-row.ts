@@ -2,7 +2,6 @@ import { type } from "arktype";
 
 import {
   Capability,
-  CredentialRequirement,
   GrantRequirement,
   grantEffects,
   grantOrigins,
@@ -17,11 +16,8 @@ import {
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
-import { ToolPackagePinArray } from "@intx/types/tool-packages";
 
 import type {
-  agent,
-  agentVersion,
   approval,
   credential,
   gitToken,
@@ -82,9 +78,6 @@ const WorkflowDefinitionVersionStatusValidator = type.enumerated(
 const PrincipalKindValidator = type.enumerated(...principalKinds);
 const PrincipalStatusValidator = type.enumerated(...principalStatuses);
 
-const agentVersionStatuses = ["active", "inactive", "failed"] as const;
-const AgentVersionStatusValidator = type.enumerated(...agentVersionStatuses);
-
 const credentialTypes = [
   "api_key",
   "oauth_token",
@@ -122,40 +115,6 @@ const turnPartTypes = [
   "patch",
 ] as const;
 const TurnPartTypeValidator = type.enumerated(...turnPartTypes);
-
-export function parseAgentRow(row: typeof agent.$inferSelect) {
-  return {
-    ...row,
-    contextConfig:
-      row.contextConfig !== null ? JSONObject.assert(row.contextConfig) : null,
-    initialState:
-      row.initialState !== null ? JSONObject.assert(row.initialState) : null,
-    modelConfig:
-      row.modelConfig !== null ? JSONObject.assert(row.modelConfig) : null,
-    capabilities:
-      row.capabilities !== null ? JSONObject.assert(row.capabilities) : null,
-    credentialRequirements:
-      row.credentialRequirements !== null
-        ? CredentialRequirement.array().assert(row.credentialRequirements)
-        : null,
-    modelRequirements:
-      row.modelRequirements !== null
-        ? ModelRequirements.assert(row.modelRequirements)
-        : null,
-    grantRequirements:
-      row.grantRequirements !== null
-        ? GrantRequirement.array().assert(row.grantRequirements)
-        : null,
-    toolPackages: ToolPackagePinArray.assert(row.toolPackages),
-  };
-}
-
-export function parseAgentVersionRow(row: typeof agentVersion.$inferSelect) {
-  return {
-    ...row,
-    status: AgentVersionStatusValidator.assert(row.status),
-  };
-}
 
 export function parseWorkflowDefinitionRow(
   row: typeof workflowDefinition.$inferSelect,

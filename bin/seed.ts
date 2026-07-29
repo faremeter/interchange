@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { type, type Type } from "arktype";
 import {
@@ -27,10 +27,16 @@ import {
   GrantResponse,
   paginatedSchema,
 } from "@intx/types";
+import { eq } from "drizzle-orm";
+import { createDB } from "@intx/db";
+import { asset } from "@intx/db/schema";
 import {
   WORKSPACE_BUILTINS_REGISTRY,
   WORKFLOW_JSON_PATH,
+  ensureWorkflowDefinitionForAsset,
 } from "@intx/hub-sessions";
+
+import { resolveDbConfig } from "./lib/db-config";
 
 import {
   buildWorkflowJson,
@@ -43,8 +49,6 @@ import { catalogModels, catalogProviders } from "./lib/catalog-seed-data";
 import { offeringCapabilities } from "./lib/offering-capabilities";
 
 const AuthResponse = type({ "user?": { id: "string" } });
-
-const SEED_ROOT = resolve(import.meta.dirname ?? ".", "..");
 
 function parse<T extends Type>(
   schema: T,
@@ -1120,30 +1124,27 @@ async function runGit(
   });
 }
 
-async function runDbBackfill(): Promise<void> {
-  // Shell out to the run-once fold rather than reproduce it here: the backfill
-  // is the single writer of workflow_definition rows, and running it against
-  // the same database this seed just populated keeps a fresh dev DB in the
-  // folded shape (and exercises the fold on every reset). The fold writes rows
-  // only, so it needs the DB connection the dev environment already exports and
-  // writes no repos.
-  const backfillBin = resolve(SEED_ROOT, "bin", "db-backfill");
-  const status = await new Promise<number>((resolveRun, reject) => {
-    const child = spawn(backfillBin, [], {
-      cwd: SEED_ROOT,
-      env: process.env,
-      stdio: "inherit",
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      resolveRun(code ?? -1);
-    });
-  });
-  if (status !== 0) {
-    process.stderr.write(
-      `[seed] FAIL db-backfill exited with status ${status}\n`,
-    );
-    process.exit(1);
+async function ensureSeededWorkflowDefinitions(): Promise<void> {
+  // Project a workflow_definition (+ version "1") over every native
+  // `workflow`-kind asset via `ensureWorkflowDefinitionForAsset` -- the same
+  // create-if-absent helper the deploy path uses -- so a freshly seeded dev
+  // database has the definitions the launch and listing surfaces read. Rows
+  // only: no sidecar or repo is needed, just the DB connection the dev
+  // environment already exports. Each projection is its own transaction so a
+  // partial failure never leaves a definition without its version.
+  const { db, close } = createDB(resolveDbConfig(process.env));
+  try {
+    const assets = await db
+      .select({ id: asset.id })
+      .from(asset)
+      .where(eq(asset.kind, "workflow"));
+    for (const workflowAsset of assets) {
+      await db.transaction((tx) =>
+        ensureWorkflowDefinitionForAsset(tx, workflowAsset.id),
+      );
+    }
+  } finally {
+    await close();
   }
 }
 
@@ -1378,9 +1379,10 @@ log(
   `  Carol has ${parse(paginatedSchema(PrincipalSummary), carolPrinData, "carol principals response").data.length} principal(s)`,
 );
 
-// Fold the seeded agents and native workflow assets onto workflow
-// definitions, so a freshly seeded dev database lands in the folded shape.
-log("Folding seeded agents onto workflow definitions...");
-await runDbBackfill();
+// Project workflow definitions over the seeded native workflow assets so a
+// freshly seeded dev database has the definitions the launch and listing
+// surfaces read.
+log("Creating workflow definitions for seeded workflow assets...");
+await ensureSeededWorkflowDefinitions();
 
 log("Seed completed successfully.");
