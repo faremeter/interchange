@@ -160,13 +160,22 @@ const OPENCODE_CAPTURED: SupportEntry[] = SUPPORT_MATRIX.filter(
   (e) => e.provider === "opencode-zen" && e.outcome === "captured",
 );
 
+const OPENAI_CAPTURED: SupportEntry[] = SUPPORT_MATRIX.filter(
+  (e) => e.provider === "openai" && e.outcome === "captured",
+);
+
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_CHAT_URL = `${OPENAI_BASE_URL}/chat/completions`;
+
 function collectSteps(opts: {
   model: string;
   capability: Capability;
   responses: readonly CapturedResponse[];
+  baseUrl?: string;
 }): CaptureStep[] {
   const intent = INTENTS[opts.capability];
-  const iter = createOpenaiIterator(TEST_BASE_URL)({
+  const baseUrl = opts.baseUrl ?? TEST_BASE_URL;
+  const iter = createOpenaiIterator(baseUrl)({
     model: opts.model,
     capability: opts.capability,
     intent,
@@ -182,6 +191,101 @@ function collectSteps(opts: {
     next = iter.next(response);
   }
   return steps;
+}
+
+function assertStructuralMatch(opts: {
+  entry: SupportEntry;
+  chatUrl: string;
+  baseUrl: string;
+}): void {
+  const { entry, chatUrl, baseUrl } = opts;
+  if (MULTI_TURN_CAPABILITIES.has(entry.capability)) {
+    const turn1Response: CapturedResponse = {
+      status: 200,
+      headers: {},
+      parsed: loadFixtureJSON(entry, "turn-1", "response.json"),
+      bytes: null,
+    };
+    const steps = collectSteps({
+      model: entry.model,
+      capability: entry.capability,
+      responses: [turn1Response],
+      baseUrl,
+    });
+    expect(steps.length).toBe(2);
+    const [step1, step2] = steps;
+    if (step1 === undefined || step2 === undefined) {
+      throw new Error("expected two steps for multi-turn");
+    }
+    expect(step1.subdir).toBe("turn-1");
+    expect(step2.subdir).toBe("turn-2");
+    expect(step1.url).toBe(chatUrl);
+    expect(step2.url).toBe(chatUrl);
+
+    const captured1 = loadFixtureJSON(entry, "turn-1", "request.json");
+    const captured2 = loadFixtureJSON(entry, "turn-2", "request.json");
+
+    const cap1Schema = extractSchema(pruneEphemeral(captured1));
+    const built1Schema = extractSchema(pruneEphemeral(step1.body));
+    if (!schemaContains(built1Schema, cap1Schema)) {
+      throw new Error(
+        [
+          "turn-1 schema mismatch",
+          `captured: ${describeSchema(cap1Schema)}`,
+          `built:    ${describeSchema(built1Schema)}`,
+        ].join("\n"),
+      );
+    }
+
+    const cap2Schema = extractSchema(pruneEphemeral(captured2));
+    const built2Schema = extractSchema(pruneEphemeral(step2.body));
+    if (!schemaContains(built2Schema, cap2Schema)) {
+      throw new Error(
+        [
+          "turn-2 schema mismatch",
+          `captured: ${describeSchema(cap2Schema)}`,
+          `built:    ${describeSchema(built2Schema)}`,
+        ].join("\n"),
+      );
+    }
+    return;
+  }
+
+  const captured = loadFixtureJSON(entry, "request.json");
+  const steps = collectSteps({
+    model: entry.model,
+    capability: entry.capability,
+    responses: [],
+    baseUrl,
+  });
+  expect(steps.length).toBe(1);
+  const [only] = steps;
+  if (only === undefined) throw new Error("expected one step");
+  expect(only.subdir).toBeNull();
+  expect(only.url).toBe(chatUrl);
+
+  const capturedSchema = extractSchema(pruneEphemeral(captured));
+  const builtSchema = extractSchema(pruneEphemeral(only.body));
+
+  const ok = schemaContains(builtSchema, capturedSchema);
+  if (!ok) {
+    const msg = [
+      "schema mismatch",
+      `captured: ${describeSchema(capturedSchema)}`,
+      `built:    ${describeSchema(builtSchema)}`,
+    ].join("\n");
+    throw new Error(msg);
+  }
+
+  if (!isRecord(only.body)) {
+    throw new Error("expected built body to be record");
+  }
+  expect(only.body.model).toBe(entry.model);
+
+  const wantsStream = entry.capability.endsWith("-streaming");
+  if (wantsStream) {
+    expect(only.body.stream).toBe(true);
+  }
 }
 
 describe("createOpencodeZenPlugin", () => {
@@ -349,93 +453,27 @@ describe("fixture oracle: every captured (model, capability) matches structure",
     expect(OPENCODE_CAPTURED.length).toBeGreaterThan(0);
   });
 
+  test("there is at least one captured first-party openai entry", () => {
+    expect(OPENAI_CAPTURED.length).toBeGreaterThan(0);
+  });
+
   for (const entry of OPENCODE_CAPTURED) {
-    test(`structural match: ${entry.model} / ${entry.capability}`, () => {
-      if (MULTI_TURN_CAPABILITIES.has(entry.capability)) {
-        const turn1Response: CapturedResponse = {
-          status: 200,
-          headers: {},
-          parsed: loadFixtureJSON(entry, "turn-1", "response.json"),
-          bytes: null,
-        };
-        const steps = collectSteps({
-          model: entry.model,
-          capability: entry.capability,
-          responses: [turn1Response],
-        });
-        expect(steps.length).toBe(2);
-        const [step1, step2] = steps;
-        if (step1 === undefined || step2 === undefined) {
-          throw new Error("expected two steps for multi-turn");
-        }
-        expect(step1.subdir).toBe("turn-1");
-        expect(step2.subdir).toBe("turn-2");
-        expect(step1.url).toBe(TEST_CHAT_URL);
-        expect(step2.url).toBe(TEST_CHAT_URL);
-
-        const captured1 = loadFixtureJSON(entry, "turn-1", "request.json");
-        const captured2 = loadFixtureJSON(entry, "turn-2", "request.json");
-
-        const cap1Schema = extractSchema(pruneEphemeral(captured1));
-        const built1Schema = extractSchema(pruneEphemeral(step1.body));
-        if (!schemaContains(built1Schema, cap1Schema)) {
-          throw new Error(
-            [
-              "turn-1 schema mismatch",
-              `captured: ${describeSchema(cap1Schema)}`,
-              `built:    ${describeSchema(built1Schema)}`,
-            ].join("\n"),
-          );
-        }
-
-        const cap2Schema = extractSchema(pruneEphemeral(captured2));
-        const built2Schema = extractSchema(pruneEphemeral(step2.body));
-        if (!schemaContains(built2Schema, cap2Schema)) {
-          throw new Error(
-            [
-              "turn-2 schema mismatch",
-              `captured: ${describeSchema(cap2Schema)}`,
-              `built:    ${describeSchema(built2Schema)}`,
-            ].join("\n"),
-          );
-        }
-        return;
-      }
-
-      const captured = loadFixtureJSON(entry, "request.json");
-      const steps = collectSteps({
-        model: entry.model,
-        capability: entry.capability,
-        responses: [],
+    test(`opencode-zen structural match: ${entry.model} / ${entry.capability}`, () => {
+      assertStructuralMatch({
+        entry,
+        chatUrl: TEST_CHAT_URL,
+        baseUrl: TEST_BASE_URL,
       });
-      expect(steps.length).toBe(1);
-      const [only] = steps;
-      if (only === undefined) throw new Error("expected one step");
-      expect(only.subdir).toBeNull();
-      expect(only.url).toBe(TEST_CHAT_URL);
+    });
+  }
 
-      const capturedSchema = extractSchema(pruneEphemeral(captured));
-      const builtSchema = extractSchema(pruneEphemeral(only.body));
-
-      const ok = schemaContains(builtSchema, capturedSchema);
-      if (!ok) {
-        const msg = [
-          "schema mismatch",
-          `captured: ${describeSchema(capturedSchema)}`,
-          `built:    ${describeSchema(builtSchema)}`,
-        ].join("\n");
-        throw new Error(msg);
-      }
-
-      if (!isRecord(only.body)) {
-        throw new Error("expected built body to be record");
-      }
-      expect(only.body.model).toBe(entry.model);
-
-      const wantsStream = entry.capability.endsWith("-streaming");
-      if (wantsStream) {
-        expect(only.body.stream).toBe(true);
-      }
+  for (const entry of OPENAI_CAPTURED) {
+    test(`openai structural match: ${entry.model} / ${entry.capability}`, () => {
+      assertStructuralMatch({
+        entry,
+        chatUrl: OPENAI_CHAT_URL,
+        baseUrl: OPENAI_BASE_URL,
+      });
     });
   }
 });
