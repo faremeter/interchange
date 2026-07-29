@@ -1,7 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { INTENTS } from "@intx/inference-discovery/catalog";
 import { createOpenAIPlugin } from "./index";
-import { buildMultiTurnTurn1Body, buildRequestBody } from "./protocol/body";
+import {
+  buildMultiTurnTurn1Body,
+  buildMultiTurnTurn2Body,
+  buildRequestBody,
+} from "./protocol/body";
 
 const TEST_API_KEY = "test-key";
 
@@ -90,5 +94,56 @@ describe("gpt-5.6 tool-calling reasoning_effort", () => {
       intent: INTENTS["function-calling"],
     });
     expect(reasoningEffortOf(body)).toBeUndefined();
+  });
+
+  test("sets reasoning_effort none on gpt-5.6 multi-turn turn-2 bodies", () => {
+    const intent = INTENTS["function-calling-multi-turn"];
+    const turn1Response = {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_test",
+                type: "function",
+                function: {
+                  name: "get_weather",
+                  arguments: '{"location":"Boston, MA"}',
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    for (const model of [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ] as const) {
+      const turn1Body = buildMultiTurnTurn1Body({ model, intent });
+      const turn2 = buildMultiTurnTurn2Body({
+        model,
+        intent,
+        turn1Body,
+        turn1Response,
+      });
+      expect(turn2.reasoning_effort).toBe("none");
+      expect(turn2.tools).toBeDefined();
+    }
+
+    const legacyTurn1 = buildMultiTurnTurn1Body({
+      model: "gpt-5.5",
+      intent,
+    });
+    const legacyTurn2 = buildMultiTurnTurn2Body({
+      model: "gpt-5.5",
+      intent,
+      turn1Body: legacyTurn1,
+      turn1Response,
+    });
+    expect(legacyTurn2.reasoning_effort).toBeUndefined();
   });
 });
