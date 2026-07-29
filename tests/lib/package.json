@@ -14,6 +14,14 @@
       "types": "./db-harness.ts",
       "default": "./db-harness.ts"
     },
+    "./db-provision": {
+      "types": "./db-provision.ts",
+      "default": "./db-provision.ts"
+    },
+    "./grants": {
+      "types": "./grants.ts",
+      "default": "./grants.ts"
+    },
     "./seed": {
       "types": "./seed.ts",
       "default": "./seed.ts"
@@ -21,6 +29,7 @@
   },
   "dependencies": {
     "@intx/db": "workspace:*",
-    "drizzle-orm": "catalog:"
+    "drizzle-orm": "catalog:",
+    "postgres": "catalog:"
   }
 }

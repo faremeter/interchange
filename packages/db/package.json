@@ -22,7 +22,7 @@
     "@intx/types": "workspace:*",
     "arktype": "catalog:",
     "drizzle-orm": "catalog:",
-    "postgres": "^3.4.8"
+    "postgres": "catalog:"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.9"
