@@ -19,7 +19,11 @@
 // resolves `behaviorFor` against the live `RunState` plus the loaded
 // `WorkflowDefinition`.
 
-import type { DrainBehavior, WorkflowDefinition } from "../definition/index";
+import {
+  stepTriggerBudget,
+  type DrainBehavior,
+  type WorkflowDefinition,
+} from "../definition/index";
 import { baseStepId } from "./step-scope";
 
 /**
@@ -51,8 +55,11 @@ export interface DrainController {
  *
  * The default-by-kind table mirrors the constructors in
  * `definition/primitives.ts`:
- *   - `step`, `sleep`, `childWorkflow` default to `"cancel"`.
+ *   - `sleep`, `childWorkflow` default to `"cancel"`.
  *   - `awaitSignal` defaults to `"wait"` (the human-in-the-loop case).
+ *   - `step` defaults to `"cancel"` when its trigger budget is `1`
+ *     (batch) and to `"wait"` when the budget is larger (multi-turn
+ *     or unbounded).
  *   - `gate`, `escalation`, `map` carry no `drainBehavior` of their
  *     own; the runtime never blocks inside them long enough for
  *     drain to matter, so the function returns `"cancel"` so the
@@ -67,8 +74,14 @@ export function resolveDrainBehavior(
   const primitive = lookupPrimitive(definition, stepId);
   if (primitive === null) return "cancel";
   switch (primitive.kind) {
-    case "step":
-      return primitive.drainBehavior ?? "cancel";
+    case "step": {
+      // A step with a budget other than 1 (multi-turn or unbounded) is
+      // definitionally long-lived; draining it means "stop feeding new
+      // input", not "abort the paused waiter". The author can still
+      // override with an explicit `drainBehavior`.
+      const budget = stepTriggerBudget(primitive);
+      return primitive.drainBehavior ?? (budget !== 1 ? "wait" : "cancel");
+    }
     case "action":
       return primitive.drainBehavior ?? "cancel";
     case "loop":

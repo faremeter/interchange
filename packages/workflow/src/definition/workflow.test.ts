@@ -649,9 +649,36 @@ describe("loop validation", () => {
 });
 
 describe("primitive defaults", () => {
-  test("step defaults drainBehavior to cancel", () => {
+  test("step defaults drainBehavior to cancel (batch)", () => {
     const s = step({ agent: makeAgent("a") });
     expect(s.drainBehavior).toBe("cancel");
+    const explicitOne = step({ agent: makeAgent("a"), triggers: 1 });
+    expect(explicitOne.drainBehavior).toBe("cancel");
+  });
+
+  test("step defaults drainBehavior to wait when triggers is not 1", () => {
+    const multi = step({ agent: makeAgent("a"), triggers: 5 });
+    expect(multi.drainBehavior).toBe("wait");
+    const unbounded = step({
+      agent: makeAgent("a"),
+      triggers: "unbounded",
+    });
+    expect(unbounded.drainBehavior).toBe("wait");
+  });
+
+  test("explicit drainBehavior overrides the trigger-budget default", () => {
+    const multiExplicit = step({
+      agent: makeAgent("a"),
+      triggers: 5,
+      drainBehavior: "cancel",
+    });
+    expect(multiExplicit.drainBehavior).toBe("cancel");
+    const batchExplicit = step({
+      agent: makeAgent("a"),
+      triggers: 1,
+      drainBehavior: "wait",
+    });
+    expect(batchExplicit.drainBehavior).toBe("wait");
   });
 
   test("awaitSignal defaults drainBehavior to wait", () => {

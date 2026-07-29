@@ -7,13 +7,16 @@
 // reuse the same constructor result under different keys without
 // repeating themselves.
 //
-// `drainBehavior` defaults differ per primitive: `step` and `sleep`
-// default to `"cancel"` because long compute should not block a
-// redeploy past `drainTimeout`; `awaitSignal` defaults to `"wait"`
-// because human-in-the-loop pauses are the canonical case the spec
-// calls out and operators do not want them silently cancelled at
-// redeploy. `map`'s outer node carries no `drainBehavior` -- its inner
-// step carries its own.
+// `drainBehavior` defaults differ per primitive: `sleep` and
+// `childWorkflow` default to `"cancel"` because long compute should not
+// block a redeploy past `drainTimeout`; `awaitSignal` defaults to
+// `"wait"` because human-in-the-loop pauses are the canonical case the
+// spec calls out and operators do not want them silently cancelled at
+// redeploy. A `step` defaults to `"cancel"` when its trigger budget is
+// `1` (batch) and `"wait"` when the budget is larger (multi-turn or
+// unbounded) -- a long-lived step is definitionally interactive.
+// `map`'s outer node carries no `drainBehavior` -- its inner step
+// carries its own.
 
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type { Type } from "arktype";
@@ -285,7 +288,14 @@ export function validateRetryTriggerCombination(step: StepPrimitive): void {
 export function step<EnvReq extends BaseEnv>(
   opts: StepOpts<EnvReq>,
 ): StepPrimitive {
-  const drainBehavior: DrainBehavior = opts.drainBehavior ?? "cancel";
+  // A step with a trigger budget other than 1 (multi-turn or unbounded)
+  // is definitionally long-lived; cancelling it during drain would discard
+  // in-flight work the operator likely wants to preserve. The default is
+  // "wait" for long-lived steps, "cancel" for batch steps (budget 1 or
+  // absent). An explicit `drainBehavior` always wins.
+  const defaultDrain: DrainBehavior =
+    opts.triggers !== undefined && opts.triggers !== 1 ? "wait" : "cancel";
+  const drainBehavior: DrainBehavior = opts.drainBehavior ?? defaultDrain;
   // The narrower `EnvReq` requirements (tool factories that need
   // `transport`, an author-supplied director with extra env keys) live
   // on the agent's tool-factory metadata. The workflow runtime hands
