@@ -376,15 +376,17 @@ async function buildStepAgent(
 /**
  * Drive one `agent.send`, racing it against the step's abort signal.
  *
- * The message sent depends on `req.resume`. A first invocation sends the
- * synthesized `req.input` content. A resume sends the full correlated
- * `InboundMessage` built from `req.resume`, whose
+ * The message sent depends on `req.resume` and its kind. A first invocation
+ * sends the synthesized `req.input` content. An `"approval"` resume sends the
+ * full correlated `InboundMessage` built from `req.resume`, whose
  * `headers.interchangeCorrelationId` routes through the reactor's
- * `tryCorrelate` to match the rehydrated gate and resume the parked cycle
- * -- no second inference cycle. Because both paths go through `agent.send`,
- * the returned `SendResult` carries the reactor's full settle arm set: a
- * resumed cycle that re-parks on a second gate settles as `"suspended"`
- * exactly as a first-invocation gate does.
+ * `tryCorrelate` to match the rehydrated gate and resume the parked cycle --
+ * no second inference cycle. An `"input"` resume sends the decision as plain
+ * synthesized content, exactly like a first invocation: it is the step's next
+ * turn, with no gate to correlate. Because every path goes through
+ * `agent.send`, the returned `SendResult` carries the reactor's full settle
+ * arm set: a cycle that parks on a gate settles as `"suspended"` regardless
+ * of how the turn was delivered.
  *
  * `closeOnAbort` selects the abort semantics:
  *   - `true` (cold path): the in-flight send is left to settle via
@@ -432,25 +434,32 @@ async function sendWithAbort(
       req.signal.addEventListener("abort", onAbort, { once: true });
       let message: string | InboundMessage;
       try {
-        // A resume carries the correlated decision: build the same full
-        // `InboundMessage` a first invocation's synthesis path would, but
-        // stamped with `resume.correlationId` so the header reaches the
-        // reactor's `tryCorrelate` and matches the rehydrated gate. The
-        // object form is load-bearing -- passing the synthesized content as
-        // a plain string would drop the correlation id, and the resumed
-        // cycle would never be matched. A first invocation sends the plain
-        // synthesized content; `agent.send` stamps its own synthetic
-        // addressing.
+        // How the resumed input is delivered depends on the park kind:
+        //
+        // - `"approval"`: the reactor is parked mid-turn on a tool/authz gate.
+        //   Build the full `InboundMessage` stamped with `resume.correlationId`
+        //   so the header reaches the reactor's `tryCorrelate` and matches the
+        //   rehydrated gate. The object form is load-bearing -- a plain string
+        //   would drop the correlation id and the resumed cycle would never
+        //   match.
+        // - `"input"`: the step re-armed between turns; the decision is simply
+        //   the next user turn, with NO gate to correlate. Deliver it as the
+        //   plain synthesized content, exactly as a first invocation does.
+        //
+        // A first invocation (no resume) sends the plain synthesized input;
+        // `agent.send` stamps its own synthetic addressing.
         message =
-          req.resume !== undefined
-            ? createInboundMessage({
-                from: "signal@local",
-                to: "agent@local",
-                content: synthesizeInputContent(req.resume.decision),
-                interchangeType: "conversation.message",
-                correlationId: req.resume.correlationId,
-              })
-            : synthesizeInputContent(req.input);
+          req.resume === undefined
+            ? synthesizeInputContent(req.input)
+            : req.resume.kind === "input"
+              ? synthesizeInputContent(req.resume.decision)
+              : createInboundMessage({
+                  from: "signal@local",
+                  to: "agent@local",
+                  content: synthesizeInputContent(req.resume.decision),
+                  interchangeType: "conversation.message",
+                  correlationId: req.resume.correlationId,
+                });
       } catch (cause) {
         reject(cause instanceof Error ? cause : new Error(String(cause)));
         return;

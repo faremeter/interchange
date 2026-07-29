@@ -967,7 +967,11 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
 
     const req: StepInvokeRequest = {
       ...buildRequest({ input: { goal: "start" } }),
-      resume: { correlationId: "corr-1", decision: { outcome: "approved" } },
+      resume: {
+        correlationId: "corr-1",
+        decision: { outcome: "approved" },
+        kind: "approval",
+      },
     };
     const result = await invoker(req);
 
@@ -1036,7 +1040,11 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
 
     const req: StepInvokeRequest = {
       ...buildRequest({ input: { goal: "start" } }),
-      resume: { correlationId: "corr-A", decision: { outcome: "approved" } },
+      resume: {
+        correlationId: "corr-A",
+        decision: { outcome: "approved" },
+        kind: "approval",
+      },
     };
     const result = await invoker(req);
 
@@ -1061,6 +1069,52 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       );
     }
     expect(result.suspend.correlationId).toBe("corr-B");
+  });
+
+  test("an input resume delivers a plain next turn, not a correlated gate inbound", async () => {
+    // An `"input"` resume is the step's next turn (a long-lived agent's next
+    // mail), with no gate to re-correlate. The adapter must send the decision
+    // as PLAIN synthesized content, NOT an InboundMessage stamped with the
+    // correlationId (the approval path). A plain string is the tell: nothing
+    // for the reactor's `tryCorrelate` to match, just a fresh user turn.
+    const nextTurn = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "next turn reply" }],
+      model: STUB_SOURCE.model,
+      timestamp: 9,
+    };
+    let sentContent: string | InboundMessage | undefined;
+    const agent = buildResumeStubAgent((content) => {
+      sentContent = content;
+      return { type: "reply", reply: "next turn reply", turn: nextTurn };
+    });
+
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+
+    const req: StepInvokeRequest = {
+      ...buildRequest({ input: { goal: "start" } }),
+      resume: {
+        correlationId: "corr-input-1",
+        decision: { text: "the next mail" },
+        kind: "input",
+      },
+    };
+    const result = await invoker(req);
+
+    // Plain content, not a correlated InboundMessage.
+    expect(typeof sentContent).toBe("string");
+    expect(expectOutput(result)).toEqual({
+      reply: "next turn reply",
+      turn: nextTurn,
+    });
   });
 });
 

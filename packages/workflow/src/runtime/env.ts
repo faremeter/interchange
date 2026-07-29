@@ -8,7 +8,7 @@
 // source-level test in `run.test.ts` asserts the discipline.
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
-import type { ApprovalSnapshot } from "@intx/types/runtime";
+import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
 
 import type {
   AuthorizeContext,
@@ -165,40 +165,41 @@ export interface StepInvokeRequest {
   signal: AbortSignal;
   /**
    * Present only on a resume re-invocation of a step that previously
-   * suspended. The invoker rebuilds the agent against the same context,
-   * delivers an inbound carrying `correlationId` and a body derived from
-   * `decision`, and drives the resumed reactor to its reply. Absent on the
-   * first invocation, where the invoker drives a plain `agent.send`.
+   * suspended. `kind` carries the park kind the step suspended on, so the
+   * invoker synthesizes the right inbound: an `"approval"` resume delivers a
+   * body stamped with `correlationId` so the reactor's `tryCorrelate` matches
+   * the rehydrated gate; an `"input"` resume delivers the `decision` as a
+   * plain next user turn (there is no gate to match). Absent on the first
+   * invocation, where the invoker drives a plain `agent.send`.
    */
-  resume?: { correlationId: string; decision: unknown };
+  resume?: { correlationId: string; decision: unknown; kind: ControlParkKind };
 }
 
 /**
  * The outcome of a single `invokeStep`. A step either produces its `output`
- * (the agent replied) or suspends, handing back the `correlationId` the
- * runtime parks the step on until the correlated event is delivered. The
- * suspend arm is discriminated by an explicit {@link ControlParkKind}:
+ * (the agent replied) or suspends on a tool/authz gate, handing back the
+ * `correlationId` the runtime parks the step on until the correlated decision
+ * is delivered. The suspend carries an explicit `kind: "approval"`
+ * discriminant and a REQUIRED snapshot (the sidecar->hub co-write treats it
+ * as mandatory), so a snapshot-less approval is unrepresentable here rather
+ * than resting on the runtime guard alone.
  *
- * - `"approval"` -- the reactor parked on a tool/authz gate. The snapshot is
- *   REQUIRED (the sidecar->hub co-write treats it as mandatory), so it is a
- *   type invariant here rather than resting on the runtime guard alone.
- * - `"input"` -- the step parked awaiting its next input (a long-lived agent
- *   run awaiting the next mail to take another turn). No snapshot, no host
- *   notify; the run's owner delivers the input and the step re-arms.
- *
- * The discriminant is explicit, never inferred from snapshot presence: a
- * snapshot-less approval must fail loud, not silently become an input park.
+ * An invoker can ONLY suspend as an approval. The `"input"` control-plane
+ * park (a long-lived step awaiting its next trigger) is minted exclusively by
+ * the RUNTIME's trigger-budget re-arm -- never by an invoker -- which is what
+ * keeps the finite-budget respawn seed sound: every input `SignalAwaited` in
+ * the durable log is a runtime re-arm, so counting them counts turns
+ * serviced. Offering an input arm here would let a host invoker emit input
+ * parks that inflate that count.
  */
 export type StepInvokeResult =
   | { output: unknown }
   | {
-      suspend:
-        | {
-            correlationId: string;
-            kind: "approval";
-            approvalSnapshot: ApprovalSnapshot;
-          }
-        | { correlationId: string; kind: "input" };
+      suspend: {
+        correlationId: string;
+        kind: "approval";
+        approvalSnapshot: ApprovalSnapshot;
+      };
     };
 
 /**

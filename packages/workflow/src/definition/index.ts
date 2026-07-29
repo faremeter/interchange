@@ -21,6 +21,8 @@ export {
   map,
   sleep,
   step,
+  stepTriggerBudget,
+  validateRetryTriggerCombination,
   type ActionOpts,
   type ActionPrimitive,
   type AwaitSignalOpts,

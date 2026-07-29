@@ -135,6 +135,7 @@ describe("step suspend/resume bridge", () => {
     expect(invocations[1]?.resume).toEqual({
       correlationId: "corr-1",
       decision: { outcome: "approved" },
+      kind: "approval",
     });
 
     // (iv) The step completes with the REPLY output, not the raw payload.

@@ -803,20 +803,28 @@ export function createSidecarStepBuildEnv(
         : await createIsogitStore(storeDir, deps.signer);
 
     // Cold-path resume keying assertion (correct-by-construction guard for
-    // the resume-attempt invariant documented on `stepStorageRoot`). A
-    // resume re-invocation (`req.resume` present) delivers the correlated
-    // decision to the reactor, which rehydrates its gate from THIS store's
-    // pending operations. The store the runtime reopened is keyed by
-    // `attempt` (`stepStorageRoot` above); if that attempt does not match
-    // the attempt the step suspended on, the store carries no pending-op
-    // for the resumed correlationId, the reactor comes up gateless, and the
-    // delivered decision correlates against nothing -- a silent forever-hang.
-    // Make that keying violation loud here, at the single seam that both
-    // opened the store AND knows a resume must find its gate, rather than
+    // the resume-attempt invariant documented on `stepStorageRoot`). An
+    // APPROVAL resume re-invocation delivers the correlated decision to the
+    // reactor, which rehydrates its gate from THIS store's pending
+    // operations. The store the runtime reopened is keyed by `attempt`
+    // (`stepStorageRoot` above); if that attempt does not match the attempt
+    // the step suspended on, the store carries no pending-op for the resumed
+    // correlationId, the reactor comes up gateless, and the delivered
+    // decision correlates against nothing -- a silent forever-hang. Make that
+    // keying violation loud here, at the single seam that both opened the
+    // store AND knows an approval resume must find its gate, rather than
     // letting it surface as a hang. The warm path keys its durable store per
     // agent (not per attempt) and rehydrates from a different lifecycle, so
-    // this assertion is cold-path only.
-    if (deps.durableConversation === undefined && req.resume !== undefined) {
+    // this assertion is cold-path only. An `"input"` resume is exempt by
+    // construction: its correlationId names the runtime-minted re-arm channel
+    // awaiting the step's next trigger, not a reactor gate, so no pending
+    // operation ever exists for it and the delivered decision is sent as a
+    // plain next turn (no correlation to rehydrate).
+    if (
+      deps.durableConversation === undefined &&
+      req.resume !== undefined &&
+      req.resume.kind === "approval"
+    ) {
       const resumeCorrelationId = req.resume.correlationId;
       const loaded = await storage.load();
       const hasPendingOp = loaded.pendingOperations.some(

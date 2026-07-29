@@ -24,7 +24,11 @@ import type {
   StepPrimitive,
   WorkflowDefinition,
 } from "../definition/index";
-import { hashDefinition } from "../definition/index";
+import {
+  hashDefinition,
+  stepTriggerBudget,
+  validateRetryTriggerCombination,
+} from "../definition/index";
 import { evaluate, type SelectorContext } from "./selectors";
 import {
   hasFailedStep,
@@ -52,6 +56,7 @@ import { shouldAbortForDrain } from "./drain";
 import { RuntimeResumeUnsupportedError } from "./errors";
 import { scopedStepId } from "./step-scope";
 import {
+  controlParkKindOf,
   isTerminalRunPhase,
   resumeFromLog,
   TransitionError,
@@ -1115,6 +1120,10 @@ async function runStep(
   selectorCtx: SelectorContext,
   abort: AbortSignal,
 ): Promise<unknown> {
+  // A definition hydrated from workflow.json never passed through
+  // `step()`, so its retry/budget cross-field guard is re-applied here,
+  // at the runtime's single read point for both fields.
+  validateRetryTriggerCombination(step);
   let attempt = 1;
   const maxAttempts = step.retry?.maxAttempts ?? 1;
   // StepStarted is committed exactly once per step -- the entry to
@@ -1140,7 +1149,9 @@ async function runStep(
   // `invokeStep` re-invokes the agent against the delivered decision.
   const entryState = await reloadState(env, runId);
   const entryStepState = entryState.steps.get(step.id);
-  let resumeFromPark: { signalName: string; correlationId: string } | undefined;
+  let resumeFromPark:
+    | { signalName: string; correlationId: string; parkKind: ControlParkKind }
+    | undefined;
   if (entryStepState?.phase === "awaiting-signal") {
     const parkedSignalName = findAwaitedSignalNameForStep(entryState, step.id);
     if (parkedSignalName === undefined) {
@@ -1154,7 +1165,22 @@ async function runStep(
         `runStep resume: step ${step.id} is parked on ${parkedSignalName}, which is not a reserved control-plane signal name; an agent step suspends only on a signalName(correlationId) channel`,
       );
     }
-    resumeFromPark = { signalName: parkedSignalName, correlationId };
+    // Recover the park kind from the durable reduced state so the resume
+    // synthesizes the right inbound after a respawn. The awaiting-signal phase
+    // guarantees `awaitingSignal` is set -- read it definitely and fail loud on
+    // the invariant rather than papering over a missing field; `controlParkKindOf`
+    // is the single point that maps its optional kind to a definite one.
+    const awaited = entryStepState.awaitingSignal;
+    if (awaited === undefined) {
+      throw new Error(
+        `runStep resume: step ${step.id} is awaiting-signal but has no awaitingSignal in the reduced state`,
+      );
+    }
+    resumeFromPark = {
+      signalName: parkedSignalName,
+      correlationId,
+      parkKind: controlParkKindOf(awaited),
+    };
     // Recover the attempt the step suspended on. The suspend committed its
     // pending-op + turns under the cold-path ContextStore keyed by this
     // attempt (`stepStorageRoot({runId, stepId, attempt})`); the resume
@@ -1237,7 +1263,9 @@ async function runStep(
       // is the step output. A resume that parks again re-parks, mirroring
       // runAwaitSignal's re-park.
       let output: unknown;
-      let resume: { correlationId: string; decision: unknown } | undefined;
+      let resume:
+        | { correlationId: string; decision: unknown; kind: ControlParkKind }
+        | undefined;
       // A crash-resume re-entry re-parks on the recovered channel FIRST,
       // before any `invokeStep`, so the agent is never re-sent the original
       // input. The delivered decision seeds `resume` so the bridge loop's
@@ -1257,8 +1285,35 @@ async function runStep(
           parkState,
           stepAbort.signal,
         );
-        resume = { correlationId: resumeFromPark.correlationId, decision };
+        resume = {
+          correlationId: resumeFromPark.correlationId,
+          decision,
+          kind: resumeFromPark.parkKind,
+        };
         resumeFromPark = undefined;
+      }
+      // Trigger budget: how many triggers this step services before it
+      // completes (`stepTriggerBudget` owns the absent-means-1 default). A
+      // batch step (1) completes on its first output; an `"unbounded"` step
+      // re-arms after every output and never self-completes. For a finite
+      // budget > 1 the count of triggers already serviced must survive a
+      // respawn, so it is seeded from the durable log -- the number of
+      // input-park `SignalAwaited`s the step has emitted equals the turns it
+      // has serviced, because the runtime's re-arm below is the ONLY minter
+      // of input parks (`StepInvokeResult` offers invokers no input arm), and
+      // it emits exactly one per completed turn. A budget of 1 never re-arms
+      // (its count is 0 by construction) and unbounded never counts, so both
+      // skip the log read -- the batch default pays nothing.
+      const triggerBudget = stepTriggerBudget(step);
+      let servicedTriggers = 0;
+      if (triggerBudget !== "unbounded" && triggerBudget > 1) {
+        const priorEvents = await env.repoStore.read(runId);
+        servicedTriggers = priorEvents.filter(
+          (e) =>
+            e.kind === "SignalAwaited" &&
+            e.stepId === step.id &&
+            e.parkKind === "input",
+        ).length;
       }
       while (true) {
         const result = await env.invokeStep({
@@ -1274,7 +1329,37 @@ async function runStep(
         });
         if ("output" in result) {
           output = result.output;
-          break;
+          servicedTriggers += 1;
+          // Budget spent -> complete (the batch case: one trigger, one turn,
+          // done). Budget remaining -> re-arm: park the step on a fresh input
+          // control-plane channel awaiting its next trigger, which becomes the
+          // next turn's input. The park is snapshot-less (`kind: "input"`) and
+          // fires no host notify -- the run's owner delivers the next trigger
+          // on this channel. `env.newId` mints a unique channel per turn so
+          // deliveries never collide; the run's owner discovers the current
+          // channel from the reduced `awaitingSignal.name`.
+          const hasMoreTriggers =
+            triggerBudget === "unbounded" || servicedTriggers < triggerBudget;
+          if (!hasMoreTriggers) break;
+          const inputCorrelationId = env.newId("corr");
+          const rearmState = await reloadState(env, runId);
+          const decision = await parkOnSignal(
+            env,
+            runId,
+            {
+              stepId: step.id,
+              signalName: signalName(inputCorrelationId),
+              parkKind: "input",
+            },
+            rearmState,
+            stepAbort.signal,
+          );
+          resume = {
+            correlationId: inputCorrelationId,
+            decision,
+            kind: "input",
+          };
+          continue;
         }
         // The reactor parked. Park the step on the reserved signal channel
         // for this correlation. Unlike runAwaitSignal, the agent step
@@ -1290,17 +1375,20 @@ async function runStep(
           {
             stepId: step.id,
             signalName: signalName(result.suspend.correlationId),
+            // An invoker can only suspend as an approval (the input park is
+            // minted by the trigger-budget re-arm above, never by an
+            // invoker), and the approval arm carries a mandatory snapshot.
             parkKind: result.suspend.kind,
-            // The approval arm carries a mandatory snapshot; the input arm
-            // carries none. Narrowing on `kind` keeps that a type invariant.
-            ...(result.suspend.kind === "approval"
-              ? { approvalSnapshot: result.suspend.approvalSnapshot }
-              : {}),
+            approvalSnapshot: result.suspend.approvalSnapshot,
           },
           parkState,
           stepAbort.signal,
         );
-        resume = { correlationId: result.suspend.correlationId, decision };
+        resume = {
+          correlationId: result.suspend.correlationId,
+          decision,
+          kind: result.suspend.kind,
+        };
       }
       const outputRef = (await env.blobs.recordOutput(step.id, attempt, output))
         .ref;

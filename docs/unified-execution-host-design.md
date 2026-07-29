@@ -238,7 +238,9 @@ conversation state":
 
 - The **supervisor** owns durable mail ingestion: `mailBus.registerAddress` +
   `subscribeMailForAddress` -> inbox claim-check substrate -> FIFO dispatch
-  loop -> `trigger.fired` (one run per message), in
+  loop -> `trigger.fired` (one run per message -- the `triggers: 1` case; a
+  step with a larger `triggers` budget folds many triggers into one run, see
+  §3h), in
   `packages/workflow-host/src/supervisor/supervisor.ts`.
 - The **harness** owns its own ingestion: it subscribes a `MessageTransport`
   directly, runs a connector reactor, drains INBOX continuously, and holds
@@ -357,11 +359,15 @@ the persisted config but conversation continuity is whatever the agent's
 isogit store last committed. Under the unified host the single agent gains the
 multi-step durability model:
 
-- **What a "run" means for a long-lived agent.** Each inbound message is one
-  `runtimeRun` of the one-step workflow — one `RunStarted` ->
-  `StepStarted` -> `StepCompleted` -> `RunCompleted` bracket, committed to the
-  workflow-run repo under `runs/<runId>/...`. This is exactly the bracket the
-  current `driveTrivialRunChain` projector hand-rolls
+- **What a "run" means for a long-lived agent.** In the `triggers: 1` (batch)
+  case each inbound message is one `runtimeRun` of the one-step workflow — one
+  `RunStarted` -> `StepStarted` -> `StepCompleted` -> `RunCompleted` bracket,
+  committed to the workflow-run repo under `runs/<runId>/...`. For an
+  `"unbounded"` (interactive) step the runtime re-arms rather than completing
+  (§3h), so **one** run spans every turn: a single `RunStarted` ->
+  `StepStarted`, then a park/deliver cycle per turn, and no terminal until the
+  run is torn down. The batch bracket is exactly the one the current
+  `driveTrivialRunChain` projector hand-rolls
   (`apps/sidecar/src/workflow-host-wiring.ts`), except now the runtime emits it
   natively because a real `runtimeRun` is driving the step. That projector is
   deleted (§4).
@@ -379,11 +385,11 @@ multi-step durability model:
   conversation state is restored from the substrate. This is strictly more
   durable than the in-process runtime, which had no per-message run log at all.
 
-**Open question (flagged):** the exact granularity of conversation-state
-commits — per run, per turn, or per connector-state-change — trades durability
-against substrate write volume. The harness already has the change-point hook;
-the question is whether committing on every change is acceptable write load on
-the single-writer workflow-run ref. See §6.
+**Commit granularity is per turn (§3h).** The warm step-invoker's per-send hook
+fires after each `agent.send`, so the conversation is mirrored **per turn**
+whether a run services one trigger or many. Whether one substrate mirror per
+turn is acceptable write load on the single-writer ref is an empirical question
+flagged in §6.
 
 ### 3d. Tool materialization and execution in the child (the other hard one)
 
@@ -947,6 +953,71 @@ as the multi-step path already does:
   from `config.grants` before spawn, and the per-step `deriveStepAddress` /
   `deriveStepRepoId` return the legacy address and the legacy agent-state repo
   id. Reuse this patch as the identity/grants foundation.
+
+### 3h. Trigger budget: how long a step lives
+
+A step declares how many triggers it services before completing, and the
+runtime re-arms it between triggers. This is the single knob that spans the
+batch and interactive workloads: "one run per message" is one point on it.
+
+**Decision: a step carries `triggers: number | "unbounded"` (default 1).**
+
+- `1` (the default) -- a **batch** step: one trigger, one turn, then it
+  completes. At the deployment level, one run per trigger (the §3a/§3c bracket).
+- `"unbounded"` -- an **interactive agent**: the step never completes on its
+  own; it absorbs every trigger as another turn until the run is torn down
+  (undeploy/drain). One run spans the whole conversation.
+- a finite `N` -- a **bounded server**: services N triggers, then completes.
+
+The field lives on the `step` primitive
+(`packages/workflow/src/definition/primitives.ts`), rides the content-addressed
+definition hash (`projectForHash` spreads the primitive), and is read through
+the single `stepTriggerBudget` helper that owns the absent-means-1 default.
+
+A step whose budget is not exactly `1` may not carry a `retry` policy with
+`maxAttempts > 1`: a retried attempt re-invokes the step with its launch input
+and starts with no resume, so a mid-run failure would re-service the launch
+trigger and never re-service the already-consumed one -- a wrong conversation
+reported as success. `step()` rejects the combination at authoring time and
+the runtime re-rejects it at the read point
+(`validateRetryTriggerCombination`, applied at `runStep` entry, where a
+`workflow.json`-hydrated definition is first executed).
+
+**The re-arm mechanism.** Between triggers the runtime parks the step on a
+**snapshot-less input control-plane park** -- a `ControlParkKind` of `"input"`,
+distinct from the approval park (which carries an `ApprovalSnapshot` and
+notifies the host so the sidecar co-writes the hub approval rows). An input park
+carries no snapshot and fires no host notify: the run's owner delivers the next
+trigger on the park's channel and the step re-arms. The park kind is recorded on
+`SignalAwaited`, so parked-correlation recovery reads it and **skips** input
+parks -- a snapshot-less park never reaches the approval-snapshot lookup that a
+mislabelled park would fail the whole deployment's re-registration on. The
+runtime mints a fresh input channel per turn (`env.newId`); the run's owner
+finds the current one from the reduced `awaitingSignal.name` -- discoverable,
+not guessable.
+
+**Who decides re-arm.** The definition declares `triggers`; the **runtime**
+honors it -- after a step's output it re-arms while budget remains, else
+completes. The step-invoker adapter is a translator: it returns a reply as
+`{ output }` and never parks itself. Its only concession to the input kind is
+the resume path -- an `"approval"` resume delivers a body stamped with the
+correlationId so the reactor's `tryCorrelate` matches the rehydrated gate; an
+`"input"` resume delivers the decision as a plain next user turn (no gate to
+match).
+
+**Conversation state is committed per turn.** The warm step-invoker's per-send
+hook (§3c) fires after each `agent.send`, so a long-lived run's conversation is
+mirrored to the substrate per turn, however many turns the run spans.
+
+**Bounds and failure shape.** `step.timeout` spans the whole multi-turn
+attempt, including time parked awaiting the next trigger, so on a long-lived
+step it bounds the attempt's wall-clock life rather than any single turn. The
+timer is armed per `runStep` entry, so a crash-resume re-entry arms a fresh
+one: the bound is per process incarnation, not cumulative across respawns. A
+crash mid-turn is run-fatal under the at-most-once settle: the durable
+`StepStarted` without a `StepCompleted` settles the run as terminal
+`StepFailed`, and a trigger whose `SignalReceived` is already durable is not
+re-serviced.
 
 ## 4. What gets retired vs reused
 

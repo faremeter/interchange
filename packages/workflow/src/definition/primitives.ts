@@ -74,6 +74,28 @@ export interface StepPrimitive extends PrimitiveBase {
   /** Per-step timeout in milliseconds; enforced via an `AbortSignal`. */
   timeout?: number;
   drainBehavior?: DrainBehavior;
+  /**
+   * How many triggers this step services before it completes.
+   *
+   * - A positive integer `N`: the step services N triggers, then completes.
+   *   `1` (the default when absent) is the ordinary batch step -- one trigger,
+   *   one turn, done -- and, at the deployment level, one run per trigger.
+   * - `"unbounded"`: the step never completes on its own; it absorbs every
+   *   trigger as another turn (a long-lived interactive agent) until the run
+   *   is torn down.
+   *
+   * Between triggers the runtime re-arms the step on a snapshot-less input
+   * control-plane park; each delivered trigger is the next turn's input.
+   * Absent means `1` -- read through `stepTriggerBudget`, the single point of
+   * that default.
+   *
+   * A step whose budget is not exactly `1` may not carry a `retry` policy
+   * with `maxAttempts > 1` (`validateRetryTriggerCombination` rejects the
+   * combination): a retried attempt re-invokes the step with its launch
+   * input and starts with no resume, so a mid-run failure would re-service
+   * the launch trigger and never re-service the consumed one.
+   */
+  triggers?: number | "unbounded";
 }
 
 export interface MapPrimitive extends PrimitiveBase {
@@ -203,6 +225,61 @@ export interface StepOpts<EnvReq extends BaseEnv> {
   timeout?: number;
   drainBehavior?: DrainBehavior;
   after?: readonly string[];
+  /** See {@link StepPrimitive.triggers}. Absent means `1` (batch). */
+  triggers?: number | "unbounded";
+}
+
+/**
+ * The trigger budget a step services before it completes -- the single point
+ * of the absent-means-`1` default. `1` is the ordinary batch step;
+ * `"unbounded"` is the long-lived interactive agent that never self-completes.
+ *
+ * Validates the declared value on every read: `step()` rejects a bad value at
+ * authoring time, but a definition hydrated from `workflow.json` never passes
+ * through `step()` (the envelope schema checks structure only), so this read
+ * point is where a persisted `triggers: 0`/`-1`/`1.5` fails loud instead of
+ * silently coercing (a non-positive budget would behave as `1`; a fractional
+ * one would service an extra trigger).
+ */
+export function stepTriggerBudget(step: StepPrimitive): number | "unbounded" {
+  if (step.triggers === undefined) return 1;
+  validateTriggers(step.triggers);
+  return step.triggers;
+}
+
+/**
+ * Validate a `triggers` value: a positive integer, or the literal
+ * `"unbounded"`. Fails loud on anything else (a zero/negative/fractional count
+ * is a definition bug, not a value to silently coerce).
+ */
+function validateTriggers(triggers: number | "unbounded"): void {
+  if (triggers === "unbounded") return;
+  if (!Number.isInteger(triggers) || triggers < 1) {
+    throw new Error(
+      `step triggers must be a positive integer or "unbounded", got ${String(triggers)}`,
+    );
+  }
+}
+
+/**
+ * Validate the retry/budget combination: a step whose resolved trigger
+ * budget is not exactly `1` may not carry a `retry` policy with
+ * `maxAttempts > 1`. A retried attempt re-invokes the step with its
+ * original launch input and starts with no resume, so a mid-run failure
+ * would re-service the launch trigger and never re-service the
+ * already-consumed one -- a wrong conversation reported as success.
+ * `step()` enforces this at authoring time; the runtime re-applies it at
+ * `runStep` entry because a definition hydrated from `workflow.json` never
+ * passes through `step()`.
+ */
+export function validateRetryTriggerCombination(step: StepPrimitive): void {
+  const retry = step.retry;
+  if (retry === undefined || retry.maxAttempts <= 1) return;
+  if (stepTriggerBudget(step) !== 1) {
+    throw new Error(
+      `step retry policy with maxAttempts ${String(retry.maxAttempts)} cannot combine with a trigger budget other than 1: a retried attempt re-invokes the step with its launch input and cannot re-service an already-consumed trigger`,
+    );
+  }
 }
 
 export function step<EnvReq extends BaseEnv>(
@@ -219,6 +296,7 @@ export function step<EnvReq extends BaseEnv>(
   // juggling per-step EnvReq parameters.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the agent's env requirements are checked at StepInvoker time by createAgent's validateEnv; the runtime body itself does not read AgentDefinition.toolFactories
   const agent = opts.agent as AgentDefinition<BaseEnv>;
+  if (opts.triggers !== undefined) validateTriggers(opts.triggers);
   const primitive: StepPrimitive = {
     kind: "step",
     id: "",
@@ -230,7 +308,9 @@ export function step<EnvReq extends BaseEnv>(
     ...(opts.retry !== undefined ? { retry: opts.retry } : {}),
     ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
+    ...(opts.triggers !== undefined ? { triggers: opts.triggers } : {}),
   };
+  validateRetryTriggerCombination(primitive);
   return primitive;
 }
 
@@ -242,6 +322,17 @@ export interface MapOpts {
 }
 
 export function map(opts: MapOpts): MapPrimitive {
+  // The map's retry applies to each fan-out instance of the inner step when
+  // the inner declares none (mirroring the runtime's scoped-step injection),
+  // so the retry/budget cross-field guard must see that COMPOSED shape --
+  // `step()` alone never sees a map-level retry, and without this check the
+  // forbidden combination would surface only at the run's first execution.
+  validateRetryTriggerCombination({
+    ...opts.step,
+    ...(opts.step.retry === undefined && opts.retry !== undefined
+      ? { retry: opts.retry }
+      : {}),
+  });
   return {
     kind: "map",
     id: "",
