@@ -31,6 +31,15 @@ const ANTHROPIC_TOOL_NAME_LIMIT: ToolNameLimit = {
   maxLength: 128,
 };
 
+// Models that reject thinking:{type:"enabled",budget_tokens} and require
+// thinking:{type:"adaptive"} with output_config.effort. Keep aligned with
+// the discovery plug-in's ADAPTIVE_THINKING_MODELS set.
+const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
+  "claude-sonnet-5",
+  "claude-opus-5",
+  "claude-fable-5",
+]);
+
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
@@ -81,10 +90,18 @@ function buildRequest(
   }
 
   if (options.thinking?.enabled) {
-    body["thinking"] = {
-      type: "enabled",
-      budget_tokens: options.thinking.budgetTokens ?? 1024,
-    };
+    // Adaptive models reject the classic budget_tokens shape with
+    // invalid_request_error and require thinking:{type:"adaptive"}
+    // plus output_config.effort.
+    if (ADAPTIVE_THINKING_MODELS.has(model)) {
+      body["thinking"] = { type: "adaptive" };
+      body["output_config"] = { effort: "high" };
+    } else {
+      body["thinking"] = {
+        type: "enabled",
+        budget_tokens: options.thinking.budgetTokens ?? 1024,
+      };
+    }
   }
 
   if (options.tools !== undefined && options.tools.length > 0) {

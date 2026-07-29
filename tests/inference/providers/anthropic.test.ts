@@ -62,7 +62,11 @@ const AnthropicMessage = type({
 
 const AnthropicThinking = type({
   type: "string",
-  budget_tokens: "number",
+  "budget_tokens?": "number",
+});
+
+const AnthropicOutputConfig = type({
+  effort: "string",
 });
 
 const AnthropicTool = type({
@@ -85,6 +89,7 @@ const AnthropicRequestBody = type({
   stream: "boolean",
   "system?": AnthropicSystemBlock.array(),
   "thinking?": AnthropicThinking,
+  "output_config?": AnthropicOutputConfig,
   "tools?": AnthropicTool.array(),
   "temperature?": "number",
 });
@@ -196,7 +201,7 @@ describe("Anthropic adapter: buildRequest", () => {
     ]);
   });
 
-  test("includes thinking config when enabled", () => {
+  test("includes classic thinking config when enabled on budget-token models", () => {
     const messages: ConversationTurn[] = [
       {
         role: "user",
@@ -211,6 +216,30 @@ describe("Anthropic adapter: buildRequest", () => {
     const body = AnthropicRequestBody.assert(JSON.parse(req.body));
     expect(body.thinking?.type).toBe("enabled");
     expect(body.thinking?.budget_tokens).toBe(2048);
+    expect(body.output_config).toBeUndefined();
+  });
+
+  test("uses adaptive thinking for sonnet-5, opus-5, and fable-5", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Think deeply." }],
+        timestamp: 1000,
+      },
+    ];
+    for (const model of [
+      "claude-sonnet-5",
+      "claude-opus-5",
+      "claude-fable-5",
+    ] as const) {
+      const req = adapter.buildRequest(messages, model, {
+        thinking: { enabled: true, budgetTokens: 2048 },
+      });
+      const body = AnthropicRequestBody.assert(JSON.parse(req.body));
+      expect(body.thinking).toEqual({ type: "adaptive" });
+      expect(body.thinking).not.toHaveProperty("budget_tokens");
+      expect(body.output_config).toEqual({ effort: "high" });
+    }
   });
 
   test("echoes thinking block signature back in the request body", () => {
