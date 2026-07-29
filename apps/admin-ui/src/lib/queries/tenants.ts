@@ -338,9 +338,9 @@ export function approvalDetailQuery(tenantId: string, approvalId: string) {
   });
 }
 
-export function tenantInstancesQuery(tenantId: string) {
+export function tenantRunsQuery(tenantId: string) {
   return queryOptions({
-    queryKey: ["tenants", tenantId, "instances", { status: "running" }],
+    queryKey: ["tenants", tenantId, "runs", { status: "running" }],
     queryFn: async () => {
       const res = await api<{ data: WorkflowRunResponse[] }>(
         "GET",
@@ -351,20 +351,20 @@ export function tenantInstancesQuery(tenantId: string) {
   });
 }
 
-export function tenantInstancesInfiniteQuery(tenantId: string) {
+export function tenantRunsInfiniteQuery(tenantId: string) {
   return infiniteListQuery<WorkflowRunResponse>(
-    ["tenants", tenantId, "instances", INFINITE_LIST_KEY],
+    ["tenants", tenantId, "runs", INFINITE_LIST_KEY],
     `/api/tenants/${tenantId}/workflows/runs?status=running`,
   );
 }
 
-export function instanceDetailQuery(tenantId: string, instanceId: string) {
+export function runDetailQuery(tenantId: string, runId: string) {
   return queryOptions({
-    queryKey: ["tenants", tenantId, "instances", instanceId],
+    queryKey: ["tenants", tenantId, "runs", runId],
     queryFn: () =>
       api<WorkflowRunResponse>(
         "GET",
-        `/api/tenants/${tenantId}/workflows/runs/${instanceId}`,
+        `/api/tenants/${tenantId}/workflows/runs/${runId}`,
       ),
     refetchInterval: 3000,
   });
@@ -678,14 +678,14 @@ export function deletePrincipalMutation(
   };
 }
 
-export function stopInstanceMutation(tenantId: string, qc: QueryClient) {
+export function stopRunMutation(tenantId: string, qc: QueryClient) {
   return {
-    mutationFn: (instanceId: string) =>
+    mutationFn: (runId: string) =>
       api<undefined>(
         "DELETE",
-        `/api/tenants/${tenantId}/workflows/runs/${instanceId}`,
+        `/api/tenants/${tenantId}/workflows/runs/${runId}`,
       ),
-    onSuccess: () => invalidate(qc, tenantId, "instances"),
+    onSuccess: () => invalidate(qc, tenantId, "runs"),
   };
 }
 

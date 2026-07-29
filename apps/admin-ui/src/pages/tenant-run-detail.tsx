@@ -22,10 +22,7 @@ import {
 } from "@intx/hub-client";
 
 import { MutationError } from "@/components/mutation-error";
-import {
-  instanceDetailQuery,
-  stopInstanceMutation,
-} from "@/lib/queries/tenants";
+import { runDetailQuery, stopRunMutation } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -109,20 +106,18 @@ function Row({
   );
 }
 
-export function TenantInstanceDetailPage() {
-  const { tenantId, instanceId } = useParams({
-    from: "/authed/tenants/$tenantId/instances/$instanceId",
+export function TenantRunDetailPage() {
+  const { tenantId, runId } = useParams({
+    from: "/authed/tenants/$tenantId/workflows/runs/$runId",
   });
   const queryClient = useQueryClient();
 
-  const { data: instance, isLoading } = useQuery(
-    instanceDetailQuery(tenantId, instanceId),
-  );
+  const { data: run, isLoading } = useQuery(runDetailQuery(tenantId, runId));
 
-  const isRunning = instance?.status === "running";
+  const isRunning = run?.status === "running";
   const displayStatus = isRunning
-    ? (instance?.runtimeStatus ?? "running")
-    : (instance?.status ?? "unknown");
+    ? (run?.runtimeStatus ?? "running")
+    : (run?.status ?? "unknown");
 
   const [, forceRender] = useState(0);
 
@@ -141,12 +136,12 @@ export function TenantInstanceDetailPage() {
 
     const session = createInstanceSession({
       tenantId,
-      instanceId,
+      instanceId: runId,
       transport,
       onChange: () => forceRender((n) => n + 1),
       onSessionEnded: () => {
         void queryClient.invalidateQueries({
-          queryKey: ["tenants", tenantId, "instances"],
+          queryKey: ["tenants", tenantId, "runs"],
         });
       },
     });
@@ -157,13 +152,13 @@ export function TenantInstanceDetailPage() {
       session.destroy();
       sessionRef.current = null;
     };
-  }, [isRunning, instanceId, tenantId]);
+  }, [isRunning, runId, tenantId]);
 
   const stopMut = useMutation({
-    ...stopInstanceMutation(tenantId, queryClient),
+    ...stopRunMutation(tenantId, queryClient),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["tenants", tenantId, "instances"],
+        queryKey: ["tenants", tenantId, "runs"],
       });
     },
   });
@@ -183,7 +178,7 @@ export function TenantInstanceDetailPage() {
 
   useEffect(() => {
     chatPinnedRef.current = true;
-  }, [instanceId]);
+  }, [runId]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -202,7 +197,7 @@ export function TenantInstanceDetailPage() {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  if (!instance) {
+  if (!run) {
     return <div className="p-4 text-sm text-muted-foreground">Not found.</div>;
   }
 
@@ -210,20 +205,20 @@ export function TenantInstanceDetailPage() {
     <div>
       <div className="mb-6">
         <Link
-          to="/tenants/$tenantId/instances"
+          to="/tenants/$tenantId/workflows"
           params={{ tenantId }}
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
-          Agents
+          Workflows
         </Link>
       </div>
 
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{instance.definitionName}</h2>
+          <h2 className="text-lg font-semibold">{run.definitionName}</h2>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {instance.address}
+            {run.address}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -231,7 +226,7 @@ export function TenantInstanceDetailPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => stopMut.mutate(instanceId)}
+              onClick={() => stopMut.mutate(runId)}
               disabled={stopMut.isPending}
             >
               {stopMut.isPending ? "Stopping..." : "Stop"}
@@ -245,26 +240,22 @@ export function TenantInstanceDetailPage() {
           <Row label="Status">
             <StatusBadge status={displayStatus} />
           </Row>
-          <Row label="Instance ID">
-            <span className="font-mono text-xs">{instance.id}</span>
+          <Row label="Run ID">
+            <span className="font-mono text-xs">{run.id}</span>
           </Row>
-          {instance.kernelId && (
+          {run.kernelId && (
             <Row label="Kernel ID">
-              <span className="font-mono text-xs">{instance.kernelId}</span>
+              <span className="font-mono text-xs">{run.kernelId}</span>
             </Row>
           )}
-          {instance.sidecarId && (
+          {run.sidecarId && (
             <Row label="Sidecar ID">
-              <span className="font-mono text-xs">{instance.sidecarId}</span>
+              <span className="font-mono text-xs">{run.sidecarId}</span>
             </Row>
           )}
-          <Row label="Created">
-            {new Date(instance.createdAt).toLocaleString()}
-          </Row>
-          {instance.endedAt && (
-            <Row label="Ended">
-              {new Date(instance.endedAt).toLocaleString()}
-            </Row>
+          <Row label="Created">{new Date(run.createdAt).toLocaleString()}</Row>
+          {run.endedAt && (
+            <Row label="Ended">{new Date(run.endedAt).toLocaleString()}</Row>
           )}
         </dl>
       </div>
@@ -337,10 +328,10 @@ export function TenantInstanceDetailPage() {
                           <span>
                             Sent mail to{" "}
                             <Link
-                              to="/tenants/$tenantId/instances/$instanceId"
+                              to="/tenants/$tenantId/workflows/runs/$runId"
                               params={{
                                 tenantId,
-                                instanceId: agentRecipient.instanceId,
+                                runId: agentRecipient.instanceId,
                               }}
                               className="font-medium text-primary underline"
                             >
@@ -354,10 +345,10 @@ export function TenantInstanceDetailPage() {
                           <span>
                             Received mail from{" "}
                             <Link
-                              to="/tenants/$tenantId/instances/$instanceId"
+                              to="/tenants/$tenantId/workflows/runs/$runId"
                               params={{
                                 tenantId,
-                                instanceId: agentSender.instanceId,
+                                runId: agentSender.instanceId,
                               }}
                               className="font-medium text-primary underline"
                             >

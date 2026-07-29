@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 
 import {
   mePrincipalsInfiniteQuery,
-  meInstancesInfiniteQuery,
+  meRunsInfiniteQuery,
 } from "@/lib/queries/me";
 import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
 import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
@@ -36,12 +36,12 @@ export function DashboardPage() {
     fetchNextPage: fetchMorePrincipals,
   } = usePaginatedList(mePrincipalsInfiniteQuery);
   const {
-    items: instances,
-    isLoading: loadingInstances,
-    hasNextPage: hasMoreInstances,
-    isFetchingNextPage: fetchingMoreInstances,
-    fetchNextPage: fetchMoreInstances,
-  } = usePaginatedList(meInstancesInfiniteQuery);
+    items: runs,
+    isLoading: loadingRuns,
+    hasNextPage: hasMoreRuns,
+    isFetchingNextPage: fetchingMoreRuns,
+    fetchNextPage: fetchMoreRuns,
+  } = usePaginatedList(meRunsInfiniteQuery);
 
   return (
     <div className="space-y-8">
@@ -97,16 +97,16 @@ export function DashboardPage() {
       )}
 
       <div>
-        <h2 className="text-xl font-semibold">Agents</h2>
+        <h2 className="text-xl font-semibold">Workflows</h2>
         <p className="text-sm text-muted-foreground">
-          Running agents across all your tenants.
+          Running workflows across all your tenants.
         </p>
       </div>
 
-      {loadingInstances ? (
+      {loadingRuns ? (
         <p className="text-sm text-muted-foreground">Loading...</p>
-      ) : instances.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No running agents.</p>
+      ) : runs.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No running workflows.</p>
       ) : (
         <div className="rounded-lg border">
           <Table>
@@ -119,34 +119,34 @@ export function DashboardPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {instances.map((inst) => (
-                <TableRow key={inst.id}>
+              {runs.map((run) => (
+                <TableRow key={run.id}>
                   <TableCell>
                     <Link
-                      to="/tenants/$tenantId/instances/$instanceId"
-                      params={{ tenantId: inst.tenantId, instanceId: inst.id }}
+                      to="/tenants/$tenantId/workflows/runs/$runId"
+                      params={{ tenantId: run.tenantId, runId: run.id }}
                       className="text-primary hover:underline"
                     >
-                      {inst.definitionName}
+                      {run.definitionName}
                     </Link>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {inst.tenantName}
+                    {run.tenantName}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {inst.address}
+                    {run.address}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={inst.status} />
+                    <StatusBadge status={run.status} />
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
           <PaginatedListSentinel
-            hasNextPage={hasMoreInstances}
-            isFetchingNextPage={fetchingMoreInstances}
-            fetchNextPage={fetchMoreInstances}
+            hasNextPage={hasMoreRuns}
+            isFetchingNextPage={fetchingMoreRuns}
+            fetchNextPage={fetchMoreRuns}
           />
         </div>
       )}

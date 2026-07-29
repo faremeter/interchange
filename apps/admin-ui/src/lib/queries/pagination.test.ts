@@ -23,8 +23,11 @@ describe("pageRequestPath", () => {
 
   test("merges the cursor into an existing query string", () => {
     expect(
-      pageRequestPath("/api/tenants/tnt_1/instances?status=running", "abc123"),
-    ).toBe("/api/tenants/tnt_1/instances?status=running&cursor=abc123");
+      pageRequestPath(
+        "/api/tenants/tnt_1/workflows/runs?status=running",
+        "abc123",
+      ),
+    ).toBe("/api/tenants/tnt_1/workflows/runs?status=running&cursor=abc123");
   });
 
   test("handles a base path ending in a bare question mark", () => {

@@ -44,7 +44,7 @@ type WorkflowRunSummary = {
   createdAt: string;
 };
 
-export const meInstancesInfiniteQuery = infiniteListQuery<WorkflowRunSummary>(
-  ["me", "instances"],
+export const meRunsInfiniteQuery = infiniteListQuery<WorkflowRunSummary>(
+  ["me", "runs"],
   "/api/me/workflows/runs",
 );
