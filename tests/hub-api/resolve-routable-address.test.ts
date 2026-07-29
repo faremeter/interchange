@@ -17,7 +17,7 @@ import {
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
-import { agent, agentSession, workflowDefinition } from "@intx/db/schema";
+import { agentSession, workflowDefinition } from "@intx/db/schema";
 import { resolveRoutableAddress } from "@intx/hub-sessions";
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -40,13 +40,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function seedBase(): Promise<void> {
       await seedTenants(h.db, [{ id: "tnt_root" }]);
       await seedPrincipal(h.db, { id: "prn_creator", tenantId: "tnt_root" });
-      await h.db.insert(agent).values({
-        id: "agt_1",
-        tenantId: "tnt_root",
-        creatorPrincipalId: "prn_creator",
-        name: "test-agent",
-        systemPrompt: "p",
-      });
     }
 
     test("resolves a folded workflow-run address to kind run, session via the run principal", async () => {
@@ -58,7 +51,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "wfd_folded",
         tenantId: "tnt_root",
         name: "folded",
-        originAgentId: "agt_1",
       });
       await h.db.insert(agentSession).values({
         id: "ses_r",
@@ -158,7 +150,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "wfd_sessionless",
         tenantId: "tnt_root",
         name: "sessionless",
-        originAgentId: "agt_1",
       });
       await h.db.insert(agentSession).values({
         id: "ses_ended",

@@ -18,12 +18,12 @@ export const inferenceTurn = pgTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => agentSession.id, { onDelete: "cascade" }),
-    // The endpoint that produced this turn: a legacy agent_instance id or a
-    // folded workflow_run id, drawn from one shared id space. This is a
-    // polymorphic reference across two tables, so it carries no foreign key
-    // (mirroring workflow_definition.originAgentId); the collector-creation
-    // layer owns the invariant that the id names a live endpoint. It stays
-    // NOT NULL -- a turn always names its producer.
+    // The endpoint that produced this turn: a workflow_run id (older rows may
+    // carry an abandoned agent_instance id from before the fold, since the two
+    // shared one id space). This is a polymorphic reference that carries no
+    // foreign key; the collector-creation layer owns the invariant that the id
+    // names a live endpoint. It stays NOT NULL -- a turn always names its
+    // producer.
     instanceId: text("instance_id").notNull(),
     tenantId: text("tenant_id")
       .notNull()
@@ -78,11 +78,11 @@ export const sessionMail = pgTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => agentSession.id, { onDelete: "cascade" }),
-    // The endpoint whose mail this is: a legacy agent_instance id, or null for
-    // a folded run (which keys its mail on the session instead). A polymorphic
-    // reference that carries no foreign key (mirroring inference_turn.instanceId
-    // and workflow_definition.originAgentId); the mail-write layer owns the
-    // invariant. Nullable -- absent for folded runs.
+    // The endpoint whose mail this is: null for a folded run (which keys its
+    // mail on the session instead), or -- on older rows from before the fold --
+    // an abandoned agent_instance id. A polymorphic reference that carries no
+    // foreign key (mirroring inference_turn.instanceId); the mail-write layer
+    // owns the invariant. Nullable -- absent for folded runs.
     instanceId: text("instance_id"),
     tenantId: text("tenant_id")
       .notNull()

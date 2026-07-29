@@ -23,8 +23,6 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
-  seedAgent,
-  seedAgentInstance,
   seedPrincipal,
   seedTenants,
   seedWorkflowRun,
@@ -42,7 +40,6 @@ import {
 const TENANT_ID = "tnt_blob";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
 const ACTOR_USER_ID = "usr_actor";
-const AGENT_ID = "agt_blob";
 const DEFINITION_ID = "wfd_blob";
 
 const RUN_PRINCIPAL_ID = "prn_run";
@@ -188,17 +185,11 @@ beforeEach(async () => {
     kind: "user",
     refId: ACTOR_USER_ID,
   });
-  await seedAgent(h.db, {
-    id: AGENT_ID,
-    tenantId: TENANT_ID,
-    creatorPrincipalId: ACTOR_PRINCIPAL_ID,
-    name: "blob-agent",
-  });
   await h.db.insert(workflowDefinition).values({
     id: DEFINITION_ID,
     tenantId: TENANT_ID,
     name: "blob-agent",
-    originAgentId: AGENT_ID,
+    kind: "instance",
   });
 });
 
@@ -335,12 +326,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentId: DEFINITION_ID,
         principalId: INSTANCE_PRINCIPAL_ID,
         status: "active",
-      });
-      await seedAgentInstance(h.db, {
-        id: INSTANCE_ID,
-        tenantId: TENANT_ID,
-        agentId: AGENT_ID,
-        principalId: INSTANCE_PRINCIPAL_ID,
       });
       await insertMail({
         id: "mail_instance_ok",

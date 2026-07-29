@@ -40,7 +40,6 @@ const TENANT_ID = "tnt_test";
 const PRINCIPAL_ID = "prn_test";
 const USER_ID = "usr_test";
 const INSTANCE_ID = "ins_test";
-const AGENT_ID = "agt_test";
 const ADDRESS = "ins_test@test.example.com";
 
 const testTenant = {
@@ -64,13 +63,11 @@ const testPrincipal = {
   updatedAt: new Date("2025-01-01"),
 };
 
-const testAgent = { id: AGENT_ID, name: "Test Agent" };
-// The folded definition for `testAgent`: offerings key on it now, and it
-// carries the agent's name (the fold copies it).
+// The instance-kind definition the read routes key offerings and names on.
 const testDefinition = {
   id: "wfd_test",
   name: "Test Agent",
-  originAgentId: AGENT_ID,
+  kind: "instance" as const,
   tenantId: TENANT_ID,
 };
 
@@ -124,7 +121,6 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
 type MockDBOpts = {
   tenant?: typeof testTenant | undefined;
   principal?: typeof testPrincipal | undefined;
-  agent?: typeof testAgent | undefined;
   definition?: typeof testDefinition | undefined;
   /** A folded workflow_run row `findRoutableById`'s run query returns (with a
    * `definitionKind`). */
@@ -244,10 +240,6 @@ function createMockDB(opts: MockDBOpts) {
       principal: {
         findFirst: async () => opts.principal,
         findMany: notImplemented("db.query.principal.findMany"),
-      },
-      agent: {
-        findFirst: async () => opts.agent,
-        findMany: notImplemented("db.query.agent.findMany"),
       },
       workflowDefinition: {
         findFirst: async () => opts.definition,
@@ -417,7 +409,6 @@ function createTestApp(opts: TestAppOpts = {}) {
       principal: testPrincipal,
       run: makeTestRun({ principalId: "prn_agent" }),
       runSessionId: "ses_test",
-      agent: testAgent,
       definition: testDefinition,
     },
   );
@@ -539,7 +530,6 @@ describe("GET /workflows/runs/:instanceId/health", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
       },
     });
 
@@ -587,7 +577,6 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
         tenant: testTenant,
         principal: testPrincipal,
         run: makeTestRun(),
-        agent: testAgent,
         definition: testDefinition,
         offerings,
       },
@@ -610,7 +599,6 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
         tenant: testTenant,
         principal: testPrincipal,
         run: makeTestRun(),
-        agent: testAgent,
         definition: testDefinition,
         offerings: [],
       },
@@ -628,7 +616,6 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: undefined,
       },
     });
 
@@ -662,7 +649,6 @@ describe("GET /workflows/runs/:instanceId/offerings", () => {
           status: "completed",
           endedAt: new Date("2025-06-01"),
         }),
-        agent: testAgent,
         definition: testDefinition,
         offerings,
       },
@@ -688,7 +674,6 @@ describe("read routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         definition: testDefinition,
         run,
       },
@@ -731,7 +716,6 @@ describe("read routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         run: makeTestRun(),
       },
       routableAddresses: [ADDRESS],
@@ -747,7 +731,6 @@ describe("read routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         definition: testDefinition,
         run: makeTestRun(),
         offerings: [
@@ -816,7 +799,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         run: makeTestRun({ principalId: "prn_run" }),
         runSessionId: "ses_run",
         inserts,
@@ -847,7 +829,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         run: makeTestRun({ status: "completed", principalId: "prn_run" }),
         runSessionId: "ses_run",
       },
@@ -867,7 +848,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         run: makeTestRun({
           status: "cancelled",
           endedAt: new Date("2025-02-01"),
@@ -892,7 +872,6 @@ describe("interact routes serve a folded run", () => {
       db: {
         tenant: testTenant,
         principal: testPrincipal,
-        agent: testAgent,
         run: makeTestRun({ principalId: "prn_run" }),
         turns: [
           {
@@ -1083,7 +1062,6 @@ describe("POST /workflows/runs/:instanceId/mail", () => {
         principal: testPrincipal,
         run: makeTestRun({ principalId: "prn_agent" }),
         runSessionId: "ses_test",
-        agent: testAgent,
         sessionMail: [{ id: "prior-1" }],
       },
     });
@@ -1346,7 +1324,7 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
           id?: string;
           status?: string;
           modelRequirements?: unknown;
-          originAgentId?: string | null;
+          kind?: string;
           assetId?: string | null;
         }
       | undefined;
@@ -1412,15 +1390,11 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
           findFirst: async () => testPrincipal,
           findMany: notImplemented("db.query.principal.findMany"),
         },
-        agent: {
-          findFirst: async () => opts.agent,
-          findMany: notImplemented("db.query.agent.findMany"),
-        },
-        // The folded `workflow_definition` the launch route reads for
+        // The instance-kind `workflow_definition` the launch route reads for
         // launchability (status) and model resolution (model_requirements). The
-        // fold copies these off the agent verbatim, so mirror the agent fixture
-        // -- a test that varies the agent's status/requirements varies the
-        // definition's too, matching the real one-way fold.
+        // `agent` fixture is projected into it via `foldedDefinitionRowFor` --
+        // a test that varies the fixture's status/requirements varies the
+        // definition's too.
         workflowDefinition: {
           findFirst: async () =>
             opts.agent
@@ -1526,14 +1500,10 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
       id?: string;
       status?: string;
       modelRequirements?: unknown;
-      originAgentId?: string | null;
+      kind?: string;
       assetId?: string | null;
     },
   ): Record<string, unknown> {
-    const originAgentId =
-      overrides !== undefined && "originAgentId" in overrides
-        ? overrides.originAgentId
-        : agent["id"];
     return {
       id: overrides?.id ?? DEFAULT_FOLDED_DEF_ID,
       tenantId: agent["tenantId"],
@@ -1542,10 +1512,9 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
         overrides !== undefined && "assetId" in overrides
           ? overrides.assetId
           : LAUNCH_ASSET_ID,
-      originAgentId,
-      // A folded definition (origin agent set) launches as an instance; a
-      // native one (origin agent null) is a workflow.
-      kind: originAgentId === null ? "workflow" : "instance",
+      // An instance-kind definition launches as an instance; a native
+      // workflow-kind one is rejected by the launch route.
+      kind: overrides?.kind ?? "instance",
       name: agent["name"],
       description: agent["description"],
       grantRequirements: agent["grantRequirements"],
@@ -1954,7 +1923,7 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
         agent: makeAgentDef(),
         credential: makeCredential(),
         inserts: [],
-        foldedDefinition: { originAgentId: null },
+        foldedDefinition: { kind: "workflow" },
       }),
     );
     expect(res.status).toBe(409);
@@ -2170,8 +2139,6 @@ describe("DELETE /workflows/runs/:instanceId (folded run)", () => {
   // A db whose `select(workflow_run)` returns the seeded run and whose
   // `update(...)` records the (table, set) of every write, so the test can
   // assert the run, its principal, and its session are all flipped terminal.
-  // `agentInstance.findFirst` returns undefined: a folded stop never reaches
-  // the legacy path.
   function createFoldedDeleteDB(opts: {
     run: Record<string, unknown> | undefined;
     updates: Update[];
@@ -2205,10 +2172,6 @@ describe("DELETE /workflows/runs/:instanceId (folded run)", () => {
         principal: {
           findFirst: async () => testPrincipal,
           findMany: notImplemented("db.query.principal.findMany"),
-        },
-        agentInstance: {
-          findFirst: async () => undefined,
-          findMany: notImplemented("db.query.agentInstance.findMany"),
         },
       },
       select: () => ({

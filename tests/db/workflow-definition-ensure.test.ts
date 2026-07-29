@@ -72,8 +72,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(def?.creatorPrincipalId).toBe(CREATOR);
       expect(def?.name).toBe("wf-name");
       expect(def?.description).toBe("WF Display");
-      // Native: no origin agent.
-      expect(def?.originAgentId).toBeNull();
 
       const versions = await h.db
         .select()

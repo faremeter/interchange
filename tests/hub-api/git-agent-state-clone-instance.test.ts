@@ -36,7 +36,7 @@ import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 import {
   createTenant,
   mintTenantGitToken,
-  seedAgentDefinition,
+  seedInstanceDefinition,
   signUpUser,
   tokenEnv,
   type CreatedTenant,
@@ -150,13 +150,13 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state per-run clone", () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
-    const agent = await seedAgentDefinition(
+    const def = await seedInstanceDefinition(
       hub.schema,
       user,
       tenant,
       "clone-creator-agent",
     );
-    const run = await seedRunRow(hub.schema, user, tenant, agent.definitionId);
+    const run = await seedRunRow(hub.schema, user, tenant, def.definitionId);
 
     const token = await mintTenantGitToken(hub.url, user, tenant, {
       resource: `agent-state:${run.runId}`,
@@ -204,13 +204,13 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state per-run clone", () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
-    const agent = await seedAgentDefinition(
+    const def = await seedInstanceDefinition(
       hub.schema,
       user,
       tenant,
       "clone-admin-agent",
     );
-    const run = await seedRunRow(hub.schema, user, tenant, agent.definitionId);
+    const run = await seedRunRow(hub.schema, user, tenant, def.definitionId);
     const token = await mintTenantGitToken(hub.url, user, tenant, {
       resource: `agent-state:${run.runId}`,
       refPattern: "**",
@@ -242,18 +242,13 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state per-run clone", () => {
     const hub = await startHubTracked();
     const userA = await signUpUser(hub.url);
     const tenantA = await createTenant(hub.url, userA);
-    const agent = await seedAgentDefinition(
+    const def = await seedInstanceDefinition(
       hub.schema,
       userA,
       tenantA,
       "clone-denied-agent",
     );
-    const run = await seedRunRow(
-      hub.schema,
-      userA,
-      tenantA,
-      agent.definitionId,
-    );
+    const run = await seedRunRow(hub.schema, userA, tenantA, def.definitionId);
 
     const userB = await signUpUser(hub.url);
     const tenantB = await createTenant(hub.url, userB);

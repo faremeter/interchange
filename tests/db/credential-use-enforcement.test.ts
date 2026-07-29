@@ -17,7 +17,6 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
-  seedAgent,
   seedCredential,
   seedGrant,
   seedModel,
@@ -114,10 +113,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     }
 
-    // Seed an agent whose creator's credential-use authorization the caller
+    // Seed a definition whose creator's credential-use authorization the caller
     // controls via `authorized`. The credential-using offering is the same
     // organizational credential as the launch fixture.
-    async function seedAgentWithCreator(authorized: boolean): Promise<void> {
+    async function seedDefinitionWithCreator(
+      authorized: boolean,
+    ): Promise<void> {
       await seedTenantCredentialOffering();
       await seedPrincipal(h.db, {
         id: "prn_creator",
@@ -132,19 +133,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           action: "use",
         });
       }
-      await seedAgent(h.db, {
-        id: "agt_1",
-        tenantId: "tnt_root",
-        creatorPrincipalId: "prn_creator",
-        modelRequirements: [{ model: "opus" }],
-      });
       // The rotation path (resolveInstanceModelSources) reads the requirements
-      // and creator off the folded definition, so mirror them there.
+      // and creator off the definition.
       await h.db.insert(workflowDefinition).values({
         id: "wfd_1",
         tenantId: "tnt_root",
         creatorPrincipalId: "prn_creator",
-        originAgentId: "agt_1",
         name: "agent-1",
         modelRequirements: [{ model: "opus" }],
       });
@@ -199,7 +193,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     describe("rotation path (resolveInstanceModelSources)", () => {
       test("withholds the secret when the instance creator lacks credential/use", async () => {
-        await seedAgentWithCreator(false);
+        await seedDefinitionWithCreator(false);
 
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           definitionId: "wfd_1",
@@ -218,7 +212,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("pushes the secret when the instance creator holds credential/use", async () => {
-        await seedAgentWithCreator(true);
+        await seedDefinitionWithCreator(true);
 
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           definitionId: "wfd_1",

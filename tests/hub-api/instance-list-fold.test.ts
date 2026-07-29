@@ -22,19 +22,19 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAgent, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // Exercises the GET /workflows/runs list against a real migrated schema. The
 // list surfaces the folded workflow_run rows that present as instances (an
-// address plus an origin-agent definition). Only a real database exercises the
-// origin-agent join that surfaces a folded run and cursor resumption over the
+// address plus an instance-kind definition). Only a real database exercises the
+// definition join that surfaces a folded run and cursor resumption over the
 // keyset.
 
 const TENANT_ID = "tnt_list";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
 const ACTOR_USER_ID = "usr_actor";
-const AGENT_A = "agt_a";
-const AGENT_B = "agt_b";
+const DEF_A = "def_a";
+const DEF_B = "def_b";
 
 function createMockGetSession(userId: string): GetSession {
   const now = new Date("2025-01-01");
@@ -147,41 +147,25 @@ beforeEach(async () => {
     kind: "user",
     refId: ACTOR_USER_ID,
   });
-  await seedAgent(h.db, {
-    id: AGENT_A,
-    tenantId: TENANT_ID,
-    creatorPrincipalId: ACTOR_PRINCIPAL_ID,
-    name: "agent-a",
-  });
-  await seedAgent(h.db, {
-    id: AGENT_B,
-    tenantId: TENANT_ID,
-    creatorPrincipalId: ACTOR_PRINCIPAL_ID,
-    name: "agent-b",
-  });
-  // One folded definition per agent -- `workflow_definition.originAgentId` is
-  // uniquely indexed, so a definition is 1:1 with its origin agent and many
-  // folded runs of that agent share it.
+  // Two instance-kind definitions; many folded runs share each one.
   await h.db.insert(workflowDefinition).values([
     {
-      id: definitionIdFor(AGENT_A),
+      id: definitionIdFor(DEF_A),
       tenantId: TENANT_ID,
       name: "def-a",
-      originAgentId: AGENT_A,
       kind: "instance",
     },
     {
-      id: definitionIdFor(AGENT_B),
+      id: definitionIdFor(DEF_B),
       tenantId: TENANT_ID,
       name: "def-b",
-      originAgentId: AGENT_B,
       kind: "instance",
     },
   ]);
 });
 
-function definitionIdFor(agentId: string): string {
-  return `wfd_${agentId}`;
+function definitionIdFor(key: string): string {
+  return `wfd_${key}`;
 }
 
 function buildApp(): ReturnType<typeof createApp> {
@@ -199,12 +183,12 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-// A folded run owning a routing address, anchored on its origin agent's shared
+// A folded run owning a routing address, anchored on a shared instance-kind
 // definition (or an explicit definition for the corruption case). principalId
 // is left null -- the list never reads it.
 async function insertFoldedRun(opts: {
   id: string;
-  originAgentId: string;
+  definitionKey: string;
   status?: "running" | "completed" | "failed" | "cancelled";
   createdAt: Date;
   address?: string | null;
@@ -213,7 +197,7 @@ async function insertFoldedRun(opts: {
   await h.db.insert(workflowRun).values({
     id: opts.id,
     tenantId: TENANT_ID,
-    definitionId: opts.definitionId ?? definitionIdFor(opts.originAgentId),
+    definitionId: opts.definitionId ?? definitionIdFor(opts.definitionKey),
     address:
       opts.address === undefined ? `${opts.id}@list.example` : opts.address,
     status: opts.status ?? "running",
@@ -229,7 +213,6 @@ async function insertNativeDefinition(id: string): Promise<void> {
     id,
     tenantId: TENANT_ID,
     name: `def-${id}`,
-    originAgentId: null,
   });
 }
 
@@ -270,12 +253,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("lists folded runs newest first", async () => {
       await insertFoldedRun({
         id: "ins_1",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_2",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
       const { ids } = await fetchList(buildApp());
@@ -283,20 +266,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(ids).toEqual(["ins_2", "ins_1"]);
     });
 
-    test("filters folded runs by their origin agent", async () => {
+    test("filters folded runs by their definition", async () => {
       await insertFoldedRun({
         id: "ins_a",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_b",
-        originAgentId: AGENT_B,
+        definitionKey: DEF_B,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
       const { ids } = await fetchList(
         buildApp(),
-        `?definitionId=${definitionIdFor(AGENT_A)}`,
+        `?definitionId=${definitionIdFor(DEF_A)}`,
       );
       expect(ids).toEqual(["ins_a"]);
     });
@@ -304,19 +287,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("maps a folded run's status onto the instance status filter", async () => {
       await insertFoldedRun({
         id: "ins_run",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         status: "running",
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_done",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         status: "completed",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_failed",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         status: "failed",
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
       });
@@ -325,7 +308,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(running.rows).toEqual([
         {
           id: "ins_run",
-          definitionId: definitionIdFor(AGENT_A),
+          definitionId: definitionIdFor(DEF_A),
           status: "running",
         },
       ]);
@@ -334,7 +317,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(stopped.rows).toEqual([
         {
           id: "ins_done",
-          definitionId: definitionIdFor(AGENT_A),
+          definitionId: definitionIdFor(DEF_A),
           status: "stopped",
         },
       ]);
@@ -343,7 +326,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(errored.rows).toEqual([
         {
           id: "ins_failed",
-          definitionId: definitionIdFor(AGENT_A),
+          definitionId: definitionIdFor(DEF_A),
           status: "error",
         },
       ]);
@@ -357,7 +340,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Address-less: a native deployment-anchored run, not a folded instance.
       await insertFoldedRun({
         id: "ins_native",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
         address: null,
       });
@@ -366,7 +349,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await insertNativeDefinition("wfd_corrupt");
       await insertFoldedRun({
         id: "ins_corrupt",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
         definitionId: "wfd_corrupt",
       });
@@ -379,12 +362,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Same createdAt; id DESC breaks the tie, so `ins_z` precedes `ins_a`.
       await insertFoldedRun({
         id: "ins_a",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: tie,
       });
       await insertFoldedRun({
         id: "ins_z",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: tie,
       });
 
@@ -402,22 +385,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("resumes a page across runs without drops or duplicates", async () => {
       await insertFoldedRun({
         id: "ins_4run",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-04T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_3run",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_2run",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
       await insertFoldedRun({
         id: "ins_1run",
-        originAgentId: AGENT_A,
+        definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
 
@@ -453,7 +436,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       for (const r of rows) {
         await insertFoldedRun({
           id: r.id,
-          originAgentId: AGENT_A,
+          definitionKey: DEF_A,
           createdAt: new Date(`2025-03-0${r.day}T00:00:00.000Z`),
         });
       }

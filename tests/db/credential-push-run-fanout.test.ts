@@ -16,7 +16,6 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
-  seedAgent,
   seedCredential,
   seedGrant,
   seedModel,
@@ -112,16 +111,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         resource: "credential:*",
         action: "use",
       });
-      await seedAgent(h.db, {
-        id: "agt_1",
-        tenantId: "tnt_root",
-        creatorPrincipalId: "prn_creator",
-      });
       await h.db.insert(workflowDefinition).values({
         id: "wfd_1",
         tenantId: "tnt_root",
         creatorPrincipalId: "prn_creator",
-        originAgentId: "agt_1",
         name: "agent-1",
         modelRequirements: [{ model: "opus" }],
       });

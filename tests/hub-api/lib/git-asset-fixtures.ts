@@ -194,20 +194,18 @@ export async function createTenant(
   return { tenantId, slug };
 }
 
-// Insert an `agent` row and its folded `workflow_definition` directly,
-// bypassing any HTTP surface -- every agent is folded, so the two always
-// coexist. The agent-state definition-mode git route resolves the repo by
-// looking the definition up by (origin_agent_id, tenantId), so a real folded
-// definition must exist for the smart-HTTP request to pass tenant binding
-// rather than 404. Returns both ids: the definition-mode repo keys on the
-// agent id, while any session/run row keys on the definition id. Runs against
-// the hub's per-test schema via search_path.
-export async function seedAgentDefinition(
+// Insert an instance-kind `workflow_definition` directly, bypassing any HTTP
+// surface. The agent-state definition-mode git route resolves the repo through
+// the run that keys on this definition, so a real definition must exist for the
+// smart-HTTP request to pass tenant binding rather than 404. Returns the
+// definition id any session/run row keys on. Runs against the hub's per-test
+// schema via search_path.
+export async function seedInstanceDefinition(
   schema: string,
   user: SignedUpUser,
   tenant: CreatedTenant,
   name: string,
-): Promise<{ agentId: string; definitionId: string }> {
+): Promise<{ definitionId: string }> {
   const dbConfig = loadHarnessDbConfig();
   const sql = postgres({
     host: dbConfig.host,
@@ -225,20 +223,15 @@ export async function seedAgentDefinition(
     const creatorPrincipal = principalRows[0];
     if (creatorPrincipal === undefined) {
       throw new Error(
-        `seedAgentDefinition: no principal for user ${user.userId} in tenant ${tenant.tenantId}`,
+        `seedInstanceDefinition: no principal for user ${user.userId} in tenant ${tenant.tenantId}`,
       );
     }
-    const agentId = generateId("agent");
     const definitionId = generateId("workflowDefinition");
-    await sql`insert into agent (id, tenant_id, creator_principal_id, name)
-              values (${agentId}, ${tenant.tenantId}, ${creatorPrincipal.id}, ${name})`;
-    // The folded definition the definition-mode route resolves by
-    // origin_agent_id, and that any session/run row keys on.
     await sql`insert into workflow_definition
-                (id, tenant_id, creator_principal_id, origin_agent_id, kind, name)
+                (id, tenant_id, creator_principal_id, kind, name)
               values (${definitionId}, ${tenant.tenantId},
-                ${creatorPrincipal.id}, ${agentId}, 'instance', ${name})`;
-    return { agentId, definitionId };
+                ${creatorPrincipal.id}, 'instance', ${name})`;
+    return { definitionId };
   } finally {
     await sql.end();
   }

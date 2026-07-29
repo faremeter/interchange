@@ -21,7 +21,6 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
-  seedAgent,
   seedCredential,
   seedGrant,
   seedModel,
@@ -430,7 +429,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     describe("resolveInstanceModelSources", () => {
-      async function seedAgentWithRelay(
+      async function seedDefinitionWithRelay(
         modelRequirements: unknown,
       ): Promise<void> {
         await seedBase();
@@ -449,29 +448,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
           resource: "credential:*",
           action: "use",
         });
-        // resolveInstanceModelSources reads the requirements off the folded
-        // definition, not the agent row -- so seed them there. The agent row
-        // carries null requirements, which proves the definition is the source
-        // (and mirrors the launch path, which also resolves off the definition,
-        // so reconnect reproduces the launch ordering).
-        await seedAgent(h.db, {
-          id: "agt_1",
-          tenantId: "tnt_root",
-          creatorPrincipalId: "prn_creator",
-          modelRequirements: null,
-        });
+        // resolveInstanceModelSources reads the requirements off the
+        // definition -- so seed them there (mirroring the launch path, which
+        // also resolves off the definition, so reconnect reproduces the launch
+        // ordering).
         await h.db.insert(workflowDefinition).values({
           id: "wfd_1",
           tenantId: "tnt_root",
           creatorPrincipalId: "prn_creator",
-          originAgentId: "agt_1",
           name: "agent-1",
           modelRequirements,
         });
       }
 
       test("resolves from the folded definition's persisted modelRequirements", async () => {
-        await seedAgentWithRelay([{ model: "opus" }]);
+        await seedDefinitionWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           definitionId: "wfd_1",
           modelPreferences: null,
@@ -483,7 +474,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("applies the invoker preferences persisted on the instance", async () => {
-        await seedAgentWithRelay([{ model: "opus" }]);
+        await seedDefinitionWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           definitionId: "wfd_1",
           modelPreferences: [
@@ -497,7 +488,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("returns no_requirements when the definition has none", async () => {
-        await seedAgentWithRelay(null);
+        await seedDefinitionWithRelay(null);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           definitionId: "wfd_1",
           modelPreferences: null,
@@ -506,7 +497,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("returns no_requirements when no definition matches in the tenant", async () => {
-        await seedAgentWithRelay([{ model: "opus" }]);
+        await seedDefinitionWithRelay([{ model: "opus" }]);
         const result = await resolveInstanceModelSources(h.db, "tnt_root", {
           definitionId: "wfd_missing",
           modelPreferences: null,
@@ -515,7 +506,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       test("throws on malformed persisted modelPreferences", async () => {
-        await seedAgentWithRelay([{ model: "opus" }]);
+        await seedDefinitionWithRelay([{ model: "opus" }]);
         await expect(
           resolveInstanceModelSources(h.db, "tnt_root", {
             definitionId: "wfd_1",

@@ -97,9 +97,6 @@ async function resolveGrantNames(
     const userRefIds = principals
       .filter((p) => p.kind === "user")
       .map((p) => p.refId);
-    const agentRefIds = principals
-      .filter((p) => p.kind === "agent")
-      .map((p) => p.refId);
     const workflowRefIds = principals
       .filter((p) => p.kind === "workflow")
       .map((p) => p.refId);
@@ -112,34 +109,6 @@ async function resolveGrantNames(
       });
       for (const u of users) {
         refToName.set(u.id, u.name);
-      }
-    }
-
-    if (agentRefIds.length > 0) {
-      // The surviving agent-kind principals are instance-level: refId is an
-      // agent_instance id, and the display name comes from the folded
-      // definition its agent maps to. (Definition-level agent principals are
-      // re-keyed to workflow-kind and resolve through the workflow branch.)
-      const instances = await db.query.agentInstance.findMany({
-        where: (i, { inArray }) => inArray(i.id, agentRefIds),
-      });
-      const agentIds = [...new Set(instances.map((i) => i.agentId))];
-      const instanceDefinitions =
-        agentIds.length > 0
-          ? await db.query.workflowDefinition.findMany({
-              where: (d, { inArray }) => inArray(d.originAgentId, agentIds),
-            })
-          : [];
-      const defNames = new Map(
-        instanceDefinitions.flatMap((d) =>
-          d.originAgentId === null ? [] : [[d.originAgentId, d.name] as const],
-        ),
-      );
-      for (const inst of instances) {
-        const name = defNames.get(inst.agentId);
-        if (name) {
-          refToName.set(inst.id, `${name} (instance)`);
-        }
       }
     }
 

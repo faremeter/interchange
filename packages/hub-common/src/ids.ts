@@ -5,8 +5,6 @@ const PREFIXES = {
   principal: "prn_",
   role: "rol_",
   grant: "grt_",
-  agent: "agt_",
-  agentVersion: "avr_",
   federationTrust: "ftr_",
   provider: "prv_",
   oauthClient: "ocl_",

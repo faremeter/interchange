@@ -140,11 +140,6 @@ function createMockDB(opts: CatalogDBOpts) {
         // subtree; no children in tests.
         findMany: async () => [],
       },
-      // The post-mutation source push scans running instances; none in tests.
-      agentInstance: {
-        findFirst: notImplemented("db.query.agentInstance.findFirst"),
-        findMany: async () => [],
-      },
       principal: {
         findFirst: async () => testPrincipal,
         findMany: notImplemented("db.query.principal.findMany"),

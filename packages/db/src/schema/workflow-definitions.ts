@@ -1,4 +1,3 @@
-import { sql } from "drizzle-orm";
 import {
   index,
   jsonb,
@@ -16,13 +15,13 @@ import { tenant } from "./tenants";
 // workflow_definition is the first-class definition entity for the workflow
 // model: one row per deployable definition, with a version table alongside it.
 //
-// Unlike `agent`, the definition body (system prompt, context/model config,
-// tool packages) is not stored on this row. For a workflow-origin definition
-// the body lives in the `workflow`-kind asset the row points at; for an
-// agent-origin definition (backfilled from `agent`) the body is not a workflow
-// asset at all, which is why `asset_id` is nullable. The unique index over
-// `asset_id` still bounds it to at most one definition per workflow asset,
-// because Postgres treats NULLs as distinct.
+// The definition body (system prompt, context/model config, tool packages) is
+// not stored on this row. For a workflow-kind definition the body lives in the
+// `workflow`-kind asset the row points at; an instance-kind definition (a
+// folded agent) has no workflow asset -- its launch synthesizes the body from
+// this row's own columns -- which is why `asset_id` is nullable. The unique
+// index over `asset_id` still bounds it to at most one definition per workflow
+// asset, because Postgres treats NULLs as distinct.
 export const workflowDefinition = pgTable(
   "workflow_definition",
   {
@@ -30,53 +29,37 @@ export const workflowDefinition = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
-    // Nullable to match the weaker of the two backfill sources: `asset`'s
+    // Nullable to match the weaker of the two definition sources: `asset`'s
     // creator principal is `onDelete: "set null"`, so a workflow asset whose
     // creator principal was removed carries no creator onto the definition.
     creatorPrincipalId: text("creator_principal_id").references(
       () => principal.id,
     ),
     // The `workflow`-kind asset holding this definition's body, or null for an
-    // agent-origin definition that has no workflow asset. `restrict`: the
+    // instance-kind definition that has no workflow asset. `restrict`: the
     // definition is the first-class entity, so deleting the asset must not
     // cascade into deleting the definition.
     assetId: text("asset_id").references(() => asset.id, {
       onDelete: "restrict",
     }),
-    // The legacy `agent.id` an agent-origin definition was folded from; null
-    // for a workflow-origin definition (its `asset_id` is the back-reference).
-    // A plain text column, not an FK, to avoid coupling to the `agent` table's
-    // lifecycle.
-    //
-    // This is a PERMANENT, load-bearing identity key -- not fold-era
-    // scaffolding to drop with the agent table. Legacy agent ids outlive the
-    // agent table: agent-kind `principal.refId`, `agent_instance.agent_id`, and
-    // the agent-state git route's `:agentId` segment all still carry them.
-    // Resolving such an id to its folded definition joins through this column --
-    // model-source re-resolution (reconnect) and agent-state git scoping do so
-    // -- so it cannot be dropped until those legacy-id holders are themselves
-    // retired or re-keyed onto definition ids.
-    originAgentId: text("origin_agent_id"),
     name: text("name").notNull(),
     description: text("description"),
     // Grant requirements manifest, resolved at launch into materialized grants.
     // Validated as GrantRequirement[] at parse time.
     grantRequirements: jsonb("grant_requirements"),
-    // Model requirements manifest for an agent-origin (folded) definition: the
+    // Model requirements manifest for an instance-kind (folded) definition: the
     // canonical model names + provider preferences its launch resolves against
     // the live tenant catalog into credential-bearing inference sources, fresh
-    // each launch. Null for a workflow-origin definition, which carries no such
+    // each launch. Null for a workflow-kind definition, which carries no such
     // manifest -- a native workflow deploy supplies its sources directly.
-    // Validated as ModelRequirements at parse time. Mirrors the field the
-    // retired `agent` row carried, so a folded launch resolves models without
-    // the agent row. A null (or empty) manifest is legitimate -- it resolves to
-    // an unlaunchable empty source chain, exactly as the agent field did.
+    // Validated as ModelRequirements at parse time. A null (or empty) manifest
+    // is legitimate -- it resolves to an unlaunchable empty source chain.
     modelRequirements: jsonb("model_requirements"),
     // Whether this definition launches as a single born-running instance
     // (`instance`) or deploys as a multi-step workflow (`workflow`). The launch
-    // route gates on this rather than `origin_agent_id`, so the classification
-    // survives that column's removal: a folded (agent-origin) definition is an
-    // `instance`, a native workflow-origin definition is a `workflow`.
+    // and read surfaces gate on this to classify a definition: an instance-kind
+    // definition is a folded agent, a workflow-kind definition is a native
+    // workflow.
     kind: text("kind", { enum: ["instance", "workflow"] })
       .notNull()
       .default("workflow"),
@@ -92,15 +75,6 @@ export const workflowDefinition = pgTable(
   (t) => [
     index("workflow_definition_tenant_idx").on(t.tenantId, t.createdAt),
     uniqueIndex("workflow_definition_asset_idx").on(t.assetId),
-    // Partial UNIQUE over `origin_agent_id` (where not null): at most one
-    // definition per source agent, so every legacy-id lookup resolves to
-    // exactly one row and the run-once backfill's double-fold is a structural
-    // fail-loud rather than a procedural query-guard. Partial because
-    // workflow-origin definitions leave `origin_agent_id` null and must not
-    // collide.
-    uniqueIndex("workflow_definition_origin_agent_idx")
-      .on(t.originAgentId)
-      .where(sql`${t.originAgentId} is not null`),
   ],
 );
 

@@ -17,12 +17,7 @@ import {
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
-import {
-  agent,
-  agentSession,
-  workflowDefinition,
-  workflowRun,
-} from "@intx/db/schema";
+import { agentSession, workflowDefinition, workflowRun } from "@intx/db/schema";
 import { findRoutableById, resolveRunSessionId } from "@intx/hub-sessions";
 
 describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
@@ -43,22 +38,14 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
   async function seedBase(): Promise<void> {
     await seedTenants(h.db, [{ id: "tnt_root" }]);
     await seedPrincipal(h.db, { id: "prn_creator", tenantId: "tnt_root" });
-    await h.db.insert(agent).values({
-      id: "agt_1",
-      tenantId: "tnt_root",
-      creatorPrincipalId: "prn_creator",
-      name: "test-agent",
-      systemPrompt: "p",
-    });
   }
 
-  test("resolves a folded run by id, agent via the definition's origin agent", async () => {
+  test("resolves a folded run by id via its own instance-kind definition", async () => {
     await seedBase();
     await h.db.insert(workflowDefinition).values({
       id: "wfd_folded",
       tenantId: "tnt_root",
       name: "folded",
-      originAgentId: "agt_1",
       kind: "instance",
     });
     await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
@@ -97,7 +84,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       id: "wfd_done",
       tenantId: "tnt_root",
       name: "done",
-      originAgentId: "agt_1",
       kind: "instance",
     });
     await h.db.insert(workflowRun).values({
@@ -136,12 +122,11 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
   test("returns undefined for a run whose definition is not instance-kind", async () => {
     await seedBase();
     // A workflow-kind (native) definition that a run with an address points at:
-    // backfill corruption. Resolves to not-found, not a bad record.
+    // a corrupt pairing. Resolves to not-found, not a bad record.
     await h.db.insert(workflowDefinition).values({
       id: "wfd_native",
       tenantId: "tnt_root",
       name: "native",
-      originAgentId: null,
       kind: "workflow",
     });
     await h.db.insert(workflowRun).values({
@@ -170,7 +155,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       id: "wfd_anchor",
       tenantId: "tnt_root",
       name: "anchor-def",
-      originAgentId: "agt_1",
       kind: "instance",
     });
     await h.db.insert(workflowRun).values({
@@ -198,18 +182,10 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     async function seedRunPrincipal(): Promise<void> {
       await seedTenants(h.db, [{ id: "tnt_root" }]);
       await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
-      await h.db.insert(agent).values({
-        id: "agt_1",
-        tenantId: "tnt_root",
-        creatorPrincipalId: "prn_run",
-        name: "a",
-        systemPrompt: "p",
-      });
       await h.db.insert(workflowDefinition).values({
         id: "wfd_run",
         tenantId: "tnt_root",
         name: "run",
-        originAgentId: "agt_1",
         kind: "instance",
       });
     }

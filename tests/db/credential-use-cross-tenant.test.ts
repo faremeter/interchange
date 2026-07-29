@@ -20,7 +20,6 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
-  seedAgent,
   seedCredential,
   seedGrant,
   seedModel,
@@ -116,19 +115,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         modelId: "mdl_opus",
         providerId: "mpv_anthropic",
       });
-      await seedAgent(h.db, {
-        id: "agt_1",
-        tenantId: "tnt_child",
-        creatorPrincipalId: opts.creatorPrincipalId,
-        modelRequirements: [{ model: "opus" }],
-      });
       // The rotation path (resolveInstanceModelSources) reads the requirements
-      // and creator off the folded definition, so mirror them there.
+      // and creator off the definition.
       await h.db.insert(workflowDefinition).values({
         id: "wfd_1",
         tenantId: "tnt_child",
         creatorPrincipalId: opts.creatorPrincipalId,
-        originAgentId: "agt_1",
         name: "agent-1",
         modelRequirements: [{ model: "opus" }],
       });

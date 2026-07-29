@@ -438,12 +438,11 @@ export function createInstanceRoutes({
       }
       const grantRows = materialization.grantRows;
 
-      // A folded agent -- one the backfill lifted into a `workflow_definition`
-      // (carrying this agent's id as `origin_agent_id`) -- launches as a
-      // `workflow_run` rather than an `agent_instance`: the run IS the launched
-      // instance. The plain `ins_<hex>` address, per-launch principal, grants,
-      // and deploy are identical; only the persisted row (and how its session
-      // is keyed) differ.
+      // An instance-kind `workflow_definition` launches as a `workflow_run`
+      // rather than an `agent_instance`: the run IS the launched instance. The
+      // plain `ins_<hex>` address, per-launch principal, grants, and deploy are
+      // identical to a legacy instance launch; only the persisted row (and how
+      // its session is keyed) differ.
 
       // --- Resolve role assignments for the instance principal ---
 

@@ -9,8 +9,6 @@
 
 import type { DB } from "@intx/db";
 import {
-  agent,
-  agentInstance,
   asset,
   credential,
   grant,
@@ -271,45 +269,6 @@ export async function seedModelOffering(
     deploymentTags: o.deploymentTags ?? [],
     quirks: o.quirks ?? null,
     disabled: o.disabled ?? false,
-  });
-}
-
-export type SeedAgent = {
-  id: string;
-  tenantId: string;
-  creatorPrincipalId: string;
-  name?: string;
-  modelRequirements?: unknown;
-};
-
-export async function seedAgent(db: Db, a: SeedAgent): Promise<void> {
-  await db.insert(agent).values({
-    id: a.id,
-    tenantId: a.tenantId,
-    creatorPrincipalId: a.creatorPrincipalId,
-    name: a.name ?? a.id,
-    modelRequirements: a.modelRequirements ?? null,
-  });
-}
-
-export type SeedAgentInstance = {
-  id: string;
-  tenantId: string;
-  agentId: string;
-  principalId: string;
-  address?: string;
-};
-
-export async function seedAgentInstance(
-  db: Db,
-  i: SeedAgentInstance,
-): Promise<void> {
-  await db.insert(agentInstance).values({
-    id: i.id,
-    tenantId: i.tenantId,
-    agentId: i.agentId,
-    principalId: i.principalId,
-    address: i.address ?? `${i.id}.agent.test`,
   });
 }
 
