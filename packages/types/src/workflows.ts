@@ -5,10 +5,6 @@ export const workflowDefinitionStatuses = ["deployed", "stopped"] as const;
 export type WorkflowDefinitionStatus =
   (typeof workflowDefinitionStatuses)[number];
 
-// Whether a definition launches as a single instance or deploys as a workflow.
-export const workflowDefinitionKinds = ["instance", "workflow"] as const;
-export type WorkflowDefinitionKind = (typeof workflowDefinitionKinds)[number];
-
 export const workflowDefinitionVersionStatuses = [
   "active",
   "inactive",

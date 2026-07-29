@@ -25,10 +25,9 @@ import {
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // Exercises the GET /workflows/runs list against a real migrated schema. The
-// list surfaces the folded workflow_run rows that present as instances (an
-// address plus an instance-kind definition). Only a real database exercises the
-// definition join that surfaces a folded run and cursor resumption over the
-// keyset.
+// list surfaces the folded workflow_run rows that present as instances (a plain
+// address and no deployment id). Only a real database exercises the definition
+// join that surfaces a folded run and cursor resumption over the keyset.
 
 const TENANT_ID = "tnt_list";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -147,19 +146,17 @@ beforeEach(async () => {
     kind: "user",
     refId: ACTOR_USER_ID,
   });
-  // Two instance-kind definitions; many folded runs share each one.
+  // Two definitions; many folded runs share each one.
   await h.db.insert(workflowDefinition).values([
     {
       id: definitionIdFor(DEF_A),
       tenantId: TENANT_ID,
       name: "def-a",
-      kind: "instance",
     },
     {
       id: definitionIdFor(DEF_B),
       tenantId: TENANT_ID,
       name: "def-b",
-      kind: "instance",
     },
   ]);
 });
@@ -183,9 +180,9 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-// A folded run owning a routing address, anchored on a shared instance-kind
-// definition (or an explicit definition for the corruption case). principalId
-// is left null -- the list never reads it.
+// A folded run owning a plain routing address and no deployment id -- the shape
+// that presents as an instance. principalId is left null -- the list never
+// reads it.
 async function insertFoldedRun(opts: {
   id: string;
   definitionKey: string;
@@ -202,17 +199,6 @@ async function insertFoldedRun(opts: {
       opts.address === undefined ? `${opts.id}@list.example` : opts.address,
     status: opts.status ?? "running",
     createdAt: opts.createdAt,
-  });
-}
-
-// A workflow-kind (native) definition -- the list gate excludes its runs from
-// the instance surface. Its id is caller-supplied so a run can anchor on it;
-// `kind` defaults to `workflow`.
-async function insertNativeDefinition(id: string): Promise<void> {
-  await h.db.insert(workflowDefinition).values({
-    id,
-    tenantId: TENANT_ID,
-    name: `def-${id}`,
   });
 }
 
@@ -336,22 +322,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(deployed.ids).toEqual([]);
     });
 
-    test("excludes an address-less run and a run on a native definition", async () => {
-      // Address-less: a native deployment-anchored run, not a folded instance.
+    test("excludes an address-less run and a deployment-anchored run", async () => {
+      // Address-less: not routable, so not an instance-shaped run.
       await insertFoldedRun({
         id: "ins_native",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
         address: null,
       });
-      // Address present but the definition is workflow-kind (native): the
-      // instance-kind list gate drops it.
-      await insertNativeDefinition("wfd_corrupt");
-      await insertFoldedRun({
-        id: "ins_corrupt",
-        definitionKey: DEF_A,
+      // Address present but carrying a deployment id (a self-referential
+      // deployment anchor run): the null-`deploymentId` list gate drops it.
+      await h.db.insert(workflowRun).values({
+        id: "dep_anchor",
+        tenantId: TENANT_ID,
+        definitionId: definitionIdFor(DEF_A),
+        deploymentId: "dep_anchor",
+        address: "ins_dep_anchor@list.example",
+        status: "running",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
-        definitionId: "wfd_corrupt",
       });
       const { ids } = await fetchList(buildApp());
       expect(ids).toEqual([]);

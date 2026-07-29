@@ -17,7 +17,6 @@ import {
   agentSession,
   principal,
   sessionMail,
-  workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
@@ -665,36 +664,21 @@ export async function findRoutableById(
       kernelId: workflowRun.kernelId,
       sidecarId: workflowRun.sidecarId,
       definitionId: workflowRun.definitionId,
-      // The definition kind is not part of the record; it only gates whether a
-      // run presents as an instance (a native run's definition is workflow-kind).
-      definitionKind: workflowDefinition.kind,
     })
     .from(workflowRun)
-    .leftJoin(
-      workflowDefinition,
-      eq(workflowRun.definitionId, workflowDefinition.id),
-    )
     .where(and(eq(workflowRun.id, id), eq(workflowRun.tenantId, tenantId)))
     .limit(1)
     .then((rows) => rows[0]);
 
   if (runRow !== undefined) {
     if (runRow.address === null) {
-      // Deployment-anchored native run, not a folded instance; not served here.
+      // A deployment-anchored run owns no plain address; not served here.
       return undefined;
     }
     if (isWorkflowDerivedAddress(runRow.address)) {
-      // A deployment's anchor run owns a workflow-derived address. Like an
-      // address-less deployment-anchored run it is not a folded instance and is
-      // not served on the instance read surface -- and unlike a plain-address
-      // native-kind run below, its workflow-kind definition is expected, not
-      // corruption, so it must not warn.
-      return undefined;
-    }
-    if (runRow.definitionKind !== "instance") {
-      // A run owns a plain address but its definition is not instance-kind:
-      // backfill corruption. Surface it rather than bury it as a silent 404.
-      logger.warn`Run ${runRow.id} owns a routing address but its definition is not instance-kind; treating as not found`;
+      // A deployment's anchor run owns a workflow-derived address; an instance
+      // run owns a plain (non-derived) one, so the address family classifies
+      // the run and the anchor is not served on the instance read surface.
       return undefined;
     }
     return {

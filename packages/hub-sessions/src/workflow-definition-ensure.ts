@@ -12,9 +12,9 @@ import { generateId } from "@intx/hub-common";
  * The first-class `workflow_definition` for a `workflow`-kind asset, created if
  * absent. A native workflow carries its body in the asset it points at, so this
  * only projects a definition row -- plus its version "1" -- over that asset, so
- * a run can anchor on a first-class definition. `currentVersion`/`status`/
- * `kind` are left to the table defaults -- a native definition takes the
- * `workflow` kind (deploy, not instance-launch).
+ * a run can anchor on a first-class definition. `currentVersion`/`status` are
+ * left to the table defaults; the definition carries no `modelRequirements`
+ * manifest, so it deploys as a workflow rather than launching as an instance.
  *
  * Idempotent and concurrency-safe: the definition insert conflicts on the
  * unique `assetId` and the version on `(definitionId, version)`, so two

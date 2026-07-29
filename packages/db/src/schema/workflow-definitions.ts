@@ -16,11 +16,10 @@ import { tenant } from "./tenants";
 // model: one row per deployable definition, with a version table alongside it.
 //
 // The definition body (system prompt, context/model config, tool packages) is
-// not stored on this row. For a workflow-kind definition the body lives in the
-// `workflow`-kind asset the row points at; an instance-kind definition (a
-// folded agent) has no workflow asset -- its launch synthesizes the body from
-// this row's own columns -- which is why `asset_id` is nullable. The unique
-// index over `asset_id` still bounds it to at most one definition per workflow
+// not stored on this row -- it lives in the `workflow`-kind asset the row
+// points at, and the run reads it back from there. `asset_id` is nullable at
+// the schema level, but a runnable definition points at a materialized asset.
+// The unique index over `asset_id` bounds it to at most one definition per
 // asset, because Postgres treats NULLs as distinct.
 export const workflowDefinition = pgTable(
   "workflow_definition",
@@ -35,10 +34,9 @@ export const workflowDefinition = pgTable(
     creatorPrincipalId: text("creator_principal_id").references(
       () => principal.id,
     ),
-    // The `workflow`-kind asset holding this definition's body, or null for an
-    // instance-kind definition that has no workflow asset. `restrict`: the
-    // definition is the first-class entity, so deleting the asset must not
-    // cascade into deleting the definition.
+    // The asset holding this definition's body. `restrict`: the definition is
+    // the first-class entity, so deleting the asset must not cascade into
+    // deleting it.
     assetId: text("asset_id").references(() => asset.id, {
       onDelete: "restrict",
     }),
@@ -47,22 +45,14 @@ export const workflowDefinition = pgTable(
     // Grant requirements manifest, resolved at launch into materialized grants.
     // Validated as GrantRequirement[] at parse time.
     grantRequirements: jsonb("grant_requirements"),
-    // Model requirements manifest for an instance-kind (folded) definition: the
-    // canonical model names + provider preferences its launch resolves against
-    // the live tenant catalog into credential-bearing inference sources, fresh
-    // each launch. Null for a workflow-kind definition, which carries no such
-    // manifest -- a native workflow deploy supplies its sources directly.
-    // Validated as ModelRequirements at parse time. A null (or empty) manifest
-    // is legitimate -- it resolves to an unlaunchable empty source chain.
+    // Model requirements manifest: the canonical model names + provider
+    // preferences a definition launched as a single interactive run resolves
+    // against the live tenant catalog into credential-bearing inference
+    // sources, fresh each launch. Non-null marks such a definition and gates
+    // the interactive-launch path; null for a definition deployed as a workflow,
+    // which supplies its sources at deploy time. Validated as ModelRequirements
+    // at parse time.
     modelRequirements: jsonb("model_requirements"),
-    // Whether this definition launches as a single born-running instance
-    // (`instance`) or deploys as a multi-step workflow (`workflow`). The launch
-    // and read surfaces gate on this to classify a definition: an instance-kind
-    // definition is a folded agent, a workflow-kind definition is a native
-    // workflow.
-    kind: text("kind", { enum: ["instance", "workflow"] })
-      .notNull()
-      .default("workflow"),
     currentVersion: text("current_version").notNull().default("1"),
     status: text("status", {
       enum: ["deployed", "stopped"],

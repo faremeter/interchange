@@ -64,7 +64,6 @@ type Def = {
   description: string | null;
   currentVersion: string;
   status: "deployed" | "stopped";
-  kind: "instance" | "workflow";
   grantRequirements: null;
   modelRequirements: null;
   createdAt: Date;
@@ -88,7 +87,6 @@ function makeDef(overrides: Partial<Def> = {}): Def {
     description: null,
     currentVersion: "2",
     status: "deployed",
-    kind: "workflow",
     grantRequirements: null,
     modelRequirements: null,
     createdAt: new Date("2025-01-01"),

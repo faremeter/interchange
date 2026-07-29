@@ -194,12 +194,12 @@ export async function createTenant(
   return { tenantId, slug };
 }
 
-// Insert an instance-kind `workflow_definition` directly, bypassing any HTTP
-// surface. The agent-state definition-mode git route resolves the repo through
-// the run that keys on this definition, so a real definition must exist for the
-// smart-HTTP request to pass tenant binding rather than 404. Returns the
-// definition id any session/run row keys on. Runs against the hub's per-test
-// schema via search_path.
+// Insert a `workflow_definition` directly, bypassing any HTTP surface. The
+// agent-state git route resolves the repo through the run that keys on this
+// definition, so a real definition must exist for the smart-HTTP request to
+// pass tenant binding rather than 404. Returns the definition id any
+// session/run row keys on. Runs against the hub's per-test schema via
+// search_path.
 export async function seedInstanceDefinition(
   schema: string,
   user: SignedUpUser,
@@ -228,9 +228,9 @@ export async function seedInstanceDefinition(
     }
     const definitionId = generateId("workflowDefinition");
     await sql`insert into workflow_definition
-                (id, tenant_id, creator_principal_id, kind, name)
+                (id, tenant_id, creator_principal_id, name)
               values (${definitionId}, ${tenant.tenantId},
-                ${creatorPrincipal.id}, 'instance', ${name})`;
+                ${creatorPrincipal.id}, ${name})`;
     return { definitionId };
   } finally {
     await sql.end();

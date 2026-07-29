@@ -189,7 +189,6 @@ beforeEach(async () => {
     id: DEFINITION_ID,
     tenantId: TENANT_ID,
     name: "blob-agent",
-    kind: "instance",
   });
 });
 

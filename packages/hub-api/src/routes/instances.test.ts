@@ -63,19 +63,15 @@ const testPrincipal = {
   updatedAt: new Date("2025-01-01"),
 };
 
-// The instance-kind definition the read routes key offerings and names on.
+// The definition the read routes key offerings and names on.
 const testDefinition = {
   id: "wfd_test",
   name: "Test Agent",
-  kind: "instance" as const,
   tenantId: TENANT_ID,
 };
 
-// A folded workflow_run as `findRoutableById`'s run query projects it: it
-// shares the instance id space and carries its definition's kind (surfaced here
-// as `definitionKind`), which gates whether it presents as an instance. Its
-// status is the run enum, which the read routes map onto the instance
-// vocabulary.
+// A `workflow_run` as `findRoutableById`'s run query projects it. Its status is
+// the run enum, which the read routes map onto the instance vocabulary.
 function makeTestRun(overrides: Record<string, unknown> = {}) {
   return {
     id: INSTANCE_ID,
@@ -89,7 +85,6 @@ function makeTestRun(overrides: Record<string, unknown> = {}) {
     kernelId: null,
     sidecarId: null,
     definitionId: "wfd_test",
-    definitionKind: "instance",
     ...overrides,
   };
 }
@@ -167,8 +162,8 @@ function createMockDB(opts: MockDBOpts) {
   const sessionMailRows = opts.sessionMail ?? [];
 
   // Builder chain, distinguished by the target table `t`:
-  //   - workflowRun: `findRoutableById`'s run query (.leftJoin().where()
-  //     .limit() -> the seeded run, or empty when none is seeded).
+  //   - workflowRun: `findRoutableById`'s run query (.where().limit() -> the
+  //     seeded run, or empty when none is seeded).
   //   - anything else (sessionMail): the priorMail query used by POST mail
   //     (.where().orderBy().limit()).
   function selectChain() {
@@ -178,9 +173,7 @@ function createMockDB(opts: MockDBOpts) {
       from: (t: unknown) => {
         if (t === workflowRun) {
           return {
-            leftJoin: () => ({
-              where: () => ({ limit: () => Promise.resolve(runRows) }),
-            }),
+            where: () => ({ limit: () => Promise.resolve(runRows) }),
           };
         }
         if (t === agentSession) {
@@ -1324,7 +1317,6 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
           id?: string;
           status?: string;
           modelRequirements?: unknown;
-          kind?: string;
           assetId?: string | null;
         }
       | undefined;
@@ -1500,7 +1492,6 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
       id?: string;
       status?: string;
       modelRequirements?: unknown;
-      kind?: string;
       assetId?: string | null;
     },
   ): Record<string, unknown> {
@@ -1512,9 +1503,6 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
         overrides !== undefined && "assetId" in overrides
           ? overrides.assetId
           : LAUNCH_ASSET_ID,
-      // An instance-kind definition launches as an instance; a native
-      // workflow-kind one is rejected by the launch route.
-      kind: overrides?.kind ?? "instance",
       name: agent["name"],
       description: agent["description"],
       grantRequirements: agent["grantRequirements"],
@@ -1912,23 +1900,6 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
     expect(res.status).toBe(409);
     expect(JSON.stringify(await res.json())).toContain(
       "not in a launchable state",
-    );
-  });
-
-  test("rejects launching a workflow-kind definition", async () => {
-    // A native workflow-kind definition deploys through the workflow path, not
-    // as a single instance here.
-    const res = await launch(
-      createLaunchMockDB({
-        agent: makeAgentDef(),
-        credential: makeCredential(),
-        inserts: [],
-        foldedDefinition: { kind: "workflow" },
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(JSON.stringify(await res.json())).toContain(
-      "not launchable as an instance",
     );
   });
 

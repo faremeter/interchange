@@ -246,23 +246,6 @@ export function createInstanceRoutes({
         );
       }
 
-      // Only an `instance`-kind definition launches as a single instance here;
-      // a `workflow`-kind definition deploys through the workflow path instead.
-      // Gating on `kind` rather than the origin agent lets that identity column
-      // be dropped without losing the launchable/deployable distinction.
-      if (definition.kind !== "instance") {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message:
-                "This definition is not launchable as an instance; deploy it through the workflow path",
-            },
-          },
-          409,
-        );
-      }
-
       // Source the launch body from the definition's materialized asset (the
       // frozen `workflow.json`), not the origin agent row. The materialization
       // cliff runs before any launch, so a null asset id is a broken invariant,
@@ -691,10 +674,10 @@ export function createInstanceRoutes({
         limit: c.req.query("limit"),
       });
 
-      // Instances are folded `workflow_run` rows: a run presents as an instance
-      // when it owns a routing address and its definition is instance-kind. The
-      // address and kind predicates enforce that, dropping a deployment-anchored
-      // or native run. When a status filter selects no run statuses
+      // A run presents as an instance when it owns a plain routing address and
+      // carries no deployment id; the two predicates enforce that, dropping a
+      // deployment-anchored run (which carries its deployment id) and an
+      // address-less child run. When a status filter selects no run statuses
       // (`deployed`/`updating`), skip the query entirely.
       const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
 
@@ -707,7 +690,7 @@ export function createInstanceRoutes({
         const runConditions = [
           eq(workflowRun.tenantId, tenantCtx.id),
           isNotNull(workflowRun.address),
-          eq(workflowDefinition.kind, "instance"),
+          isNull(workflowRun.deploymentId),
         ];
         if (definitionId !== undefined) {
           runConditions.push(eq(workflowRun.definitionId, definitionId));

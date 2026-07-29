@@ -484,6 +484,13 @@
       "when": 1785500000000,
       "tag": "0068_drop_agent_tables_and_origin_agent_id",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1785337102704,
+      "tag": "0069_drop_workflow_definition_kind",
+      "breakpoints": true
     }
   ]
 }
