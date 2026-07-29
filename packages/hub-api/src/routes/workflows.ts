@@ -299,6 +299,29 @@ export function createWorkflowRoutes({
         );
       }
 
+      // A single-step deploy pins its full ordered inference chain and the
+      // reactor activates the head, so the default source must be the chain
+      // head. Reject a contradictory ordering here at the edge with a
+      // caller-facing message rather than letting it fall through to the
+      // orchestrator's internal invariant guard, which speaks in reactor terms.
+      // Multi-step deploys select a source per step, so their deploy-wide
+      // ordering is unconstrained and this check does not apply.
+      if (
+        definition.stepOrder.length === 1 &&
+        firstSource.id !== body.defaultSource
+      ) {
+        return c.json(
+          {
+            error: {
+              code: "invalid_workflow",
+              message:
+                "defaultSource must be the first entry in sources: a single-step deploy runs the default at the head of its pinned chain",
+            },
+          },
+          409,
+        );
+      }
+
       const deploymentId = generateId("deployment");
       const sessionId = generateId("session");
       const config: HarnessConfig = {

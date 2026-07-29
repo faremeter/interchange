@@ -762,6 +762,48 @@ describe("POST /workflows/instances", () => {
     expect(deployCalls).toHaveLength(1);
   });
 
+  test("rejects a single-step deploy whose default is not the chain head with 409, before deploying", async () => {
+    // The single-step chain gate lives at the route edge: a default source that
+    // is not the head of the pinned chain is contradictory request shape, so
+    // the route must reject it with a caller-facing invalid_workflow BEFORE
+    // handing anything to the deploy call -- not surface the orchestrator's
+    // internal invariant wording through the deploy-catch branch.
+    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      deployCalls,
+      // stepOrder ["work"] -- single-step, so the chain-head rule applies.
+      workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/instances`, {
+        assetId: ASSET_ID,
+        sources: [
+          {
+            id: "src-b",
+            provider: "anthropic",
+            baseURL: "https://api.example",
+            apiKey: "secret",
+            model: "m",
+          },
+          {
+            id: "src-a",
+            provider: "anthropic",
+            baseURL: "https://api.example",
+            apiKey: "secret",
+            model: "m2",
+          },
+        ],
+        defaultSource: "src-a",
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("invalid_workflow");
+    // The edge check pre-empts the deploy entirely -- an empty deployCalls
+    // proves the rejection did not come from the orchestrator assert.
+    expect(deployCalls).toHaveLength(0);
+  });
+
   test("reports a missing post-deploy anchor run as 500, not 502", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
