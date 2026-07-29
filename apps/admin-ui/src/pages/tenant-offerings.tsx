@@ -55,12 +55,12 @@ export function TenantOfferingsPage() {
   const { data: definitions } = useQuery(tenantDefinitionsQuery(tenantId));
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [createAgentId, setCreateAgentId] = useState("");
+  const [createDefinitionId, setCreateDefinitionId] = useState("");
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
 
   function resetCreateForm() {
-    setCreateAgentId("");
+    setCreateDefinitionId("");
     setCreateName("");
     setCreateDescription("");
   }
@@ -170,7 +170,7 @@ export function TenantOfferingsPage() {
                 name: string;
                 description?: string;
               } = {
-                agentId: createAgentId,
+                agentId: createDefinitionId,
                 name: createName.trim(),
               };
               if (createDescription.trim())
@@ -181,7 +181,10 @@ export function TenantOfferingsPage() {
           >
             <div className="grid gap-2">
               <Label>Workflow definition</Label>
-              <Select value={createAgentId} onValueChange={setCreateAgentId}>
+              <Select
+                value={createDefinitionId}
+                onValueChange={setCreateDefinitionId}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select a workflow definition" />
                 </SelectTrigger>
@@ -217,7 +220,9 @@ export function TenantOfferingsPage() {
               <Button
                 type="submit"
                 disabled={
-                  createMut.isPending || !createAgentId || !createName.trim()
+                  createMut.isPending ||
+                  !createDefinitionId ||
+                  !createName.trim()
                 }
               >
                 {createMut.isPending ? "Creating..." : "Create"}
