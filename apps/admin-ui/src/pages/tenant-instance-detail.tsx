@@ -221,7 +221,7 @@ export function TenantInstanceDetailPage() {
 
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{instance.agentName}</h2>
+          <h2 className="text-lg font-semibold">{instance.definitionName}</h2>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
             {instance.address}
           </p>

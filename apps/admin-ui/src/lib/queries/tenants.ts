@@ -65,10 +65,10 @@ type RoleResponse = {
   updatedAt: string;
 };
 
-export type AgentInstanceResponse = {
+export type WorkflowRunResponse = {
   id: string;
   definitionId: string;
-  agentName: string;
+  definitionName: string;
   tenantId: string;
   address: string;
   status: "deployed" | "running" | "updating" | "error" | "stopped";
@@ -342,7 +342,7 @@ export function tenantInstancesQuery(tenantId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "instances", { status: "running" }],
     queryFn: async () => {
-      const res = await api<{ data: AgentInstanceResponse[] }>(
+      const res = await api<{ data: WorkflowRunResponse[] }>(
         "GET",
         `/api/tenants/${tenantId}/workflows/runs?status=running`,
       );
@@ -352,7 +352,7 @@ export function tenantInstancesQuery(tenantId: string) {
 }
 
 export function tenantInstancesInfiniteQuery(tenantId: string) {
-  return infiniteListQuery<AgentInstanceResponse>(
+  return infiniteListQuery<WorkflowRunResponse>(
     ["tenants", tenantId, "instances", INFINITE_LIST_KEY],
     `/api/tenants/${tenantId}/workflows/runs?status=running`,
   );
@@ -362,7 +362,7 @@ export function instanceDetailQuery(tenantId: string, instanceId: string) {
   return queryOptions({
     queryKey: ["tenants", tenantId, "instances", instanceId],
     queryFn: () =>
-      api<AgentInstanceResponse>(
+      api<WorkflowRunResponse>(
         "GET",
         `/api/tenants/${tenantId}/workflows/runs/${instanceId}`,
       ),

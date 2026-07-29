@@ -47,7 +47,7 @@ describe("formatInstanceView", () => {
     expect(view).toMatchObject({
       id: "ins_1",
       definitionId: "wfd_1",
-      agentName: "My Agent",
+      definitionName: "My Agent",
       tenantId: "tnt_1",
       address: "ins_1@tenant.example",
       status: "running",

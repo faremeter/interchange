@@ -2,18 +2,18 @@
 // shaper, one resolver (`findRoutableById`) -- so a run renders as the instance
 // it stands in for.
 
-import type { AgentInstanceStatus } from "@intx/types";
+import type { WorkflowRunStatus } from "@intx/types";
 import type { RoutableRecord } from "@intx/hub-sessions";
 
 import { ts } from "../format";
 
-// A workflow run's lifecycle enum differs from the instance enum the wire
+// A workflow run's lifecycle enum differs from the run-view enum the wire
 // contract speaks. A run is `running` while live; its terminal states map onto
-// the instance vocabulary: a clean finish or an operator stop both read as
+// the view vocabulary: a clean finish or an operator stop both read as
 // `stopped`, a failure as `error`.
 export function mapRunStatusToInstanceStatus(
   status: string,
-): AgentInstanceStatus {
+): WorkflowRunStatus {
   switch (status) {
     case "running":
       return "running";
@@ -28,23 +28,23 @@ export function mapRunStatusToInstanceStatus(
   }
 }
 
-// The record's status in the instance vocabulary: a run's status mapped onto
+// The record's status in the run-view vocabulary: a run's status mapped onto
 // it. Route status guards (a stopped endpoint is gone) through this so a
 // terminal run 410s exactly as a stopped instance would.
-export function instanceStatusOf(record: RoutableRecord): AgentInstanceStatus {
+export function instanceStatusOf(record: RoutableRecord): WorkflowRunStatus {
   return mapRunStatusToInstanceStatus(record.status);
 }
 
 export function formatInstanceView(
   record: RoutableRecord,
-  agentName: string,
+  definitionName: string,
   runtimeStatus?: string,
 ) {
   const status = instanceStatusOf(record);
   return {
     id: record.id,
     definitionId: record.definitionId,
-    agentName,
+    definitionName,
     tenantId: record.tenantId,
     address: record.address,
     status,

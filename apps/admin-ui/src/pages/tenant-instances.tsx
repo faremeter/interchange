@@ -5,7 +5,7 @@ import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
 import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   tenantInstancesInfiniteQuery,
-  type AgentInstanceResponse,
+  type WorkflowRunResponse,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-function StatusBadge({ status }: { status: AgentInstanceResponse["status"] }) {
+function StatusBadge({ status }: { status: WorkflowRunResponse["status"] }) {
   const variant =
     status === "running"
       ? "secondary"
@@ -31,7 +31,7 @@ function InstanceRow({
   instance,
   tenantId,
 }: {
-  instance: AgentInstanceResponse;
+  instance: WorkflowRunResponse;
   tenantId: string;
 }) {
   const navigate = useNavigate();
@@ -46,7 +46,7 @@ function InstanceRow({
         })
       }
     >
-      <TableCell className="font-medium">{instance.agentName}</TableCell>
+      <TableCell className="font-medium">{instance.definitionName}</TableCell>
       <TableCell>
         <StatusBadge status={instance.status} />
       </TableCell>

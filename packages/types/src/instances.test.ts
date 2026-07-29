@@ -1,14 +1,14 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
-import { CreateAgentInstance } from "./instances";
+import { CreateWorkflowRun } from "./instances";
 
 // ---------------------------------------------------------------------------
-// CreateAgentInstance
+// CreateWorkflowRun
 // ---------------------------------------------------------------------------
 
-describe("CreateAgentInstance", () => {
+describe("CreateWorkflowRun", () => {
   test("accepts invokerGrants array", () => {
-    const result = CreateAgentInstance({
+    const result = CreateWorkflowRun({
       definitionId: "wfd_1",
       invokerGrants: [{ resource: "wallet:wal_1", action: "spend" }],
     });
@@ -16,7 +16,7 @@ describe("CreateAgentInstance", () => {
   });
 
   test("accepts invokerGrants with effect", () => {
-    const result = CreateAgentInstance({
+    const result = CreateWorkflowRun({
       definitionId: "wfd_1",
       invokerGrants: [
         { resource: "tool:bash", action: "invoke", effect: "allow" },
@@ -26,7 +26,7 @@ describe("CreateAgentInstance", () => {
   });
 
   test("accepts absent invokerGrants (optional)", () => {
-    const result = CreateAgentInstance({ definitionId: "wfd_1" });
+    const result = CreateWorkflowRun({ definitionId: "wfd_1" });
     expect(result instanceof type.errors).toBe(false);
   });
 });

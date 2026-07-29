@@ -33,18 +33,18 @@ export const mePrincipalsInfiniteQuery = infiniteListQuery<PrincipalSummary>(
   "/api/me/principals",
 );
 
-type InstanceSummary = {
+type WorkflowRunSummary = {
   id: string;
   tenantId: string;
   tenantName: string;
   definitionId: string;
-  agentName: string;
+  definitionName: string;
   address: string;
   status: "deployed" | "running" | "updating" | "error" | "stopped";
   createdAt: string;
 };
 
-export const meInstancesInfiniteQuery = infiniteListQuery<InstanceSummary>(
+export const meInstancesInfiniteQuery = infiniteListQuery<WorkflowRunSummary>(
   ["me", "instances"],
   "/api/me/workflows/runs",
 );

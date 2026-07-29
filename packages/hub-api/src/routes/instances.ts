@@ -26,9 +26,9 @@ import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
-  CreateAgentInstance,
-  AgentInstanceResponse,
-  AgentHealth,
+  CreateWorkflowRun,
+  WorkflowRunResponse,
+  WorkflowRunHealth,
   OfferingDetail,
   GrantRequirement,
   SendMessage,
@@ -124,7 +124,7 @@ const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
 // an instance-kind definition, so the kind is not carried on the row.
 type FoldedRunListRow = {
   run: typeof workflowRun.$inferSelect;
-  agentName: string;
+  definitionName: string;
 };
 
 // Shape a folded run into the fold-normalized record the instance view expects.
@@ -189,7 +189,7 @@ export function createInstanceRoutes({
         201: {
           description: "Instance deployed",
           content: {
-            "application/json": { schema: resolver(AgentInstanceResponse) },
+            "application/json": { schema: resolver(WorkflowRunResponse) },
           },
         },
         404: {
@@ -212,7 +212,7 @@ export function createInstanceRoutes({
         },
       },
     }),
-    validator("json", CreateAgentInstance),
+    validator("json", CreateWorkflowRun),
     async (c) => {
       const tenant = c.get("tenant");
       const principal = c.get("principal");
@@ -677,7 +677,7 @@ export function createInstanceRoutes({
           description: "List of instances",
           content: {
             "application/json": {
-              schema: resolver(paginatedSchema(AgentInstanceResponse)),
+              schema: resolver(paginatedSchema(WorkflowRunResponse)),
             },
           },
         },
@@ -725,7 +725,7 @@ export function createInstanceRoutes({
         runRows = await db
           .select({
             run: workflowRun,
-            agentName: workflowDefinition.name,
+            definitionName: workflowDefinition.name,
           })
           .from(workflowRun)
           .innerJoin(
@@ -740,7 +740,7 @@ export function createInstanceRoutes({
       return c.json(
         paginatedResponse(
           runRows.map((r) =>
-            formatInstanceView(foldedRunToRecord(r), r.agentName),
+            formatInstanceView(foldedRunToRecord(r), r.definitionName),
           ),
           runRows.map((r) => ({ createdAt: r.run.createdAt, id: r.run.id })),
           limit,
@@ -897,7 +897,7 @@ export function createInstanceRoutes({
         200: {
           description: "Instance detail",
           content: {
-            "application/json": { schema: resolver(AgentInstanceResponse) },
+            "application/json": { schema: resolver(WorkflowRunResponse) },
           },
         },
         404: {
@@ -958,7 +958,7 @@ export function createInstanceRoutes({
         200: {
           description: "Health status",
           content: {
-            "application/json": { schema: resolver(AgentHealth) },
+            "application/json": { schema: resolver(WorkflowRunHealth) },
           },
         },
         404: {

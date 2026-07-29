@@ -8,7 +8,7 @@ import type { DB } from "@intx/db";
 import {
   UserProfile,
   PrincipalSummary,
-  InstanceSummary,
+  WorkflowRunSummary,
   SessionSummary,
   ApprovalSummary,
   ErrorResponse,
@@ -199,7 +199,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
           description: "Runs across tenants",
           content: {
             "application/json": {
-              schema: resolver(paginatedSchema(InstanceSummary)),
+              schema: resolver(paginatedSchema(WorkflowRunSummary)),
             },
           },
         },
@@ -280,7 +280,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
           tenantId: r.tenantId,
           tenantName: tenantMap.get(r.tenantId)?.name ?? "Unknown",
           definitionId: r.definitionId,
-          agentName: r.definitionName,
+          definitionName: r.definitionName,
           address: r.address,
           status: "running" as const,
           createdAt: ts(r.createdAt),

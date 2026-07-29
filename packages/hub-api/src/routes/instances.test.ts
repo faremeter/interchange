@@ -702,7 +702,7 @@ describe("read routes serve a folded run", () => {
     expect(body).toMatchObject({
       id: INSTANCE_ID,
       definitionId: "wfd_test",
-      agentName: "Test Agent",
+      definitionName: "Test Agent",
       address: ADDRESS,
       status: "running",
     });

@@ -127,7 +127,7 @@ export function DashboardPage() {
                       params={{ tenantId: inst.tenantId, instanceId: inst.id }}
                       className="text-primary hover:underline"
                     >
-                      {inst.agentName}
+                      {inst.definitionName}
                     </Link>
                   </TableCell>
                   <TableCell className="text-muted-foreground">

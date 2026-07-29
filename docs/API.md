@@ -447,9 +447,9 @@ Deploy an agent instance
 
 Creates a new running instance of the specified agent definition. Resolves the definition's model requirements against the tenant catalog into an ordered inference-source list, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, and modelPreferences to reorder or restrict the resolved providers for the session.
 
-Body: CreateAgentInstance
+Body: CreateWorkflowRun
 
-201: AgentInstanceResponse -- Instance deployed
+201: WorkflowRunResponse -- Instance deployed
 404: ErrorResponse -- Agent definition not found
 409: ErrorResponse -- Agent not launchable
 502: ErrorResponse -- Sidecar unavailable
@@ -478,7 +478,7 @@ Get instance detail
 
 Returns instance runtime state including status, public key, and sidecar assignment.
 
-200: AgentInstanceResponse -- Instance detail
+200: WorkflowRunResponse -- Instance detail
 404: ErrorResponse -- Instance not found
 
 ### DELETE /api/tenants/:tenantId/workflows/runs/:runId
@@ -496,7 +496,7 @@ Get instance health
 
 Returns liveness and readiness for a running instance. Liveness reflects whether the instance's sidecar connection is active. Readiness reflects whether the instance has an active event collector and can process work.
 
-200: AgentHealth -- Health status
+200: WorkflowRunHealth -- Health status
 404: ErrorResponse -- Instance not found
 410: ErrorResponse -- Instance stopped
 
@@ -1231,16 +1231,6 @@ Returns the current set of tarballs under tarballs/ for the package-registry ass
 
 ## Type Reference
 
-### AgentHealth
-`{ liveness: "ok" | "unhealthy", readiness: "not_ready" | "ok" | "unhealthy", lastCheckedAt?: string | null }`
-Source: packages/types/src/instances.ts
-
-### AgentInstanceResponse
-`{ address: string, agentName: string, createdAt: string, definitionId: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
-Source: packages/types/src/instances.ts
-
-**status**: Lifecycle state of this running instance: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
-
 ### ApprovalResponse
 `{ agentAddress: string, correlationId: string, createdAt: string, deploymentId: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown }, toolDefinition: { [string]: unknown }, updatedAt: string }`
 Source: packages/types/src/approvals.ts
@@ -1251,10 +1241,10 @@ Source: packages/types/src/approvals.ts
 **toolDefinition**: The approver-facing tool snapshot (name, description, input schema) captured at suspend time.
 
 ### ApprovalSummary
-`{ action: string, agentName: string, createdAt: string, definitionId: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`
+`{ action: string, createdAt: string, definitionId: string, definitionName: string, id: string, resource: string, sessionId: string, tenantId: string, tenantName: string }`
 Source: packages/types/src/me.ts
 
-**sessionId**: Internal FK to the session channel. The instance ID can be resolved via the session relationship.
+**sessionId**: Internal FK to the session channel. The run ID can be resolved via the session relationship.
 
 ### ApproveAction
 `{ scope: "always" | "once" }`
@@ -1284,13 +1274,6 @@ Source: packages/types/src/agent-data.ts
 ### CommitDetail
 `{ author: string, changes: { path: string, status: "added" | "deleted" | "modified", additions?: number, deletions?: number }[], message: string, ref: string, timestamp: string }`
 Source: packages/types/src/agent-data.ts
-
-### CreateAgentInstance
-`{ definitionId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
-Source: packages/types/src/instances.ts
-
-**invokerGrants**: Capabilities the invoker is willing to delegate to the agent, resolved against the invoker's own authority at launch. These are materialized as grants on the agent principal in addition to any grants from the definition's own requirements.
-**modelPreferences**: The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the instance so re-resolution reuses it.
 
 ### CreateCredential
 `{ name: string, providerId: string, secret: string, type: "api_key" | "certificate" | "oauth_token" | "other", description?: string, expiresAt?: string, metadata?: { [string]: unknown }, oauthClientId?: string, principalId?: string, refreshSecret?: string, scopes?: string[] }`
@@ -1383,6 +1366,13 @@ Source: packages/types/src/wallets.ts
 
 **backendType**: Settlement backend the wallet is denominated in: `crypto` (on-chain assets), `fiat` (national currency), or `credits` (internal accounting units). Determines how balances and transactions are settled.
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
+
+### CreateWorkflowRun
+`{ definitionId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
+Source: packages/types/src/instances.ts
+
+**invokerGrants**: Capabilities the invoker is willing to delegate to the run, resolved against the invoker's own authority at launch. These are materialized as grants on the run principal in addition to any grants from the definition's own requirements.
+**modelPreferences**: The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the run so re-resolution reuses it.
 
 ### CredentialResponse
 `{ createdAt: string, id: string, name: string, providerId: string, status: "active" | "error" | "expired" | "revoked", tenantId: string, type: "api_key" | "certificate" | "oauth_token" | "other", updatedAt: string, description?: string | null, expiresAt?: string | null, metadata?: { [string]: unknown } | null, oauthClientId?: string | null, principalId?: string | null, scopes?: string[] | null }`
@@ -1533,7 +1523,7 @@ Source: packages/types/src/roles.ts
 Source: packages/types/src/sessions.ts
 
 ### SessionSummary
-`{ agentName: string, createdAt: string, definitionId: string, id: string, status: "ended" | "ending" | "idle", tenantId: string, tenantName: string, lastActivityAt?: string | null }`
+`{ createdAt: string, definitionId: string, definitionName: string, id: string, status: "ended" | "ending" | "idle", tenantId: string, tenantName: string, lastActivityAt?: string | null }`
 Source: packages/types/src/me.ts
 
 ### SpanResponse
@@ -1638,4 +1628,14 @@ Source: packages/types/src/workflows.ts
 ### WorkflowRollbackRequest
 `{ version: string }`
 Source: packages/types/src/workflows.ts
+
+### WorkflowRunHealth
+`{ liveness: "ok" | "unhealthy", readiness: "not_ready" | "ok" | "unhealthy", lastCheckedAt?: string | null }`
+Source: packages/types/src/instances.ts
+
+### WorkflowRunResponse
+`{ address: string, createdAt: string, definitionId: string, definitionName: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
+Source: packages/types/src/instances.ts
+
+**status**: Lifecycle state of this run: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
 
