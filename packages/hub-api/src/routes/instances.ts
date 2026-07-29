@@ -18,7 +18,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import { parseWorkflowDefinitionRow, resolveModelSources } from "@intx/db";
+import { parseWorkflowDefinitionRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -57,6 +57,7 @@ import {
   isWorkflowDerivedAddress,
 } from "@intx/workflow-deploy";
 import { hydrateDefinition } from "../run-grant-materialization";
+import { resolveDefinitionSources } from "../run-source-resolution";
 import { formatOffering } from "./offerings";
 import { formatInstanceView, instanceStatusOf } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
@@ -311,8 +312,6 @@ export function createInstanceRoutes({
         );
       }
 
-      const modelRequirements = definition.modelRequirements ?? [];
-
       // The invoker's launch-time preference reorders or restricts the
       // tenant-visible providers; it cannot introduce one the catalog lacks.
       const invokerPreferences: Record<string, ProviderPreference> = {};
@@ -320,58 +319,23 @@ export function createInstanceRoutes({
         invokerPreferences[preference.model] = preference.providers;
       }
 
-      // A model source only carries a credential secret when the definition's
-      // creator holds `credential:{id}` / `use` for it. Resolution authorizes
-      // the creator against these grants and withholds the secret otherwise,
-      // surfacing an unauthorized credential as a not-launchable skip below.
-      // Collect across the tenant ancestor chain: credential resolution reaches
-      // inherited credentials up the chain, and the authorizing `use` grant is
-      // stamped with the credential's own (ancestor) tenant, so single-tenant
-      // collection would withhold a legitimately inherited credential.
-      const creatorSourceGrants = await grantStore.collectGrantsInChain(
-        creatorPrincipalId,
-        tenant.id,
-      );
-
-      const resolution = await resolveModelSources(
+      const resolution = await resolveDefinitionSources({
         db,
-        tenant.id,
-        modelRequirements,
-        creatorSourceGrants,
-        { invokerPreferences },
-      );
+        grantStore,
+        tenantId: tenant.id,
+        creatorPrincipalId,
+        modelRequirements: definition.modelRequirements,
+        fallbackModel: null,
+        invokerPreferences,
+      });
       if (!resolution.ok) {
-        const message =
-          resolution.reason === "no_requirements"
-            ? "Agent declares no model requirements; cannot resolve any inference sources"
-            : `No launchable inference source for model "${resolution.model}"` +
-              (resolution.skips.length > 0
-                ? ` (${resolution.skips
-                    .map((skip) => `${skip.provider}: ${skip.reason}`)
-                    .join(", ")})`
-                : "");
-        return c.json({ error: { code: "not_launchable", message } }, 409);
-      }
-      const sources = resolution.sources;
-
-      // The head of the catalog-priority-ordered list is the active source;
-      // the tail is the failover chain. resolveModelSources only returns ok
-      // when every required model produced at least one source, so the head
-      // is always present — the guard satisfies the type and would fail
-      // loudly if that invariant ever broke.
-      const [headSource] = sources;
-      if (headSource === undefined) {
         return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message: "Inference source resolution produced no sources",
-            },
-          },
+          { error: { code: "not_launchable", message: resolution.message } },
           409,
         );
       }
-      const defaultSource = headSource.id;
+      const sources = resolution.sources;
+      const defaultSource = resolution.defaultSource;
 
       // --- Grant requirement resolution (creator/invoker delegation) ---
 

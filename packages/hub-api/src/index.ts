@@ -26,3 +26,7 @@ export {
   createMailTriggeredRunGrantsMaterializer,
   type MailTriggeredRunGrantsDeps,
 } from "./run-grant-materialization";
+export {
+  resolveDefinitionSources,
+  type DefinitionSourceResolution,
+} from "./run-source-resolution";
