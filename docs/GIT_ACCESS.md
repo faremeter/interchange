@@ -9,7 +9,7 @@ For the underlying authorization model — the relationship between session-auth
 Two repo families speak the smart-HTTP wire:
 
 - **Assets.** Operator-curated, tenant-scoped repositories spanning the `skill`, `agent-state`, `package-registry`, and `workflow` kinds. Both `git clone` (upload-pack) and `git push` (receive-pack) are supported.
-- **Agent state.** Two URL grammars, both read-only over HTTP. The per-instance grammar exposes the runtime state of a single agent; the per-definition grammar exposes the deploy artifacts the hub materializes at instance launch.
+- **Agent state.** Two URL grammars, both read-only over HTTP. The per-run grammar exposes the runtime state of a single folded run; the per-definition grammar exposes the deploy artifacts the hub materializes at instance launch.
 
 Anonymous access is not supported. Every smart-HTTP request must present a hub-issued bearer token. Unauthenticated clones receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="Interchange"` challenge so stock git falls into its credential helper or askpass prompt.
 
@@ -151,7 +151,7 @@ git clone https://hub.example/api/tenants/tnt_abc/assets/skill/greet.git
 ```
 
 - `:tenantId` is the `tnt_*` ID.
-- `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`. (The `agent-state` _kind_ is the asset family used for shared agent-state templates; it is not the same surface as the per-instance and per-definition agent-state routes below.)
+- `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`. (The `agent-state` _kind_ is the asset family used for shared agent-state templates; it is not the same surface as the per-run and per-definition agent-state routes below.)
 - `:name` is the kebab-case asset name as registered via `POST /api/tenants/:tenantId/assets`.
 - The `.git` suffix on the trailing segment is required — it is how the hub disambiguates the asset namespace from arbitrary tenant sub-paths.
 
@@ -166,17 +166,17 @@ cd greet
 git push origin main
 ```
 
-### Agent state — per instance
+### Agent state — per run
 
 ```
-/api/tenants/:tenantId/agents/instances/:instanceId/state.git/...
+/api/tenants/:tenantId/workflows/runs/:runId/state.git/...
 ```
 
-- `:instanceId` is the `ins_*` ID.
-- Read-only over HTTP. The instance's runtime state is written by the sidecar through a separate path; HTTP is for inspection.
+- `:runId` is the folded run's `ins_*` ID.
+- Read-only over HTTP. The run's runtime state is written by the sidecar through a separate path; HTTP is for inspection.
 
 ```
-git clone https://hub.example/api/tenants/tnt_abc/agents/instances/ins_xyz/state.git
+git clone https://hub.example/api/tenants/tnt_abc/workflows/runs/ins_xyz/state.git
 ```
 
 ### Agent state — per definition

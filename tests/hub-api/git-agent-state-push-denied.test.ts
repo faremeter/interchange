@@ -1,10 +1,10 @@
-// `git push -v` against the per-instance agent-state URL returns 403
+// `git push -v` against the per-run agent-state URL returns 403
 // at the advertise step. The denial message names "read-only" so
 // support can recognise it.
 //
 // The receive-pack denial routes are registered BEFORE the bearer
 // middleware, so the test does not need to mint a token: an
-// unauthenticated `git push -v` against the per-instance URL still
+// unauthenticated `git push -v` against the per-run URL still
 // parses the pkt-line ERR record cleanly.
 //
 // We also verify the raw advertise body shape (the locked
@@ -77,12 +77,12 @@ async function prepareLocalPushSource(workDir: string): Promise<void> {
   }
 }
 
-function instanceStateGitUrl(
+function runStateGitUrl(
   hubUrl: string,
   tenantId: string,
-  instanceId: string,
+  runId: string,
 ): string {
-  return `${hubUrl}/api/tenants/${tenantId}/agents/instances/${instanceId}/state.git`;
+  return `${hubUrl}/api/tenants/${tenantId}/workflows/runs/${runId}/state.git`;
 }
 
 describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
@@ -95,14 +95,14 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     // bearer middleware and the resolver, so an unauthenticated probe
     // on a bogus instance id still yields the locked 403 body verbatim.
     const res = await fetch(
-      `${instanceStateGitUrl(hub.url, tenant.tenantId, "ins_doesnotexist")}/info/refs?service=git-receive-pack`,
+      `${runStateGitUrl(hub.url, tenant.tenantId, "ins_doesnotexist")}/info/refs?service=git-receive-pack`,
     );
     expect(res.status).toBe(403);
     const body = await res.text();
     expect(body).toContain("agent-state is read-only over HTTP");
   }, 90_000);
 
-  test("git push -v against per-instance URL returns 403 with read-only message", async () => {
+  test("git push -v against per-run URL returns 403 with read-only message", async () => {
     const hub = await startHubTracked();
     const user = await signUpUser(hub.url);
     const tenant = await createTenant(hub.url, user);
@@ -115,11 +115,7 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     const workDir = await mkTemp("agent-state-push-ins-");
     await prepareLocalPushSource(workDir);
 
-    const remote = instanceStateGitUrl(
-      hub.url,
-      tenant.tenantId,
-      "ins_fakefakefake",
-    );
+    const remote = runStateGitUrl(hub.url, tenant.tenantId, "ins_fakefakefake");
     const push = await runGit(
       [
         "-c",

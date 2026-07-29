@@ -119,12 +119,12 @@ Three route groups expose the wire:
   - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-receive-pack` serves push.
   - `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`; `:name` is the kebab-case asset name. The `.git` suffix on the trailing segment is required — it is how the URL grammar disambiguates the asset namespace from arbitrary tenant sub-paths.
 
-- **Agent-state per-instance smart-HTTP** under `/api/tenants/:tenantId/agents/instances/:instanceId/state.git/...`.
+- **Agent-state per-run smart-HTTP** under `/api/tenants/:tenantId/workflows/runs/:runId/state.git/...`.
   - Read-only. `info/refs` and `git-upload-pack` are served; `git-receive-pack` returns a pkt-line-framed protocol-level rejection so `git push -v` surfaces a readable error even when no `Authorization` header is present.
-  - The repo is lazily materialized: a never-pushed instance advertises an empty repository (the `capabilities^{}` empty-repo record) so a stock `git clone` succeeds against an empty tree rather than 404'ing.
+  - The repo is lazily materialized: a never-pushed run advertises an empty repository (the `capabilities^{}` empty-repo record) so a stock `git clone` succeeds against an empty tree rather than 404'ing.
 
 - **Agent-state per-definition smart-HTTP** under `/api/tenants/:tenantId/agents/definitions/:agentId/state.git/...`.
-  - Read-only, same handler shape as the per-instance grammar. The `deploy/` prefix is populated by the hub at instance launch.
+  - Read-only, same handler shape as the per-run grammar. The `deploy/` prefix is populated by the hub at instance launch.
 
 - **Git-tokens REST** under two scopes:
   - `/api/tenants/:tenantId/git-tokens` mints, lists, and revokes tenant-bound service tokens (`kind: "svc"`). The token speaks as a specific tenant member; the route group is gated by `requireGrant("git-token:*", ...)`.
@@ -135,8 +135,8 @@ Three route groups expose the wire:
 
 Every smart-HTTP URL the hub exposes terminates the repo segment with `.git`. The suffix is what distinguishes a smart-HTTP request from an arbitrary tenant or instance sub-path:
 
-- `/api/tenants/tnt_abc/agents/instances/ins_xyz/state.git/info/refs` — smart-HTTP.
-- `/api/tenants/tnt_abc/agents/instances/ins_xyz/events` — SSE, not git.
+- `/api/tenants/tnt_abc/workflows/runs/ins_xyz/state.git/info/refs` — smart-HTTP.
+- `/api/tenants/tnt_abc/workflows/runs/ins_xyz/events` — SSE, not git.
 
 This matches stock git's convention: `git clone` URLs end in `.git`, and the URL is the primary key by which it lives in `.git/config`.
 

@@ -60,7 +60,7 @@ import {
 } from "./routes/assets";
 import {
   AGENT_STATE_OPENAPI_EXCLUDE_GLOBS,
-  createAgentStateInstanceGitRoutes,
+  createAgentStateRunGitRoutes,
   createAgentStateReceivePackDeny,
 } from "./routes/agent-state-git";
 import { createGitTokenAuth } from "./middleware/git-token-auth";
@@ -190,11 +190,11 @@ export function mountHubRoutes(
   // upload-pack half (advertise + POST) on a valid token.
   if (repoStore !== null) {
     app.use(
-      "/api/tenants/:tenantId/agents/instances/:instanceId/state.git/*",
+      "/api/tenants/:tenantId/workflows/runs/:runId/state.git/*",
       createAgentStateReceivePackDeny(),
     );
     app.use(
-      "/api/tenants/:tenantId/agents/instances/:instanceId/state.git/*",
+      "/api/tenants/:tenantId/workflows/runs/:runId/state.git/*",
       createGitTokenAuth({ db }),
     );
   }
@@ -359,9 +359,13 @@ export function mountHubRoutes(
   }
 
   if (repoStore !== null) {
+    // The folded run's agent-state clone surface. Mounts at `/workflows/runs`
+    // alongside the run-management routes; the git sub-paths (`:runId/state.git`)
+    // are disjoint from the run routes, and the literal `runs` segment
+    // out-ranks the `/workflows/:deploymentId` deploy router.
     app.route(
-      "/api/tenants/:tenantId/agents/instances",
-      createAgentStateInstanceGitRoutes({
+      "/api/tenants/:tenantId/workflows/runs",
+      createAgentStateRunGitRoutes({
         db,
         repoStore,
         grantStore,
