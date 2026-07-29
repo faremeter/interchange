@@ -174,14 +174,32 @@ export interface StepInvokeRequest {
 }
 
 /**
- * The outcome of a single `invokeStep`. A step either produces its
- * `output` (the agent replied) or suspends: the reactor parked on a gate
- * awaiting an external decision, handing back the `correlationId` the
- * runtime parks the step on until the correlated decision is delivered.
+ * The outcome of a single `invokeStep`. A step either produces its `output`
+ * (the agent replied) or suspends, handing back the `correlationId` the
+ * runtime parks the step on until the correlated event is delivered. The
+ * suspend arm is discriminated by an explicit {@link ControlParkKind}:
+ *
+ * - `"approval"` -- the reactor parked on a tool/authz gate. The snapshot is
+ *   REQUIRED (the sidecar->hub co-write treats it as mandatory), so it is a
+ *   type invariant here rather than resting on the runtime guard alone.
+ * - `"input"` -- the step parked awaiting its next input (a long-lived agent
+ *   run awaiting the next mail to take another turn). No snapshot, no host
+ *   notify; the run's owner delivers the input and the step re-arms.
+ *
+ * The discriminant is explicit, never inferred from snapshot presence: a
+ * snapshot-less approval must fail loud, not silently become an input park.
  */
 export type StepInvokeResult =
   | { output: unknown }
-  | { suspend: { correlationId: string; approvalSnapshot?: ApprovalSnapshot } };
+  | {
+      suspend:
+        | {
+            correlationId: string;
+            kind: "approval";
+            approvalSnapshot: ApprovalSnapshot;
+          }
+        | { correlationId: string; kind: "input" };
+    };
 
 /**
  * Per-action deterministic effect handler invocation, the effect analog

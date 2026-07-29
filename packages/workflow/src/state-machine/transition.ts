@@ -21,6 +21,8 @@
 // under that name and consumed by the next `SignalAwaited` for the
 // same name.
 
+import type { ControlParkKind } from "@intx/types/runtime";
+
 import { CANCEL_ORIGINS } from "./events";
 import type {
   AttemptScheduled,
@@ -336,9 +338,21 @@ function handleSignalAwaited(state: RunState, e: SignalAwaited): RunState {
     };
   }
   const steps = new Map(state.steps);
-  const awaitingSignal: { name: string; timeoutAt?: string } = {
+  // Carry the control-plane park kind through to the reduced state VERBATIM so
+  // recovery can tell an `"input"` park from an `"approval"` one. It is absent
+  // for a plain `awaitSignal` gate and for a legacy park committed before the
+  // input kind; recovery reads that absence through `controlParkKindOf`, the
+  // single point that interprets a reserved-channel absence as a legacy
+  // approval. The reducer does not itself default -- it must not stamp
+  // `"approval"` onto a plain gate that is not one.
+  const awaitingSignal: {
+    name: string;
+    timeoutAt?: string;
+    parkKind?: ControlParkKind;
+  } = {
     name: e.signalName,
     ...(e.timeoutAt !== undefined ? { timeoutAt: e.timeoutAt } : {}),
+    ...(e.parkKind !== undefined ? { parkKind: e.parkKind } : {}),
   };
   steps.set(e.stepId, {
     ...step,

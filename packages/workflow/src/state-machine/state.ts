@@ -5,6 +5,8 @@
 // reconstructs state from the log on resume; it never reads stale
 // in-memory state across process restart.
 
+import type { ControlParkKind } from "@intx/types/runtime";
+
 import type {
   RunId,
   SequenceNumber,
@@ -35,8 +37,30 @@ export interface StepState {
   currentAttempt: number;
   outputRef?: string;
   lastError?: { message: string };
-  awaitingSignal?: { name: string; timeoutAt?: string };
+  awaitingSignal?: {
+    name: string;
+    timeoutAt?: string;
+    parkKind?: ControlParkKind;
+  };
   awaitingTimerId?: TimerId;
+}
+
+/**
+ * Resolve a reserved-channel park's control-plane kind to a definite value.
+ *
+ * `awaitingSignal.parkKind` is absent in two cases: a plain `awaitSignal` gate
+ * (not a control-plane park at all), and a reserved-channel park committed
+ * before the input kind existed. Callers reach this ONLY after confirming a
+ * reserved `signalName(correlationId)` channel, where an absent kind can only
+ * be the latter -- a legacy park, which was an `"approval"` by construction
+ * (the input kind postdates it). This function is the SINGLE point of that
+ * legacy interpretation; every other read of `parkKind` goes through it rather
+ * than re-deriving the rule.
+ */
+export function controlParkKindOf(awaitingSignal: {
+  parkKind?: ControlParkKind;
+}): ControlParkKind {
+  return awaitingSignal.parkKind === "input" ? "input" : "approval";
 }
 
 export interface ChildState {

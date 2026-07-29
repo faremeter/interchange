@@ -551,6 +551,28 @@ export const ApprovalSnapshot = type({
 export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
 
 /**
+ * The kind of a control-plane park: a step suspended on a reserved
+ * `signalName(correlationId)` channel awaiting an external event.
+ *
+ * - `"approval"` -- the step parked on a tool/authz gate and REQUIRES an
+ *   {@link ApprovalSnapshot}; the runtime notifies the host (`env.onPark`) so
+ *   the sidecar co-writes the approval/correlation rows the hub registers.
+ * - `"input"` -- the step parked awaiting its next input (e.g. a long-lived
+ *   agent run awaiting the next mail so it can take another turn). It carries
+ *   NO snapshot and does NOT notify the host: the run's owner delivers the
+ *   input on the same channel and the step re-arms. It is a runtime-local
+ *   concept -- deliberately NOT a {@link SignalKind}, so it never touches the
+ *   approval-routing machinery (IPC register frames, the hub co-write, the
+ *   approval columns).
+ *
+ * The two are distinguished by an EXPLICIT discriminant everywhere the kind
+ * flows -- never inferred from the presence or absence of a snapshot, which
+ * would silently reclassify a malformed snapshot-less approval as an input
+ * park rather than failing loud.
+ */
+export type ControlParkKind = "approval" | "input";
+
+/**
  * Maximum serialized size, in UTF-8 bytes, of an {@link ApprovalSnapshot} that
  * crosses a trust boundary. A tool `inputSchema` is normally single-digit KB;
  * a snapshot approaching this bound is malformed or hostile and is rejected at

@@ -26,6 +26,7 @@ import {
   runtimeRun,
   step,
   type SignalChannel,
+  type StepInvokeResult,
   type StepInvoker,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -94,14 +95,18 @@ describe("env.onPark at a control-plane suspension", () => {
       steps: { s: step({ agent }) },
     });
     const parks: WorkflowPark[] = [];
-    // A correlated suspend that carries no approval snapshot -- the shape a
-    // director `caps.suspend` produces. The park boundary owns the "an
-    // approval park carries a snapshot" invariant, so the runtime fails the
-    // run here rather than emit a snapshot-less approval park that would crash
-    // the sidecar->hub co-write downstream.
-    const invokeStep: StepInvoker = async () => ({
-      suspend: { correlationId: "corr-1" },
-    });
+    // A correlated APPROVAL suspend that carries no snapshot. The typed
+    // `StepInvokeResult` now prevents this shape (the approval arm's snapshot
+    // is mandatory) and the producer classifies it as an error, so the cast
+    // reproduces a would-be internal invariant violation to assert that
+    // parkOnSignal still fails loud as a last line of defense rather than
+    // emitting a snapshot-less approval park that would crash the
+    // sidecar->hub co-write downstream.
+    const invokeStep: StepInvoker = async () =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately malformed: a snapshot-less approval the typed API prevents, cast to reach the runtime's belt-and-suspenders guard
+      ({
+        suspend: { correlationId: "corr-1", kind: "approval" },
+      }) as unknown as StepInvokeResult;
     const env = buildEnv(oneStep, {
       invokeStep,
       signalChannel: createInMemorySignalChannel(),
@@ -134,9 +139,13 @@ describe("env.onPark at a control-plane suspension", () => {
       trigger: { type: "manual" },
       steps: { s: step({ agent }) },
     });
-    const invokeStep: StepInvoker = async () => ({
-      suspend: { correlationId: "corr-durable" },
-    });
+    // Malformed on purpose (see the sibling test): a snapshot-less approval
+    // suspend the typed API prevents, cast to reach parkOnSignal's guard.
+    const invokeStep: StepInvoker = async () =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately malformed snapshot-less approval to reach the runtime guard
+      ({
+        suspend: { correlationId: "corr-durable", kind: "approval" },
+      }) as unknown as StepInvokeResult;
     const env = buildEnv(oneStep, {
       invokeStep,
       signalChannel: createInMemorySignalChannel(),
@@ -205,7 +214,11 @@ describe("env.onPark at a control-plane suspension", () => {
     const invokeStep: StepInvoker = async (req) => {
       if (req.resume === undefined) {
         return {
-          suspend: { correlationId: "corr-snap", approvalSnapshot: snapshot },
+          suspend: {
+            correlationId: "corr-snap",
+            kind: "approval",
+            approvalSnapshot: snapshot,
+          },
         };
       }
       return { output: { reply: "done", turn: replyTurn } };
@@ -263,6 +276,7 @@ describe("env.onPark at a control-plane suspension", () => {
         return {
           suspend: {
             correlationId: "corr-durable-notify",
+            kind: "approval",
             approvalSnapshot: snapshot,
           },
         };

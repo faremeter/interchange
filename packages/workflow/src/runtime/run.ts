@@ -9,7 +9,7 @@
 // body.
 
 import { correlationIdFromSignalName, signalName } from "@intx/types";
-import type { ApprovalSnapshot } from "@intx/types/runtime";
+import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
 
 import type {
   ActionPrimitive,
@@ -497,6 +497,14 @@ async function executeRunBody(
   // `timeoutAt` as epoch ms; `SignalAwaited` carries it as an ISO string, so
   // convert, and omit the field entirely for the indefinite-hold parks that are
   // the norm.
+  //
+  // This recovery is APPROVAL-only: `recoverableParks` come from the reactor's
+  // durable approval pending-op store, which reconstructs an approval park. An
+  // "input" park has no equivalent durable pending-op yet, so a crash in its
+  // pre-flush window (StepStarted flushed, SignalAwaited not) leaves it in
+  // `crashedInFlight` and it settles as a terminal StepFailed below rather than
+  // re-parking. The durable input substrate that closes this window is future
+  // work; input-park crash-safety today holds only for the post-flush window.
   for (const { stepId, correlationId, timeoutAtMs } of recoverableParks) {
     const awaited: WorkflowEvent = {
       kind: "SignalAwaited",
@@ -1282,7 +1290,10 @@ async function runStep(
           {
             stepId: step.id,
             signalName: signalName(result.suspend.correlationId),
-            ...(result.suspend.approvalSnapshot !== undefined
+            parkKind: result.suspend.kind,
+            // The approval arm carries a mandatory snapshot; the input arm
+            // carries none. Narrowing on `kind` keeps that a type invariant.
+            ...(result.suspend.kind === "approval"
               ? { approvalSnapshot: result.suspend.approvalSnapshot }
               : {}),
           },
@@ -2216,6 +2227,15 @@ async function parkOnSignal(
     signalName: string;
     timeout?: number;
     approvalSnapshot?: ApprovalSnapshot;
+    /**
+     * The control-plane park kind for a reserved-channel suspend. `"approval"`
+     * requires a snapshot and notifies the host; `"input"` is snapshot-less
+     * and does not notify (the run's owner delivers the next input on this
+     * channel). Absent for a plain `awaitSignal` gate on an author-chosen name
+     * (not a control-plane suspension) and on a re-park resume, which re-adopts
+     * the durable `SignalAwaited` without re-deriving the kind.
+     */
+    parkKind?: ControlParkKind;
   },
   state: ReturnType<typeof resumeFromLog>,
   abort: AbortSignal,
@@ -2253,6 +2273,9 @@ async function parkOnSignal(
             ).toISOString(),
           }
         : {}),
+      // Record the park kind so recovery can distinguish an input park from an
+      // approval one after a crash/reconnect (see parked-correlations).
+      ...(opts.parkKind !== undefined ? { parkKind: opts.parkKind } : {}),
     };
     state = await commit(env, runId, awaited);
     // Only a park on a reserved `signalName(correlationId)` channel (the
@@ -2261,12 +2284,13 @@ async function parkOnSignal(
     // author-chosen name is not a control-plane suspension, so
     // `correlationIdFromSignalName` returns `undefined` and no notify fires.
     const correlationId = correlationIdFromSignalName(opts.signalName);
-    if (correlationId !== undefined) {
-      // A reserved control-plane channel is always an approval today. The
-      // `WorkflowPark` type carries a single `kind: "approval"` arm, so a
-      // second `SignalKind` cannot be emitted here without adding an arm and
-      // deciding whether this site produces it -- the mis-stamp risk is now
-      // partly compiler-visible rather than resting on reviewer vigilance.
+    if (correlationId !== undefined && opts.parkKind !== "input") {
+      // A reserved control-plane channel is an APPROVAL park (`"input"` parks
+      // are handled by the branch guard above: they carry no snapshot and do
+      // NOT notify the host, because the run's owner delivers the next input on
+      // this channel rather than the hub co-writing an approval row). A legacy
+      // reserved-channel park with no recorded kind is an approval by
+      // construction and falls here too.
       //
       // An approval park REQUIRES its snapshot (the sidecar->hub co-write
       // treats it as mandatory). This is the layer that owns the park, so it

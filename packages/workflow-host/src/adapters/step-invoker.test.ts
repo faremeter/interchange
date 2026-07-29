@@ -409,7 +409,38 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
       );
     }
     expect(result.suspend.correlationId).toBe("corr-1");
+    if (result.suspend.kind !== "approval") {
+      throw new Error(
+        `expected an approval suspend, got ${result.suspend.kind}`,
+      );
+    }
     expect(result.suspend.approvalSnapshot).toEqual(approvalSnapshot);
+  });
+
+  test("throws on a suspended send result that carries no approval snapshot", async () => {
+    // A suspended reactor outcome is always an approval and must carry a
+    // snapshot; a snapshot-less suspend (a director `caps.suspend` with no tool
+    // definitions) is not a supported approval park. The producer classifies
+    // the failure here rather than emitting an ambiguous suspend the runtime
+    // would reject downstream. (The "input" park -- a conversational step
+    // re-arming for the next mail -- is the workflow-host's decision, not a
+    // reactor `SendResult`, so it never flows through here.)
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+    });
+
+    const sendPromise = invoker(buildRequest({ input: { goal: "ping" } }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "suspended", correlationId: "corr-1" });
+
+    await expect(sendPromise).rejects.toThrow(/no approval snapshot/);
   });
 
   test("passes a string input through verbatim instead of double-JSON-encoding", async () => {
@@ -981,7 +1012,16 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     let sentContent: string | InboundMessage | undefined;
     const agent = buildResumeStubAgent((content) => {
       sentContent = content;
-      return { type: "suspended", correlationId: "corr-B" };
+      return {
+        type: "suspended",
+        correlationId: "corr-B",
+        approvalSnapshot: {
+          name: "tool_b",
+          description: "Tool B needs approval",
+          inputSchema: { type: "object" },
+          arguments: {},
+        },
+      };
     });
 
     const invoker = createWorkflowStepInvoker({

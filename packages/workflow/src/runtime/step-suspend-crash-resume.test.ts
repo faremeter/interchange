@@ -98,7 +98,18 @@ describe("step suspend crash-resume", () => {
     const invokeStep: StepInvoker = async (req) => {
       invocations.push(req);
       if (req.resume === undefined) {
-        return { suspend: { correlationId: "corr-1" } };
+        return {
+          suspend: {
+            correlationId: "corr-1",
+            kind: "approval",
+            approvalSnapshot: {
+              name: "gate",
+              description: "gate",
+              inputSchema: { type: "object" },
+              arguments: {},
+            },
+          },
+        };
       }
       return { output: { reply: "done", turn: replyTurn } };
     };

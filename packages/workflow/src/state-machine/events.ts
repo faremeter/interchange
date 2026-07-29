@@ -9,6 +9,8 @@
 // legal in which states. See the design spec section 4 for the full
 // narrative of the cancellation, signal, and timer invariants.
 
+import type { ControlParkKind } from "@intx/types/runtime";
+
 export type RunId = string;
 export type StepId = string;
 export type AttemptId = number;
@@ -105,6 +107,17 @@ export interface SignalAwaited extends EventBase {
   stepId: StepId;
   signalName: string;
   timeoutAt?: string;
+  /**
+   * The control-plane park kind, recorded so it survives a crash/reconnect:
+   * the reduced state alone cannot tell an `"input"` park (snapshot-less,
+   * never hub-registered) from an `"approval"` park, and the parked-
+   * correlation recovery must skip the former rather than throw looking for a
+   * snapshot it never had. Absent on a plain `awaitSignal` gate (not a
+   * control-plane park) and on logs written before the input kind existed --
+   * both read back as `"approval"` at the reducer, which is correct because
+   * every reserved-channel park before this change was an approval.
+   */
+  parkKind?: ControlParkKind;
 }
 
 export interface SignalReceived extends EventBase {

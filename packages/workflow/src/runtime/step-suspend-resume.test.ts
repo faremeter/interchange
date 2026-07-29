@@ -93,6 +93,7 @@ describe("step suspend/resume bridge", () => {
         return {
           suspend: {
             correlationId: "corr-1",
+            kind: "approval",
             approvalSnapshot: suspendSnapshot,
           },
         };
@@ -163,6 +164,7 @@ describe("step suspend/resume bridge", () => {
         return {
           suspend: {
             correlationId: "corr-A",
+            kind: "approval",
             approvalSnapshot: suspendSnapshot,
           },
         };
@@ -173,6 +175,7 @@ describe("step suspend/resume bridge", () => {
         return {
           suspend: {
             correlationId: "corr-B",
+            kind: "approval",
             approvalSnapshot: suspendSnapshot,
           },
         };

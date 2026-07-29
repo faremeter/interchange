@@ -16,7 +16,10 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions/substrate";
-import type { RepoStore as RuntimeRepoStore } from "@intx/workflow";
+import {
+  controlParkKindOf,
+  type RepoStore as RuntimeRepoStore,
+} from "@intx/workflow";
 import type { SignalKind } from "@intx/types";
 import { correlationIdFromSignalName } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
@@ -79,10 +82,19 @@ export async function collectParkedApprovalCorrelations(
   for (const run of discovered) {
     for (const step of run.resumedState.steps.values()) {
       if (step.phase !== "awaiting-signal") continue;
-      const name = step.awaitingSignal?.name;
-      if (name === undefined) continue;
-      const correlationId = correlationIdFromSignalName(name);
+      const awaited = step.awaitingSignal;
+      if (awaited === undefined) continue;
+      const correlationId = correlationIdFromSignalName(awaited.name);
       if (correlationId === undefined) continue;
+      // An `"input"` park (a long-lived run awaiting its next mail) reduces to
+      // the same `awaiting-signal` on a reserved channel as an approval, but it
+      // carries NO snapshot and is never hub-registered -- the run's owner
+      // delivers the input directly. Skip it: enumerating it would call
+      // loadParkedApproval, get no snapshot, and throw below, taking the whole
+      // deployment's approval re-registration down on every reconnect.
+      // `controlParkKindOf` is the single point that reads a reserved-channel
+      // park's kind; an absent kind is a legacy approval, not an input park.
+      if (controlParkKindOf(awaited) === "input") continue;
       if (opts.loadParkedApproval === undefined) {
         throw new Error(
           `workflow-child parked-correlations: run ${run.runId} step ${step.stepId} is parked on control-plane correlation ${correlationId}, but no loadParkedApproval binding is wired to recover its snapshot`,
