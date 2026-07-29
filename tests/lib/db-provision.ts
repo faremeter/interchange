@@ -37,6 +37,53 @@ export type ProvisionedDatabase = {
 };
 
 /**
+ * Drop a provisioned database by name. Reloads host/port from `.env` via
+ * `loadHarnessDbConfig` and connects to the maintenance `postgres`
+ * database under the ambient superuser identity, exactly as
+ * `provisionDatabase` does when it creates the database. Terminates any
+ * remaining backends against the target, then drops it with `FORCE`,
+ * retrying a bounded number of times so a connection that is still
+ * winding down cannot leave the database orphaned.
+ *
+ * Both `provisionDatabase`'s returned `teardown` and the standalone
+ * provisioning CLI's `down` command route through here, so there is a
+ * single drop implementation with two entry points.
+ */
+export async function dropProvisionedDatabase(name: string): Promise<void> {
+  const base = loadHarnessDbConfig();
+  const dbIdent = quoteIdent(name);
+
+  const dropClient = postgres({
+    host: base.host,
+    port: base.port,
+    database: "postgres",
+    max: 1,
+    onnotice: () => undefined,
+  });
+  try {
+    await dropClient`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${name} AND pid <> pg_backend_pid()`;
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await dropClient
+          .unsafe(`DROP DATABASE IF EXISTS ${dbIdent} WITH (FORCE)`)
+          .simple();
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    throw new Error(`failed to drop database ${name}`, {
+      cause: lastError,
+    });
+  } finally {
+    await dropClient.end();
+  }
+}
+
+/**
  * Provision a fresh, uniquely-named postgres database: create it under
  * the maintenance (superuser) connection, grant the migration and hub
  * roles what each needs, apply the migrations into `public`, and return
@@ -66,31 +113,6 @@ export async function provisionDatabase(): Promise<ProvisionedDatabase> {
       max: 1,
       onnotice: () => undefined,
     });
-
-  const dropDatabase = async (): Promise<void> => {
-    const dropClient = openMaintenance("postgres");
-    try {
-      await dropClient`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${database} AND pid <> pg_backend_pid()`;
-
-      let lastError: unknown;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await dropClient
-            .unsafe(`DROP DATABASE IF EXISTS ${dbIdent} WITH (FORCE)`)
-            .simple();
-          return;
-        } catch (error) {
-          lastError = error;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-      }
-      throw new Error(`failed to drop database ${database}`, {
-        cause: lastError,
-      });
-    } finally {
-      await dropClient.end();
-    }
-  };
 
   const admin = openMaintenance("postgres");
   try {
@@ -146,7 +168,7 @@ export async function provisionDatabase(): Promise<ProvisionedDatabase> {
     }
   } catch (error) {
     try {
-      await dropDatabase();
+      await dropProvisionedDatabase(database);
     } catch {
       // Best-effort cleanup: the original provisioning failure is the
       // meaningful one, so a failure to drop the half-provisioned
@@ -155,5 +177,9 @@ export async function provisionDatabase(): Promise<ProvisionedDatabase> {
     throw error;
   }
 
-  return { database, config, teardown: dropDatabase };
+  return {
+    database,
+    config,
+    teardown: () => dropProvisionedDatabase(database),
+  };
 }
