@@ -28,6 +28,18 @@ test: FORCE
 test-load: FORCE
 	$(BUN) test --timeout 300000 tests/workflow-deploy/fifo-mail-load.test.ts
 
+# Browser-driven admin UI end-to-end suite (Playwright). Excluded from
+# all/test; needs a running Postgres and a one-time
+# `bunx playwright install chromium`. Builds the admin UI bundle first
+# because the harness globalSetup requires apps/admin-ui/dist.
+test-e2e: build-admin-ui
+	$(MAKE) test-e2e-run
+
+# Run the suite against an already-built bundle (CI builds it via
+# `make all` and must not build it twice).
+test-e2e-run: FORCE
+	cd tests/admin-ui-e2e && bunx playwright test
+
 verify-tool-load: FORCE
 	bun bin/verify-tool-load.ts
 
@@ -54,5 +66,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build build-admin-ui lint test test-load verify-tool-load format docs clean builtins publish-builtins
+.PHONY: all build build-admin-ui lint test test-load test-e2e test-e2e-run verify-tool-load format docs clean builtins publish-builtins
 FORCE:

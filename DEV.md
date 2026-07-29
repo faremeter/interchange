@@ -159,6 +159,7 @@ make build-admin-ui # admin-ui production bundle (vite build)
 make lint           # Prettier + ESLint + API docs freshness
 make format         # Prettier auto-fix
 make test           # All tests
+make test-e2e       # Admin UI browser end-to-end suite (excluded from all)
 make docs           # Regenerate API documentation
 make clean          # Remove tsbuildinfo, dist directories, env stamp
 ```
@@ -166,6 +167,28 @@ make clean          # Remove tsbuildinfo, dist directories, env stamp
 The pre-commit hook checks out the staged tree into a temporary
 directory and runs `make lint` against it, so only committed content
 is validated.
+
+### End-to-End Suite
+
+`make test-e2e` runs the Playwright browser suite in `tests/admin-ui-e2e`.
+It builds the admin UI bundle (`make build-admin-ui`), brings up a
+hermetic stack headless -- a fresh per-run database, a hub, and a vite
+preview server serving the built admin UI -- and drives a real browser
+through a login against that UI. It is excluded from `make all` and
+`make test`; run it on its own.
+
+Local prerequisites:
+
+- An already-running PostgreSQL. The suite does not use docker.
+- A maintenance/superuser Postgres connection available through the
+  ambient `PG*` libpq environment (`PGHOST`, `PGPORT`, `PGUSER`, ...),
+  so the per-run provisioner can `CREATE DATABASE`. This is the same
+  superuser basis `bin/db-reset` relies on.
+- A one-time browser install: `bunx playwright install chromium`.
+
+The harness sets `ADMIN_UI_HUB_ORIGIN` for the run; the vite preview
+proxy reads it to point the admin UI's `/api` calls at that run's hub.
+You do not set it by hand.
 
 ## Bin Scripts
 
