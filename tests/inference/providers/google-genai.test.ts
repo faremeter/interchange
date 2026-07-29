@@ -388,11 +388,11 @@ describe("Google GenAI adapter: tools and thinking", () => {
     });
   });
 
-  test("thinking.enabled=false emits thinkingConfig.thinkingBudget=0", () => {
-    // Gemini 2.5's default thinking budget is NOT zero, so disabling
-    // thinking requires an explicit zero rather than just omitting
-    // thinkingConfig. Mirrors the discovery-side plainTextStreaming
-    // capture shape.
+  test("thinking.enabled=false emits thinkingBudget=0 on models that allow it", () => {
+    // Gemini 2.5 flash default thinking budget is NOT zero, so
+    // disabling thinking requires an explicit zero rather than just
+    // omitting thinkingConfig. Mirrors the discovery-side
+    // plainTextStreaming capture shape.
     const req = adapter.buildRequest(
       [
         {
@@ -408,6 +408,26 @@ describe("Google GenAI adapter: tools and thinking", () => {
     expect(body.generationConfig).toEqual({
       thinkingConfig: { thinkingBudget: 0 },
     });
+  });
+
+  test("thinking.enabled=false uses dynamic budget on thinking-mandatory models", () => {
+    for (const model of ["gemini-2.5-pro", "gemini-3.6-flash"] as const) {
+      const req = adapter.buildRequest(
+        [
+          {
+            role: "user",
+            content: [{ type: "text", text: "hi" }],
+            timestamp: 0,
+          },
+        ],
+        model,
+        { thinking: { enabled: false } },
+      );
+      const body = parseBody(req.body);
+      expect(body.generationConfig).toEqual({
+        thinkingConfig: { thinkingBudget: -1 },
+      });
+    }
   });
 
   test("thinking omitted → no thinkingConfig (model default applies)", () => {

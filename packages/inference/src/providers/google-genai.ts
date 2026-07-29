@@ -30,6 +30,22 @@ const GOOGLE_TOOL_NAME_LIMIT: ToolNameLimit = {
   maxLength: 64,
 };
 
+// Models that reject thinkingConfig.thinkingBudget: 0 with HTTP 400.
+// Keep aligned with the discovery plug-in's THINKING_MANDATORY_MODELS.
+const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
+  "gemini-2.5-pro",
+  "gemini-3.6-flash",
+]);
+
+// Dynamic thinking budget sentinel: the model decides how much to
+// think. Used when suppressing thought parts on thinking-mandatory
+// models that reject a zero budget.
+const DYNAMIC_THINKING_BUDGET = -1;
+
+function minimalThinkingBudget(model: string): number {
+  return THINKING_MANDATORY_MODELS.has(model) ? DYNAMIC_THINKING_BUDGET : 0;
+}
+
 // Runtime validator for "parsed JSON value is a plain object." Used
 // by `tryParseJSONObject` to narrow `JSON.parse(string)` from its
 // declared `unknown` return into a `Record<string, unknown>` without a
@@ -118,7 +134,7 @@ function buildRequest(
     ];
   }
 
-  const generationConfig = buildGenerationConfig(options);
+  const generationConfig = buildGenerationConfig(model, options);
   if (generationConfig !== undefined) {
     body["generationConfig"] = generationConfig;
   }
@@ -516,6 +532,7 @@ function tryParseJSONObject(text: string): Record<string, unknown> | null {
 // ---------------------------------------------------------------------------
 
 function buildGenerationConfig(
+  model: string,
   options: InferenceOptions,
 ): Record<string, unknown> | undefined {
   const config: Record<string, unknown> = {};
@@ -529,10 +546,10 @@ function buildGenerationConfig(
 
   // thinking.enabled === true  -> include a budget (default 1024) and
   //                                ask Gemini to surface thought parts
-  // thinking.enabled === false -> set the budget to 0 to disable
-  //                                thinking; Gemini's 2.5-series default
-  //                                is NOT zero, so "thinking off" needs
-  //                                an explicit signal
+  // thinking.enabled === false -> suppress thoughts: budget 0 when the
+  //                                model allows it, or dynamic (-1) for
+  //                                thinking-mandatory models that reject
+  //                                a zero budget with HTTP 400
   // thinking absent            -> omit thinkingConfig entirely; Gemini
   //                                uses the model's default
   if (options.thinking !== undefined) {
@@ -543,7 +560,9 @@ function buildGenerationConfig(
         includeThoughts: true,
       };
     } else {
-      config["thinkingConfig"] = { thinkingBudget: 0 };
+      config["thinkingConfig"] = {
+        thinkingBudget: minimalThinkingBudget(model),
+      };
     }
   }
 
