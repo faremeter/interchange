@@ -261,6 +261,46 @@ describe("structured-output round-trip — google-genai gemini-2.5-flash", () =>
   });
 });
 
+describe("structured-output round-trip — openai gpt-5.6-sol", () => {
+  test("non-streaming JSON parses against the catalog schema", () => {
+    const content = readOpenAINonStreamingContent({
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      capability: "structured-output",
+    });
+    assertContentSchemaConformant(content);
+  });
+
+  test("streaming JSON parses against the catalog schema", async () => {
+    const events = await replayFixture({
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      capability: "structured-output-streaming",
+    });
+    assertSchemaConformant(events);
+  });
+});
+
+describe("structured-output round-trip — google-genai gemini-3.6-flash", () => {
+  test("non-streaming JSON parses against the catalog schema", () => {
+    const content = readGeminiNonStreamingContent({
+      provider: "google-genai",
+      model: "gemini-3.6-flash",
+      capability: "structured-output",
+    });
+    assertContentSchemaConformant(content);
+  });
+
+  test("streaming JSON parses against the catalog schema", async () => {
+    const events = await replayFixture({
+      provider: "google-genai",
+      model: "gemini-3.6-flash",
+      capability: "structured-output-streaming",
+    });
+    assertSchemaConformant(events);
+  });
+});
+
 // Drift guard: the per-provider responseFormat translation lives in
 // two places — the runtime adapter (`@intx/inference`) and the
 // discovery plug-in (`@intx/inference-discovery-*`). The two
@@ -337,6 +377,49 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     // may differ between the discovery probe and an adapter call
     // configured with different timeouts. Pin only responseMimeType
     // and responseSchema.
+    expect(adapterBody.generationConfig?.responseMimeType).toBe(
+      capturedBody.generationConfig?.responseMimeType,
+    );
+    expect(adapterBody.generationConfig?.responseSchema).toEqual(
+      capturedBody.generationConfig?.responseSchema,
+    );
+  });
+
+  test("OpenAI first-party gpt-5.6-sol: adapter.response_format matches captured request body", () => {
+    const adapter = createOpenAIAdapter(OPENAI_SOURCE);
+    const adapterReq = adapter.buildRequest(
+      [PROMPT_TURN],
+      "gpt-5.6-sol",
+      OPTIONS_FROM_INTENT,
+    );
+    const adapterBody = CapturedOpenAIBody.assert(JSON.parse(adapterReq.body));
+    const capturedRaw = readFileSync(
+      path.join(
+        fixtureDirFor("openai", "gpt-5.6-sol", "structured-output"),
+        "request.json",
+      ),
+      "utf8",
+    );
+    const capturedBody = CapturedOpenAIBody.assert(JSON.parse(capturedRaw));
+    expect(adapterBody.response_format).toEqual(capturedBody.response_format);
+  });
+
+  test("Google GenAI gemini-3.6-flash: adapter structured-output fields match capture", () => {
+    const adapter = createGoogleGenAIAdapter(GOOGLE_SOURCE);
+    const adapterReq = adapter.buildRequest(
+      [PROMPT_TURN],
+      "gemini-3.6-flash",
+      OPTIONS_FROM_INTENT,
+    );
+    const adapterBody = CapturedGeminiBody.assert(JSON.parse(adapterReq.body));
+    const capturedRaw = readFileSync(
+      path.join(
+        fixtureDirFor("google-genai", "gemini-3.6-flash", "structured-output"),
+        "request.json",
+      ),
+      "utf8",
+    );
+    const capturedBody = CapturedGeminiBody.assert(JSON.parse(capturedRaw));
     expect(adapterBody.generationConfig?.responseMimeType).toBe(
       capturedBody.generationConfig?.responseMimeType,
     );
