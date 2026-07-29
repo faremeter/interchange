@@ -53,6 +53,7 @@ make build-admin-ui  # admin-ui production bundle (vite build)
 make lint            # Prettier + ESLint + API docs freshness
 make format          # Auto-format with Prettier
 make test            # Run bun tests
+make test-e2e        # Admin UI browser end-to-end suite (excluded from all)
 make docs            # Regenerate API documentation
 ```
 

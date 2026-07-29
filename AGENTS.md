@@ -46,6 +46,7 @@ The remaining command gets a clean, running system with seed data. It drops and 
 | Bundle the admin UI           | `make build-admin-ui`   |
 | Lint only                     | `make lint`             |
 | Run tests only                | `make test`             |
+| Admin UI e2e suite            | `make test-e2e`         |
 | Auto-format                   | `make format`           |
 | Regenerate API docs           | `make docs`             |
 
