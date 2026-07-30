@@ -238,7 +238,7 @@ describe("env.onPark at a control-plane suspension", () => {
       {
         runId: "run-snap",
         correlationId: "corr-snap",
-        kind: "approval",
+        parkKind: "approval",
         approvalSnapshot: snapshot,
       },
     ]);

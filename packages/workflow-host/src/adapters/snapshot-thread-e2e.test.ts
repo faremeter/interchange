@@ -211,7 +211,7 @@ describe("approval snapshot in-process end-to-end thread", () => {
     expect(parks).toHaveLength(1);
     const park = parks[0];
     if (park === undefined) throw new Error("unreachable");
-    expect(park.kind).toBe("approval");
+    expect(park.parkKind).toBe("approval");
     expect(park.approvalSnapshot).toEqual({
       name: TOOL_NAME,
       description: TOOL_DESCRIPTION,

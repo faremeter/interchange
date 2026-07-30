@@ -2262,7 +2262,7 @@ describe("emitParkNotify", () => {
     const park: WorkflowPark = {
       runId: "run-park",
       correlationId: "corr-42",
-      kind: "approval",
+      parkKind: "approval",
       approvalSnapshot: parkSnapshot,
     };
     await emitParkNotify(sender, park);
@@ -2272,7 +2272,7 @@ describe("emitParkNotify", () => {
         data: {
           runId: "run-park",
           correlationId: "corr-42",
-          kind: "approval",
+          parkKind: "approval",
           snapshot: parkSnapshot,
         },
       },
@@ -2290,7 +2290,7 @@ describe("emitParkNotify", () => {
     await emitParkNotify(sender, {
       runId: "run-park",
       correlationId: "corr-42",
-      kind: "approval",
+      parkKind: "approval",
       approvalSnapshot: parkSnapshot,
     });
   });

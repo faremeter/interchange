@@ -64,7 +64,6 @@ import {
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
 import { base64Decode, base64Encode, deriveMessageId } from "@intx/types";
-import type { SignalKind } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
@@ -396,6 +395,17 @@ export function createWorkflowSupervisor(
    * Used by: `drain()` to arm one drainTimeout accumulator per run.
    */
   const cohortRunIds = new Set<string>();
+  /**
+   * Per-run input channel cache. When a long-lived run parks on an input
+   * signal, the child sends `park.notify` with `parkKind: "input"`. The
+   * supervisor stores the `correlationId` here so that subsequent mail
+   * deliveries can fire `signal.deliver` without re-reading the substrate.
+   * Cleared on terminal event or cohort abort.
+   */
+  const runInputChannels = new Map<
+    string,
+    { correlationId: string; parkKind: "input" }
+  >();
   // D2 attribution (measurement-only): the runId the dispatch loop is
   // currently servicing. Set at `dispatch-start`, cleared after
   // `reply-produced`. The dispatch loop is strictly serial (one message
@@ -800,21 +810,33 @@ export function createWorkflowSupervisor(
         // Clean up cohort tracking for the terminated run. Self-discovered
         // runs have no dispatch-loop entry, so their cleanup happens here.
         cohortRunIds.delete(payload.data.runId);
+        runInputChannels.delete(payload.data.runId);
         continue;
       }
       if (payload.type === "park.notify") {
         // The workflow-process child reported a control-plane suspension: an
         // agent step parked on a reserved `signalName(correlationId)` channel.
-        // Register it the same way the reconnect re-emit driver does, through
-        // the shared `registerSuspension` transform.
-        registerSuspension({
-          runId: payload.data.runId,
-          correlationId: payload.data.correlationId,
-          kind: payload.data.kind,
-          ...(payload.data.snapshot !== undefined
-            ? { snapshot: payload.data.snapshot }
-            : {}),
-        });
+        if (payload.data.parkKind === "input") {
+          // Input parks are owned by the supervisor, not the hub. Cache the
+          // correlationId so the dispatch loop can fire signal.deliver on
+          // subsequent mail without a substrate round-trip.
+          runInputChannels.set(payload.data.runId, {
+            correlationId: payload.data.correlationId,
+            parkKind: "input",
+          });
+        } else {
+          // Approval parks are hub-registered through the shared
+          // `registerSuspension` transform.
+          registerSuspension({
+            runId: payload.data.runId,
+            correlationId: payload.data.correlationId,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the else branch only runs for non-input parks; approval is the only other kind today
+            parkKind: payload.data.parkKind as "approval",
+            ...(payload.data.snapshot !== undefined
+              ? { snapshot: payload.data.snapshot }
+              : {}),
+          });
+        }
         continue;
       }
       if (payload.type === "parked-correlations.response") {
@@ -928,7 +950,7 @@ export function createWorkflowSupervisor(
   function registerSuspension(park: {
     runId: string;
     correlationId: string;
-    kind: SignalKind;
+    parkKind: "approval";
     snapshot?: ApprovalSnapshot;
   }): void {
     if (bindings.onSuspensionRegister === undefined) {
@@ -939,7 +961,7 @@ export function createWorkflowSupervisor(
       bindings.onSuspensionRegister({
         runId: park.runId,
         correlationId: park.correlationId,
-        kind: park.kind,
+        kind: park.parkKind,
         deploymentId: bindings.deploymentId,
         agentAddress: bindings.deploymentMailAddress,
         ...(park.snapshot !== undefined
@@ -1041,7 +1063,14 @@ export function createWorkflowSupervisor(
     // answered): nothing to re-emit; the next re-establishment re-drives.
     if (outcome === "timeout" || outcome === null) return;
     for (const parked of outcome) {
-      registerSuspension(parked);
+      if (parked.parkKind === "input") {
+        runInputChannels.set(parked.runId, {
+          correlationId: parked.correlationId,
+          parkKind: "input",
+        });
+      } else {
+        registerSuspension({ ...parked, parkKind: "approval" });
+      }
     }
   }
 
@@ -2325,6 +2354,7 @@ export function createWorkflowSupervisor(
       drainAccumulators.clear();
       cohortRunIds.clear();
       dispatchedRunIds.clear();
+      runInputChannels.clear();
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||

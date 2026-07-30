@@ -1411,7 +1411,7 @@ describe("park.notify snapshot validation", () => {
       data: {
         runId: "run-1",
         correlationId: "corr-1",
-        kind: "approval",
+        parkKind: "approval",
         snapshot: validSnapshot,
       },
     });
@@ -1421,7 +1421,7 @@ describe("park.notify snapshot validation", () => {
   test("accepts a park.notify with no snapshot", () => {
     const validated = ControlPayload({
       type: "park.notify",
-      data: { runId: "run-1", correlationId: "corr-1", kind: "approval" },
+      data: { runId: "run-1", correlationId: "corr-1", parkKind: "approval" },
     });
     expect(validated instanceof type.errors).toBe(false);
   });
@@ -1432,7 +1432,7 @@ describe("park.notify snapshot validation", () => {
       data: {
         runId: "run-1",
         correlationId: "corr-1",
-        kind: "approval",
+        parkKind: "approval",
         snapshot: {
           ...validSnapshot,
           inputSchema: { pad: "a".repeat(APPROVAL_SNAPSHOT_MAX_BYTES) },
@@ -1487,7 +1487,7 @@ describe("parked-correlations frames", () => {
           {
             runId: "run-1",
             correlationId: "corr-1",
-            kind: "approval",
+            parkKind: "approval",
             snapshot: validSnapshot,
           },
         ],
@@ -1508,7 +1508,7 @@ describe("parked-correlations frames", () => {
             {
               runId: "run-1",
               correlationId: "corr-1",
-              kind: "approval",
+              parkKind: "approval",
               snapshot: validSnapshot,
             },
           ],

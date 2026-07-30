@@ -373,12 +373,7 @@ export type LoopFnRegistry = (ref: string) => LoopFn;
 export type WorkflowPark = {
   runId: string;
   correlationId: string;
-  // A one-arm discriminated union, not `kind: SignalKind`: `approval` is the
-  // only control-plane kind today and it REQUIRES an `approvalSnapshot`. A
-  // second `SignalKind` must add its own arm here and declare its own snapshot
-  // policy rather than silently inheriting approval's -- the same discipline
-  // `signalKindToGateType`'s `assertNever` enforces at the gate switch.
-  kind: "approval";
+  parkKind: ControlParkKind;
   /**
    * Approver-facing snapshot of the parked tool call, forwarded from the
    * reactor so the host can register it alongside the correlation. Required on
@@ -386,8 +381,10 @@ export type WorkflowPark = {
    * snapshot-less one, because the sidecar->hub co-write treats the snapshot as
    * mandatory (the register frame requires it and the approval columns are NOT
    * NULL). A resume-from-park does not re-fire the notify.
+   *
+   * Absent for input parks, which carry no snapshot.
    */
-  approvalSnapshot: ApprovalSnapshot;
+  approvalSnapshot?: ApprovalSnapshot;
 };
 
 /**

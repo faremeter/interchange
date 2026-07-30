@@ -570,7 +570,8 @@ export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
  * would silently reclassify a malformed snapshot-less approval as an input
  * park rather than failing loud.
  */
-export type ControlParkKind = "approval" | "input";
+export const ControlParkKind = type.enumerated("approval", "input");
+export type ControlParkKind = typeof ControlParkKind.infer;
 
 /**
  * Maximum serialized size, in UTF-8 bytes, of an {@link ApprovalSnapshot} that

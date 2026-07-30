@@ -2372,34 +2372,43 @@ async function parkOnSignal(
     // author-chosen name is not a control-plane suspension, so
     // `correlationIdFromSignalName` returns `undefined` and no notify fires.
     const correlationId = correlationIdFromSignalName(opts.signalName);
-    if (correlationId !== undefined && opts.parkKind !== "input") {
-      // A reserved control-plane channel is an APPROVAL park (`"input"` parks
-      // are handled by the branch guard above: they carry no snapshot and do
-      // NOT notify the host, because the run's owner delivers the next input on
-      // this channel rather than the hub co-writing an approval row). A legacy
-      // reserved-channel park with no recorded kind is an approval by
-      // construction and falls here too.
-      //
-      // An approval park REQUIRES its snapshot (the sidecar->hub co-write
-      // treats it as mandatory). This is the layer that owns the park, so it
-      // is where the invariant is enforced: a correlated suspend that carries
-      // no snapshot -- e.g. a director `caps.suspend` -- fails loud here rather
-      // than mislabelling a snapshot-less park and crashing the co-write three
-      // hops downstream. Failing before the flush is correct: nothing has been
-      // transmitted yet, so a snapshot-less park leaves no durable or hub trace.
-      if (opts.approvalSnapshot === undefined) {
-        throw new Error(
-          `control-plane approval park for ${correlationId} carries no ` +
-            `approval snapshot; a snapshot-less correlated suspend (e.g. a ` +
-            `director caps.suspend) is not a supported approval`,
-        );
+    if (correlationId !== undefined) {
+      if (opts.parkKind === "input") {
+        // An input park carries no snapshot and does NOT notify the hub.
+        // The supervisor (not the hub) owns the next input delivery, so
+        // the child forwards the correlationId upstream so the supervisor
+        // can cache it for signal delivery.
+        parkToNotify = {
+          runId,
+          correlationId,
+          parkKind: "input",
+        };
+      } else {
+        // A reserved control-plane channel is an APPROVAL park (a legacy
+        // reserved-channel park with no recorded kind is an approval by
+        // construction and falls here too).
+        //
+        // An approval park REQUIRES its snapshot (the sidecar->hub co-write
+        // treats it as mandatory). This is the layer that owns the park, so it
+        // is where the invariant is enforced: a correlated suspend that carries
+        // no snapshot -- e.g. a director `caps.suspend` -- fails loud here rather
+        // than mislabelling a snapshot-less park and crashing the co-write three
+        // hops downstream. Failing before the flush is correct: nothing has been
+        // transmitted yet, so a snapshot-less park leaves no durable or hub trace.
+        if (opts.approvalSnapshot === undefined) {
+          throw new Error(
+            `control-plane approval park for ${correlationId} carries no ` +
+              `approval snapshot; a snapshot-less correlated suspend (e.g. a ` +
+              `director caps.suspend) is not a supported approval`,
+          );
+        }
+        parkToNotify = {
+          runId,
+          correlationId,
+          parkKind: "approval",
+          approvalSnapshot: opts.approvalSnapshot,
+        };
       }
-      parkToNotify = {
-        runId,
-        correlationId,
-        kind: "approval",
-        approvalSnapshot: opts.approvalSnapshot,
-      };
     }
   }
   // The per-step timeout commits TimerSet before asking the scheduler

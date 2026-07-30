@@ -20,9 +20,8 @@ import {
   controlParkKindOf,
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow";
-import type { SignalKind } from "@intx/types";
+import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
 import { correlationIdFromSignalName } from "@intx/types";
-import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import { discoverInFlightRuns } from "./self-discovery";
 
@@ -41,18 +40,15 @@ export type LoadParkedApproval = (args: {
 }) => Promise<ApprovalSnapshot | undefined>;
 
 /**
- * One parked approval correlation: the child-supplied half of a suspension
- * registration. `kind` is the literal `"approval"` -- the enumeration filter
- * (a control-plane `signalName(correlationId)` channel) already establishes
- * that this is an approval, and reading `kind` back from the durable record
- * (a bare `"approval"` literal) would risk a future signal kind silently
- * inheriting approval's snapshot policy instead of declaring its own.
+ * One parked control-plane correlation: the child-supplied half of a
+ * suspension registration. `parkKind` discriminates approval parks
+ * (which carry a snapshot) from input parks (which do not).
  */
 export interface ParkedApprovalCorrelation {
   runId: string;
   correlationId: string;
-  kind: SignalKind;
-  snapshot: ApprovalSnapshot;
+  parkKind: ControlParkKind;
+  snapshot?: ApprovalSnapshot;
 }
 
 export interface CollectParkedApprovalCorrelationsOpts {
@@ -94,7 +90,15 @@ export async function collectParkedApprovalCorrelations(
       // deployment's approval re-registration down on every reconnect.
       // `controlParkKindOf` is the single point that reads a reserved-channel
       // park's kind; an absent kind is a legacy approval, not an input park.
-      if (controlParkKindOf(awaited) === "input") continue;
+      const parkKind = controlParkKindOf(awaited);
+      if (parkKind === "input") {
+        out.push({
+          runId: run.runId,
+          correlationId,
+          parkKind: "input",
+        });
+        continue;
+      }
       if (opts.loadParkedApproval === undefined) {
         throw new Error(
           `workflow-child parked-correlations: run ${run.runId} step ${step.stepId} is parked on control-plane correlation ${correlationId}, but no loadParkedApproval binding is wired to recover its snapshot`,
@@ -114,7 +118,7 @@ export async function collectParkedApprovalCorrelations(
       out.push({
         runId: run.runId,
         correlationId,
-        kind: "approval",
+        parkKind: "approval",
         snapshot,
       });
     }

@@ -262,7 +262,7 @@ describe("supervisor park.notify arm", () => {
       data: {
         runId: "run-parked",
         correlationId: "corr-99",
-        kind: "approval",
+        parkKind: "approval",
       },
     });
 
@@ -302,7 +302,7 @@ describe("supervisor park.notify arm", () => {
       data: {
         runId: "run-parked-2",
         correlationId: "corr-100",
-        kind: "approval",
+        parkKind: "approval",
         snapshot,
       },
     });

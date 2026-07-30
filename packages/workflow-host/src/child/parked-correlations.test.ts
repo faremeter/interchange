@@ -153,7 +153,12 @@ describe("collectParkedApprovalCorrelations", () => {
     });
 
     expect(result).toEqual([
-      { runId: "run-1", correlationId: "corr-1", kind: "approval", snapshot },
+      {
+        runId: "run-1",
+        correlationId: "corr-1",
+        parkKind: "approval",
+        snapshot,
+      },
     ]);
     expect(calls).toEqual([
       { runId: "run-1", stepId: "s", attempt: 1, correlationId: "corr-1" },
@@ -201,7 +206,7 @@ describe("collectParkedApprovalCorrelations", () => {
       "corr-a2",
       "corr-b1",
     ]);
-    expect(result.every((r) => r.kind === "approval")).toBe(true);
+    expect(result.every((r) => r.parkKind === "approval")).toBe(true);
     expect(result.every((r) => r.snapshot === snapshot)).toBe(true);
     expect(calls.sort()).toEqual(["corr-a1", "corr-a2", "corr-b1"]);
   });
@@ -269,14 +274,20 @@ describe("collectParkedApprovalCorrelations", () => {
     const substrate = createStubSubstrate(baseDir);
 
     // No loadParkedApproval binding: a control-plane APPROVAL park here would
-    // throw "no loadParkedApproval binding is wired". The input park is skipped
-    // before that check, so the call resolves to an empty result.
+    // throw "no loadParkedApproval binding is wired". An input park is collected
+    // without a snapshot and without touching the binding.
     const result = await collectParkedApprovalCorrelations({
       substrate,
       repoId,
       runtimeRepoStore,
     });
-    expect(result).toEqual([]);
+    expect(result).toEqual([
+      {
+        runId: "run-input",
+        correlationId: "corr-input",
+        parkKind: "input",
+      },
+    ]);
   });
 
   test("throws when a control-plane park is found but no binding is wired", async () => {
