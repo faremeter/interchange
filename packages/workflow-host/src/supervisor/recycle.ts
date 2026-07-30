@@ -180,6 +180,11 @@ export interface RecycleContext {
    * decision must survive the respawn rather than be re-derived.
    */
   readonly warmKeep: boolean;
+  /**
+   * Whether the deployment's step has a trigger budget other than 1.
+   * Carried on respawn env unchanged across recycle.
+   */
+  readonly isLongLived: boolean;
   /** Forward target for InferenceEvents the new child publishes. */
   readonly onInferenceEvent: (event: EventPayload) => void;
   /** Live child wiring on entry; replaced before return. */
@@ -340,6 +345,7 @@ export async function triggerRecycle(
     stepCount: ctx.bindings.stepCount,
     definitionHash: ctx.definitionHash,
     warmKeep: ctx.warmKeep,
+    isLongLived: ctx.isLongLived,
   });
 
   const handle = ctx.bindings.subprocessSpawner({

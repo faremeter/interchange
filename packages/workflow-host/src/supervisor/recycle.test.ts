@@ -532,6 +532,7 @@ async function spawnSupervisor(opts: {
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
+    isLongLived: false,
     onInferenceEvent: () => undefined,
   });
   // Wait until the spawner has been invoked and the channelId is
@@ -583,6 +584,7 @@ describe("supervisor spawn: failure cleanup", () => {
         stepOrder: ["step-1"],
         definitionHash: "def-hash-abc",
         warmKeep: false,
+        isLongLived: false,
         onInferenceEvent: () => undefined,
       }),
     ).rejects.toThrow(/did not emit ready/);
@@ -648,6 +650,7 @@ describe("supervisor spawn: failure cleanup", () => {
         stepOrder: ["step-1"],
         definitionHash: "def-hash-abc",
         warmKeep: false,
+        isLongLived: false,
         onInferenceEvent: () => undefined,
       }),
     ).rejects.toThrow(/did not emit ready/);
@@ -693,6 +696,7 @@ describe("supervisor spawn: dynamic env", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -761,6 +765,8 @@ describe("supervisor recycle: operator-initiated", () => {
     // child's spawn-time env contract, with the same step count.
     expect(parseSpawnTimeEnv(spawnEnv).stepCount).toBe(1);
     expect(parseSpawnTimeEnv(respawnEnv).stepCount).toBe(1);
+    expect(parseSpawnTimeEnv(spawnEnv).isLongLived).toBe(false);
+    expect(parseSpawnTimeEnv(respawnEnv).isLongLived).toBe(false);
   });
 
   test("drain mail sends, child is killed, fresh child spawns with a new channelId", async () => {
@@ -841,6 +847,7 @@ describe("supervisor recycle: failure after the cohort handoff", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -906,6 +913,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -966,6 +974,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -1026,6 +1035,7 @@ describe("supervisor recycle: deliverSignal phase guard", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -1334,6 +1344,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -1448,6 +1459,7 @@ describe("supervisor recycle: drain-side processing replay", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (originalKill.length === 0) {
@@ -1507,6 +1519,7 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-shutdown-race",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {
@@ -1592,6 +1605,7 @@ describe("supervisor recycle: external drain phase guard", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-drain-guard",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0) {

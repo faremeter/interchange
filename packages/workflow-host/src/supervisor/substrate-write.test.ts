@@ -539,6 +539,7 @@ async function bootSupervisor(opts: {
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
+    isLongLived: false,
     onInferenceEvent: () => {
       /* unused */
     },

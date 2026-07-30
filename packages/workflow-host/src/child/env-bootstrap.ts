@@ -69,6 +69,11 @@ const SpawnTimeEnvShape = type({
   // so the warm-keep decision is deterministic and a multi-step agent is
   // never warm-kept by a silent default.
   "WARM_KEEP?": "string",
+  // Long-lived signal: the supervisor sets this to `"true"` when the
+  // deployment's step has a trigger budget other than 1. The child
+  // carries it explicitly so the supervisor's dispatch-loop and drain
+  // decisions survive recycle.
+  "IS_LONG_LIVED?": "string",
 }).onUndeclaredKey("ignore");
 
 /**
@@ -103,6 +108,12 @@ export interface SpawnTimeEnv {
    * cache when set and keeps cold instantiate-send-teardown otherwise.
    */
   warmKeep: boolean;
+  /**
+   * Whether the deployment's step has a trigger budget other than 1
+   * (multi-turn or unbounded). Used by the supervisor for dispatch
+   * loop and drain policy decisions.
+   */
+  isLongLived: boolean;
 }
 
 /**
@@ -167,5 +178,8 @@ export function parseSpawnTimeEnv(
     // absence) reads false. Warm-keep is opt-in and deterministic; a
     // typo'd or partial value must not silently enable it.
     warmKeep: validated.WARM_KEEP === "true",
+    // Strict `=== "true"` so any other value (including the key's
+    // absence) reads false. Long-lived is opt-in and deterministic.
+    isLongLived: validated.IS_LONG_LIVED === "true",
   };
 }

@@ -265,6 +265,13 @@ export type SpawnOpts = {
    */
   warmKeep: boolean;
   /**
+   * Whether this deployment's step has a trigger budget other than
+   * 1 (multi-turn or unbounded). The supervisor uses this to branch
+   * the dispatch loop and drain policy. Carried explicitly on the
+   * spawn env so the decision survives recycle.
+   */
+  isLongLived: boolean;
+  /**
    * Callback the supervisor invokes for each verified InferenceEvent
    * the child publishes. Mirrors the existing `agent.event` event
    * sink the host exposes; the supervisor is the in-host translator.
@@ -1539,6 +1546,7 @@ export function createWorkflowSupervisor(
       stepCount: bindings.stepCount,
       definitionHash: opts.definitionHash,
       warmKeep: opts.warmKeep,
+      isLongLived: opts.isLongLived,
     });
 
     const handle = bindings.subprocessSpawner({
@@ -1812,6 +1820,7 @@ export function createWorkflowSupervisor(
         stepOrder: opts.stepOrder,
         definitionHash: opts.definitionHash,
         warmKeep: opts.warmKeep,
+        isLongLived: opts.isLongLived,
         onInferenceEvent: opts.onInferenceEvent,
         spawnedAt: now(),
       };
@@ -2579,6 +2588,7 @@ export function createWorkflowSupervisor(
           stepOrder: priorContext.stepOrder,
           definitionHash: priorContext.definitionHash,
           warmKeep: priorContext.warmKeep,
+          isLongLived: priorContext.isLongLived,
           onInferenceEvent: priorContext.onInferenceEvent,
           current: {
             handle: prior.handle,
@@ -2709,6 +2719,7 @@ export function createWorkflowSupervisor(
               stepOrder: priorContext.stepOrder,
               definitionHash: priorContext.definitionHash,
               warmKeep: priorContext.warmKeep,
+              isLongLived: priorContext.isLongLived,
               onInferenceEvent: priorContext.onInferenceEvent,
               spawnedAt: now(),
             };
@@ -2931,6 +2942,11 @@ type SpawnContext = {
   definitionHash: string;
   /** Warm-keep flag carried on respawn env (unchanged across recycle). */
   warmKeep: boolean;
+  /**
+   * Whether the deployment's step has a trigger budget other than 1.
+   * Carried on respawn env unchanged across recycle.
+   */
+  isLongLived: boolean;
   onInferenceEvent: (event: EventPayload) => void;
   spawnedAt: number;
 };

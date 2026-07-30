@@ -639,6 +639,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: (event) => {
         eventsObserved.push({ type: event.type });
       },
@@ -808,6 +809,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-barrier",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -1045,6 +1047,7 @@ describe("createWorkflowSupervisor", () => {
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
+    isLongLived: false,
     onInferenceEvent: () => {
       /* unused in the ready-timeout tests */
     },
@@ -1161,6 +1164,7 @@ describe("createWorkflowSupervisor", () => {
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
+    isLongLived: false,
     onInferenceEvent: () => {
       /* unused in the pre-registration failure tests */
     },
@@ -1289,6 +1293,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => {
         /* unused in this test */
       },
@@ -1507,6 +1512,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => {
         /* unused in this test */
       },
@@ -1774,6 +1780,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -1931,6 +1938,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -2166,6 +2174,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: true,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -2472,6 +2481,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {

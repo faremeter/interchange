@@ -460,6 +460,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (tracker.children.length === 0)

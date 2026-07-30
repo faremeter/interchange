@@ -438,6 +438,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
 
@@ -581,6 +582,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     // Wait for the spawn to be in flight and registered with the

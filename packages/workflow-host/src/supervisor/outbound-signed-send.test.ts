@@ -282,6 +282,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
       warmKeep: false,
+      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
 

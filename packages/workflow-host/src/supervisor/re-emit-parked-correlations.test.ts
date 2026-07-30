@@ -368,6 +368,7 @@ async function setup(opts: {
     stepOrder: ["step-1"],
     definitionHash: "def-hash",
     warmKeep: false,
+    isLongLived: false,
     onInferenceEvent: () => undefined,
   });
 
