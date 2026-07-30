@@ -18,6 +18,7 @@ lint: FORCE
 	$(BUN) bin/gen-api-docs.ts --check
 	$(BUN) bin/check-deps.ts
 	$(BUN) bin/check-launchers.ts
+	$(BUN) bin/check-test-enumeration.ts
 	$(BUN) bin/exports-shape.ts
 	$(BUN) bin/publish-metadata.ts
 
