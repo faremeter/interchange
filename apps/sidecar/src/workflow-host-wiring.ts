@@ -61,11 +61,7 @@ import {
   AgentDeployWorkflow,
   type AgentDeployFrame,
 } from "@intx/types/sidecar";
-import {
-  STEP_ID_PATTERN,
-  stepTriggerBudget,
-  type Primitive,
-} from "@intx/workflow";
+import { STEP_ID_PATTERN } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type {
@@ -1491,23 +1487,10 @@ export function createSidecarDeployRouter(deps: {
       // messages. A multi-step deploy keeps instantiate-send-teardown per
       // step. The signal is carried explicitly down through the spawn env.
       const warmKeep = spec.definition.stepOrder.length === 1;
-      // A deployment is long-lived when any of its steps has a trigger
-      // budget other than 1. The definition is the single source of truth.
-      // Kept separate from warmKeep: a multi-step workflow with one long-
-      // lived step is not warmKeep but is long-lived; a single-step batch
-      // workflow is warmKeep but is NOT long-lived.
-      const isLongLived = spec.definition.stepOrder.some((stepId) => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the wire-protocol types steps as Record<string, unknown>; the authoring-side WorkflowDefinition guarantees they are Primitive, but that contract is not reflected in the arktype validator
-        const primitive = spec.definition.steps[stepId] as unknown as
-          | Primitive
-          | undefined;
-        return primitive?.kind === "step" && stepTriggerBudget(primitive) !== 1;
-      });
       const spawnOpts: SpawnOpts = {
         stepOrder,
         definitionHash,
         warmKeep,
-        isLongLived,
         onInferenceEvent: (event) => {
           // The event arrives HMAC-verified over the child's event channel.
           // Re-narrow it to the hub's `InferenceEvent` union; a parse

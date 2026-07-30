@@ -563,7 +563,7 @@ async function boot(opts: { prefix: string }): Promise<
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
-    isLongLived: false,
+
     onInferenceEvent: () => {
       /* unused */
     },

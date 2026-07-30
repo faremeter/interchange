@@ -63,7 +63,12 @@ import {
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
-import { base64Decode, base64Encode, deriveMessageId } from "@intx/types";
+import {
+  base64Decode,
+  base64Encode,
+  deriveMessageId,
+  signalName,
+} from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
@@ -264,13 +269,6 @@ export type SpawnOpts = {
    */
   warmKeep: boolean;
   /**
-   * Whether this deployment's step has a trigger budget other than
-   * 1 (multi-turn or unbounded). The supervisor uses this to branch
-   * the dispatch loop and drain policy. Carried explicitly on the
-   * spawn env so the decision survives recycle.
-   */
-  isLongLived: boolean;
-  /**
    * Callback the supervisor invokes for each verified InferenceEvent
    * the child publishes. Mirrors the existing `agent.event` event
    * sink the host exposes; the supervisor is the in-host translator.
@@ -405,6 +403,17 @@ export function createWorkflowSupervisor(
   const runInputChannels = new Map<
     string,
     { correlationId: string; parkKind: "input" }
+  >();
+  /**
+   * Messages dequeued for a long-lived run whose child has not yet
+   * sent the input `park.notify`. Each entry is a queue of messages
+   * keyed by the stable `runId`. When `park.notify` arrives, the
+   * queued messages are dispatched as `signal.deliver` in order.
+   * Cleared on terminal event or cohort abort.
+   */
+  const pendingInputMessages = new Map<
+    string,
+    { messageId: string; rawMessage: string | undefined }[]
   >();
   // D2 attribution (measurement-only): the runId the dispatch loop is
   // currently servicing. Set at `dispatch-start`, cleared after
@@ -811,6 +820,7 @@ export function createWorkflowSupervisor(
         // runs have no dispatch-loop entry, so their cleanup happens here.
         cohortRunIds.delete(payload.data.runId);
         runInputChannels.delete(payload.data.runId);
+        pendingInputMessages.delete(payload.data.runId);
         continue;
       }
       if (payload.type === "park.notify") {
@@ -824,13 +834,34 @@ export function createWorkflowSupervisor(
             correlationId: payload.data.correlationId,
             parkKind: "input",
           });
+          // Drain any messages that arrived while the child was between
+          // trigger.fire and this park.notify.
+          const queued = pendingInputMessages.get(payload.data.runId);
+          if (queued !== undefined) {
+            pendingInputMessages.delete(payload.data.runId);
+            const sender = activeControlSender();
+            if (sender !== null) {
+              for (const msg of queued) {
+                await sender.send({
+                  type: "signal.deliver",
+                  data: {
+                    runId: payload.data.runId,
+                    signalName: signalName(payload.data.correlationId),
+                    signalId: msg.messageId,
+                    payload: msg.rawMessage ?? null,
+                  },
+                });
+              }
+            } else {
+              logger.warn`pending input messages dropped for run ${payload.data.runId}: no active control sender`;
+            }
+          }
         } else {
           // Approval parks are hub-registered through the shared
           // `registerSuspension` transform.
           registerSuspension({
             runId: payload.data.runId,
             correlationId: payload.data.correlationId,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the else branch only runs for non-input parks; approval is the only other kind today
             parkKind: payload.data.parkKind as "approval",
             ...(payload.data.snapshot !== undefined
               ? { snapshot: payload.data.snapshot }
@@ -1575,7 +1606,6 @@ export function createWorkflowSupervisor(
       stepCount: bindings.stepCount,
       definitionHash: opts.definitionHash,
       warmKeep: opts.warmKeep,
-      isLongLived: opts.isLongLived,
     });
 
     const handle = bindings.subprocessSpawner({
@@ -1849,7 +1879,6 @@ export function createWorkflowSupervisor(
         stepOrder: opts.stepOrder,
         definitionHash: opts.definitionHash,
         warmKeep: opts.warmKeep,
-        isLongLived: opts.isLongLived,
         onInferenceEvent: opts.onInferenceEvent,
         spawnedAt: now(),
       };
@@ -2019,18 +2048,20 @@ export function createWorkflowSupervisor(
     sender: ControlChannelSender,
     messageId: string,
     receivedAt: number,
+    runId?: string,
   ): Promise<string> {
+    const effectiveRunId = runId ?? messageId;
     await sender.send({
       type: "trigger.fire",
       data: {
-        runId: messageId,
+        runId: effectiveRunId,
         messageId,
         receivedAt,
       },
     });
-    dispatchedRunIds.add(messageId);
-    cohortRunIds.add(messageId);
-    return messageId;
+    dispatchedRunIds.add(effectiveRunId);
+    cohortRunIds.add(effectiveRunId);
+    return effectiveRunId;
   }
 
   /**
@@ -2102,12 +2133,6 @@ export function createWorkflowSupervisor(
     broadcaster: TerminalBroadcaster,
   ): Promise<boolean> {
     if (cohortAbort.signal.aborted) return false;
-    // Subscribe to the terminal broadcaster BEFORE forwarding the
-    // trigger.fire so a terminal event the child notifies between
-    // forward and subscribe cannot be missed. The broadcaster fires
-    // its listeners synchronously inside `notify`; with the subscribe
-    // ordered first the listener buffers the event until the
-    // dispatch loop's `iter.next()` consumes it.
     const beforeDequeueMs = dispatchTimingEnabled() ? performance.now() : 0;
     const dequeued = await inboxPrimitives.dequeueToProcessing(
       bindings.repoStore,
@@ -2117,6 +2142,7 @@ export function createWorkflowSupervisor(
     );
     if (dequeued === null) return false;
     const envelope = dequeued.envelope;
+    const isLongLived = false;
     const runId = envelope.messageId;
     currentDispatchRunId = runId;
     emitDispatchTiming(runId, "dispatch-start", beforeDequeueMs);
@@ -2142,10 +2168,13 @@ export function createWorkflowSupervisor(
       }
     }
     legMarkEnd(runId, "dequeue");
-    const iterable = broadcaster.source(runId);
-    const iter = iterable[Symbol.asyncIterator]();
+    // Subscribe to the terminal broadcaster BEFORE the grants barrier so
+    // a synthetic `RunFailed` from a barrier failure is captured. The
+    // long-lived path normally does not wait for terminal events, but
+    // still arms the iterator so a barrier failure can be observed.
+    const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
     // Per-run grants barrier. When `onRunStart` is wired, push this run's
-    // grants snapshot BEFORE the `trigger.fire` so the child's authorize
+    // grants snapshot BEFORE the trigger/signal so the child's authorize
     // closure binds to it rather than throwing on a null snapshot. The push
     // and the fire share the child's control channel, so a `grants-updated`
     // awaited here is observed by the child ahead of the trigger. A barrier
@@ -2154,12 +2183,100 @@ export function createWorkflowSupervisor(
     // trigger is NOT fired, so no step ever runs against absent grants.
     const barrierFailed = await pushRunGrants(sender, runId, broadcaster);
     if (!barrierFailed) {
-      await forwardDispatchedEntry(
-        sender,
-        envelope.messageId,
-        envelope.receivedAt,
-      );
+      if (isLongLived) {
+        const inputChannel = runInputChannels.get(runId);
+        if (inputChannel !== undefined) {
+          await sender.send({
+            type: "signal.deliver",
+            data: {
+              runId,
+              signalName: signalName(inputChannel.correlationId),
+              signalId: envelope.messageId,
+              payload: envelope.rawMessage ?? null,
+            },
+          });
+        } else if (!cohortRunIds.has(runId)) {
+          // First message for this long-lived deployment: fire trigger.fire.
+          await forwardDispatchedEntry(
+            sender,
+            envelope.messageId,
+            envelope.receivedAt,
+            runId,
+          );
+        } else {
+          // The child has already been triggered but has not yet sent
+          // the input park.notify. Queue the message so it can be
+          // delivered as signal.deliver once the channel is known.
+          const queue = pendingInputMessages.get(runId);
+          if (queue === undefined) {
+            pendingInputMessages.set(runId, [
+              {
+                messageId: envelope.messageId,
+                rawMessage: envelope.rawMessage,
+              },
+            ]);
+          } else {
+            queue.push({
+              messageId: envelope.messageId,
+              rawMessage: envelope.rawMessage,
+            });
+          }
+        }
+      } else {
+        await forwardDispatchedEntry(
+          sender,
+          envelope.messageId,
+          envelope.receivedAt,
+        );
+      }
     }
+    if (isLongLived) {
+      if (barrierFailed) {
+        // Wait for the synthetic RunFailed before consuming the message,
+        // mirroring the batch path's barrier-failure handling.
+        await waitForRunTerminal(iter, cohortAbort.signal);
+      } else {
+        // Eagerly dispose the unused terminal iterator so the broadcaster
+        // does not buffer events for a run that will never be awaited.
+        if (iter.return !== undefined) {
+          await iter.return();
+        }
+      }
+      dispatchedRunIds.delete(runId);
+      if (cohortAbort.signal.aborted) {
+        currentDispatchRunId = null;
+        resolveMarkConsumedWaiter(runId);
+        return false;
+      }
+      // D2 leg: `markConsumed` is paid AFTER the trigger/signal is
+      // forwarded, so its growth is invisible to the 4.7 round-trip
+      // bracket -- the leg mark makes the out-of-window cost visible.
+      legMarkStart(runId, "markconsumed");
+      try {
+        await inboxPrimitives.markConsumed(
+          bindings.repoStore,
+          inboxWritePrincipal,
+          bindings.workflowRunRepoId,
+          {
+            address: bindings.deploymentMailAddress,
+            messageId: envelope.messageId,
+            runId,
+            consumedAt: Date.now(),
+            retentionHorizonMs: consumedRetentionMs,
+          },
+        );
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`markConsumed failed for run ${runId}: ${message}`;
+      }
+      legMarkEnd(runId, "markconsumed");
+      resolveMarkConsumedWaiter(runId);
+      // §10c forced-repack A/B (measurement-only; no-op when unwired).
+      maybeRepack(runId);
+      currentDispatchRunId = null;
+      return true;
+    }
+    // Batch path: wait for the run's terminal event (or cohort abort).
     await waitForRunTerminal(iter, cohortAbort.signal);
     emitDispatchTiming(runId, "reply-produced", performance.now());
     dispatchedRunIds.delete(runId);
@@ -2195,7 +2312,6 @@ export function createWorkflowSupervisor(
     }
     legMarkEnd(runId, "markconsumed");
     resolveMarkConsumedWaiter(runId);
-    // §10c forced-repack A/B (measurement-only; no-op when unwired).
     maybeRepack(runId);
     currentDispatchRunId = null;
     return true;
@@ -2355,6 +2471,7 @@ export function createWorkflowSupervisor(
       cohortRunIds.clear();
       dispatchedRunIds.clear();
       runInputChannels.clear();
+      pendingInputMessages.clear();
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
@@ -2539,6 +2656,12 @@ export function createWorkflowSupervisor(
     // body's cancellation cascade tears the run down without the
     // supervisor having to thread any per-run wiring beyond what the
     // accumulator already encapsulates.
+    //
+    // Long-lived deployments are not cancelled by drain; the runtime
+    // parks the run and the supervisor simply stops delivering new mail.
+    // The cohort abort on shutdown/recycle will eventually tear the run
+    // down. Skip accumulator arming so a parked long-lived run does not
+    // get escalated to CancelRequested.
     const cohortSource = perCohortTerminalSource(
       state.terminalCohortAbort,
       state.terminalBroadcaster,
@@ -2618,7 +2741,6 @@ export function createWorkflowSupervisor(
           stepOrder: priorContext.stepOrder,
           definitionHash: priorContext.definitionHash,
           warmKeep: priorContext.warmKeep,
-          isLongLived: priorContext.isLongLived,
           onInferenceEvent: priorContext.onInferenceEvent,
           current: {
             handle: prior.handle,
@@ -2749,7 +2871,6 @@ export function createWorkflowSupervisor(
               stepOrder: priorContext.stepOrder,
               definitionHash: priorContext.definitionHash,
               warmKeep: priorContext.warmKeep,
-              isLongLived: priorContext.isLongLived,
               onInferenceEvent: priorContext.onInferenceEvent,
               spawnedAt: now(),
             };
@@ -2972,11 +3093,6 @@ type SpawnContext = {
   definitionHash: string;
   /** Warm-keep flag carried on respawn env (unchanged across recycle). */
   warmKeep: boolean;
-  /**
-   * Whether the deployment's step has a trigger budget other than 1.
-   * Carried on respawn env unchanged across recycle.
-   */
-  isLongLived: boolean;
   onInferenceEvent: (event: EventPayload) => void;
   spawnedAt: number;
 };

@@ -6,7 +6,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexDecode, hexEncode } from "@intx/types";
+import { hexDecode, hexEncode, signalName } from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
@@ -79,6 +79,56 @@ function parseControlFrameTypes(lines: readonly string[]): string[] {
     types.push(payload.type);
   }
   return types;
+}
+
+/**
+ * Parse every `signal.deliver` frame in the supervisor-to-child stream,
+ * returning the `{ signalName, signalId }` for each.
+ */
+function parseSignalDelivers(
+  lines: readonly string[],
+): { signalName: string; signalId: string }[] {
+  const out: { signalName: string; signalId: string }[] = [];
+  for (const line of lines) {
+    if (!line.includes("signal.deliver")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "signal.deliver") continue;
+    out.push({
+      signalName: payload.data.signalName,
+      signalId: payload.data.signalId,
+    });
+  }
+  return out;
+}
+
+function createNoopDrainAccumulator(): DrainTimeoutAccumulator {
+  return {
+    start() {
+      // noop
+    },
+    pause() {
+      // noop
+    },
+    resume() {
+      // noop
+    },
+    stop() {
+      // noop
+    },
+    accumulatedMs() {
+      return 0;
+    },
+    get escalated() {
+      return false;
+    },
+    async disposed() {
+      // noop
+    },
+  };
 }
 
 function parseSourcesUpdatedFrames(
@@ -347,6 +397,7 @@ type MemoryInboxEntry = {
   messageId: string;
   receivedAt: number;
   mailAuditRef: { store: string; path: string };
+  rawMessage?: string;
 };
 
 export type MemoryInboxState = {
@@ -408,6 +459,9 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
         mailAuditRef: args.mailAuditRef,
+        ...(args.rawMessage !== undefined
+          ? { rawMessage: args.rawMessage }
+          : {}),
       };
       state.inbox.set(key, envelope);
       return {
@@ -443,6 +497,9 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
           receivedAt: envelope.receivedAt,
           address,
           mailAuditRef: envelope.mailAuditRef,
+          ...(envelope.rawMessage !== undefined
+            ? { rawMessage: envelope.rawMessage }
+            : {}),
         },
       };
     },
@@ -639,7 +696,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: (event) => {
         eventsObserved.push({ type: event.type });
       },
@@ -761,7 +818,8 @@ describe("createWorkflowSupervisor", () => {
   // through the bindings so the dispatch loop runs the per-run barrier.
   async function spawnWithRunStart(opts: {
     baseDir: string;
-    onRunStart: WorkflowSupervisorBindings["onRunStart"];
+    onRunStart?: WorkflowSupervisorBindings["onRunStart"];
+    drainTimeoutAccumulatorFactory?: DrainTimeoutAccumulatorFactory;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -803,13 +861,17 @@ describe("createWorkflowSupervisor", () => {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
       ...(opts.onRunStart !== undefined ? { onRunStart: opts.onRunStart } : {}),
+      ...(opts.drainTimeoutAccumulatorFactory !== undefined
+        ? {
+            drainTimeoutAccumulatorFactory: opts.drainTimeoutAccumulatorFactory,
+          }
+        : {}),
     };
     const supervisor = createWorkflowSupervisor(bindings);
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-barrier",
       warmKeep: false,
-      isLongLived: false,
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -1047,7 +1109,7 @@ describe("createWorkflowSupervisor", () => {
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
-    isLongLived: false,
+
     onInferenceEvent: () => {
       /* unused in the ready-timeout tests */
     },
@@ -1164,7 +1226,7 @@ describe("createWorkflowSupervisor", () => {
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
     warmKeep: false,
-    isLongLived: false,
+
     onInferenceEvent: () => {
       /* unused in the pre-registration failure tests */
     },
@@ -1293,7 +1355,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: () => {
         /* unused in this test */
       },
@@ -1512,7 +1574,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: () => {
         /* unused in this test */
       },
@@ -1780,7 +1842,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -1938,7 +2000,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -2174,7 +2236,7 @@ describe("createWorkflowSupervisor", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: true,
-      isLongLived: false,
+
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {
@@ -2219,6 +2281,365 @@ describe("createWorkflowSupervisor", () => {
     expect(frames[0]?.defaultSource).toBe("primary");
 
     await supervisor.shutdown();
+  });
+  // ------------------------------------------------------------------
+  // Long-lived dispatch path
+  // ------------------------------------------------------------------
+
+  test("long-lived: first message fires trigger.fire with stable runId", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-first-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    const address = "deployment-x@example.com";
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    expect(runIds).toEqual(["deployment-x"]);
+    await wired.supervisor.shutdown();
+  });
+
+  test("long-lived: subsequent messages fire signal.deliver after park.notify", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-signal-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    const address = "deployment-x@example.com";
+    let deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    // Child parks on input signal.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "deployment-x",
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-2"),
+    );
+
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 2) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(2);
+
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBeGreaterThanOrEqual(1);
+    const firstSignal = signals[0];
+    if (firstSignal === undefined) throw new Error("unreachable");
+    expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
+    expect(firstSignal.signalId).toBeTruthy();
+    await wired.supervisor.shutdown();
+  });
+
+  test("long-lived: messages before park.notify are queued and flushed", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-queue-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    const address = "deployment-x@example.com";
+    let deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    // Deliver second message BEFORE child parks.
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-2"),
+    );
+
+    // Wait a short beat so the dispatch loop has a chance to process it.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // No signal.deliver yet because the channel is unknown.
+    let signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(0);
+
+    // Now child parks.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "deployment-x",
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    // Wait for the queued message to be flushed.
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+      if (signals.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(signals.length).toBeGreaterThanOrEqual(1);
+    const firstSignal = signals[0];
+    if (firstSignal === undefined) throw new Error("unreachable");
+    expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
+
+    // Both messages are consumed.
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 2) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(2);
+    await wired.supervisor.shutdown();
+  });
+
+  test("long-lived: drain() does not arm accumulators", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-drain-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const armedStubs: { runId: string }[] = [];
+    const factory: DrainTimeoutAccumulatorFactory = (opts) => {
+      armedStubs.push({ runId: opts.runId });
+      return createNoopDrainAccumulator();
+    };
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+      drainTimeoutAccumulatorFactory: factory,
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    const address = "deployment-x@example.com";
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    await wired.supervisor.drain({ deadlineMs: 5_000 });
+
+    expect(armedStubs.length).toBe(0);
+    await wired.supervisor.shutdown();
+  });
+
+  test("long-lived: grants barrier failure consumes message without firing trigger", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-barrier-");
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () => {
+      throw new Error("synthetic grants-barrier failure");
+    };
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart,
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("barrier-fail-m1"),
+    );
+
+    const address = "deployment-x@example.com";
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    expect(runIds).toEqual([]);
+    await wired.supervisor.shutdown();
+  });
+
+  test("long-lived: terminal event clears cohort tracking and drops pending messages", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-terminal-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    // First message triggers the run.
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    const address = "deployment-x@example.com";
+    let deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    // Second message arrives before the child parks.
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-2"),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // No signal.deliver yet.
+    let signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(0);
+
+    // The run terminates before parking.
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+
+    // Wait for the terminal event to be processed.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Third message should start a NEW trigger.fire because the old
+    // run was cleaned up from cohortRunIds.
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-3"),
+    );
+
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+      if (runIds.length >= 2) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    expect(runIds.length).toBe(2);
+
+    // The queued second message was dropped; no signal.deliver ever
+    // fired for it.
+    signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(0);
+
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(3);
+    await wired.supervisor.shutdown();
   });
 });
 
@@ -2481,7 +2902,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: () => undefined,
     });
     while (observedEnv === undefined) {

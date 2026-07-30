@@ -42,12 +42,6 @@ export interface ChildSpawnEnvParts {
   definitionHash: string;
   /** Whether this deployment's agent is warm-kept across messages. */
   warmKeep: boolean;
-  /**
-   * Whether this deployment's step has a trigger budget other than 1
-   * (multi-turn or unbounded). Used by the supervisor for dispatch
-   * loop and drain policy decisions.
-   */
-  isLongLived: boolean;
 }
 
 /**
@@ -77,6 +71,5 @@ export function buildChildSpawnEnv(
     ...parts.dynamicSpawnEnv(),
     ...required,
     WARM_KEEP: parts.warmKeep ? "true" : "false",
-    IS_LONG_LIVED: parts.isLongLived ? "true" : "false",
   };
 }

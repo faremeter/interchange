@@ -227,7 +227,7 @@ describe("supervisor park.notify arm", () => {
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
       warmKeep: false,
-      isLongLived: false,
+
       onInferenceEvent: () => undefined,
     });
 
