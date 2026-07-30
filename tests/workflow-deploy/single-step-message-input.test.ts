@@ -42,7 +42,7 @@ import {
   SESSION_ID,
   SIDECAR_ID,
   fireMailTrigger,
-  listRunIds,
+  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitForFirstRunId,
@@ -274,12 +274,23 @@ describe("single-step message-input round-trip", () => {
     });
     expect(second.messageId).not.toBe(first.messageId);
 
-    const secondRunId = await waitForSecondRunId(
-      env,
-      workflowRunRepoId,
-      firstRunId,
-      { timeoutMs: 20_000 },
-    );
+    // Under the stable-runId model both messages share the same runId.
+    // Wait for the second message to land in consumed/ before reading
+    // the current run events.
+    const secondRunId = firstRunId;
+    const secondMessageId =
+      "<single-step-message-input-2@integration.interchange>";
+    const consumedDeadline = Date.now() + 20_000;
+    while (Date.now() < consumedDeadline) {
+      const consumed = await readClaimCheckDir(
+        env,
+        workflowRunRepoId,
+        deploymentMailAddress,
+        "consumed",
+      );
+      if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
 
     const secondTerminal = await waitForWorkflowRunComplete(
       env,
@@ -309,31 +320,6 @@ describe("single-step message-input round-trip", () => {
     expect(secondReply).not.toBe(firstReply);
   });
 });
-
-/**
- * Poll until a run id distinct from `firstRunId` appears under `runs/`,
- * returning it. The supervisor processes one run per inbound message,
- * so the second mail produces a second run id.
- */
-async function waitForSecondRunId(
-  deployEnv: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-  firstRunId: string,
-  opts: { timeoutMs: number },
-): Promise<string> {
-  const start = Date.now();
-  for (;;) {
-    const ids = await listRunIds(deployEnv, workflowRunRepoId);
-    const other = ids.find((id) => id !== firstRunId);
-    if (other !== undefined) return other;
-    if (Date.now() - start > opts.timeoutMs) {
-      throw new Error(
-        `waitForSecondRunId timed out after ${String(opts.timeoutMs)}ms; saw runIds ${JSON.stringify(ids)}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
 
 /** Find the single step's `StepCompleted` event body. */
 function stepCompletedBody(

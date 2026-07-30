@@ -71,7 +71,6 @@ import {
   SIDECAR_ID,
   fireMailTrigger,
   injectSignal,
-  listRunIds,
   readWorkflowRunEvents,
   settleThenDrop,
   startDeployFlowEnv,
@@ -311,9 +310,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
     const firstRunId = await runInterStepChainToCompletion(env, {
       deploymentId: DEPLOYMENT_ID,
       deploymentMailAddress,
-      workflowRunRepoId,
       messageId: "<multistep-reroute-1@integration.interchange>",
-      priorRunIds: new Set<string>(),
     });
 
     // ---- settle the pack pipeline, then drop the hub link ----
@@ -362,11 +359,10 @@ describe("multi-step per-step re-route survival across reconnect", () => {
     const secondRunId = await runInterStepChainToCompletion(env, {
       deploymentId: DEPLOYMENT_ID,
       deploymentMailAddress,
-      workflowRunRepoId,
       messageId: "<multistep-reroute-2@integration.interchange>",
-      priorRunIds: new Set<string>([firstRunId]),
     });
-    expect(secondRunId).not.toBe(firstRunId);
+    // Under the stable-runId model both messages share the same runId.
+    expect(secondRunId).toBe(firstRunId);
   }, 180_000);
 });
 
@@ -378,28 +374,16 @@ describe("multi-step per-step re-route survival across reconnect", () => {
  * (RunStarted -> step1 Started/Completed -> SignalAwaited -> SignalReceived ->
  * step2 Started/Completed -> RunCompleted), which is the inter-step
  * mail/signal routing under test. Returns the runId the supervisor minted.
- *
- * `priorRunIds` names the run ids present before this trigger so the helper
- * can isolate the run this trigger started; the supervisor mints the id from
- * the inbound mail bytes and the test does not know it up front.
  */
 async function runInterStepChainToCompletion(
   env: DeployFlowEnv,
   args: {
     deploymentId: string;
     deploymentMailAddress: string;
-    workflowRunRepoId: RepoId;
     messageId: string;
-    priorRunIds: ReadonlySet<string>;
   },
 ): Promise<string> {
-  const {
-    deploymentId,
-    deploymentMailAddress,
-    workflowRunRepoId,
-    messageId,
-    priorRunIds,
-  } = args;
+  const { deploymentId, deploymentMailAddress, messageId } = args;
 
   const { messageId: firedMessageId } = await fireMailTrigger(
     env,
@@ -407,9 +391,25 @@ async function runInterStepChainToCompletion(
     { messageId },
   );
 
-  // Discover the run id this trigger started: the first run id under `runs/`
-  // that was not present before the fire.
-  const runId = await waitForNewRunId(env, workflowRunRepoId, priorRunIds);
+  // Under the stable-runId model every run of this deployment shares the
+  // runId (the deployment address). `clearRunEventsIfAny` clears the prior
+  // run's events before the new trigger.fire, and that clear commit is
+  // pushed ahead of the new run's events, so waiting for a RunStarted whose
+  // `consumedMessageId` is THIS trigger's messageId pins every read below to
+  // the current run's incarnation rather than a prior run's not-yet-cleared
+  // events.
+  const runId = deploymentMailAddress;
+  await waitFor(
+    async () => {
+      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      return events.some(
+        (e) =>
+          e.type === "RunStarted" &&
+          e.body["consumedMessageId"] === firedMessageId,
+      );
+    },
+    { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+  );
 
   // First-half chain: RunStarted -> StepStarted{step1} ->
   // StepCompleted{step1} -> SignalAwaited{name:"go"}.
@@ -490,27 +490,4 @@ async function runInterStepChainToCompletion(
   expect(signalReceivedBody["payload"]).toEqual({ resumed: true });
 
   return runId;
-}
-
-/**
- * Poll until a run id appears under `runs/` that is not in `priorRunIds`, and
- * return it. Throws on timeout so a run that never started surfaces loudly.
- */
-async function waitForNewRunId(
-  env: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-  priorRunIds: ReadonlySet<string>,
-): Promise<string> {
-  const start = Date.now();
-  for (;;) {
-    const ids = await listRunIds(env, workflowRunRepoId);
-    const fresh = ids.find((id) => !priorRunIds.has(id));
-    if (fresh !== undefined) return fresh;
-    if (Date.now() - start > 30_000) {
-      throw new Error(
-        `no new run id after mail trigger; saw runIds ${JSON.stringify(ids)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
 }

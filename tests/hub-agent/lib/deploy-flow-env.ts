@@ -1612,12 +1612,12 @@ export async function fireMailTrigger(
   const rawMessage = assembleMessage(headers, signedContent, signature);
   const base64 = base64Encode(rawMessage);
 
-  // Deliver the run's grants before the trigger mail, exactly as the
-  // production trigger route does: the runId is the mail's Message-ID, and
-  // same-address FIFO guarantees the `run.grants` frame lands ahead of the
-  // mail that dispatches the run. `messageId` here is the RFC 2822 header
-  // value; the sidecar derives the same runId from the mail bytes.
-  const runId = messageId;
+  // Deliver the run's grants before the trigger mail. The supervisor
+  // uses a stable runId derived from the deployment mail address (not
+  // the per-message Message-ID), so the grants frame must name that
+  // same address as its runId for the sidecar to write the grants file
+  // at the path the supervisor's onRunStart barrier expects.
+  const runId = address;
   const grantsDelivered = env.hub.router.sendRunGrants(
     address,
     runId,

@@ -1640,9 +1640,14 @@ describe("createWorkflowSupervisor", () => {
     await new Promise<void>((r) => setTimeout(r, 5));
 
     // The accumulator's escalation committed a CancelRequested event
-    // through the supervisor's substrate handle.
-    expect(observedWrites.length).toBe(1);
-    const write = observedWrites[0];
+    // through the supervisor's substrate handle.  The unified-dispatch
+    // path may also write a clear-run-events operation before the
+    // escalation, so filter to the write that carries the event.
+    const writesWithEvents = observedWrites.filter((w) =>
+      Object.keys(w.files).some((k) => k.includes("/events/")),
+    );
+    expect(writesWithEvents.length).toBe(1);
+    const write = writesWithEvents[0];
     if (write === undefined) {
       throw new Error("no CancelRequested commit captured");
     }
@@ -2314,6 +2319,20 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
+    // In the unified-dispatch path markConsumed waits for the child to
+    // reach terminal or park before consuming the message.  Drive the
+    // mock child to terminal so the dispatch loop can proceed.
+    await new Promise((r) => setTimeout(r, 100));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x@example.com",
+        seq: 0,
+        kind: "RunCompleted",
+        at: new Date().toISOString(),
+      },
+    });
+
     const address = "deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
@@ -2323,7 +2342,7 @@ describe("createWorkflowSupervisor", () => {
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    expect(runIds).toEqual(["deployment-x"]);
+    expect(runIds).toEqual(["deployment-x@example.com"]);
     await wired.supervisor.shutdown();
   });
 
@@ -2355,23 +2374,28 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
+    // Wait for trigger.fire to land before parking, then send park.notify
+    // so the unified-dispatch path can complete markConsumed.
+    await new Promise((r) => setTimeout(r, 10));
+
     const address = "deployment-x@example.com";
+
+    // Child parks on input signal.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "deployment-x@example.com",
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
     let deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
       await new Promise((r) => setTimeout(r, 1));
     }
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
-
-    // Child parks on input signal.
-    await wired.childSender.send({
-      type: "park.notify",
-      data: {
-        runId: "deployment-x",
-        correlationId: "corr-input-1",
-        parkKind: "input",
-      },
-    });
 
     wired.mailBus.deliver(
       "deployment-x@example.com",
@@ -2422,13 +2446,12 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
+    // In the unified-dispatch path markConsumed waits for the child to
+    // park or reach terminal.  Nothing is consumed yet.
+    await new Promise((r) => setTimeout(r, 50));
+
     const address = "deployment-x@example.com";
-    let deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
 
     // Deliver second message BEFORE child parks.
     wired.mailBus.deliver(
@@ -2439,22 +2462,24 @@ describe("createWorkflowSupervisor", () => {
     // Wait a short beat so the dispatch loop has a chance to process it.
     await new Promise((r) => setTimeout(r, 50));
 
-    // No signal.deliver yet because the channel is unknown.
+    // Still no signal.deliver and still nothing consumed because the
+    // channel is unknown and the first run has not parked.
     let signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(0);
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
 
     // Now child parks.
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: "deployment-x",
+        runId: "deployment-x@example.com",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
     });
 
     // Wait for the queued message to be flushed.
-    deadline = Date.now() + 1000;
+    let deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       signals = parseSignalDelivers(wired.supervisorToChild.flushed());
       if (signals.length >= 1) break;
@@ -2510,6 +2535,18 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
+    // Park the run so markConsumed can proceed and the run enters the
+    // runtime-determined parked state that drain should skip.
+    await new Promise((r) => setTimeout(r, 10));
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "deployment-x@example.com",
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
     const address = "deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
@@ -2520,6 +2557,8 @@ describe("createWorkflowSupervisor", () => {
 
     await wired.supervisor.drain({ deadlineMs: 5_000 });
 
+    // Drain skips accumulators for runs that have parked (runtime-
+    // determined long-lived state).
     expect(armedStubs.length).toBe(0);
     await wired.supervisor.shutdown();
   });
@@ -2538,8 +2577,22 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "deployment-x@example.com",
-      new TextEncoder().encode("barrier-fail-m1"),
+      new TextEncoder().encode("msg-1"),
     );
+
+    // In the unified-dispatch path markConsumed waits for the child to
+    // reach terminal or park before consuming the message.  Drive the
+    // mock child to terminal so the dispatch loop can proceed.
+    await new Promise((r) => setTimeout(r, 100));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x@example.com",
+        seq: 0,
+        kind: "RunCompleted",
+        at: new Date().toISOString(),
+      },
+    });
 
     const address = "deployment-x@example.com";
     const deadline = Date.now() + 1000;
@@ -2554,7 +2607,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
-  test("long-lived: terminal event clears cohort tracking and drops pending messages", async () => {
+  test("long-lived: terminal event clears cohort tracking and a new message gets trigger.fire", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-terminal-");
     await seedStepGrants(
       baseDir,
@@ -2583,6 +2636,18 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
+    // Drive the run to terminal so markConsumed can proceed.
+    await new Promise((r) => setTimeout(r, 10));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x@example.com",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+
     const address = "deployment-x@example.com";
     let deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
@@ -2591,36 +2656,11 @@ describe("createWorkflowSupervisor", () => {
     }
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
-    // Second message arrives before the child parks.
+    // Second message arrives after the first run terminated.
+    // The cohort was cleared, so it gets a fresh trigger.fire.
     wired.mailBus.deliver(
       "deployment-x@example.com",
       new TextEncoder().encode("msg-2"),
-    );
-    await new Promise((r) => setTimeout(r, 50));
-
-    // No signal.deliver yet.
-    let signals = parseSignalDelivers(wired.supervisorToChild.flushed());
-    expect(signals.length).toBe(0);
-
-    // The run terminates before parking.
-    await wired.childSender.send({
-      type: "terminal.event",
-      data: {
-        runId: "deployment-x",
-        seq: 0,
-        kind: "RunCompleted",
-        at: "test",
-      },
-    });
-
-    // Wait for the terminal event to be processed.
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Third message should start a NEW trigger.fire because the old
-    // run was cleaned up from cohortRunIds.
-    wired.mailBus.deliver(
-      "deployment-x@example.com",
-      new TextEncoder().encode("msg-3"),
     );
 
     deadline = Date.now() + 1000;
@@ -2632,13 +2672,13 @@ describe("createWorkflowSupervisor", () => {
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(runIds.length).toBe(2);
+    expect(runIds[0]).toBe("deployment-x@example.com");
+    expect(runIds[1]).toBe("deployment-x@example.com");
 
-    // The queued second message was dropped; no signal.deliver ever
-    // fired for it.
-    signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    // No signal.deliver because the run never parked.
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(0);
 
-    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(3);
     await wired.supervisor.shutdown();
   });
 });
@@ -3107,18 +3147,15 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       receivedAt: 1000,
       mailAuditRef: { store: "test", path: "test/orphan" },
     });
-    // The test never sends a `terminal.event` upstream control frame
-    // for the dispatched run, so the supervisor's per-cohort
-    // broadcaster never settles the dispatch loop. The loop sits on
-    // `waitForRunTerminal` after forwarding the trigger.fire, which
-    // is the observation point the assertions below pin.
-    const { supervisor, supervisorToChild } = await buildFifoTestFixture({
-      label: "fifo-replay-spawn-",
-      inbox,
-    });
+    // In the unified-dispatch path markConsumed waits for the child to
+    // reach terminal or park before consuming the message.
+    const { supervisor, supervisorToChild, childSender } =
+      await buildFifoTestFixture({
+        label: "fifo-replay-spawn-",
+        inbox,
+      });
     // Wait for the dispatch loop to pull the recovered inbox entry
-    // and send the trigger.fire. The terminal-event source above
-    // never resolves so the loop sits on the dispatch indefinitely.
+    // and send the trigger.fire.
     const deadline = Date.now() + 500;
     while (Date.now() < deadline) {
       const flushed = supervisorToChild.flushed();
@@ -3130,13 +3167,33 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       .flushed()
       .filter((f) => f.includes("trigger.fire"));
     expect(triggerFires.length).toBeGreaterThanOrEqual(1);
+
+    // Drive the run to terminal so markConsumed can proceed.
+    await new Promise((r) => setTimeout(r, 10));
+    await childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x@example.com",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+
     // The processing entry was moved back to inbox during spawn,
-    // then dequeued by the dispatch loop into processing again.
+    // then dequeued by the dispatch loop and forwarded as trigger.fire.
+    // After the child reaches terminal, markConsumed moves it to consumed.
+    const consumedDeadline = Date.now() + 1000;
+    while (Date.now() < consumedDeadline) {
+      const snapshot = inbox.snapshot("deployment-x@example.com");
+      if (snapshot.consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
     const snapshot = inbox.snapshot("deployment-x@example.com");
-    expect(snapshot.processing.size).toBe(1);
-    const processingEntry = [...snapshot.processing.values()][0];
-    if (processingEntry === undefined) throw new Error("unreachable");
-    expect(processingEntry.messageId).toBe("msg-orphan");
+    expect(snapshot.consumed.size).toBe(1);
+    const consumedEntry = [...snapshot.consumed.values()][0];
+    if (consumedEntry === undefined) throw new Error("unreachable");
+    expect(consumedEntry.messageId).toBe("msg-orphan");
     await supervisor.shutdown();
   });
 });

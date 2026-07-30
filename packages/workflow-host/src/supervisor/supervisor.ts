@@ -58,7 +58,6 @@ import {
   readOwnedMessageIds,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   DEFAULT_CONSUMED_RETENTION_MS,
-  type NewlyTerminalRun,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
@@ -136,27 +135,11 @@ import {
 const logger = getLogger(["workflow-host", "supervisor"]);
 
 /**
- * Default watchdog timeout for the supervisor's
- * `synchronouslyDispatchTerminalWrite`. The handler holds the
- * `substrate.write.response` back to the child until the dispatch
- * loop's `markConsumed` settles for the matching terminal event; an
- * unbounded wait would chain into a child / runtime / dispatch loop
- * deadlock if `markConsumed` never armed (bug in the dispatch loop, a
- * torn-down cohort, a stalled inbox primitive). 30s sits between the
- * recycle path's `DEFAULT_KILL_TIMEOUT_MS` (5s, a hard process-level
- * kill cap) and `DEFAULT_DRAIN_TIMEOUT_MS` (60s, the per-deployment
- * drain budget) -- generous enough to absorb a slow legitimate
- * markConsumed, tight enough to surface a real deadlock long before
- * the drainTimeout would otherwise mask it.
- */
-export const DEFAULT_TERMINAL_WRITE_WATCHDOG_MS = 30_000;
-
-/**
  * Default watchdog for `reEmitParkedCorrelations`' wait on the child's
- * `parked-correlations.response`. Shares the terminal-write watchdog's 30s
- * budget: generous enough for a healthy child to enumerate its in-flight runs
- * and load each parked snapshot, tight enough that a wedged-but-alive child
- * does not hang the reconnect caller until some coarser timeout intervenes.
+ * `parked-correlations.response`. 30s is generous enough for a healthy child
+ * to enumerate its in-flight runs and load each parked snapshot, tight
+ * enough that a wedged-but-alive child does not hang the reconnect caller
+ * until some coarser timeout intervenes.
  */
 export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
 
@@ -348,22 +331,6 @@ export type RecycleOpts = {
 };
 
 /**
- * Raised when a `pendingMerges` entry or a
- * `markConsumedCompletionWaiters` waiter is rejected because the
- * cohort it was registered against has been aborted (cohort transition
- * during a recycle, or a supervisor shutdown). Callers awaiting the
- * resolved value receive an instance of this error so the failure mode
- * is recognisable from a generic substrate-merge or markConsumed
- * failure.
- */
-export class MergeAbortedError extends Error {
-  constructor(reason: string) {
-    super(`supervisor cohort aborted before completion: ${reason}`);
-    this.name = "MergeAbortedError";
-  }
-}
-
-/**
  * Construct a per-deployment supervisor. All host-specific
  * dependencies are pulled in via `bindings`; nothing in the
  * supervisor reaches into `process.env` or a singleton.
@@ -372,18 +339,6 @@ export function createWorkflowSupervisor(
   bindings: WorkflowSupervisorBindings,
 ): WorkflowSupervisor {
   let state: SupervisorState = { phase: "idle" };
-  /**
-   * RunIds the supervisor personally dispatched via `trigger.fire`.
-   * A runId enters when `forwardDispatchedEntry` fires the trigger;
-   * it leaves when `markConsumed` completes (or the cohort aborts).
-   * Self-discovered runs NEVER enter this set -- they have no inbox
-   * entry and therefore no markConsumed lifecycle.
-   *
-   * Used by: `synchronouslyDispatchTerminalWrite` to decide which
-   * terminal writes to hold for markConsumed completion.
-   */
-  const dispatchedRunIds = new Set<string>();
-
   /**
    * ALL runIds the current child cohort is driving, regardless of
    * who spawned them: supervisor-dispatched + self-discovered.
@@ -405,16 +360,11 @@ export function createWorkflowSupervisor(
     { correlationId: string; parkKind: "input" }
   >();
   /**
-   * Messages dequeued for a long-lived run whose child has not yet
-   * sent the input `park.notify`. Each entry is a queue of messages
-   * keyed by the stable `runId`. When `park.notify` arrives, the
-   * queued messages are dispatched as `signal.deliver` in order.
-   * Cleared on terminal event or cohort abort.
+   * Waiters for dispatch loops blocked on a `park.notify` for a
+   * specific runId. When `park.notify` arrives, the handler resolves
+   * the waiter so the dispatch loop re-evaluates routing.
    */
-  const pendingInputMessages = new Map<
-    string,
-    { messageId: string; rawMessage: string | undefined }[]
-  >();
+  const parkNotifyWaiters = new Map<string, () => void>();
   // D2 attribution (measurement-only): the runId the dispatch loop is
   // currently servicing. Set at `dispatch-start`, cleared after
   // `reply-produced`. The dispatch loop is strictly serial (one message
@@ -451,8 +401,6 @@ export function createWorkflowSupervisor(
       }
     });
   const drainTimeoutMs = bindings.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
-  const terminalWriteWatchdogMs =
-    bindings.terminalWriteWatchdogMs ?? DEFAULT_TERMINAL_WRITE_WATCHDOG_MS;
   const parkedQueryWatchdogMs =
     bindings.parkedQueryWatchdogMs ?? DEFAULT_PARKED_QUERY_WATCHDOG_MS;
 
@@ -806,10 +754,11 @@ export function createWorkflowSupervisor(
         // to-one with its cohort's `controlIncoming` iterator: a
         // buffered `terminal.event` the OLD child emitted before kill
         // landed must NEVER route to the NEW cohort's broadcaster.
-        // Without this binding, a stale OLD-cohort frame for a runId
-        // the NEW cohort happens to be dispatching under the same id
-        // (the normal recycle/replay case) would falsely settle the
-        // NEW cohort's `waitForRunTerminal` and commit `markConsumed`
+        // Every run shares the stable runId (the deployment mail
+        // address), so an OLD-cohort frame and a NEW-cohort run collide
+        // on that id by construction (the recycle/replay case); without
+        // this binding the stale frame would falsely settle the NEW
+        // cohort's `waitForRunTerminalOrPark` and commit `markConsumed`
         // on a run still in flight. The broadcaster's own `dispose()`
         // on cohort teardown turns post-dispose notify into a no-op,
         // so a stale frame dequeued after the cohort was torn down
@@ -820,7 +769,6 @@ export function createWorkflowSupervisor(
         // runs have no dispatch-loop entry, so their cleanup happens here.
         cohortRunIds.delete(payload.data.runId);
         runInputChannels.delete(payload.data.runId);
-        pendingInputMessages.delete(payload.data.runId);
         continue;
       }
       if (payload.type === "park.notify") {
@@ -834,27 +782,13 @@ export function createWorkflowSupervisor(
             correlationId: payload.data.correlationId,
             parkKind: "input",
           });
-          // Drain any messages that arrived while the child was between
-          // trigger.fire and this park.notify.
-          const queued = pendingInputMessages.get(payload.data.runId);
-          if (queued !== undefined) {
-            pendingInputMessages.delete(payload.data.runId);
-            const sender = activeControlSender();
-            if (sender !== null) {
-              for (const msg of queued) {
-                await sender.send({
-                  type: "signal.deliver",
-                  data: {
-                    runId: payload.data.runId,
-                    signalName: signalName(payload.data.correlationId),
-                    signalId: msg.messageId,
-                    payload: msg.rawMessage ?? null,
-                  },
-                });
-              }
-            } else {
-              logger.warn`pending input messages dropped for run ${payload.data.runId}: no active control sender`;
-            }
+          // Wake any dispatch loop waiting for this run to park.
+          resolveParkNotifyWaiter(payload.data.runId);
+          // Stop any drain accumulator for a run that has parked.
+          const accumulator = drainAccumulators.get(payload.data.runId);
+          if (accumulator !== undefined) {
+            accumulator.stop();
+            drainAccumulators.delete(payload.data.runId);
           }
         } else {
           // Approval parks are hub-registered through the shared
@@ -909,13 +843,13 @@ export function createWorkflowSupervisor(
   const pendingMerges = new Map<string, PendingMerge>();
 
   /**
-   * Reject every pending merge round-trip and every
-   * `markConsumed` completion waiter. Invoked on cohort transitions
-   * (shutdown, recycle's `installNewChild`) so closures awaiting these
-   * promises do not outlive the cohort that armed them. Without this,
-   * a `handleSubstrateWriteRequest` mid-merge or a dispatch-loop
-   * caller awaiting `markConsumed` would sit on a resolver that the
-   * dying control channel will never invoke.
+   * Reject every pending merge round-trip and every park-notify
+   * waiter. Invoked on cohort transitions (shutdown, recycle's
+   * `installNewChild`) so closures awaiting these promises do not
+   * outlive the cohort that armed them. Without this, a
+   * `handleSubstrateWriteRequest` mid-merge or a dispatch loop
+   * waiting for park would sit on a resolver that the dying control
+   * channel will never invoke.
    */
   function rejectCohortAwaiters(reason: string): void {
     for (const [requestId, entry] of pendingMerges) {
@@ -926,11 +860,9 @@ export function createWorkflowSupervisor(
       pendingParkedQueries.delete(requestId);
       entry.settle(null);
     }
-    for (const [runId, waiter] of markConsumedCompletionWaiters.entries()) {
-      markConsumedCompletionWaiters.delete(runId);
-      waiter.reject(
-        new MergeAbortedError(`markConsumed waiter (${runId}): ${reason}`),
-      );
+    for (const [runId, resolve] of parkNotifyWaiters.entries()) {
+      parkNotifyWaiters.delete(runId);
+      resolve();
     }
   }
 
@@ -1103,6 +1035,13 @@ export function createWorkflowSupervisor(
         registerSuspension({ ...parked, parkKind: "approval" });
       }
     }
+  }
+
+  function resolveParkNotifyWaiter(runId: string): void {
+    const resolve = parkNotifyWaiters.get(runId);
+    if (resolve === undefined) return;
+    parkNotifyWaiters.delete(runId);
+    resolve();
   }
 
   /**
@@ -1307,23 +1246,11 @@ export function createWorkflowSupervisor(
         );
       // D2 leg end: the substrate commit (hash objects, write tree,
       // advance ref under the per-repo lock) just resolved. Stamped here,
-      // before the terminal-write markConsumed-coupling wait below, so the
-      // run-event/wal leg measures only its own commit and not the
-      // dispatch loop's markConsumed (which the `markconsumed` leg owns).
+      // before the response, so the run-event/wal leg measures only its own
+      // commit and not the dispatch loop's markConsumed (which the
+      // `markconsumed` leg owns).
       if (legClassification !== null) {
         legMarkEnd(legClassification.runId, legClassification.leg);
-      }
-      const watchdog =
-        await synchronouslyDispatchTerminalWrite(newlyTerminalRuns);
-      if (!watchdog.ok) {
-        await controlSender.send({
-          type: "substrate.write.response",
-          data: {
-            requestId: data.requestId,
-            result: { ok: false, reason: watchdog.reason },
-          },
-        });
-        return;
       }
       await controlSender.send({
         type: "substrate.write.response",
@@ -1372,149 +1299,6 @@ export function createWorkflowSupervisor(
     }
   }
 
-  // Per-runId synchronization between the substrate-write handler
-  // and the dispatch loop's `markConsumed`. The handler arms a
-  // waiter when it commits a terminal-event blob and waits for the
-  // dispatch loop to fire `resolveMarkConsumedWaiter(runId)` before
-  // sending the substrate.write.response back to the child.
-  const markConsumedCompletionWaiters = new Map<
-    string,
-    { resolve: () => void; reject: (err: Error) => void }
-  >();
-
-  function resolveMarkConsumedWaiter(runId: string): void {
-    const waiter = markConsumedCompletionWaiters.get(runId);
-    if (waiter === undefined) return;
-    markConsumedCompletionWaiters.delete(runId);
-    waiter.resolve();
-  }
-
-  /**
-   * Hold the substrate.write.response until the dispatch loop's
-   * markConsumed settles for each run the kind handler reports as newly
-   * terminal in this commit. Terminal-ness comes from the handler's typed
-   * `newlyTerminalRuns` signal -- determined authoritatively during
-   * validation -- not re-derived from the committed path shape, so it
-   * survives the run-event layout changing (e.g. compaction folding a
-   * run's per-event files into one combined file). The wait is per-runId
-   * so multiple runs can proceed concurrently if a future dispatch loop
-   * ever processes more than one mail in parallel.
-   *
-   * A watchdog timeout (`terminalWriteWatchdogMs`) caps each wait so a
-   * never-arming markConsumed (a bug in the dispatch loop, a torn-down
-   * cohort, a stalled inbox primitive) does not deadlock the child's
-   * write -- and therefore the runtime body, and therefore the dispatch
-   * loop. On expiry the waiter is force-released and a structured failure
-   * propagates back to the child as
-   * `{ ok: false, reason: "terminal-write watchdog timeout: ..." }`.
-   */
-  async function synchronouslyDispatchTerminalWrite(
-    newlyTerminalRuns: readonly NewlyTerminalRun[],
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const holds: Promise<{ ok: true } | { ok: false; reason: string }>[] = [];
-    for (const { runId, terminalEventJson } of newlyTerminalRuns) {
-      if (!dispatchedRunIds.has(runId)) continue;
-      holds.push(holdResponseForMarkConsumed(runId, terminalEventJson));
-    }
-    if (holds.length === 0) return { ok: true };
-    const results = await Promise.all(holds);
-    return results.find((r) => !r.ok) ?? { ok: true };
-  }
-
-  async function holdResponseForMarkConsumed(
-    runId: string,
-    terminalEventJson: string,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const completed = new Promise<void>((resolve, reject) => {
-      markConsumedCompletionWaiters.set(runId, { resolve, reject });
-    });
-    const broadcaster = activeTerminalBroadcaster();
-    if (broadcaster !== null) {
-      const synthetic = synthesizeTerminalEvent(terminalEventJson);
-      if (synthetic !== null) {
-        broadcaster.notify(runId, synthetic);
-      }
-    }
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-    const watchdog = new Promise<{ ok: false; reason: string }>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        timeoutHandle = null;
-        // Force-release the waiter so the dispatch loop's eventual
-        // resolve does not strand a dangling map entry, then surface
-        // the structured failure to the caller. The reason text is
-        // logged through the package logger so the watchdog is not
-        // silent on the host side.
-        const stillPending =
-          markConsumedCompletionWaiters.get(runId) !== undefined;
-        if (stillPending) {
-          markConsumedCompletionWaiters.delete(runId);
-        }
-        const reason = `terminal-write watchdog timeout: markConsumed for runId=${runId} did not settle within ${String(terminalWriteWatchdogMs)}ms`;
-        logger.error`${reason}`;
-        resolve({ ok: false, reason });
-      }, terminalWriteWatchdogMs);
-    });
-    const result = await Promise.race([
-      completed.then(() => ({ ok: true }) as const),
-      watchdog,
-    ]);
-    if (timeoutHandle !== null) {
-      clearTimeout(timeoutHandle);
-    }
-    return result;
-  }
-
-  function synthesizeTerminalEvent(
-    terminalEventJson: string,
-  ): TerminalRunEvent | null {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(terminalEventJson);
-    } catch {
-      return null;
-    }
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      !("type" in parsed) ||
-      !("seq" in parsed)
-    ) {
-      return null;
-    }
-    const body = parsed as {
-      type?: unknown;
-      seq?: unknown;
-      at?: unknown;
-      error?: { message?: unknown };
-    };
-    if (typeof body.seq !== "number") return null;
-    const at = typeof body.at === "string" ? body.at : new Date().toISOString();
-    if (body.type === "RunCompleted") {
-      return { kind: "RunCompleted", seq: body.seq, at };
-    }
-    if (body.type === "RunCancelled") {
-      return { kind: "RunCancelled", seq: body.seq, at };
-    }
-    if (body.type === "RunFailed") {
-      // The wire schema makes `error.message` required when the event
-      // type is `RunFailed`. An event that doesn't carry one is a
-      // contract violation upstream of the supervisor; coercing it to an
-      // empty string would silently hide the producer bug.
-      if (typeof body.error?.message !== "string") {
-        throw new Error(
-          `synthesizeTerminalEvent: RunFailed event missing required error.message`,
-        );
-      }
-      return {
-        kind: "RunFailed",
-        seq: body.seq,
-        at,
-        error: { message: body.error.message },
-      };
-    }
-    return null;
-  }
-
   function activeControlSender(): ControlChannelSender | null {
     if (
       state.phase === "starting" ||
@@ -1522,17 +1306,6 @@ export function createWorkflowSupervisor(
       state.phase === "recycling"
     ) {
       return state.controlSender;
-    }
-    return null;
-  }
-
-  function activeTerminalBroadcaster(): TerminalBroadcaster | null {
-    if (
-      state.phase === "starting" ||
-      state.phase === "running" ||
-      state.phase === "recycling"
-    ) {
-      return state.terminalBroadcaster;
     }
     return null;
   }
@@ -2059,7 +1832,6 @@ export function createWorkflowSupervisor(
         receivedAt,
       },
     });
-    dispatchedRunIds.add(effectiveRunId);
     cohortRunIds.add(effectiveRunId);
     return effectiveRunId;
   }
@@ -2120,12 +1892,53 @@ export function createWorkflowSupervisor(
   }
 
   /**
+   * Clear any prior terminal events under `runs/<runId>/` so a NEW
+   * trigger (not a recovery re-fire) starts with a clean event log.
+   * The runtime short-circuits on an already-terminal canonical log,
+   * so without this clear the second message to a batch deployment would
+   * silently return the old terminal result and never process its payload.
+   *
+   * `grants.json` is preserved: the sidecar writes it for the inbound
+   * message before the supervisor dequeues the mail, so the new run's
+   * `onRunStart` barrier still resolves.
+   */
+  async function clearRunEventsIfAny(runId: string): Promise<void> {
+    const prefix = `runs/${runId}/`;
+    try {
+      await bindings.repoStore.writeTreePreservingPrefix(
+        bindings.readPrincipal,
+        bindings.workflowRunRepoId,
+        bindings.workflowRunRef,
+        {
+          preservePrefix: prefix,
+          merge: async (existing) => {
+            const files: Record<string, string | Uint8Array> = {};
+            for (const [path, content] of existing) {
+              if (path === `${prefix}grants.json`) {
+                files[path] = content;
+              }
+            }
+            return files;
+          },
+          message: `clear old terminal events for new run ${runId}`,
+        },
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`failed to clear old events for run ${runId}: ${message}`;
+    }
+  }
+
+  /**
    * One iteration of the dispatch loop: dequeue the FIFO-first inbox
-   * entry, forward it as a `trigger.fire`, wait for the corresponding
-   * run's terminal event (or for the cohort to abort), then
-   * `markConsumed`. Returns `true` if a dispatch landed (caller should
-   * loop immediately) and `false` if the inbox was empty (caller
-   * should await the next wake).
+   * entry, decide whether to `signal.deliver` or `trigger.fire` (or wait
+   * if the run is in-flight but not yet parked), then `markConsumed`
+   * once the child has taken up the message -- for a `trigger.fire` that
+   * means after the run reaches a terminal event or parks, so the
+   * claim-check entry the child still needs to read is not deleted out
+   * from under it. Returns `true` if a dispatch landed (caller should
+   * loop immediately) and `false` if the inbox was empty (caller should
+   * await the next wake).
    */
   async function dispatchOne(
     sender: ControlChannelSender,
@@ -2142,8 +1955,7 @@ export function createWorkflowSupervisor(
     );
     if (dequeued === null) return false;
     const envelope = dequeued.envelope;
-    const isLongLived = false;
-    const runId = envelope.messageId;
+    const runId = bindings.deploymentMailAddress;
     currentDispatchRunId = runId;
     emitDispatchTiming(runId, "dispatch-start", beforeDequeueMs);
     // D2 leg: the claim-check dequeue READ. `dispatch-start` is sampled
@@ -2169,10 +1981,8 @@ export function createWorkflowSupervisor(
     }
     legMarkEnd(runId, "dequeue");
     // Subscribe to the terminal broadcaster BEFORE the grants barrier so
-    // a synthetic `RunFailed` from a barrier failure is captured. The
-    // long-lived path normally does not wait for terminal events, but
-    // still arms the iterator so a barrier failure can be observed.
-    const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
+    // a synthetic `RunFailed` from a barrier failure can be captured.
+    const preIter = broadcaster.source(runId)[Symbol.asyncIterator]();
     // Per-run grants barrier. When `onRunStart` is wired, push this run's
     // grants snapshot BEFORE the trigger/signal so the child's authorize
     // closure binds to it rather than throwing on a null snapshot. The push
@@ -2182,8 +1992,22 @@ export function createWorkflowSupervisor(
     // a synthesized `RunFailed` fanned out to this run's watcher -- and the
     // trigger is NOT fired, so no step ever runs against absent grants.
     const barrierFailed = await pushRunGrants(sender, runId, broadcaster);
-    if (!barrierFailed) {
-      if (isLongLived) {
+    if (barrierFailed) {
+      // Wait for the synthetic RunFailed before consuming the message.
+      await waitForRunTerminal(preIter, cohortAbort.signal);
+      // Clean up for synthetic barrier failure (real terminal events are
+      // cleaned up by pumpUpstreamControl, but synthetic ones are not).
+      cohortRunIds.delete(runId);
+      runInputChannels.delete(runId);
+    } else {
+      // Dispose the pre-created iterator; the normal path creates fresh
+      // iterators inside the dispatch-decision loop when waiting.
+      if (typeof preIter.return === "function") {
+        await preIter.return();
+      }
+      // Unified dispatch: park → signal.deliver; no live run → trigger.fire;
+      // in-flight but undecided → wait for terminal or park, then re-evaluate.
+      while (!cohortAbort.signal.aborted) {
         const inputChannel = runInputChannels.get(runId);
         if (inputChannel !== undefined) {
           await sender.send({
@@ -2195,103 +2019,56 @@ export function createWorkflowSupervisor(
               payload: envelope.rawMessage ?? null,
             },
           });
-        } else if (!cohortRunIds.has(runId)) {
-          // First message for this long-lived deployment: fire trigger.fire.
+          break;
+        }
+        if (!cohortRunIds.has(runId)) {
+          // A prior run with this stable runId may have left terminal
+          // events in the substrate.  The runtime short-circuits on an
+          // already-terminal log (treating the trigger as a recovery
+          // re-fire), so a NEW message must start with a clean event
+          // directory.  We keep `grants.json` because the sidecar writes
+          // it for the new message before the mail dequeues.
+          await clearRunEventsIfAny(runId);
           await forwardDispatchedEntry(
             sender,
             envelope.messageId,
             envelope.receivedAt,
             runId,
           );
-        } else {
-          // The child has already been triggered but has not yet sent
-          // the input park.notify. Queue the message so it can be
-          // delivered as signal.deliver once the channel is known.
-          const queue = pendingInputMessages.get(runId);
-          if (queue === undefined) {
-            pendingInputMessages.set(runId, [
-              {
-                messageId: envelope.messageId,
-                rawMessage: envelope.rawMessage,
-              },
-            ]);
-          } else {
-            queue.push({
-              messageId: envelope.messageId,
-              rawMessage: envelope.rawMessage,
-            });
-          }
-        }
-      } else {
-        await forwardDispatchedEntry(
-          sender,
-          envelope.messageId,
-          envelope.receivedAt,
-        );
-      }
-    }
-    if (isLongLived) {
-      if (barrierFailed) {
-        // Wait for the synthetic RunFailed before consuming the message,
-        // mirroring the batch path's barrier-failure handling.
-        await waitForRunTerminal(iter, cohortAbort.signal);
-      } else {
-        // Eagerly dispose the unused terminal iterator so the broadcaster
-        // does not buffer events for a run that will never be awaited.
-        if (iter.return !== undefined) {
-          await iter.return();
-        }
-      }
-      dispatchedRunIds.delete(runId);
-      if (cohortAbort.signal.aborted) {
-        currentDispatchRunId = null;
-        resolveMarkConsumedWaiter(runId);
-        return false;
-      }
-      // D2 leg: `markConsumed` is paid AFTER the trigger/signal is
-      // forwarded, so its growth is invisible to the 4.7 round-trip
-      // bracket -- the leg mark makes the out-of-window cost visible.
-      legMarkStart(runId, "markconsumed");
-      try {
-        await inboxPrimitives.markConsumed(
-          bindings.repoStore,
-          inboxWritePrincipal,
-          bindings.workflowRunRepoId,
-          {
-            address: bindings.deploymentMailAddress,
-            messageId: envelope.messageId,
+
+          // Wait for the child to process this trigger before allowing
+          // `markConsumed` to move the claim-check entry out of `processing/`.
+          // The child reads the trigger payload from that entry; racing
+          // `markConsumed` would delete the entry before the child resolves it.
+          const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
+          const outcome = await waitForRunTerminalOrPark(
+            iter,
+            cohortAbort.signal,
             runId,
-            consumedAt: Date.now(),
-            retentionHorizonMs: consumedRetentionMs,
-          },
+          );
+          if (outcome === "aborted") break;
+          // Child has read the trigger payload (parked or terminal'd).
+          // Safe to let the post-loop `markConsumed` run.
+          break;
+        }
+        const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
+        const outcome = await waitForRunTerminalOrPark(
+          iter,
+          cohortAbort.signal,
+          runId,
         );
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        logger.error`markConsumed failed for run ${runId}: ${message}`;
+        if (outcome === "aborted") break;
+        // Continue loop: re-evaluate runInputChannels / cohortRunIds
       }
-      legMarkEnd(runId, "markconsumed");
-      resolveMarkConsumedWaiter(runId);
-      // §10c forced-repack A/B (measurement-only; no-op when unwired).
-      maybeRepack(runId);
-      currentDispatchRunId = null;
-      return true;
     }
-    // Batch path: wait for the run's terminal event (or cohort abort).
-    await waitForRunTerminal(iter, cohortAbort.signal);
-    emitDispatchTiming(runId, "reply-produced", performance.now());
-    dispatchedRunIds.delete(runId);
-    cohortRunIds.delete(runId);
     if (cohortAbort.signal.aborted) {
-      // The cohort tore down before the terminal event arrived (or
-      // alongside it). Skip `markConsumed` so the recycle path's
-      // drain-side replay can reclaim the processing entry.
       currentDispatchRunId = null;
-      resolveMarkConsumedWaiter(runId);
       return false;
     }
-    // D2 leg: `markConsumed` is paid AFTER `reply-produced` (stamped
-    // above), so its growth is invisible to the 4.7 round-trip bracket --
-    // the leg mark makes the out-of-window cost visible.
+    emitDispatchTiming(runId, "reply-produced", performance.now());
+    // D2 leg: `markConsumed` is paid AFTER `reply-produced`, so its growth
+    // is invisible to the 4.7 round-trip bracket -- the leg mark makes the
+    // out-of-window cost visible.
     legMarkStart(runId, "markconsumed");
     try {
       await inboxPrimitives.markConsumed(
@@ -2311,7 +2088,6 @@ export function createWorkflowSupervisor(
       logger.error`markConsumed failed for run ${runId}: ${message}`;
     }
     legMarkEnd(runId, "markconsumed");
-    resolveMarkConsumedWaiter(runId);
     maybeRepack(runId);
     currentDispatchRunId = null;
     return true;
@@ -2346,6 +2122,63 @@ export function createWorkflowSupervisor(
         return;
       }
     } finally {
+      if (onAbort !== null) {
+        abortSignal.removeEventListener("abort", onAbort);
+      }
+      if (typeof iter.return === "function") {
+        await iter.return(undefined).catch(() => {
+          /* swallowed: best-effort finalisation of the watcher iterator. */
+        });
+      }
+    }
+  }
+
+  /**
+   * Wait until the run's terminal event lands on the cohort
+   * broadcaster's iterator, the child parks the run (resolving a
+   * `parkNotifyWaiter`), or the cohort aborts. Returns `"terminal"`
+   * when a terminal event arrived, `"parked"` when the run parked,
+   * and `"aborted"` when the cohort tore down.
+   */
+  async function waitForRunTerminalOrPark(
+    iter: AsyncIterator<TerminalRunEvent>,
+    abortSignal: AbortSignal,
+    runId: string,
+  ): Promise<"terminal" | "parked" | "aborted"> {
+    let onAbort: (() => void) | null = null;
+    const abortPromise = new Promise<{ done: true }>((resolve) => {
+      if (abortSignal.aborted) {
+        resolve({ done: true });
+        return;
+      }
+      onAbort = () => resolve({ done: true });
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    });
+
+    let parkResolve: (() => void) | null = null;
+    const parkPromise = new Promise<{ parked: true }>((resolve) => {
+      parkResolve = () => resolve({ parked: true });
+      parkNotifyWaiters.set(runId, parkResolve);
+    });
+
+    try {
+      while (true) {
+        if (abortSignal.aborted) return "aborted";
+        const result = await Promise.race([
+          iter.next().then((r) => ({ source: "iter" as const, r })),
+          abortPromise.then(() => ({ source: "abort" as const })),
+          parkPromise.then(() => ({ source: "park" as const })),
+        ]);
+        if (result.source === "abort") return "aborted";
+        if (result.source === "park") return "parked";
+        if (result.r.done === true) return "aborted";
+        // A terminal event for this runId arrived; stop waiting.
+        return "terminal";
+      }
+    } finally {
+      if (parkResolve !== null) {
+        parkNotifyWaiters.delete(runId);
+      }
       if (onAbort !== null) {
         abortSignal.removeEventListener("abort", onAbort);
       }
@@ -2469,16 +2302,15 @@ export function createWorkflowSupervisor(
       }
       drainAccumulators.clear();
       cohortRunIds.clear();
-      dispatchedRunIds.clear();
       runInputChannels.clear();
-      pendingInputMessages.clear();
+      parkNotifyWaiters.clear();
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
         prior.phase === "recycling"
       ) {
         prior.terminalCohortAbort.abort();
-        // Reject every pending merge round-trip and markConsumed waiter
+        // Reject every pending merge round-trip and park-notify waiter
         // so handler closures awaiting them (including fire-and-forget
         // `handleSubstrateWriteRequest` instances) cannot outlive the
         // dying cohort. Without this, the `await new Promise` inside
@@ -2657,17 +2489,17 @@ export function createWorkflowSupervisor(
     // supervisor having to thread any per-run wiring beyond what the
     // accumulator already encapsulates.
     //
-    // Long-lived deployments are not cancelled by drain; the runtime
-    // parks the run and the supervisor simply stops delivering new mail.
-    // The cohort abort on shutdown/recycle will eventually tear the run
-    // down. Skip accumulator arming so a parked long-lived run does not
-    // get escalated to CancelRequested.
+    // Runs that are already parked do not need drain escalation; the
+    // runtime parks the run and the supervisor simply stops delivering
+    // new mail. The cohort abort on shutdown/recycle will eventually
+    // tear the run down.
     const cohortSource = perCohortTerminalSource(
       state.terminalCohortAbort,
       state.terminalBroadcaster,
     );
     for (const runId of cohortRunIds) {
       if (drainAccumulators.has(runId)) continue;
+      if (runInputChannels.has(runId)) continue;
       const accumulator = accumulatorFactory({
         substrate: bindings.repoStore,
         repoId: bindings.workflowRunRepoId,
@@ -2822,7 +2654,10 @@ export function createWorkflowSupervisor(
               accumulator.stop();
             }
             drainAccumulators.clear();
-            // Reject every pending merge round-trip and markConsumed
+            cohortRunIds.clear();
+            runInputChannels.clear();
+            parkNotifyWaiters.clear();
+            // Reject every pending merge round-trip and park-notify
             // waiter registered against the dying cohort so handler
             // closures cannot survive the kill/respawn gap. The new
             // child will re-issue substrate writes through fresh

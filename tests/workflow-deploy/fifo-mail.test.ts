@@ -80,10 +80,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import {
-  waitForConsumedEntries,
-  waitForRunsByMessageIds,
-} from "./fifo-mail-helpers";
+import { waitForConsumedEntries } from "./fifo-mail-helpers";
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -290,80 +287,37 @@ describe("FIFO mail-trigger serialization", () => {
     }
     expect(firedMessageIds).toEqual([...MESSAGE_IDS]);
 
-    // Wait until every fired mail has reached a terminal run. The
-    // discovery walks the workflow-run repo for runs whose
-    // `RunStarted.consumedMessageId` matches one of the mails fired
-    // above; the test does not know the runId the supervisor minted
-    // up front (the supervisor derives it from the Message-Id
-    // header).
-    const observed = await waitForRunsByMessageIds(
-      env,
-      DEPLOYMENT_ID,
-      workflowRunRepoId,
-      MESSAGE_IDS,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
-    );
+    // Under the stable-runId model the runId is the deployment
+    // address, so every message to this deployment shares one
+    // run directory.  `clearRunEventsIfAny` clears prior terminal
+    // events before each new trigger.fire, so only the last run's
+    // events survive in the repo.  We therefore wait for all
+    // messages to land in consumed/ and for the single run to
+    // reach terminal, rather than looking for per-message run
+    // histories.
+    const runId = deploymentMailAddress;
 
-    // Drive each run to terminal. `waitForRunsByMessageIds` waits
-    // only for `RunStarted` to land per mail, not the terminal
-    // event; the per-run terminal wait below confirms each run
-    // reaches `RunCompleted`.
-    for (const entry of observed) {
-      const terminal = await waitForWorkflowRunComplete(
-        env,
-        DEPLOYMENT_ID,
-        entry.runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
-      );
-      expect(`${entry.messageId}: ${String(terminal.type)}`).toBe(
-        `${entry.messageId}: RunCompleted`,
-      );
-    }
-
-    // FIFO ordering assertion. The runs the supervisor minted from
-    // mails [m1, m2, m3] must reach `RunStarted` in that order.
-    // `observed` is already returned in mail-fire order, so the
-    // `seq` of each entry's `RunStarted` event must be strictly
-    // ascending when compared at the file-mtime level. We instead
-    // pin the property the supervisor's dispatch loop actually
-    // guarantees: a run's `RunStarted` precedes the next run's
-    // `RunStarted` along the inbox-key sort. The most direct
-    // observable surface is the workflow-run repo's inbox FIFO
-    // sort: the supervisor consumes inbox entries in
-    // `receivedAt` order. After all three runs complete, the
-    // `consumed/<messageId>.json` index entries should carry
-    // `receivedAt` values that match the inbox-arrival ordering.
-    //
-    // The supervisor's dispatch loop writes `markConsumed` AFTER
-    // the run's terminal event lands; the test's
-    // `waitForWorkflowRunComplete` above observes the terminal
-    // event at the hub the moment that event's pack push acks,
-    // which is strictly before the supervisor's subsequent
-    // `markConsumed` pack push lands at the hub. Polling here
-    // closes that intra-supervisor sequencing window for the
-    // final run -- the wrap's hub-ack-await guarantees prior
-    // writes are visible at the hub by the time the next write
-    // begins, but the last `markConsumed` of the burst still
-    // has to traverse the supervisor's dispatch loop and pack
-    // pipeline after the third run's terminal event observation.
     const consumedEntries = await waitForConsumedEntries(
       env,
       workflowRunRepoId,
       deploymentMailAddress,
       MESSAGE_IDS,
-      // 90s headroom: the supervisor's per-message markConsumed pack
-      // push has to traverse the wrap's hub-ack-await for every prior
-      // pack push in the dispatch loop, so the last markConsumed of
-      // the burst lands well after the test observes the third run's
-      // terminal event. Under parallel test load on a busy machine
-      // even 60s flaked; 90s leaves headroom under the 120s bun
-      // per-test cap.
       { timeoutMs: 90_000, diagnostics: env.sidecarDiagnostics },
     );
     const consumedMessageIds = consumedEntries.map((e) => e.messageId);
     for (const messageId of MESSAGE_IDS) {
       expect(consumedMessageIds).toContain(messageId);
     }
+
+    // Wait for the final run to reach terminal.
+    const terminal = await waitForWorkflowRunComplete(
+      env,
+      DEPLOYMENT_ID,
+      runId,
+      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+    );
+    expect(terminal.type).toBe("RunCompleted");
+
     const receivedAts = MESSAGE_IDS.map((mid) => {
       const entry = consumedEntries.find((e) => e.messageId === mid);
       if (entry === undefined) {
@@ -412,41 +366,39 @@ describe("FIFO mail-trigger serialization", () => {
     );
     expect(processingEntries).toEqual([]);
 
-    // Canonical event chain assertion for the first run: the
-    // multi-step workflow above is `step1 -> step2`, so the
+    // Canonical event chain assertion for the current (last) run:
+    // the multi-step workflow above is `step1 -> step2`, so the
     // expected chain is `RunStarted -> StepStarted{step1} ->
     // StepCompleted{step1} -> StepStarted{step2} ->
-    // StepCompleted{step2} -> RunCompleted`.
-    const firstRunId = observed[0]?.runId;
-    if (firstRunId === undefined) {
-      throw new Error("unreachable: observed[0] missing");
-    }
-    const firstEvents = await readWorkflowRunEvents(
+    // StepCompleted{step2} -> RunCompleted`.  Only the last run's
+    // events survive because `clearRunEventsIfAny` clears prior
+    // terminal state before each new trigger.fire.
+    const currentEvents = await readWorkflowRunEvents(
       env,
       DEPLOYMENT_ID,
-      firstRunId,
+      runId,
     );
-    const firstTypes = firstEvents.map((e) => e.type);
-    const observedSequence = `observed: ${firstTypes.join(" -> ")}`;
+    const currentTypes = currentEvents.map((e) => e.type);
+    const observedSequence = `observed: ${currentTypes.join(" -> ")}`;
 
-    const runStartedIdx = firstTypes.indexOf("RunStarted");
-    const step1StartedIdx = firstTypes.findIndex(
+    const runStartedIdx = currentTypes.indexOf("RunStarted");
+    const step1StartedIdx = currentTypes.findIndex(
       (t, i) =>
-        t === "StepStarted" && firstEvents[i]?.body["stepId"] === "step1",
+        t === "StepStarted" && currentEvents[i]?.body["stepId"] === "step1",
     );
-    const step1CompletedIdx = firstTypes.findIndex(
+    const step1CompletedIdx = currentTypes.findIndex(
       (t, i) =>
-        t === "StepCompleted" && firstEvents[i]?.body["stepId"] === "step1",
+        t === "StepCompleted" && currentEvents[i]?.body["stepId"] === "step1",
     );
-    const step2StartedIdx = firstTypes.findIndex(
+    const step2StartedIdx = currentTypes.findIndex(
       (t, i) =>
-        t === "StepStarted" && firstEvents[i]?.body["stepId"] === "step2",
+        t === "StepStarted" && currentEvents[i]?.body["stepId"] === "step2",
     );
-    const step2CompletedIdx = firstTypes.findIndex(
+    const step2CompletedIdx = currentTypes.findIndex(
       (t, i) =>
-        t === "StepCompleted" && firstEvents[i]?.body["stepId"] === "step2",
+        t === "StepCompleted" && currentEvents[i]?.body["stepId"] === "step2",
     );
-    const runCompletedIdx = firstTypes.indexOf("RunCompleted");
+    const runCompletedIdx = currentTypes.indexOf("RunCompleted");
 
     expect(
       `runStarted@${String(runStartedIdx)} (${observedSequence})`,
@@ -457,27 +409,10 @@ describe("FIFO mail-trigger serialization", () => {
     expect(step2CompletedIdx).toBeGreaterThan(step2StartedIdx);
     expect(runCompletedIdx).toBeGreaterThan(step2CompletedIdx);
 
-    const runStartedBody = firstEvents[runStartedIdx]?.body;
+    // The surviving RunStarted belongs to the last message because
+    // prior runs' events were cleared.
+    const runStartedBody = currentEvents[runStartedIdx]?.body;
     if (runStartedBody === undefined) throw new Error("unreachable");
-    expect(runStartedBody["consumedMessageId"]).toBe(MESSAGE_IDS[0]);
-
-    // Cross-run correlation: every observed run's `RunStarted` body
-    // must reference its mail's messageId exactly. This is the
-    // property the supervisor's `messageId -> runId` minting pins,
-    // and the consumed-index assertion above relies on it.
-    for (const entry of observed) {
-      const events = await readWorkflowRunEvents(
-        env,
-        DEPLOYMENT_ID,
-        entry.runId,
-      );
-      const started = events.find((e) => e.type === "RunStarted");
-      if (started === undefined) {
-        throw new Error(
-          `fifo-mail: run ${entry.runId} has no RunStarted event`,
-        );
-      }
-      expect(started.body["consumedMessageId"]).toBe(entry.messageId);
-    }
+    expect(runStartedBody["consumedMessageId"]).toBe(MESSAGE_IDS[2]);
   }, 60_000);
 });

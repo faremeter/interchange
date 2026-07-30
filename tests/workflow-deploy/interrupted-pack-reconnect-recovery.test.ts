@@ -51,6 +51,7 @@ import {
   SIDECAR_ID,
   fireMailTrigger,
   listRunIds,
+  readClaimCheckDir,
   readWorkflowRunEvents,
   settleThenDrop,
   startDeployFlowEnv,
@@ -319,30 +320,41 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
     // trigger with a fresh message id per attempt: a trigger that lands while
     // a residual reconnect is in flight can be dropped before the supervisor
     // enqueues it.
-    const runId = await (async () => {
-      const start = Date.now();
-      let attempt = 0;
-      for (;;) {
-        attempt += 1;
-        await fireMailTrigger(env, deploymentMailAddress, {
-          messageId: `<settled-control-recovered-${String(attempt)}@integration.interchange>`,
-          content: "recovered",
-        });
-        const deadline = Date.now() + 10_000;
-        while (Date.now() < deadline) {
-          const ids = await listRunIds(env, workflowRunRepoId);
-          // The first run already completed; wait for a SECOND run to appear.
-          const second = ids[1];
-          if (second !== undefined) return second;
-          await new Promise((r) => setTimeout(r, 100));
+    // Under the stable-runId model every trigger shares the same runId.
+    // Fire triggers until one lands in consumed/ (meaning the dispatch
+    // loop processed it and the run reached terminal).
+    const runId = deploymentMailAddress;
+    let attempt = 0;
+    let consumedMessageId = "";
+    const start = Date.now();
+    for (;;) {
+      attempt += 1;
+      const messageId = `<settled-control-recovered-${String(attempt)}@integration.interchange>`;
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId,
+        content: "recovered",
+      });
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const consumed = await readClaimCheckDir(
+          env,
+          workflowRunRepoId,
+          deploymentMailAddress,
+          "consumed",
+        );
+        if (consumed.some((c) => c.filename.includes(messageId))) {
+          consumedMessageId = messageId;
+          break;
         }
-        if (Date.now() - start > 60_000) {
-          throw new Error(
-            `no fresh run produced on the recovered link after ${String(attempt)} triggers\n${env.sidecarDiagnostics()}`,
-          );
-        }
+        await new Promise((r) => setTimeout(r, 100));
       }
-    })();
+      if (consumedMessageId !== "") break;
+      if (Date.now() - start > 60_000) {
+        throw new Error(
+          `no fresh run produced on the recovered link after ${String(attempt)} triggers\n${env.sidecarDiagnostics()}`,
+        );
+      }
+    }
     const terminal = await waitForWorkflowRunComplete(
       env,
       deploymentId,

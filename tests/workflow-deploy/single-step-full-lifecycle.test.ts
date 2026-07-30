@@ -100,12 +100,12 @@ import {
   SESSION_ID,
   SIDECAR_ID,
   fireMailTrigger,
+  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
-  listRunIds,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { toLaunchDeployContent } from "./launch-session-bridge";
@@ -422,12 +422,24 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     });
     expect(second.messageId).not.toBe(first.messageId);
 
-    const secondRunId = await waitForSecondRunId(
-      env,
-      workflowRunRepoId,
-      firstRunId,
-      { timeoutMs: 20_000 },
-    );
+    // Under the stable-runId model the second message shares the
+    // same runId as the first.  We wait for the second message to
+    // land in consumed/ (which means the second run reached
+    // terminal and markCompleted ran) and then read the current
+    // events for that runId.
+    const secondRunId = firstRunId;
+    const secondMessageId = "<full-lifecycle-2@integration.interchange>";
+    const consumedDeadline = Date.now() + 20_000;
+    while (Date.now() < consumedDeadline) {
+      const consumed = await readClaimCheckDir(
+        env,
+        workflowRunRepoId,
+        deploymentMailAddress,
+        "consumed",
+      );
+      if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
 
     const secondTerminal = await waitForWorkflowRunComplete(
       env,
@@ -676,30 +688,6 @@ async function readSnapshotUserTexts(agentStateDir: string): Promise<string[]> {
     texts.push(turn.content.map((c) => c.text ?? "").join(""));
   }
   return texts;
-}
-
-/**
- * Poll until a run id distinct from `firstRunId` appears under `runs/`.
- * The supervisor processes one run per inbound message.
- */
-async function waitForSecondRunId(
-  deployEnv: DeployFlowEnv,
-  workflowRunRepoId: RepoId,
-  firstRunId: string,
-  opts: { timeoutMs: number },
-): Promise<string> {
-  const start = Date.now();
-  for (;;) {
-    const ids = await listRunIds(deployEnv, workflowRunRepoId);
-    const other = ids.find((id) => id !== firstRunId);
-    if (other !== undefined) return other;
-    if (Date.now() - start > opts.timeoutMs) {
-      throw new Error(
-        `waitForSecondRunId timed out after ${String(opts.timeoutMs)}ms; saw runIds ${JSON.stringify(ids)}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
 }
 
 /**

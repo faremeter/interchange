@@ -1,6 +1,5 @@
 export {
   createWorkflowSupervisor,
-  DEFAULT_TERMINAL_WRITE_WATCHDOG_MS,
   type CancelCommitInfo,
   type CancelRequestOpts,
   type DeliverSignalOpts,

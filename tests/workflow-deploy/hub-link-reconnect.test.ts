@@ -46,7 +46,7 @@ import {
   SESSION_ID,
   SIDECAR_ID,
   fireMailTrigger,
-  listRunIds,
+  readClaimCheckDir,
   settleThenDrop,
   startDeployFlowEnv,
   waitFor,
@@ -259,20 +259,21 @@ describe("hub-link drop -> reconnect survival (harness smoke)", () => {
     });
     expect(second.messageId).not.toBe(first.messageId);
 
-    const secondRunId = await (async () => {
-      const start = Date.now();
-      for (;;) {
-        const ids = await listRunIds(env, workflowRunRepoId);
-        const other = ids.find((id) => id !== firstRunId);
-        if (other !== undefined) return other;
-        if (Date.now() - start > 30_000) {
-          throw new Error(
-            `no second run after reconnect; saw runIds ${JSON.stringify(ids)}\n${env.sidecarDiagnostics()}`,
-          );
-        }
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    })();
+    // Under the stable-runId model the second message shares the
+    // same runId as the first.  Wait for it to land in consumed/.
+    const secondRunId = firstRunId;
+    const secondMessageId = "<reconnect-smoke-2@integration.interchange>";
+    const consumedDeadline = Date.now() + 30_000;
+    while (Date.now() < consumedDeadline) {
+      const consumed = await readClaimCheckDir(
+        env,
+        workflowRunRepoId,
+        deploymentMailAddress,
+        "consumed",
+      );
+      if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
 
     const secondTerminal = await waitForWorkflowRunComplete(
       env,

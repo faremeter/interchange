@@ -609,13 +609,12 @@ export async function runWorkflowChild(
           cleanupRunStorage: opts.bindings.cleanupRunStorage,
           runId: run.runId,
         });
+        runsInFlight.delete(run.runId);
         return emitTerminalEvent(upstreamSender, result);
       })
       .catch((cause) => {
-        logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
-      })
-      .finally(() => {
         runsInFlight.delete(run.runId);
+        logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
       });
     resumedRunIds.push(run.runId);
   }
@@ -836,13 +835,12 @@ async function handleControlPayload(
             cleanupRunStorage: ctx.bindings.cleanupRunStorage,
             runId: payload.data.runId,
           });
+          ctx.runsInFlight.delete(payload.data.runId);
           return emitTerminalEvent(ctx.upstreamSender, result);
         })
         .catch((cause) => {
-          logger.error`triggered run ${payload.data.runId} failed: ${String(cause)}`;
-        })
-        .finally(() => {
           ctx.runsInFlight.delete(payload.data.runId);
+          logger.error`triggered run ${payload.data.runId} failed: ${String(cause)}`;
         });
       ctx.triggeredRunIds.push(payload.data.runId);
       return false;

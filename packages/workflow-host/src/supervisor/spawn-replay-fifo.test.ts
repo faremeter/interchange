@@ -708,11 +708,10 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     harness.gatedInbox.release();
     await harness.gatedInbox.replaySettled();
 
-    // Wait for the first `trigger.fire` and assert it carries
-    // ORPHAN_ID. The supervisor blocks the loop on the run's
-    // terminal event after the first forward, so we observe the
-    // first forward and then drive the terminal event so the loop
-    // can advance to the second.
+    // Wait for the first `trigger.fire`. With the stable runId
+    // (deploymentMailAddress) both the orphan and the fresh mail share
+    // the same runId on the wire; the FIFO ordering assertion below
+    // is what still proves the replay contract.
     const firstTriggerDeadline = Date.now() + 2_000;
     let firstTriggerRunId: string | null = null;
     while (firstTriggerRunId === null && Date.now() < firstTriggerDeadline) {
@@ -728,15 +727,15 @@ describe("supervisor spawn-time replay FIFO contract", () => {
         await new Promise((r) => setTimeout(r, 1));
       }
     }
-    expect(firstTriggerRunId).toBe(ORPHAN_ID);
+    expect(firstTriggerRunId).toBe(harness.deploymentMailAddress);
 
-    // Drive ORPHAN's terminal event back through the child sender so
-    // the dispatch loop's `waitForRunTerminal` resolves and the next
-    // iteration runs. The fresh mail must follow.
+    // Drive the run's terminal event back through the child sender so
+    // the dispatch loop's wait loop resolves and the next iteration
+    // (for the fresh mail) can run.
     await harness.childSender.send({
       type: "terminal.event",
       data: {
-        runId: ORPHAN_ID,
+        runId: harness.deploymentMailAddress,
         kind: "RunCompleted",
         seq: 0,
         at: "test",
@@ -758,14 +757,14 @@ describe("supervisor spawn-time replay FIFO contract", () => {
         await new Promise((r) => setTimeout(r, 1));
       }
     }
-    expect(secondTriggerRunId).toBe(freshId);
+    expect(secondTriggerRunId).toBe(harness.deploymentMailAddress);
 
-    // Drive the fresh run's terminal so the loop unwinds cleanly,
+    // Drive the run's terminal event again so the loop unwinds cleanly,
     // then tear the supervisor down.
     await harness.childSender.send({
       type: "terminal.event",
       data: {
-        runId: freshId,
+        runId: harness.deploymentMailAddress,
         kind: "RunCompleted",
         seq: 0,
         at: "test",

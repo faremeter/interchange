@@ -53,7 +53,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import { base64Encode, deriveMessageId, hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
@@ -104,13 +104,15 @@ describe("mail-handling edge cases", () => {
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
-  test("mail with no Message-Id header derives a sha256-of-bytes runId; identical bytes collide", async () => {
+  test("mail with no Message-Id header derives a sha256-of-bytes messageId; identical bytes collide", async () => {
     const ctx = await deployEdgeWorkflow(env, NO_HEADER_DEPLOYMENT_ID);
 
     // Construct two byte-identical raw mails with NO Message-Id header.
     // The supervisor's parser walks for a `message-id:` line
     // case-insensitively; without one, `parseMessageIdHeader` returns
     // null and `deriveMessageId` falls back to `sha256(rawMessage)`.
+    // Under the stable-runId model the runId is the deployment address,
+    // but the messageId (used for claim-check dedup) is still sha256.
     const raw = buildMinimalMail({
       from: "edge@integration.interchange",
       to: ctx.deploymentMailAddress,
@@ -118,31 +120,30 @@ describe("mail-handling edge cases", () => {
       body: "no-header edge case body",
     });
 
-    const expectedRunId = await sha256Hex(raw);
+    const messageId = await sha256Hex(raw);
+    const runId = ctx.deploymentMailAddress;
 
-    // Fire the first mail; the supervisor should mint a run with
-    // runId === sha256(raw). Wait for `RunStarted` to land.
+    // Fire the first mail; the supervisor should start a run with
+    // runId === deployment address. Wait for `RunStarted` to land.
     await routeRaw(env, ctx.deploymentMailAddress, raw);
-    await waitForWorkflowRunComplete(
-      env,
-      NO_HEADER_DEPLOYMENT_ID,
-      expectedRunId,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
-    );
+    await waitForWorkflowRunComplete(env, NO_HEADER_DEPLOYMENT_ID, runId, {
+      timeoutMs: 30_000,
+      diagnostics: env.sidecarDiagnostics,
+    });
 
-    // Verify the canonical chain materialised for the sha256 runId
-    // and the `consumedMessageId` on `RunStarted` equals the sha256.
+    // Verify the canonical chain materialised and the
+    // `consumedMessageId` on `RunStarted` equals the sha256 messageId.
     const events = await readWorkflowRunEvents(
       env,
       NO_HEADER_DEPLOYMENT_ID,
-      expectedRunId,
+      runId,
     );
     const types = events.map((e) => e.type);
     expect(types).toContain("RunStarted");
     expect(types).toContain("RunCompleted");
     const started = events.find((e) => e.type === "RunStarted");
     if (started === undefined) throw new Error("unreachable");
-    expect(started.body["consumedMessageId"]).toBe(expectedRunId);
+    expect(started.body["consumedMessageId"]).toBe(messageId);
 
     // Fire a second byte-identical mail. The supervisor's
     // `deriveMessageId` derives the same sha256 hash; the
@@ -161,13 +162,13 @@ describe("mail-handling edge cases", () => {
       env,
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
-      `${expectedRunId}.json`,
+      `${messageId}.json`,
       { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
     );
-    const consumedRunIds = consumedBefore
+    const consumedMessageIds = consumedBefore
       .map((e) => /^(.+)\.json$/.exec(e.filename)?.[1])
       .filter((v): v is string => v !== undefined);
-    expect(consumedRunIds).toContain(expectedRunId);
+    expect(consumedMessageIds).toContain(messageId);
 
     // Snapshot the sidecar diagnostics buffer before firing the
     // duplicate so the log-substring wait below can scope its match
@@ -199,18 +200,20 @@ describe("mail-handling edge cases", () => {
     expect(consumedAfter.length).toBe(consumedBefore.length);
 
     const runIdsAfter = await listRunIds(env, ctx.workflowRunRepoId);
-    // Exactly one run for the sha256 id; no synthetic second
+    // Exactly one run for the deployment address; no synthetic second
     // run-id materialised.
-    expect(runIdsAfter.filter((r) => r === expectedRunId).length).toBe(1);
+    expect(runIdsAfter.filter((r) => r === runId).length).toBe(1);
   }, 60_000);
 
-  test("mail with malformed Message-Id (no closing bracket) mints the raw value as runId", async () => {
+  test("mail with malformed Message-Id (no closing bracket) mints the raw value as messageId", async () => {
     const ctx = await deployEdgeWorkflow(env, MALFORMED_DEPLOYMENT_ID);
 
     // Construct a mail with a malformed Message-Id header. The
     // parser does NOT validate angle-bracket shape; it returns the
     // trimmed suffix after `Message-Id:`. So `<invalid` becomes
-    // the messageId verbatim.
+    // the messageId verbatim.  Under the stable-runId model the
+    // runId is the deployment address, but the messageId is still
+    // the parsed header value.
     const malformedMessageId = "<invalid";
     const raw = buildMinimalMail({
       from: "edge@integration.interchange",
@@ -220,25 +223,23 @@ describe("mail-handling edge cases", () => {
       body: "malformed message-id edge case body",
     });
 
+    const runId = ctx.deploymentMailAddress;
+
     await routeRaw(env, ctx.deploymentMailAddress, raw);
 
-    await waitForWorkflowRunComplete(
-      env,
-      MALFORMED_DEPLOYMENT_ID,
-      malformedMessageId,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
-    );
+    await waitForWorkflowRunComplete(env, MALFORMED_DEPLOYMENT_ID, runId, {
+      timeoutMs: 30_000,
+      diagnostics: env.sidecarDiagnostics,
+    });
 
     const events = await readWorkflowRunEvents(
       env,
       MALFORMED_DEPLOYMENT_ID,
-      malformedMessageId,
+      runId,
     );
     const started = events.find((e) => e.type === "RunStarted");
     if (started === undefined) {
-      throw new Error(
-        `malformed edge: run ${malformedMessageId} has no RunStarted`,
-      );
+      throw new Error(`malformed edge: run ${runId} has no RunStarted`);
     }
     expect(started.body["consumedMessageId"]).toBe(malformedMessageId);
     const types = events.map((e) => e.type);
@@ -268,13 +269,15 @@ describe("mail-handling edge cases", () => {
       body: "duplicate edge case body — second send (different body)",
     });
 
+    const runId = ctx.deploymentMailAddress;
+
     await routeRaw(env, ctx.deploymentMailAddress, raw1);
-    await waitForWorkflowRunComplete(env, DUPLICATE_DEPLOYMENT_ID, messageId, {
+    await waitForWorkflowRunComplete(env, DUPLICATE_DEPLOYMENT_ID, runId, {
       timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
 
-    // First run materialised under runs/<messageId>/. The supervisor's
+    // First run materialised under runs/<runId>/. The supervisor's
     // `markConsumed` lands strictly after the terminal observation
     // above; wait for the dedup entry to surface so the duplicate
     // collides on the consumed/ branch rather than the processing/
@@ -335,7 +338,8 @@ describe("mail-handling edge cases", () => {
     expect(processingAfter).toEqual([]);
 
     const runIds = await listRunIds(env, ctx.workflowRunRepoId);
-    expect(runIds.filter((r) => r === messageId).length).toBe(1);
+    // Under the stable-runId model the runId is the deployment address.
+    expect(runIds.filter((r) => r === runId).length).toBe(1);
   }, 60_000);
 });
 
@@ -539,14 +543,10 @@ async function routeRaw(
   address: string,
   raw: Uint8Array,
 ): Promise<void> {
-  // Deliver the run's grants ahead of the mail under the SAME runId the
-  // sidecar derives from these bytes (the shared `deriveMessageId`: the
-  // Message-ID header when present, else sha256 of the bytes), so the run's
-  // `onRunStart` barrier resolves its grants file rather than failing
-  // closed. These edge-case workflows authorize no tools, so an empty grant
-  // set is sufficient -- what matters is that the file lands under the
-  // derived runId.
-  const runId = await deriveMessageId(raw);
+  // Under the stable-runId model the supervisor expects grants at
+  // runs/<deploymentAddress>/grants.json, regardless of the message's
+  // derived messageId.
+  const runId = address;
   const grantsDelivered = env.hub.router.sendRunGrants(address, runId, []);
   if (!grantsDelivered) {
     throw new Error(

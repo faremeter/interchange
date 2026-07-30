@@ -35,7 +35,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { base64Encode, hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types";
 import type { NewlyTerminalRun, RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -451,14 +451,11 @@ async function bootSupervisor(opts: {
   prefix: string;
   inboxOpts?: Parameters<typeof createMemoryInboxPrimitives>[0];
   onWriteAttempt?: (cap: WriteCapture) => void;
-  terminalWriteWatchdogMs?: number;
   /**
    * The merge callback the substrate runs is the supervisor's
    * IPC-bridging closure; set this to `false` so the stub does not
    * pre-invoke the merge callback synchronously with an empty existing
-   * map. Tests that exercise the merge round-trip set this to true
-   * (default false here for the watchdog test which writes the
-   * terminal-event blob directly via the merge body).
+   * map. Tests that exercise the merge round-trip set this to true.
    */
   invokeMerge?: boolean;
 }): Promise<SupervisorHarness> {
@@ -529,9 +526,6 @@ async function bootSupervisor(opts: {
       `${deploymentId}-${stepId}@example.com`,
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives,
-    ...(opts.terminalWriteWatchdogMs !== undefined
-      ? { terminalWriteWatchdogMs: opts.terminalWriteWatchdogMs }
-      : {}),
   };
 
   const supervisor = createWorkflowSupervisor(bindings);
@@ -615,153 +609,6 @@ function readPayloadsOfType<T extends string>(
   }
   return out;
 }
-
-describe("substrate-write watchdog", () => {
-  test("a stalled markConsumed forces a structured failure response within the watchdog window", async () => {
-    // Inject a never-resolving `markConsumed` so the dispatch loop's
-    // post-terminal step hangs forever. The watchdog inside
-    // `synchronouslyDispatchTerminalWrite` has to surface that stall
-    // as a `{ ok: false, reason: "terminal-write watchdog timeout: ..." }`
-    // response within the configured window rather than wedging.
-    const blockMarkConsumed = new Promise<void>(() => {
-      /* never resolve */
-    });
-    const harness = await bootSupervisor({
-      prefix: "watchdog-",
-      inboxOpts: { blockMarkConsumed },
-      terminalWriteWatchdogMs: 60,
-    });
-
-    // Deliver a mail so the dispatch loop dequeues it, forwards a
-    // trigger.fire, and adds the runId to dispatchedRunIds. The runId
-    // equals the messageId in the supervisor's dispatch loop.
-    harness.mailBus.deliver(
-      "deployment-x@example.com",
-      new TextEncoder().encode("watchdog-msg"),
-    );
-    // Wait until the supervisor has forwarded the trigger.fire so we
-    // can extract the runId it allocated.
-    const triggerDeadline = Date.now() + 2_000;
-    let runId: string | null = null;
-    while (runId === null && Date.now() < triggerDeadline) {
-      const triggers = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "trigger.fire",
-      );
-      if (triggers.length > 0) {
-        const first = triggers[0];
-        if (first !== undefined) runId = first.data.runId;
-      }
-      if (runId === null) await new Promise((r) => setTimeout(r, 1));
-    }
-    if (runId === null) {
-      throw new Error("supervisor did not forward trigger.fire in time");
-    }
-
-    // Now drive the child's `substrate.write.request` for a terminal
-    // event blob targeting that same runId. The supervisor's stub
-    // RepoStore invokes the merge round-trip; we satisfy it with a
-    // valid `substrate.merge.response` carrying the prospective
-    // RunCompleted blob. Once the merge round-trip completes the
-    // supervisor enters `synchronouslyDispatchTerminalWrite`, which
-    // notifies the broadcaster (the dispatch loop's iterator wakes
-    // and calls markConsumed -- but markConsumed is wedged on the
-    // injected promise). The watchdog should surface the deadlock
-    // within `terminalWriteWatchdogMs`.
-    const requestId = "watchdog-req-1";
-    await harness.childSender.send({
-      type: "substrate.write.request",
-      data: {
-        requestId,
-        repoId: { kind: "workflow-run", id: "deployment-x" },
-        ref: "refs/heads/main",
-        preservePrefix: `runs/${runId}/events/`,
-        message: "child terminal write",
-      },
-    });
-    // Wait for the supervisor's `substrate.merge.request` to land,
-    // then reply with the terminal-event blob.
-    const mergeDeadline = Date.now() + 2_000;
-    let mergeRequestSeen = false;
-    while (!mergeRequestSeen && Date.now() < mergeDeadline) {
-      const merges = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.merge.request",
-      );
-      if (merges.some((m) => m.data.requestId === requestId)) {
-        mergeRequestSeen = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    expect(mergeRequestSeen).toBe(true);
-    const terminalBlob = JSON.stringify({
-      type: "RunCompleted",
-      seq: 0,
-      runId,
-      at: "test",
-      signature: { principalKind: "workflow-process", sig: "00" },
-    });
-    await harness.childSender.send({
-      type: "substrate.merge.response",
-      data: {
-        requestId,
-        result: {
-          ok: true,
-          files: [
-            {
-              path: `runs/${runId}/events/0.json`,
-              contentBase64: base64Encode(
-                new TextEncoder().encode(terminalBlob),
-              ),
-            },
-          ],
-        },
-      },
-    });
-
-    // The watchdog should surface a structured failure on the
-    // downstream control channel within the configured window.
-    const responseDeadline = Date.now() + 2_000;
-    let watchdogResponse: {
-      requestId: string;
-      result: { ok: boolean; reason?: string };
-    } | null = null;
-    while (watchdogResponse === null && Date.now() < responseDeadline) {
-      const responses = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.write.response",
-      );
-      const matched = responses.find((r) => r.data.requestId === requestId);
-      if (matched !== undefined) {
-        watchdogResponse = {
-          requestId: matched.data.requestId,
-          result: matched.data.result,
-        };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    if (watchdogResponse === null) {
-      const flushed = harness.supervisorToChild.flushed();
-      throw new Error(
-        `watchdog did not surface a substrate.write.response in time; flushed lines: ${String(flushed.length)}`,
-      );
-    }
-    expect(watchdogResponse.result.ok).toBe(false);
-    expect(watchdogResponse.result.reason).toMatch(
-      /terminal-write watchdog timeout/,
-    );
-
-    // The dispatch loop is wedged on the injected `blockMarkConsumed`;
-    // a normal shutdown would await the loop's settle and hang. The
-    // close on `childToSupervisor` from the spawner's `kill` lands the
-    // dispatch loop's cohort abort, but the in-flight `markConsumed`
-    // awaiter still leaks. The test does not need a clean shutdown
-    // here -- the watchdog assertion is the load-bearing observation.
-    void harness.supervisor.shutdown();
-  });
-});
 
 describe("substrate-write authz: supervisor overrides the child's claim", () => {
   test("the supervisor presents its bindings-pinned workflow-process principal regardless of what the child claims", async () => {
@@ -890,12 +737,11 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
 });
 
 describe("substrate-write cohort abort cleanup", () => {
-  test("a substrate.write.request mid-merge is rejected through MergeAbortedError when the supervisor shuts down", async () => {
+  test("a substrate.write.request mid-merge is rejected with cohort abort reason when the supervisor shuts down", async () => {
     // The HIGH cleanup the supervisor commits when a cohort tears down:
-    // every pending merge round-trip and every markConsumed waiter
-    // registered against the dying cohort must reject through
-    // `MergeAbortedError` so handler closures awaiting them do not
-    // leak past the shutdown. Pin the observable result here by
+    // every pending merge round-trip registered against the dying cohort
+    // must resolve with a failure so handler closures awaiting them do
+    // not leak past the shutdown. Pin the observable result here by
     // driving a substrate.write.request to mid-merge, then issuing
     // shutdown without sending the matching substrate.merge.response.
     // The supervisor's `substrate.write.response` to the child must
@@ -972,148 +818,6 @@ describe("substrate-write cohort abort cleanup", () => {
     }
     expect(abortResponse.result.ok).toBe(false);
     expect(abortResponse.result.reason).toMatch(/cohort aborted/);
-
-    await shutdownPromise;
-  });
-
-  test("a markConsumed waiter mid-await is rejected through MergeAbortedError when the supervisor shuts down", async () => {
-    // Companion to the test above. The HIGH cleanup also covers
-    // `markConsumedCompletionWaiters`, which the supervisor populates
-    // when a substrate.write.request lands a terminal-event blob: the
-    // post-merge `synchronouslyDispatchTerminalWrite` path notifies
-    // the broadcaster and then awaits a per-runId completion promise
-    // that the dispatch loop's `markConsumed` would normally resolve.
-    // If the cohort tears down while a waiter is mid-await, the
-    // resolver the dispatch loop would have called never fires; the
-    // HIGH cleanup must reject the waiter via MergeAbortedError so
-    // the awaiting handler closure unblocks and the
-    // substrate.write.response surfaces the abort to the child.
-    const blockMarkConsumed = new Promise<void>(() => {
-      /* never resolve: lets the markConsumed completion waiter sit
-         in `markConsumedCompletionWaiters` for shutdown to find */
-    });
-    const harness = await bootSupervisor({
-      prefix: "supv-cohort-abort-mc-",
-      invokeMerge: true,
-      inboxOpts: { blockMarkConsumed },
-    });
-
-    // Drive a trigger.fire so the supervisor adds the runId to
-    // `dispatchedRunIds` (a precondition for the waiter registration).
-    harness.mailBus.deliver(
-      "deployment-x@example.com",
-      new TextEncoder().encode("cohort-abort-mc-msg"),
-    );
-    const triggerDeadline = Date.now() + 2_000;
-    let runId: string | null = null;
-    while (runId === null && Date.now() < triggerDeadline) {
-      const triggers = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "trigger.fire",
-      );
-      if (triggers.length > 0) {
-        const first = triggers[0];
-        if (first !== undefined) runId = first.data.runId;
-      }
-      if (runId === null) await new Promise((r) => setTimeout(r, 1));
-    }
-    if (runId === null) {
-      throw new Error("supervisor did not forward trigger.fire in time");
-    }
-
-    // Drive a terminal-event write through the substrate-write IPC.
-    // The supervisor's `synchronouslyDispatchTerminalWrite` enters the
-    // `await completed` line after registering the waiter; the
-    // blockMarkConsumed stub guarantees `markConsumed` cannot resolve
-    // it, so the await sits in the map for shutdown to find.
-    const requestId = "cohort-abort-mc-req-1";
-    await harness.childSender.send({
-      type: "substrate.write.request",
-      data: {
-        requestId,
-        repoId: { kind: "workflow-run", id: "deployment-x" },
-        ref: "refs/heads/main",
-        preservePrefix: `runs/${runId}/events/`,
-        message: "terminal-event write that will be aborted",
-      },
-    });
-    const mergeDeadline = Date.now() + 2_000;
-    let mergeRequestSeen = false;
-    while (!mergeRequestSeen && Date.now() < mergeDeadline) {
-      const merges = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.merge.request",
-      );
-      if (merges.some((m) => m.data.requestId === requestId)) {
-        mergeRequestSeen = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    expect(mergeRequestSeen).toBe(true);
-
-    // Satisfy the merge round-trip with a real terminal-event blob.
-    // The supervisor's post-merge synthesizeTerminalEvent path runs,
-    // notifies the broadcaster, and parks on the markConsumed
-    // completion waiter (which blockMarkConsumed will never resolve).
-    const terminalBlob = JSON.stringify({
-      type: "RunCompleted",
-      seq: 0,
-      runId,
-      at: "test",
-      signature: { principalKind: "workflow-process", sig: "00" },
-    });
-    await harness.childSender.send({
-      type: "substrate.merge.response",
-      data: {
-        requestId,
-        result: {
-          ok: true,
-          files: [
-            {
-              path: `runs/${runId}/events/0.json`,
-              contentBase64: base64Encode(
-                new TextEncoder().encode(terminalBlob),
-              ),
-            },
-          ],
-        },
-      },
-    });
-
-    // Shutdown. `rejectCohortAwaiters` iterates the waiter map and
-    // calls reject(MergeAbortedError) on every entry; the awaiting
-    // handler's catch surfaces the rejection as a
-    // substrate.write.response with the abort reason.
-    const shutdownPromise = harness.supervisor.shutdown();
-
-    const responseDeadline = Date.now() + 5_000;
-    let abortResponse: {
-      requestId: string;
-      result: { ok: boolean; reason?: string };
-    } | null = null;
-    while (abortResponse === null && Date.now() < responseDeadline) {
-      const responses = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.write.response",
-      );
-      const matched = responses.find((r) => r.data.requestId === requestId);
-      if (matched !== undefined) {
-        abortResponse = {
-          requestId: matched.data.requestId,
-          result: matched.data.result,
-        };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    if (abortResponse === null) {
-      throw new Error(
-        "supervisor did not surface a cohort-aborted substrate.write.response for the markConsumed waiter in time",
-      );
-    }
-    expect(abortResponse.result.ok).toBe(false);
-    expect(abortResponse.result.reason).toMatch(/cohort aborted|markConsumed/);
 
     await shutdownPromise;
   });

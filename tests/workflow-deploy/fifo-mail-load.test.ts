@@ -47,12 +47,10 @@ import {
   readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import {
-  waitForConsumedEntries,
-  waitForRunsByMessageIds,
-} from "./fifo-mail-helpers";
+import { waitForConsumedEntries } from "./fifo-mail-helpers";
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -361,51 +359,43 @@ describe("FIFO mail-trigger serialization under load", () => {
     );
     expect(processingEntries).toEqual([]);
 
-    // Every run must materialise the canonical single-step event
-    // chain (RunStarted -> StepStarted{loadStep} ->
-    // StepCompleted{loadStep} -> RunCompleted). The supervisor
-    // mints the runId from the Message-Id header, so we resolve
-    // message-id -> runId via RunStarted bodies.
-    const observed = await waitForRunsByMessageIds(
+    // Under the stable-runId model all 50 messages share the same
+    // runId (the deployment address).  `clearRunEventsIfAny` clears
+    // prior terminal events before each new trigger.fire, so only the
+    // last run's events survive in the repo.  We therefore wait for the
+    // single run to reach terminal rather than looking for per-message
+    // run histories.
+    const runId = deploymentMailAddress;
+    const terminal = await waitForWorkflowRunComplete(
       env,
       DEPLOYMENT_ID_LOAD,
-      workflowRunRepoId,
-      LOAD_MESSAGE_IDS,
+      runId,
       { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
     );
-    expect(observed.length).toBe(LOAD_MAIL_COUNT);
+    expect(terminal.type).toBe("RunCompleted");
 
-    for (const entry of observed) {
-      const events = await readWorkflowRunEvents(
-        env,
-        DEPLOYMENT_ID_LOAD,
-        entry.runId,
-      );
-      const types = events.map((e) => e.type);
-      const runStartedIdx = types.indexOf("RunStarted");
-      const stepStartedIdx = types.findIndex(
-        (t, i) =>
-          t === "StepStarted" && events[i]?.body["stepId"] === "loadStep",
-      );
-      const stepCompletedIdx = types.findIndex(
-        (t, i) =>
-          t === "StepCompleted" && events[i]?.body["stepId"] === "loadStep",
-      );
-      const runCompletedIdx = types.indexOf("RunCompleted");
+    // Verify the current (last) run's canonical single-step event chain.
+    const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID_LOAD, runId);
+    const types = events.map((e) => e.type);
+    const runStartedIdx = types.indexOf("RunStarted");
+    const stepStartedIdx = types.findIndex(
+      (t, i) => t === "StepStarted" && events[i]?.body["stepId"] === "loadStep",
+    );
+    const stepCompletedIdx = types.findIndex(
+      (t, i) =>
+        t === "StepCompleted" && events[i]?.body["stepId"] === "loadStep",
+    );
+    const runCompletedIdx = types.indexOf("RunCompleted");
 
-      if (
-        runStartedIdx < 0 ||
-        stepStartedIdx <= runStartedIdx ||
-        stepCompletedIdx <= stepStartedIdx ||
-        runCompletedIdx <= stepCompletedIdx
-      ) {
-        throw new Error(
-          `fifo-mail-load: run ${entry.runId} (messageId=${entry.messageId}) chain malformed: ${types.join(" -> ")}`,
-        );
-      }
-      const startedBody = events[runStartedIdx]?.body;
-      if (startedBody === undefined) throw new Error("unreachable");
-      expect(startedBody["consumedMessageId"]).toBe(entry.messageId);
+    if (
+      runStartedIdx < 0 ||
+      stepStartedIdx <= runStartedIdx ||
+      stepCompletedIdx <= stepStartedIdx ||
+      runCompletedIdx <= stepCompletedIdx
+    ) {
+      throw new Error(
+        `fifo-mail-load: run ${runId} chain malformed: ${types.join(" -> ")}`,
+      );
     }
   }, 300_000);
 });

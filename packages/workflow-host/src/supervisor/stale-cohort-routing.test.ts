@@ -1,30 +1,32 @@
-// H-S2 routing pinch-point verification.
+// Stale-cohort routing pinch-point verification.
 //
-// The supervisor's `pumpUpstreamControl` resolves the broadcaster
-// DYNAMICALLY on every `terminal.event` via `activeTerminalBroadcaster()`,
-// which returns whatever broadcaster is currently in `state`. During a
-// recycle, the supervisor mints a new broadcaster on the new cohort
-// before the OLD pump's iterator finishes draining. A `terminal.event`
-// frame the OLD child emitted before kill landed sits in the OLD
-// iterator's buffer; when the OLD pump eventually consumes it, the
-// dynamic resolution returns the NEW cohort's broadcaster, and the
-// frame is fan-out to the NEW cohort's listeners.
+// The supervisor's `pumpUpstreamControl` closes over the cohort
+// broadcaster captured at pump-start time, NOT a broadcaster resolved
+// dynamically per `terminal.event`. During a recycle, the supervisor
+// mints a fresh broadcaster for the new cohort and disposes the old
+// one. A `terminal.event` frame the OLD child emitted before its kill
+// landed sits in the OLD iterator's buffer; when the OLD pump
+// eventually consumes it, the notify routes to the OLD cohort's (now
+// disposed) broadcaster, whose `notify` is a no-op — so the frame does
+// NOT fan out to the NEW cohort's listeners.
 //
 // The realistic scenario:
-//   - Run M is in-flight on cohort A.
+//   - A run is in-flight on cohort A under the stable runId (the
+//     deployment mail address, shared by every run of the deployment).
 //   - Cohort A crashes mid-run before markConsumed → recycle.
-//   - The processing/ entry for M is replayed back to inbox/.
-//   - Cohort B dispatches M as runId = M. Cohort B subscribes its
-//     broadcaster for runId M.
+//   - The processing/ entry is replayed back to inbox/.
+//   - Cohort B dispatches the fresh mail under that same stable runId
+//     and subscribes cohort B's broadcaster for it.
 //   - Meanwhile, cohort A's iterator still has a buffered
-//     `terminal.event` for runId M from the previous incarnation.
-//   - The OLD pump dequeues the buffered frame, sees that the cohort A
-//     iterator hasn't terminated yet, and calls
-//     activeTerminalBroadcaster().notify("M", staleEvent) — which
-//     routes to COHORT B's broadcaster, settling B's listener early.
-//   - Cohort B's dispatch loop falsely believes the run has completed
-//     and prematurely calls markConsumed on M, while the run is still
-//     running on cohort B.
+//     `terminal.event` for the stable runId from the previous
+//     incarnation.
+//   - The OLD pump dequeues the buffered frame and calls
+//     `notify(runId, staleEvent)` on cohort A's captured broadcaster,
+//     which is disposed, so the notify drops. Cohort B's listener is
+//     NOT settled early.
+//   - Cohort B's markConsumed stays gated on `waitForRunTerminalOrPark`
+//     and does not fire until cohort B emits the run's real terminal
+//     event.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -410,7 +412,7 @@ async function driveReady(
 }
 
 describe("H-S2 stale-cohort routing pinch-point", () => {
-  test("a terminal.event from OLD child for a runId being dispatched on NEW cohort leaks across cohorts via dynamic activeTerminalBroadcaster() resolution", async () => {
+  test("a stale terminal.event from the OLD child does not leak into the NEW cohort's dispatch wait", async () => {
     const baseDir = await makeTempDir("hs2-leak-");
     const ipcKp = await generateKeyPair();
     const mailBus = createMockMailBus();
@@ -480,7 +482,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       await new Promise((r) => setTimeout(r, 1));
     const childB = tracker.children[1];
     if (childB === undefined) throw new Error("tracker.children[1] missing");
-    await driveReady(childB, ipcKp);
+    const senderB = await driveReady(childB, ipcKp);
     await recycleP;
 
     // The recycle finished. State is now `running` with cohort B's
@@ -490,8 +492,9 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     // Deliver a fresh mail to cohort B and let it land in the inbox.
     // The runtime body of cohort B has NOT processed it yet; the
     // dispatch loop will dequeue it, subscribe cohort B's broadcaster
-    // for the runId, then forward trigger.fire. At that point, cohort
-    // B's broadcaster has a listener for that runId.
+    // for the stable runId (the deployment mail address), then forward
+    // trigger.fire. At that point, cohort B's broadcaster has a listener
+    // for that runId.
     const TEST_MESSAGE =
       "Message-ID: <stale-routing-probe@example.com>\r\n\r\nbody";
     const TEST_MESSAGE_ID = "<stale-routing-probe@example.com>";
@@ -501,7 +504,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     );
 
     // Wait until cohort B has forwarded the trigger.fire (which means
-    // the cohort B broadcaster has a listener for runId TEST_MESSAGE_ID).
+    // the cohort B broadcaster has a listener for the stable runId).
     const deadline = Date.now() + 1_000;
     while (Date.now() < deadline) {
       const flushed = childB.s2c.flushed();
@@ -512,54 +515,52 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       true,
     );
 
-    // Now inject a STALE `terminal.event` for that runId from the OLD
-    // child (cohort A). The OLD pump (still alive on A's iterator)
-    // will pick it up. Inside `pumpUpstreamControl`, the code resolves
-    // `activeTerminalBroadcaster()` — which returns cohort B's
-    // broadcaster — and routes the notify there.
+    // Now inject a STALE `terminal.event` for the stable runId from the
+    // OLD child (cohort A). The OLD pump (still alive on A's iterator)
+    // picks it up. `pumpUpstreamControl` notifies the broadcaster it
+    // captured at pump-start — cohort A's, which the recycle disposed —
+    // so the notify drops and cohort B's listener is untouched.
     await senderA.send({
       type: "terminal.event",
       data: {
-        runId: TEST_MESSAGE_ID,
+        runId: bindings.deploymentMailAddress,
         kind: "RunCompleted",
         seq: 0,
         at: "stale-from-cohort-A",
       },
     });
 
-    // Wait for the OLD pump to drain the stale frame.
+    // Wait briefly so the OLD pump has time to process the stale frame.
     await new Promise((r) => setTimeout(r, 50));
 
-    // If H-S2 is real, cohort B's dispatch loop will have observed the
-    // stale terminal event, exited waitForRunTerminal, and called
-    // markConsumed for TEST_MESSAGE_ID — even though cohort B never
-    // actually completed the run on the child side.
-    //
-    // If H-S2 is mitigated, the cohort B dispatch loop is STILL waiting
-    // for the real terminal.event from cohort B's child.
+    // Under unified dispatch markConsumed is gated on
+    // waitForRunTerminalOrPark.  The stale terminal.event from cohort A
+    // is routed to cohort A's own broadcaster (captured at pump-start
+    // time), NOT cohort B's, so it does NOT resolve cohort B's wait.
+    // The message therefore stays in processing/ until cohort B sends a
+    // real terminal event.
     expect(consumedRecord).not.toContain(TEST_MESSAGE_ID);
 
-    // Cleanup: settle the run legitimately so shutdown is clean.
-    if (childB.channelId === undefined)
-      throw new Error("childB.channelId missing");
-    const senderB = createControlChannelSender({
-      privateKeySeed: ipcKp.privateKey,
-      channelId: childB.channelId,
-      writer: {
-        write(line: string) {
-          childB.c2s.inject(line);
-        },
-      },
-    });
+    // Settle the run legitimately from cohort B under the stable runId.
     await senderB.send({
       type: "terminal.event",
       data: {
-        runId: TEST_MESSAGE_ID,
+        runId: bindings.deploymentMailAddress,
         kind: "RunCompleted",
         seq: 0,
         at: "real-from-cohort-B",
       },
     });
+
+    // The real terminal event from cohort B resolves
+    // waitForRunTerminalOrPark, allowing markConsumed to run.
+    const consumedDeadline2 = Date.now() + 1_000;
+    while (Date.now() < consumedDeadline2) {
+      if (consumedRecord.includes(TEST_MESSAGE_ID)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(consumedRecord).toContain(TEST_MESSAGE_ID);
+
     childA.c2s.close();
     await supervisor.shutdown();
   });

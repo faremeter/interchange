@@ -543,15 +543,6 @@ export interface WorkflowSupervisorBindings {
    */
   readyTimeoutMs?: number;
   /**
-   * Watchdog timeout (ms) for the supervisor's substrate-write
-   * handler's wait on the dispatch loop's `markConsumed` when a
-   * terminal-event blob lands in a proxied write. Defaults to
-   * `DEFAULT_TERMINAL_WRITE_WATCHDOG_MS`. Tests inject a small value
-   * so the watchdog path is observable without holding a test loop
-   * for the production duration.
-   */
-  terminalWriteWatchdogMs?: number;
-  /**
    * Watchdog timeout (ms) for `reEmitParkedCorrelations`' wait on the
    * child's `parked-correlations.response`. Caps the wait so a
    * wedged-but-alive child (whose cohort never tears down, so the
