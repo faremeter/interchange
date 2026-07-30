@@ -1,14 +1,11 @@
-// Hub-role grant issuance for the fresh-database provisioner
-// (`db-provision.ts`).
+// Shared hub-role grant issuance for the `tests/` harnesses.
 //
 // The hub app connects under its own postgres role, which is not the
-// role that owns the migrated tables, so the hub role needs DML +
-// USAGE grants before it can read or write. This module issues that
-// grant set for the browser end-to-end harness's per-run databases.
-// The older hub-subprocess harness (`tests/hub-api/lib/git-harness.ts`)
-// still inlines its own copy of the same grants and of the identifier
-// quoting; consolidating it onto this module is deliberate follow-up
-// work.
+// role that owns the migrated tables. Whether those tables live in a
+// per-test schema (the hub-subprocess harness) or the `public` schema
+// of a per-run database (the browser end-to-end harness), the hub role
+// needs the same DML + USAGE grants before it can read or write, and
+// both harnesses issue them through this module.
 
 import postgres from "postgres";
 
