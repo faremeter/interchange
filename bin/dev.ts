@@ -27,6 +27,7 @@ import {
   publishToolPackages,
 } from "./lib/publish-tool-packages";
 import { WORKSPACE_BUILTINS_REGISTRY } from "@intx/hub-sessions";
+import { waitForHTTP } from "@intx/test-harness/http";
 
 $.verbose = false;
 
@@ -210,24 +211,6 @@ function watchProcess(label: string, proc: ProcessPromise): void {
 }
 
 // ---------------------------------------------------------------------------
-// Health check
-// ---------------------------------------------------------------------------
-
-async function waitForHub(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.status < 500) return;
-    } catch {
-      // Not up yet.
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`Hub did not become ready within ${timeoutMs / 1000}s`);
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -333,7 +316,7 @@ const hubProc = spawnLabeled(
 watchProcess("hub", hubProc);
 
 try {
-  await waitForHub(`${hubURL}/api/auth/get-session`, 30_000);
+  await waitForHTTP(`${hubURL}/api/auth/get-session`, 30_000);
 } catch (err) {
   console.error(err instanceof Error ? err.message : String(err));
   await shutdown(1);

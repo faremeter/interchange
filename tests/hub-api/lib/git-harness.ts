@@ -109,6 +109,8 @@ import {
   loadHarnessDbConfig,
   randomSchemaName,
 } from "@intx/test-harness/db-harness";
+import { grantHubSchemaAccess } from "@intx/test-harness/grants";
+import { waitForHTTP } from "@intx/test-harness/http";
 
 /**
  * Required hub-side env. The harness writes these explicitly into
@@ -432,24 +434,6 @@ export type HubHandle = {
   stop: () => Promise<void>;
 };
 
-async function waitForHub(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: Error | null = null;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.status < 500) return;
-      lastErr = new Error(`hub returned status ${res.status}`);
-    } catch (e) {
-      lastErr = e instanceof Error ? e : new Error(String(e));
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error(
-    `hub did not become ready within ${timeoutMs}ms (last: ${lastErr?.message ?? "no probe"})`,
-  );
-}
-
 export async function startHub(
   options: StartHubOptions = {},
 ): Promise<HubHandle> {
@@ -476,16 +460,7 @@ export async function startHub(
       max: 1,
     });
     try {
-      const quote = (n: string) => `"${n.replace(/"/g, '""')}"`;
-      const schemaIdent = quote(schema);
-      const hubRole = quote(hubEnv.db.user);
-      await sql.unsafe(`GRANT USAGE ON SCHEMA ${schemaIdent} TO ${hubRole}`);
-      await sql.unsafe(
-        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schemaIdent} TO ${hubRole}`,
-      );
-      await sql.unsafe(
-        `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schemaIdent} TO ${hubRole}`,
-      );
+      await grantHubSchemaAccess(sql, schema, hubEnv.db.user);
     } finally {
       await sql.end();
     }
@@ -541,7 +516,7 @@ export async function startHub(
   const url = `http://127.0.0.1:${port}`;
 
   try {
-    await waitForHub(url, 30_000);
+    await waitForHTTP(url, 30_000, 100);
   } catch (e) {
     // Surface what the hub printed so the test failure is
     // actionable.

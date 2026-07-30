@@ -22,6 +22,10 @@
       "types": "./grants.ts",
       "default": "./grants.ts"
     },
+    "./http": {
+      "types": "./http.ts",
+      "default": "./http.ts"
+    },
     "./seed": {
       "types": "./seed.ts",
       "default": "./seed.ts"
