@@ -4,8 +4,16 @@
 // StepCompleted, RunCompleted) as a SEPARATE durable
 // `writeTreePreservingPrefix` commit (four per synchronous single-step
 // run). B2 buffers the events emitted within one synchronous execution
-// segment and flushes them in ONE commit at the segment boundary
-// (suspension or completion). This is a persistence-TIMING change only.
+// segment and flushes the buffer in ONE `appendBatch` at a flush
+// boundary. A flush boundary is the segment boundary (a suspension or
+// the terminal event) AND the agent-invoke durability barrier: an
+// agent step's `StepStarted` is flushed durably BEFORE the
+// non-idempotent `env.invokeStep` runs, so a crash mid-invocation
+// leaves a durable marker the recovery path settles rather than
+// re-invoking the agent. A synchronous single-step agent run is
+// therefore TWO commits -- the barrier flush [RunStarted, StepStarted]
+// and the terminal flush [StepCompleted, RunCompleted] -- not one.
+// This is a persistence-TIMING change only.
 //
 // These tests are the gate: they prove exactly-once, crash-recovery,
 // and resume are equivalent to the per-event behaviour, against the
@@ -217,7 +225,7 @@ function signalWorkflow(): WorkflowDefinition {
 }
 
 describe("B2 run-event batching — correctness gate", () => {
-  test("gate 1: a synchronous single-step run commits its 4 events in ONE durable write, terminal last", async () => {
+  test("gate 1: a synchronous single-step agent run commits its 4 events in TWO durable writes split by the agent-invoke barrier, terminal last", async () => {
     const repoId: RepoId = { kind: "workflow-run", id: "gate1-deployment" };
     const { substrate } = await makeSubstrate(repoId);
     const adapter = createWorkflowRunRepoStore({
@@ -238,25 +246,23 @@ describe("B2 run-event batching — correctness gate", () => {
 
     expect(result.terminalStatus).toBe("completed");
 
-    // The whole synchronous segment is ONE durable commit. Before B2
-    // this run cost four separate commits.
-    expect(store.durableWrites()).toBe(1);
+    // The agent-invoke barrier splits the synchronous segment into two
+    // durable commits: the barrier flush [RunStarted, StepStarted]
+    // before the non-idempotent invoke, then the terminal flush
+    // [StepCompleted, RunCompleted]. Before B2 this run cost four
+    // separate commits.
+    expect(store.durableWrites()).toBe(2);
 
-    const onlyBatch = store.batches()[0];
-    if (onlyBatch === undefined) throw new Error("expected one batch");
-    const kinds = onlyBatch.map((e) => e.kind);
-    expect(kinds).toEqual([
-      "RunStarted",
-      "StepStarted",
-      "StepCompleted",
-      "RunCompleted",
+    expect(store.batches().map((b) => b.map((e) => e.kind))).toEqual([
+      ["RunStarted", "StepStarted"],
+      ["StepCompleted", "RunCompleted"],
     ]);
 
     // The terminal RunCompleted is the LAST blob in the merge, which is
     // exactly what the supervisor's terminal-write sniff keys on and
     // what the kind handler's terminal-lock requires. Read the durable
     // log back through the production adapter to confirm the validator
-    // accepted the multi-blob commit and the seqs are contiguous.
+    // accepted the batched commits and the seqs are contiguous.
     const durable = await adapter.read(runId);
     expect(durable.map((e) => e.kind)).toEqual([
       "RunStarted",
@@ -278,7 +284,7 @@ describe("B2 run-event batching — correctness gate", () => {
     expect(runStarted.consumedMessageId).toBe("msg-gate1");
   });
 
-  test("gate 2: a crash mid-segment (before flush) leaves NO durable run, discovery skips it, the re-drive completes exactly once", async () => {
+  test("gate 2: a crash on the terminal-batch flush leaves exactly the barrier flush [RunStarted, StepStarted] durable; the terminal batch is atomic", async () => {
     const repoId: RepoId = { kind: "workflow-run", id: "gate2-deployment" };
     const { substrate } = await makeSubstrate(repoId);
     const adapter = createWorkflowRunRepoStore({
@@ -290,9 +296,10 @@ describe("B2 run-event batching — correctness gate", () => {
     const def = singleStepWorkflow();
     const runId = "run-gate2";
 
-    // First attempt: crash on the segment-boundary flush (the single
-    // batch carrying the terminal). The step ran in memory but the
-    // durable write is dropped -- exactly the mid-segment crash window.
+    // Crash on the terminal-batch flush: the buffer carrying
+    // [StepCompleted, RunCompleted] is dropped. The agent-invoke
+    // barrier already flushed [RunStarted, StepStarted] durably before
+    // the invoke, so this segment is NOT one all-or-nothing batch.
     const crashingStore = countingStore(adapter, {
       crashOn: (events) => events.some((e) => e.kind === "RunCompleted"),
     });
@@ -304,51 +311,26 @@ describe("B2 run-event batching — correctness gate", () => {
       }).complete,
     ).rejects.toBeInstanceOf(InjectedCrash);
 
-    // The buffered segment never flushed, so there is NO
-    // runs/<runId>/ directory at all -- not even a partial RunStarted.
+    // The barrier flush landed durably, so the run directory exists --
+    // that is the barrier's whole point: a durable marker before the
+    // non-idempotent invoke.
     const runsDir = path.join(
       substrate.getRepoDir(repoId),
       "runs",
       runId,
       "events",
     );
-    expect(fs.existsSync(runsDir)).toBe(false);
+    expect(fs.existsSync(runsDir)).toBe(true);
 
-    // discoverInFlightRuns does not enumerate a run with zero durable
-    // events -- it simply does not see the crashed attempt.
-    const runtimeRepoStore = createWorkflowRunRepoStore({
-      substrate,
-      repoId,
-      principal: principalFor(repoId),
-      ref: REF,
-    });
-    const discovered = await discoverInFlightRuns({
-      substrate,
-      repoId,
-      runtimeRepoStore,
-    });
-    expect(discovered.map((d) => d.runId)).not.toContain(runId);
-    expect(discovered).toHaveLength(0);
-
-    // Respawn: the message replays from the inbox and re-drives as a
-    // fresh run. There is no prior durable record to dedup against, so
-    // the replay IS the recovery and it completes exactly once.
-    const cleanStore = countingStore(adapter);
-    const cleanEnv = buildEnv(cleanStore, def);
-    const result = await runtimeRun(def, cleanEnv, {
-      runId,
-      consumedMessageId: "msg-gate2",
-    }).complete;
-    expect(result.terminalStatus).toBe("completed");
-
-    // Exactly one durable commit for the successful re-drive, and the
-    // durable log carries exactly one RunStarted / one RunCompleted --
-    // no double-process residue from the crashed attempt.
-    expect(cleanStore.durableWrites()).toBe(1);
+    // The durable residue is EXACTLY the barrier flush: the terminal
+    // batch is atomic, so neither StepCompleted nor RunCompleted
+    // persisted. The run is left with a durable StepStarted and no
+    // completion -- the crash-mid-invocation shape the recovery path
+    // adopts and settles terminal (covered by refire-adopts-crashed-step;
+    // the adoption is not re-covered here).
     const durable = await adapter.read(runId);
-    expect(durable.filter((e) => e.kind === "RunStarted")).toHaveLength(1);
-    expect(durable.filter((e) => e.kind === "RunCompleted")).toHaveLength(1);
-    expect(durable.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+    expect(durable.map((e) => e.kind)).toEqual(["RunStarted", "StepStarted"]);
+    expect(durable.map((e) => e.seq)).toEqual([1, 2]);
   });
 
   test("gate 3: a suspending run flushes the suspension marker BEFORE it parks; the durable pre-park log is discoverable and resumes to completion", async () => {
@@ -397,17 +379,15 @@ describe("B2 run-event batching — correctness gate", () => {
     expect(parked.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5]);
     expect(parkedKinds[parkedKinds.length - 1]).toBe("SignalAwaited");
 
-    // The first segment flushed as ONE durable commit ending in the
-    // suspension marker (batched, not five separate commits), and the
-    // run is NOT yet terminal.
-    const firstBatch = store.batches()[0];
-    if (firstBatch === undefined) throw new Error("expected a first batch");
-    expect(firstBatch.map((e) => e.kind)).toEqual([
-      "RunStarted",
-      "StepStarted",
-      "StepCompleted",
-      "StepStarted",
-      "SignalAwaited",
+    // The pre-suspension segment flushed as TWO durable commits, split
+    // by the first (agent) step's invoke barrier: the barrier flush
+    // [RunStarted, StepStarted] before the invoke, then the rest of the
+    // segment -- the first step's completion, the gate's StepStarted,
+    // and the buffered suspension marker -- in the flush that lands
+    // SignalAwaited. The run is NOT yet terminal.
+    expect(store.batches().map((b) => b.map((e) => e.kind))).toEqual([
+      ["RunStarted", "StepStarted"],
+      ["StepCompleted", "StepStarted", "SignalAwaited"],
     ]);
 
     // A respawn's discovery sees the parked run as in-flight and hands
@@ -455,12 +435,11 @@ describe("B2 run-event batching — correctness gate", () => {
     // the suspension boundary.
     expect(durable.map((e) => e.seq)).toEqual(durable.map((_, i) => i + 1));
 
-    // The second segment (SignalReceived -> StepStarted ->
-    // StepCompleted -> RunCompleted) flushed as its own batched commit
-    // at completion: the durable write count is exactly the number of
-    // segments (one at the park, one at completion), not the number of
-    // events.
-    expect(store.durableWrites()).toBe(2);
+    // The post-signal segment is likewise split by the second (agent)
+    // step's invoke barrier. Across both segments the durable write
+    // count is one per flush boundary -- the two agent-invoke barriers,
+    // the suspension, and the terminal -- not one per event.
+    expect(store.durableWrites()).toBe(4);
   });
 
   test("gate 4: per-event in-memory validation is preserved -- the batched durable log replays through the state machine identically", async () => {
@@ -499,9 +478,34 @@ async function waitForDurable(
   predicate: (events: readonly WorkflowEvent[]) => boolean,
 ): Promise<void> {
   for (let i = 0; i < 600; i += 1) {
-    const events = await store.read(runId);
-    if (predicate(events)) return;
+    // The runtime flushes the durable log on its own task, off this
+    // polling loop. A read landing while a batch flush is
+    // re-materializing the events tree can ENOENT on a blob the
+    // directory listing just enumerated -- a transient of observing a
+    // live store mid-write, not a durability failure. Treat it as
+    // "condition not yet observable" and poll again; every other error
+    // propagates, and a condition that never holds still fails via the
+    // timeout below.
+    let events: readonly WorkflowEvent[] | undefined;
+    try {
+      events = await store.read(runId);
+    } catch (cause) {
+      if (!isMidRewriteEnoent(cause)) throw cause;
+    }
+    if (events !== undefined && predicate(events)) return;
     await new Promise((r) => setTimeout(r, 5));
   }
   throw new Error(`waitForDurable timed out for run ${runId}`);
+}
+
+// Tolerates only the ABSENCE face of a torn off-lock read: a blob gone
+// between readdir and readFile while a concurrent flush materializes the
+// tree. The corruption face -- a half-written blob failing JSON parse --
+// is the same race and would take the same tolerate-and-retry answer, but
+// is deliberately not tolerated today: the substrate materializes blobs
+// atomically, so absence is the only transient observed.
+function isMidRewriteEnoent(cause: unknown): boolean {
+  if (!(cause instanceof Error) || !("code" in cause)) return false;
+  const { code } = cause;
+  return code === "ENOENT";
 }
