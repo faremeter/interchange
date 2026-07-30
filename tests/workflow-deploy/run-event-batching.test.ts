@@ -478,34 +478,9 @@ async function waitForDurable(
   predicate: (events: readonly WorkflowEvent[]) => boolean,
 ): Promise<void> {
   for (let i = 0; i < 600; i += 1) {
-    // The runtime flushes the durable log on its own task, off this
-    // polling loop. A read landing while a batch flush is
-    // re-materializing the events tree can ENOENT on a blob the
-    // directory listing just enumerated -- a transient of observing a
-    // live store mid-write, not a durability failure. Treat it as
-    // "condition not yet observable" and poll again; every other error
-    // propagates, and a condition that never holds still fails via the
-    // timeout below.
-    let events: readonly WorkflowEvent[] | undefined;
-    try {
-      events = await store.read(runId);
-    } catch (cause) {
-      if (!isMidRewriteEnoent(cause)) throw cause;
-    }
-    if (events !== undefined && predicate(events)) return;
+    const events = await store.read(runId);
+    if (predicate(events)) return;
     await new Promise((r) => setTimeout(r, 5));
   }
   throw new Error(`waitForDurable timed out for run ${runId}`);
-}
-
-// Tolerates only the ABSENCE face of a torn off-lock read: a blob gone
-// between readdir and readFile while a concurrent flush materializes the
-// tree. The corruption face -- a half-written blob failing JSON parse --
-// is the same race and would take the same tolerate-and-retry answer, but
-// is deliberately not tolerated today: the substrate materializes blobs
-// atomically, so absence is the only transient observed.
-function isMidRewriteEnoent(cause: unknown): boolean {
-  if (!(cause instanceof Error) || !("code" in cause)) return false;
-  const { code } = cause;
-  return code === "ENOENT";
 }

@@ -217,6 +217,42 @@ function createStubRepoStore(baseDir: string): RepoStore {
       }
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
+    async openCommittedReads(_principal, repoId, _ref) {
+      // The fake substrate persists commits to the working tree, so back
+      // committed reads with those same files (oid = repo-relative path).
+      // This test drives a single writer with no concurrent flush, so
+      // there is no torn-read window to model -- the adapter's read just
+      // needs a committed-tree view that round-trips what
+      // writeTreePreservingPrefix persisted.
+      const repoDir = path.join(baseDir, repoId.kind, repoId.id);
+      return {
+        async listDir(relPath: string) {
+          let dirents;
+          try {
+            dirents = await fs.readdir(path.join(repoDir, relPath), {
+              withFileTypes: true,
+            });
+          } catch (cause) {
+            if (
+              cause instanceof Error &&
+              "code" in cause &&
+              cause.code === "ENOENT"
+            ) {
+              return [];
+            }
+            throw cause;
+          }
+          return dirents.map((d) => ({
+            name: d.name,
+            oid: path.join(relPath, d.name),
+            type: d.isDirectory() ? "tree" : "blob",
+          }));
+        },
+        async readBlobByOid(oid: string) {
+          return fs.readFile(path.join(repoDir, oid));
+        },
+      };
+    },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
   return new Proxy(stub as RepoStore, {

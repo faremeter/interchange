@@ -20,6 +20,7 @@ import type {
 import type { WorkflowEvent } from "@intx/workflow";
 
 import { createWorkflowRunRepoStore } from "./repo-store";
+import { compactRunEvents } from "../supervisor/run-event-compaction";
 
 const tempDirs: string[] = [];
 
@@ -82,6 +83,14 @@ function freshStepStarted(seq: number): WorkflowEvent {
   };
 }
 
+function freshRunCompleted(seq: number): WorkflowEvent {
+  return {
+    kind: "RunCompleted",
+    seq,
+    at: new Date(0).toISOString(),
+  };
+}
+
 describe("workflow-host RepoStore adapter — happy path", () => {
   test("append followed by read returns the events in seq order", async () => {
     const dataDir = await makeTempDir("repo-store-adapter-happy-");
@@ -119,7 +128,7 @@ describe("workflow-host RepoStore adapter — happy path", () => {
     expect(events[1]?.seq).toBe(2);
   });
 
-  test("read folds a combined events.jsonl identically to the per-event files", async () => {
+  test("read returns a compaction-sealed combined events.jsonl identically to the pre-seal per-event files", async () => {
     const dataDir = await makeTempDir("repo-store-adapter-combined-");
     const repoId: RepoId = { kind: "workflow-run", id: "deployment-combined" };
     const substrate = createRepoStore({
@@ -139,38 +148,35 @@ describe("workflow-host RepoStore adapter — happy path", () => {
       ref: REF,
     });
 
-    const perEventRun = "run-perevent";
-    await adapter.append(perEventRun, freshRunStarted(perEventRun, 1));
-    await adapter.append(perEventRun, freshStepStarted(2));
+    // Drive a terminal run, then read it before and after the supervisor
+    // seals it. Compaction is the only path that produces a combined
+    // `events.jsonl`: it commits the fold and drops the per-event blobs,
+    // so reading the sealed run exercises the adapter's combined-form read
+    // against the committed tree.
+    const runId = "run-combined";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
+    await adapter.append(runId, freshRunCompleted(3));
 
-    // Fold the per-event run's on-disk blobs into a sibling run's combined
-    // events.jsonl -- byte-for-byte, one line per event in seq order, with
-    // a trailing newline -- the exact shape the compaction writer produces.
-    const dir = substrate.getRepoDir(repoId);
-    const fsp = await import("node:fs/promises");
-    const eventsDir = path.join(dir, "runs", perEventRun, "events");
-    const names = (await fsp.readdir(eventsDir))
-      .filter((n) => /^(0|[1-9][0-9]*)\.json$/.test(n))
-      .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
-    const lines: string[] = [];
-    for (const n of names) {
-      lines.push(await fsp.readFile(path.join(eventsDir, n), "utf8"));
-    }
-    const combinedRun = "run-combined";
-    await fsp.mkdir(path.join(dir, "runs", combinedRun), { recursive: true });
-    await fsp.writeFile(
-      path.join(dir, "runs", combinedRun, "events.jsonl"),
-      lines.join("\n") + "\n",
-    );
-
-    const fromPerEvent = await adapter.read(perEventRun);
-    const fromCombined = await adapter.read(combinedRun);
-    expect(fromCombined).toEqual(fromPerEvent);
-    expect(fromCombined.map((e) => e.kind)).toEqual([
+    const fromPerEvent = await adapter.read(runId);
+    expect(fromPerEvent.map((e) => e.kind)).toEqual([
       "RunStarted",
       "StepStarted",
+      "RunCompleted",
     ]);
-    expect(fromCombined.map((e) => e.seq)).toEqual([1, 2]);
+    expect(fromPerEvent.map((e) => e.seq)).toEqual([1, 2, 3]);
+
+    const { compacted } = await compactRunEvents({
+      substrate,
+      repoId,
+      ref: REF,
+      deploymentId: repoId.id,
+      runId,
+    });
+    expect(compacted).toBe(true);
+
+    const fromCombined = await adapter.read(runId);
+    expect(fromCombined).toEqual(fromPerEvent);
   });
 
   test("on-disk envelope carries top-level seq and type matching the workflow-run kind handler contract", async () => {

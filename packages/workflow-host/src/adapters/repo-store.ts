@@ -158,42 +158,50 @@ async function readAllEventsForRun(
   opts: WorkflowRunRepoStoreOpts,
   runId: string,
 ): Promise<readonly WorkflowEvent[]> {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const dir = opts.substrate.getRepoDir(opts.repoId);
-  const runDir = path.join(dir, RUNS_PREFIX, runId);
+  // Read the committed tree through the substrate, never the working
+  // checkout under `getRepoDir`. `openCommittedReads` pins the ref to its
+  // tip commit and serves every read from the git object store, so an
+  // enumerate-then-read sequence is a single coherent snapshot even while
+  // a concurrent append re-materializes the checkout. The prior
+  // implementation read the working tree directly (raw readdir/readFile)
+  // and raced that materialization: a blob `readdir` had just enumerated
+  // could vanish before `readFile` on a contended filesystem, surfacing a
+  // spurious ENOENT. Reading under the substrate's per-repo write lock was
+  // the alternative considered and rejected -- it would serialize every
+  // read behind the single writer and couple read latency to write
+  // contention, whereas the pinned committed tree is lock-free and already
+  // consistent because every append lands as exactly one commit.
+  const reads = await opts.substrate.openCommittedReads(
+    opts.principal,
+    opts.repoId,
+    opts.ref,
+  );
+  // Null mirrors the prior readdir-ENOENT contract: an uninitialised repo
+  // or an unresolved ref holds no runs at all.
+  if (reads === null) return [];
+
+  const runDir = `${RUNS_PREFIX}/${runId}`;
+  const runChildren = await reads.listDir(runDir);
+  const decoder = new TextDecoder();
   const entries: { seq: number; event: WorkflowEvent }[] = [];
 
   // A terminated run is sealed into a single combined `events.jsonl`; an
-  // in-flight run keeps per-event `events/<seq>.json` files. The combined
-  // file's presence selects the read path; the two forms are mutually
-  // exclusive in a run directory.
-  let combinedRaw: string | null;
-  try {
-    combinedRaw = await fs.readFile(
-      path.join(runDir, WORKFLOW_RUN_EVENTS_FILE),
-      "utf8",
-    );
-  } catch (cause) {
-    if (!isErrnoNotFound(cause)) throw cause;
-    combinedRaw = null;
-  }
-  if (combinedRaw !== null) {
-    // The two forms are mutually exclusive; a run carrying both is a
-    // botched seal, and silently reading only the combined file would
-    // mask it, so surface it instead.
-    let perEventPresent = false;
-    try {
-      await fs.access(path.join(runDir, EVENTS_DIR));
-      perEventPresent = true;
-    } catch (cause) {
-      if (!isErrnoNotFound(cause)) throw cause;
-    }
-    if (perEventPresent) {
+  // in-flight run keeps per-event `events/<seq>.json` files. The two forms
+  // are mutually exclusive; a run carrying both is a botched seal, and
+  // silently reading only the combined file would mask it, so surface it.
+  const combined = runChildren.find(
+    (e) => e.type === "blob" && e.name === WORKFLOW_RUN_EVENTS_FILE,
+  );
+  const perEventDir = runChildren.find(
+    (e) => e.type === "tree" && e.name === EVENTS_DIR,
+  );
+  if (combined !== undefined) {
+    if (perEventDir !== undefined) {
       throw new Error(
         `workflow-runtime: run ${runId} carries both a combined ${WORKFLOW_RUN_EVENTS_FILE} and a per-event ${EVENTS_DIR}/ directory`,
       );
     }
+    const combinedRaw = decoder.decode(await reads.readBlobByOid(combined.oid));
     for (const line of splitCombinedEventLog(combinedRaw)) {
       entries.push(
         parseEventEnvelope(
@@ -206,22 +214,18 @@ async function readAllEventsForRun(
     return entries.map((e) => e.event);
   }
 
-  const eventsDir = path.join(runDir, EVENTS_DIR);
-  let filenames: string[];
-  try {
-    filenames = await fs.readdir(eventsDir);
-  } catch (cause) {
-    if (isErrnoNotFound(cause)) return [];
-    throw cause;
-  }
-  for (const name of filenames) {
-    const match = EVENT_FILENAME_RE.exec(name);
+  // Per-event form. `listDir` on an absent or non-tree path returns the
+  // empty array, so a run with no events reads as the empty log.
+  const eventBlobs = await reads.listDir(`${runDir}/${EVENTS_DIR}`);
+  for (const child of eventBlobs) {
+    if (child.type !== "blob") continue;
+    const match = EVENT_FILENAME_RE.exec(child.name);
     if (match === null) continue;
     const seqStr = match[1];
     if (seqStr === undefined) continue;
     const seqFromName = Number.parseInt(seqStr, 10);
-    const raw = await fs.readFile(path.join(eventsDir, name), "utf8");
-    const source = `${opts.repoId.id}/${runId}/${EVENTS_DIR}/${name}`;
+    const raw = decoder.decode(await reads.readBlobByOid(child.oid));
+    const source = `${opts.repoId.id}/${runId}/${EVENTS_DIR}/${child.name}`;
     const entry = parseEventEnvelope(raw, source);
     if (entry.seq !== seqFromName) {
       throw new Error(
@@ -431,10 +435,4 @@ async function* subscribeRun(
     const event = onDiskToWorkflowEvent(entry.event);
     yield { seq: entry.event.seq, event };
   }
-}
-
-function isErrnoNotFound(cause: unknown): boolean {
-  if (cause === null || typeof cause !== "object") return false;
-  const code = (cause as { code?: unknown }).code;
-  return code === "ENOENT";
 }
