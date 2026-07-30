@@ -369,13 +369,26 @@ export function createWorkflowSupervisor(
 ): WorkflowSupervisor {
   let state: SupervisorState = { phase: "idle" };
   /**
-   * In-flight runIds the supervisor knows about. A runId enters this
-   * set when the supervisor forwards a `trigger.fire` for it on the
-   * control channel; the runId leaves the set when the dispatch
-   * loop's terminal-event watcher fires `markConsumed`. The drain
-   * path arms one accumulator per entry here.
+   * RunIds the supervisor personally dispatched via `trigger.fire`.
+   * A runId enters when `forwardDispatchedEntry` fires the trigger;
+   * it leaves when `markConsumed` completes (or the cohort aborts).
+   * Self-discovered runs NEVER enter this set -- they have no inbox
+   * entry and therefore no markConsumed lifecycle.
+   *
+   * Used by: `synchronouslyDispatchTerminalWrite` to decide which
+   * terminal writes to hold for markConsumed completion.
    */
-  const inFlightRuns = new Set<string>();
+  const dispatchedRunIds = new Set<string>();
+
+  /**
+   * ALL runIds the current child cohort is driving, regardless of
+   * who spawned them: supervisor-dispatched + self-discovered.
+   * Populated at `trigger.fire` time and when the child reports
+   * `resumed.runs`. Removed on terminal event or cohort teardown.
+   *
+   * Used by: `drain()` to arm one drainTimeout accumulator per run.
+   */
+  const cohortRunIds = new Set<string>();
   // D2 attribution (measurement-only): the runId the dispatch loop is
   // currently servicing. Set at `dispatch-start`, cleared after
   // `reply-produced`. The dispatch loop is strictly serial (one message
@@ -777,6 +790,9 @@ export function createWorkflowSupervisor(
         // drops cleanly without leaking into any successor cohort.
         const event = terminalEventFromPayload(payload.data);
         cohortBroadcaster.notify(payload.data.runId, event);
+        // Clean up cohort tracking for the terminated run. Self-discovered
+        // runs have no dispatch-loop entry, so their cleanup happens here.
+        cohortRunIds.delete(payload.data.runId);
         continue;
       }
       if (payload.type === "park.notify") {
@@ -800,6 +816,15 @@ export function createWorkflowSupervisor(
         // timed out and dropped it) is logged and dropped, never thrown, so it
         // cannot tear the pump down.
         resolveParkedResponse(payload.data);
+        continue;
+      }
+      if (payload.type === "resumed.runs") {
+        // The child self-discovered runs from the substrate after reconnect
+        // or recycle. Seed cohort tracking so drain accumulators and dispatch
+        // routing account for runs the supervisor did not personally fire.
+        for (const runId of payload.data.runIds) {
+          cohortRunIds.add(runId);
+        }
         continue;
       }
       logger.warn`workflow-process upstream control payload ignored: type=${payload.type}`;
@@ -1321,7 +1346,7 @@ export function createWorkflowSupervisor(
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const holds: Promise<{ ok: true } | { ok: false; reason: string }>[] = [];
     for (const { runId, terminalEventJson } of newlyTerminalRuns) {
-      if (!inFlightRuns.has(runId)) continue;
+      if (!dispatchedRunIds.has(runId)) continue;
       holds.push(holdResponseForMarkConsumed(runId, terminalEventJson));
     }
     if (holds.length === 0) return { ok: true };
@@ -1965,7 +1990,8 @@ export function createWorkflowSupervisor(
         receivedAt,
       },
     });
-    inFlightRuns.add(messageId);
+    dispatchedRunIds.add(messageId);
+    cohortRunIds.add(messageId);
     return messageId;
   }
 
@@ -2098,7 +2124,8 @@ export function createWorkflowSupervisor(
     }
     await waitForRunTerminal(iter, cohortAbort.signal);
     emitDispatchTiming(runId, "reply-produced", performance.now());
-    inFlightRuns.delete(runId);
+    dispatchedRunIds.delete(runId);
+    cohortRunIds.delete(runId);
     if (cohortAbort.signal.aborted) {
       // The cohort tore down before the terminal event arrived (or
       // alongside it). Skip `markConsumed` so the recycle path's
@@ -2287,6 +2314,8 @@ export function createWorkflowSupervisor(
         }
       }
       drainAccumulators.clear();
+      cohortRunIds.clear();
+      dispatchedRunIds.clear();
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
@@ -2475,7 +2504,7 @@ export function createWorkflowSupervisor(
       state.terminalCohortAbort,
       state.terminalBroadcaster,
     );
-    for (const runId of inFlightRuns) {
+    for (const runId of cohortRunIds) {
       if (drainAccumulators.has(runId)) continue;
       const accumulator = accumulatorFactory({
         substrate: bindings.repoStore,

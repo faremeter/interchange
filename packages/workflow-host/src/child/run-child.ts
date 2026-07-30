@@ -640,6 +640,13 @@ export async function runWorkflowChild(
     },
   });
 
+  // Report self-discovered runs so the supervisor seeds its cohort
+  // tracking before the dispatch loop starts.
+  await upstreamSender.send({
+    type: "resumed.runs",
+    data: { runIds: resumedRunIds },
+  });
+
   const triggeredRunIds: string[] = [];
 
   // Control-loop. The receiver iterator yields one verified payload
@@ -1103,6 +1110,14 @@ async function handleControlPayload(
         data: { requestId: payload.data.requestId, parked },
       });
       return false;
+    }
+    case "resumed.runs": {
+      // `resumed.runs` is the child->supervisor self-discovery report;
+      // receiving one on the child's downstream side is a protocol
+      // violation in the same shape as a downstream `ready`.
+      throw new Error(
+        "workflow-child received a `resumed.runs` frame on its inbound control channel; this is a child-only upstream payload",
+      );
     }
     case "parked-correlations.response": {
       // `parked-correlations.response` is the child->supervisor reply frame;

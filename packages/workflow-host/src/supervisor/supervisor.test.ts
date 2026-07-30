@@ -1341,7 +1341,7 @@ describe("createWorkflowSupervisor", () => {
     // and forward its `trigger.fire`. The H-S1 contract gates the
     // dispatch loop's first iteration on the spawn-time replayDone;
     // without polling for the forwarded frame the test would call
-    // `drain()` while `inFlightRuns` is still empty and no
+    // `drain()` while `cohortRunIds` is still empty and no
     // accumulator would arm.
     const triggerFireDeadline = Date.now() + 500;
     while (Date.now() < triggerFireDeadline) {
@@ -1544,7 +1544,7 @@ describe("createWorkflowSupervisor", () => {
     await spawnPromise;
 
     // Wait for the dispatch loop to forward the buffered mail's
-    // `trigger.fire` so the run is in `inFlightRuns` when `drain()`
+    // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
     // arms its accumulator. With the H-S1 replayDone gate the first
     // dispatch is no longer synchronous with `await spawnPromise`.
     const triggerFireDeadline = Date.now() + 500;
@@ -1808,7 +1808,7 @@ describe("createWorkflowSupervisor", () => {
     });
     await spawnPromise;
     // Wait for the dispatch loop to forward the buffered mail's
-    // `trigger.fire` so the run is in `inFlightRuns` when `drain()`
+    // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
     // arms its accumulator. The H-S1 replayDone gate moves the first
     // dispatch off the `await spawnPromise` critical path.
     const triggerFireDeadline = Date.now() + 500;
@@ -1965,7 +1965,7 @@ describe("createWorkflowSupervisor", () => {
     });
     await spawnPromise;
     // Wait for the dispatch loop to forward the buffered mail's
-    // `trigger.fire` so the run is in `inFlightRuns` when `drain()`
+    // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
     // arms its accumulator. The H-S1 replayDone gate moves the first
     // dispatch off the `await spawnPromise` critical path.
     const triggerFireDeadline = Date.now() + 500;

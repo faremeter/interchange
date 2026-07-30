@@ -632,7 +632,7 @@ describe("substrate-write watchdog", () => {
     });
 
     // Deliver a mail so the dispatch loop dequeues it, forwards a
-    // trigger.fire, and adds the runId to inFlightRuns. The runId
+    // trigger.fire, and adds the runId to dispatchedRunIds. The runId
     // equals the messageId in the supervisor's dispatch loop.
     harness.mailBus.deliver(
       "deployment-x@example.com",
@@ -998,7 +998,7 @@ describe("substrate-write cohort abort cleanup", () => {
     });
 
     // Drive a trigger.fire so the supervisor adds the runId to
-    // `inFlightRuns` (a precondition for the waiter registration).
+    // `dispatchedRunIds` (a precondition for the waiter registration).
     harness.mailBus.deliver(
       "deployment-x@example.com",
       new TextEncoder().encode("cohort-abort-mc-msg"),

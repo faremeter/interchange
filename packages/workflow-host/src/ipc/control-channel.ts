@@ -480,6 +480,16 @@ export const ControlPayload = type(
         snapshot: BoundedApprovalSnapshot,
       }).array(),
     },
+  })
+  .or({
+    // Child reports self-discovered runs after reconnect or recycle.
+    // The supervisor seeds its cohort tracking from these runIds so
+    // drain accumulators and dispatch routing account for runs the
+    // supervisor did not personally trigger.fire.
+    type: "'resumed.runs'",
+    data: {
+      runIds: type("string > 0").array(),
+    },
   });
 
 export type ControlPayload = typeof ControlPayload.infer;
