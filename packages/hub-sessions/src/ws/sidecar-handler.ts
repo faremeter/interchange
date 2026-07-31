@@ -1191,14 +1191,18 @@ export function createSidecarRouter(
     recipients: string[],
   ): Promise<void> {
     // A mail addressed to more than one workflow deployment would birth a
-    // run per recipient from a single inbound mail. That fan-out is not a
-    // supported shape, so fail loudly rather than materialize a partial
-    // set. Each recipient now derives its own per-deployment runId (its
-    // mail address), so this is no longer the runId-collision guard it once
-    // was when the runId was the shared Message-ID -- it is a deliberate
-    // one-workflow-recipient-per-mail restriction. The guard only applies
-    // when a materializer is wired -- absent one, no run is born from the
-    // mail, so there is nothing to restrict.
+    // run per recipient from a single inbound mail. The stable runId
+    // removed the Message-ID collision that originally forced this guard --
+    // each recipient now derives its own per-deployment runId (its mail
+    // address), so it is no longer a runId-collision guard. It stays a
+    // deliberate one-workflow-recipient-per-mail restriction because the
+    // fan-out is not verified end-to-end: per-recipient grants
+    // materialization, consumed-tracking, and reply-addressing all assume a
+    // single workflow recipient today. Lifting it means proving those three
+    // hold per recipient, not just relaxing this check -- so fail loudly
+    // rather than materialize a partial set. The guard only applies when a
+    // materializer is wired -- absent one, no run is born from the mail, so
+    // there is nothing to restrict.
     if (lookups.materializeMailTriggeredRunGrants !== undefined) {
       const workflowRecipients = recipients.filter(isWorkflowDerivedAddress);
       if (workflowRecipients.length > 1) {
