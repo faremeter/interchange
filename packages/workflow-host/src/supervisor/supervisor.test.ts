@@ -866,6 +866,7 @@ describe("createWorkflowSupervisor", () => {
       preservePrefix: string;
       message: string;
     }) => void | Promise<void>;
+    inboxPrimitives?: MemoryInboxPrimitives;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -895,7 +896,8 @@ describe("createWorkflowSupervisor", () => {
     };
 
     const mailBus = createMockMailBus();
-    const inboxPrimitives = createMemoryInboxPrimitives();
+    const inboxPrimitives =
+      opts.inboxPrimitives ?? createMemoryInboxPrimitives();
     const baseBindings = await buildBindings({
       baseDir: opts.baseDir,
       spawner,
@@ -3266,6 +3268,75 @@ describe("createWorkflowSupervisor", () => {
       type: "terminal.event",
       data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
     });
+    await wired.supervisor.shutdown();
+  });
+
+  test("a markConsumed failure leaves the mail reclaimable and the loop alive", async () => {
+    const baseDir = await makeTempDir("supervisor-markconsumed-fatal-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const memoryInbox = createMemoryInboxPrimitives();
+    let failMarkConsumed = true;
+    const failingInbox: MemoryInboxPrimitives = {
+      ...memoryInbox,
+      markConsumed: async (...args) => {
+        if (failMarkConsumed) {
+          throw new Error("injected markConsumed failure");
+        }
+        return memoryInbox.markConsumed(...args);
+      },
+    };
+    const wired = await spawnWithRunStart({
+      baseDir,
+      inboxPrimitives: failingInbox,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "deployment-x@example.com";
+
+    // Drive a run to terminal so dispatch reaches markConsumed, which throws.
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+
+    // The failure propagates into the dispatch fault handler rather than being
+    // swallowed: the mail is NOT recorded consumed -- it stays in processing/,
+    // reclaimable -- and the dispatch loop survives the throw.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
+    expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(1);
+
+    // Loop is alive: a second mail, once markConsumed recovers, is consumed.
+    failMarkConsumed = false;
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-2"));
+    await new Promise((r) => setTimeout(r, 10));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 1, kind: "RunCompleted", at: "test" },
+    });
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(
+      wired.inboxPrimitives.snapshot(address).consumed.size,
+    ).toBeGreaterThanOrEqual(1);
+
     await wired.supervisor.shutdown();
   });
 });

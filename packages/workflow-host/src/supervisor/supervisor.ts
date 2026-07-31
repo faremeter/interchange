@@ -2242,8 +2242,13 @@ export function createWorkflowSupervisor(
         },
       );
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      logger.error`markConsumed failed for run ${runId}: ${message}`;
+      // A markConsumed failure is fatal, mirroring the clear-events leg:
+      // swallowing it treats the dispatch as complete while the mail is NOT
+      // durably recorded consumed, hiding the failure and leaving a mail that
+      // is neither cleanly consumed nor visibly failed. Propagate into the
+      // dispatch fault handler so the failure surfaces and the mail stays
+      // reclaimable.
+      throw new Error(`failed to markConsumed for run ${runId}`, { cause });
     }
     legMarkEnd(messageId, "markconsumed");
     maybeRepack(runId);
