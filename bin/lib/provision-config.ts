@@ -8,6 +8,8 @@
 // wrapper rather than the `.ts`. A `bin/lib` helper has no such twin, so
 // both the entry point and its test import the parser from here.
 
+import { requireEnvVar, requireIntVar } from "./env";
+
 export type ProvisionConfig = {
   sidecarId: string;
   sidecarToken: string;
@@ -32,33 +34,18 @@ export type ProvisionConfig = {
 export function resolveProvisionConfig(
   env: Record<string, string | undefined>,
 ): ProvisionConfig {
-  const requireVar = (name: string): string => {
-    const value = env[name];
-    if (value === undefined || value === "") {
-      throw new Error(`${name} is required`);
-    }
-    return value;
-  };
-
-  const portRaw = requireVar("DB_PORT");
-  const port = Number(portRaw);
-  if (!Number.isInteger(port) || port <= 0) {
-    throw new Error(
-      `DB_PORT must be a positive integer; got ${JSON.stringify(portRaw)}`,
-    );
-  }
-
+  const port = requireIntVar(env, "DB_PORT");
   const schema = env["PG_SCHEMA"];
 
   return {
-    sidecarId: requireVar("SIDECAR_ID"),
-    sidecarToken: requireVar("SIDECAR_TOKEN"),
+    sidecarId: requireEnvVar(env, "SIDECAR_ID"),
+    sidecarToken: requireEnvVar(env, "SIDECAR_TOKEN"),
     db: {
-      host: requireVar("DB_HOST"),
+      host: requireEnvVar(env, "DB_HOST"),
       port,
-      user: requireVar("DB_USER"),
-      password: requireVar("DB_PASSWORD"),
-      database: requireVar("DB_NAME"),
+      user: requireEnvVar(env, "DB_USER"),
+      password: requireEnvVar(env, "DB_PASSWORD"),
+      database: requireEnvVar(env, "DB_NAME"),
       ...(schema !== undefined && schema !== "" && { schema }),
     },
   };
