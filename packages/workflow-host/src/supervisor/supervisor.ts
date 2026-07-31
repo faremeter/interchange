@@ -154,6 +154,18 @@ class NoStaleRunEventsToClear extends Error {}
 export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
 
 /**
+ * Backstop for `waitForRunTerminalOrPark`. A dispatch waits here for the child
+ * to park or terminate the run before releasing `markConsumed`; a lost park
+ * wake or a wedged child would otherwise hang the deployment's dispatch loop
+ * forever. Five minutes is far beyond any healthy per-message dispatch (which
+ * settles in well under a second), so this never fires on a legitimately long
+ * run without also being a genuine fault -- and when it does fire it is logged
+ * loudly and fails the dispatch (the mail is left reclaimable, never consumed
+ * on the assumption the run made progress), not silently swallowed.
+ */
+export const TERMINAL_OR_PARK_BACKSTOP_MS = 300_000;
+
+/**
  * Public surface returned by `createWorkflowSupervisor`. Each method
  * advances the supervisor through one lifecycle transition; the
  * supervisor's internal state is encapsulated.
@@ -375,6 +387,20 @@ export function createWorkflowSupervisor(
    * the waiter so the dispatch loop re-evaluates routing.
    */
   const parkNotifyWaiters = new Map<string, () => void>();
+  /**
+   * Monotonic per-run INPUT-park generation. Bumped on every
+   * `park.notify(input)` for a runId. `waitForRunTerminalOrPark` captures a
+   * `sinceGen` before its caller's pre-wait awaits and returns `"parked"` when
+   * the generation later exceeds it, so the wait keys on the park EDGE rather
+   * than `runInputChannels`' LEVEL state: a park that fired during the pre-wait
+   * awaits (before the waiter armed, so `resolveParkNotifyWaiter` no-op'd) is
+   * still observed, and a stale `runInputChannels` entry from a prior run or
+   * incarnation cannot false-positive because it did not bump the generation
+   * past `sinceGen`. Incarnation-scoped: cleared with `parkNotifyWaiters` on
+   * recycle/teardown so a reused runId cannot carry a stale captured generation
+   * across incarnations.
+   */
+  const parkGenerations = new Map<string, number>();
   // D2 attribution (measurement-only): the messageId the dispatch loop is
   // currently servicing. Set at `dispatch-start`, cleared after
   // `reply-produced`. The dispatch loop is strictly serial (one message
@@ -789,13 +815,26 @@ export function createWorkflowSupervisor(
         // The workflow-process child reported a control-plane suspension: an
         // agent step parked on a reserved `signalName(correlationId)` channel.
         if (payload.data.parkKind === "input") {
-          // Input parks are owned by the supervisor, not the hub. Cache the
+          // Input parks are owned by the supervisor, not the hub. Register
+          // cohort membership BEFORE caching the correlationId so a run is
+          // never a channel-without-cohort entry (the routing-hygiene
+          // invariant); a live run that parked is always in cohortRunIds
+          // already, so this is idempotent belt-and-suspenders. Cache the
           // correlationId so the dispatch loop can fire signal.deliver on
           // subsequent mail without a substrate round-trip.
+          cohortRunIds.add(payload.data.runId);
           runInputChannels.set(payload.data.runId, {
             correlationId: payload.data.correlationId,
             parkKind: "input",
           });
+          // Bump the park generation BEFORE resolving the waiter: a dispatch
+          // loop that captured `sinceGen` for this run must see the newer
+          // generation both when its armed waiter fires here and when it
+          // re-reads the generation after arming (the check-after-register).
+          parkGenerations.set(
+            payload.data.runId,
+            (parkGenerations.get(payload.data.runId) ?? 0) + 1,
+          );
           // Wake any dispatch loop waiting for this run to park.
           resolveParkNotifyWaiter(payload.data.runId);
           // Stop any drain accumulator for a run that has parked.
@@ -1041,6 +1080,11 @@ export function createWorkflowSupervisor(
     if (outcome === "timeout" || outcome === null) return;
     for (const parked of outcome) {
       if (parked.parkKind === "input") {
+        // Register cohort membership BEFORE the input channel so the run is
+        // never a channel-without-cohort entry: the dispatch loop's routing
+        // hygiene drops exactly such entries, and a live resumed run must not
+        // be mistaken for a dead one and have its channel deleted.
+        cohortRunIds.add(parked.runId);
         runInputChannels.set(parked.runId, {
           correlationId: parked.correlationId,
           parkKind: "input",
@@ -2033,6 +2077,21 @@ export function createWorkflowSupervisor(
       // Unified dispatch: park → signal.deliver; no live run → trigger.fire;
       // in-flight but undecided → wait for terminal or park, then re-evaluate.
       while (!cohortAbort.signal.aborted) {
+        // Capture the park generation BEFORE this iteration's pre-wait awaits
+        // so `waitForRunTerminalOrPark` can accept a strictly-newer park that
+        // fires during them (see the latch there). Re-captured each iteration
+        // so a wait that returned "parked" is not re-counted next time around.
+        const sinceGen = parkGenerations.get(runId) ?? 0;
+        // Routing hygiene (defense-in-depth the latch never depends on): a
+        // runInputChannels entry with no live run in this cohort is a stale
+        // routing hazard left by a dead incarnation. Drop it BEFORE the signal
+        // branch so a fresh mail cannot be routed onto a dead run's
+        // correlation. The resumed.runs invariant (cohortRunIds registered
+        // before its input channel) keeps a LIVE resumed run out of this
+        // branch, so this only ever drops genuinely-dead entries.
+        if (!cohortRunIds.has(runId) && runInputChannels.has(runId)) {
+          runInputChannels.delete(runId);
+        }
         const inputChannel = runInputChannels.get(runId);
         if (inputChannel !== undefined) {
           // Mint the terminal watcher BEFORE the signal so a terminal the
@@ -2048,14 +2107,35 @@ export function createWorkflowSupervisor(
               payload: envelope.rawMessage ?? null,
             },
           });
+          // Invalidate the cached input channel: its correlation is now
+          // consumed by this delivery, so the NEXT mail must not reuse it. The
+          // resumed run re-parks on a FRESH correlation (a new park.notify
+          // repopulates runInputChannels); a mail arriving before that re-park
+          // waits for it via the in-flight branch rather than delivering onto
+          // the stale channel. This is routing hygiene only -- the wait below
+          // keys on the park-generation edge, not this level state, so its
+          // correctness does not depend on the invalidation.
+          runInputChannels.delete(runId);
           // Durable-consume contract, mirroring the trigger.fire path: hold
           // markConsumed until the child has durably taken up the signal --
-          // the resumed run re-parks or reaches a terminal event. A crash
-          // before then leaves the claim-check entry in processing/, so
-          // replayProcessingToInbox re-delivers the signal on restart rather
-          // than dropping it. On cohort abort the wait returns and the
-          // post-loop guard skips markConsumed.
-          await waitForRunTerminalOrPark(iter, cohortAbort.signal, runId);
+          // the resumed run re-parks or reaches a terminal event. That gate is
+          // downstream of durability DESPITE the child's fire-and-forget
+          // SignalReceived writer: the runtime reaches re-park/terminal only by
+          // resuming from the COMMITTED SignalReceived, which its per-run
+          // subscribeKind substrate subscription surfaces only after the commit
+          // lands -- so the substrate subscription IS the ack, and a failed
+          // deliver commit is observed by nothing, never re-parks, and never
+          // releases markConsumed (the mail stays reclaimable). A crash before
+          // the re-park/terminal leaves the claim-check entry in processing/,
+          // so replayProcessingToInbox re-delivers the signal on restart. On
+          // cohort abort the wait returns and the post-loop guard skips
+          // markConsumed.
+          await waitForRunTerminalOrPark(
+            iter,
+            cohortAbort.signal,
+            runId,
+            sinceGen,
+          );
           break;
         }
         if (!cohortRunIds.has(runId)) {
@@ -2082,6 +2162,7 @@ export function createWorkflowSupervisor(
             iter,
             cohortAbort.signal,
             runId,
+            sinceGen,
           );
           if (outcome === "aborted") break;
           // Child has read the trigger payload (parked or terminal'd).
@@ -2093,6 +2174,7 @@ export function createWorkflowSupervisor(
           iter,
           cohortAbort.signal,
           runId,
+          sinceGen,
         );
         if (outcome === "aborted") break;
         // Continue loop: re-evaluate runInputChannels / cohortRunIds
@@ -2172,47 +2254,86 @@ export function createWorkflowSupervisor(
 
   /**
    * Wait until the run's terminal event lands on the cohort
-   * broadcaster's iterator, the child parks the run (resolving a
-   * `parkNotifyWaiter`), or the cohort aborts. Returns `"terminal"`
+   * broadcaster's iterator, the child parks the run (bumping the park
+   * generation past `sinceGen`), or the cohort aborts. Returns `"terminal"`
    * when a terminal event arrived, `"parked"` when the run parked,
-   * and `"aborted"` when the cohort tore down.
+   * and `"aborted"` when the cohort tore down. Throws when the backstop
+   * fires (see `TERMINAL_OR_PARK_BACKSTOP_MS`).
+   *
+   * `sinceGen` is the park generation the CALLER captured before its pre-wait
+   * awaits; the wait accepts only a STRICTLY NEWER park (`generation >
+   * sinceGen`). Keying on that edge -- not `runInputChannels`' level state --
+   * makes the wait's correctness local: a park during the pre-wait awaits is
+   * observed even though its `resolveParkNotifyWaiter` no-op'd, and a stale
+   * channel entry from a prior run or incarnation cannot false-positive.
    */
   async function waitForRunTerminalOrPark(
     iter: AsyncIterator<TerminalRunEvent>,
     abortSignal: AbortSignal,
     runId: string,
+    sinceGen: number,
   ): Promise<"terminal" | "parked" | "aborted"> {
     let onAbort: (() => void) | null = null;
-    const abortPromise = new Promise<{ done: true }>((resolve) => {
+    const abortPromise = new Promise<{ source: "abort" }>((resolve) => {
       if (abortSignal.aborted) {
-        resolve({ done: true });
+        resolve({ source: "abort" });
         return;
       }
-      onAbort = () => resolve({ done: true });
+      onAbort = () => resolve({ source: "abort" });
       abortSignal.addEventListener("abort", onAbort, { once: true });
     });
 
     let parkResolve: (() => void) | null = null;
-    const parkPromise = new Promise<{ parked: true }>((resolve) => {
-      parkResolve = () => resolve({ parked: true });
+    const parkPromise = new Promise<{ source: "park" }>((resolve) => {
+      parkResolve = () => resolve({ source: "park" });
       parkNotifyWaiters.set(runId, parkResolve);
     });
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<{ source: "timeout" }>((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve({ source: "timeout" }),
+        TERMINAL_OR_PARK_BACKSTOP_MS,
+      );
+    });
+
     try {
-      while (true) {
-        if (abortSignal.aborted) return "aborted";
-        const result = await Promise.race([
-          iter.next().then((r) => ({ source: "iter" as const, r })),
-          abortPromise.then(() => ({ source: "abort" as const })),
-          parkPromise.then(() => ({ source: "park" as const })),
-        ]);
-        if (result.source === "abort") return "aborted";
-        if (result.source === "park") return "parked";
-        if (result.r.done === true) return "aborted";
-        // A terminal event for this runId arrived; stop waiting.
-        return "terminal";
+      if (abortSignal.aborted) return "aborted";
+      // Check-after-register: read the generation now that the waiter above is
+      // armed, SYNCHRONOUSLY (no await between arming and this read, so no
+      // `park.notify` can interleave). A generation past `sinceGen` means the
+      // run already parked -- during the caller's pre-wait awaits, before the
+      // waiter armed, so `resolveParkNotifyWaiter` no-op'd and the armed
+      // parkPromise would never fire -- and this catches it rather than hanging
+      // to the backstop.
+      if ((parkGenerations.get(runId) ?? 0) > sinceGen) return "parked";
+      const result = await Promise.race([
+        iter.next().then((r) => ({ source: "iter" as const, r })),
+        abortPromise,
+        parkPromise,
+        timeoutPromise,
+      ]);
+      if (result.source === "abort") return "aborted";
+      if (result.source === "park") return "parked";
+      if (result.source === "timeout") {
+        // Backstop against a lost wake or a wedged child: the run neither
+        // parked, terminated, nor aborted within a generous window. Surface it
+        // LOUDLY and throw so the dispatch fails -- the caller does not
+        // markConsumed on a throw, so the mail stays reclaimable in
+        // processing/ and is never consumed on the assumption the run
+        // progressed.
+        logger.error`waitForRunTerminalOrPark backstop fired for run ${runId} after ${TERMINAL_OR_PARK_BACKSTOP_MS}ms; failing the dispatch so the mail stays reclaimable`;
+        throw new Error(
+          `waitForRunTerminalOrPark backstop: run ${runId} did not park or terminate within ${TERMINAL_OR_PARK_BACKSTOP_MS}ms`,
+        );
       }
+      if (result.r.done === true) return "aborted";
+      // A terminal event for this runId arrived; stop waiting.
+      return "terminal";
     } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
       if (parkResolve !== null) {
         parkNotifyWaiters.delete(runId);
       }
@@ -2341,6 +2462,7 @@ export function createWorkflowSupervisor(
       cohortRunIds.clear();
       runInputChannels.clear();
       parkNotifyWaiters.clear();
+      parkGenerations.clear();
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
@@ -2694,6 +2816,7 @@ export function createWorkflowSupervisor(
             cohortRunIds.clear();
             runInputChannels.clear();
             parkNotifyWaiters.clear();
+            parkGenerations.clear();
             // Reject every pending merge round-trip and park-notify
             // waiter registered against the dying cohort so handler
             // closures cannot survive the kill/respawn gap. The new

@@ -342,7 +342,10 @@ function createStubRepoStore(opts: {
    * before any sentinel-skip logic inside the merge, so it models a genuine
    * failure regardless of the prefix's contents.
    */
-  beforeWrite?: (args: { preservePrefix: string; message: string }) => void;
+  beforeWrite?: (args: {
+    preservePrefix: string;
+    message: string;
+  }) => void | Promise<void>;
   /**
    * When true, the stub carries committed files across
    * `writeTreePreservingPrefix` invocations keyed by (repoId.id, ref,
@@ -361,7 +364,7 @@ function createStubRepoStore(opts: {
       return path.join(opts.baseDir, repoId.kind, repoId.id);
     },
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
-      opts.beforeWrite?.({
+      await opts.beforeWrite?.({
         preservePrefix: args.preservePrefix,
         message: args.message,
       });
@@ -587,7 +590,10 @@ async function buildBindings(opts: {
     message: string;
     files: Record<string, string | Uint8Array>;
   }) => void;
-  beforeWrite?: (args: { preservePrefix: string; message: string }) => void;
+  beforeWrite?: (args: {
+    preservePrefix: string;
+    message: string;
+  }) => void | Promise<void>;
   statefulWrites?: boolean;
   inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
@@ -855,7 +861,10 @@ describe("createWorkflowSupervisor", () => {
       message: string;
       files: Record<string, string | Uint8Array>;
     }) => void;
-    beforeWrite?: (args: { preservePrefix: string; message: string }) => void;
+    beforeWrite?: (args: {
+      preservePrefix: string;
+      message: string;
+    }) => void | Promise<void>;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -2872,6 +2881,218 @@ describe("createWorkflowSupervisor", () => {
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
     expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(1);
 
+    await wired.supervisor.shutdown();
+  });
+
+  test("an instant park during the pre-wait window still advances the dispatch loop", async () => {
+    const baseDir = await makeTempDir("supervisor-instant-park-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    // Inject latency into the trigger branch's pre-wait awaits by delaying the
+    // clear-events write, then park the run during that window -- so the
+    // child's park.notify lands BEFORE waitForRunTerminalOrPark arms its
+    // edge-triggered park waiter. resolveParkNotifyWaiter no-ops (no waiter),
+    // so only the synchronous check-after-register can catch the already-set
+    // channel; without it the wait would hang to the backstop and the mail
+    // would never be consumed.
+    const wired = await spawnWithRunStart({
+      baseDir,
+      beforeWrite: async ({ message }) => {
+        if (message.startsWith("clear old terminal events")) {
+          await new Promise((r) => setTimeout(r, 80));
+        }
+      },
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    const address = "deployment-x@example.com";
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+
+    // Reach the delayed clear, then park before the wait arms its waiter.
+    await new Promise((r) => setTimeout(r, 20));
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: address,
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    // The loop must proceed and consume msg-1 despite the lost park wake.
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("two mails to a parked run each deliver on the run's fresh correlation", async () => {
+    const baseDir = await makeTempDir("supervisor-fresh-corr-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "deployment-x@example.com";
+    const waitConsumed = async (n: number) => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        if (wired.inboxPrimitives.snapshot(address).consumed.size >= n) break;
+        await new Promise((r) => setTimeout(r, 2));
+      }
+    };
+    const waitSignals = async (n: number) => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const s = parseSignalDelivers(wired.supervisorToChild.flushed());
+        if (s.length >= n) break;
+        await new Promise((r) => setTimeout(r, 2));
+      }
+    };
+
+    // Trigger msg-1 and park the run on corr-1.
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: address,
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+    await waitConsumed(1);
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    // Two mails arrive at the parked run back-to-back. Both must deliver as
+    // signals, each on the correlation the run is CURRENTLY parked on: msg-2
+    // on corr-1, then -- after the run re-parks on corr-2 -- msg-3 on corr-2,
+    // never the stale corr-1 the cache would hold without invalidation.
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-2"));
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-3"));
+
+    await waitSignals(1);
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: address,
+        correlationId: "corr-input-2",
+        parkKind: "input",
+      },
+    });
+    await waitConsumed(2);
+
+    await waitSignals(2);
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: address,
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+    await waitConsumed(3);
+
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(3);
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(2);
+    expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
+    expect(signals[1]?.signalName).toBe(signalName("corr-input-2"));
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a park-registered run keeps its channel: a mail routes as signal, not a fresh trigger", async () => {
+    const baseDir = await makeTempDir("supervisor-resumed-order-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "deployment-x@example.com";
+
+    // Register the run's input channel via park.notify with NO prior local
+    // trigger.fire -- the shape the reconnect/resumed path produces, where
+    // cohort membership and the channel both come from park discovery, not a
+    // fire. The handler must add cohortRunIds BEFORE the channel; otherwise the
+    // dispatch loop's routing hygiene sees a channel-without-cohort entry,
+    // deletes it as stale, and the next mail wrongly starts a FRESH run.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: address,
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(1);
+    expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
+    expect(
+      parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length,
+    ).toBe(0);
+
+    // Release the durable-consume wait so shutdown is clean.
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+    });
     await wired.supervisor.shutdown();
   });
 });
