@@ -2399,6 +2399,66 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
+  test("long-lived: a trigger.fire run parking on approval releases the dispatch wait", async () => {
+    const baseDir = await makeTempDir("supervisor-long-lived-approval-park-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    // Let the dispatch loop forward trigger.fire and enter
+    // waitForRunTerminalOrPark before the run parks.
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The run's first step parks on an APPROVAL gate -- not an input park and
+    // not a terminal. An approval park must release the dispatch wait the same
+    // as an input park does; without that, this hangs to the terminal-or-park
+    // backstop and the mail is never consumed.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "deployment-x@example.com",
+        correlationId: "corr-approval-1",
+        parkKind: "approval",
+      },
+    });
+
+    const address = "deployment-x@example.com";
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    // markConsumed only runs once the dispatch wait returns; a wait still
+    // hanging on the approval park would leave this at 0 until the backstop.
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    expect(runIds).toEqual(["deployment-x@example.com"]);
+    await wired.supervisor.shutdown();
+  });
+
   test("long-lived: subsequent messages fire signal.deliver after park.notify", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-signal-");
     await seedStepGrants(

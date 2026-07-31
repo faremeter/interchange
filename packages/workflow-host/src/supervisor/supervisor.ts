@@ -824,17 +824,10 @@ export function createWorkflowSupervisor(
             correlationId: payload.data.correlationId,
             parkKind: "input",
           });
-          // Bump the park generation BEFORE resolving the waiter: a dispatch
-          // loop that captured `sinceGen` for this run must see the newer
-          // generation both when its armed waiter fires here and when it
-          // re-reads the generation after arming (the check-after-register).
-          parkGenerations.set(
-            payload.data.runId,
-            (parkGenerations.get(payload.data.runId) ?? 0) + 1,
-          );
-          // Wake any dispatch loop waiting for this run to park.
-          resolveParkNotifyWaiter(payload.data.runId);
-          // Stop any drain accumulator for a run that has parked.
+          // Stop any drain accumulator for a run that has parked. Input parks
+          // own this because a drain arms no accumulator for a run that already
+          // holds an input channel; an approval park never carries one, so its
+          // drain interaction is a separate concern and stays out of this arm.
           const accumulator = drainAccumulators.get(payload.data.runId);
           if (accumulator !== undefined) {
             accumulator.stop();
@@ -852,6 +845,21 @@ export function createWorkflowSupervisor(
               : {}),
           });
         }
+        // A park of ANY kind suspends the run, so a dispatch loop waiting on
+        // `waitForRunTerminalOrPark` after firing the trigger (or delivering
+        // the last signal) must be released here regardless of park kind. An
+        // approval park that only registered its suspension would leave that
+        // loop hanging to the terminal-or-park backstop. Bump the park
+        // generation BEFORE resolving the waiter: a dispatch loop that captured
+        // `sinceGen` for this run must see the newer generation both when its
+        // armed waiter fires here and when it re-reads the generation after
+        // arming (the check-after-register).
+        parkGenerations.set(
+          payload.data.runId,
+          (parkGenerations.get(payload.data.runId) ?? 0) + 1,
+        );
+        // Wake any dispatch loop waiting for this run to park.
+        resolveParkNotifyWaiter(payload.data.runId);
         continue;
       }
       if (payload.type === "parked-correlations.response") {
