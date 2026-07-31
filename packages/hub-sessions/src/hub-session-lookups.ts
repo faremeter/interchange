@@ -640,6 +640,44 @@ export interface RoutableRecord {
 }
 
 /**
+ * Shape a run row and its already-resolved routing address into the instance
+ * record. Callers decide whether the run resolves at all -- a null or
+ * workflow-derived address is not an instance -- and pass the address they have
+ * narrowed; this only maps the columns, including the run's `endedAt ??
+ * createdAt` stand-in for the absent `updatedAt`.
+ */
+export function runRowToRoutableRecord(
+  run: {
+    id: string;
+    tenantId: string;
+    publicKey: string | null;
+    status: string;
+    createdAt: Date;
+    endedAt: Date | null;
+    definitionId: string;
+    principalId: string | null;
+    kernelId: string | null;
+    sidecarId: string | null;
+  },
+  address: string,
+): RoutableRecord {
+  return {
+    id: run.id,
+    tenantId: run.tenantId,
+    address,
+    publicKey: run.publicKey,
+    status: run.status,
+    createdAt: run.createdAt,
+    updatedAt: run.endedAt ?? run.createdAt,
+    endedAt: run.endedAt,
+    definitionId: run.definitionId,
+    principalId: run.principalId,
+    kernelId: run.kernelId,
+    sidecarId: run.sidecarId,
+  };
+}
+
+/**
  * Resolve a plain run id to its instance-shaped record. A run resolves only
  * when it presents as an instance: it owns a routing address AND its definition
  * is instance-kind. A run with no address is deployment-anchored, not an
@@ -680,20 +718,7 @@ export async function findRoutableById(
       // the run and the anchor is not served on the instance read surface.
       return undefined;
     }
-    return {
-      id: runRow.id,
-      tenantId: runRow.tenantId,
-      address: runRow.address,
-      publicKey: runRow.publicKey,
-      status: runRow.status,
-      createdAt: runRow.createdAt,
-      updatedAt: runRow.endedAt ?? runRow.createdAt,
-      endedAt: runRow.endedAt,
-      definitionId: runRow.definitionId,
-      principalId: runRow.principalId,
-      kernelId: runRow.kernelId,
-      sidecarId: runRow.sidecarId,
-    };
+    return runRowToRoutableRecord(runRow, runRow.address);
   }
 
   return undefined;

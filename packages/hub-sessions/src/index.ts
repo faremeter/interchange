@@ -42,6 +42,7 @@ export {
   resolveRoutableAddress,
   resolveRunIdForSession,
   resolveRunSessionId,
+  runRowToRoutableRecord,
   type HubSessionLookupsDeps,
   type RoutableEndpoint,
   type RoutableRecord,

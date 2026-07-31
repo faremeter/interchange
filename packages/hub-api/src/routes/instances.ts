@@ -45,6 +45,7 @@ import {
   findRoutableById,
   resolveRunIdForSession,
   resolveRunSessionId,
+  runRowToRoutableRecord,
   SessionLaunchError,
   type AssetService,
   type EventCollectorRegistry,
@@ -139,28 +140,14 @@ type FoldedRunListRow = {
   definitionName: string;
 };
 
-// Shape a folded run into the fold-normalized record the instance view expects.
-// `updatedAt` mirrors `findRoutableById`'s run branch (`endedAt ?? createdAt`).
-// The sub-query filters `address` non-null, so a null here is a broken
-// invariant and surfaces loudly.
+// Shape a folded run into the fold-normalized record the instance view expects,
+// through the same builder `findRoutableById` uses. The sub-query filters
+// `address` non-null, so a null here is a broken invariant and surfaces loudly.
 function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
   if (row.run.address === null) {
     throw new Error(`folded run ${row.run.id} listed with a null address`);
   }
-  return {
-    id: row.run.id,
-    tenantId: row.run.tenantId,
-    address: row.run.address,
-    publicKey: row.run.publicKey,
-    status: row.run.status,
-    createdAt: row.run.createdAt,
-    updatedAt: row.run.endedAt ?? row.run.createdAt,
-    endedAt: row.run.endedAt,
-    definitionId: row.run.definitionId,
-    principalId: row.run.principalId,
-    kernelId: row.run.kernelId,
-    sidecarId: row.run.sidecarId,
-  };
+  return runRowToRoutableRecord(row.run, row.run.address);
 }
 
 export type CreateInstanceRoutesDeps = {
