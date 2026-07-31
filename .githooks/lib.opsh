@@ -10,7 +10,12 @@ if $GIT_SKIP_HOOKS; then
 fi
 
 if [[ ! -v _GIT_HOOK_STAGING_DIR ]]; then
-	_GIT_HOOK_STAGING_DIR="$(git rev-parse --show-toplevel)/git-hook-staging"
+	# Stage OUTSIDE the worktree. An in-worktree copy of the tree is globbed
+	# by any concurrent test discovery, which then hits phantom ENOENT when
+	# this hook removes the copy mid-run. Land it beside opsh's $TMPDIR so it
+	# is out of the worktree yet out of opsh's own auto-cleaned tree, leaving
+	# the GIT_HOOK_KEEP_STAGING escape hatch below in control of its lifetime.
+	_GIT_HOOK_STAGING_DIR="$(mktemp -d "$(dirname "$TMPDIR")/git-hook-staging.XXXXXX")"
 	export _GIT_HOOK_STAGING_DIR
 	exit::trigger staging-cleanup
 fi
