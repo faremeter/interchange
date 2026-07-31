@@ -23,7 +23,7 @@ import {
 
 import { MutationError } from "@/components/mutation-error";
 import { runDetailQuery, stopRunMutation } from "@/lib/queries/tenants";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge, RUN_STATUS_VARIANTS } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -77,16 +77,6 @@ function formatToolArgs(_name: string, args: Record<string, unknown>): string {
       return `${k}: ${short}`;
     })
     .join(", ");
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "running"
-      ? "secondary"
-      : status === "error"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
 }
 
 function Row({
@@ -238,7 +228,10 @@ export function TenantRunDetailPage() {
       <div className="mt-6">
         <dl className="overflow-hidden rounded-lg border">
           <Row label="Status">
-            <StatusBadge status={displayStatus} />
+            <StatusBadge
+              status={displayStatus}
+              variants={RUN_STATUS_VARIANTS}
+            />
           </Row>
           <Row label="Run ID">
             <span className="font-mono text-xs">{run.id}</span>

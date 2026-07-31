@@ -17,6 +17,10 @@ import {
   type WorkflowDeployment,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
+import {
+  StatusBadge,
+  DEPLOYMENT_STATUS_VARIANTS,
+} from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,16 +58,6 @@ function Row({
       <dd className="px-4 py-3 text-sm">{children}</dd>
     </div>
   );
-}
-
-function DeploymentStatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "running" || status === "deployed"
-      ? "secondary"
-      : status === "error"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
 }
 
 function isAwaitingSignal(status: string): boolean {
@@ -357,7 +351,10 @@ export function TenantWorkflowDetailPage() {
                   <TableRow key={d.id}>
                     <TableCell className="font-mono text-xs">{d.id}</TableCell>
                     <TableCell>
-                      <DeploymentStatusBadge status={d.status} />
+                      <StatusBadge
+                        status={d.status}
+                        variants={DEPLOYMENT_STATUS_VARIANTS}
+                      />
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {new Date(d.createdAt).toLocaleString()}

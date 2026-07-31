@@ -17,6 +17,10 @@ import {
   tenantRolesQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
+import {
+  StatusBadge,
+  PRINCIPAL_STATUS_VARIANTS,
+} from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -39,16 +43,6 @@ import { Label } from "@/components/ui/label";
 
 function isUpdatablePrincipalStatus(v: string): v is UpdatablePrincipalStatus {
   return (updatablePrincipalStatuses as readonly string[]).includes(v);
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "active"
-      ? "secondary"
-      : status === "suspended" || status === "deactivated"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
 }
 
 function Row({
@@ -189,7 +183,10 @@ export function TenantPrincipalDetailPage() {
           </Row>
           <Row label="Status">
             <div className="flex flex-col gap-3">
-              <StatusBadge status={principal.status} />
+              <StatusBadge
+                status={principal.status}
+                variants={PRINCIPAL_STATUS_VARIANTS}
+              />
               <div className="flex items-center gap-2">
                 <Label htmlFor="status-select" className="sr-only">
                   Change status

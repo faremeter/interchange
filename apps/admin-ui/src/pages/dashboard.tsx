@@ -7,6 +7,10 @@ import {
 import { PaginatedListSentinel } from "@/components/paginated-list-sentinel";
 import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import { Badge } from "@/components/ui/badge";
+import {
+  StatusBadge,
+  DASHBOARD_STATUS_VARIANTS,
+} from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -16,16 +20,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "active" || status === "deployed" || status === "running"
-      ? "secondary"
-      : status === "error" || status === "suspended"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
-}
 
 export function DashboardPage() {
   const {
@@ -69,7 +63,10 @@ export function DashboardPage() {
                       <CardTitle className="text-base">
                         {p.tenantName}
                       </CardTitle>
-                      <StatusBadge status={p.status} />
+                      <StatusBadge
+                        status={p.status}
+                        variants={DASHBOARD_STATUS_VARIANTS}
+                      />
                     </div>
                     <p className="text-xs text-muted-foreground">
                       {p.tenantSlug}
@@ -137,7 +134,10 @@ export function DashboardPage() {
                     {run.address}
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={run.status} />
+                    <StatusBadge
+                      status={run.status}
+                      variants={DASHBOARD_STATUS_VARIANTS}
+                    />
                   </TableCell>
                 </TableRow>
               ))}

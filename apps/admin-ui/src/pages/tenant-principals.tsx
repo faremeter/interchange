@@ -13,6 +13,10 @@ import {
   tenantRolesQuery,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
+import {
+  StatusBadge,
+  PRINCIPAL_STATUS_VARIANTS,
+} from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -38,16 +42,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "active"
-      ? "secondary"
-      : status === "suspended" || status === "deactivated"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
-}
 
 export function TenantPrincipalsPage() {
   const { tenantId } = useParams({
@@ -129,7 +123,10 @@ export function TenantPrincipalsPage() {
                     <Badge variant="outline">{p.kind}</Badge>
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={p.status} />
+                    <StatusBadge
+                      status={p.status}
+                      variants={PRINCIPAL_STATUS_VARIANTS}
+                    />
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">

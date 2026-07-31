@@ -11,6 +11,7 @@ import {
   type WorkflowRunResponse,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge, RUN_STATUS_VARIANTS } from "@/components/status-badge";
 import {
   Table,
   TableBody,
@@ -19,16 +20,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-function StatusBadge({ status }: { status: WorkflowRunResponse["status"] }) {
-  const variant =
-    status === "running"
-      ? "secondary"
-      : status === "error"
-        ? "destructive"
-        : "outline";
-  return <Badge variant={variant}>{status}</Badge>;
-}
 
 function RunRow({
   run,
@@ -51,7 +42,7 @@ function RunRow({
     >
       <TableCell className="font-medium">{run.definitionName}</TableCell>
       <TableCell>
-        <StatusBadge status={run.status} />
+        <StatusBadge status={run.status} variants={RUN_STATUS_VARIANTS} />
       </TableCell>
       <TableCell className="font-mono text-xs text-muted-foreground">
         {run.address}
