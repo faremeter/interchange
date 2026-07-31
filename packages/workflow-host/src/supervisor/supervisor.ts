@@ -96,6 +96,7 @@ import {
 import { commitCancelRequested } from "./cancel-signing";
 import { buildChildSpawnEnv } from "./spawn-env";
 import { compactRunEvents } from "./run-event-compaction";
+import { extractConversationText } from "../conversation-text";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
@@ -2098,13 +2099,30 @@ export function createWorkflowSupervisor(
           // resumed run reaches right after applying it is not missed; the
           // park watcher is armed inside waitForRunTerminalOrPark.
           const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
+          // Resolve the inbound mail to conversation text HERE, the single
+          // site that knows this payload's provenance is mail, applying the
+          // SAME extraction the turn-1 trigger does (resolveTriggerPayload).
+          // The signal.deliver frame's payload is the resume decision in FINAL
+          // form; deliverSignal's structured signals ship their own payload
+          // unchanged. A missing rawMessage throws loud -- the dispatch fails
+          // into the loop's fault handler and the mail stays reclaimable --
+          // rather than resuming the parked agent on empty input.
+          if (envelope.rawMessage === undefined) {
+            throw new Error(
+              `signal.deliver for run ${runId}: inbound mail carries no rawMessage bytes; cannot resume the parked agent`,
+            );
+          }
+          const inputText = extractConversationText(
+            base64Decode(envelope.rawMessage),
+            envelope.messageId,
+          );
           await sender.send({
             type: "signal.deliver",
             data: {
               runId,
               signalName: signalName(inputChannel.correlationId),
               signalId: envelope.messageId,
-              payload: envelope.rawMessage ?? null,
+              payload: inputText,
             },
           });
           // Invalidate the cached input channel: its correlation is now

@@ -178,6 +178,12 @@ export const ControlPayload = type(
       runId: "string",
       signalName: "string",
       signalId: "string",
+      // The resume decision in FINAL form -- the child commits it as the
+      // SignalReceived payload verbatim. Each sender owns any
+      // provenance-specific preparation BEFORE this frame: the dispatch loop
+      // resolves an inbound mail to conversation text (like the turn-1
+      // trigger), while `deliverSignal` ships a structured signal payload
+      // unchanged. Do NOT ship raw inbound mail bytes through here.
       payload: "unknown",
     },
   },

@@ -87,8 +87,8 @@ function parseControlFrameTypes(lines: readonly string[]): string[] {
  */
 function parseSignalDelivers(
   lines: readonly string[],
-): { signalName: string; signalId: string }[] {
-  const out: { signalName: string; signalId: string }[] = [];
+): { signalName: string; signalId: string; payload: unknown }[] {
+  const out: { signalName: string; signalId: string; payload: unknown }[] = [];
   for (const line of lines) {
     if (!line.includes("signal.deliver")) continue;
     const raw: unknown = JSON.parse(line);
@@ -100,6 +100,7 @@ function parseSignalDelivers(
     out.push({
       signalName: payload.data.signalName,
       signalId: payload.data.signalId,
+      payload: payload.data.payload,
     });
   }
   return out;
@@ -3093,6 +3094,103 @@ describe("createWorkflowSupervisor", () => {
       type: "terminal.event",
       data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
     });
+    await wired.supervisor.shutdown();
+  });
+
+  test("a mail resumes a parked run with the conversation text, not raw MIME", async () => {
+    const baseDir = await makeTempDir("supervisor-signal-text-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "deployment-x@example.com";
+
+    // Park the run so the next mail routes as signal.deliver.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: address,
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    // Deliver a real inbound MIME message whose body is "hello turn two".
+    const mail = new TextEncoder().encode(
+      "Content-Type: text/plain\r\n\r\nhello turn two",
+    );
+    wired.mailBus.deliver(address, mail);
+
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(1);
+    // The frame carries the EXTRACTED conversation text, resolved at the
+    // dispatch site, not the raw base64 MIME envelope.
+    expect(signals[0]?.payload).toBe("hello turn two");
+
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+    await wired.supervisor.shutdown();
+  });
+
+  test("deliverSignal ships its structured payload through unchanged", async () => {
+    const baseDir = await makeTempDir("supervisor-deliversignal-passthrough-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    // A hub-originated signal (e.g. awaitSignal) carries a STRUCTURED payload
+    // that must reach the child verbatim -- the mail-input extraction is the
+    // dispatch loop's concern only, and this contract split is what the
+    // signal.deliver frame's uniform "final-form payload" contract guarantees.
+    await wired.supervisor.deliverSignal({
+      runId: "deployment-x@example.com",
+      signalName: "go",
+      signalId: "sig-1",
+      payload: { resumed: true, n: 7 },
+    });
+
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(1);
+    expect(signals[0]?.payload).toEqual({ resumed: true, n: 7 });
+
     await wired.supervisor.shutdown();
   });
 });
