@@ -59,7 +59,11 @@ import {
 import { hydrateDefinition } from "../run-grant-materialization";
 import { resolveDefinitionSources } from "../run-source-resolution";
 import { formatOffering } from "./offerings";
-import { formatInstanceView, instanceStatusOf } from "./instance-view";
+import {
+  formatInstanceView,
+  instanceStatusOf,
+  mapRunStatusToInstanceStatus,
+} from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
 import { resolveGrantMaterialization } from "../grant-materialization";
 
@@ -105,20 +109,27 @@ function isInstanceStatusFilter(
 
 type WorkflowRunStatus = (typeof workflowRun.$inferSelect)["status"];
 
-// The `workflow_run` statuses that present as a given instance-status filter --
-// the inverse of `mapRunStatusToInstanceStatus`. A folded run never reads as
-// `deployed` or `updating`, so those filters select no runs (empty array), and
-// the caller skips the run query entirely.
+// The `workflow_run` statuses that present as a given instance-status filter,
+// derived as the inverse of `mapRunStatusToInstanceStatus` so the two cannot
+// drift: every run status is bucketed under the instance status it maps onto.
+// No run status maps onto `deployed` or `updating`, so those filters select no
+// runs (empty array) and the caller skips the run query entirely.
 const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
   InstanceStatusFilter,
   WorkflowRunStatus[]
-> = {
-  running: ["running"],
-  stopped: ["completed", "cancelled"],
-  error: ["failed"],
-  deployed: [],
-  updating: [],
-};
+> = (() => {
+  const byStatus: Record<InstanceStatusFilter, WorkflowRunStatus[]> = {
+    deployed: [],
+    running: [],
+    updating: [],
+    error: [],
+    stopped: [],
+  };
+  for (const runStatus of workflowRun.status.enumValues) {
+    byStatus[mapRunStatusToInstanceStatus(runStatus)].push(runStatus);
+  }
+  return byStatus;
+})();
 
 // The row shape the folded-run list sub-query projects: the run columns the
 // instance view needs, plus the definition name. The sub-query already gates on

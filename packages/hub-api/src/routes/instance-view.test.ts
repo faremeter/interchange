@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
+import { workflowRun } from "@intx/db/schema";
 import type { RoutableRecord } from "@intx/hub-sessions";
 
 import {
@@ -38,6 +39,15 @@ describe("mapRunStatusToInstanceStatus", () => {
     expect(() => mapRunStatusToInstanceStatus("bogus")).toThrow(
       /unmapped workflow_run status/,
     );
+  });
+
+  test("maps every workflow_run status the schema defines", () => {
+    // The status-filter inverse is derived by bucketing this enum through the
+    // map, so a new run status the map does not handle must fail here rather
+    // than throw obscurely when that inverse is built.
+    for (const status of workflowRun.status.enumValues) {
+      expect(() => mapRunStatusToInstanceStatus(status)).not.toThrow();
+    }
   });
 });
 
