@@ -2,6 +2,8 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import { Hono } from "hono";
 import type { DB } from "@intx/db";
+import { createInMemoryGrantStore } from "@intx/authz";
+import type { GrantRule } from "@intx/types/authz";
 import { createApp, createHubContextMiddleware, mountHubRoutes } from "./app";
 import type { AppEnv } from "./context";
 import {
@@ -244,5 +246,108 @@ describe("mountHubRoutes composition", () => {
     // free for the third party to wire as they choose.
     const res = await thirdParty.request("/api/auth/anything");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("stub-router default-deny", () => {
+  const TENANT = "tnt_stub";
+  const stubUser = {
+    id: "usr_stub",
+    email: "stub@example.com",
+    emailVerified: true,
+    name: "Stub",
+    image: null,
+    createdAt: new Date("2025-01-01"),
+    updatedAt: new Date("2025-01-01"),
+  };
+  const stubSession = {
+    id: "ses_stub",
+    userId: stubUser.id,
+    token: "tok_stub",
+    expiresAt: new Date("2999-01-01"),
+    createdAt: stubUser.createdAt,
+    updatedAt: stubUser.updatedAt,
+  };
+  const stubTenant = {
+    id: TENANT,
+    name: "Stub",
+    slug: "stub",
+    domain: "stub.example.com",
+    parentId: null,
+    config: null,
+    createdAt: new Date("2025-01-01"),
+    updatedAt: new Date("2025-01-01"),
+  };
+  const stubMember = {
+    id: "prn_stub",
+    tenantId: TENANT,
+    kind: "user" as const,
+    refId: stubUser.id,
+    status: "active" as const,
+    createdAt: new Date("2025-01-01"),
+    updatedAt: new Date("2025-01-01"),
+  };
+
+  // resolveTenant only reads the tenant and the caller's membership principal;
+  // the stub routes are 501 and touch no DB, so those two lookups are all the
+  // default-deny path exercises.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only resolveTenant's tenant+principal lookups are exercised here
+  const memberDb = {
+    query: {
+      tenant: { findFirst: async () => stubTenant },
+      principal: { findFirst: async () => stubMember },
+    },
+  } as unknown as DB["db"];
+
+  function grant(resource: string): GrantRule {
+    return {
+      id: `grant-${resource}`,
+      resource,
+      action: "read",
+      effect: "allow",
+      origin: "system",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: stubMember.id,
+    };
+  }
+
+  function stubApp(grants: GrantRule[]) {
+    return createApp({
+      getSession: async () => ({ user: stubUser, session: stubSession }),
+      authHandler: () => new Response("", { status: 404 }),
+      db: memberDb,
+      grantStore: createInMemoryGrantStore(grants),
+      sidecarRouter,
+      sessionService,
+      eventCollectors,
+      assetService: null,
+      repoStore: null,
+      maxTarballBytes: 10_000_000,
+    });
+  }
+
+  const agentDataPath = `/api/tenants/${TENANT}/agents/agt_x/history/ref_x`;
+  const tracesPath = `/api/tenants/${TENANT}/traces/trc_x`;
+
+  test("an active member without a grant is denied the agent-data stub (403, not 501)", async () => {
+    const res = await stubApp([]).request(agentDataPath);
+    expect(res.status).toBe(403);
+  });
+
+  test("an active member without a grant is denied the observability stub (403, not 501)", async () => {
+    const res = await stubApp([]).request(tracesPath);
+    expect(res.status).toBe(403);
+  });
+
+  test("the agent-data grant passes the mount and reaches the 501 stub", async () => {
+    const res = await stubApp([grant("agent-data:*")]).request(agentDataPath);
+    expect(res.status).toBe(501);
+  });
+
+  test("the observability grant passes the mount and reaches the 501 stub", async () => {
+    const res = await stubApp([grant("observability:*")]).request(tracesPath);
+    expect(res.status).toBe(501);
   });
 });

@@ -336,6 +336,24 @@ export function mountHubRoutes(
       createTenantGitTokenRoutes({ db, requireGrant }),
     );
   }
+  // Default-deny the observability and agent-data stub surfaces. Both are 501
+  // stubs that carry no requireGrant of their own, so without this any active
+  // tenant member would reach them; a mount-level grant check makes them fail
+  // closed instead. No grants are minted for these resources today, so this is
+  // a pure deny until the features ship. When they do, REFINE the resource and
+  // action per route -- agent-data's history restore is a write, not a read,
+  // and observability's agent logs/metrics belong under an observability
+  // resource rather than the agent-data one this shared prefix applies -- do
+  // not remove the gate. These two prefixes are stub-only; no live route
+  // resolves under them.
+  app.use(
+    "/api/tenants/:tenantId/agents/:agentId/*",
+    requireGrant("agent-data:*", "read"),
+  );
+  app.use(
+    "/api/tenants/:tenantId/traces/*",
+    requireGrant("observability:*", "read"),
+  );
   app.route("/api/tenants/:tenantId", createObservabilityRoutes());
   app.route(
     "/api/tenants/:tenantId/federation",
