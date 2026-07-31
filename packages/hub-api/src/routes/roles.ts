@@ -422,8 +422,36 @@ export function createRoleAssignRoutes({
       },
     }),
     async (c) => {
+      const tenantCtx = c.get("tenant");
       const principalId = c.req.param("principalId") ?? "";
       const roleId = c.req.param("roleId") ?? "";
+
+      // Bind both the principal and the role to the caller's tenant before
+      // touching the join row. The grant authorizes the role id, not its
+      // tenant, so without this a role:* manage grant could unassign roles
+      // across tenants. Mirrors the assign path above.
+      const principalRow = await db.query.principal.findFirst({
+        where: and(
+          eq(principal.id, principalId),
+          eq(principal.tenantId, tenantCtx.id),
+        ),
+      });
+      if (!principalRow) {
+        return c.json(
+          { error: { code: "not_found", message: "Principal not found" } },
+          404,
+        );
+      }
+
+      const roleRow = await db.query.role.findFirst({
+        where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
+      });
+      if (!roleRow) {
+        return c.json(
+          { error: { code: "not_found", message: "Role not found" } },
+          404,
+        );
+      }
 
       const deleted = await db
         .delete(principalRole)
