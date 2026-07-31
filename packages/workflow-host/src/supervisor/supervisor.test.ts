@@ -331,6 +331,8 @@ function createStubRepoStore(opts: {
     principal: { kind: string };
     repoId: RepoId;
     ref: string;
+    preservePrefix: string;
+    message: string;
     files: Record<string, string | Uint8Array>;
   }) => void;
   /**
@@ -357,7 +359,14 @@ function createStubRepoStore(opts: {
           ? (committed.get(key) ?? new Map<string, Uint8Array>())
           : new Map<string, Uint8Array>();
       const files = await args.merge(existing);
-      opts.onWrite?.({ principal, repoId, ref, files });
+      opts.onWrite?.({
+        principal,
+        repoId,
+        ref,
+        preservePrefix: args.preservePrefix,
+        message: args.message,
+        files,
+      });
       if (opts.statefulWrites === true) {
         const next = new Map<string, Uint8Array>();
         for (const [path, bytes] of Object.entries(files)) {
@@ -562,6 +571,8 @@ async function buildBindings(opts: {
     principal: { kind: string };
     repoId: RepoId;
     ref: string;
+    preservePrefix: string;
+    message: string;
     files: Record<string, string | Uint8Array>;
   }) => void;
   statefulWrites?: boolean;
@@ -820,6 +831,14 @@ describe("createWorkflowSupervisor", () => {
     baseDir: string;
     onRunStart?: WorkflowSupervisorBindings["onRunStart"];
     drainTimeoutAccumulatorFactory?: DrainTimeoutAccumulatorFactory;
+    onWrite?: (args: {
+      principal: { kind: string };
+      repoId: RepoId;
+      ref: string;
+      preservePrefix: string;
+      message: string;
+      files: Record<string, string | Uint8Array>;
+    }) => void;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -856,6 +875,7 @@ describe("createWorkflowSupervisor", () => {
       signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
       mailBus,
       inboxPrimitives,
+      ...(opts.onWrite !== undefined ? { onWrite: opts.onWrite } : {}),
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
@@ -2678,6 +2698,57 @@ describe("createWorkflowSupervisor", () => {
     // No signal.deliver because the run never parked.
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(0);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a clean dispatch fires the run without committing an empty clear-events op", async () => {
+    const baseDir = await makeTempDir("supervisor-clean-clear-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const clearWrites: string[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onWrite: ({ message }) => {
+        if (message.startsWith("clear old terminal events")) {
+          clearWrites.push(message);
+        }
+      },
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    // A first message to a never-run deployment: `runs/<runId>/` holds no
+    // prior terminal log, so the clear must abort rather than commit an
+    // empty prefix rewrite -- while the dispatch still fires the run.
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const ids = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+      if (ids.length >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    expect(runIds.length).toBe(1);
+    expect(runIds[0]).toBe("deployment-x@example.com");
+    expect(clearWrites).toEqual([]);
 
     await wired.supervisor.shutdown();
   });

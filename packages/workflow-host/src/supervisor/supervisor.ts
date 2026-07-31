@@ -136,6 +136,15 @@ import {
 const logger = getLogger(["workflow-host", "supervisor"]);
 
 /**
+ * Sentinel thrown from `clearRunEventsIfAny`'s merge callback to abort the
+ * commit when the run's event prefix holds nothing but `grants.json` -- there
+ * is no stale terminal log to clear, so a fresh trigger must not mint an empty
+ * no-op commit. The caller catches exactly this sentinel and returns; any
+ * OTHER throw is a real clear failure and propagates.
+ */
+class NoStaleRunEventsToClear extends Error {}
+
+/**
  * Default watchdog for `reEmitParkedCorrelations`' wait on the child's
  * `parked-correlations.response`. 30s is generous enough for a healthy child
  * to enumerate its in-flight runs and load each parked snapshot, tight
@@ -1909,6 +1918,7 @@ export function createWorkflowSupervisor(
    */
   async function clearRunEventsIfAny(runId: string): Promise<void> {
     const prefix = `runs/${runId}/`;
+    const grantsPath = `${prefix}grants.json`;
     try {
       await bindings.repoStore.writeTreePreservingPrefix(
         bindings.readPrincipal,
@@ -1917,20 +1927,29 @@ export function createWorkflowSupervisor(
         {
           preservePrefix: prefix,
           merge: async (existing) => {
+            // Only `grants.json` (or nothing) under the prefix means there is
+            // no stale terminal log to clear. Abort so a fresh trigger does
+            // not commit an empty prefix-rewrite on every dispatch.
+            const hasStaleEvents = [...existing.keys()].some(
+              (path) => path !== grantsPath,
+            );
+            if (!hasStaleEvents) throw new NoStaleRunEventsToClear();
             const files: Record<string, string | Uint8Array> = {};
-            for (const [path, content] of existing) {
-              if (path === `${prefix}grants.json`) {
-                files[path] = content;
-              }
-            }
+            const grants = existing.get(grantsPath);
+            if (grants !== undefined) files[grantsPath] = grants;
             return files;
           },
           message: `clear old terminal events for new run ${runId}`,
         },
       );
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`failed to clear old events for run ${runId}: ${message}`;
+      if (cause instanceof NoStaleRunEventsToClear) return;
+      // A genuine clear failure is fatal: leaving the stale terminal log in
+      // place makes the runtime short-circuit and silently return the prior
+      // run's result instead of processing this trigger.
+      throw new Error(`failed to clear old terminal events for run ${runId}`, {
+        cause,
+      });
     }
   }
 
