@@ -31,6 +31,14 @@
 // schema + a real asset service) is wired into the fixture hub's sidecar
 // router via the `materializeMailTriggeredRunGrants` option, closing the
 // harness gap that let the earlier route test assert only DB rows.
+//
+// SCOPE: this exercises the RECEIVER seam -- grant materialization + the
+// onRunStart barrier -- across a real sidecar transport on ONE hub. It is NOT
+// cross-hub coverage: the sender-to-receiver hop stays inside a single hub's
+// router, not over a hub-link between two hubs. A dedicated two-hub
+// federation-transport test is separate and non-gating; do not read this as
+// covering that hop. The harness's dependence on the placement invariant
+// below is tracked in INTR-395.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -107,10 +115,15 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // The RECEIVER, whose grants come only from the sidecar materializer. The
-// `dep_` prefix is load-bearing: deliverMailToRecipient only materializes a
-// run for a recipient whose address `isWorkflowDerivedAddress` recognizes, and
-// that predicate keys on the `ins_dep_` instance prefix a real deployment id
-// produces.
+// `dep_` prefix is load-bearing and MUST NOT be simplified to a bare id: the
+// deployment address SHAPE selects the materialization path. deliverMailToRecipient
+// only materializes a run for a recipient whose address `isWorkflowDerivedAddress`
+// recognizes, and that predicate keys on the `ins_dep_` instance prefix a real
+// deployment id produces. A bare id (e.g. `fed-mail-receiver-1` ->
+// `ins_fed-mail-receiver-1@...`) fails that predicate, so the mail is routed
+// with NO materialization -- and the test still goes GREEN while exercising
+// nothing, because the receiver never starts and the RunCompleted assertion is
+// only ever reached on the real path. Keep the `dep_` prefix.
 const RECEIVER_ID = "dep_fed-mail-receiver-1";
 const RECEIVER_TENANT_ID = "tnt_fed_mail_receiver";
 const RECEIVER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_receiver_creator";
@@ -369,6 +382,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // reconnects and appends AFTER sidecar 2, so once sidecar 2 leads the
       // connection order the next deploy lands on it deterministically,
       // regardless of when sidecar 1 comes back.
+      //
+      // DO NOT "simplify" this wait away: `getConnectedSidecars()[0] ===
+      // SECOND_SIDECAR_ID` is exactly the predicate `findSidecarForNewAgent`
+      // evaluates to place a new deploy (first entry of the connections map).
+      // Waiting on that precise invariant -- not a sleep, not "sidecar 2 is
+      // connected" -- is what makes the placement deterministic rather than
+      // racy against sidecar 1's reconnect. Dropping or loosening it silently
+      // reintroduces the race and lands the sender on the wrong sidecar (making
+      // the send local, which never exercises deliverMailToRecipient). The
+      // coupling to this internal placement rule is tracked in INTR-395.
       sidecar1Handle.close();
       await waitFor(
         () => env.hub.router.getConnectedSidecars()[0] === SECOND_SIDECAR_ID,
@@ -401,6 +424,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // them at runs/<receiverAddress>/ under the recipient-derived runId. A
       // RunFailed or timeout here is the signature of grants staged under the
       // mail's Message-ID.
+      //
+      // TRIAGE, if this goes red: this test rides on placement + reconnect
+      // settling before it can assert the grants seam, so it has two
+      // distinguishable failure points. A timeout at the
+      // `getConnectedSidecars()[0]` placement wait or the `waitForReconnect`
+      // above is an infrastructure/timing failure, NOT a grants regression --
+      // run the dedicated reconnect suites (hub-link-reconnect,
+      // reconnect-reemits-parked-correlation) first to disambiguate. Only a
+      // reached-here RunFailed or a timeout waiting on the RECEIVER's terminal
+      // event below implicates the grants materialization/runId contract this
+      // test actually guards.
       const dumpDiag = () =>
         `${env.sidecarDiagnostics()}\n--- sidecar 2 (sender) stderr ---\n${
           sidecar2?.stderr.join("") ?? "(none)"
