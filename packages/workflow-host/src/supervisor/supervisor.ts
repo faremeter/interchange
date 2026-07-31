@@ -2418,6 +2418,13 @@ export function createWorkflowSupervisor(
       if (cohortAbort.signal.aborted) return;
     }
     while (!cohortAbort.signal.aborted) {
+      // Capture the wake BEFORE the dispatch iteration (capture-before-check,
+      // same discipline as the park-generation latch). `wakeDispatch` resolves
+      // the CURRENT promise and swaps in a fresh one, so a mail that enqueues
+      // DURING dispatchOne resolves THIS captured promise; capturing it after
+      // dispatchOne would await the fresh, unresolved promise and strand that
+      // mail until some later wake.
+      const wake = dispatchWake.promise;
       let dispatched: boolean;
       try {
         dispatched = await dispatchOne(sender, cohortAbort, broadcaster);
@@ -2432,7 +2439,6 @@ export function createWorkflowSupervisor(
       }
       if (dispatched) continue;
       if (cohortAbort.signal.aborted) return;
-      const wake = dispatchWake.promise;
       const abortPromise = new Promise<void>((resolve) => {
         if (cohortAbort.signal.aborted) {
           resolve();

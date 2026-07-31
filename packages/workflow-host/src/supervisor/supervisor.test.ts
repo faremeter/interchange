@@ -867,6 +867,7 @@ describe("createWorkflowSupervisor", () => {
       message: string;
     }) => void | Promise<void>;
     inboxPrimitives?: MemoryInboxPrimitives;
+    mailBus?: ReturnType<typeof createMockMailBus>;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -895,7 +896,7 @@ describe("createWorkflowSupervisor", () => {
       };
     };
 
-    const mailBus = createMockMailBus();
+    const mailBus = opts.mailBus ?? createMockMailBus();
     const inboxPrimitives =
       opts.inboxPrimitives ?? createMemoryInboxPrimitives();
     const baseBindings = await buildBindings({
@@ -3336,6 +3337,67 @@ describe("createWorkflowSupervisor", () => {
     expect(
       wired.inboxPrimitives.snapshot(address).consumed.size,
     ).toBeGreaterThanOrEqual(1);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a mail enqueued during a dispatch iteration is picked up, not stranded", async () => {
+    const baseDir = await makeTempDir("supervisor-lost-wake-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const address = "deployment-x@example.com";
+    const mailBus = createMockMailBus();
+    const memoryInbox = createMemoryInboxPrimitives();
+    let armed = true;
+    const racingInbox: MemoryInboxPrimitives = {
+      ...memoryInbox,
+      dequeueToProcessing: async (...args) => {
+        if (armed) {
+          armed = false;
+          // Model a mail landing DURING this dispatch iteration: deliver it
+          // (which fires wakeDispatch and swaps the wake promise) and let that
+          // settle, then report the inbox empty so dispatchOne returns false.
+          // With the capture-after bug the fired wake is lost and this mail
+          // sleeps forever; capture-before catches it on the next loop.
+          mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+          await new Promise((r) => setTimeout(r, 50));
+          return null;
+        }
+        return memoryInbox.dequeueToProcessing(...args);
+      },
+    };
+    const wired = await spawnWithRunStart({
+      baseDir,
+      mailBus,
+      inboxPrimitives: racingInbox,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    // Let the racing dequeue fire the wake and the loop re-dequeue msg-1's run,
+    // then drive it to terminal so it can be consumed.
+    await new Promise((r) => setTimeout(r, 120));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
   });
