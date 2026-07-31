@@ -70,3 +70,26 @@ export async function resolveDefinitionPrincipalNames(
   }
   return names;
 }
+
+/**
+ * Resolve display names for `workflow`-kind principals, keyed by refId, applying
+ * the run-then-definition fallthrough: a refId that names a run resolves to its
+ * address label; a refId that does not (a re-keyed definition principal) falls
+ * through to the definition resolver and resolves to the definition name. A
+ * refId neither resolves is absent, so the caller can fall back to the raw
+ * refId.
+ */
+export async function resolveWorkflowPrincipalLabels(
+  db: DB["db"],
+  refIds: string[],
+): Promise<Map<string, string>> {
+  const labels = await resolveWorkflowPrincipalNames(db, refIds);
+  const unresolved = refIds.filter((id) => !labels.has(id));
+  if (unresolved.length > 0) {
+    const defNames = await resolveDefinitionPrincipalNames(db, unresolved);
+    for (const [defId, name] of defNames) {
+      labels.set(defId, name);
+    }
+  }
+  return labels;
+}

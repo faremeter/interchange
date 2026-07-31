@@ -7,7 +7,11 @@ import {
   test,
 } from "bun:test";
 
-import { resolveWorkflowPrincipalNames } from "@intx/hub-api";
+import {
+  resolveWorkflowPrincipalLabels,
+  resolveWorkflowPrincipalNames,
+} from "@intx/hub-api";
+import { workflowDefinition } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -111,6 +115,81 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const names = await resolveWorkflowPrincipalNames(h.db, ["run-nameless"]);
       expect(names.has("run-nameless")).toBe(false);
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "resolveWorkflowPrincipalLabels (real DB)",
+  () => {
+    let h: TestDb;
+
+    beforeAll(async () => {
+      h = await createTestDb();
+    });
+
+    afterAll(async () => {
+      await h.close();
+    });
+
+    beforeEach(async () => {
+      await h.reset();
+      await seedTenants(h.db, [{ id: TENANT }]);
+    });
+
+    test("resolves a run refId to its address label", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run-1",
+        tenantId: TENANT,
+        deploymentId: null,
+        address: "ins_run@wf.example",
+        status: "running",
+      });
+
+      const labels = await resolveWorkflowPrincipalLabels(h.db, ["run-1"]);
+      expect(labels.get("run-1")).toBe("Workflow (ins_run@wf.example)");
+    });
+
+    test("falls a definition refId through to the definition name", async () => {
+      // A re-keyed definition principal's refId names no run, so it falls
+      // through the run resolver to the definition resolver.
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd-1",
+        tenantId: TENANT,
+        name: "my-workflow",
+      });
+
+      const labels = await resolveWorkflowPrincipalLabels(h.db, ["wfd-1"]);
+      expect(labels.get("wfd-1")).toBe("my-workflow");
+    });
+
+    test("resolves run and definition refIds in one batch", async () => {
+      // Proves the fallthrough handles a mixed batch: the run resolves on the
+      // first pass, the definition only on the second.
+      await seedWorkflowRun(h.db, {
+        id: "run-1",
+        tenantId: TENANT,
+        deploymentId: null,
+        address: "ins_run@wf.example",
+        status: "running",
+      });
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd-1",
+        tenantId: TENANT,
+        name: "my-workflow",
+      });
+
+      const labels = await resolveWorkflowPrincipalLabels(h.db, [
+        "run-1",
+        "wfd-1",
+      ]);
+      expect(labels.get("run-1")).toBe("Workflow (ins_run@wf.example)");
+      expect(labels.get("wfd-1")).toBe("my-workflow");
+    });
+
+    test("omits a refId that matches neither a run nor a definition", async () => {
+      const labels = await resolveWorkflowPrincipalLabels(h.db, ["nope"]);
+      expect(labels.has("nope")).toBe(false);
     });
   },
 );

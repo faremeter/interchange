@@ -21,7 +21,10 @@ export {
 } from "./middleware/tenant";
 export type { AppEnv, TenantEnv, TenantRow, PrincipalRow } from "./context";
 export type { GetSession, SessionInfo, SessionUser } from "./session";
-export { resolveWorkflowPrincipalNames } from "./routes/workflow-principal-name";
+export {
+  resolveWorkflowPrincipalNames,
+  resolveWorkflowPrincipalLabels,
+} from "./routes/workflow-principal-name";
 export {
   createMailTriggeredRunGrantsMaterializer,
   type MailTriggeredRunGrantsDeps,

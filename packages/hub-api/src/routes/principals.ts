@@ -18,10 +18,7 @@ import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
-import {
-  resolveWorkflowPrincipalNames,
-  resolveDefinitionPrincipalNames,
-} from "./workflow-principal-name";
+import { resolveWorkflowPrincipalLabels } from "./workflow-principal-name";
 import {
   parsePageParams,
   cursorCondition,
@@ -75,21 +72,9 @@ async function resolveIdentities(
   }
 
   if (workflowRefIds.length > 0) {
-    // A workflow principal's refId is either a run id or a definition id. A run
-    // principal's label is the run's address -- a deployment's for a native
-    // run, or the run's own for a folded launch. A re-keyed definition
-    // principal's label is the definition name; it falls through the run
-    // resolver (no matching run) to the definition resolver.
-    const runNames = await resolveWorkflowPrincipalNames(db, workflowRefIds);
-    for (const [runId, displayName] of runNames) {
-      identities.set(runId, { displayName });
-    }
-    const defRefIds = workflowRefIds.filter((id) => !runNames.has(id));
-    if (defRefIds.length > 0) {
-      const defNames = await resolveDefinitionPrincipalNames(db, defRefIds);
-      for (const [defId, displayName] of defNames) {
-        identities.set(defId, { displayName });
-      }
+    const wfNames = await resolveWorkflowPrincipalLabels(db, workflowRefIds);
+    for (const [refId, displayName] of wfNames) {
+      identities.set(refId, { displayName });
     }
   }
 
