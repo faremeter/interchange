@@ -30,7 +30,7 @@ BEGIN
         WHERE wdef.asset_id = wd.definition_asset_id
       )
   ) THEN
-    RAISE EXCEPTION 'workflow-asset fold has not run: a deployment lacks a folded definition and its anchor run would be definition-less; run bin/db-backfill before applying this migration';
+    RAISE EXCEPTION 'workflow-asset fold has not run: a deployment lacks a folded definition and its anchor run would be definition-less. The fold tooling has been retired; create the missing workflow_definition for the deployment asset by hand before applying this migration (see the agent-fold migration note in DEV.md).';
   END IF;
 END $$;
 --> statement-breakpoint

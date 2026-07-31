@@ -158,6 +158,19 @@ this is now a historical note: a fresh database applies these migrations with
 nothing to fold (they no-op over an empty `workflow_deployment`), and the
 populated environments are already migrated.
 
+Because that tooling is gone, two migrations fail loud rather than silently
+corrupting data if they ever meet a database that was never folded. Migration
+0055 aborts if any pre-fold deployment still lacks a folded
+`workflow_definition` (its reconstructed anchor run would be definition-less).
+Migration 0068 aborts before dropping the legacy agent tables if `agent_instance`
+still holds rows — that instance routing/mail/turn state was never folded into
+`workflow_run`, and no tool ever converted it, so a bare drop would destroy it.
+If either guard fires, the database predates the completed fold and there is no
+automated path back: reconcile it by hand — create the missing
+`workflow_definition` for the deployment's asset, or retire the remaining agent
+instances — before re-running the migration. On a fresh or already-migrated
+database neither guard fires.
+
 ## Build Pipeline
 
 The Makefile is the canonical entry point for the build verbs. It runs
