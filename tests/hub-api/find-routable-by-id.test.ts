@@ -48,13 +48,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       name: "folded",
     });
     await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
-    await h.db.insert(agentSession).values({
-      id: "ses_run",
-      tenantId: "tnt_root",
-      agentId: "wfd_folded",
-      principalId: "prn_run",
-      status: "active",
-    });
     await h.db.insert(workflowRun).values({
       id: "ins_folded",
       tenantId: "tnt_root",
@@ -74,7 +67,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     expect(record?.status).toBe("running");
     // A run has no updatedAt column; a live run reports createdAt.
     expect(record?.updatedAt).toEqual(new Date("2026-01-01T00:00:00Z"));
-    expect(record?.sessionId).toBe("ses_run");
   });
 
   test("a terminal run reports endedAt as its updatedAt", async () => {
@@ -99,7 +91,6 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     const record = await findRoutableById(h.db, "ins_done", "tnt_root");
     expect(record?.status).toBe("completed");
     expect(record?.updatedAt).toEqual(new Date("2026-01-05T00:00:00Z"));
-    expect(record?.sessionId).toBeNull();
   });
 
   test("returns undefined for a deployment-anchored native run (no address)", async () => {

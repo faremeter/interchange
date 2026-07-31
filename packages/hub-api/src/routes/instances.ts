@@ -140,11 +140,9 @@ type FoldedRunListRow = {
 };
 
 // Shape a folded run into the fold-normalized record the instance view expects.
-// The list does not resolve a per-run session: a scan must not issue a session
-// lookup per row, and `formatInstanceView` never reads `sessionId`, so it stays
-// null. `updatedAt` mirrors `findRoutableById`'s run branch (`endedAt ??
-// createdAt`). The sub-query filters `address` non-null, so a null here is a
-// broken invariant and surfaces loudly.
+// `updatedAt` mirrors `findRoutableById`'s run branch (`endedAt ?? createdAt`).
+// The sub-query filters `address` non-null, so a null here is a broken
+// invariant and surfaces loudly.
 function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
   if (row.run.address === null) {
     throw new Error(`folded run ${row.run.id} listed with a null address`);
@@ -160,7 +158,6 @@ function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
     endedAt: row.run.endedAt,
     definitionId: row.run.definitionId,
     principalId: row.run.principalId,
-    sessionId: null,
     kernelId: row.run.kernelId,
     sidecarId: row.run.sidecarId,
   };
@@ -601,7 +598,6 @@ export function createInstanceRoutes({
         endedAt: null,
         definitionId: definition.id,
         principalId: instancePrincipalId,
-        sessionId,
         kernelId: null,
         sidecarId: null,
       };
@@ -1390,10 +1386,11 @@ export function createInstanceRoutes({
         );
       }
 
-      // A send requires the live session: the running gate above guarantees a
-      // run's session is live, and an instance's session column is set while
-      // running.
-      const sessionId = record.sessionId;
+      // A send needs the run's live session. The running gate above guarantees
+      // one exists; resolve it here (live-only) rather than have the id lookup
+      // fetch a session for every caller when only this route reads it. The
+      // GET-history read below resolves the same way, with ended sessions.
+      const sessionId = await resolveRunSessionId(db, record.principalId);
       if (sessionId === null) {
         return c.json(
           {

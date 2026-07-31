@@ -20,7 +20,6 @@ function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
     endedAt: null,
     definitionId: "wfd_1",
     principalId: "prn_1",
-    sessionId: "ses_1",
     kernelId: null,
     sidecarId: null,
     ...overrides,

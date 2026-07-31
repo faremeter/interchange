@@ -635,7 +635,6 @@ export interface RoutableRecord {
   /** The folded definition this run belongs to (`workflow_definition.id`). */
   readonly definitionId: string;
   readonly principalId: string | null;
-  readonly sessionId: string | null;
   readonly kernelId: string | null;
   readonly sidecarId: string | null;
 }
@@ -692,7 +691,6 @@ export async function findRoutableById(
       endedAt: runRow.endedAt,
       definitionId: runRow.definitionId,
       principalId: runRow.principalId,
-      sessionId: await resolveRunSessionId(db, runRow.principalId),
       kernelId: runRow.kernelId,
       sidecarId: runRow.sidecarId,
     };
