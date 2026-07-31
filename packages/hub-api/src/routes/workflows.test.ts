@@ -1112,13 +1112,13 @@ describe("POST /workflows/:deploymentId/mail", () => {
     // lands them at the sidecar before the run dispatches.
     expect(sendOrder.map((s) => s.kind)).toEqual(["run.grants", "mail"]);
 
-    // The run.grants frame carries the run id (= the mail's Message-ID) and
-    // the definition-pure tool grants the capability walk lifted.
+    // The run.grants frame carries the run id (= the deployment's mail
+    // address) and the definition-pure tool grants the capability walk lifted.
     expect(runGrantsCalls).toHaveLength(1);
     const grantsCall = runGrantsCalls[0];
     if (grantsCall === undefined) throw new Error("missing run.grants call");
     expect(grantsCall.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
-    expect(grantsCall.runId).toBe(json.messageId);
+    expect(grantsCall.runId).toBe(json.address);
 
     const byResource = new Map(
       grantsCall.stepGrants.map((g) => [g.resource, g]),
@@ -1147,7 +1147,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     );
     expect(principalRow).toMatchObject({
       kind: "workflow",
-      refId: json.messageId,
+      refId: json.address,
       tenantId: TENANT_ID,
       status: "active",
     });
@@ -1158,7 +1158,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     expect(runInserts).toHaveLength(1);
     const runRow = assertBody(WorkflowRunInsert, runInserts[0]?.values);
     expect(runRow).toMatchObject({
-      id: json.messageId,
+      id: json.address,
       deploymentId: DEPLOYMENT_ID,
       tenantId: TENANT_ID,
       principalId: principalRow.id,

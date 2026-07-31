@@ -1474,14 +1474,15 @@ describe("SidecarRouter", () => {
         [WORKFLOW_ADDR],
       );
 
-      // The lookup was invoked with the derived runId (the mail's Message-ID).
+      // The lookup was invoked with the derived runId: the deployment's mail
+      // address (the stable runId), not this mail's Message-ID.
       expect(calls).toEqual([
-        { agentAddress: WORKFLOW_ADDR, runId: "<mail-run-1@tenant.example>" },
+        { agentAddress: WORKFLOW_ADDR, runId: WORKFLOW_ADDR },
       ]);
       // The recipient received the run.grants frame BEFORE the mail.inbound.
       const frames = ws.sent.map((s) => JSON.parse(s));
       expect(frames[0]?.type).toBe("run.grants");
-      expect(frames[0]?.runId).toBe("<mail-run-1@tenant.example>");
+      expect(frames[0]?.runId).toBe(WORKFLOW_ADDR);
       expect(frames[0]?.stepGrants).toEqual(SAMPLE_GRANTS);
       expect(frames[1]?.type).toBe("mail.inbound");
       // The commit ran only after the mail was accepted for delivery.
@@ -1611,8 +1612,8 @@ describe("SidecarRouter", () => {
         [WORKFLOW_ADDR, otherWfAddr],
       );
 
-      // The shared-runId collision is refused loudly before any
-      // materialization; neither workflow recipient is delivered to.
+      // The one-workflow-recipient-per-mail restriction is refused loudly
+      // before any materialization; neither workflow recipient is delivered to.
       expect(called).toBe(false);
       expect(wfWs.sent).toHaveLength(0);
       expect(otherWs.sent).toHaveLength(0);

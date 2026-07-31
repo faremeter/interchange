@@ -7,12 +7,7 @@
 import { getLogger } from "@intx/log";
 import { verifyEd25519 } from "@intx/crypto";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
-import {
-  base64Decode,
-  deriveMessageId,
-  hexDecode,
-  hexEncode,
-} from "@intx/types";
+import { deriveWorkflowRunId, hexDecode, hexEncode } from "@intx/types";
 import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
@@ -1195,19 +1190,20 @@ export function createSidecarRouter(
     rawMessage: string,
     recipients: string[],
   ): Promise<void> {
-    // A single mail to two workflow-derived recipients would derive ONE
-    // Message-ID and thus ONE runId shared across both, colliding on the
-    // `workflow_run` primary key -- materializing either would silently
-    // conflate two runs into one. Fail loudly rather than pick a winner:
-    // the single-workflow-recipient invariant holds because the runId IS
-    // the Message-ID, which every recipient of a mail shares. The guard
-    // only applies when a materializer is wired -- absent one, no run is
-    // born from the mail, so there is nothing to conflate.
+    // A mail addressed to more than one workflow deployment would birth a
+    // run per recipient from a single inbound mail. That fan-out is not a
+    // supported shape, so fail loudly rather than materialize a partial
+    // set. Each recipient now derives its own per-deployment runId (its
+    // mail address), so this is no longer the runId-collision guard it once
+    // was when the runId was the shared Message-ID -- it is a deliberate
+    // one-workflow-recipient-per-mail restriction. The guard only applies
+    // when a materializer is wired -- absent one, no run is born from the
+    // mail, so there is nothing to restrict.
     if (lookups.materializeMailTriggeredRunGrants !== undefined) {
       const workflowRecipients = recipients.filter(isWorkflowDerivedAddress);
       if (workflowRecipients.length > 1) {
         throw new Error(
-          `mail addressed to multiple workflow-derived recipients (${workflowRecipients.join(", ")}); the run id is the shared Message-ID, so materializing more than one run from a single mail is unsupported`,
+          `mail addressed to multiple workflow-derived recipients (${workflowRecipients.join(", ")}); materializing a run for more than one workflow deployment from a single mail is unsupported`,
         );
       }
     }
@@ -1263,7 +1259,7 @@ export function createSidecarRouter(
       lookups.materializeMailTriggeredRunGrants !== undefined &&
       isWorkflowDerivedAddress(recipient)
     ) {
-      const runId = await deriveMessageId(base64Decode(rawMessage));
+      const runId = deriveWorkflowRunId(recipient);
       const result = await lookups.materializeMailTriggeredRunGrants({
         agentAddress: recipient,
         runId,

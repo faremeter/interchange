@@ -341,15 +341,18 @@ export type CommitRunGrantsArgs = {
 
 /**
  * Idempotently commit a run's principal, run row, and grant rows in one
- * transaction, keyed on the run id -- stable for a mail run (the
- * Message-ID) and unique for an external trigger.
+ * transaction, keyed on the run id -- the deployment's mail address,
+ * shared by every run of the deployment (see `deriveWorkflowRunId`).
  *
  * The transaction opens with an already-materialized GUARD: it looks up
  * the principal for `(tenantId, kind: "workflow", refId: runId)` and, if
- * one is present, returns without writing anything. A redelivery is thus a
- * true no-op that neither throws nor duplicates rows -- the grant table
- * has no natural unique key, so re-running the inserts would otherwise
- * append a second copy of every grant. The guard reads inside the
+ * one is present, returns without writing anything. Because the runId is
+ * stable across every trigger of a deployment, the FIRST trigger
+ * materializes the principal, run row, and grants and every later trigger
+ * (and any redelivery) is a true no-op that neither throws nor duplicates
+ * rows -- the grant table has no natural unique key, so re-running the
+ * inserts would otherwise append a second copy of every grant. The guard
+ * reads inside the
  * transaction, so a concurrent first commit either has not yet inserted
  * the principal (this call proceeds and the principal's unique constraint
  * serializes the race) or has committed it (this call sees it and skips).
@@ -498,10 +501,11 @@ export function createMailTriggeredRunGrantsMaterializer(
       creatorRequirements,
     );
 
-    // Derive the run principal id from `(tenantId, runId)` so a redelivery
-    // (same Message-ID runId) mints the same principal id and its
-    // conflict-noop reinsert leaves the grant rows pointing at the id that
-    // is actually present.
+    // Derive the run principal id from `(tenantId, runId)`. The runId is the
+    // stable deployment address, so every trigger of the deployment mints
+    // the same principal id; the commit's already-materialized guard makes
+    // all but the first a no-op, leaving the grant rows pointing at the id
+    // that is actually present.
     const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
     const now = new Date();
     const staged = await stageRunGrants({

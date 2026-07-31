@@ -45,10 +45,11 @@ export function generateId(kind: IDKind): string {
  * has ONE principal id regardless of how many times its birth is
  * attempted.
  *
- * Determinism is load-bearing for redelivery idempotency: a mail run's
- * `runId` is the mail's Message-ID (stable across a redelivery), and the
- * `principal` table's `unique(tenantId, kind, refId=runId)` makes the
- * insert an `onConflictDoNothing` no-op on the second attempt. A RANDOM
+ * Determinism is load-bearing for idempotency: a run's `runId` is the
+ * deployment's mail address (stable across a redelivery AND across every
+ * trigger of the deployment), and the `principal` table's
+ * `unique(tenantId, kind, refId=runId)` makes the insert an
+ * `onConflictDoNothing` no-op on every attempt after the first. A RANDOM
  * id would leave that no-op pointing the fresh id nowhere while the grant
  * rows referenced it, breaking the principal foreign key. Deriving the id
  * from the run means the second attempt reuses the id already written, so

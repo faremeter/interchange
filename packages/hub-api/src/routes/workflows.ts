@@ -14,7 +14,12 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
-import { base64Encode, ErrorResponse, SendMessage } from "@intx/types";
+import {
+  base64Encode,
+  deriveWorkflowRunId,
+  ErrorResponse,
+  SendMessage,
+} from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
 import type { HarnessConfig } from "@intx/types/runtime";
 import {
@@ -653,11 +658,12 @@ export function createWorkflowRoutes({
       const user = c.get("user");
       const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
 
-      // The runId the supervisor mints for this trigger is the mail's
-      // Message-ID header verbatim (see `deriveMessageId` in
-      // `@intx/workflow-host`), so it equals `messageId` byte-identically.
-      // The run principal and its grants key off it.
-      const runId = messageId;
+      // The runId is the deployment's mail address, shared by every run of
+      // the deployment -- NOT this message's Message-ID. The supervisor's
+      // dispatch loop waits on that id and reads the run's grants from
+      // `runs/<runId>/`, so the run principal and its grants must key off
+      // the same value or the run fails closed on its onRunStart barrier.
+      const runId = deriveWorkflowRunId(address);
 
       // Derive the run's authorization grants from the deployment's workflow
       // definition and stage them on a fresh run principal. Nothing is
@@ -704,10 +710,11 @@ export function createWorkflowRoutes({
         );
       }
 
-      // Derive the run principal id from `(tenantId, runId)` so a
-      // redelivery of the same trigger mints the same principal id, keeping
-      // the mint idempotent on the runId shared with the mail-triggered
-      // path.
+      // Derive the run principal id from `(tenantId, runId)`. The runId is
+      // the stable deployment address, so every trigger of the deployment
+      // mints the same principal id; the commit's already-materialized guard
+      // makes all but the first a no-op, sharing one run principal with the
+      // mail-triggered path.
       const runPrincipalId = await deriveRunPrincipalId(tenant.id, runId);
       const now = new Date();
 
@@ -854,8 +861,9 @@ export function createWorkflowRoutes({
       // so the 409 path above never leaves orphaned authz state behind. The
       // principal is a bare `workflow`-kind row keyed on the runId, mirroring
       // the per-instance principal the agent.deploy path mints. The commit is
-      // idempotent on the runId (unique for an external trigger), sharing the
-      // same staging and commit the mail-triggered run path uses.
+      // idempotent on the runId (the stable deployment address, shared by
+      // every trigger), sharing the same staging and commit the
+      // mail-triggered run path uses.
       // Anchor the run on the deployment's definition -- the one the anchor
       // run already carries, resolved above.
       const definitionId = anchor.definitionId;

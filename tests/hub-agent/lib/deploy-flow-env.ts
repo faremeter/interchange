@@ -64,7 +64,7 @@ import {
   type WorkflowRunHubPrincipal,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { base64Encode, hexEncode } from "@intx/types";
+import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import {
@@ -1612,12 +1612,11 @@ export async function fireMailTrigger(
   const rawMessage = assembleMessage(headers, signedContent, signature);
   const base64 = base64Encode(rawMessage);
 
-  // Deliver the run's grants before the trigger mail. The supervisor
-  // uses a stable runId derived from the deployment mail address (not
-  // the per-message Message-ID), so the grants frame must name that
-  // same address as its runId for the sidecar to write the grants file
-  // at the path the supervisor's onRunStart barrier expects.
-  const runId = address;
+  // Deliver the run's grants before the trigger mail. The runId is the
+  // deployment's mail address (not the per-message Message-ID); derive it
+  // through the same shared helper the production route and sidecar use, so
+  // this fixture cannot mask a divergence by hand-picking the right value.
+  const runId = deriveWorkflowRunId(address);
   const grantsDelivered = env.hub.router.sendRunGrants(
     address,
     runId,

@@ -762,8 +762,9 @@ async function handleControlPayload(
     case "trigger.fire": {
       // One driver per runId. If this child is already driving this
       // runId -- self-discovery resumed it, or an earlier trigger opened
-      // it -- the supervisor's re-fire (which carries `runId = messageId`
-      // and no resumeFromEvents) must NOT spawn a second `runtimeRun`. A
+      // it -- the supervisor's re-fire (which carries the deployment's
+      // mail address as the runId and no resumeFromEvents) must NOT spawn
+      // a second `runtimeRun`. A
       // second concurrent driver would race the live one to settle the
       // same residual and the loser throws an uncaught TransitionError,
       // and even a driver that avoided the throw would double-emit the

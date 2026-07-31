@@ -66,6 +66,7 @@ import {
   base64Decode,
   base64Encode,
   deriveMessageId,
+  deriveWorkflowRunId,
   signalName,
 } from "@intx/types";
 import { RepoId } from "@intx/types/sidecar";
@@ -659,9 +660,13 @@ export function createWorkflowSupervisor(
     const rawMessageBase64 = base64Encode(rawMessage);
     // D2 leg: `enqueueInbox` runs in `onMailMessage` BEFORE dispatch, so
     // it is paid OUTSIDE the dispatch-start..reply-produced window -- its
-    // growth is invisible to the 4.7 bracket. The leg mark, keyed by the
-    // same messageId the dispatch loop later uses as the runId, makes the
-    // out-of-window cost visible and joinable to the in-window legs.
+    // growth is invisible to the 4.7 bracket. This leg mark is keyed by
+    // the messageId. The dispatch loop's in-window legs now key on the
+    // stable deployment-address runId (shared by every message of the
+    // deployment), so the enqueue leg no longer shares a per-message join
+    // key with them; re-keying D2 per-message attribution under the stable
+    // runId is a benchmark-owned change, out of scope for the runId
+    // grants contract.
     legMarkStart(messageId, "enqueue");
     await inboxPrimitives.enqueueInbox(
       bindings.repoStore,
@@ -1812,28 +1817,28 @@ export function createWorkflowSupervisor(
 
   /**
    * Forward one dequeued inbox entry to the child as `trigger.fire`
-   * and record its runId as in-flight. The runId is the messageId
-   * the envelope carries (one run per trigger fire per discovery
-   * Q3.1); the same value is what the dispatch loop waits on via
-   * `terminalEventSource`.
+   * and record its runId as in-flight. The runId is the deployment's
+   * mail address (see `deriveWorkflowRunId`), shared by every run of
+   * the deployment; the `messageId` rides alongside it so the child can
+   * recover the trigger's mail bytes by claim-check. The runId is the
+   * same value the dispatch loop waits on via `terminalEventSource`.
    */
   async function forwardDispatchedEntry(
     sender: ControlChannelSender,
     messageId: string,
     receivedAt: number,
-    runId?: string,
+    runId: string,
   ): Promise<string> {
-    const effectiveRunId = runId ?? messageId;
     await sender.send({
       type: "trigger.fire",
       data: {
-        runId: effectiveRunId,
+        runId,
         messageId,
         receivedAt,
       },
     });
-    cohortRunIds.add(effectiveRunId);
-    return effectiveRunId;
+    cohortRunIds.add(runId);
+    return runId;
   }
 
   /**
@@ -1955,7 +1960,7 @@ export function createWorkflowSupervisor(
     );
     if (dequeued === null) return false;
     const envelope = dequeued.envelope;
-    const runId = bindings.deploymentMailAddress;
+    const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
     currentDispatchRunId = runId;
     emitDispatchTiming(runId, "dispatch-start", beforeDequeueMs);
     // D2 leg: the claim-check dequeue READ. `dispatch-start` is sampled

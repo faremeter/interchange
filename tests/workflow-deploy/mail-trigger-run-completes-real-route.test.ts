@@ -1,39 +1,23 @@
-// Trigger-route grant derivation + commit, under real constraints.
+// Trigger-route runId contract: a real-route run reaches terminal SUCCESS.
 //
-// INTR-339's headline: when a workflow run is triggered, the run's
-// authorization grants are DERIVED from the deployment's definition and
-// committed to Postgres before the run dispatches. This test drives that
-// derivation through the PRODUCTION `POST /workflows/:deploymentId/mail`
-// route against a real migrated schema and a real sidecar subprocess:
+// The supervisor keys a run on the deployment's mail address as the stable
+// runId and reads that run's grants from `runs/<runId>/grants.json`; the
+// sidecar's `onRunStart` barrier refuses to start a run whose grants file
+// is absent at that path. So a producer that stages the run's grants under
+// any OTHER id leaves the supervisor's path empty and the run fails closed.
 //
-//   - The workflow's single ACTION step declares `effect:{requires:
-//     ["fs:write"]}`. The deploy-time capability walk lifts that into a
-//     `effect:fs:write` runtime grant; the trigger route materializes it
-//     onto a fresh run principal and commits the principal + run + grant
-//     rows in one transaction (`commitRunGrants`). The route declares NO
-//     `grants` inline -- the `effect:fs:write` row exists only because the
-//     WALK derived it, which is the property under test.
-//   - `createApp` is wired with the real `h.db`, a real `assetService` +
-//     `repoStore` (so the `/workflows` routes mount and `hydrateDefinition`
-//     reads the deployment's `workflow.json`), a real DB-backed grant store,
-//     and the fixture's real `env.hub.router`. The route's `sendRunGrants`
-//     and `routeMail` therefore reach the SAME deployed sidecar the fixture
-//     stood up, so a 202 means the run was genuinely accepted for dispatch.
-//   - The committed rows insert under real foreign keys: `workflow_run`'s
-//     `deployment_id` references its anchor run's `workflow_run.id`, and the
-//     run principal is a real `principal` row. A broken derivation or a wrong
-//     deployment id fails at the DB, not at a mock.
-//
-// SCOPE. This proves the route's grant DERIVATION + DB COMMIT under real
-// constraints. It does NOT exercise the runtime CONSUME side: the sidecar
-// workflow host does not execute action primitives (no `invokeAction` is
-// wired on the production run env), so the dispatched run fails its action
-// step with "this host does not support action primitives" and never runs
-// the effect. That downstream failure is expected and irrelevant here --
-// the derivation and commit both complete before the run dispatches, and
-// those are what this test asserts. The action-effect authorization path
-// (`EffectContext.perform` gating `effect:fs:write`) only runs under the
-// in-process `runLocal` host and is covered there.
+// This test drives the PRODUCTION `POST /workflows/:deploymentId/mail`
+// route against a real migrated schema and a real sidecar subprocess, and
+// asserts the dispatched run reaches `RunCompleted` -- not just that DB
+// rows were committed. A completing single-step agent workflow (echo
+// inference) is used precisely so the run CAN terminate successfully; the
+// only thing that keeps it from completing is the grants file landing under
+// a runId the supervisor never reads. Before the runId contract was
+// unified (the route derived runId from the mail's Message-ID), the grants
+// were staged under that per-message id, `onRunStart` found no grants at
+// `runs/<deploymentMailAddress>/`, and the run failed closed -- this test
+// fails there. The `mail-trigger-derived-grants-roundtrip` sibling proves
+// the derivation + DB commit; this one proves the run actually runs.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -48,14 +32,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { and, eq } from "drizzle-orm";
 import { type } from "arktype";
 
-import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { createGrantStore } from "@intx/db";
 import {
-  grant as grantTable,
-  principal as principalTable,
   tenant as tenantTable,
   workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
@@ -76,8 +57,8 @@ import {
   type SessionService,
   type WorkflowRunHubPrincipal,
 } from "@intx/hub-sessions";
-import type { KeyPair } from "@intx/types/runtime";
-import type { HarnessConfig } from "@intx/types/runtime";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import type { HarnessConfig, KeyPair } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   createTestDb,
@@ -85,11 +66,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
-import {
-  action,
-  defineWorkflow,
-  type WorkflowDefinition,
-} from "@intx/workflow";
+import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
@@ -103,22 +80,22 @@ import {
 import {
   SESSION_ID,
   startDeployFlowEnv,
+  waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 // The tenant domain must equal the fixture's deploy domain so the route's
 // derived address (`ins_<deploymentId>@<tenant.domain>`) matches the
-// address the fixture deployed the sidecar workflow under; otherwise
-// `sendRunGrants`/`routeMail` route to an unknown address and the route
-// returns 409 instead of 202.
+// address the fixture deployed the sidecar workflow under; otherwise the
+// route's sendRunGrants/routeMail target an unknown address (409).
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "mail-trigger-derived-grants-1";
-const TENANT_ID = "tnt_mail_trigger_derived";
-const CALLER_USER_ID = "usr_mail_trigger_caller";
-const CALLER_PRINCIPAL_ID = "prn_mail_trigger_caller";
-const DEFINITION_ASSET_ID = "ast_mail_trigger_wf";
-const STEP_ID = "act";
+const DEPLOYMENT_ID = "mail-trigger-run-completes-1";
+const TENANT_ID = "tnt_mail_trigger_completes";
+const CALLER_USER_ID = "usr_mail_trigger_completes_caller";
+const CALLER_PRINCIPAL_ID = "prn_mail_trigger_completes_caller";
+const DEFINITION_ASSET_ID = "ast_mail_trigger_completes_wf";
+const STEP_ID = "step1";
 
 const TOOL_PINS: readonly ToolPackagePin[] = [];
 
@@ -127,19 +104,24 @@ const deploymentMailAddress = deriveDeploymentAddress({
   deploymentDomain: DEPLOYMENT_DOMAIN,
 });
 
-// The workflow the deployment carries: a single action step whose effect
-// requires `fs:write`. The capability walk derives `effect:fs:write` from
-// this; no `grants` are declared inline, so the derived row is the ONLY
-// source of that grant. The handler ref is inert here (the run never
-// executes the action on this host).
+// A single agent step with no tools: the run completes on the echo
+// inference alone, so the ONLY thing that can stop it reaching
+// RunCompleted is the grants barrier failing to find the run's grants.
+const agent = defineAgent({
+  id: `agent_${DEPLOYMENT_ID}`,
+  systemPrompt: "You are the single-step run-completes agent.",
+  tools: [],
+  capabilities: [],
+  inference: {
+    sources: [{ provider: "anthropic", model: "mock-model" }],
+  },
+});
+
 const workflow: WorkflowDefinition = defineWorkflow({
   id: `wf_${DEPLOYMENT_ID}`,
   trigger: { type: "mail", to: deploymentMailAddress },
   steps: {
-    [STEP_ID]: action({
-      handler: "writer",
-      effect: { requires: ["fs:write"] },
-    }),
+    [STEP_ID]: step({ agent }),
   },
 });
 
@@ -168,9 +150,9 @@ function createMockGetSession(userId: string): GetSession {
       updatedAt: now,
     },
     session: {
-      id: "session_mail_trigger",
+      id: "session_mail_trigger_completes",
       userId,
-      token: "tok_mail_trigger",
+      token: "tok_mail_trigger_completes",
       expiresAt: new Date("2999-01-01"),
       createdAt: now,
       updatedAt: now,
@@ -179,7 +161,7 @@ function createMockGetSession(userId: string): GetSession {
 }
 
 function notImpl(name: string): never {
-  throw new Error(`mail-trigger derived-grants mock: ${name} not implemented`);
+  throw new Error(`mail-trigger run-completes mock: ${name} not implemented`);
 }
 
 function createMockSessionService(): SessionService {
@@ -206,12 +188,12 @@ function createMockEventCollectors(): EventCollectorRegistry {
   };
 }
 
-// A real RepoStore carrying the workflow kind handler, so a workflow asset
-// can be created and its `workflow.json` written and read back. The `/mail`
+// A real RepoStore carrying the workflow kind handler, so the workflow
+// asset's `workflow.json` can be written and read back. The `/mail`
 // route's `hydrateDefinition` reads the definition through this store.
 async function createWorkflowRepoStore(): Promise<RepoStore> {
   const dataDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "mail-trigger-derived-"),
+    path.join(os.tmpdir(), "mail-trigger-completes-"),
   );
   tempDirs.push(dataDir);
   const signer = async (payload: string) =>
@@ -232,14 +214,16 @@ async function createWorkflowRepoStore(): Promise<RepoStore> {
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "mail trigger derives and commits run grants under real constraints",
+  "a mail-triggered run started through the real route reaches RunCompleted",
   () => {
     let hasRun = false;
 
     beforeAll(async () => {
       signingKey = await generateKeyPair();
       h = await createTestDb();
-      env = await startDeployFlowEnv();
+      // Echo inference so the single agent step produces a reply and the
+      // run terminates on its own once its grants barrier is satisfied.
+      env = await startDeployFlowEnv({ inferenceEchoUserMessage: true });
     });
 
     afterAll(async () => {
@@ -258,9 +242,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
     });
 
-    test("commits the run principal, run row, and derived effect grant", async () => {
-      // Single shared sidecar subprocess: guard against a second test
-      // reusing the warm deploy state under a different DB reset.
+    test("the run reaches RunCompleted, not RunFailed on a missing grants file", async () => {
       if (hasRun) {
         throw new Error(
           "this suite assumes a single test per shared subprocess env; " +
@@ -269,11 +251,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       hasRun = true;
 
-      // Seed the tenancy the route resolves against. The tenant carries
-      // the deploy domain so the derived address matches the sidecar
-      // deployment; the caller is an active user-principal (for
-      // resolveTenant) holding the `workflow-run:<id>/manage` grant the
-      // `/mail` route's middleware requires.
+      // Seed the tenancy the route resolves against: the tenant carries the
+      // deploy domain so the derived address matches the sidecar deployment,
+      // and the caller is an active user-principal holding the
+      // `workflow-run:<id>/manage` grant the `/mail` route requires.
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
         name: TENANT_ID,
@@ -292,7 +273,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: DEFINITION_ASSET_ID,
         tenantId: TENANT_ID,
         kind: "workflow",
-        name: "mail-trigger-derived-wf",
+        name: "mail-trigger-completes-wf",
         creatorPrincipalId: CALLER_PRINCIPAL_ID,
       });
       await seedGrant(h.db, {
@@ -304,8 +285,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         origin: "system",
         principalId: CALLER_PRINCIPAL_ID,
       });
-      // Deploy the workflow asset's `workflow.json` through a real asset
-      // service so the route can hydrate it.
+
+      // Write the workflow's `workflow.json` into the hub-api asset the
+      // route hydrates its grants from.
       const repoStore = await createWorkflowRepoStore();
       const assetService = createAssetService({ db: h.db, repoStore });
       await repoStore.initRepo({ kind: "workflow", id: DEFINITION_ASSET_ID });
@@ -319,13 +301,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       });
 
-      // Deploy the workflow to the real sidecar so its address is routable
-      // and its workflow-run repo exists. The route's sendRunGrants +
-      // routeMail reach this deployment.
+      // Deploy the same workflow to the real sidecar so its address is
+      // routable and its workflow-run repo exists, then register it with the
+      // fixture so run events can be read for the completion wait.
       await deployWorkflowToSidecar();
 
-      // Seed the deployment row after the asset + sidecar deploy so the
-      // FK target exists for commitRunGrants.
+      // Seed the deployment's definition + anchor run after the asset and
+      // sidecar deploy so the FK targets exist for the route's commit.
       await seedDeploymentRow();
 
       const grantStore = createGrantStore(h.db);
@@ -347,7 +329,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content: "kick off" }),
+          body: JSON.stringify({ content: "kick off the run" }),
         },
       );
       if (res.status !== 202) {
@@ -356,62 +338,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `expected 202 from /mail, got ${String(res.status)}: ${JSON.stringify(body)}\n${env.sidecarDiagnostics()}`,
         );
       }
-      const rawJson: unknown = await res.json();
-      const json = TriggerResponse.assert(rawJson);
-      expect(json.deploymentId).toBe(DEPLOYMENT_ID);
+      const json = TriggerResponse.assert(await res.json());
       expect(json.address).toBe(deploymentMailAddress);
-      // The route keys the run on the deployment's mail address (the stable
-      // runId), not this message's Message-ID.
-      const runId = deploymentMailAddress;
 
-      // ---- The run principal committed (kind workflow, refId = runId) ----
-      const principals = await h.db
-        .select()
-        .from(principalTable)
-        .where(
-          and(
-            eq(principalTable.tenantId, TENANT_ID),
-            eq(principalTable.kind, "workflow"),
-            eq(principalTable.refId, runId),
-          ),
-        );
-      expect(principals).toHaveLength(1);
-      const runPrincipal = principals[0];
-      if (runPrincipal === undefined) throw new Error("unreachable");
-
-      // ---- The run row committed, FK'd to the real deployment ----
-      const runs = await h.db
-        .select()
-        .from(workflowRunTable)
-        .where(eq(workflowRunTable.id, runId));
-      expect(runs).toHaveLength(1);
-      const runRow = runs[0];
-      if (runRow === undefined) throw new Error("unreachable");
-      expect(runRow.deploymentId).toBe(DEPLOYMENT_ID);
-      expect(runRow.tenantId).toBe(TENANT_ID);
-      expect(runRow.principalId).toBe(runPrincipal.id);
-
-      // ---- The DERIVED effect grant committed on the run principal ----
-      const grants = await h.db
-        .select()
-        .from(grantTable)
-        .where(eq(grantTable.principalId, runPrincipal.id));
-      const effectGrant = grants.find((g) => g.resource === "effect:fs:write");
-      if (effectGrant === undefined) {
+      // The load-bearing assertion: the run the route dispatched reaches
+      // terminal SUCCESS. The runId is the deployment mail address, so that
+      // is what the run events are keyed on. A RunFailed here (or a timeout)
+      // is the signature of grants staged under the wrong runId.
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        deploymentMailAddress,
+        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+      );
+      if (terminal.type !== "RunCompleted") {
         throw new Error(
-          `no effect:fs:write grant committed on the run principal; got ${JSON.stringify(
-            grants.map((g) => g.resource),
-          )}`,
+          `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(terminal.body)}\n${env.sidecarDiagnostics()}`,
         );
       }
-      expect(effectGrant.action).toBe("invoke");
-      expect(effectGrant.effect).toBe("allow");
-      expect(effectGrant.origin).toBe("creator");
+      expect(terminal.type).toBe("RunCompleted");
     });
 
     // Seed the deployment's first-class definition and its anchor run at the
-    // fixture's deploy address: the trigger route reads the workflow asset and
-    // the run's definition off the anchor.
+    // fixture's deploy address: the trigger route reads the workflow asset
+    // and the run's definition off the anchor.
     async function seedDeploymentRow(): Promise<void> {
       await h.db.insert(workflowDefinitionTable).values({
         id: `wfd_${DEPLOYMENT_ID}`,
@@ -436,7 +386,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "Fallback",
+        systemPrompt:
+          "Fallback prompt (overridden per step by the orchestrator)",
         tools: [],
         grants: [],
         sources: [
@@ -455,7 +406,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
         `mail.send:${DEPLOYMENT_DOMAIN}`,
-        "effect:fs:write",
       ]);
       const launchSession: LaunchSessionFn = async (p) => {
         await env.hub.sessionService.stageWorkflowStep({
@@ -496,7 +446,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             DEFAULT_ASSET_REF,
             {
               files,
-              message: `mail-trigger derived test: ${args.workflowRepoId}`,
+              message: `mail-trigger run-completes test: ${args.workflowRepoId}`,
             },
           );
         },
@@ -523,6 +473,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `deployWorkflow returned no publicKey\n${env.sidecarDiagnostics()}`,
         );
       }
+      const workflowRunRepoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveDeploymentId(deploymentMailAddress),
+      };
+      env.registerDeployment({
+        deploymentId: DEPLOYMENT_ID,
+        workflowDefinition: workflow,
+        workflowRunRepoId,
+        workflowRunRef: "refs/heads/main",
+        mailAddress: deploymentMailAddress,
+      });
     }
   },
 );

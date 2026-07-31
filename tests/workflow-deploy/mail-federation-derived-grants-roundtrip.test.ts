@@ -404,7 +404,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       const json = TriggerResponse.assert(await res.json());
-      const runId = json.messageId;
+      // The run is keyed on the deployment's mail address (the stable
+      // runId the route returns as `address`), not this message's
+      // Message-ID.
+      const runId = json.address;
 
       // The run principal and run row committed.
       const principals = await h.db

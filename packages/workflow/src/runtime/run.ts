@@ -347,8 +347,9 @@ async function executeRunBody(
   // seed array. The seed may have arrived two ways -- as a
   // `resumeFromEvents` array this process just wrote, or as a log a
   // prior (crashed) process left on disk that this process is re-firing
-  // fresh (the supervisor re-fires a parked inbound message with
-  // `runId = messageId` and NO `resumeFromEvents`). Reducing the durable
+  // fresh (the supervisor re-fires a parked inbound message with the
+  // deployment's mail address as the runId and NO `resumeFromEvents`).
+  // Reducing the durable
   // log answers the only question that matters for recovery -- "does the
   // canonical log carry residual work?" -- identically for both, so
   // every decision below (terminal short-circuit, crashed-in-flight

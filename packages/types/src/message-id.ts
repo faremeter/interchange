@@ -1,11 +1,16 @@
 // Canonical Message-ID derivation for a raw RFC 2822 message.
 //
-// A workflow run's id is the mail's Message-ID: the sidecar's supervisor
-// derives it when it consumes an inbound mail, and the hub derives it
-// when it materializes that run's grants. Both must produce the SAME id
-// from the SAME bytes, or the grants land under the wrong run id and the
-// run silently fails closed. This module is the single source of truth
-// both import, so the two derivations cannot diverge.
+// This id identifies the MESSAGE, not the run it triggers. It is the
+// claim-check dedup key the inbox pipeline keys on (the same bytes
+// delivered twice consume once), and it must be derived identically
+// wherever a message is fingerprinted, or a redelivery would be treated
+// as a fresh message. This module is the single source of truth those
+// call sites import.
+//
+// A workflow run's id is NOT this value -- every run of a deployment
+// shares the deployment's mail address as its stable runId (see
+// `deriveWorkflowRunId`). The two ids are distinct: this one is
+// per-message, the runId is per-deployment.
 //
 // The identifier is the `Message-ID` header value when the message
 // carries one, and a sha256 of the raw bytes otherwise -- so a message
