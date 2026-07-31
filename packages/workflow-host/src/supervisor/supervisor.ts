@@ -2178,34 +2178,51 @@ export function createWorkflowSupervisor(
           break;
         }
         if (!cohortRunIds.has(runId)) {
-          // A prior run with this stable runId may have left terminal
-          // events in the substrate.  The runtime short-circuits on an
-          // already-terminal log (treating the trigger as a recovery
-          // re-fire), so a NEW message must start with a clean event
-          // directory.  We keep `grants.json` because the sidecar writes
-          // it for the new message before the mail dequeues.
-          await clearRunEventsIfAny(runId);
-          await forwardDispatchedEntry(
-            sender,
-            envelope.messageId,
-            envelope.receivedAt,
-            runId,
-          );
-
-          // Wait for the child to process this trigger before allowing
-          // `markConsumed` to move the claim-check entry out of `processing/`.
-          // The child reads the trigger payload from that entry; racing
-          // `markConsumed` would delete the entry before the child resolves it.
+          // Subscribe the terminal watcher BEFORE the trigger fires. The
+          // broadcaster drops a notify that has no listener (its subscribe-
+          // before-fire contract), so a terminal that lands while
+          // clearRunEventsIfAny/forwardDispatchedEntry are in flight would be
+          // lost and the wait would hang to the backstop.
           const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
-          const outcome = await waitForRunTerminalOrPark(
-            iter,
-            cohortAbort.signal,
-            runId,
-            sinceGen,
-          );
-          if (outcome === "aborted") break;
-          // Child has read the trigger payload (parked or terminal'd).
-          // Safe to let the post-loop `markConsumed` run.
+          let waitEntered = false;
+          try {
+            // A prior run with this stable runId may have left terminal
+            // events in the substrate.  The runtime short-circuits on an
+            // already-terminal log (treating the trigger as a recovery
+            // re-fire), so a NEW message must start with a clean event
+            // directory.  We keep `grants.json` because the sidecar writes
+            // it for the new message before the mail dequeues.
+            await clearRunEventsIfAny(runId);
+            await forwardDispatchedEntry(
+              sender,
+              envelope.messageId,
+              envelope.receivedAt,
+              runId,
+            );
+
+            // Wait for the child to process this trigger before allowing
+            // `markConsumed` to move the claim-check entry out of
+            // `processing/`. The child reads the trigger payload from that
+            // entry; racing `markConsumed` would delete the entry before the
+            // child resolves it. On cohort abort the wait returns and the
+            // post-loop guard skips markConsumed.
+            waitEntered = true;
+            await waitForRunTerminalOrPark(
+              iter,
+              cohortAbort.signal,
+              runId,
+              sinceGen,
+            );
+          } finally {
+            // waitForRunTerminalOrPark finalizes the iterator it consumes; the
+            // only leak is when clear/forward throws before the wait is
+            // entered, so finalize only in that case.
+            if (!waitEntered && typeof iter.return === "function") {
+              await iter.return(undefined).catch(() => {
+                /* best-effort finalisation of the watcher iterator. */
+              });
+            }
+          }
           break;
         }
         const iter = broadcaster.source(runId)[Symbol.asyncIterator]();

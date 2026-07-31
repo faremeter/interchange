@@ -3401,6 +3401,58 @@ describe("createWorkflowSupervisor", () => {
 
     await wired.supervisor.shutdown();
   });
+
+  test("a terminal that lands during the trigger's forward window releases the wait", async () => {
+    const baseDir = await makeTempDir("supervisor-subscribe-before-fire-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    // Widen the trigger branch's pre-wait window by delaying the clear-events
+    // write, so a terminal can land while the trigger is still being forwarded.
+    const wired = await spawnWithRunStart({
+      baseDir,
+      beforeWrite: async ({ message }) => {
+        if (message.startsWith("clear old terminal events")) {
+          await new Promise((r) => setTimeout(r, 60));
+        }
+      },
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "deployment-x@example.com";
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+
+    // While the trigger is still being forwarded (clear delay), the run
+    // terminates. With the subscribe-after bug the broadcaster drops this
+    // notify (no listener yet) and the wait hangs to the backstop; with the
+    // watcher armed before the fire, the pre-subscribed iterator buffers it.
+    await new Promise((r) => setTimeout(r, 20));
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+
+    // The wait releases and the mail is consumed WITHOUT the (minutes-long)
+    // backstop firing.
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    await wired.supervisor.shutdown();
+  });
 });
 
 describe("assembleCredentialsSnapshot", () => {
