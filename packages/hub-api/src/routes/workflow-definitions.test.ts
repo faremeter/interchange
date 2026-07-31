@@ -129,6 +129,13 @@ function createMockDB(opts: MockDBOpts) {
         findFirst: async () => testPrincipal,
         findMany: () => notImpl("db.query.principal.findMany"),
       },
+      workflowDefinition: {
+        // The versions handler's tenant-scoped existence check; undefined
+        // stands for a definition that is not in the URL tenant (another
+        // tenant's, or nonexistent).
+        findFirst: async () => opts.definition,
+        findMany: () => notImpl("db.query.workflowDefinition.findMany"),
+      },
       workflowDefinitionVersion: {
         findFirst: () =>
           notImpl("db.query.workflowDefinitionVersion.findFirst"),
@@ -233,6 +240,7 @@ describe("GET /workflows/definitions/:definitionId/versions", () => {
   test("lists a definition's versions in order", async () => {
     const app = createTestApp({
       db: {
+        definition: makeDef(),
         versions: [
           {
             id: "wdv_1",
@@ -262,6 +270,42 @@ describe("GET /workflows/definitions/:definitionId/versions", () => {
         { version: "2", status: "active" },
       ],
     });
+  });
+
+  test("404 without leaking versions when the definition is another tenant's", async () => {
+    // The tenant-scoped definition lookup misses (the definition belongs to
+    // another tenant), so the handler must 404 and never read, let alone
+    // return, that definition's version history -- even though rows exist
+    // for the id.
+    const app = createTestApp({
+      db: {
+        definition: undefined,
+        versions: [
+          {
+            id: "wdv_leak",
+            definitionId: DEF_ID,
+            version: "cross-tenant-secret",
+            status: "active",
+            createdAt: new Date("2025-01-02"),
+          },
+        ],
+      },
+      grants: [makeGrant({ action: "read" })],
+    });
+
+    const res = await app.request(`${defsURL}/${DEF_ID}/versions`);
+    expect(res.status).toBe(404);
+    const body: unknown = await res.json();
+    expect(JSON.stringify(body)).not.toContain("cross-tenant-secret");
+  });
+
+  test("404 when the definition does not exist", async () => {
+    const app = createTestApp({
+      db: { definition: undefined, versions: [] },
+      grants: [makeGrant({ action: "read" })],
+    });
+    const res = await app.request(`${defsURL}/${DEF_ID}/versions`);
+    expect(res.status).toBe(404);
   });
 
   test("403 without a read grant", async () => {

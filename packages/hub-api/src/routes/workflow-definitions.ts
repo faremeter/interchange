@@ -120,10 +120,36 @@ export function createWorkflowDefinitionRoutes({
             },
           },
         },
+        404: {
+          description: "Definition not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
       },
     }),
     async (c) => {
+      const tenantCtx = c.get("tenant");
       const definitionId = c.req.param("definitionId");
+
+      // Scope to the URL tenant before reading the version history. The
+      // grant check authorizes the resource id but not its tenant, so
+      // without this a principal could read another tenant's definition
+      // versions by id. A miss -- wrong tenant or no such definition -- is
+      // a 404, matching the rollback sibling.
+      const definition = await db.query.workflowDefinition.findFirst({
+        where: and(
+          eq(workflowDefinition.id, definitionId),
+          eq(workflowDefinition.tenantId, tenantCtx.id),
+        ),
+      });
+      if (definition === undefined) {
+        return c.json(
+          { error: { code: "not_found", message: "Definition not found" } },
+          404,
+        );
+      }
+
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
         limit: c.req.query("limit"),

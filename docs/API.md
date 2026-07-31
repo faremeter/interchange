@@ -570,6 +570,7 @@ Lists all versions of a workflow definition with status.
 Query: cursor?, limit?
 
 200: unknown -- List of versions
+404: ErrorResponse -- Definition not found
 
 ### POST /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback
 Roll back to a previous version
