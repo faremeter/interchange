@@ -651,8 +651,14 @@ export type DispatchStructuralCounters = {
 /**
  * One observation emitted by `WorkflowSupervisorBindings.onDispatchTiming`.
  *
+ * Both variants key on `messageId`, the per-message identifier (the mail's
+ * Message-ID). The run id cannot serve as the key: every run of a deployment
+ * shares one stable run id (the deployment mail address), so it does not
+ * distinguish one dispatched message from the next, which is exactly what the
+ * per-message OLS fits below group on.
+ *
  * The `"roundtrip"` variant is the 4.7 latency-gate bracket: pair the
- * `"dispatch-start"` and `"reply-produced"` marks for the same `runId` to
+ * `"dispatch-start"` and `"reply-produced"` marks for the same `messageId` to
  * recover the per-message round-trip. `atMs` is a high-resolution
  * monotonic timestamp (`performance.now()`).
  *
@@ -668,13 +674,13 @@ export type DispatchStructuralCounters = {
 export type DispatchTimingMark =
   | {
       kind: "roundtrip";
-      runId: string;
+      messageId: string;
       marker: "dispatch-start" | "reply-produced";
       atMs: number;
     }
   | {
       kind: "leg";
-      runId: string;
+      messageId: string;
       leg: DispatchSubstrateLeg;
       phase: "start" | "end";
       atMs: number;

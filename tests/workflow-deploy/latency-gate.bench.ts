@@ -19,7 +19,7 @@
 //     the sidecar subprocess, so both ends of the IPC round-trip are
 //     visible in one process) via the `onDispatchTiming` observability
 //     hook, gated by `SIDECAR_LATENCY_BENCH_FILE`. The supervisor appends
-//     `<runId> dispatch-start|reply-produced <perf.now ms>` lines that
+//     `<messageId> dispatch-start|reply-produced <perf.now ms>` lines that
 //     this harness reads after the run.
 //
 // Boundary equivalence (documented; kept equivalent across paths):
@@ -451,37 +451,39 @@ async function runUnified(opts: {
     // message (NOT the hub-side workflow-run event poll, whose pack-push
     // pipeline lags as the repo grows and would conflate observation lag
     // with the measured interval). Exactly one message is in flight at a
-    // time -- the sustained interactive case, no pipelining. The runId
-    // the supervisor keys the timing file on is the inbound mail's
-    // `Message-Id` verbatim, so the messageId we mint is the timing key.
-    // The first message's sample is the cold agent build, discarded
-    // below.
-    const orderedRunIds: string[] = [];
+    // time -- the sustained interactive case, no pipelining. The supervisor
+    // keys the timing file on the inbound mail's `Message-Id` verbatim, so
+    // the messageId we mint is the timing key. The first message's sample is
+    // the cold agent build, discarded below.
+    const orderedMessageIds: string[] = [];
     for (let i = 0; i < opts.messages + 1; i += 1) {
       const messageId = `<latency-${String(i)}@integration.interchange>`;
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId,
         content: BODY,
       });
-      // Wait until BOTH marks for this runId are present, then proceed to
-      // the next fire. The per-message wait scales with the (growing)
+      // Wait until BOTH marks for this messageId are present, then proceed
+      // to the next fire. The per-message wait scales with the (growing)
       // round-trip, so the timeout is generous.
-      await waitForRunReplyProduced(opts.timingFile, messageId, 120_000, () =>
-        env.sidecarDiagnostics(),
+      await waitForMessageReplyProduced(
+        opts.timingFile,
+        messageId,
+        120_000,
+        () => env.sidecarDiagnostics(),
       );
-      orderedRunIds.push(messageId);
+      orderedMessageIds.push(messageId);
     }
 
-    const byRun = parseTimingFile(opts.timingFile);
+    const byMessage = parseTimingFile(opts.timingFile);
     const samples: number[] = [];
     // Discard the first (cold) run; steady-state is the 2nd..Nth.
-    for (let i = 1; i < orderedRunIds.length; i += 1) {
-      const runId = orderedRunIds[i];
-      if (runId === undefined) continue;
-      const pair = byRun.get(runId);
+    for (let i = 1; i < orderedMessageIds.length; i += 1) {
+      const messageId = orderedMessageIds[i];
+      if (messageId === undefined) continue;
+      const pair = byMessage.get(messageId);
       if (pair === undefined) {
         throw new Error(
-          `unified bench: no timing pair for runId ${runId}; the supervisor's onDispatchTiming hook did not emit both marks`,
+          `unified bench: no timing pair for messageId ${messageId}; the supervisor's onDispatchTiming hook did not emit both marks`,
         );
       }
       samples.push(pair.replyProduced - pair.dispatchStart);
@@ -497,7 +499,7 @@ async function runUnified(opts: {
 
 type TimingPair = { dispatchStart: number; replyProduced: number };
 
-/** Parse `<runId> <marker> <atMs>` lines into per-run start/stop pairs. */
+/** Parse `<messageId> <marker> <atMs>` lines into per-message start/stop pairs. */
 function parseTimingFile(file: string): Map<string, TimingPair> {
   const text = fs.readFileSync(file, "utf8");
   const starts = new Map<string, number>();
@@ -507,31 +509,35 @@ function parseTimingFile(file: string): Map<string, TimingPair> {
     if (trimmed === "") continue;
     const parts = trimmed.split(" ");
     // The supervisor's D2 attribution emits per-leg lines on this same
-    // channel, shaped `<runId> leg <leg> <phase> <atMs> [counters...]`.
-    // The 4.7 round-trip gate only consumes the `<runId> <marker> <atMs>`
+    // channel, shaped `<messageId> leg <leg> <phase> <atMs> [counters...]`.
+    // The 4.7 round-trip gate only consumes the `<messageId> <marker> <atMs>`
     // round-trip lines, so any line whose second field is the `leg`
     // discriminator is skipped here rather than treated as malformed.
     if (parts[1] === "leg") continue;
     if (parts.length !== 3) {
       throw new Error(`malformed timing line: ${JSON.stringify(line)}`);
     }
-    const [runId, marker, atRaw] = parts;
-    if (runId === undefined || marker === undefined || atRaw === undefined) {
+    const [messageId, marker, atRaw] = parts;
+    if (
+      messageId === undefined ||
+      marker === undefined ||
+      atRaw === undefined
+    ) {
       throw new Error(`malformed timing line: ${JSON.stringify(line)}`);
     }
     const at = Number.parseFloat(atRaw);
     if (!Number.isFinite(at)) {
       throw new Error(`non-numeric timestamp in line: ${JSON.stringify(line)}`);
     }
-    if (marker === "dispatch-start") starts.set(runId, at);
-    else if (marker === "reply-produced") stops.set(runId, at);
+    if (marker === "dispatch-start") starts.set(messageId, at);
+    else if (marker === "reply-produced") stops.set(messageId, at);
     else throw new Error(`unknown marker in line: ${JSON.stringify(line)}`);
   }
   const out = new Map<string, TimingPair>();
-  for (const [runId, dispatchStart] of starts) {
-    const replyProduced = stops.get(runId);
+  for (const [messageId, dispatchStart] of starts) {
+    const replyProduced = stops.get(messageId);
     if (replyProduced === undefined) continue;
-    out.set(runId, { dispatchStart, replyProduced });
+    out.set(messageId, { dispatchStart, replyProduced });
   }
   return out;
 }
@@ -559,27 +565,27 @@ async function waitForFirstRoutable(
 
 /**
  * Wait until the supervisor timing file holds the `reply-produced` mark
- * for `runId` (paired with its `dispatch-start`). This is the per-message
+ * for `messageId` (paired with its `dispatch-start`). This is the per-message
  * completion signal the bench paces on -- it comes straight from the
  * supervisor (one process, both IPC ends visible) and does not depend on
  * the laggy hub-side workflow-run pack-push pipeline. Throws on timeout
  * with sidecar diagnostics so a wedged run surfaces loudly.
  */
-async function waitForRunReplyProduced(
+async function waitForMessageReplyProduced(
   file: string,
-  runId: string,
+  messageId: string,
   timeoutMs: number,
   diagnostics: () => string,
 ): Promise<void> {
   const start = Date.now();
   for (;;) {
     if (fs.existsSync(file)) {
-      const pair = parseTimingFile(file).get(runId);
+      const pair = parseTimingFile(file).get(messageId);
       if (pair !== undefined) return;
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(
-        `unified bench: timed out after ${String(timeoutMs)}ms waiting for reply-produced mark for runId ${runId}\n${diagnostics()}`,
+        `unified bench: timed out after ${String(timeoutMs)}ms waiting for reply-produced mark for messageId ${messageId}\n${diagnostics()}`,
       );
     }
     await new Promise((r) => setTimeout(r, 20));

@@ -99,9 +99,11 @@ const adapters = await loadAdapterRegistry(adapterManifest);
 // formatted or level-gated. A failed append surfaces (it is not
 // swallowed) so a broken benchmark channel does not silently yield an
 // empty result set.
-// Two line shapes share the channel, discriminated by `mark.kind`:
-//   roundtrip:  `<runId> <marker> <atMs>`          (4.7 latency gate)
-//   leg:        `<runId> leg <leg> <phase> <atMs> [runsFanOut consumedFanOut looseObjects gitBytes]`
+// Two line shapes share the channel, discriminated by `mark.kind`. Both
+// lead with the per-message id (the mail's Message-ID), the key the
+// per-message fits group on:
+//   roundtrip:  `<messageId> <marker> <atMs>`       (4.7 latency gate)
+//   leg:        `<messageId> leg <leg> <phase> <atMs> [runsFanOut consumedFanOut looseObjects gitBytes]`
 //               (D2 per-leg attribution; the trailing four counters are
 //               present only on the `end` phase). The leg shape is a
 //               strict superset prefixed with the literal `leg` token, so
@@ -112,13 +114,13 @@ const onDispatchTiming: ((mark: DispatchTimingMark) => void) | undefined =
     ? (mark) => {
         let line: string;
         if (mark.kind === "roundtrip") {
-          line = `${mark.runId} ${mark.marker} ${mark.atMs.toFixed(3)}\n`;
+          line = `${mark.messageId} ${mark.marker} ${mark.atMs.toFixed(3)}\n`;
         } else {
           const counters =
             mark.counters !== undefined
               ? ` ${String(mark.counters.runsFanOut)} ${String(mark.counters.consumedFanOut)} ${String(mark.counters.looseObjects)} ${String(mark.counters.gitBytes)}`
               : "";
-          line = `${mark.runId} leg ${mark.leg} ${mark.phase} ${mark.atMs.toFixed(3)}${counters}\n`;
+          line = `${mark.messageId} leg ${mark.leg} ${mark.phase} ${mark.atMs.toFixed(3)}${counters}\n`;
         }
         appendFileSync(latencyBenchFile, line);
       }

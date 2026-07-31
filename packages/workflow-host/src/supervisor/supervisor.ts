@@ -375,15 +375,16 @@ export function createWorkflowSupervisor(
    * the waiter so the dispatch loop re-evaluates routing.
    */
   const parkNotifyWaiters = new Map<string, () => void>();
-  // D2 attribution (measurement-only): the runId the dispatch loop is
+  // D2 attribution (measurement-only): the messageId the dispatch loop is
   // currently servicing. Set at `dispatch-start`, cleared after
   // `reply-produced`. The dispatch loop is strictly serial (one message
   // in flight at a time -- the sustained interactive case the bench
-  // drives), so a child-proxied WAL `substrate.write.request` (whose
-  // `agent-state/<key>/...` preservePrefix carries no runId) is
-  // unambiguously attributable to this runId. Run-event writes carry the
-  // runId in their `runs/<runId>/events/` prefix and do not need it.
-  let currentDispatchRunId: string | null = null;
+  // drives), so a child-proxied `substrate.write.request` is unambiguously
+  // attributable to this message. Both the WAL leg (whose `agent-state/...`
+  // prefix names no run) and the run-event leg (whose `runs/<runId>/events/`
+  // prefix names only the stable per-deployment run id, not the message)
+  // take their per-message key from here.
+  let currentDispatchMessageId: string | null = null;
   /**
    * Per-run drainTimeout accumulators armed by `drain()`. Held so
    * `shutdown()` can stop every accumulator cleanly before tearing
@@ -419,17 +420,17 @@ export function createWorkflowSupervisor(
   // throwing observer is swallowed and logged so a benchmark hook bug
   // cannot wedge the dispatch loop.
   function emitDispatchTiming(
-    runId: string,
+    messageId: string,
     marker: "dispatch-start" | "reply-produced",
     atMs: number,
   ): void {
     const observer = bindings.onDispatchTiming;
     if (observer === undefined) return;
     try {
-      observer({ kind: "roundtrip", runId, marker, atMs });
+      observer({ kind: "roundtrip", messageId, marker, atMs });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`onDispatchTiming observer threw for ${runId} (${marker}): ${message}`;
+      logger.warn`onDispatchTiming observer threw for ${messageId} (${marker}): ${message}`;
     }
   }
 
@@ -442,25 +443,25 @@ export function createWorkflowSupervisor(
   // observability: a throwing observer is swallowed + logged so a
   // benchmark hook bug cannot wedge dispatch, and no clock or directory
   // is sampled when the observer is unwired.
-  function legMarkStart(runId: string, leg: DispatchSubstrateLeg): number {
+  function legMarkStart(messageId: string, leg: DispatchSubstrateLeg): number {
     if (bindings.onDispatchTiming === undefined) return 0;
     const atMs = performance.now();
     try {
       bindings.onDispatchTiming({
         kind: "leg",
-        runId,
+        messageId,
         leg,
         phase: "start",
         atMs,
       });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`onDispatchTiming leg observer threw for ${runId} (${leg} start): ${message}`;
+      logger.warn`onDispatchTiming leg observer threw for ${messageId} (${leg} start): ${message}`;
     }
     return atMs;
   }
 
-  function legMarkEnd(runId: string, leg: DispatchSubstrateLeg): void {
+  function legMarkEnd(messageId: string, leg: DispatchSubstrateLeg): void {
     const observer = bindings.onDispatchTiming;
     if (observer === undefined) return;
     const atMs = performance.now();
@@ -474,12 +475,12 @@ export function createWorkflowSupervisor(
       // surface it on the log and emit the end mark without counters so
       // the timing slope is still recoverable.
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`structural-counter sample failed for ${runId} (${leg}): ${message}`;
+      logger.warn`structural-counter sample failed for ${messageId} (${leg}): ${message}`;
     }
     try {
       observer({
         kind: "leg",
-        runId,
+        messageId,
         leg,
         phase: "end",
         atMs,
@@ -487,7 +488,7 @@ export function createWorkflowSupervisor(
       });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`onDispatchTiming leg observer threw for ${runId} (${leg} end): ${message}`;
+      logger.warn`onDispatchTiming leg observer threw for ${messageId} (${leg} end): ${message}`;
     }
   }
 
@@ -524,27 +525,26 @@ export function createWorkflowSupervisor(
 
   /**
    * Classify a child-proxied `substrate.write.request` into the D2 leg it
-   * represents, plus the runId the per-message OLS fit groups on.
-   * `runs/<runId>/events/` is the run-event bracket commit (runId from the
-   * prefix); `agent-state/...` is the D1 conversation WAL append (no runId
-   * in the prefix -- attributed to the dispatch loop's current serial
-   * runId). Any other prefix is an unmarked proxied write. Returns `null`
-   * when no observer is wired (so the supervisor samples nothing) or the
-   * prefix is not an attributed leg.
+   * represents, plus the messageId the per-message OLS fit groups on.
+   * `runs/<runId>/events/` is the run-event bracket commit and `agent-state/...`
+   * is the D1 conversation WAL append; neither prefix carries the message
+   * identity (the run-event prefix names only the stable per-deployment run
+   * id), so both are attributed to the dispatch loop's current serial
+   * message. Any other prefix is an unmarked proxied write. Returns `null`
+   * when no observer is wired (so the supervisor samples nothing), when the
+   * prefix is not an attributed leg, or when no message is in flight to
+   * attribute it to.
    */
   function classifyProxiedWriteLeg(
     preservePrefix: string,
-  ): { leg: DispatchSubstrateLeg; runId: string } | null {
+  ): { leg: DispatchSubstrateLeg; messageId: string } | null {
     if (bindings.onDispatchTiming === undefined) return null;
-    const runEventMatch = /^runs\/([^/]+)\/events\/$/.exec(preservePrefix);
-    if (runEventMatch !== null) {
-      const runId = runEventMatch[1];
-      if (runId !== undefined) return { leg: "runevent", runId };
+    if (currentDispatchMessageId === null) return null;
+    if (/^runs\/[^/]+\/events\/$/.test(preservePrefix)) {
+      return { leg: "runevent", messageId: currentDispatchMessageId };
     }
     if (preservePrefix.startsWith("agent-state/")) {
-      if (currentDispatchRunId !== null) {
-        return { leg: "wal", runId: currentDispatchRunId };
-      }
+      return { leg: "wal", messageId: currentDispatchMessageId };
     }
     return null;
   }
@@ -1198,7 +1198,7 @@ export function createWorkflowSupervisor(
     // benchmark's per-message OLS fit groups on.
     const legClassification = classifyProxiedWriteLeg(data.preservePrefix);
     if (legClassification !== null) {
-      legMarkStart(legClassification.runId, legClassification.leg);
+      legMarkStart(legClassification.messageId, legClassification.leg);
     }
     try {
       const { commitSha, newlyTerminalRuns } =
@@ -1264,7 +1264,7 @@ export function createWorkflowSupervisor(
       // commit and not the dispatch loop's markConsumed (which the
       // `markconsumed` leg owns).
       if (legClassification !== null) {
-        legMarkEnd(legClassification.runId, legClassification.leg);
+        legMarkEnd(legClassification.messageId, legClassification.leg);
       }
       await controlSender.send({
         type: "substrate.write.response",
@@ -1980,30 +1980,31 @@ export function createWorkflowSupervisor(
     if (dequeued === null) return false;
     const envelope = dequeued.envelope;
     const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
-    currentDispatchRunId = runId;
-    emitDispatchTiming(runId, "dispatch-start", beforeDequeueMs);
+    const messageId = envelope.messageId;
+    currentDispatchMessageId = messageId;
+    emitDispatchTiming(messageId, "dispatch-start", beforeDequeueMs);
     // D2 leg: the claim-check dequeue READ. `dispatch-start` is sampled
     // BEFORE the dequeue (so the roundtrip bracket includes the read);
     // the dequeue leg's own start mark is that same pre-dequeue sample
     // re-stamped under the leg channel, and its end is now (the read just
     // completed). Emitting the start retroactively here -- rather than
-    // before the await -- keeps the leg keyed by the runId, which is only
-    // known after the dequeue resolves.
+    // before the await -- keeps the leg keyed by the messageId, which is
+    // only known after the dequeue resolves.
     if (bindings.onDispatchTiming !== undefined) {
       try {
         bindings.onDispatchTiming({
           kind: "leg",
-          runId,
+          messageId,
           leg: "dequeue",
           phase: "start",
           atMs: beforeDequeueMs,
         });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
-        logger.warn`onDispatchTiming leg observer threw for ${runId} (dequeue start): ${message}`;
+        logger.warn`onDispatchTiming leg observer threw for ${messageId} (dequeue start): ${message}`;
       }
     }
-    legMarkEnd(runId, "dequeue");
+    legMarkEnd(messageId, "dequeue");
     // Subscribe to the terminal broadcaster BEFORE the grants barrier so
     // a synthetic `RunFailed` from a barrier failure can be captured.
     const preIter = broadcaster.source(runId)[Symbol.asyncIterator]();
@@ -2098,14 +2099,14 @@ export function createWorkflowSupervisor(
       }
     }
     if (cohortAbort.signal.aborted) {
-      currentDispatchRunId = null;
+      currentDispatchMessageId = null;
       return false;
     }
-    emitDispatchTiming(runId, "reply-produced", performance.now());
+    emitDispatchTiming(messageId, "reply-produced", performance.now());
     // D2 leg: `markConsumed` is paid AFTER `reply-produced`, so its growth
     // is invisible to the 4.7 round-trip bracket -- the leg mark makes the
     // out-of-window cost visible.
-    legMarkStart(runId, "markconsumed");
+    legMarkStart(messageId, "markconsumed");
     try {
       await inboxPrimitives.markConsumed(
         bindings.repoStore,
@@ -2123,9 +2124,9 @@ export function createWorkflowSupervisor(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`markConsumed failed for run ${runId}: ${message}`;
     }
-    legMarkEnd(runId, "markconsumed");
+    legMarkEnd(messageId, "markconsumed");
     maybeRepack(runId);
-    currentDispatchRunId = null;
+    currentDispatchMessageId = null;
     return true;
   }
 
