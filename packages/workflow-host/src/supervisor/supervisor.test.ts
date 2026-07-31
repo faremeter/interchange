@@ -2422,6 +2422,33 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-2"),
     );
 
+    // msg-2 lands on the parked run as signal.deliver. Wait for it to be
+    // sent (which arms the durable-consume watcher), then complete the
+    // resumed run: markConsumed for a signal now holds until the child has
+    // durably taken it up (re-parks or terminates), mirroring trigger.fire.
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    // The signal is sent but the run has not taken it up: markConsumed must
+    // still be held, so only msg-1 is consumed. A brief settle window would
+    // let a premature consume land if the contract regressed.
+    await new Promise((r) => setTimeout(r, 25));
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x@example.com",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+
     deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 2) break;
@@ -2509,6 +2536,23 @@ describe("createWorkflowSupervisor", () => {
     const firstSignal = signals[0];
     if (firstSignal === undefined) throw new Error("unreachable");
     expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
+
+    // msg-1 is consumed off its park, but msg-2's signal is not yet taken up
+    // by the run, so its markConsumed is still held.
+    await new Promise((r) => setTimeout(r, 25));
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+    // The signal.deliver above is observed, so its durable-consume watcher
+    // is armed; complete the resumed run so markConsumed for msg-2 releases.
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "deployment-x@example.com",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
 
     // Both messages are consumed.
     deadline = Date.now() + 1000;

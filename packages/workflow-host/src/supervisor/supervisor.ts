@@ -2034,6 +2034,10 @@ export function createWorkflowSupervisor(
       while (!cohortAbort.signal.aborted) {
         const inputChannel = runInputChannels.get(runId);
         if (inputChannel !== undefined) {
+          // Mint the terminal watcher BEFORE the signal so a terminal the
+          // resumed run reaches right after applying it is not missed; the
+          // park watcher is armed inside waitForRunTerminalOrPark.
+          const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
           await sender.send({
             type: "signal.deliver",
             data: {
@@ -2043,6 +2047,14 @@ export function createWorkflowSupervisor(
               payload: envelope.rawMessage ?? null,
             },
           });
+          // Durable-consume contract, mirroring the trigger.fire path: hold
+          // markConsumed until the child has durably taken up the signal --
+          // the resumed run re-parks or reaches a terminal event. A crash
+          // before then leaves the claim-check entry in processing/, so
+          // replayProcessingToInbox re-delivers the signal on restart rather
+          // than dropping it. On cohort abort the wait returns and the
+          // post-loop guard skips markConsumed.
+          await waitForRunTerminalOrPark(iter, cohortAbort.signal, runId);
           break;
         }
         if (!cohortRunIds.has(runId)) {
