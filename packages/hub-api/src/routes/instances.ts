@@ -1580,9 +1580,14 @@ export function createInstanceRoutes({
       if (runSessionId === null) {
         return c.json(paginatedResponse([], [], limit));
       }
-      const mailScope = eq(sessionMail.sessionId, runSessionId);
-
-      const conditions = [mailScope];
+      // Bind the read to the caller's tenant directly, not only through the
+      // session the run's principal owns: the sessionId scope borrows the
+      // principal-session 1:1 invariant, so an explicit tenantId filter keeps
+      // the mail tenant-safe even if that invariant is ever violated.
+      const conditions = [
+        eq(sessionMail.tenantId, tenant.id),
+        eq(sessionMail.sessionId, runSessionId),
+      ];
       if (cursor) {
         conditions.push(
           cursorCondition(sessionMail.createdAt, sessionMail.id, cursor),

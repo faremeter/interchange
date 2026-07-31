@@ -198,8 +198,7 @@ Soft-revokes a personal access token by setting `revokedAt`. Only the owning use
 
 204: (no content) -- Token revoked
 401: ErrorResponse -- Not authenticated
-403: ErrorResponse -- Token not owned by the authenticated user
-404: ErrorResponse -- Token not found
+404: ErrorResponse -- Token not found or not owned by the authenticated user
 
 ### GET /api/tenants/:tenantId/git-tokens
 List tenant git tokens

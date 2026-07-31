@@ -635,7 +635,7 @@ describe("DELETE /api/me/git-tokens/:id", () => {
     expect(state.gitTokens[0]?.revokedAt).toBeInstanceOf(Date);
   });
 
-  test("cross-user DELETE returns 403 and leaves the row intact", async () => {
+  test("cross-user DELETE returns 404 and leaves the row intact", async () => {
     const state: MockDBState = {
       gitTokens: [
         {
@@ -661,9 +661,11 @@ describe("DELETE /api/me/git-tokens/:id", () => {
       method: "DELETE",
     });
 
-    expect(res.status).toBe(403);
+    // A token owned by another user is indistinguishable from a missing one:
+    // uniform 404, no revoke. A 403 here would leak that the token exists.
+    expect(res.status).toBe(404);
     const body = await parseErrorResponse(res);
-    expect(body.error.code).toBe("forbidden");
+    expect(body.error.code).toBe("not_found");
     expect(state.gitTokens[0]?.revokedAt).toBeNull();
   });
 });

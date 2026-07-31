@@ -683,14 +683,8 @@ export function createMeGitTokenRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
-        403: {
-          description: "Token not owned by the authenticated user",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
         404: {
-          description: "Token not found",
+          description: "Token not found or not owned by the authenticated user",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -712,9 +706,15 @@ export function createMeGitTokenRoutes({
       const existing = await db.query.gitToken.findFirst({
         where: eq(gitToken.id, tokenId),
       });
-      if (!existing) {
+      // A token owned by another user is reported the same as a missing one --
+      // both 404 -- so an authenticated user cannot probe whether an arbitrary
+      // token id exists; only its owner learns theirs does. A 403-for-owned /
+      // 404-for-missing split would be an existence oracle. This matches the
+      // uniform 404 the tenant-revoke sibling returns for a token outside the
+      // caller's scope.
+      if (!existing || existing.userId !== user.id) {
         log.info(
-          "personal revoke not found userId={userId} tokenId={tokenId}",
+          "personal revoke not found or not owned userId={userId} tokenId={tokenId}",
           {
             userId: user.id,
             tokenId,
@@ -723,26 +723,6 @@ export function createMeGitTokenRoutes({
         return c.json(
           { error: { code: "not_found", message: "Token not found" } },
           404,
-        );
-      }
-
-      if (existing.userId !== user.id) {
-        log.info(
-          "personal revoke forbidden userId={userId} tokenId={tokenId} owner={ownerId}",
-          {
-            userId: user.id,
-            tokenId,
-            ownerId: existing.userId,
-          },
-        );
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "Token is owned by a different user",
-            },
-          },
-          403,
         );
       }
 

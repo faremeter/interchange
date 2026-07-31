@@ -969,6 +969,11 @@ export function createWorkflowRoutes({
         );
       }
 
+      // The inner :runId is not independently tenant-checked, and does not
+      // need to be: the events repo is addressed by the tenant-verified
+      // deploymentId and the caller's own tenant.domain, so a runId only
+      // selects within this tenant's deployment repo -- it cannot reach
+      // another tenant's runs.
       const events = await runReader.readRunEvents(
         workflowRunRepoId(deploymentId, tenant.domain),
         WORKFLOW_RUN_REF,
