@@ -3,11 +3,8 @@ import { describe, test, expect } from "bun:test";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
-import {
-  synthesizeFoldedWorkflow,
-  extractFoldedBody,
-  type FoldedWorkflowInput,
-} from "./fold-synthesis";
+import { extractFoldedBody } from "./fold-synthesis";
+import { synthesizeFoldedWorkflow, type FoldedWorkflowInput } from "./testing";
 
 const BASE: FoldedWorkflowInput = {
   workflowId: "wf_agt_1",

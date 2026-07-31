@@ -29,7 +29,7 @@ import {
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
-import { synthesizeFoldedWorkflow } from "@intx/workflow-deploy";
+import { synthesizeFoldedWorkflow } from "@intx/workflow-deploy/testing";
 import type { GetSession } from "../session";
 
 // ---------------------------------------------------------------------------

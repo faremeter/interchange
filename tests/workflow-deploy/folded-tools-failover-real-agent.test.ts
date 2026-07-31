@@ -26,13 +26,13 @@ import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
-  synthesizeFoldedWorkflow,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
+import { synthesizeFoldedWorkflow } from "@intx/workflow-deploy/testing";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
 import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
