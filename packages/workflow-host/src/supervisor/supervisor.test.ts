@@ -3193,6 +3193,81 @@ describe("createWorkflowSupervisor", () => {
 
     await wired.supervisor.shutdown();
   });
+
+  test("a malformed turn-2 mail is dropped and consumed, not poison-looped", async () => {
+    const baseDir = await makeTempDir("supervisor-poison-mail-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "deployment-x@example.com";
+
+    // Park the run so a mail routes as signal.deliver.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: address,
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    // A malformed multipart mail whose part 1 cannot be parsed: extraction
+    // throws. It must be dropped and CONSUMED, not thrown-and-replayed forever.
+    const bad = new TextEncoder().encode(
+      "Content-Type: multipart/mixed; boundary=zzz\r\n\r\nno parts here",
+    );
+    wired.mailBus.deliver(address, bad);
+
+    let deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+    expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(0);
+    // No signal was delivered for the poison mail.
+    expect(parseSignalDelivers(wired.supervisorToChild.flushed()).length).toBe(
+      0,
+    );
+
+    // The run survived on its correlation: a subsequent VALID mail resumes it.
+    const good = new TextEncoder().encode(
+      "Content-Type: text/plain\r\n\r\nhello",
+    );
+    wired.mailBus.deliver(address, good);
+    deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals.length).toBe(1);
+    expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
+    expect(signals[0]?.payload).toBe("hello");
+
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+    await wired.supervisor.shutdown();
+  });
 });
 
 describe("assembleCredentialsSnapshot", () => {

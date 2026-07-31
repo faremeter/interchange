@@ -696,13 +696,9 @@ export function createWorkflowSupervisor(
     const rawMessageBase64 = base64Encode(rawMessage);
     // D2 leg: `enqueueInbox` runs in `onMailMessage` BEFORE dispatch, so
     // it is paid OUTSIDE the dispatch-start..reply-produced window -- its
-    // growth is invisible to the 4.7 bracket. This leg mark is keyed by
-    // the messageId. The dispatch loop's in-window legs now key on the
-    // stable deployment-address runId (shared by every message of the
-    // deployment), so the enqueue leg no longer shares a per-message join
-    // key with them; re-keying D2 per-message attribution under the stable
-    // runId is a benchmark-owned change, out of scope for the runId
-    // grants contract.
+    // growth is invisible to the 4.7 bracket. This leg mark is keyed by the
+    // messageId, the same per-message key every in-window leg uses, so the
+    // D2 per-message OLS fit groups the enqueue leg with the rest.
     legMarkStart(messageId, "enqueue");
     await inboxPrimitives.enqueueInbox(
       bindings.repoStore,
@@ -2095,65 +2091,90 @@ export function createWorkflowSupervisor(
         }
         const inputChannel = runInputChannels.get(runId);
         if (inputChannel !== undefined) {
-          // Mint the terminal watcher BEFORE the signal so a terminal the
-          // resumed run reaches right after applying it is not missed; the
-          // park watcher is armed inside waitForRunTerminalOrPark.
-          const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
           // Resolve the inbound mail to conversation text HERE, the single
           // site that knows this payload's provenance is mail, applying the
           // SAME extraction the turn-1 trigger does (resolveTriggerPayload).
           // The signal.deliver frame's payload is the resume decision in FINAL
           // form; deliverSignal's structured signals ship their own payload
-          // unchanged. A missing rawMessage throws loud -- the dispatch fails
-          // into the loop's fault handler and the mail stays reclaimable --
-          // rather than resuming the parked agent on empty input.
-          if (envelope.rawMessage === undefined) {
-            throw new Error(
-              `signal.deliver for run ${runId}: inbound mail carries no rawMessage bytes; cannot resume the parked agent`,
+          // unchanged. Done BEFORE minting the terminal watcher so a failure
+          // here cannot leak an un-finalized iterator.
+          let inputText: string;
+          try {
+            if (envelope.rawMessage === undefined) {
+              throw new Error("inbound mail carries no rawMessage bytes");
+            }
+            inputText = extractConversationText(
+              base64Decode(envelope.rawMessage),
+              envelope.messageId,
             );
+          } catch (cause) {
+            // A malformed turn-2 mail cannot resume the parked agent. DROP it:
+            // log loudly and consume it (break to the post-loop markConsumed)
+            // rather than throwing -- a throw aborts the dispatch without
+            // consuming, and replay re-delivers the same poison mail forever.
+            // The run stays parked on its current correlation, ready for the
+            // next valid mail; one bad mail must not tear down a long-lived
+            // conversation.
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`signal.deliver for run ${runId}: dropping malformed inbound mail ${envelope.messageId}: ${message}`;
+            break;
           }
-          const inputText = extractConversationText(
-            base64Decode(envelope.rawMessage),
-            envelope.messageId,
-          );
-          await sender.send({
-            type: "signal.deliver",
-            data: {
+          // Mint the terminal watcher only now, after the payload resolved, so
+          // a terminal the resumed run reaches right after applying the signal
+          // is not missed; the park watcher is armed inside
+          // waitForRunTerminalOrPark.
+          const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
+          let waitEntered = false;
+          try {
+            await sender.send({
+              type: "signal.deliver",
+              data: {
+                runId,
+                signalName: signalName(inputChannel.correlationId),
+                signalId: envelope.messageId,
+                payload: inputText,
+              },
+            });
+            // Invalidate the cached input channel: its correlation is now
+            // consumed by this delivery, so the NEXT mail must not reuse it.
+            // The resumed run re-parks on a FRESH correlation (a new
+            // park.notify repopulates runInputChannels); a mail arriving before
+            // that re-park waits via the in-flight branch rather than
+            // delivering onto the stale channel. Routing hygiene only -- the
+            // wait keys on the park-generation edge, not this level state.
+            runInputChannels.delete(runId);
+            // Durable-consume contract, mirroring the trigger.fire path: hold
+            // markConsumed until the child has durably taken up the signal --
+            // the resumed run re-parks or reaches a terminal event. That gate
+            // is downstream of durability DESPITE the child's fire-and-forget
+            // SignalReceived writer: the runtime reaches re-park/terminal only
+            // by resuming from the COMMITTED SignalReceived, which its per-run
+            // subscribeKind substrate subscription surfaces only after the
+            // commit lands -- so the substrate subscription IS the ack, and a
+            // failed deliver commit is observed by nothing, never re-parks, and
+            // never releases markConsumed (the mail stays reclaimable). A crash
+            // before the re-park/terminal leaves the claim-check entry in
+            // processing/, so replayProcessingToInbox re-delivers the signal on
+            // restart. On cohort abort the wait returns and the post-loop guard
+            // skips markConsumed.
+            waitEntered = true;
+            await waitForRunTerminalOrPark(
+              iter,
+              cohortAbort.signal,
               runId,
-              signalName: signalName(inputChannel.correlationId),
-              signalId: envelope.messageId,
-              payload: inputText,
-            },
-          });
-          // Invalidate the cached input channel: its correlation is now
-          // consumed by this delivery, so the NEXT mail must not reuse it. The
-          // resumed run re-parks on a FRESH correlation (a new park.notify
-          // repopulates runInputChannels); a mail arriving before that re-park
-          // waits for it via the in-flight branch rather than delivering onto
-          // the stale channel. This is routing hygiene only -- the wait below
-          // keys on the park-generation edge, not this level state, so its
-          // correctness does not depend on the invalidation.
-          runInputChannels.delete(runId);
-          // Durable-consume contract, mirroring the trigger.fire path: hold
-          // markConsumed until the child has durably taken up the signal --
-          // the resumed run re-parks or reaches a terminal event. That gate is
-          // downstream of durability DESPITE the child's fire-and-forget
-          // SignalReceived writer: the runtime reaches re-park/terminal only by
-          // resuming from the COMMITTED SignalReceived, which its per-run
-          // subscribeKind substrate subscription surfaces only after the commit
-          // lands -- so the substrate subscription IS the ack, and a failed
-          // deliver commit is observed by nothing, never re-parks, and never
-          // releases markConsumed (the mail stays reclaimable). A crash before
-          // the re-park/terminal leaves the claim-check entry in processing/,
-          // so replayProcessingToInbox re-delivers the signal on restart. On
-          // cohort abort the wait returns and the post-loop guard skips
-          // markConsumed.
-          await waitForRunTerminalOrPark(
-            iter,
-            cohortAbort.signal,
-            runId,
-            sinceGen,
-          );
+              sinceGen,
+            );
+          } finally {
+            // waitForRunTerminalOrPark finalizes the iterator it consumes; the
+            // only leak is when `sender.send` throws before the wait is
+            // entered, so finalize only in that case.
+            if (!waitEntered && typeof iter.return === "function") {
+              await iter.return(undefined).catch(() => {
+                /* best-effort finalisation of the watcher iterator. */
+              });
+            }
+          }
           break;
         }
         if (!cohortRunIds.has(runId)) {
