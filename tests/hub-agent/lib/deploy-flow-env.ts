@@ -84,6 +84,12 @@ export const AGENT_ID = "ins_test-agent";
 export const SESSION_ID = "ses_integration-1";
 export const SIDECAR_ID = "sc-integration-1";
 export const TOKEN = "test-token";
+// A second sidecar identity, for tests that need two sidecars on one hub
+// (e.g. proving a cross-sidecar/federated mail deliver reaches the
+// receiver). The default fixture only spawns the first; a caller spawns the
+// second via `startSidecarSubprocess` with these in `extraEnv`.
+export const SECOND_SIDECAR_ID = "sc-integration-2";
+export const SECOND_TOKEN = "test-token-2";
 
 const TENANT_ID = "tenant-1";
 const REGISTRY_NAME = "workspace-builtins";
@@ -610,6 +616,7 @@ export async function startHub(
     transportBackedMailTool?: boolean;
     approvalMarkedMailTool?: boolean;
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
+    materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
   } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
@@ -659,8 +666,13 @@ export async function startHub(
     // The spawned sidecar presents TOKEN on its handshake; verify it and
     // resolve to the fixed integration sidecar id, exercising the real
     // token-authenticated handshake rather than accepting any token.
-    authenticateSidecar: async ({ token }) =>
-      token === TOKEN ? { kind: "sidecar", sidecarId: SIDECAR_ID } : null,
+    authenticateSidecar: async ({ token }) => {
+      if (token === TOKEN) return { kind: "sidecar", sidecarId: SIDECAR_ID };
+      if (token === SECOND_TOKEN) {
+        return { kind: "sidecar", sidecarId: SECOND_SIDECAR_ID };
+      }
+      return null;
+    },
     lookups: {
       // Answer a reconnecting sidecar's ownership challenge for a deployment
       // address with the Ed25519 key that address acked at deploy time.
@@ -773,6 +785,17 @@ export async function startHub(
       // hub co-write without standing up a second hub.
       ...(opts.registerSignalCorrelation !== undefined
         ? { registerSignalCorrelation: opts.registerSignalCorrelation }
+        : {}),
+      // Materialize a mail-triggered run's grants for a workflow-derived
+      // recipient. Only the federated-mail capstone supplies it (the real
+      // `createMailTriggeredRunGrantsMaterializer` backed by a test DB);
+      // every other test leaves it unset, so `deliverMailToRecipient`
+      // routes inbound mail without materializing a run's grants.
+      ...(opts.materializeMailTriggeredRunGrants !== undefined
+        ? {
+            materializeMailTriggeredRunGrants:
+              opts.materializeMailTriggeredRunGrants,
+          }
         : {}),
     },
   });
@@ -1113,6 +1136,17 @@ export type StartDeployFlowEnvOpts = {
    * other test leaves it unset and the frame is dropped with a warning.
    */
   registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
+  /**
+   * Materializer for a mail-triggered run's grants, wired into the mock
+   * hub's sidecar router as the `materializeMailTriggeredRunGrants` lookup.
+   * When a `mail.outbound` frame names a workflow-derived recipient, the
+   * router's `deliverMailToRecipient` calls this to stage the receiving
+   * run's grants before forwarding the mail. Only the federated-mail
+   * capstone supplies it (the real `createMailTriggeredRunGrantsMaterializer`
+   * backed by a test DB); every other test leaves it unset and the
+   * mail is routed without materialization.
+   */
+  materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
 };
 
 /**
@@ -1162,6 +1196,12 @@ export async function startDeployFlowEnv(
       : {}),
     ...(opts.registerSignalCorrelation !== undefined
       ? { registerSignalCorrelation: opts.registerSignalCorrelation }
+      : {}),
+    ...(opts.materializeMailTriggeredRunGrants !== undefined
+      ? {
+          materializeMailTriggeredRunGrants:
+            opts.materializeMailTriggeredRunGrants,
+        }
       : {}),
   });
   const inference = startMockInference({
