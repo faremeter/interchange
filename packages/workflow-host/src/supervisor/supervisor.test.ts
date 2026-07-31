@@ -336,6 +336,14 @@ function createStubRepoStore(opts: {
     files: Record<string, string | Uint8Array>;
   }) => void;
   /**
+   * Called at the START of `writeTreePreservingPrefix`, before the merge
+   * callback runs. May throw to simulate a substrate write failure (e.g. a
+   * lock or read fault) reaching the caller unmerged -- the throw fires
+   * before any sentinel-skip logic inside the merge, so it models a genuine
+   * failure regardless of the prefix's contents.
+   */
+  beforeWrite?: (args: { preservePrefix: string; message: string }) => void;
+  /**
    * When true, the stub carries committed files across
    * `writeTreePreservingPrefix` invocations keyed by (repoId.id, ref,
    * preservePrefix), so a sequence of appends sees the prior commits
@@ -353,6 +361,10 @@ function createStubRepoStore(opts: {
       return path.join(opts.baseDir, repoId.kind, repoId.id);
     },
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
+      opts.beforeWrite?.({
+        preservePrefix: args.preservePrefix,
+        message: args.message,
+      });
       const key = keyFor(repoId, ref, args.preservePrefix);
       const existing =
         opts.statefulWrites === true
@@ -575,12 +587,16 @@ async function buildBindings(opts: {
     message: string;
     files: Record<string, string | Uint8Array>;
   }) => void;
+  beforeWrite?: (args: { preservePrefix: string; message: string }) => void;
   statefulWrites?: boolean;
   inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore({
     baseDir: opts.baseDir,
     ...(opts.onWrite !== undefined ? { onWrite: opts.onWrite } : {}),
+    ...(opts.beforeWrite !== undefined
+      ? { beforeWrite: opts.beforeWrite }
+      : {}),
     ...(opts.statefulWrites === true ? { statefulWrites: true } : {}),
   });
   return {
@@ -839,6 +855,7 @@ describe("createWorkflowSupervisor", () => {
       message: string;
       files: Record<string, string | Uint8Array>;
     }) => void;
+    beforeWrite?: (args: { preservePrefix: string; message: string }) => void;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -876,6 +893,9 @@ describe("createWorkflowSupervisor", () => {
       mailBus,
       inboxPrimitives,
       ...(opts.onWrite !== undefined ? { onWrite: opts.onWrite } : {}),
+      ...(opts.beforeWrite !== undefined
+        ? { beforeWrite: opts.beforeWrite }
+        : {}),
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
@@ -2793,6 +2813,64 @@ describe("createWorkflowSupervisor", () => {
     expect(runIds.length).toBe(1);
     expect(runIds[0]).toBe("deployment-x@example.com");
     expect(clearWrites).toEqual([]);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a clear-events failure fails the dispatch without consuming or firing the mail", async () => {
+    const baseDir = await makeTempDir("supervisor-clear-fatal-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    // Fail the clear-events commit for this deployment. The clear runs before
+    // the trigger.fire on a fresh dispatch, so a fatal clear must abort the
+    // dispatch: no trigger fired, and the mail left unconsumed (a swallowed
+    // failure would fire the run against a stale terminal log and consume the
+    // mail, dropping it).
+    let clearAttempts = 0;
+    const wired = await spawnWithRunStart({
+      baseDir,
+      beforeWrite: ({ message }) => {
+        if (message.startsWith("clear old terminal events")) {
+          clearAttempts += 1;
+          throw new Error("injected clear-events failure");
+        }
+      },
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          deploymentId: "deployment-x",
+          deriveStepAddress: ({ deploymentId, stepId }) =>
+            `${deploymentId}-${stepId}@example.com`,
+        });
+      },
+    });
+
+    const address = "deployment-x@example.com";
+    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+
+    // Wait until the dispatch loop has attempted (and failed) the clear.
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (clearAttempts >= 1) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(clearAttempts).toBeGreaterThanOrEqual(1);
+
+    // Settle, then assert the failure was fatal to the dispatch: no
+    // trigger.fire forwarded, the mail not consumed, and still parked in
+    // processing/ where replay can reclaim it.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length,
+    ).toBe(0);
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
+    expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(1);
 
     await wired.supervisor.shutdown();
   });
