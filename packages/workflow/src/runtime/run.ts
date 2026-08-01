@@ -19,6 +19,7 @@ import type {
   GatePrimitive,
   LoopPrimitive,
   MapPrimitive,
+  OnTriggerPrimitive,
   Primitive,
   SleepPrimitive,
   StepPrimitive,
@@ -971,13 +972,7 @@ async function runPrimitive(
     case "loop":
       return runLoop(definition, env, runId, primitive, selectorCtx, abort);
     case "onTrigger":
-      // An onTrigger section is serviced by its own runner; this build
-      // carries the definition surface but no runner, so a section that
-      // reaches the primitive dispatch fails loud rather than resolving to
-      // undefined.
-      throw new Error(
-        `onTrigger section ${primitive.id} has no runtime handler in this build`,
-      );
+      return runOnTrigger(env, runId, primitive, selectorCtx, abort);
     case "map":
       return runMap(env, runId, primitive, selectorCtx, abort);
     case "gate":
@@ -1767,6 +1762,136 @@ async function runLoop(
   const output = { outcome, iterations, carry: currentInput };
   await emitStepCompletedWithValue(env, runId, primitive.id, output);
   return output;
+}
+
+/**
+ * Run a long-lived onTrigger section. The section services each occurrence
+ * of its trigger as an EVENT: it spawns the body as a child run resolved by
+ * the deployed `bodyRef`, awaits the body's terminal, then re-arms on a
+ * snapshot-less input park to await the next occurrence. The container never
+ * self-completes -- the run stays alive between events and settles only when
+ * a body run ends non-`completed` (terminal-is-final) or the run is
+ * cancelled/aborted.
+ *
+ * Each event's body is a full sub-run under `runs/<sectionId>__<index>/`, so
+ * per-event detail lives in its own log; the parent log carries only the
+ * container `StepStarted`, a `ChildSpawned`/`ChildCompleted` pair per event,
+ * and the input-park `SignalAwaited`/`SignalReceived` re-arm -- all existing
+ * event kinds, so the state machine is untouched.
+ *
+ * This driver runs bodies that reach a terminal (the child-run seam awaits
+ * terminal). A body that suspends mid-run on an approval park, and the
+ * crash-recovery of a mid-flight section, are layered on top of this driver;
+ * a section re-driven after a crash fails loud here rather than re-running
+ * from event 0.
+ */
+async function runOnTrigger(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  primitive: OnTriggerPrimitive,
+  selectorCtx: SelectorContext,
+  abort: AbortSignal,
+): Promise<unknown> {
+  if (!("ref" in primitive.body)) {
+    throw new Error(
+      `onTrigger ${primitive.id} reached the runtime with an inline body; ` +
+        `the deploy step must materialize the body to a workflow-asset ref`,
+    );
+  }
+  const bodyRef = primitive.body.ref;
+
+  const initial = await reloadState(env, runId);
+  if (initial.steps.has(primitive.id)) {
+    // A durable container `StepStarted` means this section is being
+    // re-driven after a crash. Recovering a mid-flight section -- re-deriving
+    // its event cursor and re-attaching to a parked body or the input park --
+    // is a separate layer; fail loud rather than re-spawning from event 0.
+    throw new Error(
+      `onTrigger ${primitive.id} crash-resume is not serviced by this build`,
+    );
+  }
+  await emitStepStartedWithValue(env, runId, primitive.id, {
+    on: primitive.on,
+    bodyRef,
+  });
+
+  // Event 0's input is the run's firing trigger payload; each later event's
+  // input arrives on the input park below.
+  let currentInput: unknown = evaluate(
+    { from: "trigger.payload" },
+    selectorCtx,
+  );
+  let eventIndex = 0;
+  while (true) {
+    const childRunId = `${primitive.id}__${String(eventIndex)}`;
+    let before = await reloadState(env, runId);
+    if (!before.children.has(childRunId)) {
+      const spawned: WorkflowEvent = {
+        kind: "ChildSpawned",
+        seq: before.lastSeq + 1,
+        at: env.clock().toISOString(),
+        stepId: primitive.id,
+        childRunId,
+        childDefinitionRef: bodyRef,
+      };
+      before = await commit(env, runId, spawned);
+      void before;
+    }
+    // Flush the spawn record durable before the child runs so a resumed
+    // parent log records the spawn ahead of any child-side work.
+    await flush(env, runId);
+
+    const res = await env.spawnChild({
+      definitionRef: bodyRef,
+      childRunId,
+      input: currentInput,
+      parentRunId: runId,
+      parentStepId: primitive.id,
+      signal: abort,
+    });
+
+    let after = await reloadState(env, runId);
+    if (after.children.get(childRunId)?.terminalStatus === undefined) {
+      const completed: WorkflowEvent = {
+        kind: "ChildCompleted",
+        seq: after.lastSeq + 1,
+        at: env.clock().toISOString(),
+        childRunId,
+        terminalStatus: res.terminalStatus,
+      };
+      after = await commit(env, runId, completed);
+      void after;
+    }
+    await flush(env, runId);
+
+    if (res.terminalStatus !== "completed") {
+      // Terminal-is-final: a body run that failed or was cancelled ends the
+      // whole section run. Throwing lands the parent terminal via
+      // `runPrimitiveSafe`; the run does not relaunch.
+      throw new Error(
+        `onTrigger ${primitive.id} body run ${childRunId} ended ` +
+          `${res.terminalStatus}`,
+      );
+    }
+
+    // Re-arm: park on a fresh input channel for the next event. The park is
+    // snapshot-less (`kind: "input"`); the run's owner delivers the next
+    // event's payload on this channel and `parkOnSignal` returns it.
+    const correlationId = env.newId("corr");
+    const rearm = await reloadState(env, runId);
+    currentInput = await parkOnSignal(
+      env,
+      runId,
+      {
+        stepId: primitive.id,
+        signalName: signalName(correlationId),
+        parkKind: "input",
+      },
+      rearm,
+      abort,
+    );
+    eventIndex += 1;
+  }
 }
 
 function isIterationDone(
