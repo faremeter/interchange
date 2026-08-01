@@ -15,6 +15,7 @@ import {
   action,
   defineWorkflow,
   loop,
+  onTrigger,
   step,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
@@ -171,6 +172,40 @@ describe("walkCapabilities", () => {
     expect(grants.has("capability:summarize")).toBe(true);
     expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
     expect(grants.has("inference.source:openai:gpt-4")).toBe(true);
+  });
+
+  test("collects an onTrigger section body's agent grants for approval", () => {
+    // A section runs its body per event, so the operator must approve the
+    // body's agent capabilities at the parent deploy. The walk descends into
+    // the authored inline body before the deploy step extracts it to a ref.
+    const registry = createDefaultDirectorRegistry();
+    const bodyAgent = defineAgent({
+      id: "ag_section_body",
+      systemPrompt: "section body agent",
+      tools: [makeMailFactory()],
+      capabilities: ["reply"],
+      inference: { sources: [{ provider: "anthropic", model: "claude-3" }] },
+    });
+    const body = defineWorkflow({
+      id: "section-body",
+      trigger: { type: "manual" },
+      steps: { work: step({ agent: bodyAgent }) },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_section",
+      steps: {
+        section: onTrigger({ on: { type: "mail", to: "s@x.example" }, body }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("section");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("tool:mail_send")).toBe(true);
+    expect(grants.has("capability:reply")).toBe(true);
+    expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
   });
 
   test("mail trigger emits both address and send-domain grants", () => {

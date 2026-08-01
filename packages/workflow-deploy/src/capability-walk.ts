@@ -162,6 +162,7 @@ export function walkCapabilities(
         collected.grants.add(grant);
       }
       collectLoopBodyGrants(primitive, registry, unresolved, collected);
+      collectOnTriggerBodyGrants(primitive, registry, unresolved, collected);
       perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
       continue;
     }
@@ -249,6 +250,46 @@ function collectLoopBodyGrants(
     for (const grant of collectActionGrants(bodyPrimitive)) {
       collected.grants.add(grant);
     }
+  }
+}
+
+/**
+ * Union an onTrigger section body's agent/action grants into the section's
+ * declaration set, so the approval gate sees every agent and action the
+ * section can run per event. The walk runs before the deploy step extracts
+ * the body into its own asset, so it sees the authored `{ inline }` form; a
+ * deployed `{ ref }` body is an independent asset with its own declarations
+ * and is skipped here. A section body may itself contain a loop, whose body
+ * grants are collected too; a nested onTrigger is forbidden at definition
+ * time, so there is no section-within-section recursion to handle.
+ */
+function collectOnTriggerBodyGrants(
+  primitive: WorkflowDefinition["steps"][string],
+  registry: DirectorRegistry,
+  unresolved: Set<string>,
+  collected: GrantSet,
+): void {
+  if (primitive.kind !== "onTrigger") {
+    return;
+  }
+  if (!("inline" in primitive.body)) {
+    return;
+  }
+  for (const bodyStepId of primitive.body.inline.stepOrder) {
+    const bodyPrimitive = primitive.body.inline.steps[bodyStepId];
+    if (bodyPrimitive === undefined) {
+      throw new Error(
+        `capability walk: onTrigger body step ${bodyStepId} listed in stepOrder is missing from steps`,
+      );
+    }
+    const bodyAgent = extractAgent(bodyPrimitive);
+    if (bodyAgent !== null) {
+      collectAgentGrants(bodyAgent, registry, unresolved, collected);
+    }
+    for (const grant of collectActionGrants(bodyPrimitive)) {
+      collected.grants.add(grant);
+    }
+    collectLoopBodyGrants(bodyPrimitive, registry, unresolved, collected);
   }
 }
 
