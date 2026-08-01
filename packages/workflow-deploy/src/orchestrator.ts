@@ -381,8 +381,19 @@ export function createWorkflowDeployOrchestrator(
         throw new CapabilityApprovalDeniedError(decision);
       }
 
-      await writeWorkflowRepoTree({
+      // Materialize each onTrigger section's authored inline body into its
+      // own workflow asset and rewrite the primitive to a ref, so the runtime
+      // spawns the body as a child run resolved by ref. The walk above ran on
+      // the inline form so the operator approved the body agents' caps; the
+      // stored definition carries `{ ref }` bodies from here on.
+      const deployed = await extractOnTriggerBodies({
         workflow: args.workflow,
+        registry: directorRegistry,
+        workflowRepo,
+      });
+
+      await writeWorkflowRepoTree({
+        workflow: deployed,
         walk,
         workflowRepo,
       });
@@ -939,6 +950,44 @@ function extractAgent(primitive: Primitive): AgentDefinition<BaseEnv> | null {
   if (primitive.kind === "step") return primitive.agent;
   if (primitive.kind === "map") return primitive.step.agent;
   return null;
+}
+
+/**
+ * Deploy each onTrigger section's authored inline body as its own workflow
+ * asset and rewrite the primitive to reference it. A section runs its body
+ * as a child run resolved by ref -- the same production path childWorkflow
+ * uses -- so the deployed definition carries `{ ref }` bodies while the
+ * author writes `{ inline }`. The ref is derived deterministically from the
+ * parent workflow id and the section's step id, so a redeploy of the same
+ * definition produces the same ref. A workflow with no inline section body
+ * is returned unchanged. Exported for a focused unit test.
+ */
+export async function extractOnTriggerBodies(args: {
+  workflow: WorkflowDefinition;
+  registry: DirectorRegistry;
+  workflowRepo: WorkflowRepoWriter;
+}): Promise<WorkflowDefinition> {
+  const steps: Record<string, Primitive> = { ...args.workflow.steps };
+  let rewritten = false;
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    if (primitive.kind !== "onTrigger") continue;
+    if (!("inline" in primitive.body)) continue;
+    const bodyRef = `${args.workflow.id}__${stepId}`;
+    const bodyDefinition: WorkflowDefinition = {
+      ...primitive.body.inline,
+      id: bodyRef,
+    };
+    const bodyWalk = walkCapabilities(bodyDefinition, args.registry);
+    await writeWorkflowRepoTree({
+      workflow: bodyDefinition,
+      walk: bodyWalk,
+      workflowRepo: args.workflowRepo,
+    });
+    steps[stepId] = { ...primitive, body: { ref: bodyRef } };
+    rewritten = true;
+  }
+  if (!rewritten) return args.workflow;
+  return { ...args.workflow, steps };
 }
 
 async function writeWorkflowRepoTree(args: {
