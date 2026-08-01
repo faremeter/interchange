@@ -21,6 +21,7 @@ import {
   step,
   stepTriggerBudget,
   validateRetryTriggerCombination,
+  type Primitive,
   type WorkflowDefinition,
 } from "./index";
 
@@ -50,7 +51,9 @@ describe("onTrigger primitive", () => {
     const prim = onTrigger({ on: { type: "mail", to: "s@x.example" }, body });
     expect(prim.kind).toBe("onTrigger");
     expect(prim.on).toEqual({ type: "mail", to: "s@x.example" });
-    expect(prim.body).toBe(body);
+    // Authored inline: the constructor wraps the WorkflowDefinition as
+    // `{ inline }`; deploy later rewrites it to `{ ref }`.
+    expect(prim.body).toEqual({ inline: body });
     expect(prim.drainBehavior).toBe("wait");
     // defineWorkflow, not the constructor, assigns the id from the record key.
     expect(prim.id).toBe("");
@@ -81,6 +84,22 @@ describe("onTrigger primitive", () => {
     const section = def.steps.section;
     expect(section?.kind).toBe("onTrigger");
     expect(section?.id).toBe("section");
+  });
+
+  test("accepts a deployed ref-form section body, skipping its validation", () => {
+    // The deploy step rewrites the inline body to a `{ ref }` arm; the
+    // referenced body was validated at its own deploy, so defineWorkflow
+    // must accept the ref without descending into (absent) inline steps.
+    const section: Primitive = {
+      kind: "onTrigger",
+      id: "",
+      on: { type: "manual" },
+      body: { ref: "body-asset-ref" },
+      drainBehavior: "wait",
+    };
+    const def = defineWorkflow({ id: "wf", steps: { section } });
+    expect(def.steps.section?.kind).toBe("onTrigger");
+    expect(def.triggers).toEqual([{ type: "manual" }]);
   });
 
   test("collects each section's `on` into the workflow triggers", () => {

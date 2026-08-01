@@ -40,6 +40,7 @@ export {
   type LoopPrimitive,
   type MapOpts,
   type MapPrimitive,
+  type OnTriggerBody,
   type OnTriggerOpts,
   type OnTriggerPrimitive,
   type Primitive,

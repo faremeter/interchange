@@ -374,8 +374,11 @@ function validateLoopBody(steps: Record<string, Primitive>): void {
 function validateOnTriggerBody(steps: Record<string, Primitive>): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "onTrigger") continue;
+    // Only an inline (authored) body carries steps to constrain here; a
+    // deployed `{ ref }` body was validated at its own deploy.
+    if (!("inline" in primitive.body)) continue;
     for (const [bodyStepId, bodyPrimitive] of Object.entries(
-      primitive.body.steps,
+      primitive.body.inline.steps,
     )) {
       if (bodyPrimitive.kind === "onTrigger") {
         throw new Error(

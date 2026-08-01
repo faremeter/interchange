@@ -231,9 +231,20 @@ export interface LoopPrimitive extends PrimitiveBase {
 export interface OnTriggerPrimitive extends PrimitiveBase {
   kind: "onTrigger";
   on: Trigger;
-  body: WorkflowDefinition;
+  body: OnTriggerBody;
   drainBehavior?: DrainBehavior;
 }
+
+/**
+ * The section body, in one of its two lifecycle forms. Authored inline
+ * (the constructor wraps the author's `WorkflowDefinition` as `{ inline }`);
+ * the deploy step materializes that inline body into its own workflow asset
+ * and rewrites it to `{ ref }`, so the runtime spawns each event's body as
+ * a child run resolved by ref. Exactly one arm is present -- a discriminated
+ * union, not two optionals, so neither "both" nor "neither" is
+ * representable and the runtime switches exhaustively.
+ */
+export type OnTriggerBody = { inline: WorkflowDefinition } | { ref: string };
 
 export type Primitive =
   | StepPrimitive
@@ -550,7 +561,8 @@ export function onTrigger(opts: OnTriggerOpts): OnTriggerPrimitive {
     kind: "onTrigger",
     id: "",
     on: opts.on,
-    body: opts.body,
+    // Authored inline; the deploy step rewrites this to `{ ref }`.
+    body: { inline: opts.body },
     drainBehavior,
     ...(opts.after !== undefined ? { after: opts.after } : {}),
   };
