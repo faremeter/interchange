@@ -94,8 +94,6 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     throw new Error("defineWorkflow requires a non-empty id");
   }
 
-  const triggers = resolveTriggers(config);
-
   const stepEntries = Object.entries(config.steps);
   if (stepEntries.length === 0) {
     throw new Error("defineWorkflow requires at least one step");
@@ -140,6 +138,12 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
   // already known to name a real step; this pass only rejects cycles.
   validateAcyclic(steps);
   validateLoopBody(steps);
+  validateOnTriggerBody(steps);
+
+  // An onTrigger section's `on` is the first-class binding between a
+  // trigger and the section it drives, so each section contributes its
+  // trigger to the workflow's subscription set.
+  const triggers = resolveTriggers(config, collectSectionTriggers(steps));
 
   const definition: WorkflowDefinition = {
     id: config.id,
@@ -154,20 +158,43 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
   return definition;
 }
 
-function resolveTriggers(config: WorkflowConfig): readonly Trigger[] {
+function resolveTriggers(
+  config: WorkflowConfig,
+  sectionTriggers: readonly Trigger[],
+): readonly Trigger[] {
   if (config.trigger !== undefined && config.triggers !== undefined) {
     throw new Error("defineWorkflow accepts `trigger` or `triggers`, not both");
   }
-  if (config.trigger !== undefined) {
-    return [config.trigger];
+  if (config.triggers !== undefined && config.triggers.length === 0) {
+    throw new Error("`triggers` must be non-empty");
   }
-  if (config.triggers !== undefined) {
-    if (config.triggers.length === 0) {
-      throw new Error("`triggers` must be non-empty");
-    }
-    return config.triggers;
+  const declared: readonly Trigger[] =
+    config.trigger !== undefined ? [config.trigger] : (config.triggers ?? []);
+  // Dedupe by structural identity so a section whose `on` restates an
+  // explicitly-declared trigger does not double-subscribe.
+  const merged: Trigger[] = [];
+  const seen = new Set<string>();
+  for (const trigger of [...declared, ...sectionTriggers]) {
+    const key = JSON.stringify(trigger);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(trigger);
   }
-  return [{ type: "manual" }];
+  // A workflow that declares no trigger and has no onTrigger section is
+  // manually invoked -- the same default the singular/plural configs carry
+  // when `trigger`/`triggers` are omitted.
+  if (merged.length === 0) return [{ type: "manual" }];
+  return merged;
+}
+
+function collectSectionTriggers(
+  steps: Record<string, Primitive>,
+): readonly Trigger[] {
+  const out: Trigger[] = [];
+  for (const primitive of Object.values(steps)) {
+    if (primitive.kind === "onTrigger") out.push(primitive.on);
+  }
+  return out;
 }
 
 /**
@@ -308,6 +335,7 @@ const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>([
   "awaitSignal",
   "sleep",
   "childWorkflow",
+  "onTrigger",
 ]);
 
 /**
@@ -326,7 +354,33 @@ function validateLoopBody(steps: Record<string, Primitive>): void {
       if (LOOP_BODY_FORBIDDEN.has(bodyPrimitive.kind)) {
         throw new Error(
           `loop ${stepId} body step ${bodyStepId} is a ${bodyPrimitive.kind}; ` +
-            `a loop body may not contain a loop, awaitSignal, sleep, or childWorkflow`,
+            `a loop body may not contain a loop, awaitSignal, sleep, ` +
+            `childWorkflow, or onTrigger`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Reject an onTrigger section whose body nests another onTrigger. An
+ * onTrigger body is otherwise unrestricted -- unlike a loop body it may
+ * await signals, run agent steps, and so on -- because an onTrigger
+ * section IS the sanctioned long-lived input loop. The single restriction
+ * is one subscription layer per run: a section may not contain a section.
+ * A separate pass from `validateAcyclic`, which does not recurse into the
+ * body's own (already-normalized) `WorkflowDefinition`.
+ */
+function validateOnTriggerBody(steps: Record<string, Primitive>): void {
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    if (primitive.kind !== "onTrigger") continue;
+    for (const [bodyStepId, bodyPrimitive] of Object.entries(
+      primitive.body.steps,
+    )) {
+      if (bodyPrimitive.kind === "onTrigger") {
+        throw new Error(
+          `onTrigger ${stepId} body step ${bodyStepId} is itself an ` +
+            `onTrigger; an onTrigger body may not nest another section`,
         );
       }
     }

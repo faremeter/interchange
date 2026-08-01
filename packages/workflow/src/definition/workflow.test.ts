@@ -82,6 +82,86 @@ describe("onTrigger primitive", () => {
     expect(section?.kind).toBe("onTrigger");
     expect(section?.id).toBe("section");
   });
+
+  test("collects each section's `on` into the workflow triggers", () => {
+    const def = defineWorkflow({
+      id: "wf",
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "s@x.example" },
+          body: simpleBody(),
+        }),
+      },
+    });
+    expect(def.triggers).toEqual([{ type: "mail", to: "s@x.example" }]);
+  });
+
+  test("dedupes a section `on` that restates a declared trigger", () => {
+    const def = defineWorkflow({
+      id: "wf",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "s@x.example" },
+          body: simpleBody(),
+        }),
+      },
+    });
+    expect(def.triggers).toEqual([{ type: "mail", to: "s@x.example" }]);
+  });
+
+  test("a section body may contain an awaitSignal, unlike a loop body", () => {
+    const body = defineWorkflow({
+      id: "body",
+      trigger: { type: "manual" },
+      steps: { hold: awaitSignal({ name: "go" }) },
+    });
+    // Does not throw: an onTrigger body is the sanctioned long-lived loop.
+    defineWorkflow({
+      id: "wf",
+      steps: { section: onTrigger({ on: { type: "manual" }, body }) },
+    });
+  });
+
+  test("rejects a section body that nests another onTrigger", () => {
+    const inner = defineWorkflow({
+      id: "inner",
+      steps: {
+        nested: onTrigger({ on: { type: "manual" }, body: simpleBody() }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        steps: { section: onTrigger({ on: { type: "manual" }, body: inner }) },
+      }),
+    ).toThrow(/may not nest another section/);
+  });
+
+  test("rejects a loop body that contains an onTrigger section", () => {
+    const body = defineWorkflow({
+      id: "body",
+      steps: {
+        section: onTrigger({ on: { type: "manual" }, body: simpleBody() }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          l: loop({
+            body,
+            while: "whileFn",
+            carry: "carryFn",
+            maxIterations: 2,
+            onExhausted: "done",
+          }),
+          done: step({ agent: makeAgent("d"), after: ["l"] }),
+        },
+      }),
+    ).toThrow(/onTrigger/);
+  });
 });
 
 describe("step triggers budget", () => {
