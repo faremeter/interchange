@@ -18,6 +18,7 @@ import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import {
   awaitSignal,
   defineWorkflow,
+  onTrigger,
   sleep,
   step,
   type WorkflowDefinition,
@@ -115,6 +116,28 @@ describe("DrainController shape", () => {
     expect(resolveDrainBehavior(def, "waitSignal")).toBe("wait");
     expect(resolveDrainBehavior(def, "cancelSignal")).toBe("cancel");
     expect(resolveDrainBehavior(def, "sleepStep")).toBe("cancel");
+  });
+
+  test("an onTrigger section drains as wait by default, honoring an explicit cancel", () => {
+    const body = defineWorkflow({
+      id: "section-body",
+      trigger: { type: "manual" },
+      steps: { s: step({ agent: makeAgent("a") }) },
+    });
+    const def = defineWorkflow({
+      id: "onTrigger-drain",
+      trigger: { type: "manual" },
+      steps: {
+        live: onTrigger({ on: { type: "mail", to: "x@y.example" }, body }),
+        cancelable: onTrigger({
+          on: { type: "mail", to: "z@y.example" },
+          body,
+          drainBehavior: "cancel",
+        }),
+      },
+    });
+    expect(resolveDrainBehavior(def, "live")).toBe("wait");
+    expect(resolveDrainBehavior(def, "cancelable")).toBe("cancel");
   });
 
   test("shouldAbortForDrain returns false when signal not aborted", () => {

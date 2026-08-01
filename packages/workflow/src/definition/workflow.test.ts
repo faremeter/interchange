@@ -16,6 +16,7 @@ import {
   hashDefinition,
   loop,
   map,
+  onTrigger,
   sleep,
   step,
   stepTriggerBudget,
@@ -42,6 +43,46 @@ function makeAgent(id: string): AgentDefinition<BaseEnv> {
     },
   });
 }
+
+describe("onTrigger primitive", () => {
+  test("constructor carries on/body and defaults drainBehavior to wait", () => {
+    const body = simpleBody();
+    const prim = onTrigger({ on: { type: "mail", to: "s@x.example" }, body });
+    expect(prim.kind).toBe("onTrigger");
+    expect(prim.on).toEqual({ type: "mail", to: "s@x.example" });
+    expect(prim.body).toBe(body);
+    expect(prim.drainBehavior).toBe("wait");
+    // defineWorkflow, not the constructor, assigns the id from the record key.
+    expect(prim.id).toBe("");
+  });
+
+  test("honors an explicit drainBehavior and after", () => {
+    const prim = onTrigger({
+      on: { type: "manual" },
+      body: simpleBody(),
+      drainBehavior: "cancel",
+      after: ["setup"],
+    });
+    expect(prim.drainBehavior).toBe("cancel");
+    expect(prim.after).toEqual(["setup"]);
+  });
+
+  test("defineWorkflow populates the section id from its record key", () => {
+    const def = defineWorkflow({
+      id: "wf",
+      trigger: { type: "manual" },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "s@x.example" },
+          body: simpleBody(),
+        }),
+      },
+    });
+    const section = def.steps.section;
+    expect(section?.kind).toBe("onTrigger");
+    expect(section?.id).toBe("section");
+  });
+});
 
 describe("step triggers budget", () => {
   test("defaults to 1 when unspecified", () => {

@@ -90,6 +90,11 @@ export function resolveDrainBehavior(
       return primitive.drainBehavior ?? "cancel";
     case "childWorkflow":
       return primitive.drainBehavior ?? "cancel";
+    case "onTrigger":
+      // A live event-driven section is definitionally interactive;
+      // draining means "stop feeding new events", not "abort the paused
+      // waiter". Mirrors awaitSignal and the long-lived step budget.
+      return primitive.drainBehavior ?? "wait";
     case "awaitSignal":
       return primitive.drainBehavior ?? "wait";
     case "map":

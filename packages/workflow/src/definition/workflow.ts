@@ -200,6 +200,7 @@ function applyDefaultInput(
       };
     case "action":
     case "loop":
+    case "onTrigger":
     case "awaitSignal":
     case "sleep":
     case "gate":

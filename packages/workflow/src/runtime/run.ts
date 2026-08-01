@@ -970,6 +970,14 @@ async function runPrimitive(
       return runAction(env, runId, primitive, selectorCtx, abort);
     case "loop":
       return runLoop(definition, env, runId, primitive, selectorCtx, abort);
+    case "onTrigger":
+      // An onTrigger section is serviced by its own runner; this build
+      // carries the definition surface but no runner, so a section that
+      // reaches the primitive dispatch fails loud rather than resolving to
+      // undefined.
+      throw new Error(
+        `onTrigger section ${primitive.id} has no runtime handler in this build`,
+      );
     case "map":
       return runMap(env, runId, primitive, selectorCtx, abort);
     case "gate":

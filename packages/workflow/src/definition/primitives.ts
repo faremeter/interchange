@@ -22,10 +22,11 @@ import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type { Type } from "arktype";
 
 import type { Selector } from "./selectors";
-// Type-only import: a loop body is a full WorkflowDefinition. This is a
-// type-level cycle (workflow.ts imports Primitive from here), erased at
-// runtime by `import type`, so there is no runtime import cycle.
+// Type-only import: a loop or onTrigger body is a full WorkflowDefinition.
+// This is a type-level cycle (workflow.ts imports Primitive from here),
+// erased at runtime by `import type`, so there is no runtime import cycle.
 import type { WorkflowDefinition } from "./workflow";
+import type { Trigger } from "./triggers";
 
 export type DrainBehavior = "cancel" | "wait";
 
@@ -204,11 +205,42 @@ export interface LoopPrimitive extends PrimitiveBase {
   drainBehavior?: DrainBehavior;
 }
 
+/**
+ * Long-lived, event-driven section. The workflow subscribes to `on` and
+ * runs `body` -- a full sub-DAG -- once per occurrence of that trigger,
+ * each occurrence a separate child run of `body` (own run id, own event
+ * log), all WITHIN the one living workflow run. Between occurrences the
+ * runtime re-arms the section on a snapshot-less input control-plane park
+ * (the same machinery a signal resume uses); each delivered occurrence is
+ * the next body run's input, surfaced to the body as its
+ * `trigger.payload`.
+ *
+ * The section never self-completes: the workflow stays running while
+ * subscribed and terminates only on a body error or an explicit
+ * end-of-workflow, and a terminated run is final -- never relaunched. The
+ * first occurrence is the run's own firing trigger (its
+ * `RunStarted.trigger.payload`); each later occurrence arrives as an input
+ * signal carrying the next payload. `defineWorkflow` collects every `on`
+ * into the workflow's `triggers`, so `on` is the first-class binding
+ * between a trigger and the section it drives.
+ *
+ * `drainBehavior` defaults to `"wait"`: a live interactive section is not
+ * abandoned mid-conversation at redeploy unless the author opts into
+ * `"cancel"`.
+ */
+export interface OnTriggerPrimitive extends PrimitiveBase {
+  kind: "onTrigger";
+  on: Trigger;
+  body: WorkflowDefinition;
+  drainBehavior?: DrainBehavior;
+}
+
 export type Primitive =
   | StepPrimitive
   | MapPrimitive
   | ActionPrimitive
   | LoopPrimitive
+  | OnTriggerPrimitive
   | GatePrimitive
   | AwaitSignalPrimitive
   | SleepPrimitive
@@ -501,6 +533,25 @@ export function loop(opts: LoopOpts): LoopPrimitive {
     onExhausted: opts.onExhausted,
     drainBehavior,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
+    ...(opts.after !== undefined ? { after: opts.after } : {}),
+  };
+}
+
+export interface OnTriggerOpts {
+  on: Trigger;
+  body: WorkflowDefinition;
+  drainBehavior?: DrainBehavior;
+  after?: readonly string[];
+}
+
+export function onTrigger(opts: OnTriggerOpts): OnTriggerPrimitive {
+  const drainBehavior: DrainBehavior = opts.drainBehavior ?? "wait";
+  return {
+    kind: "onTrigger",
+    id: "",
+    on: opts.on,
+    body: opts.body,
+    drainBehavior,
     ...(opts.after !== undefined ? { after: opts.after } : {}),
   };
 }
