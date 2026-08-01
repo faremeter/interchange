@@ -105,6 +105,26 @@ export function isResumableReceivedAwaitSignalStep(
 }
 
 /**
+ * An onTrigger section container left non-terminal in a seed log is
+ * resumable in both of its live phases: `in-flight` while a body run is
+ * mid-flight (like a loop container, `runOnTrigger` re-derives its cursor
+ * from the settled body runs and continues) and `awaiting-signal` while
+ * parked between events (like an `awaitSignal` gate, it re-parks on the
+ * input channel so the next event resolves it). The section never
+ * self-completes, so -- unlike an agent step -- neither phase is a crash
+ * mid-invocation to settle as failed. A synthetic per-event id strips to
+ * its container to resolve the kind, mirroring the loop carve-out.
+ */
+export function isResumableOnTriggerStep(
+  def: WorkflowDefinition,
+  stepId: string,
+  phase: StepPhase,
+): boolean {
+  if (phase !== "in-flight" && phase !== "awaiting-signal") return false;
+  return def.steps[baseStepId(stepId)]?.kind === "onTrigger";
+}
+
+/**
  * An `in-flight` step whose primitive is an invocation boundary -- an
  * agent `step` or a deterministic `action` -- is a crash
  * mid-invocation, not a resumable coordination primitive: a durable
@@ -159,10 +179,12 @@ export function nextSchedulable(
   // The exceptions re-offered below are the resumable carve-outs: a
   // mid-loop container, an `awaitSignal` step still `awaiting-signal`
   // (`isResumableAwaitingSignalStep`, re-parked so a later signal
-  // resolves it), and an `awaitSignal` step left `in-flight` by an
+  // resolves it), an `awaitSignal` step left `in-flight` by an
   // already-logged `SignalReceived` (`isResumableReceivedAwaitSignalStep`,
-  // the crash-after-signal-before-StepCompleted window). The resume guard
-  // keys on the SAME predicates so the two views agree.
+  // the crash-after-signal-before-StepCompleted window), and an onTrigger
+  // section container in-flight or awaiting-signal
+  // (`isResumableOnTriggerStep`, re-derived by `runOnTrigger`). The resume
+  // guard keys on the SAME predicates so the two views agree.
   if (state.phase !== "running") {
     return [];
   }
@@ -181,7 +203,8 @@ export function nextSchedulable(
       existing !== undefined &&
       !isResumableInFlightLoopStep(def, stepId, existing.phase) &&
       !isResumableAwaitingSignalStep(def, stepId, existing.phase) &&
-      !isResumableReceivedAwaitSignalStep(def, stepId, existing.phase)
+      !isResumableReceivedAwaitSignalStep(def, stepId, existing.phase) &&
+      !isResumableOnTriggerStep(def, stepId, existing.phase)
     ) {
       continue;
     }
