@@ -1799,6 +1799,13 @@ async function runOnTrigger(
     );
   }
   const bodyRef = primitive.body.ref;
+  const spawnSuspendableChild = env.spawnSuspendableChild;
+  if (spawnSuspendableChild === undefined) {
+    throw new Error(
+      `onTrigger ${primitive.id}: this host does not support onTrigger ` +
+        `sections (spawnSuspendableChild is not wired)`,
+    );
+  }
 
   const initial = await reloadState(env, runId);
   if (initial.steps.has(primitive.id)) {
@@ -1841,7 +1848,7 @@ async function runOnTrigger(
     // parent log records the spawn ahead of any child-side work.
     await flush(env, runId);
 
-    const res = await env.spawnChild({
+    const child = await spawnSuspendableChild({
       definitionRef: bodyRef,
       childRunId,
       input: currentInput,
@@ -1849,6 +1856,36 @@ async function runOnTrigger(
       parentStepId: primitive.id,
       signal: abort,
     });
+    let terminalStatus: "completed" | "failed" | "cancelled";
+    for (;;) {
+      const bodyEvent = await child.next();
+      if (bodyEvent.kind === "terminal") {
+        terminalStatus = bodyEvent.terminalStatus;
+        break;
+      }
+      // A body step parked on an approval. Proxy it up on the SAME
+      // correlation via THIS run's own park machinery, so the whole
+      // deployment-runId approval path (registerSuspension/hub/deliver) is
+      // reused unchanged and the approver sees the body step's real
+      // snapshot; then relay the granted decision back into the child so the
+      // body continues.
+      const parkRearm = await reloadState(env, runId);
+      const decision = await parkOnSignal(
+        env,
+        runId,
+        {
+          stepId: primitive.id,
+          signalName: signalName(bodyEvent.park.correlationId),
+          parkKind: "approval",
+          ...(bodyEvent.park.approvalSnapshot !== undefined
+            ? { approvalSnapshot: bodyEvent.park.approvalSnapshot }
+            : {}),
+        },
+        parkRearm,
+        abort,
+      );
+      await child.resume(bodyEvent.park.correlationId, decision);
+    }
 
     let after = await reloadState(env, runId);
     if (after.children.get(childRunId)?.terminalStatus === undefined) {
@@ -1857,20 +1894,20 @@ async function runOnTrigger(
         seq: after.lastSeq + 1,
         at: env.clock().toISOString(),
         childRunId,
-        terminalStatus: res.terminalStatus,
+        terminalStatus,
       };
       after = await commit(env, runId, completed);
       void after;
     }
     await flush(env, runId);
 
-    if (res.terminalStatus !== "completed") {
+    if (terminalStatus !== "completed") {
       // Terminal-is-final: a body run that failed or was cancelled ends the
       // whole section run. Throwing lands the parent terminal via
       // `runPrimitiveSafe`; the run does not relaunch.
       throw new Error(
         `onTrigger ${primitive.id} body run ${childRunId} ended ` +
-          `${res.terminalStatus}`,
+          `${terminalStatus}`,
       );
     }
 

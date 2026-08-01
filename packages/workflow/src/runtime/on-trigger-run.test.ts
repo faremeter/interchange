@@ -1,18 +1,20 @@
 // runOnTrigger: a long-lived onTrigger section services each occurrence of
-// its trigger as an EVENT -- spawning the body as a child run resolved by the
-// deployed bodyRef, awaiting the body's terminal, then re-arming on a
-// snapshot-less input park to await the next occurrence. The container never
+// its trigger as an EVENT -- spawning the body via the suspendable-child
+// seam, awaiting the body's terminal (proxying any body approval park up on
+// the SAME correlation via this run's own park machinery), then re-arming on
+// a snapshot-less input park to await the next occurrence. The container never
 // self-completes; it settles only when a body run ends non-completed
 // (terminal-is-final) or the run is cancelled.
 //
-// This exercises the runtime driver in isolation with a test-wired spawnChild
-// that runs each body to a terminal status -- no deploy orchestrator or
-// suspension machinery. The DEPLOYED section form (a `{ ref }` body) is built
-// directly, since the deploy step is a separate layer.
+// This exercises the runtime driver in isolation with a test-wired
+// spawnSuspendableChild -- no sidecar. The DEPLOYED section form (a `{ ref }`
+// body) is built directly, since the deploy step is a separate layer.
 
 import { describe, test, expect } from "bun:test";
 
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { signalName } from "@intx/types";
+import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import {
   createInMemoryBlobSubstrate,
@@ -25,7 +27,7 @@ import {
   type Primitive,
   type RepoStore,
   type SignalChannel,
-  type SpawnChildWorkflow,
+  type SpawnSuspendableChild,
   type StepInvoker,
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
@@ -39,7 +41,7 @@ function buildEnv(args: {
   def: WorkflowDefinition;
   repoStore: RepoStore;
   signalChannel: SignalChannel;
-  spawnChild: SpawnChildWorkflow;
+  spawnSuspendableChild: SpawnSuspendableChild;
 }): WorkflowRuntimeEnv {
   const clock = (): Date => new Date();
   return {
@@ -54,7 +56,8 @@ function buildEnv(args: {
       resolvedBy: null,
     }),
     invokeStep: noopInvokeStep,
-    spawnChild: args.spawnChild,
+    spawnChild: async () => ({ terminalStatus: "completed" }),
+    spawnSuspendableChild: args.spawnSuspendableChild,
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(args.def),
@@ -75,26 +78,24 @@ function sectionWorkflow(): WorkflowDefinition {
   return defineWorkflow({ id: "on-trigger-run", steps: { section } });
 }
 
-// The input channel the section mints per re-arm is opaque; the delivering
-// owner discovers the current one from the reduced state. Here we read it from
-// the durable log: the Nth input `SignalAwaited`'s signal name.
-async function waitForInputPark(
+async function waitForPark(
   repoStore: RepoStore,
   runId: string,
+  parkKind: "input" | "approval",
   count: number,
 ): Promise<string> {
   for (let i = 0; i < 200; i += 1) {
     const events = await repoStore.read(runId);
-    const inputAwaits = events.filter(
-      (e) => e.kind === "SignalAwaited" && e.parkKind === "input",
+    const awaits = events.filter(
+      (e) => e.kind === "SignalAwaited" && e.parkKind === parkKind,
     );
-    const latest = inputAwaits[inputAwaits.length - 1];
-    if (inputAwaits.length >= count && latest?.kind === "SignalAwaited") {
+    const latest = awaits[awaits.length - 1];
+    if (awaits.length >= count && latest?.kind === "SignalAwaited") {
       return latest.signalName;
     }
     await new Promise((r) => setTimeout(r, 10));
   }
-  throw new Error(`timed out waiting for input park #${String(count)}`);
+  throw new Error(`timed out waiting for ${parkKind} park #${String(count)}`);
 }
 
 describe("runOnTrigger", () => {
@@ -104,28 +105,41 @@ describe("runOnTrigger", () => {
     const channel = createInMemorySignalChannel();
     const spawnRefs: string[] = [];
     const spawnInputs: unknown[] = [];
-    const spawnChild: SpawnChildWorkflow = async ({ definitionRef, input }) => {
+    const spawnSuspendableChild: SpawnSuspendableChild = async ({
+      definitionRef,
+      input,
+    }) => {
       spawnRefs.push(definitionRef);
       spawnInputs.push(input);
-      return { terminalStatus: "completed" };
+      let done = false;
+      return {
+        next: async () => {
+          if (done) throw new Error("next after terminal");
+          done = true;
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => {
+          throw new Error("resume on a non-suspending body");
+        },
+      };
     };
     const def = sectionWorkflow();
     const run = runtimeRun(
       def,
-      buildEnv({ def, repoStore, signalChannel: channel, spawnChild }),
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
       { runId, triggerPayload: { text: "event-0" } },
     );
 
-    // Event 0 (the firing trigger) spawns body 0; the section re-arms on an
-    // input park. Deliver event 1 on that channel; body 1 spawns and it
-    // re-arms again.
-    const ch1 = await waitForInputPark(repoStore, runId, 1);
+    const ch1 = await waitForPark(repoStore, runId, "input", 1);
     await channel.deliver(ch1, { text: "event-1" }, "sig-1");
-    await waitForInputPark(repoStore, runId, 2);
+    await waitForPark(repoStore, runId, "input", 2);
 
     const log = await repoStore.read(runId);
-    // One run, one container step bracket, two body children, no terminal:
-    // the section stays alive between events.
     expect(log.filter((e) => e.kind === "RunStarted").length).toBe(1);
     expect(log.filter((e) => e.kind === "StepStarted").length).toBe(1);
     expect(log.filter((e) => e.kind === "ChildSpawned").length).toBe(2);
@@ -133,8 +147,6 @@ describe("runOnTrigger", () => {
     expect(
       log.some((e) => e.kind === "RunCompleted" || e.kind === "RunFailed"),
     ).toBe(false);
-    // Each event's payload threads to its body child as input; the body is
-    // resolved by ref; children are scoped per event.
     expect(spawnRefs).toEqual(["body-ref", "body-ref"]);
     expect(spawnInputs).toEqual([{ text: "event-0" }, { text: "event-1" }]);
     expect(
@@ -145,24 +157,95 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
+  test("proxies a body approval park up on the same correlation and resumes the child", async () => {
+    const runId = "sec-approve";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    const snapshot: ApprovalSnapshot = {
+      name: "charge_card",
+      description: "Charge the customer",
+      inputSchema: {},
+      arguments: { amount: 100 },
+    };
+    let resumedCorr: string | undefined;
+    let resumedDecision: unknown;
+    const bodyCorr = "body-corr-1";
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let stage = 0;
+      return {
+        next: async () => {
+          stage += 1;
+          if (stage === 1) {
+            return {
+              kind: "park",
+              park: { correlationId: bodyCorr, approvalSnapshot: snapshot },
+            };
+          }
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async (correlationId, decision) => {
+          resumedCorr = correlationId;
+          resumedDecision = decision;
+        },
+      };
+    };
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+
+    // The body parked on approval -> the section proxied it up as an approval
+    // park on the SAME correlation, carrying the body's snapshot. Grant it.
+    const approvalChannel = await waitForPark(repoStore, runId, "approval", 1);
+    expect(approvalChannel).toBe(signalName(bodyCorr));
+    await channel.deliver(approvalChannel, { approved: true }, "grant-1");
+
+    // The section relayed the grant into the child; the body completed and the
+    // section re-armed for the next event on an input park.
+    await waitForPark(repoStore, runId, "input", 1);
+    expect(resumedCorr).toBe(bodyCorr);
+    expect(resumedDecision).toEqual({ approved: true });
+
+    const log = await repoStore.read(runId);
+    expect(
+      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "approval"),
+    ).toBe(true);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
   test("a failed body run ends the section (terminal-is-final)", async () => {
     const runId = "sec-fail";
     const repoStore = createInMemoryRepoStore();
     const channel = createInMemorySignalChannel();
-    const spawnChild: SpawnChildWorkflow = async () => ({
-      terminalStatus: "failed",
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => ({
+      next: async () => ({ kind: "terminal", terminalStatus: "failed" }),
+      resume: async () => undefined,
     });
     const def = sectionWorkflow();
     const run = runtimeRun(
       def,
-      buildEnv({ def, repoStore, signalChannel: channel, spawnChild }),
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
       { runId, triggerPayload: { text: "event-0" } },
     );
 
     const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
     const log = await repoStore.read(runId);
-    // The first body failed, so the section never re-armed for a second event.
     expect(log.filter((e) => e.kind === "ChildSpawned").length).toBe(1);
     expect(
       log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
