@@ -551,8 +551,10 @@ export const ApprovalSnapshot = type({
 export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
 
 /**
- * The kind of a control-plane park: a step suspended on a reserved
- * `signalName(correlationId)` channel awaiting an external event.
+ * The kind of a control-plane park: a step suspended awaiting an external
+ * event. `"approval"` and `"input"` park on a reserved
+ * `signalName(correlationId)` channel; `"signal-relay"` parks on an
+ * author-chosen name.
  *
  * - `"approval"` -- the step parked on a tool/authz gate and REQUIRES an
  *   {@link ApprovalSnapshot}; the runtime notifies the host (`env.onPark`) so
@@ -564,13 +566,25 @@ export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
  *   concept -- deliberately NOT a {@link SignalKind}, so it never touches the
  *   approval-routing machinery (IPC register frames, the hub co-write, the
  *   approval columns).
+ * - `"signal-relay"` -- an onTrigger section container parked on an
+ *   author-named signal so a body child's `awaitSignal` on that name is
+ *   serviced through the deployment run: the external signal is delivered to
+ *   the parent run and the runtime relays it down into the live body child.
+ *   The channel name is the author's free-form signal name, NOT a reserved
+ *   `signalName(correlationId)`, so recovery must branch on this kind BEFORE
+ *   assuming the awaited name is a reserved control-plane channel. Carries no
+ *   snapshot and is not hub-registered.
  *
- * The two are distinguished by an EXPLICIT discriminant everywhere the kind
+ * The kinds are distinguished by an EXPLICIT discriminant everywhere the kind
  * flows -- never inferred from the presence or absence of a snapshot, which
- * would silently reclassify a malformed snapshot-less approval as an input
- * park rather than failing loud.
+ * would silently reclassify a malformed snapshot-less approval as another
+ * park kind rather than failing loud.
  */
-export const ControlParkKind = type.enumerated("approval", "input");
+export const ControlParkKind = type.enumerated(
+  "approval",
+  "input",
+  "signal-relay",
+);
 export type ControlParkKind = typeof ControlParkKind.infer;
 
 /**

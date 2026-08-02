@@ -46,21 +46,26 @@ export interface StepState {
 }
 
 /**
- * Resolve a reserved-channel park's control-plane kind to a definite value.
+ * Resolve a control-plane park's kind to a definite value.
  *
- * `awaitingSignal.parkKind` is absent in two cases: a plain `awaitSignal` gate
- * (not a control-plane park at all), and a reserved-channel park committed
- * before the input kind existed. Callers reach this ONLY after confirming a
- * reserved `signalName(correlationId)` channel, where an absent kind can only
- * be the latter -- a legacy park, which was an `"approval"` by construction
- * (the input kind postdates it). This function is the SINGLE point of that
- * legacy interpretation; every other read of `parkKind` goes through it rather
- * than re-deriving the rule.
+ * An explicit `parkKind` (`"input"` or `"signal-relay"`) is returned verbatim.
+ * `parkKind` is ABSENT in two cases: a plain `awaitSignal` gate (not a
+ * control-plane park at all), and a reserved-channel park committed before the
+ * kind was recorded. Callers reach the absent path only on a reserved
+ * `signalName(correlationId)` channel, where an absent kind can only be the
+ * latter -- a legacy park, which was an `"approval"` by construction (the
+ * `input`/`signal-relay` kinds postdate it). A `"signal-relay"` park is on an
+ * author-named (non-reserved) channel and always carries its explicit kind, so
+ * it never falls to the absent-means-approval default. This function is the
+ * SINGLE point of that legacy interpretation; every other read of `parkKind`
+ * goes through it rather than re-deriving the rule.
  */
 export function controlParkKindOf(awaitingSignal: {
   parkKind?: ControlParkKind;
 }): ControlParkKind {
-  return awaitingSignal.parkKind === "input" ? "input" : "approval";
+  if (awaitingSignal.parkKind === "input") return "input";
+  if (awaitingSignal.parkKind === "signal-relay") return "signal-relay";
+  return "approval";
 }
 
 export interface ChildState {

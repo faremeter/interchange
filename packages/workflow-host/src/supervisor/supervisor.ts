@@ -833,17 +833,23 @@ export function createWorkflowSupervisor(
             accumulator.stop();
             drainAccumulators.delete(payload.data.runId);
           }
-        } else {
+        } else if (payload.data.parkKind === "approval") {
           // Approval parks are hub-registered through the shared
           // `registerSuspension` transform.
           registerSuspension({
             runId: payload.data.runId,
             correlationId: payload.data.correlationId,
-            parkKind: payload.data.parkKind as "approval",
+            parkKind: "approval",
             ...(payload.data.snapshot !== undefined
               ? { snapshot: payload.data.snapshot }
               : {}),
           });
+        } else {
+          // A `signal-relay` park is relayed down into the body child by the
+          // section runtime and is never hub-registered, so it does not ride
+          // `park.notify`. One arriving here is a protocol violation; log and
+          // drop rather than mis-registering it as an approval.
+          logger.error`park.notify for run ${payload.data.runId} carried parkKind=${payload.data.parkKind}, which is not a hub-registered kind; dropping`;
         }
         // A park of ANY kind suspends the run, so a dispatch loop waiting on
         // `waitForRunTerminalOrPark` after firing the trigger (or delivering
