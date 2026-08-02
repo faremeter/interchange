@@ -75,6 +75,7 @@ import type {
   StepInvokeResult,
   StepInvoker,
   SpawnChildWorkflow,
+  SpawnSuspendableChild,
   WorkflowAuthorizeFn,
   WorkflowDefinition,
   WorkflowPark,
@@ -297,6 +298,16 @@ export interface RunWorkflowChildBindings {
    * `createWorkflowSpawnChild`; tests inject a stub.
    */
   spawnChild: SpawnChildWorkflow;
+  /**
+   * Suspendable child-spawn callback the runtime body invokes for an
+   * `onTrigger` section's per-event body: a child run driven across approval
+   * parks via a live handle (see `SpawnSuspendableChild`). The production
+   * binary wires this against `createWorkflowSpawnSuspendableChild`. Optional
+   * because it is only needed to service `onTrigger` sections -- a child
+   * process that never runs one omits it, and `runOnTrigger` fails loud if a
+   * workflow uses a section the env did not wire.
+   */
+  spawnSuspendableChild?: SpawnSuspendableChild;
   /** Host-process scheduler singleton. The child consumes the same instance. */
   scheduler: Scheduler;
   /** Grant evaluator wired against the host's grant-rule grammar. */
@@ -1187,6 +1198,12 @@ function buildRuntimeEnv(args: {
     authorize: args.authorize,
     invokeStep,
     spawnChild: args.bindings.spawnChild,
+    // Wire the suspendable-child seam only when the host supplied it; a child
+    // that never runs an onTrigger section omits the binding, and the runtime
+    // body fails loud if a workflow reaches a section the env did not wire.
+    ...(args.bindings.spawnSuspendableChild !== undefined
+      ? { spawnSuspendableChild: args.bindings.spawnSuspendableChild }
+      : {}),
     clock: args.clock,
     newId: args.newId,
     drain: args.drainController,

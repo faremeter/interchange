@@ -66,6 +66,7 @@ import {
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createWorkflowSpawnChild,
+  createWorkflowSpawnSuspendableChild,
   createWorkflowStepInvoker,
   hashGrants,
   type ChildOutboundMailBridge,
@@ -1823,7 +1824,7 @@ export function createSidecarSubstrateFactory(
       };
     };
 
-    const runChild = createSidecarRunChild({
+    const childRunDeps = {
       substrate,
       workflowRunRepoId,
       workflowRunRef: validated.WORKFLOW_RUN_REF,
@@ -1832,13 +1833,25 @@ export function createSidecarSubstrateFactory(
       scheduler,
       invokeStep: childInvokeStep,
       evaluateGrants: evaluateGrantsAdapter,
-    });
+    };
+    const runChild = createSidecarRunChild(childRunDeps);
 
     const spawnChild = createWorkflowSpawnChild({
       substrate,
       principal,
       deployRef: validated.WORKFLOW_DEFINITION_REF,
       runChild,
+    });
+
+    // An onTrigger section runs each event's body as a suspendable child.
+    // The resolving adapter maps the body's definition ref to a definition
+    // and delegates to the sidecar spawner, which returns the live handle
+    // `runOnTrigger` drives across the body's approval parks.
+    const spawnSuspendableChild = createWorkflowSpawnSuspendableChild({
+      substrate,
+      principal,
+      deployRef: validated.WORKFLOW_DEFINITION_REF,
+      runSuspendableChild: createSidecarSpawnSuspendableChild(childRunDeps),
     });
 
     // Per-run scratch reclamation for the cold (multi-step) path. The
@@ -1946,6 +1959,7 @@ export function createSidecarSubstrateFactory(
       invokeStep,
       initialSources: stepInferenceSources,
       spawnChild,
+      spawnSuspendableChild,
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,
       loadParkedApproval,
