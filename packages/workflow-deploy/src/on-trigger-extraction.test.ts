@@ -45,11 +45,12 @@ describe("extractOnTriggerBodies", () => {
       },
     });
 
-    const deployed = await extractOnTriggerBodies({
-      workflow,
-      registry: createDefaultDirectorRegistry(),
-      workflowRepo: writer,
-    });
+    const { workflow: deployed, referencedDefinitions } =
+      await extractOnTriggerBodies({
+        workflow,
+        registry: createDefaultDirectorRegistry(),
+        workflowRepo: writer,
+      });
 
     // The body landed as its own workflow asset, keyed by the derived ref
     // (parent id + section step id), and its stored id is that ref so
@@ -68,6 +69,10 @@ describe("extractOnTriggerBodies", () => {
     if (section?.kind === "onTrigger") {
       expect(section.body).toEqual({ ref: bodyRef });
     }
+
+    // The extracted body also rides back so the deploy frame can carry it to
+    // the sidecar for materialization (the hub-stored copy is not on disk).
+    expect(referencedDefinitions.map((d) => d.id)).toEqual([bodyRef]);
   });
 
   test("leaves a workflow with no onTrigger section unchanged", async () => {
@@ -82,12 +87,14 @@ describe("extractOnTriggerBodies", () => {
       steps: { s: step({ agent: makeAgent("a") }) },
     });
 
-    const deployed = await extractOnTriggerBodies({
-      workflow,
-      registry: createDefaultDirectorRegistry(),
-      workflowRepo: writer,
-    });
+    const { workflow: deployed, referencedDefinitions } =
+      await extractOnTriggerBodies({
+        workflow,
+        registry: createDefaultDirectorRegistry(),
+        workflowRepo: writer,
+      });
 
     expect(deployed).toBe(workflow);
+    expect(referencedDefinitions).toEqual([]);
   });
 });

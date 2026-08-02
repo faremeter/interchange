@@ -365,36 +365,56 @@ export function bridgeOrchestratorDeployContent(
  * `sendAgentDeploy` with a `workflow` field structurally matching the
  * `AgentDeployFrame.workflow` schema.
  */
+/**
+ * Project a `WorkflowDefinition` onto the wire envelope the sidecar deploy
+ * router serializes verbatim into `workflow.json` and the workflow-process
+ * child re-validates against `workflowDefinitionEnvelopeSchema`: `id`,
+ * `triggers`, `steps`, `stepOrder`, optional `state`. The projection widens
+ * the `readonly` arrays at the boundary (the serializer never mutates them); a
+ * missing envelope-required field would round-trip into the child's envelope
+ * rejection on disk.
+ */
+function toWireWorkflowDefinition(definition: WorkflowDefinition): {
+  id: string;
+  triggers: unknown[];
+  stepOrder: string[];
+  steps: Record<string, unknown>;
+  state?: Record<string, unknown>;
+} {
+  return {
+    id: definition.id,
+    triggers: [...definition.triggers],
+    stepOrder: [...definition.stepOrder],
+    steps: definition.steps as Record<string, unknown>,
+    ...(definition.state !== undefined ? { state: definition.state } : {}),
+  };
+}
+
 export async function sendMultiStepDeployFrame(args: {
   sidecarRouter: SidecarRouter;
   agentAddress: string;
   config: HarnessConfig;
   definition: WorkflowDefinition;
   sources: Record<string, InferenceSource[]>;
+  /**
+   * Extracted onTrigger section bodies to carry inline so the sidecar
+   * materializes each as its own `assets/workflow/<bodyRef>/workflow.json`;
+   * a body child then resolves the ref off disk without a hub round-trip.
+   */
+  referencedDefinitions?: readonly WorkflowDefinition[];
 }): Promise<{ publicKey: string }> {
-  // The wire validator's projection types `stepOrder` and `triggers`
-  // as mutable arrays while `WorkflowDefinition` declares them as
-  // `readonly`. The wire serializer never mutates the arrays; the
-  // shallow copies pay the readonly-widen at the boundary. Every
-  // field listed here must match the structural envelope the
-  // workflow-process child re-validates against on materialization
-  // (`workflowDefinitionEnvelopeSchema`): `id`, `triggers`, `steps`,
-  // `stepOrder`, optional `state`. The sidecar deploy router
-  // serializes this object verbatim into `workflow.json`; a missing
-  // envelope-required field here would round-trip into the child's
-  // envelope rejection on disk.
-  const wireDefinition = {
-    id: args.definition.id,
-    triggers: [...args.definition.triggers],
-    stepOrder: [...args.definition.stepOrder],
-    steps: args.definition.steps as Record<string, unknown>,
-    ...(args.definition.state !== undefined
-      ? { state: args.definition.state }
-      : {}),
-  };
+  const wireDefinition = toWireWorkflowDefinition(args.definition);
   return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
     definition: wireDefinition,
     sources: args.sources,
+    ...(args.referencedDefinitions !== undefined &&
+    args.referencedDefinitions.length > 0
+      ? {
+          referencedDefinitions: args.referencedDefinitions.map((body) => ({
+            definition: toWireWorkflowDefinition(body),
+          })),
+        }
+      : {}),
   });
 }
 
@@ -480,6 +500,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     workflowFrame?: {
       definition: WorkflowDefinition;
       sources: Record<string, InferenceSource[]>;
+      referencedDefinitions?: readonly WorkflowDefinition[];
     };
     /**
      * Multi-step per-step stage. When true, Phase 1 binds a transient route
@@ -632,6 +653,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
             config,
             definition: workflowFrame.definition,
             sources: workflowFrame.sources,
+            ...(workflowFrame.referencedDefinitions !== undefined
+              ? { referencedDefinitions: workflowFrame.referencedDefinitions }
+              : {}),
           });
           deployAckPublicKey = ack.publicKey;
         } else if (stageOnly) {
@@ -732,6 +756,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       workflowFrame: {
         definition: deployParams.definition,
         sources: deployParams.sources,
+        ...(deployParams.referencedDefinitions !== undefined
+          ? { referencedDefinitions: deployParams.referencedDefinitions }
+          : {}),
       },
       ...(deployParams.toolPackagePins !== undefined
         ? { toolPackagePins: deployParams.toolPackagePins }
@@ -781,6 +808,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         config: deployParams.config,
         definition: deployParams.definition,
         sources: deployParams.sources,
+        ...(deployParams.referencedDefinitions !== undefined
+          ? { referencedDefinitions: deployParams.referencedDefinitions }
+          : {}),
       });
 
     const orchestrator = createWorkflowDeployOrchestrator({

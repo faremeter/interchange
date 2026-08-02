@@ -342,16 +342,29 @@ export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
  * `sources` entry; the validator rejects frames that violate this at the
  * boundary.
  */
+const WorkflowProjectionDefinition = type({
+  id: "string > 0",
+  triggers: "unknown[]",
+  stepOrder: "string[]",
+  steps: { "[string]": "unknown" },
+  "state?": "Record<string, unknown>",
+  "+": "delete",
+});
+
 export const AgentDeployWorkflow = type({
-  definition: type({
-    id: "string > 0",
-    triggers: "unknown[]",
-    stepOrder: "string[]",
-    steps: { "[string]": "unknown" },
-    "state?": "Record<string, unknown>",
-    "+": "delete",
-  }),
+  definition: WorkflowProjectionDefinition,
   sources: { "[string]": InferenceSource.array().atLeastLength(1) },
+  // Extracted onTrigger section bodies, materialized to their own workflow
+  // assets on the sidecar so a body child's spawn-child resolves the body by
+  // ref without a hub round-trip (the body id IS the asset ref). Optional: only
+  // an onTrigger deploy carries it, and every existing non-onTrigger deploy
+  // omits it and still validates. Per-body inference sources are deferred --
+  // body agent-step execution is not wired (INTR-310), so a body runs only
+  // non-inference primitives today -- hence each entry carries the body
+  // definition alone.
+  "referencedDefinitions?": type({
+    definition: WorkflowProjectionDefinition,
+  }).array(),
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {

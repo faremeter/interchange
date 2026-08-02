@@ -1872,6 +1872,15 @@ export function createSidecarDeployRouter(deps: {
       // and skips this; both land before the shared spawn core runs.
       await materializeWorkflowJson(dataDir, projection.definition);
 
+      // Materialize each extracted onTrigger section body as its own
+      // `assets/workflow/<bodyRef>/workflow.json` (the body id IS the ref) so a
+      // body child's spawn-child resolves it off disk without a hub round-trip.
+      // The hub also stores each body, but that copy is not on the sidecar; the
+      // deploy frame carries them here for exactly this reason.
+      for (const referenced of projection.referencedDefinitions ?? []) {
+        await materializeWorkflowJson(dataDir, referenced.definition);
+      }
+
       // Grants bridge: the spawned child does not see the frame; it reads
       // each step's grants out of `state/grants.json` in the step's
       // agent-state repo while the supervisor assembles the

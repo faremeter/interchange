@@ -102,6 +102,11 @@ export type SendMultiStepDeployFn = (params: {
   definition: WorkflowDefinition;
   sources: Record<string, InferenceSource[]>;
   hubPublicKey: string;
+  /**
+   * Extracted onTrigger section bodies to materialize on the sidecar so a
+   * body child resolves by ref. Empty/absent for a workflow with no section.
+   */
+  referencedDefinitions?: readonly WorkflowDefinition[];
 }) => Promise<MultiStepDeployResult>;
 
 /**
@@ -131,6 +136,11 @@ export type DeploySingleStepFn = (params: {
   sources: Record<string, InferenceSource[]>;
   hubPublicKey: string;
   toolPackagePins?: readonly ToolPackagePin[];
+  /**
+   * Extracted onTrigger section bodies to materialize on the sidecar so a
+   * body child resolves by ref. Empty/absent for a workflow with no section.
+   */
+  referencedDefinitions?: readonly WorkflowDefinition[];
 }) => Promise<MultiStepDeployResult>;
 
 /**
@@ -386,11 +396,12 @@ export function createWorkflowDeployOrchestrator(
       // spawns the body as a child run resolved by ref. The walk above ran on
       // the inline form so the operator approved the body agents' caps; the
       // stored definition carries `{ ref }` bodies from here on.
-      const deployed = await extractOnTriggerBodies({
-        workflow: args.workflow,
-        registry: directorRegistry,
-        workflowRepo,
-      });
+      const { workflow: deployed, referencedDefinitions } =
+        await extractOnTriggerBodies({
+          workflow: args.workflow,
+          registry: directorRegistry,
+          workflowRepo,
+        });
 
       await writeWorkflowRepoTree({
         workflow: deployed,
@@ -402,7 +413,9 @@ export function createWorkflowDeployOrchestrator(
       // the `definition` frame carried in the deploy, so it must be the one
       // whose onTrigger bodies are `{ ref }` -- the inline form throws at the
       // runtime. Extraction preserves `stepOrder` and every non-onTrigger
-      // step, so branch selection and per-step derivation are unaffected.
+      // step, so branch selection and per-step derivation are unaffected. The
+      // extracted body definitions ride the frame too (referencedDefinitions)
+      // so the sidecar materializes them on disk for the body child to resolve.
       const deployArgs: DeployWorkflowArgs = { ...args, workflow: deployed };
 
       // A one-step workflow has no distinct steps: the lone step IS the
@@ -414,6 +427,7 @@ export function createWorkflowDeployOrchestrator(
         const result = await runSingleStepAtHead({
           args: deployArgs,
           deploySingleStepAtHead,
+          referencedDefinitions,
         });
         return { publicKey: result.publicKey };
       }
@@ -422,6 +436,7 @@ export function createWorkflowDeployOrchestrator(
         args: deployArgs,
         launchSession,
         sendMultiStepDeploy,
+        referencedDefinitions,
       });
       return { publicKey: result.publicKey };
     },
@@ -442,8 +457,9 @@ export function createWorkflowDeployOrchestrator(
 async function runSingleStepAtHead(args: {
   args: DeployWorkflowArgs;
   deploySingleStepAtHead: DeploySingleStepFn | undefined;
+  referencedDefinitions: readonly WorkflowDefinition[];
 }): Promise<MultiStepDeployResult> {
-  const { args: deploy, deploySingleStepAtHead } = args;
+  const { args: deploy, deploySingleStepAtHead, referencedDefinitions } = args;
   const deploymentId = deploy.deploymentId;
   const deploymentDomain = deploy.deploymentDomain;
   if (deploymentId === undefined) {
@@ -540,6 +556,7 @@ async function runSingleStepAtHead(args: {
     ...(headToolPackagePins !== undefined
       ? { toolPackagePins: headToolPackagePins }
       : {}),
+    ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
   });
 }
 
@@ -547,8 +564,14 @@ async function runMultiStepBranch(args: {
   args: DeployWorkflowArgs;
   launchSession: LaunchSessionFn;
   sendMultiStepDeploy: SendMultiStepDeployFn | undefined;
+  referencedDefinitions: readonly WorkflowDefinition[];
 }): Promise<MultiStepDeployResult> {
-  const { args: deploy, launchSession, sendMultiStepDeploy } = args;
+  const {
+    args: deploy,
+    launchSession,
+    sendMultiStepDeploy,
+    referencedDefinitions,
+  } = args;
   const deploymentId = deploy.deploymentId;
   const deploymentDomain = deploy.deploymentDomain;
   if (deploymentId === undefined) {
@@ -657,6 +680,7 @@ async function runMultiStepBranch(args: {
     definition: deploy.workflow,
     sources,
     hubPublicKey: deploy.hubPublicKey,
+    ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
   });
 }
 
@@ -967,14 +991,25 @@ function extractAgent(primitive: Primitive): AgentDefinition<BaseEnv> | null {
  * author writes `{ inline }`. The ref is derived deterministically from the
  * parent workflow id and the section's step id, so a redeploy of the same
  * definition produces the same ref. A workflow with no inline section body
- * is returned unchanged. Exported for a focused unit test.
+ * is returned unchanged with no referenced bodies. Exported for a focused
+ * unit test.
+ *
+ * Returns the rewritten workflow AND each extracted body definition, so the
+ * deploy can both store the body at the hub (via `writeWorkflowRepoTree`) and
+ * carry it inline in the deploy frame for the sidecar to materialize (the
+ * hub-stored copy is not on the sidecar's disk, so a body child's spawn-child
+ * would otherwise fail to resolve the ref).
  */
 export async function extractOnTriggerBodies(args: {
   workflow: WorkflowDefinition;
   registry: DirectorRegistry;
   workflowRepo: WorkflowRepoWriter;
-}): Promise<WorkflowDefinition> {
+}): Promise<{
+  workflow: WorkflowDefinition;
+  referencedDefinitions: readonly WorkflowDefinition[];
+}> {
   const steps: Record<string, Primitive> = { ...args.workflow.steps };
+  const referencedDefinitions: WorkflowDefinition[] = [];
   let rewritten = false;
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "onTrigger") continue;
@@ -990,11 +1025,14 @@ export async function extractOnTriggerBodies(args: {
       walk: bodyWalk,
       workflowRepo: args.workflowRepo,
     });
+    referencedDefinitions.push(bodyDefinition);
     steps[stepId] = { ...primitive, body: { ref: bodyRef } };
     rewritten = true;
   }
-  if (!rewritten) return args.workflow;
-  return { ...args.workflow, steps };
+  if (!rewritten) {
+    return { workflow: args.workflow, referencedDefinitions: [] };
+  }
+  return { workflow: { ...args.workflow, steps }, referencedDefinitions };
 }
 
 async function writeWorkflowRepoTree(args: {
