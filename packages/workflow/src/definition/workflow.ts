@@ -364,10 +364,18 @@ function validateLoopBody(steps: Record<string, Primitive>): void {
 
 /**
  * Reject an onTrigger section whose body nests another onTrigger. An
- * onTrigger body is otherwise unrestricted -- unlike a loop body it may
- * await signals, run agent steps, and so on -- because an onTrigger
- * section IS the sanctioned long-lived input loop. The single restriction
- * is one subscription layer per run: a section may not contain a section.
+ * onTrigger body is otherwise unrestricted at DEFINITION time -- unlike a
+ * loop body it may await signals, sleep, spawn child workflows, and so on --
+ * because an onTrigger section IS the sanctioned long-lived input loop. The
+ * single restriction is one subscription layer per run: a section may not
+ * contain a section.
+ *
+ * PENDING INTR-310: a body agent `step` is accepted here but is not yet
+ * EXECUTABLE -- per-step agent invocation inside a body is stubbed, so a body
+ * runs only non-inference primitives (awaitSignal, sleep, childWorkflow) at
+ * runtime today. INTR-310 wires the body invoker + per-body sources, after
+ * which "run agent steps" becomes true at runtime as well.
+ *
  * A separate pass from `validateAcyclic`, which does not recurse into the
  * body's own (already-normalized) `WorkflowDefinition`.
  */
