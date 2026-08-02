@@ -354,6 +354,15 @@ export type SuspendableChildHandle = {
  * the child. onTrigger runs every event's body through this seam, so a body
  * step's approval is serviced without the body child ever needing to reach a
  * terminal to unblock the parent.
+ *
+ * `resumeFromEvents` re-adopts a body child that was mid-flight when the
+ * process crashed: the seam drives `runtimeRun` from the supplied durable log
+ * instead of a fresh `triggerPayload`, so a body step that was parked on an
+ * approval re-parks on its reserved channel. A re-park does NOT re-fire
+ * `onPark` (the park is already durable), so the caller does not observe the
+ * in-flight park via `next()` on resume; it relays the eventual grant via
+ * `resume` on the correlation it recovered from its own log, and `next()`
+ * resumes surfacing the body's subsequent parks and terminal as normal.
  */
 export type SpawnSuspendableChild = (input: {
   definitionRef: string;
@@ -362,6 +371,7 @@ export type SpawnSuspendableChild = (input: {
   parentRunId: string;
   parentStepId: string;
   signal: AbortSignal;
+  resumeFromEvents?: readonly WorkflowEvent[];
 }) => Promise<SuspendableChildHandle>;
 
 /**

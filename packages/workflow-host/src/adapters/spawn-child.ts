@@ -69,6 +69,7 @@ import type {
   SpawnSuspendableChild,
   SuspendableChildHandle,
   WorkflowDefinition,
+  WorkflowEvent,
 } from "@intx/workflow";
 
 const WORKFLOW_JSON_PATH = "workflow.json";
@@ -206,6 +207,7 @@ export type RunSuspendableChild = (input: {
   parentRunId: string;
   parentStepId: string;
   signal: AbortSignal;
+  resumeFromEvents?: readonly WorkflowEvent[];
 }) => Promise<SuspendableChildHandle>;
 
 export interface WorkflowSpawnSuspendableChildOpts {
@@ -255,6 +257,7 @@ export function createWorkflowSpawnSuspendableChild(
     parentRunId,
     parentStepId,
     signal,
+    resumeFromEvents,
   }) => {
     if (signal.aborted) {
       throw abortError(signal);
@@ -281,6 +284,7 @@ export function createWorkflowSpawnSuspendableChild(
       parentRunId,
       parentStepId,
       signal,
+      ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
     });
   };
 }

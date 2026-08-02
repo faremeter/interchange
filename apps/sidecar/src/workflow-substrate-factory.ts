@@ -1214,7 +1214,14 @@ export function createSidecarSpawnSuspendableChild(
   // rather than silently spawning.
   const runChild = createSidecarRunChild(deps);
 
-  return async ({ definition, childRunId, input, parentRunId, signal }) => {
+  return async ({
+    definition,
+    childRunId,
+    input,
+    parentRunId,
+    signal,
+    resumeFromEvents,
+  }) => {
     const { env: baseEnv, signalChannel } = await buildChildRunEnv({
       deps,
       directors,
@@ -1273,10 +1280,17 @@ export function createSidecarSpawnSuspendableChild(
       },
     };
 
-    const handle = runtimeRun(definition, env, {
-      runId: childRunId,
-      triggerPayload: input,
-    });
+    // On resume, drive the run from its durable log; the body step re-parks
+    // silently (a re-park does not re-fire onPark), and the caller relays the
+    // grant via resume on the correlation it recovered from its own log. On a
+    // fresh spawn, seed the run with the event's trigger payload.
+    const handle = runtimeRun(
+      definition,
+      env,
+      resumeFromEvents !== undefined
+        ? { runId: childRunId, resumeFromEvents }
+        : { runId: childRunId, triggerPayload: input },
+    );
 
     const cancelOnAbort = (): void => {
       void handle.cancel("supervisor-operator", "parent cancelled");
