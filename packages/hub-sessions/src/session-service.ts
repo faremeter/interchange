@@ -56,6 +56,7 @@ import {
   type DeployWorkflowResult,
   type DeploySingleStepFn,
   type LaunchSessionFn,
+  type ReferencedBodyDefinition,
   type SendMultiStepDeployFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
@@ -398,10 +399,11 @@ export async function sendMultiStepDeployFrame(args: {
   sources: Record<string, InferenceSource[]>;
   /**
    * Extracted onTrigger section bodies to carry inline so the sidecar
-   * materializes each as its own `assets/workflow/<bodyRef>/workflow.json`;
-   * a body child then resolves the ref off disk without a hub round-trip.
+   * materializes each as its own `assets/workflow/<bodyRef>/workflow.json`
+   * plus a co-located `sources.json`; a body child then resolves both the ref
+   * and its inference sources off disk without a hub round-trip.
    */
-  referencedDefinitions?: readonly WorkflowDefinition[];
+  referencedDefinitions?: readonly ReferencedBodyDefinition[];
 }): Promise<{ publicKey: string }> {
   const wireDefinition = toWireWorkflowDefinition(args.definition);
   return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
@@ -411,7 +413,8 @@ export async function sendMultiStepDeployFrame(args: {
     args.referencedDefinitions.length > 0
       ? {
           referencedDefinitions: args.referencedDefinitions.map((body) => ({
-            definition: toWireWorkflowDefinition(body),
+            definition: toWireWorkflowDefinition(body.definition),
+            sources: body.sources,
           })),
         }
       : {}),
@@ -500,7 +503,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     workflowFrame?: {
       definition: WorkflowDefinition;
       sources: Record<string, InferenceSource[]>;
-      referencedDefinitions?: readonly WorkflowDefinition[];
+      referencedDefinitions?: readonly ReferencedBodyDefinition[];
     };
     /**
      * Multi-step per-step stage. When true, Phase 1 binds a transient route

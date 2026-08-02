@@ -78,6 +78,26 @@ export type LaunchSessionFn = (params: {
 }) => Promise<void>;
 
 /**
+ * An extracted onTrigger section body carried inline in the deploy frame:
+ * the rewritten `{ ref }`-target definition plus the body's own per-step
+ * inference-source pins. The sidecar materializes both alongside each other
+ * (`assets/workflow/<bodyRef>/workflow.json` + `sources.json`) so a body
+ * child resolves its definition AND its inference sources off disk -- the
+ * body child runs in-process (no process env) and its env is lost across a
+ * restart, so the sources must be durable and co-located with the body
+ * definition, not passed through an ephemeral channel.
+ *
+ * `sources` is keyed by the body's step ids (matching
+ * `definition.stepOrder`), each an ordered non-empty failover chain, exactly
+ * as the top-level deploy pins its own steps. Every body step id must have a
+ * matching entry, per the wire validator's per-body narrow.
+ */
+export interface ReferencedBodyDefinition {
+  readonly definition: WorkflowDefinition;
+  readonly sources: Record<string, InferenceSource[]>;
+}
+
+/**
  * Multi-step deploy hand-off. Called once after the per-step
  * provisioning loop has completed; mirrors the wire shape the deploy
  * router consumes (the `agent.deploy` frame's `workflow?` field). The
@@ -106,7 +126,7 @@ export type SendMultiStepDeployFn = (params: {
    * Extracted onTrigger section bodies to materialize on the sidecar so a
    * body child resolves by ref. Empty/absent for a workflow with no section.
    */
-  referencedDefinitions?: readonly WorkflowDefinition[];
+  referencedDefinitions?: readonly ReferencedBodyDefinition[];
 }) => Promise<MultiStepDeployResult>;
 
 /**
@@ -140,7 +160,7 @@ export type DeploySingleStepFn = (params: {
    * Extracted onTrigger section bodies to materialize on the sidecar so a
    * body child resolves by ref. Empty/absent for a workflow with no section.
    */
-  referencedDefinitions?: readonly WorkflowDefinition[];
+  referencedDefinitions?: readonly ReferencedBodyDefinition[];
 }) => Promise<MultiStepDeployResult>;
 
 /**
@@ -401,6 +421,8 @@ export function createWorkflowDeployOrchestrator(
           workflow: args.workflow,
           registry: directorRegistry,
           workflowRepo,
+          config: args.config,
+          operatorApprovals: args.operatorApprovals,
         });
 
       await writeWorkflowRepoTree({
@@ -457,7 +479,7 @@ export function createWorkflowDeployOrchestrator(
 async function runSingleStepAtHead(args: {
   args: DeployWorkflowArgs;
   deploySingleStepAtHead: DeploySingleStepFn | undefined;
-  referencedDefinitions: readonly WorkflowDefinition[];
+  referencedDefinitions: readonly ReferencedBodyDefinition[];
 }): Promise<MultiStepDeployResult> {
   const { args: deploy, deploySingleStepAtHead, referencedDefinitions } = args;
   const deploymentId = deploy.deploymentId;
@@ -564,7 +586,7 @@ async function runMultiStepBranch(args: {
   args: DeployWorkflowArgs;
   launchSession: LaunchSessionFn;
   sendMultiStepDeploy: SendMultiStepDeployFn | undefined;
-  referencedDefinitions: readonly WorkflowDefinition[];
+  referencedDefinitions: readonly ReferencedBodyDefinition[];
 }): Promise<MultiStepDeployResult> {
   const {
     args: deploy,
@@ -994,22 +1016,30 @@ function extractAgent(primitive: Primitive): AgentDefinition<BaseEnv> | null {
  * is returned unchanged with no referenced bodies. Exported for a focused
  * unit test.
  *
- * Returns the rewritten workflow AND each extracted body definition, so the
- * deploy can both store the body at the hub (via `writeWorkflowRepoTree`) and
- * carry it inline in the deploy frame for the sidecar to materialize (the
- * hub-stored copy is not on the sidecar's disk, so a body child's spawn-child
- * would otherwise fail to resolve the ref).
+ * Returns the rewritten workflow AND each extracted body as a
+ * `ReferencedBodyDefinition` ({@link ReferencedBodyDefinition}) -- the body
+ * definition plus its own per-step inference-source pins -- so the deploy can
+ * both store the body at the hub (via `writeWorkflowRepoTree`) and carry it
+ * inline in the deploy frame for the sidecar to materialize (the hub-stored
+ * copy is not on the sidecar's disk, so a body child's spawn-child would
+ * otherwise fail to resolve the ref, and the body child -- in-process, env
+ * lost across a restart -- needs its sources durable on disk beside it). Each
+ * body's sources are pinned against the operator-approved set exactly as the
+ * top-level steps are, and a tool-bearing body agent is rejected here (see
+ * `pinBodySources`).
  */
 export async function extractOnTriggerBodies(args: {
   workflow: WorkflowDefinition;
   registry: DirectorRegistry;
   workflowRepo: WorkflowRepoWriter;
+  config: HarnessConfig;
+  operatorApprovals: ApprovalSet;
 }): Promise<{
   workflow: WorkflowDefinition;
-  referencedDefinitions: readonly WorkflowDefinition[];
+  referencedDefinitions: readonly ReferencedBodyDefinition[];
 }> {
   const steps: Record<string, Primitive> = { ...args.workflow.steps };
-  const referencedDefinitions: WorkflowDefinition[] = [];
+  const referencedDefinitions: ReferencedBodyDefinition[] = [];
   let rewritten = false;
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "onTrigger") continue;
@@ -1025,7 +1055,19 @@ export async function extractOnTriggerBodies(args: {
       walk: bodyWalk,
       workflowRepo: args.workflowRepo,
     });
-    referencedDefinitions.push(bodyDefinition);
+    // Pin the body's own per-step inference sources (gated against the same
+    // operator-approved set) and reject any tool-bearing body agent -- both in
+    // `pinBodySources`. The pins ride inline so the body child resolves
+    // inference off disk, durably across a restart.
+    const bodySources = pinBodySources({
+      body: bodyDefinition,
+      config: args.config,
+      operatorApprovals: args.operatorApprovals,
+    });
+    referencedDefinitions.push({
+      definition: bodyDefinition,
+      sources: bodySources,
+    });
     steps[stepId] = { ...primitive, body: { ref: bodyRef } };
     rewritten = true;
   }
@@ -1033,6 +1075,81 @@ export async function extractOnTriggerBodies(args: {
     return { workflow: args.workflow, referencedDefinitions: [] };
   }
   return { workflow: { ...args.workflow, steps }, referencedDefinitions };
+}
+
+/**
+ * Pin every step of an extracted onTrigger body to an operator-approved
+ * inference source, mirroring the top-level multi-step per-step pin: a single
+ * source wrapped in a one-element failover chain, agent-preferred when
+ * approved and available, else the gated `defaultSource`. Non-agent body
+ * steps (sleep, awaitSignal, childWorkflow) pin the fallback exactly like the
+ * top-level non-agent steps, so the body's `sources` covers every `stepOrder`
+ * entry -- the coverage the wire validator's per-body narrow requires.
+ *
+ * A body agent that declares any tool surface is rejected here
+ * (`assertBodyAgentToolless`): INTR-310 wires body agent-step execution but
+ * DEFERS staging body tool trees, while the section already unions a body
+ * agent's tool grants into its own authorized set -- so a tool-bearing body
+ * agent would be authorized for tools whose deploy tree is never staged and
+ * would materialize an empty tool set at invoke. Reject at deploy rather than
+ * ship that silent-correctness trap.
+ */
+function pinBodySources(args: {
+  body: WorkflowDefinition;
+  config: HarnessConfig;
+  operatorApprovals: ApprovalSet;
+}): Record<string, InferenceSource[]> {
+  const sources: Record<string, InferenceSource[]> = {};
+  for (const stepId of args.body.stepOrder) {
+    const primitive = args.body.steps[stepId];
+    if (primitive === undefined) {
+      throw new WorkflowDefinitionInvalidError(
+        args.body.id,
+        `body step ${stepId} listed in stepOrder is missing from steps`,
+      );
+    }
+    const stepAgent = extractAgent(primitive);
+    assertBodyAgentToolless(stepAgent, args.body.id, stepId);
+    sources[stepId] = [
+      pickStepInferenceSource({
+        stepAgent,
+        stepId,
+        workflowId: args.body.id,
+        config: args.config,
+        operatorApprovals: args.operatorApprovals,
+      }),
+    ];
+  }
+  return sources;
+}
+
+/**
+ * Reject a body agent that declares any tool surface (`toolFactories` or
+ * `toolPackagePins`). Body agent tool trees are not yet staged (INTR-310
+ * follow-up); the section unions a body agent's tool grants into its own
+ * authorized set, so a tool-bearing body agent would be authorized for tools
+ * whose deploy tree never landed on the sidecar and would materialize an
+ * empty tool set at invoke -- a silent-correctness trap. Fail loud at deploy
+ * until body tool trees ship. A toolless body agent, or a non-agent step
+ * (`agent === null`), is accepted.
+ */
+function assertBodyAgentToolless(
+  agent: AgentDefinition<BaseEnv> | null,
+  bodyId: string,
+  stepId: string,
+): void {
+  if (agent === null) return;
+  const toolFactoryCount = agent.toolFactories.length;
+  const toolPinCount = agent.toolPackagePins?.length ?? 0;
+  if (toolFactoryCount === 0 && toolPinCount === 0) return;
+  throw new WorkflowDefinitionInvalidError(
+    bodyId,
+    `onTrigger body step ${stepId} declares a tool-bearing agent (${String(
+      toolFactoryCount,
+    )} tool factories, ${String(
+      toolPinCount,
+    )} tool-package pins); body agent tools are not yet supported (INTR-310 follow-up), and shipping one would authorize the body agent for tools whose deploy tree is never staged`,
+  );
 }
 
 async function writeWorkflowRepoTree(args: {

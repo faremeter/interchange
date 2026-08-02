@@ -351,6 +351,28 @@ const WorkflowProjectionDefinition = type({
   "+": "delete",
 });
 
+/**
+ * A workflow projection paired with its per-step inference-source pins, with
+ * the invariant that every `stepOrder` entry has a `sources` failover chain.
+ * The narrow here is the same coverage check the top-level `AgentDeployWorkflow`
+ * applies to its own definition; this reusable form carries it into each
+ * extracted onTrigger body under `referencedDefinitions`, so a body's sources
+ * cover the body's stepOrder just as the top-level's cover the top-level's.
+ */
+const WorkflowProjectionWithSources = type({
+  definition: WorkflowProjectionDefinition,
+  sources: { "[string]": InferenceSource.array().atLeastLength(1) },
+}).narrow((value, ctx) => {
+  for (const stepId of value.definition.stepOrder) {
+    if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
+      return ctx.mustBe(
+        `a workflow projection whose sources cover every step in stepOrder; ${JSON.stringify(stepId)} is missing`,
+      );
+    }
+  }
+  return true;
+});
+
 export const AgentDeployWorkflow = type({
   definition: WorkflowProjectionDefinition,
   sources: { "[string]": InferenceSource.array().atLeastLength(1) },
@@ -358,13 +380,11 @@ export const AgentDeployWorkflow = type({
   // assets on the sidecar so a body child's spawn-child resolves the body by
   // ref without a hub round-trip (the body id IS the asset ref). Optional: only
   // an onTrigger deploy carries it, and every existing non-onTrigger deploy
-  // omits it and still validates. Per-body inference sources are deferred --
-  // body agent-step execution is not wired (INTR-310), so a body runs only
-  // non-inference primitives today -- hence each entry carries the body
-  // definition alone.
-  "referencedDefinitions?": type({
-    definition: WorkflowProjectionDefinition,
-  }).array(),
+  // omits it and still validates. Each entry carries the body definition AND
+  // the body's own per-step inference-source pins, materialized beside the body
+  // on disk (`sources.json`) so a body child -- in-process, its env lost across
+  // a restart -- resolves inference durably without a hub round-trip.
+  "referencedDefinitions?": WorkflowProjectionWithSources.array(),
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {

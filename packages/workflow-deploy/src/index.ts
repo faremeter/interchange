@@ -48,6 +48,7 @@ export {
   type DeployWorkflowResult,
   type LaunchSessionFn,
   type MultiStepDeployResult,
+  type ReferencedBodyDefinition,
   type SendMultiStepDeployFn,
   type WorkflowDeployOrchestrator,
   type WorkflowDeployOrchestratorDeps,
