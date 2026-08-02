@@ -885,7 +885,7 @@ export function createWorkflowRoutes({
         );
       }
 
-      const delivered = sidecarRouter.routeMail(address, base64);
+      const delivered = sidecarRouter.routeMail(address, base64, messageId);
       if (!delivered) {
         return c.json(
           {

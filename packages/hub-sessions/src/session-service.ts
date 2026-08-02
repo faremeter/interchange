@@ -1326,7 +1326,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const rawMessage = assembleMessage(headers, signedContent, signature);
     const base64 = base64Encode(rawMessage);
 
-    const delivered = sidecarRouter.routeMail(agentAddress, base64);
+    const delivered = sidecarRouter.routeMail(agentAddress, base64, messageId);
     if (!delivered) {
       throw new Error(
         `Failed to deliver message to ${agentAddress}: agent is unreachable`,

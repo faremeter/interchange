@@ -229,13 +229,40 @@ export type SignalCorrelationRegisterAckFrame =
  * A message to deliver to a local agent's INBOX. The hub routes inbound
  * mail (from UI users, from agents on other sidecars) to the correct
  * sidecar connection.
+ *
+ * `messageId` is the hub-minted id of this delivery, carried so the sidecar
+ * can acknowledge durable receipt (`mail.inbound.ack`) keyed on the SAME id
+ * the hub tracks -- no per-side re-derivation. It is the id the hub minted at
+ * ingress (also the message's `Message-ID` header), so a redelivery replays
+ * identical bytes and the downstream `RunStarted` dedup (consumedMessageIds)
+ * makes at-least-once effectively-once. Present only on hub-originated mail
+ * that participates in the ack/retry handshake (workflow trigger mail, session
+ * conversation mail); agent-to-agent relayed mail omits it.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
   agentAddress: "string",
   rawMessage: "string",
+  "messageId?": "string",
 });
 export type MailInboundFrame = typeof MailInboundFrame.infer;
+
+/**
+ * Sidecar acknowledges durable receipt of a `mail.inbound`: the message is in
+ * the agent's on-disk inbox. The hub holds each delivered mail in a pending
+ * map and retries until this ack lands (or reconnect-redelivers it), so a
+ * message dropped in the connected/reconnecting window is not silently lost.
+ * Keyed on the hub-minted `messageId` the `mail.inbound` carried, so the ack
+ * clears exactly the pending entry it resolves; the ack is only sent AFTER the
+ * durable inbox write resolves (a non-ack IS the retry signal). At-least-once
+ * delivery is made effectively-once by the `RunStarted`/signal dedup guards.
+ */
+export const MailInboundAckFrame = type({
+  type: "'mail.inbound.ack'",
+  agentAddress: "string",
+  messageId: "string",
+});
+export type MailInboundAckFrame = typeof MailInboundAckFrame.infer;
 
 /**
  * Deliver a workflow-run signal to a multi-step deployment's

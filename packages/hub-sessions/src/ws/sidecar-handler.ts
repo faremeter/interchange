@@ -97,7 +97,11 @@ export type SidecarRouter = {
   handleMessage(ws: WsHandle, data: string): void;
   handleClose(ws: WsHandle): void;
 
-  routeMail(agentAddress: string, rawMessage: string): boolean;
+  routeMail(
+    agentAddress: string,
+    rawMessage: string,
+    messageId?: string,
+  ): boolean;
   /**
    * Deliver a run's authorization grants to the sidecar hosting the named
    * deployment-level mail address, ahead of the trigger mail that starts the
@@ -1898,22 +1902,33 @@ export function createSidecarRouter(
     });
   }
 
-  function routeMail(agentAddress: string, rawMessage: string): boolean {
+  function routeMail(
+    agentAddress: string,
+    rawMessage: string,
+    messageId?: string,
+  ): boolean {
+    // Carry the hub-minted messageId on the frame so the sidecar's durable-
+    // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
+    // a redelivery replays identical bytes for the downstream RunStarted dedup.
+    // Optional: the workflow-trigger and session-conversation callers supply
+    // it (they participate in the ack/retry handshake); a caller without a
+    // hub-minted id omits it and the delivery is not tracked for redelivery.
+    const frame: HubFrame = {
+      type: "mail.inbound",
+      agentAddress,
+      rawMessage,
+      ...(messageId !== undefined ? { messageId } : {}),
+    };
     const ws = addressIndex.get(agentAddress);
     if (ws !== undefined) {
       const conn = connections.get(ws);
       if (conn !== undefined) {
-        conn.send({
-          type: "mail.inbound",
-          agentAddress,
-          rawMessage,
-        });
+        conn.send(frame);
         return true;
       }
     }
 
     // If the agent recently disconnected, queue for delivery on reconnect.
-    const frame: HubFrame = { type: "mail.inbound", agentAddress, rawMessage };
     return enqueueForDisconnected(agentAddress, frame);
   }
 
