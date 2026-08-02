@@ -30,8 +30,69 @@ import {
   type SpawnSuspendableChild,
   type StepInvoker,
   type WorkflowDefinition,
+  type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+
+const at = new Date().toISOString();
+
+// The durable parent log a section leaves when a body child is parked
+// mid-approval: the container `StepStarted`, the `ChildSpawned` for event 0's
+// body, and the approval `SignalAwaited` the container proxied up on the body's
+// correlation. With `grantDelivered` it also carries the `SignalReceived` that
+// landed before the crash relayed it -- the narrow window where the container
+// reduces to `in-flight` with its `awaitingSignal` stripped.
+function midApprovalSeed(
+  runId: string,
+  corr: string,
+  opts: { grantDelivered: boolean },
+): WorkflowEvent[] {
+  const events: WorkflowEvent[] = [
+    {
+      kind: "RunStarted",
+      seq: 1,
+      at,
+      runId,
+      definitionHash: "x",
+      trigger: { type: "manual", payload: { text: "event-0" } },
+    },
+    {
+      kind: "StepStarted",
+      seq: 2,
+      at,
+      stepId: "section",
+      attempt: 1,
+      input: { ref: "inline:null" },
+    },
+    {
+      kind: "ChildSpawned",
+      seq: 3,
+      at,
+      stepId: "section",
+      childRunId: "section__0",
+      childDefinitionRef: "body-ref",
+    },
+    {
+      kind: "SignalAwaited",
+      seq: 4,
+      at,
+      stepId: "section",
+      signalName: signalName(corr),
+      parkKind: "approval",
+    },
+  ];
+  if (opts.grantDelivered) {
+    events.push({
+      kind: "SignalReceived",
+      seq: 5,
+      at,
+      signalName: signalName(corr),
+      signalId: "grant-1",
+      payload: { approved: true },
+    });
+  }
+  return events;
+}
 
 const noopInvokeStep: StepInvoker = () => {
   throw new Error("onTrigger test: invokeStep must not be called");
@@ -250,5 +311,106 @@ describe("runOnTrigger", () => {
     expect(
       log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
     ).toBe(false);
+  });
+
+  test("resumes a body parked mid-approval and relays the grant after restart", async () => {
+    const runId = "sec-resume";
+    const corr = "body-corr-1";
+    const seed = midApprovalSeed(runId, corr, { grantDelivered: false });
+
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    let resumedCorr: string | undefined;
+    let resumedDecision: unknown;
+    let spawnResume: readonly WorkflowEvent[] | undefined;
+    const spawnSuspendableChild: SpawnSuspendableChild = async ({
+      resumeFromEvents,
+    }) => {
+      spawnResume = resumeFromEvents;
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async (correlationId, decision) => {
+          resumedCorr = correlationId;
+          resumedDecision = decision;
+        },
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // The container was re-offered on restart: it re-spawned the body from its
+    // log and re-parked on the same correlation. Delivering the grant relays it
+    // into the body, which completes, and the section re-arms for the next
+    // event. (The in-memory channel queues a pre-await delivery, so this need
+    // not race the re-park.)
+    await channel.deliver(signalName(corr), { approved: true }, "grant-1");
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(spawnResume).toEqual([]);
+    expect(resumedCorr).toBe(corr);
+    expect(resumedDecision).toEqual({ approved: true });
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("relays an approval grant that landed before the crash relayed it", async () => {
+    const runId = "sec-resume-grant";
+    const corr = "body-corr-2";
+    // The grant's SignalReceived is durable but was never relayed into the body:
+    // the container reduces to in-flight with awaitingSignal stripped, so the
+    // correlation and decision live only in the log.
+    const seed = midApprovalSeed(runId, corr, { grantDelivered: true });
+
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    let resumedCorr: string | undefined;
+    let resumedDecision: unknown;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => ({
+      next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+      resume: async (correlationId, decision) => {
+        resumedCorr = correlationId;
+        resumedDecision = decision;
+      },
+    });
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // No fresh delivery: the driver recovers the decision from the durable
+    // SignalReceived and relays it directly into the re-spawned body, which
+    // completes and re-arms.
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(resumedCorr).toBe(corr);
+    expect(resumedDecision).toEqual({ approved: true });
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
   });
 });
