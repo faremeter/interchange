@@ -788,6 +788,76 @@ describe("loop validation", () => {
   });
 });
 
+describe("awaitSignal onTimeout validation", () => {
+  test("accepts a timed awaitSignal routing to a successor on timeout", () => {
+    const recover = makeAgent("recover");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          gate: awaitSignal({ name: "go", timeout: 100, onTimeout: "recover" }),
+          recover: step({ agent: recover, after: ["gate"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects onTimeout without a timeout", () => {
+    const recover = makeAgent("recover");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          gate: awaitSignal({ name: "go", onTimeout: "recover" }),
+          recover: step({ agent: recover, after: ["gate"] }),
+        },
+      }),
+    ).toThrow(/onTimeout recover but sets no timeout/);
+  });
+
+  test("rejects onTimeout naming an unknown step", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          gate: awaitSignal({ name: "go", timeout: 100, onTimeout: "nope" }),
+        },
+      }),
+    ).toThrow(/onTimeout nope which is not a known step/);
+  });
+
+  test("rejects onTimeout naming itself", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          gate: awaitSignal({ name: "go", timeout: 100, onTimeout: "gate" }),
+        },
+      }),
+    ).toThrow(/cannot name itself as onTimeout/);
+  });
+
+  test("rejects an onTimeout target that does not depend on the gate", () => {
+    // onTimeout routes only on a fired timer, so the target must name the gate
+    // in its after (mirroring loop.onExhausted) -- else it would run every run.
+    const recover = makeAgent("recover");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          gate: awaitSignal({ name: "go", timeout: 100, onTimeout: "recover" }),
+          recover: step({ agent: recover }),
+        },
+      }),
+    ).toThrow(/onTimeout recover must name gate in its after/);
+  });
+});
+
 describe("primitive defaults", () => {
   test("step defaults drainBehavior to cancel (batch)", () => {
     const s = step({ agent: makeAgent("a") });

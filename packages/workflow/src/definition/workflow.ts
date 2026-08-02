@@ -321,6 +321,35 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
         );
       }
     }
+    if (primitive.kind === "awaitSignal" && primitive.onTimeout !== undefined) {
+      // onTimeout routes to a successor when the gate's timer fires, so it is
+      // only meaningful WITH a timeout; a timeout WITHOUT onTimeout stays legal
+      // (the gate fails on timeout, the pre-existing behavior).
+      if (primitive.timeout === undefined) {
+        throw new Error(
+          `awaitSignal ${stepId} names onTimeout ${primitive.onTimeout} but sets no timeout; onTimeout only routes when a timer fires`,
+        );
+      }
+      if (!ids.has(primitive.onTimeout)) {
+        throw new Error(
+          `awaitSignal ${stepId} names onTimeout ${primitive.onTimeout} which is not a known step`,
+        );
+      }
+      if (primitive.onTimeout === stepId) {
+        throw new Error(
+          `awaitSignal ${stepId} cannot name itself as onTimeout`,
+        );
+      }
+      // onTimeout routes only on a fired timer, so it must depend on the gate.
+      // Without `after: [gate]` it would be schedulable from RunStarted and
+      // fire on every run.
+      const target = steps[primitive.onTimeout];
+      if (target !== undefined && !(target.after?.includes(stepId) ?? false)) {
+        throw new Error(
+          `awaitSignal ${stepId} onTimeout ${primitive.onTimeout} must name ${stepId} in its after`,
+        );
+      }
+    }
   }
 }
 
@@ -476,6 +505,13 @@ function buildDependencyAdjacency(
       // forward step (redundant with its `after` edge), but naming an
       // ancestor closes a cycle. Include it so a back-edge is rejected.
       addEdge(stepId, primitive.onExhausted);
+    }
+    if (primitive.kind === "awaitSignal" && primitive.onTimeout !== undefined) {
+      // An awaitSignal's onTimeout is a routing target like a loop's
+      // onExhausted: on a timeout the gate routes to it instead of failing.
+      // Same shape -- include the edge so an onTimeout naming an ancestor is
+      // rejected as a cycle rather than corrupting branch pruning at runtime.
+      addEdge(stepId, primitive.onTimeout);
     }
   }
   return adjacency;
