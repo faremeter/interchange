@@ -76,7 +76,7 @@ async function seedTimerSet(
       [`runs/${runId}/events/${String(seq)}.json`]: JSON.stringify({
         seq,
         type: "TimerSet",
-        data: payload,
+        ...payload,
       }),
     },
     message: `seed TimerSet ${timerId}`,
@@ -102,11 +102,10 @@ async function readTimerFiredBlobs(
     const obj = parsed as {
       seq?: unknown;
       type?: unknown;
-      data?: { timerId?: unknown };
+      timerId?: unknown;
     };
     if (obj.type !== "TimerFired") continue;
-    if (obj.data === undefined) continue;
-    const timerId = obj.data.timerId;
+    const timerId = obj.timerId;
     if (typeof timerId !== "string") continue;
     const bodySeq = typeof obj.seq === "number" ? obj.seq : undefined;
     out.push({ seq: Number.parseInt(seqStr, 10), bodySeq, timerId });
@@ -196,7 +195,7 @@ describe("workflow-host scheduler", () => {
           [`runs/${runId}/events/2.json`]: JSON.stringify({
             seq: 2,
             type: "TimerFired",
-            data: { timerId: "t-fired" },
+            timerId: "t-fired",
           }),
         },
         message: "TimerFired t-fired",
@@ -251,7 +250,7 @@ describe("workflow-host scheduler", () => {
           [`runs/${runId}/events/2.json`]: JSON.stringify({
             seq: 2,
             type: "TimerFired",
-            data: { timerId: "t-fired" },
+            timerId: "t-fired",
           }),
         },
         message: "TimerFired t-fired",
@@ -313,10 +312,8 @@ describe("workflow-host scheduler", () => {
           "runs/r2/events.jsonl": JSON.stringify({
             seq: 0,
             type: "TimerSet",
-            data: {
-              timerId: "t-sealed",
-              fireAt: new Date(farFuture).toISOString(),
-            },
+            timerId: "t-sealed",
+            fireAt: new Date(farFuture).toISOString(),
           }),
         },
         message: "seal r2",
@@ -395,7 +392,8 @@ describe("workflow-host scheduler", () => {
         files: {
           "runs/r1/events/not-a-seq.json": JSON.stringify({
             type: "TimerSet",
-            data: { timerId: "x", fireAt: new Date().toISOString() },
+            timerId: "x",
+            fireAt: new Date().toISOString(),
           }),
         },
         message: "bad filename",
@@ -537,7 +535,6 @@ describe("workflow-host scheduler", () => {
           [`runs/${runId}/events/0.json`]: JSON.stringify({
             seq: 0,
             type: "RunStarted",
-            data: {},
           }),
         },
         message: "RunStarted",
@@ -563,10 +560,8 @@ describe("workflow-host scheduler", () => {
             [`runs/${runId}/events/1.json`]: JSON.stringify({
               seq: 1,
               type: "TimerSet",
-              data: {
-                timerId: "t-live",
-                fireAt: new Date(fireAtMs).toISOString(),
-              },
+              timerId: "t-live",
+              fireAt: new Date(fireAtMs).toISOString(),
             }),
           },
           message: "TimerSet t-live",
@@ -630,10 +625,8 @@ describe("workflow-host scheduler against workflowRunKindHandler", () => {
           [`runs/${runId}/events/0.json`]: JSON.stringify({
             seq: 0,
             type: "TimerSet",
-            data: {
-              timerId: "t-real",
-              fireAt: new Date(fireAtMs).toISOString(),
-            },
+            timerId: "t-real",
+            fireAt: new Date(fireAtMs).toISOString(),
           }),
         },
         message: "seed TimerSet against real handler",

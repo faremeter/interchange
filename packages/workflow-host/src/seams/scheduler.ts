@@ -26,15 +26,17 @@
 //
 // The scheduler reads workflow-event blobs at the canonical layout
 // `runs/<runId>/events/<seq>.json` and writes a fresh blob at the
-// next-seq slot for each `TimerFired` commit. The blob envelope
-// carries `{ seq, type, data }` at the top level: `seq` is the
-// integer that also appears in the filename, `type` is the
-// `subscribeKind` discriminator the scheduler narrows on, and `data`
-// carries the timer payload. The workflow-run kind handler's
-// `validatePush` enforces that every event blob's body `seq` matches
-// the filename's seq, so the scheduler mints the next seq inside the
-// `writeTreePreservingPrefix` merge step and writes both into the
-// envelope and the filename.
+// next-seq slot for each `TimerFired` commit. The blob envelope is
+// FLAT -- `{ seq, type, ...eventFields }` -- matching the runtime
+// repo-store's `workflowEventToOnDisk` and the workflow-run kind
+// handler's `EventEnvelope` contract: `seq` is the integer that also
+// appears in the filename, `type` is the `subscribeKind` discriminator
+// the scheduler narrows on, and the timer fields (`timerId`, `fireAt`,
+// ...) sit alongside them, NOT under a nested `data` object. The kind
+// handler's `validatePush` enforces that every event blob's body `seq`
+// matches the filename's seq, so the scheduler mints the next seq
+// inside the `writeTreePreservingPrefix` merge step and writes both
+// into the envelope and the filename.
 
 import { type } from "arktype";
 
@@ -62,12 +64,16 @@ import {
 export const TimerEventEnvelope = type({
   seq: "number >= 0",
   type: "'TimerSet' | 'TimerFired'",
-  data: {
-    timerId: "string",
-    "fireAt?": "string",
-    "stepId?": "string | null",
-    "cron?": "string | null",
-  },
+  // FLAT on-disk shape, matching the runtime repo-store's `workflowEventToOnDisk`
+  // ({ seq, type, ...eventFields }) and the substrate's enforced `EventEnvelope`
+  // contract -- NOT a nested `data` object. The scheduler was the lone component
+  // writing/reading a nested `data` envelope; nothing else parsed it, so a
+  // deployed timer never round-tripped until this was aligned.
+  timerId: "string",
+  "fireAt?": "string",
+  "stepId?": "string | null",
+  "cron?": "string | null",
+  "+": "ignore",
 });
 export type TimerEventEnvelope = typeof TimerEventEnvelope.infer;
 
@@ -221,26 +227,26 @@ export function createWorkflowHostScheduler(
       for await (const entry of iter) {
         if (stopped) break;
         if (entry.event.type !== "TimerSet") continue;
-        const fireAt = entry.event.data.fireAt;
+        const fireAt = entry.event.fireAt;
         if (fireAt === undefined) {
           throw new Error(
-            `scheduler live ingest: TimerSet in ${String(repoId.id)} run ${entry.runId} timer ${entry.event.data.timerId} missing fireAt`,
+            `scheduler live ingest: TimerSet in ${String(repoId.id)} run ${entry.runId} timer ${entry.event.timerId} missing fireAt`,
           );
         }
         const fireAtMs = Date.parse(fireAt);
         if (Number.isNaN(fireAtMs)) {
           throw new Error(
-            `scheduler live ingest: TimerSet in ${String(repoId.id)} run ${entry.runId} timer ${entry.event.data.timerId} fireAt unparseable: ${fireAt}`,
+            `scheduler live ingest: TimerSet in ${String(repoId.id)} run ${entry.runId} timer ${entry.event.timerId} fireAt unparseable: ${fireAt}`,
           );
         }
         const cron =
-          entry.event.data.cron !== undefined && entry.event.data.cron !== null;
+          entry.event.cron !== undefined && entry.event.cron !== null;
         if (cron && fireAtMs < opts.clock().getTime()) {
           // Same missed-cron-tick spec as recovery: a cron TimerSet
           // whose fireAt is in the past on arrival is dropped.
           continue;
         }
-        enqueue(repoId, entry.runId, entry.event.data.timerId, fireAtMs, cron);
+        enqueue(repoId, entry.runId, entry.event.timerId, fireAtMs, cron);
       }
     })();
     liveSubscriptions.push({ abort, done });
@@ -257,28 +263,27 @@ export function createWorkflowHostScheduler(
     >();
     for (const e of events) {
       if (e.envelope.type === "TimerSet") {
-        const fireAt = e.envelope.data.fireAt;
+        const fireAt = e.envelope.fireAt;
         if (fireAt === undefined) {
           throw new Error(
-            `scheduler recovery: TimerSet in ${String(repoId.id)} run ${e.runId} timer ${e.envelope.data.timerId} missing fireAt`,
+            `scheduler recovery: TimerSet in ${String(repoId.id)} run ${e.runId} timer ${e.envelope.timerId} missing fireAt`,
           );
         }
         const fireAtMs = Date.parse(fireAt);
         if (Number.isNaN(fireAtMs)) {
           throw new Error(
-            `scheduler recovery: TimerSet in ${String(repoId.id)} run ${e.runId} timer ${e.envelope.data.timerId} fireAt unparseable: ${fireAt}`,
+            `scheduler recovery: TimerSet in ${String(repoId.id)} run ${e.runId} timer ${e.envelope.timerId} fireAt unparseable: ${fireAt}`,
           );
         }
-        const cron =
-          e.envelope.data.cron !== undefined && e.envelope.data.cron !== null;
-        unfired.set(`${e.runId} ${e.envelope.data.timerId}`, {
+        const cron = e.envelope.cron !== undefined && e.envelope.cron !== null;
+        unfired.set(`${e.runId} ${e.envelope.timerId}`, {
           runId: e.runId,
-          timerId: e.envelope.data.timerId,
+          timerId: e.envelope.timerId,
           fireAtMs,
           cron,
         });
       } else {
-        unfired.delete(`${e.runId} ${e.envelope.data.timerId}`);
+        unfired.delete(`${e.runId} ${e.envelope.timerId}`);
       }
     }
     const now = opts.clock().getTime();
@@ -493,7 +498,7 @@ async function commitTimerFired(
         out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
           seq: nextSeq,
           type: "TimerFired",
-          data: { timerId },
+          timerId,
         });
         return out;
       },
@@ -504,10 +509,9 @@ async function commitTimerFired(
 
 function isMatchingTimerFired(parsed: unknown, timerId: string): boolean {
   if (typeof parsed !== "object" || parsed === null) return false;
-  const obj = parsed as { type?: unknown; data?: { timerId?: unknown } };
+  const obj = parsed as { type?: unknown; timerId?: unknown };
   if (obj.type !== "TimerFired") return false;
-  if (obj.data === undefined) return false;
-  return obj.data.timerId === timerId;
+  return obj.timerId === timerId;
 }
 
 async function findOwningDeployment(
