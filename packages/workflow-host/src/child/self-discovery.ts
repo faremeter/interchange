@@ -56,6 +56,16 @@ export interface DiscoverRunsOpts {
  * terminal event. Runs that already terminated are skipped because
  * resume against a terminal log would still settle without progress
  * but would generate spurious "resume seed" reads for no benefit.
+ *
+ * Child runs are excluded. A run spawned by another run -- a
+ * `childWorkflow` step's child or an `onTrigger` section's per-event body,
+ * whichever committed a `ChildSpawned` naming it -- is driven by its
+ * PARENT's runtime, not on its own. Resuming a child here would re-run it
+ * under the deployment definition rather than the child's own definition,
+ * and for a body approval park it would hub-register the child's internal
+ * park that the parent already proxies up on the shared correlation. A
+ * child run is identified structurally, by appearing as a
+ * `ChildSpawned.childRunId` in some log, rather than by its id shape.
  */
 export async function discoverInFlightRuns(
   opts: DiscoverRunsOpts,
@@ -71,10 +81,22 @@ export async function discoverInFlightRuns(
     if (isErrnoNotFound(cause)) return [];
     throw cause;
   }
-  const out: DiscoveredRun[] = [];
+  // Read every run's log once, and collect the set of run ids that any log
+  // spawned as a child. The scan spans every run (terminal ones included) so
+  // a child whose parent already completed is still recognized as a child.
+  const logs = new Map<string, readonly WorkflowEvent[]>();
+  const childRunIds = new Set<string>();
   for (const runId of runDirs) {
     const events = await opts.runtimeRepoStore.read(runId);
     if (events.length === 0) continue;
+    logs.set(runId, events);
+    for (const event of events) {
+      if (event.kind === "ChildSpawned") childRunIds.add(event.childRunId);
+    }
+  }
+  const out: DiscoveredRun[] = [];
+  for (const [runId, events] of logs) {
+    if (childRunIds.has(runId)) continue;
     const resumed = resumeFromLog(runId, events);
     if (isTerminalRunPhase(resumed.phase)) continue;
     out.push({ runId, seedEvents: events, resumedState: resumed });
