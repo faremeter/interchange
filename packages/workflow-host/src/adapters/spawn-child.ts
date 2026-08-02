@@ -64,7 +64,12 @@ import { type } from "arktype";
 
 import type { Principal, RepoStore } from "@intx/hub-sessions/substrate";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
-import type { SpawnChildWorkflow, WorkflowDefinition } from "@intx/workflow";
+import type {
+  SpawnChildWorkflow,
+  SpawnSuspendableChild,
+  SuspendableChildHandle,
+  WorkflowDefinition,
+} from "@intx/workflow";
 
 const WORKFLOW_JSON_PATH = "workflow.json";
 
@@ -155,7 +160,10 @@ export function createWorkflowSpawnChild(
       throw abortError(signal);
     }
 
-    const definition = await resolveDefinition(opts, definitionRef);
+    const definition = await resolveDefinition(
+      { substrate: opts.substrate, deployRef: opts.deployRef },
+      definitionRef,
+    );
 
     // Re-check the abort signal after the resolution await. The
     // caller can fire `signal.abort()` between the entry-time check
@@ -180,8 +188,105 @@ export function createWorkflowSpawnChild(
   };
 }
 
+/**
+ * Runtime-supplied suspendable child execution callback. The park-aware
+ * analog of {@link RunChildWorkflow}: the supervisor owns the child
+ * `WorkflowRuntimeEnv` construction and the `runtimeRun` invocation and
+ * returns a live `SuspendableChildHandle` the caller drives across the
+ * body's approval parks, rather than awaiting a terminal. The adapter is
+ * the single resolution point that hands the supervisor a concrete
+ * `WorkflowDefinition` alongside the parent attribution the runtime body
+ * produced.
+ */
+export type RunSuspendableChild = (input: {
+  definition: WorkflowDefinition;
+  definitionRef: string;
+  childRunId: string;
+  input: unknown;
+  parentRunId: string;
+  parentStepId: string;
+  signal: AbortSignal;
+}) => Promise<SuspendableChildHandle>;
+
+export interface WorkflowSpawnSuspendableChildOpts {
+  /**
+   * Substrate the deploy orchestrator wrote the workflow asset into.
+   * Read through `substrate.getRepoDir` exactly as the terminal-only
+   * adapter resolves its definition.
+   */
+  substrate: RepoStore;
+  /**
+   * Principal held in closure for symmetry with the terminal-only adapter
+   * and a future authorize-gated read path; `getRepoDir` resolution does
+   * not gate on it today.
+   */
+  principal: Principal;
+  /**
+   * Ref under the workflow asset's repo whose tree holds the deployed
+   * `workflow.json`.
+   */
+  deployRef: string;
+  /**
+   * Runtime-supplied suspendable child execution callback. The adapter
+   * delegates here once the `WorkflowDefinition` is resolved; the
+   * supervisor owns the child `WorkflowRuntimeEnv`, the `runtimeRun`
+   * invocation, and the returned handle.
+   */
+  runSuspendableChild: RunSuspendableChild;
+}
+
+/**
+ * Construct the production `WorkflowRuntimeEnv.SpawnSuspendableChild`
+ * adapter. Mirrors {@link createWorkflowSpawnChild}: it resolves the
+ * `definitionRef` to a concrete `WorkflowDefinition` from the deploy ref
+ * and delegates to the runtime-supplied `runSuspendableChild`, which
+ * returns the live handle `runOnTrigger` drives across the body's
+ * approval parks. Sharing `resolveDefinition` keeps definitionRef
+ * resolution owned by this layer for both the terminal-only and
+ * park-aware spawn paths.
+ */
+export function createWorkflowSpawnSuspendableChild(
+  opts: WorkflowSpawnSuspendableChildOpts,
+): SpawnSuspendableChild {
+  return async ({
+    definitionRef,
+    childRunId,
+    input,
+    parentRunId,
+    parentStepId,
+    signal,
+  }) => {
+    if (signal.aborted) {
+      throw abortError(signal);
+    }
+
+    const definition = await resolveDefinition(
+      { substrate: opts.substrate, deployRef: opts.deployRef },
+      definitionRef,
+    );
+
+    // Re-check the abort signal after the resolution await, mirroring the
+    // terminal-only adapter: a caller can fire `signal.abort()` between the
+    // entry-time check and here, and the child callback must not spin up a
+    // run against an already-aborted signal.
+    if (signal.aborted) {
+      throw abortError(signal);
+    }
+
+    return opts.runSuspendableChild({
+      definition,
+      definitionRef,
+      childRunId,
+      input,
+      parentRunId,
+      parentStepId,
+      signal,
+    });
+  };
+}
+
 async function resolveDefinition(
-  opts: WorkflowSpawnChildOpts,
+  opts: { substrate: RepoStore; deployRef: string },
   definitionRef: string,
 ): Promise<WorkflowDefinition> {
   const repoId = { kind: "workflow" as const, id: definitionRef };

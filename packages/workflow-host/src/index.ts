@@ -13,9 +13,12 @@ export {
 } from "./adapters/step-invoker";
 export {
   createWorkflowSpawnChild,
+  createWorkflowSpawnSuspendableChild,
   type ChildTerminalStatus,
   type RunChildWorkflow,
+  type RunSuspendableChild,
   type WorkflowSpawnChildOpts,
+  type WorkflowSpawnSuspendableChildOpts,
 } from "./adapters/spawn-child";
 export {
   createWorkflowSupervisor,
