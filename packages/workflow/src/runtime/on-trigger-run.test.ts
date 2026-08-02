@@ -94,6 +94,65 @@ function midApprovalSeed(
   return events;
 }
 
+// The durable parent log a section leaves when a body child is parked
+// mid-signal-relay: the container `StepStarted`, the `ChildSpawned` for event
+// 0's body, and the `SignalAwaited` the container proxied up on the body's
+// AUTHOR name (parkKind `"signal-relay"`). With `signalDelivered` it also
+// carries the `SignalReceived` that landed before the crash relayed it -- the
+// window where the container reduces to `in-flight` with the payload only in
+// the log (recovered via the FIFO pairing).
+function midSignalRelaySeed(
+  runId: string,
+  name: string,
+  opts: { signalDelivered: boolean },
+): WorkflowEvent[] {
+  const events: WorkflowEvent[] = [
+    {
+      kind: "RunStarted",
+      seq: 1,
+      at,
+      runId,
+      definitionHash: "x",
+      trigger: { type: "manual", payload: { text: "event-0" } },
+    },
+    {
+      kind: "StepStarted",
+      seq: 2,
+      at,
+      stepId: "section",
+      attempt: 1,
+      input: { ref: "inline:null" },
+    },
+    {
+      kind: "ChildSpawned",
+      seq: 3,
+      at,
+      stepId: "section",
+      childRunId: "section__0",
+      childDefinitionRef: "body-ref",
+    },
+    {
+      kind: "SignalAwaited",
+      seq: 4,
+      at,
+      stepId: "section",
+      signalName: name,
+      parkKind: "signal-relay",
+    },
+  ];
+  if (opts.signalDelivered) {
+    events.push({
+      kind: "SignalReceived",
+      seq: 5,
+      at,
+      signalName: name,
+      signalId: "relay-1",
+      payload: { text: "delivered" },
+    });
+  }
+  return events;
+}
+
 const noopInvokeStep: StepInvoker = () => {
   throw new Error("onTrigger test: invokeStep must not be called");
 };
@@ -560,6 +619,154 @@ describe("runOnTrigger", () => {
     ).toBe(true);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
     expect(deliveredCount).toBe(0);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("resumes a body parked mid-signal-relay and re-drives the await after restart", async () => {
+    const runId = "sec-relay-resume";
+    const name = "go";
+    const seed = midSignalRelaySeed(runId, name, { signalDelivered: false });
+
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    let spawnResume: readonly WorkflowEvent[] | undefined;
+    let delivered:
+      | { name: string; payload: unknown; signalId: string }
+      | undefined;
+    const spawnSuspendableChild: SpawnSuspendableChild = async ({
+      resumeFromEvents,
+    }) => {
+      spawnResume = resumeFromEvents;
+      let release: (() => void) | null = null;
+      return {
+        next: async () => {
+          // The re-spawned body re-parked on "go" silently; block until the
+          // recovered section re-drives the await and relays.
+          await new Promise<void>((r) => {
+            release = r;
+          });
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async (n, payload, signalId) => {
+          delivered = { name: n, payload, signalId };
+          if (release !== null) {
+            const r = release;
+            release = null;
+            r();
+          }
+        },
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // The container re-adopted its durable signal-relay await and re-drove the
+    // race from the recovered seq (no re-emit). Delivering the signal relays it
+    // into the re-spawned body, which completes and re-arms for the next event.
+    await channel.deliver(name, { text: "late" }, "sig-2");
+    await waitForPark(repoStore, runId, "input", 1);
+
+    // The body child has no separate durable log in this in-memory runtime
+    // test, so it re-spawns from an empty log (as the mid-approval resume does).
+    expect(spawnResume).toEqual([]);
+    expect(delivered).toEqual({
+      name,
+      payload: { text: "late" },
+      signalId: "sig-2",
+    });
+    const log = await repoStore.read(runId);
+    // No SECOND signal-relay SignalAwaited was emitted -- the durable one was
+    // re-adopted.
+    expect(
+      log.filter(
+        (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
+      ).length,
+    ).toBe(1);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("relays a signal that landed before the crash relayed it (relay-signal-grant)", async () => {
+    const runId = "sec-relay-grant";
+    const name = "go";
+    // The signal's SignalReceived is durable but was never relayed: the
+    // container reduced to in-flight, so the payload lives only in the log.
+    const seed = midSignalRelaySeed(runId, name, { signalDelivered: true });
+
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    let delivered:
+      | { name: string; payload: unknown; signalId: string }
+      | undefined;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      // Model the body's signal channel: `deliverSignal` may land before the
+      // body's `next()` awaits (the relay recovery delivers before the loop
+      // pulls next()), so `next()` completes if the signal already arrived.
+      let release: (() => void) | null = null;
+      let received = false;
+      return {
+        next: async () => {
+          if (!received) {
+            await new Promise<void>((r) => {
+              release = r;
+            });
+          }
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async (n, payload, signalId) => {
+          delivered = { name: n, payload, signalId };
+          received = true;
+          if (release !== null) {
+            const r = release;
+            release = null;
+            r();
+          }
+        },
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // No fresh delivery: the driver recovers the signal from the durable
+    // SignalReceived (FIFO-bound to the await) and relays it -- with its
+    // original id -- into the re-spawned body, which completes and re-arms.
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(delivered).toEqual({
+      name,
+      payload: { text: "delivered" },
+      signalId: "relay-1",
+    });
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);
