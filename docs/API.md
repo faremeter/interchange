@@ -612,6 +612,7 @@ Delivers a caller-supplied, stable signal to the named run of a workflow deploym
 Body: unknown
 
 202: (no content) -- Signal accepted for delivery
+400: ErrorResponse -- Reserved signal name or a runId that is not the deployment's addressable run
 404: ErrorResponse -- Workflow deployment not found
 502: ErrorResponse -- Sidecar unavailable
 

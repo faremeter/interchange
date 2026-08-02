@@ -6,7 +6,7 @@ import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
-import { base64Decode, ErrorResponse } from "@intx/types";
+import { base64Decode, ErrorResponse, signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
@@ -880,6 +880,10 @@ describe("GET /workflows/instances", () => {
 });
 
 describe("POST /workflows/:deploymentId/signals", () => {
+  // The single addressable run of a deployment is its stable run id, the
+  // deployment mail address (deriveWorkflowRunId returns the address verbatim).
+  const RUN_ID = `ins_${DEPLOYMENT_ID}@${DOMAIN}`;
+
   function manageGrant(): GrantRule {
     return makeGrant({
       resource: `workflow-run:${DEPLOYMENT_ID}`,
@@ -897,7 +901,7 @@ describe("POST /workflows/:deploymentId/signals", () => {
 
     const res = await app.fetch(
       authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
-        runId: "run-1",
+        runId: RUN_ID,
         signalName: "go",
         signalId: "sig-caller-1",
         payload: { ok: true },
@@ -909,7 +913,7 @@ describe("POST /workflows/:deploymentId/signals", () => {
     const call = signalCalls[0];
     if (call === undefined) throw new Error("missing signal call");
     expect(call.agentAddress).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
-    expect(call.runId).toBe("run-1");
+    expect(call.runId).toBe(RUN_ID);
     expect(call.signalName).toBe("go");
     // The signalId is the caller-supplied stable id, never server-minted.
     expect(call.signalId).toBe("sig-caller-1");
@@ -926,7 +930,7 @@ describe("POST /workflows/:deploymentId/signals", () => {
 
     const res = await app.fetch(
       authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
-        runId: "run-1",
+        runId: RUN_ID,
         signalName: "go",
         signalId: "sig-caller-2",
       }),
@@ -938,6 +942,47 @@ describe("POST /workflows/:deploymentId/signals", () => {
     if (call === undefined) throw new Error("missing signal call");
     expect(call.signalId).toBe("sig-caller-2");
     expect(call.payload).toBeUndefined();
+  });
+
+  test("rejects a reserved control-plane signalName with 400", async () => {
+    const signalCalls: SignalCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      signalCalls,
+      db: { deploymentRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: RUN_ID,
+        signalName: signalName("corr-1"),
+        signalId: "sig-caller-1",
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(signalCalls).toHaveLength(0);
+  });
+
+  test("rejects a runId that is not the deployment's addressable run with 400", async () => {
+    const signalCalls: SignalCall[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      signalCalls,
+      db: { deploymentRow },
+    });
+
+    // A synthetic body-child id (or any non-address id) is not addressable.
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: "section__0",
+        signalName: "go",
+        signalId: "sig-caller-1",
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(signalCalls).toHaveLength(0);
   });
 
   test("rejects a caller without the workflow-run manage grant", async () => {

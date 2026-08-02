@@ -16,6 +16,7 @@ import {
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   base64Encode,
+  correlationIdFromSignalName,
   deriveWorkflowRunId,
   ErrorResponse,
   SendMessage,
@@ -484,6 +485,11 @@ export function createWorkflowRoutes({
         202: {
           description: "Signal accepted for delivery",
         },
+        400: {
+          description:
+            "Reserved signal name or a runId that is not the deployment's addressable run",
+          content: { "application/json": { schema: resolver(ErrorResponse) } },
+        },
         404: {
           description: "Workflow deployment not found",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
@@ -499,6 +505,7 @@ export function createWorkflowRoutes({
       const tenant = c.get("tenant");
       const deploymentId = c.req.param("deploymentId");
       const body = c.req.valid("json");
+      const agentAddress = `ins_${deploymentId}@${tenant.domain}`;
 
       if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
         return c.json(
@@ -512,9 +519,43 @@ export function createWorkflowRoutes({
         );
       }
 
+      // A reserved control-plane channel name (`signalName(correlationId)`) is
+      // the hub's own approval/input plane. Delivering on it through this route
+      // would let a caller answer a pending approval directly -- bypassing the
+      // approval co-write and its authorization -- so reject it. Author signals
+      // to a workflow use free-form names.
+      if (correlationIdFromSignalName(body.signalName) !== undefined) {
+        return c.json(
+          {
+            error: {
+              code: "reserved_signal_name",
+              message:
+                "signalName names a reserved control-plane channel; deliver author-named signals only",
+            },
+          },
+          400,
+        );
+      }
+
+      // Only the deployment's single addressable run may be signaled. A
+      // synthetic body-child run id (or any other id) is not addressable: a
+      // signal for a section body is delivered to the parent deployment run and
+      // relayed down by the runtime, never addressed to the child directly.
+      if (body.runId !== deriveWorkflowRunId(agentAddress)) {
+        return c.json(
+          {
+            error: {
+              code: "unaddressable_run",
+              message: "runId is not the addressable run of this deployment",
+            },
+          },
+          400,
+        );
+      }
+
       try {
         sidecarRouter.sendSignalDeliver({
-          agentAddress: `ins_${deploymentId}@${tenant.domain}`,
+          agentAddress,
           runId: body.runId,
           signalName: body.signalName,
           signalId: body.signalId,
