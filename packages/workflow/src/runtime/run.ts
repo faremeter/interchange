@@ -36,6 +36,7 @@ import {
   isCrashedInvocationStep,
   isResumableAwaitingSignalStep,
   isResumableInFlightLoopStep,
+  isResumableOnTriggerStep,
   isResumableReceivedAwaitSignalStep,
   isRunDone,
   nextSchedulable,
@@ -423,8 +424,17 @@ async function executeRunBody(
       if (
         isResumableInFlightLoopStep(definition, stepId, stepState.phase) ||
         isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
-        isResumableReceivedAwaitSignalStep(definition, stepId, stepState.phase)
+        isResumableReceivedAwaitSignalStep(
+          definition,
+          stepId,
+          stepState.phase,
+        ) ||
+        isResumableOnTriggerStep(definition, stepId, stepState.phase)
       ) {
+        // The onTrigger container carries no crash-mid-invocation risk (it never
+        // self-completes); `runOnTrigger` re-derives its cursor from the log and
+        // re-links a body parked mid-approval. Leave it for `nextSchedulable` to
+        // re-offer, the same as the other coordination carve-outs.
         continue;
       }
       // A crashed-mid-invocation step (agent step or action). Before settling
@@ -1779,11 +1789,13 @@ async function runLoop(
  * and the input-park `SignalAwaited`/`SignalReceived` re-arm -- all existing
  * event kinds, so the state machine is untouched.
  *
- * This driver runs bodies that reach a terminal (the child-run seam awaits
- * terminal). A body that suspends mid-run on an approval park, and the
- * crash-recovery of a mid-flight section, are layered on top of this driver;
- * a section re-driven after a crash fails loud here rather than re-running
- * from event 0.
+ * A body that suspends mid-run on an approval park is serviced by proxying the
+ * park up on the shared correlation via this run's own park machinery. On
+ * crash-recovery the driver reconstructs its position from the container's
+ * reduced state and durable log -- which event is current, whether its body is
+ * parked mid-approval (and whether the grant already landed), or whether the
+ * section is idle between events -- and re-links the parked body rather than
+ * re-running from event 0.
  */
 async function runOnTrigger(
   env: WorkflowRuntimeEnv,
@@ -1808,27 +1820,79 @@ async function runOnTrigger(
   }
 
   const initial = await reloadState(env, runId);
-  if (initial.steps.has(primitive.id)) {
-    // A durable container `StepStarted` means this section is being
-    // re-driven after a crash. Recovering a mid-flight section -- re-deriving
-    // its event cursor and re-attaching to a parked body or the input park --
-    // is a separate layer; fail loud rather than re-spawning from event 0.
-    throw new Error(
-      `onTrigger ${primitive.id} crash-resume is not serviced by this build`,
-    );
-  }
-  await emitStepStartedWithValue(env, runId, primitive.id, {
-    on: primitive.on,
-    bodyRef,
-  });
+  let eventIndex: number;
+  let currentInput: unknown;
+  // Set only on a crash-recovered iteration whose body is parked mid-approval:
+  // it re-links the parent to that body on the shared correlation before the
+  // drive loop, then clears so every later iteration is a fresh spawn.
+  let resumeApproval:
+    | { corr: string; relay: boolean; decision?: unknown }
+    | undefined;
 
-  // Event 0's input is the run's firing trigger payload; each later event's
-  // input arrives on the input park below.
-  let currentInput: unknown = evaluate(
-    { from: "trigger.payload" },
-    selectorCtx,
-  );
-  let eventIndex = 0;
+  if (!initial.steps.has(primitive.id)) {
+    await emitStepStartedWithValue(env, runId, primitive.id, {
+      on: primitive.on,
+      bodyRef,
+    });
+    // Event 0's input is the run's firing trigger payload; each later event's
+    // input arrives on the input park below.
+    eventIndex = 0;
+    currentInput = evaluate({ from: "trigger.payload" }, selectorCtx);
+  } else {
+    // A durable container `StepStarted` means this section is being re-driven
+    // after a crash. Reconstruct the drive position from the reduced state and
+    // the log rather than re-running from event 0.
+    const log = await env.repoStore.read(runId);
+    const plan = planOnTriggerResume(primitive, initial, log);
+    switch (plan.kind) {
+      case "fresh":
+        eventIndex = 0;
+        currentInput = evaluate({ from: "trigger.payload" }, selectorCtx);
+        break;
+      case "terminal-is-final":
+        // The body already ended non-`completed` before the crash; end the
+        // section the same way the steady-state loop does.
+        throw new Error(
+          `onTrigger ${primitive.id} body run ${primitive.id}__${String(plan.eventIndex)} ended ${plan.terminalStatus}`,
+        );
+      case "reestablish-approval":
+        eventIndex = plan.eventIndex;
+        currentInput = undefined;
+        resumeApproval = { corr: plan.corr, relay: false };
+        break;
+      case "relay-grant":
+        eventIndex = plan.eventIndex;
+        currentInput = undefined;
+        resumeApproval = {
+          corr: plan.corr,
+          relay: true,
+          decision: plan.decision,
+        };
+        break;
+      case "reawait-input": {
+        // The current event's body completed; the section is idle on its input
+        // re-arm. Re-adopt the durable input park or mint a fresh one, await
+        // the next event's input, then advance to the next event.
+        const inputSignalName =
+          plan.existingSignalName ?? signalName(env.newId("corr"));
+        const rearm = await reloadState(env, runId);
+        currentInput = await parkOnSignal(
+          env,
+          runId,
+          {
+            stepId: primitive.id,
+            signalName: inputSignalName,
+            parkKind: "input",
+          },
+          rearm,
+          abort,
+        );
+        eventIndex = plan.eventIndex + 1;
+        break;
+      }
+    }
+  }
+
   while (true) {
     const childRunId = `${primitive.id}__${String(eventIndex)}`;
     let before = await reloadState(env, runId);
@@ -1855,8 +1919,39 @@ async function runOnTrigger(
       parentRunId: runId,
       parentStepId: primitive.id,
       signal: abort,
+      ...(resumeApproval !== undefined
+        ? { resumeFromEvents: await env.repoStore.read(childRunId) }
+        : {}),
     });
     let terminalStatus: "completed" | "failed" | "cancelled";
+    if (resumeApproval !== undefined) {
+      // Re-link the parent to a body re-spawned from its log and parked on the
+      // shared correlation. A re-park does not re-fire onPark, so the park is
+      // not surfaced via next(); drive the resume directly from the recovered
+      // correlation. A grant already delivered to the parent log (its
+      // SignalReceived consumed the container's park) is relayed as-is;
+      // otherwise re-park the container and await the grant as the steady-state
+      // loop would.
+      let decision: unknown;
+      if (resumeApproval.relay) {
+        decision = resumeApproval.decision;
+      } else {
+        const parkRearm = await reloadState(env, runId);
+        decision = await parkOnSignal(
+          env,
+          runId,
+          {
+            stepId: primitive.id,
+            signalName: signalName(resumeApproval.corr),
+            parkKind: "approval",
+          },
+          parkRearm,
+          abort,
+        );
+      }
+      await child.resume(resumeApproval.corr, decision);
+      resumeApproval = undefined;
+    }
     for (;;) {
       const bodyEvent = await child.next();
       if (bodyEvent.kind === "terminal") {
@@ -1929,6 +2024,154 @@ async function runOnTrigger(
     );
     eventIndex += 1;
   }
+}
+
+/**
+ * Discriminated resume plan for a crash-recovered onTrigger container, derived
+ * purely from the container's reduced `state` plus its durable `log`. The
+ * `children` map locates the current event index and the container step's
+ * phase locates its lifecycle point; the log recovers a delivered-but-unrelayed
+ * approval grant, whose `SignalReceived` reduces the container step to
+ * `in-flight` and strips its `awaitingSignal` (so the correlation and decision
+ * are no longer in the reduced state).
+ */
+type OnTriggerResumePlan =
+  | { kind: "fresh" }
+  | { kind: "reestablish-approval"; eventIndex: number; corr: string }
+  | { kind: "relay-grant"; eventIndex: number; corr: string; decision: unknown }
+  | { kind: "reawait-input"; eventIndex: number; existingSignalName?: string }
+  | {
+      kind: "terminal-is-final";
+      eventIndex: number;
+      terminalStatus: "failed" | "cancelled";
+    };
+
+function planOnTriggerResume(
+  primitive: OnTriggerPrimitive,
+  state: RunState,
+  log: readonly WorkflowEvent[],
+): OnTriggerResumePlan {
+  const prefix = `${primitive.id}__`;
+  let eventIndex = -1;
+  for (const childRunId of state.children.keys()) {
+    if (!childRunId.startsWith(prefix)) continue;
+    const parsed = Number.parseInt(childRunId.slice(prefix.length), 10);
+    if (Number.isInteger(parsed) && parsed > eventIndex) eventIndex = parsed;
+  }
+  if (eventIndex === -1) {
+    // The container `StepStarted` is durable but no body was ever spawned.
+    return { kind: "fresh" };
+  }
+  const childRunId = `${prefix}${String(eventIndex)}`;
+  const child = state.children.get(childRunId);
+  if (child === undefined) {
+    throw new Error(
+      `onTrigger ${primitive.id} resume: event ${String(eventIndex)} has no child state`,
+    );
+  }
+  if (
+    child.terminalStatus === "failed" ||
+    child.terminalStatus === "cancelled"
+  ) {
+    return {
+      kind: "terminal-is-final",
+      eventIndex,
+      terminalStatus: child.terminalStatus,
+    };
+  }
+  const container = state.steps.get(primitive.id);
+  if (child.terminalStatus === "completed") {
+    // The event's body finished; the section is idle on its input re-arm. Re-
+    // adopt the durable input park if it was committed, else re-arm fresh.
+    if (
+      container !== undefined &&
+      container.phase === "awaiting-signal" &&
+      container.awaitingSignal !== undefined &&
+      controlParkKindOf(container.awaitingSignal) === "input"
+    ) {
+      return {
+        kind: "reawait-input",
+        eventIndex,
+        existingSignalName: container.awaitingSignal.name,
+      };
+    }
+    return { kind: "reawait-input", eventIndex };
+  }
+  // The body was mid-flight at crash.
+  if (container === undefined) {
+    throw new Error(
+      `onTrigger ${primitive.id} resume: body child ${childRunId} is in flight but the container step has no reduced state`,
+    );
+  }
+  if (
+    container.phase === "awaiting-signal" &&
+    container.awaitingSignal !== undefined
+  ) {
+    if (controlParkKindOf(container.awaitingSignal) !== "approval") {
+      throw new Error(
+        `onTrigger ${primitive.id} resume: container is parked on an input channel while body child ${childRunId} is still in flight`,
+      );
+    }
+    const corr = correlationIdFromSignalName(container.awaitingSignal.name);
+    if (corr === undefined) {
+      throw new Error(
+        `onTrigger ${primitive.id} resume: container awaiting-signal ${container.awaitingSignal.name} is not a reserved control-plane channel`,
+      );
+    }
+    return { kind: "reestablish-approval", eventIndex, corr };
+  }
+  // The container is not parked but the body is still in flight: the approval
+  // grant was delivered (its SignalReceived moved the container to in-flight)
+  // but not yet relayed into the child. Recover the correlation and decision
+  // from the log.
+  const grant = recoverDeliveredApprovalGrant(primitive.id, log);
+  if (grant === undefined) {
+    throw new Error(
+      `onTrigger ${primitive.id} resume: body child ${childRunId} is in flight and the container is not parked, but no delivered approval grant was found to relay`,
+    );
+  }
+  return {
+    kind: "relay-grant",
+    eventIndex,
+    corr: grant.corr,
+    decision: grant.decision,
+  };
+}
+
+/**
+ * Recover the correlation and delivered decision of the container's most recent
+ * approval park from the durable log. Used only for the narrow crash window
+ * where the grant's `SignalReceived` landed before the driver relayed it into
+ * the body -- the container step reduces to `in-flight` with its
+ * `awaitingSignal` stripped, so the correlation lives only in the log.
+ */
+function recoverDeliveredApprovalGrant(
+  stepId: string,
+  log: readonly WorkflowEvent[],
+): { corr: string; decision: unknown } | undefined {
+  let corr: string | undefined;
+  let parkKind: ControlParkKind | undefined;
+  for (const event of log) {
+    if (event.kind === "SignalAwaited" && event.stepId === stepId) {
+      const candidate = correlationIdFromSignalName(event.signalName);
+      if (candidate !== undefined) {
+        corr = candidate;
+        parkKind = controlParkKindOf(event);
+      }
+    }
+  }
+  if (corr === undefined || parkKind !== "approval") return undefined;
+  const reserved = signalName(corr);
+  let decision: unknown;
+  let found = false;
+  for (const event of log) {
+    if (event.kind === "SignalReceived" && event.signalName === reserved) {
+      decision = event.payload;
+      found = true;
+    }
+  }
+  if (!found) return undefined;
+  return { corr, decision };
 }
 
 function isIterationDone(
