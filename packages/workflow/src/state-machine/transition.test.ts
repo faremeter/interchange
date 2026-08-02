@@ -957,3 +957,191 @@ describe("resumeFromLog", () => {
     expect(state.steps.get("a")?.phase).toBe("in-flight");
   });
 });
+
+describe("applyEvent: SignalAwaitAbandoned", () => {
+  // Park step "sec" on a signal-relay await for name `name`, returning the
+  // state and the next seq to use.
+  function parkedSignalRelay(name: string): {
+    state: RunState;
+    nextSeq: number;
+  } {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, {
+      kind: "StepStarted",
+      seq: 2,
+      at: T,
+      stepId: "sec",
+      attempt: 1,
+      input: { ref: "i" },
+    });
+    state = applyEvent(state, {
+      kind: "SignalAwaited",
+      seq: 3,
+      at: T,
+      stepId: "sec",
+      signalName: name,
+      parkKind: "signal-relay",
+    });
+    expect(state.steps.get("sec")?.phase).toBe("awaiting-signal");
+    return { state, nextSeq: 4 };
+  }
+
+  test("retires a matching signal-relay await, dropping the step to in-flight", () => {
+    const { state, nextSeq } = parkedSignalRelay("wake");
+    const next = applyEvent(state, {
+      kind: "SignalAwaitAbandoned",
+      seq: nextSeq,
+      at: T,
+      stepId: "sec",
+      signalName: "wake",
+    });
+    expect(next.steps.get("sec")?.phase).toBe("in-flight");
+    expect(next.steps.get("sec")?.awaitingSignal).toBeUndefined();
+  });
+
+  test("no-ops when a racing SignalReceived already resolved the await", () => {
+    const { state, nextSeq } = parkedSignalRelay("wake");
+    // The signal won the race: the step is already in-flight.
+    const resolved = applyEvent(state, {
+      kind: "SignalReceived",
+      seq: nextSeq,
+      at: T,
+      signalName: "wake",
+      signalId: "s-1",
+      payload: 1,
+    });
+    expect(resolved.steps.get("sec")?.phase).toBe("in-flight");
+    const observedBefore = resolved.observedSignalIds;
+    const next = applyEvent(resolved, {
+      kind: "SignalAwaitAbandoned",
+      seq: nextSeq + 1,
+      at: T,
+      stepId: "sec",
+      signalName: "wake",
+    });
+    // Left as the signal delivery left it; no signal bookkeeping touched.
+    expect(next.steps.get("sec")?.phase).toBe("in-flight");
+    expect(next.observedSignalIds).toBe(observedBefore);
+    expect(next.lastSeq).toBe(nextSeq + 1);
+  });
+
+  test("a late delivery after abandon still queues for the next await", () => {
+    const { state, nextSeq } = parkedSignalRelay("wake");
+    const abandoned = applyEvent(state, {
+      kind: "SignalAwaitAbandoned",
+      seq: nextSeq,
+      at: T,
+      stepId: "sec",
+      signalName: "wake",
+    });
+    // A signal that lands after the abandon is not lost: it queues under its
+    // name for the next await, exactly like a timed-out awaitSignal.
+    const late = applyEvent(abandoned, {
+      kind: "SignalReceived",
+      seq: nextSeq + 1,
+      at: T,
+      signalName: "wake",
+      signalId: "s-late",
+      payload: 2,
+    });
+    expect(late.unconsumedSignals.get("wake")?.length).toBe(1);
+  });
+
+  test("rejects an abandon that names an approval park", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: T,
+          stepId: "sec",
+          attempt: 1,
+          input: { ref: "i" },
+        },
+        {
+          kind: "SignalAwaited",
+          seq: 3,
+          at: T,
+          stepId: "sec",
+          signalName: "wake",
+          parkKind: "approval",
+        },
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 4,
+          at: T,
+          stepId: "sec",
+          signalName: "wake",
+        },
+      ],
+      /does not match an active signal-relay park/,
+    );
+  });
+
+  test("rejects an abandon whose name mismatches the active signal-relay park", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: T,
+          stepId: "sec",
+          attempt: 1,
+          input: { ref: "i" },
+        },
+        {
+          kind: "SignalAwaited",
+          seq: 3,
+          at: T,
+          stepId: "sec",
+          signalName: "wake",
+          parkKind: "signal-relay",
+        },
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 4,
+          at: T,
+          stepId: "sec",
+          signalName: "other",
+        },
+      ],
+      /does not match an active signal-relay park/,
+    );
+  });
+
+  test("rejects an abandon for an unknown step", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 2,
+          at: T,
+          stepId: "ghost",
+          signalName: "wake",
+        },
+      ],
+      /unknown step ghost/,
+    );
+  });
+
+  test("rejects an abandon after the run reached a terminal phase", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        { kind: "RunCompleted", seq: 2, at: T },
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 3,
+          at: T,
+          stepId: "sec",
+          signalName: "wake",
+        },
+      ],
+      /after terminal phase/,
+    );
+  });
+});

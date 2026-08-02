@@ -127,6 +127,21 @@ export interface SignalReceived extends EventBase {
   payload: unknown;
 }
 
+/**
+ * Retire a step's outstanding `signal-relay` await without delivering a
+ * payload. An onTrigger container that proxied a body child's author-named
+ * `awaitSignal` up onto its own log commits this when the body progresses by
+ * another exit -- its own await timeout, or any later body event -- before the
+ * external signal arrives, so a late signal does not resolve a park the body no
+ * longer waits on. Distinct from `SignalReceived`: nothing is delivered, the
+ * await is simply torn down.
+ */
+export interface SignalAwaitAbandoned extends EventBase {
+  kind: "SignalAwaitAbandoned";
+  stepId: StepId;
+  signalName: string;
+}
+
 export interface TimerSet extends EventBase {
   kind: "TimerSet";
   timerId: TimerId;
@@ -198,6 +213,7 @@ export type WorkflowEvent =
   | AttemptScheduled
   | SignalAwaited
   | SignalReceived
+  | SignalAwaitAbandoned
   | TimerSet
   | TimerFired
   | CancelRequested

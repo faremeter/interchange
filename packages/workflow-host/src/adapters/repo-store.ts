@@ -86,6 +86,7 @@ const ALL_WORKFLOW_EVENT_TYPES: readonly string[] = [
   "AttemptScheduled",
   "SignalAwaited",
   "SignalReceived",
+  "SignalAwaitAbandoned",
   "TimerSet",
   "TimerFired",
   "CancelRequested",

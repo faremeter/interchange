@@ -35,6 +35,7 @@ import type {
   RunCompleted,
   RunFailed,
   RunStarted,
+  SignalAwaitAbandoned,
   SignalAwaited,
   SignalReceived,
   StepCompleted,
@@ -46,6 +47,7 @@ import type {
   WorkflowEvent,
 } from "./events";
 import {
+  controlParkKindOf,
   isTerminalRunPhase,
   isTerminalStepPhase,
   type RunPhase,
@@ -137,6 +139,8 @@ export function applyEvent(state: RunState, event: WorkflowEvent): RunState {
       return handleSignalAwaited(state, event);
     case "SignalReceived":
       return handleSignalReceived(state, event);
+    case "SignalAwaitAbandoned":
+      return handleSignalAwaitAbandoned(state, event);
     case "TimerSet":
       return handleTimerSet(state, event);
     case "TimerFired":
@@ -412,6 +416,54 @@ function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
     observedSignalIds: observed,
     lastSeq: e.seq,
   };
+}
+
+/**
+ * Retire a step's `signal-relay` await without delivering a payload. Emitted by
+ * the onTrigger driver when the proxied body progressed by another exit before
+ * the external signal arrived.
+ *
+ * Race with `SignalReceived`: the abandon and a delivery can be committed
+ * concurrently for the same await. If the delivery won -- the step is no longer
+ * `awaiting-signal` -- the abandon is a no-op (advance the seq, leave the step
+ * as the signal left it). If the await is still live, retire it: clear the
+ * awaiter and drop the step to `in-flight`.
+ *
+ * Scope is strict. It touches ONLY a matching `signal-relay` park: an approval
+ * or input park, or a name mismatch, is a producer bug or a mis-target and is
+ * rejected, never silently cleared. It never touches `unconsumedSignals`,
+ * `observedSignalIds`, or `consumedMessageIds` -- a torn-down await does not
+ * consume or dedup a signal, and a late delivery on the same name still queues
+ * for the next await, matching a timed-out `awaitSignal`.
+ */
+function handleSignalAwaitAbandoned(
+  state: RunState,
+  e: SignalAwaitAbandoned,
+): RunState {
+  const step = requireStep(state, e, e.stepId);
+  if (step.phase !== "awaiting-signal") {
+    // Race-loss: a concurrent SignalReceived already moved the step off the
+    // await. The abandon is a no-op.
+    return { ...state, lastSeq: e.seq };
+  }
+  const awaiting = step.awaitingSignal;
+  if (
+    awaiting === undefined ||
+    controlParkKindOf(awaiting) !== "signal-relay" ||
+    awaiting.name !== e.signalName
+  ) {
+    throw new TransitionError(
+      "step-phase",
+      `SignalAwaitAbandoned for step ${e.stepId} on ${e.signalName} does not match an active signal-relay park`,
+      e,
+    );
+  }
+  const steps = new Map(state.steps);
+  steps.set(e.stepId, {
+    ...withoutAwaiters(step),
+    phase: "in-flight",
+  });
+  return { ...state, steps, lastSeq: e.seq };
 }
 
 function handleTimerSet(state: RunState, e: TimerSet): RunState {
