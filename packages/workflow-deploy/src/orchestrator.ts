@@ -398,21 +398,28 @@ export function createWorkflowDeployOrchestrator(
         workflowRepo,
       });
 
+      // The deploy hand-off ships the EXTRACTED definition: the runtime runs
+      // the `definition` frame carried in the deploy, so it must be the one
+      // whose onTrigger bodies are `{ ref }` -- the inline form throws at the
+      // runtime. Extraction preserves `stepOrder` and every non-onTrigger
+      // step, so branch selection and per-step derivation are unaffected.
+      const deployArgs: DeployWorkflowArgs = { ...args, workflow: deployed };
+
       // A one-step workflow has no distinct steps: the lone step IS the
       // head. It deploys once at the head (no per-step provisioning loop),
       // so it routes through the dedicated single-step hand-off rather
       // than `runMultiStepBranch`. The multi-step branch is reached only
       // for `stepOrder.length >= 2`.
-      if (args.workflow.stepOrder.length === 1) {
+      if (deployArgs.workflow.stepOrder.length === 1) {
         const result = await runSingleStepAtHead({
-          args,
+          args: deployArgs,
           deploySingleStepAtHead,
         });
         return { publicKey: result.publicKey };
       }
 
       const result = await runMultiStepBranch({
-        args,
+        args: deployArgs,
         launchSession,
         sendMultiStepDeploy,
       });
