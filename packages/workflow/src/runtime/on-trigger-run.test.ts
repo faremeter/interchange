@@ -142,7 +142,7 @@ function sectionWorkflow(): WorkflowDefinition {
 async function waitForPark(
   repoStore: RepoStore,
   runId: string,
-  parkKind: "input" | "approval",
+  parkKind: "input" | "approval" | "signal-relay",
   count: number,
 ): Promise<string> {
   for (let i = 0; i < 200; i += 1) {
@@ -182,6 +182,7 @@ describe("runOnTrigger", () => {
         resume: async () => {
           throw new Error("resume on a non-suspending body");
         },
+        deliverSignal: async () => undefined,
       };
     };
     const def = sectionWorkflow();
@@ -248,6 +249,7 @@ describe("runOnTrigger", () => {
           resumedCorr = correlationId;
           resumedDecision = decision;
         },
+        deliverSignal: async () => undefined,
       };
     };
     const def = sectionWorkflow();
@@ -291,6 +293,7 @@ describe("runOnTrigger", () => {
     const spawnSuspendableChild: SpawnSuspendableChild = async () => ({
       next: async () => ({ kind: "terminal", terminalStatus: "failed" }),
       resume: async () => undefined,
+      deliverSignal: async () => undefined,
     });
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -334,6 +337,7 @@ describe("runOnTrigger", () => {
           resumedCorr = correlationId;
           resumedDecision = decision;
         },
+        deliverSignal: async () => undefined,
       };
     };
 
@@ -386,6 +390,7 @@ describe("runOnTrigger", () => {
         resumedCorr = correlationId;
         resumedDecision = decision;
       },
+      deliverSignal: async () => undefined,
     });
 
     const def = sectionWorkflow();
@@ -409,6 +414,152 @@ describe("runOnTrigger", () => {
     expect(resumedDecision).toEqual({ approved: true });
     const log = await repoStore.read(runId);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  // The fail-loud multi-section-same-name guard in `driveContainerSignalRelay`
+  // (two sections concurrently proxy-parked on the same author name is refused,
+  // as the container-scoped binding would otherwise diverge from the reducer's
+  // Map-order consume) is not unit-covered here: it needs two concurrent
+  // long-lived sections whose bodies park on the same name at the same time,
+  // whose deterministic construction is fragile (long-lived sections + the
+  // run-failure cascade) and whose topology is deferred to correlated
+  // author-signals. It stands as defense-in-depth; the single-section path this
+  // pass ships is always one active awaiter and stays faithful.
+  test("proxies a body author-signal await up as a signal-relay and relays the signal", async () => {
+    const runId = "sec-signal";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    let delivered:
+      | { name: string; payload: unknown; signalId: string }
+      | undefined;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let stage = 0;
+      let release: (() => void) | null = null;
+      return {
+        next: async () => {
+          stage += 1;
+          if (stage === 1) return { kind: "signal-park", name: "go" };
+          if (stage === 2) {
+            // The body is awaiting "go"; block until the section relays it,
+            // modelling a real gate that only advances once the signal lands.
+            await new Promise<void>((r) => {
+              release = r;
+            });
+            return { kind: "terminal", terminalStatus: "completed" };
+          }
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async (name, payload, signalId) => {
+          delivered = { name, payload, signalId };
+          if (release !== null) {
+            const r = release;
+            release = null;
+            r();
+          }
+        },
+      };
+    };
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+
+    // The section proxied the body's "go" gate up as a signal-relay await on the
+    // SAME name. Deliver it and the section relays it (with the original
+    // signalId) into the body, which completes and re-arms.
+    await waitForPark(repoStore, runId, "signal-relay", 1);
+    await channel.deliver("go", { ok: true }, "sig-1");
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(delivered).toEqual({
+      name: "go",
+      payload: { ok: true },
+      signalId: "sig-1",
+    });
+    const log = await repoStore.read(runId);
+    expect(
+      log.some(
+        (e) =>
+          e.kind === "SignalAwaited" &&
+          e.parkKind === "signal-relay" &&
+          e.signalName === "go",
+      ),
+    ).toBe(true);
+    expect(
+      log.some(
+        (e) =>
+          e.kind === "SignalReceived" &&
+          e.signalName === "go" &&
+          e.signalId === "sig-1",
+      ),
+    ).toBe(true);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("retires a body signal-relay await the body abandons after a timeout", async () => {
+    const runId = "sec-signal-abandon";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    let deliveredCount = 0;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let stage = 0;
+      return {
+        next: async () => {
+          stage += 1;
+          if (stage === 1) return { kind: "signal-park", name: "go" };
+          // The body's gate timed out; it moved on WITHOUT the signal, so the
+          // body's next event arrives before any "go" is delivered.
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async () => {
+          deliveredCount += 1;
+        },
+      };
+    };
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+
+    // The body advanced past its gate before any signal landed; the section
+    // retired the stale relay await and drove the body to completion + re-arm.
+    await waitForPark(repoStore, runId, "input", 1);
+
+    const log = await repoStore.read(runId);
+    expect(
+      log.some(
+        (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
+      ),
+    ).toBe(true);
+    expect(
+      log.some(
+        (e) => e.kind === "SignalAwaitAbandoned" && e.signalName === "go",
+      ),
+    ).toBe(true);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+    expect(deliveredCount).toBe(0);
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);

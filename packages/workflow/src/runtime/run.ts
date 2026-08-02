@@ -50,6 +50,7 @@ import {
 } from "./commit-chain";
 import type {
   RunResult,
+  SuspendableChildHandle,
   WorkflowPark,
   WorkflowRun,
   WorkflowRuntimeEnv,
@@ -1952,34 +1953,55 @@ async function runOnTrigger(
       await child.resume(resumeApproval.corr, decision);
       resumeApproval = undefined;
     }
+    // `pending` carries a body event already pulled by a signal-relay drive
+    // below (its `next()` raced the signal), so the loop consumes it rather
+    // than calling `next()` a second time and dropping it.
+    let pending: Awaited<ReturnType<typeof child.next>> | undefined;
     for (;;) {
-      const bodyEvent = await child.next();
+      const bodyEvent = pending ?? (await child.next());
+      pending = undefined;
       if (bodyEvent.kind === "terminal") {
         terminalStatus = bodyEvent.terminalStatus;
         break;
       }
-      // A body step parked on an approval. Proxy it up on the SAME
-      // correlation via THIS run's own park machinery, so the whole
-      // deployment-runId approval path (registerSuspension/hub/deliver) is
-      // reused unchanged and the approver sees the body step's real
-      // snapshot; then relay the granted decision back into the child so the
-      // body continues.
-      const parkRearm = await reloadState(env, runId);
-      const decision = await parkOnSignal(
+      if (bodyEvent.kind === "park") {
+        // A body step parked on an approval. Proxy it up on the SAME
+        // correlation via THIS run's own park machinery, so the whole
+        // deployment-runId approval path (registerSuspension/hub/deliver) is
+        // reused unchanged and the approver sees the body step's real
+        // snapshot; then relay the granted decision back into the child so the
+        // body continues.
+        const parkRearm = await reloadState(env, runId);
+        const decision = await parkOnSignal(
+          env,
+          runId,
+          {
+            stepId: primitive.id,
+            signalName: signalName(bodyEvent.park.correlationId),
+            parkKind: "approval",
+            ...(bodyEvent.park.approvalSnapshot !== undefined
+              ? { approvalSnapshot: bodyEvent.park.approvalSnapshot }
+              : {}),
+          },
+          parkRearm,
+          abort,
+        );
+        await child.resume(bodyEvent.park.correlationId, decision);
+        continue;
+      }
+      // A body step parked on an author `awaitSignal` gate. Proxy it up as a
+      // signal-relay await on THIS container run over the SAME author name and
+      // relay the resolved signal back into the body. The drive returns the
+      // body's next event (its `next()` was consumed in the race), so continue
+      // the loop with it.
+      pending = await driveContainerSignalRelay(
         env,
         runId,
-        {
-          stepId: primitive.id,
-          signalName: signalName(bodyEvent.park.correlationId),
-          parkKind: "approval",
-          ...(bodyEvent.park.approvalSnapshot !== undefined
-            ? { approvalSnapshot: bodyEvent.park.approvalSnapshot }
-            : {}),
-        },
-        parkRearm,
+        primitive.id,
+        child,
+        bodyEvent.name,
         abort,
       );
-      await child.resume(bodyEvent.park.correlationId, decision);
     }
 
     let after = await reloadState(env, runId);
@@ -2024,6 +2046,191 @@ async function runOnTrigger(
     );
     eventIndex += 1;
   }
+}
+
+/**
+ * Drive one body `signal-relay` await: proxy the body's author `awaitSignal`
+ * gate up as a signal-relay await on the container over the SAME name, then
+ * relay the resolved signal back into the body. Returns the body's NEXT event
+ * (its `next()` is consumed here) for the caller's loop to continue with.
+ *
+ * BUFFER-FIFO (operator ruling): a signal is RELAYED, never dropped. Emitting
+ * the container's `SignalAwaited` runs the reducer's FIFO pairing:
+ *   (a) the emit pre-consumes a signal queued before it (container reduces to
+ *       in-flight) -- bind it from the log's pairing and relay, no await; or
+ *   (b) the container is left awaiting -- race the signal's arrival against the
+ *       body producing its next event (a gate the body timed out itself) and
+ *       against abort. Signal-first relays it directly; body-first retires the
+ *       now-stale relay await (`SignalAwaitAbandoned`) unless a signal landed
+ *       and was consumed during the race, in which case it is relayed
+ *       idempotently. An untimed body gate has a single exit -- the signal
+ *       always wins -- so this is byte-identical in shape to the approval proxy.
+ */
+async function driveContainerSignalRelay(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  containerStepId: string,
+  child: SuspendableChildHandle,
+  name: string,
+  abort: AbortSignal,
+): Promise<Awaited<ReturnType<SuspendableChildHandle["next"]>>> {
+  const state = await reloadState(env, runId);
+
+  // Fail-loud guard on the one residual divergence from the reducer's pairing:
+  // `boundSignalForContainerAwait` is container-scoped and faithful ONLY while
+  // THIS container is the sole step awaiting `name`. If another section's
+  // container is already proxy-parked on the SAME author name in this parent
+  // run, the reducer would consume a delivery by `state.steps` Map-insertion
+  // order across ALL steps (see `handleSignalReceived`), not this container's
+  // seq order, so the helper could mis-bind. Refuse the topology loudly rather
+  // than route a signal to the wrong section. Two concurrent same-name sections
+  // are only meaningful with correlated author-signal addressing, which is
+  // deferred; a single section re-awaiting a name sequentially is always one
+  // active awaiter and stays faithful.
+  for (const [otherStepId, otherStep] of state.steps) {
+    if (
+      otherStepId !== containerStepId &&
+      otherStep.phase === "awaiting-signal" &&
+      otherStep.awaitingSignal?.name === name &&
+      controlParkKindOf(otherStep.awaitingSignal) === "signal-relay"
+    ) {
+      throw new Error(
+        `onTrigger ${containerStepId} signal-relay: section ${otherStepId} is ` +
+          `already awaiting the same signal name ${name}; two sections ` +
+          `awaiting the same signal name concurrently is not supported`,
+      );
+    }
+  }
+
+  // Emit the container's signal-relay await over the body's author name. The
+  // commit's reducer pass decides (a) vs (b): a signal queued before it
+  // pre-consumes it (in-flight); otherwise the container is left awaiting.
+  const awaited: WorkflowEvent = {
+    kind: "SignalAwaited",
+    seq: state.lastSeq + 1,
+    at: env.clock().toISOString(),
+    stepId: containerStepId,
+    signalName: name,
+    parkKind: "signal-relay",
+  };
+  const awaitSeq = awaited.seq;
+  await commit(env, runId, awaited);
+  await flush(env, runId);
+  const afterEmit = await reloadState(env, runId);
+
+  if (afterEmit.steps.get(containerStepId)?.phase === "in-flight") {
+    // (a) PRE-CONSUME: the emit consumed a signal queued before it. Bind it
+    // from the log's FIFO pairing and relay -- the body's gate is already
+    // satisfiable, so there is nothing to await.
+    const log = await env.repoStore.read(runId);
+    const bound = boundSignalForContainerAwait(
+      log,
+      name,
+      containerStepId,
+      awaitSeq,
+    );
+    if (bound === undefined) {
+      throw new Error(
+        `onTrigger ${containerStepId} signal-relay: the emit pre-consumed a ` +
+          `queued ${name} signal but no paired SignalReceived is in the log`,
+      );
+    }
+    await child.deliverSignal(name, bound.payload, bound.signalId);
+    return child.next();
+  }
+
+  // (b) RACE: the signal's arrival vs the body producing its next event vs
+  // abort. `awaitNext` rejects on `raceAbort`; `next()` returns a terminal when
+  // the body is cancelled, so abort is threaded through the awaitNext leg.
+  const raceAbort = new AbortController();
+  const onOuterAbort = (): void => {
+    raceAbort.abort();
+  };
+  if (abort.aborted) {
+    raceAbort.abort();
+  } else {
+    abort.addEventListener("abort", onOuterAbort, { once: true });
+  }
+  const pSignal = env.signalChannel
+    .awaitNext(name, raceAbort.signal)
+    .then((r) => ({ tag: "signal" as const, r }));
+  const pNext = child.next().then((ev) => ({ tag: "next" as const, ev }));
+  let outcome:
+    | { tag: "signal"; r: { payload: unknown; signalId: string } }
+    | { tag: "next"; ev: Awaited<ReturnType<SuspendableChildHandle["next"]>> };
+  try {
+    outcome = await Promise.race([pSignal, pNext]);
+  } catch (cause) {
+    // awaitNext rejected: the outer abort fired (the run is tearing down).
+    // Drain the still-pending next() so it does not leak, then propagate.
+    raceAbort.abort();
+    await pNext.catch(() => undefined);
+    throw cause;
+  } finally {
+    abort.removeEventListener("abort", onOuterAbort);
+  }
+
+  if (outcome.tag === "signal") {
+    // The awaited signal arrived live. Commit its SignalReceived -- mirroring
+    // parkOnSignal's awaiter-commits contract, so the container log carries it
+    // in every host; a production delivery that also committed it dedups by
+    // signalId -- then relay it into the body and take the body's next event.
+    const before = await reloadState(env, runId);
+    const received: WorkflowEvent = {
+      kind: "SignalReceived",
+      seq: before.lastSeq + 1,
+      at: env.clock().toISOString(),
+      signalName: name,
+      signalId: outcome.r.signalId,
+      payload: outcome.r.payload,
+    };
+    await commit(env, runId, received);
+    await flush(env, runId);
+    await child.deliverSignal(name, outcome.r.payload, outcome.r.signalId);
+    return (await pNext).ev;
+  }
+
+  // The body produced its next event before the signal arrived: its gate timed
+  // out and it moved on, so the container's relay await is stale. Stop the
+  // outstanding awaitNext, then disambiguate whether a signal landed and was
+  // consumed during the race.
+  raceAbort.abort();
+  await pSignal.catch(() => undefined);
+  const afterRace = await reloadState(env, runId);
+  const container = afterRace.steps.get(containerStepId);
+  if (
+    container?.phase === "awaiting-signal" &&
+    container.awaitingSignal?.name === name
+  ) {
+    // No signal was consumed: retire the stale relay await so the reducer stops
+    // treating the container as awaiting this name.
+    const retire = await reloadState(env, runId);
+    const abandoned: WorkflowEvent = {
+      kind: "SignalAwaitAbandoned",
+      seq: retire.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId: containerStepId,
+      signalName: name,
+    };
+    await commit(env, runId, abandoned);
+    await flush(env, runId);
+  } else {
+    // A signal landed and was consumed during the race (its SignalReceived
+    // reduced the container off awaiting-signal). Relay it idempotently: the
+    // body has moved past its gate, but its run-lifetime dedup on the ORIGINAL
+    // signalId absorbs a relay it no longer needs. Do NOT abandon.
+    const log = await env.repoStore.read(runId);
+    const bound = boundSignalForContainerAwait(
+      log,
+      name,
+      containerStepId,
+      awaitSeq,
+    );
+    if (bound !== undefined) {
+      await child.deliverSignal(name, bound.payload, bound.signalId);
+    }
+  }
+  return outcome.ev;
 }
 
 /**
@@ -2172,6 +2379,91 @@ function recoverDeliveredApprovalGrant(
   }
   if (!found) return undefined;
   return { corr, decision };
+}
+
+/**
+ * Bind the signal a container `signal-relay` await consumed, by REPLAYING the
+ * reducer's FIFO signal pairing over the container's durable log. The reducer
+ * owns the queue -- `handleSignalReceived` queues a signal with no awaiter and
+ * `handleSignalAwaited` consumes the queue head -- so recovering WHICH signal
+ * paired with the await at `awaitSeq` means replaying that exact pairing, not
+ * re-heuristicking it. `findConsumedSignal` will not do here: it returns the
+ * NEWEST observed `SignalReceived` for the name, whereas the reducer consumes
+ * the OLDEST queued one, so under multiple queued signals for a name it binds
+ * the wrong payload.
+ *
+ * Two reducer behaviors the pairing depends on, both replayed here:
+ *   - dedup by `signalId`: a redelivered `SignalReceived` is a no-op in the
+ *     reducer (`observedSignalIds`) yet still lands in the log, so the replay
+ *     must skip an already-seen id rather than double-advance the FIFO.
+ *   - retire an abandoned awaiter: `SignalAwaitAbandoned` drops the awaiter, so
+ *     a later signal queues rather than pairing with the retired await; the
+ *     replay pops the container's active waiter on abandon to match. The
+ *     container awaits a given name single-file, so at most one unpaired waiter
+ *     exists at any point.
+ *
+ * PRECONDITION: `log` is the COMPLETE parent-run log from seq 1. The replay
+ * reconstructs the reducer's queue/waiters from `emptyState`, so a windowed
+ * suffix would start mid-stream and mis-pair; a non-full log fails loud below.
+ *
+ * ASSUMPTION: a UNIQUE container awaiter per name in the parent run. The
+ * pairing is container-scoped (it filters `SignalAwaited`/`SignalAwaitAbandoned`
+ * to `containerStepId`), which matches the reducer ONLY while this container is
+ * the sole step awaiting the name. Two sections concurrently awaiting the same
+ * name would let the reducer consume by `state.steps` Map-insertion order
+ * across all steps; `driveContainerSignalRelay` refuses that topology loudly at
+ * the proxy-park, so this helper never sees it.
+ */
+function boundSignalForContainerAwait(
+  log: readonly WorkflowEvent[],
+  name: string,
+  containerStepId: string,
+  awaitSeq: number,
+): { payload: unknown; signalId: string } | undefined {
+  if (log.length > 0 && log[0]?.seq !== 1) {
+    throw new Error(
+      `boundSignalForContainerAwait requires the full run log from seq 1; got ` +
+        `a log starting at seq ${String(log[0]?.seq)} (a windowed suffix would ` +
+        `mis-pair the reducer's FIFO)`,
+    );
+  }
+  const queue: { payload: unknown; signalId: string }[] = [];
+  const waiters: number[] = [];
+  const pairing = new Map<number, { payload: unknown; signalId: string }>();
+  const observed = new Set<string>();
+  for (const event of log) {
+    if (event.kind === "SignalReceived" && event.signalName === name) {
+      if (observed.has(event.signalId)) continue;
+      observed.add(event.signalId);
+      const waiter = waiters.shift();
+      if (waiter !== undefined) {
+        pairing.set(waiter, {
+          payload: event.payload,
+          signalId: event.signalId,
+        });
+      } else {
+        queue.push({ payload: event.payload, signalId: event.signalId });
+      }
+    } else if (
+      event.kind === "SignalAwaited" &&
+      event.signalName === name &&
+      event.stepId === containerStepId
+    ) {
+      const head = queue.shift();
+      if (head !== undefined) {
+        pairing.set(event.seq, head);
+      } else {
+        waiters.push(event.seq);
+      }
+    } else if (
+      event.kind === "SignalAwaitAbandoned" &&
+      event.signalName === name &&
+      event.stepId === containerStepId
+    ) {
+      waiters.pop();
+    }
+  }
+  return pairing.get(awaitSeq);
 }
 
 function isIterationDone(
@@ -2761,6 +3053,10 @@ async function parkOnSignal(
   // once, and the host's idempotent register absorbs the re-emit driven
   // from durable state on a later re-establishment.
   let parkToNotify: WorkflowPark | undefined;
+  // Author `awaitSignal` gate (non-reserved name) captured on the fresh park
+  // so the suspendable-child seam's `onSignalPark` sink fires after the flush,
+  // mirroring the `parkToNotify` deferral below. Set only on the author branch.
+  let signalParkToNotify: string | undefined;
   if (state.steps.get(opts.stepId)?.phase !== "awaiting-signal") {
     const awaited: WorkflowEvent = {
       kind: "SignalAwaited",
@@ -2823,6 +3119,11 @@ async function parkOnSignal(
           approvalSnapshot: opts.approvalSnapshot,
         };
       }
+    } else {
+      // A plain author `awaitSignal` gate. Not a control-plane suspension the
+      // hub registers, but a suspendable-child body surfaces it up so the
+      // section proxies + relays it; capture it to fire after the flush.
+      signalParkToNotify = opts.signalName;
     }
   }
   // The per-step timeout commits TimerSet before asking the scheduler
@@ -2890,6 +3191,12 @@ async function parkOnSignal(
   // which the re-emit driven from durable state reconciles idempotently.
   if (parkToNotify !== undefined) {
     env.onPark?.(parkToNotify);
+  }
+  // The author-signal sibling notify: a suspendable-child body's `awaitSignal`
+  // gate is surfaced up so the section can proxy it. Fired after the flush like
+  // `onPark` so the `SignalAwaited` is durable before the section observes it.
+  if (signalParkToNotify !== undefined) {
+    env.onSignalPark?.({ runId, name: signalParkToNotify });
   }
 
   // Drain observation point #4: signal-park entry. If drain has

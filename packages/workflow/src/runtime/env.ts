@@ -333,16 +333,31 @@ export type SuspendableChildPark = {
 /**
  * A live handle to a running suspendable child body. `next` resolves each
  * time the child parks on an approval (the caller proxies it up and, once
- * granted, calls `resume`) or reaches a terminal. `resume` delivers the
- * granted decision to the child's reserved correlation channel, unblocking
- * its awaiter so the body continues.
+ * granted, calls `resume`), parks on an author `awaitSignal` gate (surfaced as
+ * `signal-park` so the caller proxies it up as a signal-relay await and
+ * `deliverSignal`s the resolved signal back), or reaches a terminal. `resume`
+ * delivers the granted decision to the child's reserved correlation channel;
+ * `deliverSignal` delivers a signal on the body's own author-chosen name.
+ * Both unblock the body's awaiter so it continues.
  */
 export type SuspendableChildHandle = {
   next(): Promise<
     | { kind: "park"; park: SuspendableChildPark }
+    | { kind: "signal-park"; name: string }
     | { kind: "terminal"; terminalStatus: "completed" | "failed" | "cancelled" }
   >;
   resume(correlationId: string, decision: unknown): Promise<void>;
+  /**
+   * Deliver a signal on the body's author-chosen name (a non-reserved
+   * `awaitSignal` gate the body parked on), carrying the ORIGINAL `signalId`
+   * so the body's run-lifetime dedup makes a redelivered relay idempotent.
+   * Distinct from `resume`, which targets a reserved correlation channel.
+   */
+  deliverSignal(
+    name: string,
+    payload: unknown,
+    signalId: string,
+  ): Promise<void>;
 };
 
 /**
@@ -441,6 +456,23 @@ export type WorkflowPark = {
    * Absent for input parks, which carry no snapshot.
    */
   approvalSnapshot?: ApprovalSnapshot;
+};
+
+/**
+ * The notify a suspendable child body fires when a step parks on an author
+ * `awaitSignal` gate -- a NON-reserved, author-chosen `name` (not a reserved
+ * `signalName(correlationId)` control channel). Distinct from {@link
+ * WorkflowPark}: an author gate carries no correlation and no snapshot, so the
+ * host cannot register it at the hub. The suspendable-child seam surfaces it up
+ * to `runOnTrigger`, which proxies the body's await as a signal-relay await on
+ * its own run and relays the resolved signal back down. A host that is not a
+ * suspendable-child body (the container run, runLocal) leaves `onSignalPark`
+ * unset, so an author gate outside a section body parks with no notify exactly
+ * as before.
+ */
+export type WorkflowSignalPark = {
+  runId: string;
+  name: string;
 };
 
 /**
@@ -567,6 +599,19 @@ export interface WorkflowRuntimeEnv {
    * does not wire it does not register suspensions -- runLocal leaves it unset.
    */
   onPark?: (park: WorkflowPark) => void;
+  /**
+   * Optional author-signal park sink, the non-reserved-channel sibling of
+   * `onPark`. Fired once each time a step parks on an author `awaitSignal`
+   * gate (a plain, author-chosen `name`, not a reserved
+   * `signalName(correlationId)` channel), on the fresh park only -- a re-park
+   * resume that finds the step already `awaiting-signal` does not re-fire, the
+   * same discipline as `onPark`. The suspendable-child seam wires it so a
+   * section body's author gate surfaces up to `runOnTrigger`; every other host
+   * -- the container run, runLocal -- leaves it unset, so an author gate there
+   * parks silently on the signal channel exactly as before (no behavior change
+   * off the section-body path).
+   */
+  onSignalPark?: (park: WorkflowSignalPark) => void;
   /**
    * Optional read-only recovery hook: enumerate the durable pending approval
    * operations a step left behind, keyed by `{ runId, stepId, attempt }`. The

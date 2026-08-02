@@ -1265,6 +1265,7 @@ export function createSidecarSpawnSuspendableChild(
     // shape.
     type BodyEvent =
       | { kind: "park"; park: SuspendableChildPark }
+      | { kind: "signal-park"; name: string }
       | { kind: "error"; error: Error };
     const events: BodyEvent[] = [];
     let wake: (() => void) | null = null;
@@ -1300,6 +1301,14 @@ export function createSidecarSpawnSuspendableChild(
             ),
           });
         }
+        notify();
+      },
+      // A body `awaitSignal` gate on an author name: surface it so the section
+      // proxies it up as a signal-relay await and relays the resolved signal
+      // back via `deliverSignal`. Without this the body would park on the
+      // signal channel with nothing upstream to route a delivery to it.
+      onSignalPark: (park) => {
+        events.push({ kind: "signal-park", name: park.name });
         notify();
       },
     };
@@ -1363,6 +1372,9 @@ export function createSidecarSpawnSuspendableChild(
               );
               throw event.error;
             }
+            if (event.kind === "signal-park") {
+              return { kind: "signal-park", name: event.name };
+            }
             return { kind: "park", park: event.park };
           }
           if (failure !== null) throw failure;
@@ -1379,6 +1391,9 @@ export function createSidecarSpawnSuspendableChild(
       },
       resume: async (correlationId, decision) => {
         await signalChannel.deliver(signalName(correlationId), decision);
+      },
+      deliverSignal: async (name, payload, signalId) => {
+        await signalChannel.deliver(name, payload, signalId);
       },
     };
   };
