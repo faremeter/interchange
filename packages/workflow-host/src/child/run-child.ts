@@ -885,6 +885,16 @@ async function handleControlPayload(
       return false;
     }
     case "signal.deliver": {
+      // Drop a delivery for a run this child is not driving. The dispatch path
+      // only ever targets a live run id, but a stale or mis-routed frame -- a
+      // synthetic body-child id, or a run that crashed and has not been
+      // re-discovered -- must not commit an orphan `SignalReceived` to a log no
+      // awaiter is tailing. `runsInFlight` is the one-driver authority on which
+      // runs this child drives.
+      if (!ctx.runsInFlight.has(payload.data.runId)) {
+        logger.warn`signal.deliver for run ${payload.data.runId} which is not in flight; dropping (signalName=${payload.data.signalName})`;
+        return false;
+      }
       // Land the signal as a `SignalReceived` commit on the run's
       // event log. The signal-channel substrate's `subscribeKind`
       // peer (the per-run signal channel installed at run start) is

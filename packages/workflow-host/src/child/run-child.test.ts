@@ -623,6 +623,89 @@ describe("runWorkflowChild", () => {
     expect(result.finalCredentialsSnapshot?.steps).toHaveLength(1);
   });
 
+  test("drops a signal.deliver for a run this child is not driving", async () => {
+    const baseDir = await makeTempDir("child-signal-drop-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    await seedWorkflowDefinition(baseDir, {
+      kind: "workflow",
+      id: "workflow-asset",
+    });
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+      }),
+    );
+    const bindings = buildBindings({ baseDir, childKeyPair });
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    let readyLine: string | undefined;
+    for (let i = 0; i < 200 && readyLine === undefined; i += 1) {
+      const flushed = childToSupervisor.flushed();
+      if (flushed.length > 0) readyLine = flushed[0];
+      else await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(readyLine).toBeDefined();
+
+    // No trigger.fire was sent, so "ghost-run" is not in `runsInFlight`.
+    await supervisorSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: "ghost-run",
+        signalName: "go",
+        signalId: "sig-1",
+        payload: { x: 1 },
+      },
+    });
+    // Give a hypothetical non-dropped fire-and-forget deliver time to commit.
+    await new Promise((r) => setTimeout(r, 50));
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+
+    const result = await runPromise;
+    expect(result.triggeredRunIds).toEqual([]);
+
+    // The guard dropped the delivery: no events subtree was written for the
+    // unknown run.
+    const ghostEventsDir = path.join(
+      baseDir,
+      "workflow-run",
+      "deployment-x",
+      "runs",
+      "ghost-run",
+      "events",
+    );
+    const ghostExists = await fs
+      .access(ghostEventsDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(ghostExists).toBe(false);
+  });
+
   test("cold path fires cleanupRunStorage once per run at run granularity, never before terminal", async () => {
     const baseDir = await makeTempDir("child-cold-cleanup-");
     const supervisorKeyPair = await generateKeyPair();
