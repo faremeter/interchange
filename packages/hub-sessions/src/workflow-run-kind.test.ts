@@ -1033,6 +1033,74 @@ describe("workflowRunKindHandler.validatePush — CancelRequested principal-vs-o
     });
     expect(r.ok).toBe(true);
   });
+
+  test("accepts a workflow-process write that carries a supervisor-signed CancelRequested forward unchanged", async () => {
+    // The origin-vs-signer rule is a WRITE-TIME check on the commit that
+    // authors the CancelRequested. A run's own cascade write of RunCancelled
+    // is signed workflow-process and re-lists the whole events prefix, carrying
+    // the earlier supervisor-signed CancelRequested forward byte-for-byte. The
+    // handler must accept that; re-checking the carried-forward cancel's origin
+    // against the cascade write's signer would reject a legitimate terminal.
+    const cancel = eventBody(1, "CancelRequested", {
+      origin: "supervisor-operator",
+      reason: "cancel",
+    });
+    const prior = {
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: cancel,
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        ...prior,
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/2.json`]: eventBody(
+          2,
+          "RunCancelled",
+        ),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL, priorFiles: prior },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("still rejects a workflow-process write that mutates a carried-forward CancelRequested", async () => {
+    // The carry-forward exemption is gated strictly on the blob being absent
+    // from the prior tree; a byte-DIVERGED carried-forward CancelRequested is
+    // not a carry-forward, so the append-only byte-equality check rejects it
+    // before the origin exemption is even reached.
+    const prior = {
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+        0,
+        "RunStarted",
+      ),
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "CancelRequested",
+        { origin: "supervisor-operator", reason: "cancel" },
+      ),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+          1,
+          "CancelRequested",
+          { origin: "supervisor-operator", reason: "tampered" },
+        ),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL, priorFiles: prior },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/append-only/);
+  });
 });
 
 describe("workflowRunKindHandler.validatePush — append-only via prior-tree", () => {

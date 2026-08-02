@@ -2168,14 +2168,30 @@ export const workflowRunKindHandler: KindHandler = {
               reason: `event ${entry.blobPath} CancelRequested origin must be a string`,
             };
           }
-          const principalCheck = checkCancelOriginPrincipal(
-            entry.blobPath,
-            origin,
-            principal,
-          );
-          if (!principalCheck.ok) {
-            logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${principalCheck.reason}`;
-            return principalCheck;
+          // Enforce the cancel-origin principal only for a NEWLY-ADDED blob.
+          // A CancelRequested's origin-vs-signer rule is a write-time
+          // authorization: it belongs to the commit that authors the event. A
+          // later commit that merely carries the event forward -- e.g. the
+          // run's own workflow-process cascade write of CancelPropagated /
+          // RunCancelled, which re-lists the whole events prefix -- must not be
+          // rejected because the carried-forward cancel was authored under a
+          // different (supervisor) signer. Re-checking it protects nothing: the
+          // byte-equality check above already proves a carried-forward blob is
+          // unchanged, and the deletion-direction check proves it cannot be
+          // dropped. A tampered (byte-diverged) blob never reaches here --
+          // checkPriorByteEquality rejects it first. Mirrors the newly-terminal
+          // gate below, which likewise acts only on a blob absent from the
+          // prior tree.
+          if ((await priorReadBlob(entry.blobPath)) === null) {
+            const principalCheck = checkCancelOriginPrincipal(
+              entry.blobPath,
+              origin,
+              principal,
+            );
+            if (!principalCheck.ok) {
+              logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${principalCheck.reason}`;
+              return principalCheck;
+            }
           }
         }
         if (terminalSeq !== null) {
