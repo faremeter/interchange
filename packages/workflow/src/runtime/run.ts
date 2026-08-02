@@ -989,7 +989,7 @@ async function runPrimitive(
     case "gate":
       return runGate(definition, env, runId, primitive, selectorCtx, abort);
     case "awaitSignal":
-      return runAwaitSignal(env, runId, primitive, abort);
+      return runAwaitSignal(definition, env, runId, primitive, abort);
     case "sleep":
       return runSleep(env, runId, primitive, abort);
     case "childWorkflow":
@@ -3209,8 +3209,32 @@ function findAwaitedSignalNameForStep(
  * the caller has already emitted `StepStarted` (and reloaded) when
  * starting fresh. The re-park guard here reads `state` to skip re-emitting
  * `SignalAwaited` when the step is already `awaiting-signal`.
+ *
+ * Returns a discriminated result rather than throwing on timeout: a park with
+ * a `timeout` may resolve either with the delivered signal (`timedOut: false`)
+ * or because its timer fired (`timedOut: true`), and only the caller knows
+ * whether a fired timer routes onward (`awaitSignal.onTimeout`) or fails the
+ * step. A park with no `timeout` never yields `timedOut: true`.
  */
-async function parkOnSignal(
+type ParkResult = { timedOut: false; payload: unknown } | { timedOut: true };
+
+/**
+ * Unwrap a park that the caller KNOWS cannot time out (every control-plane
+ * park -- approval, input, signal-relay -- carries no `timeout`). A timeout
+ * here is a wiring bug, so surface it loudly rather than mis-route a control
+ * decision.
+ */
+function requireSignalPayload(result: ParkResult): unknown {
+  if (result.timedOut) {
+    throw new Error(
+      "parkOnSignal: a control-plane park reported a timeout, but only a " +
+        "timed awaitSignal gate sets a timeout",
+    );
+  }
+  return result.payload;
+}
+
+async function parkOnSignalResult(
   env: WorkflowRuntimeEnv,
   runId: string,
   opts: {
@@ -3230,7 +3254,7 @@ async function parkOnSignal(
   },
   state: ReturnType<typeof resumeFromLog>,
   abort: AbortSignal,
-): Promise<unknown> {
+): Promise<ParkResult> {
   // Re-emit `SignalAwaited` only when the gate is not already awaiting it.
   // On a re-park resume the gate is already `awaiting-signal` (StepStarted
   // + SignalAwaited durable), so this is skipped and the tail re-parks on
@@ -3462,19 +3486,18 @@ async function parkOnSignal(
     };
     next = await commit(env, runId, signalReceived);
     void next;
-    return received.payload;
+    return { timedOut: false, payload: received.payload };
   } catch (cause) {
     // Distinguish timeout from outer cancellation: the safe-runner's
     // catch treats `cancelling` phase specially, but a timeout that
-    // fires while the run is still `running` must surface as
-    // StepFailed. The scheduler has already committed TimerFired by
-    // the time the watch loop set `timerFired = true`; the runtime
-    // body MUST NOT commit a second TimerFired here -- single-writer
-    // is the invariant.
+    // fires while the run is still `running` is not a failure here -- it
+    // is a routing decision the caller owns (route onward via onTimeout,
+    // or fail the step). Return the discriminated timeout rather than
+    // throwing. The scheduler has already committed TimerFired by the time
+    // the watch loop set `timerFired = true`; the runtime body MUST NOT
+    // commit a second TimerFired here -- single-writer is the invariant.
     if (timerFired) {
-      throw new Error(
-        `signal-await on ${opts.signalName} timed out after ${String(opts.timeout)}ms`,
-      );
+      return { timedOut: true };
     }
     throw cause;
   } finally {
@@ -3488,7 +3511,28 @@ async function parkOnSignal(
   }
 }
 
+/**
+ * Park on a signal that CANNOT time out and return the delivered payload
+ * directly. Every control-plane park (approval, input, signal-relay) carries no
+ * `timeout`, so it never yields the discriminated timeout; a timeout here is a
+ * wiring bug that {@link requireSignalPayload} surfaces loudly. Only the
+ * `awaitSignal` gate, which owns the fail-vs-route decision, calls
+ * `parkOnSignalResult` directly.
+ */
+async function parkOnSignal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  opts: Parameters<typeof parkOnSignalResult>[2],
+  state: ReturnType<typeof resumeFromLog>,
+  abort: AbortSignal,
+): Promise<unknown> {
+  return requireSignalPayload(
+    await parkOnSignalResult(env, runId, opts, state, abort),
+  );
+}
+
 async function runAwaitSignal(
+  definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
   runId: string,
   primitive: AwaitSignalPrimitive,
@@ -3567,7 +3611,7 @@ async function runAwaitSignal(
   // also owned here: an awaitSignal gate completes with the raw delivered
   // payload, whereas the step-suspend arm re-invokes and completes with a
   // reply.
-  const payload = await parkOnSignal(
+  const result = await parkOnSignalResult(
     env,
     runId,
     {
@@ -3580,8 +3624,54 @@ async function runAwaitSignal(
     state,
     abort,
   );
-  await emitStepCompletedWithValue(env, runId, primitive.id, payload);
-  return payload;
+
+  // No onTimeout: preserve the prior behavior -- a delivered signal completes
+  // the gate with its payload; a fired timer fails the step.
+  if (primitive.onTimeout === undefined) {
+    if (result.timedOut) {
+      throw new Error(
+        `signal-await on ${primitive.name} timed out after ${String(primitive.timeout)}ms`,
+      );
+    }
+    await emitStepCompletedWithValue(env, runId, primitive.id, result.payload);
+    return result.payload;
+  }
+
+  // onTimeout set: route conditionally via the gate mechanism (prune the
+  // not-taken branch with skip-sentinels, complete the gate, let the taken
+  // branch schedule off its `after`), exactly as `routeLoopOutcome` does for a
+  // loop's onExhausted. A fired timer routes to the onTimeout target and prunes
+  // the normal successors; a delivered signal takes the normal successors and
+  // prunes the onTimeout branch. The gate completes either way -- a long-lived
+  // section keeps working through a timed-out body gate instead of failing.
+  const onTimeoutTarget = primitive.onTimeout;
+  const normalDependents = Object.entries(definition.steps)
+    .filter(
+      ([id, p]) =>
+        id !== onTimeoutTarget && (p.after?.includes(primitive.id) ?? false),
+    )
+    .map(([id]) => id);
+  const notSelected = result.timedOut ? normalDependents : [onTimeoutTarget];
+  const selected = result.timedOut ? [onTimeoutTarget] : normalDependents;
+  const toSkip = collectBranchClosure(definition, notSelected, selected);
+  const skipState = await reloadState(env, runId);
+  for (const skipId of toSkip) {
+    if (abort.aborted) break;
+    // A resumed routing pass skips a sentinel already committed (mirrors
+    // routeLoopOutcome); a timed gate crashed mid-routing is otherwise the
+    // pre-existing RuntimeResumeUnsupportedError window, inherited unchanged.
+    if (skipState.steps.has(skipId)) continue;
+    const sentinel = {
+      skipped: true,
+      gateId: primitive.id,
+      timedOut: result.timedOut,
+    };
+    await emitStepStartedWithValue(env, runId, skipId, sentinel);
+    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
+  }
+  const output = result.timedOut ? { timedOut: true } : result.payload;
+  await emitStepCompletedWithValue(env, runId, primitive.id, output);
+  return output;
 }
 
 async function runSleep(
