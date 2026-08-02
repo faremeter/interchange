@@ -53,6 +53,7 @@ import {
   type Principal,
   type RepoId,
   type RepoStore,
+  type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
 import { createIsogitStore } from "@intx/storage-isogit";
@@ -1099,6 +1100,14 @@ export function createSidecarRunChild(
   const directors = deps.directors ?? createDefaultDirectorRegistry();
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
+  // The in-process child runs under real supervisor authority; its
+  // control-plane cancel (`CancelRequested`) must be signed by a supervisor
+  // principal, which the kind handler requires and the substrate authorizes for
+  // this deployment. Run-body events keep their workflow-process attribution.
+  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
+    kind: "supervisor",
+    deploymentId: deps.workflowRunRepoId.id,
+  };
   // Created once and shared across every child this factory spawns (the
   // runtime scopes reads/subscribes by runId), so sibling and grandchild
   // spawns route through one repo-store handle rather than a fresh one each.
@@ -1106,6 +1115,7 @@ export function createSidecarRunChild(
     substrate: deps.substrate,
     repoId: deps.workflowRunRepoId,
     principal: deps.principal,
+    controlPlanePrincipal: supervisorPrincipal,
     ref: deps.workflowRunRef,
   });
   // Self-referential `RunChildWorkflow` so a child env's recursive
@@ -1141,6 +1151,11 @@ export function createSidecarRunChild(
         runId: childRunId,
         triggerPayload: input,
       });
+      // The resulting `CancelRequested` is written under the supervisor
+      // principal wired into this run's repo store (see `controlPlanePrincipal`
+      // above): the kind handler requires a supervisor signer for any cancel
+      // origin, so a workflow-process-signed cancel would be refused and a
+      // parent abort would surface as a failed rather than cancelled child.
       const cancelOnAbort = (): void => {
         void handle.cancel("supervisor-operator", "parent cancelled");
       };
@@ -1201,10 +1216,19 @@ export function createSidecarSpawnSuspendableChild(
   const directors = deps.directors ?? createDefaultDirectorRegistry();
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
+  // The in-process body child runs under real supervisor authority; its
+  // control-plane cancel (`CancelRequested`) must be signed by a supervisor
+  // principal, which the kind handler requires and the substrate authorizes for
+  // this deployment. Run-body events keep their workflow-process attribution.
+  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
+    kind: "supervisor",
+    deploymentId: deps.workflowRunRepoId.id,
+  };
   const repoStore = createWorkflowRunRepoStore({
     substrate: deps.substrate,
     repoId: deps.workflowRunRepoId,
     principal: deps.principal,
+    controlPlanePrincipal: supervisorPrincipal,
     ref: deps.workflowRunRef,
   });
   // A body's own `childWorkflow` grandchildren spawn terminal-only: the
@@ -1292,6 +1316,11 @@ export function createSidecarSpawnSuspendableChild(
         : { runId: childRunId, triggerPayload: input },
     );
 
+    // The resulting `CancelRequested` is written under the supervisor principal
+    // wired into this run's repo store (see `controlPlanePrincipal` above): the
+    // kind handler requires a supervisor signer for any cancel origin, so a
+    // workflow-process-signed cancel would be refused and a parent abort would
+    // surface as a failed rather than cancelled child.
     const cancelOnAbort = (): void => {
       void handle.cancel("supervisor-operator", "parent cancelled");
     };

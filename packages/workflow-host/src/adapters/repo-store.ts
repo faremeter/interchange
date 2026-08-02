@@ -122,6 +122,18 @@ export type WorkflowRunRepoStoreOpts = {
    */
   principal: Principal;
   /**
+   * Principal used for a control-plane cancel append (a batch that is
+   * entirely `CancelRequested`). The workflow-run kind handler requires a
+   * `CancelRequested` be signed by a `supervisor` principal -- a
+   * `workflow-process` principal may write run-body events but not a cancel.
+   * An in-process child runs under real supervisor authority, so its host
+   * supplies a supervisor principal here while run-body events keep their
+   * `workflow-process` attribution. Absent when the writer issues no
+   * in-process cancel, in which case a cancel fails loud at the push boundary
+   * rather than being silently mis-attributed.
+   */
+  controlPlanePrincipal?: Principal;
+  /**
    * Events ref the adapter reads from and writes to. The workflow-run
    * repo layout pins all `runs/<runId>/events/` blobs under a single
    * moving ref. Callers typically supply `"refs/heads/main"`.
@@ -328,10 +340,20 @@ async function appendBatchEvents(
   if (firstEvent === undefined) throw new Error("unreachable");
   const lastEvent = events[events.length - 1];
   if (lastEvent === undefined) throw new Error("unreachable");
+  // A control-plane cancel append (an isolated `CancelRequested`, which the
+  // kind handler requires be signed by a supervisor principal) is written under
+  // `controlPlanePrincipal` when the host supplied one; every other batch --
+  // including run-body events -- keeps the workflow-process `principal`. A mixed
+  // batch is never a cancel, so it stays on `principal`.
+  const principal =
+    opts.controlPlanePrincipal !== undefined &&
+    events.every((event) => event.kind === "CancelRequested")
+      ? opts.controlPlanePrincipal
+      : opts.principal;
   let seqConflict: { expected: number; supplied: number } | null = null;
   try {
     await opts.substrate.writeTreePreservingPrefix(
-      opts.principal,
+      principal,
       opts.repoId,
       opts.ref,
       {
