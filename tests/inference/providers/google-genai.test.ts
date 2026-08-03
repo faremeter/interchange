@@ -34,6 +34,8 @@ import {
   loadAdapterRegistry,
 } from "@intx/inference/providers";
 import type {
+  AssistantTurn,
+  ContentBlock,
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
@@ -4384,5 +4386,582 @@ describe("Google GenAI adapter: quirks", () => {
     expect(() =>
       createGoogleGenAIAdapter(TEST_SOURCE, { anything: true }),
     ).toThrow(/invalid quirks/);
+  });
+});
+
+describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () => {
+  const JSON_SOURCE: InferenceSource = {
+    id: "google-genai:gemini-test",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test",
+    model: "gemini-test",
+  };
+
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* no timers */
+    },
+    now: () => 0,
+  };
+
+  // Drives a response body through the real harness accumulator and returns the
+  // assembled turn plus every event. The content-type selects the decode path
+  // (JSON body vs SSE stream), so one helper drives both parseJSONResponse and
+  // parseResponse. Asserting the decoded turn (not the raw events) is
+  // essential here: the streaming path splits text across coalescing deltas
+  // while the JSON path delivers it in fewer parts, so only the accumulated
+  // turn matches across paths.
+  async function driveTurn(
+    body: string,
+    contentType = "application/json",
+  ): Promise<{ turn: AssistantTurn | undefined; events: InferenceEvent[] }> {
+    const deps: Dependencies = {
+      fetch: () =>
+        Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: { "content-type": contentType },
+          }),
+        ),
+      scheduler: inertScheduler,
+      adapters: createBuiltinRegistry(),
+    };
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
+      ],
+      source: JSON_SOURCE,
+      nextSeq: () => seq++,
+      deps,
+    })) {
+      events.push(ev);
+    }
+    const done = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    return { turn: done?.data.turn, events };
+  }
+
+  function blocksOfType<T extends ContentBlock["type"]>(
+    turn: AssistantTurn,
+    blockType: T,
+  ): Extract<ContentBlock, { type: T }>[] {
+    return turn.content.filter(
+      (b): b is Extract<ContentBlock, { type: T }> => b.type === blockType,
+    );
+  }
+
+  function requireTurn(turn: AssistantTurn | undefined): AssistantTurn {
+    if (turn === undefined) throw new Error("expected an inference.done turn");
+    return turn;
+  }
+
+  const USAGE = {
+    promptTokenCount: 14,
+    candidatesTokenCount: 7,
+    thoughtsTokenCount: 3,
+  };
+
+  function completion(parts: object[], extra: object = {}): string {
+    return JSON.stringify({
+      candidates: [
+        { content: { role: "model", parts }, finishReason: "STOP", index: 0 },
+      ],
+      usageMetadata: USAGE,
+      modelVersion: "gemini-test",
+      responseId: "resp-1",
+      ...extra,
+    });
+  }
+
+  test("decodes plain text and usage, including thinking tokens", async () => {
+    const { turn, events } = await driveTurn(
+      completion([{ text: "The capital of France is Paris." }]),
+    );
+    const t = requireTurn(turn);
+    expect(blocksOfType(t, "text").map((b) => b.text)).toEqual([
+      "The capital of France is Paris.",
+    ]);
+    const done = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    expect(done?.data.usage.input).toBe(14);
+    expect(done?.data.usage.output).toBe(7);
+    expect(done?.data.usage.thinking).toBe(3);
+  });
+
+  test("decodes a functionCall part into a tool call with parsed arguments", async () => {
+    const t = requireTurn(
+      (
+        await driveTurn(
+          completion([
+            {
+              functionCall: {
+                name: "get_weather",
+                args: { location: "Boston" },
+              },
+            },
+          ]),
+        )
+      ).turn,
+    );
+    const calls = blocksOfType(t, "tool_call");
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    if (call === undefined) throw new Error("expected a tool call");
+    expect(call.name).toBe("get_weather");
+    expect(call.arguments).toEqual({ location: "Boston" });
+  });
+
+  test("decodes a thinking part carrying its own thoughtSignature", async () => {
+    const t = requireTurn(
+      (
+        await driveTurn(
+          completion([
+            { text: "reasoning", thought: true, thoughtSignature: "sig-1" },
+            { text: "answer" },
+          ]),
+        )
+      ).turn,
+    );
+    const thinking = blocksOfType(t, "thinking");
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.thinking).toBe("reasoning");
+    expect(thinking[0]?.signature).toBe("sig-1");
+    expect(blocksOfType(t, "text").map((b) => b.text)).toEqual(["answer"]);
+  });
+
+  test("attaches a thoughtSignature that arrives on the following carrier part", async () => {
+    // The signature rides on the next non-thinking part (a functionCall), and
+    // the parser's pendingSignatureAnchor threads it back to the thinking
+    // block — exercised here within a single JSON parts array.
+    const t = requireTurn(
+      (
+        await driveTurn(
+          completion([
+            { text: "reasoning", thought: true },
+            {
+              functionCall: { name: "get_weather", args: { location: "SF" } },
+              thoughtSignature: "sig-carrier",
+            },
+          ]),
+        )
+      ).turn,
+    );
+    const thinking = blocksOfType(t, "thinking");
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.signature).toBe("sig-carrier");
+  });
+
+  test("decodes an executableCode + codeExecutionResult pair", async () => {
+    const t = requireTurn(
+      (
+        await driveTurn(
+          completion([
+            { executableCode: { language: "PYTHON", code: "print(1)" } },
+            { codeExecutionResult: { outcome: "OUTCOME_OK", output: "1\n" } },
+          ]),
+        )
+      ).turn,
+    );
+    expect(blocksOfType(t, "code_execution_request")).toHaveLength(1);
+    expect(blocksOfType(t, "code_execution_result")).toHaveLength(1);
+  });
+
+  test("decodes an inlineData image part", async () => {
+    const t = requireTurn(
+      (
+        await driveTurn(
+          completion([
+            { inlineData: { mimeType: "image/png", data: "aGVsbG8=" } },
+          ]),
+        )
+      ).turn,
+    );
+    expect(blocksOfType(t, "image")).toHaveLength(1);
+  });
+
+  test("decodes a promptFeedback.blockReason body into a safety rating and usage", async () => {
+    const body = JSON.stringify({
+      promptFeedback: { blockReason: "PROHIBITED_CONTENT" },
+      usageMetadata: USAGE,
+    });
+    const { turn, events } = await driveTurn(body);
+    const t = requireTurn(turn);
+    expect(blocksOfType(t, "safety_rating")).toHaveLength(1);
+    expect(blocksOfType(t, "safety_rating")[0]?.blockReason).toBe(
+      "PROHIBITED_CONTENT",
+    );
+    const done = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    expect(done?.data.usage.input).toBe(14);
+  });
+
+  test("rejects a non-terminal body carrying no finishReason", async () => {
+    // A complete non-streaming body must be terminal. A candidate with parts
+    // but no finishReason is a truncated capture — the terminality guard
+    // surfaces it rather than decoding a usage-less turn.
+    const body = JSON.stringify({
+      candidates: [{ content: { role: "model", parts: [{ text: "x" }] } }],
+      usageMetadata: USAGE,
+    });
+    const { events } = await driveTurn(body);
+    const error = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (error === undefined) throw new Error("expected inference.error");
+    expect(error.data.error.category).toBe("protocol_mismatch");
+  });
+
+  test("rejects a body with no candidates and no terminal signal", async () => {
+    const body = JSON.stringify({ modelVersion: "gemini-test" });
+    const { events } = await driveTurn(body);
+    const error = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (error === undefined) throw new Error("expected inference.error");
+    expect(error.data.error.category).toBe("protocol_mismatch");
+  });
+
+  test("rejects a multi-candidate body", async () => {
+    const body = JSON.stringify({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "a" }] },
+          finishReason: "STOP",
+          index: 0,
+        },
+        {
+          content: { role: "model", parts: [{ text: "b" }] },
+          finishReason: "STOP",
+          index: 1,
+        },
+      ],
+      usageMetadata: USAGE,
+    });
+    const { events } = await driveTurn(body);
+    const error = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (error === undefined) throw new Error("expected inference.error");
+    expect(error.data.error.category).toBe("protocol_mismatch");
+  });
+});
+
+describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () => {
+  const JSON_SOURCE: InferenceSource = {
+    id: "google-genai:gemini-test",
+    provider: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    apiKey: "test",
+    model: "gemini-test",
+  };
+  const inertScheduler: Scheduler = {
+    setTimeout: () => () => {
+      /* no timers */
+    },
+    now: () => 0,
+  };
+  async function driveTurn(
+    body: string,
+    contentType: string,
+  ): Promise<{ turn: AssistantTurn | undefined; events: InferenceEvent[] }> {
+    const deps: Dependencies = {
+      fetch: () =>
+        Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: { "content-type": contentType },
+          }),
+        ),
+      scheduler: inertScheduler,
+      adapters: createBuiltinRegistry(),
+    };
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of runInference({
+      turns: [
+        { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
+      ],
+      source: JSON_SOURCE,
+      nextSeq: () => seq++,
+      deps,
+    })) {
+      events.push(ev);
+    }
+    const done = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    return { turn: done?.data.turn, events };
+  }
+  function geminiSSE(events: object[]): string {
+    return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+  }
+
+  // Split a single text block across two SSE events while the JSON body carries
+  // it as one part, plus a functionCall, and prove the accumulator reconciles
+  // both paths to identical turn content and usage. This is the case that
+  // matters: the raw event arrays legitimately differ (two coalescing deltas
+  // vs one), so only the accumulated turn matches.
+  test("split-across-events streaming and single-part JSON decode to the same turn", async () => {
+    const usage = {
+      promptTokenCount: 20,
+      candidatesTokenCount: 10,
+      thoughtsTokenCount: 2,
+    };
+
+    const jsonBody = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { text: "Hello world" },
+              {
+                functionCall: {
+                  name: "get_weather",
+                  args: { location: "Boston" },
+                },
+              },
+            ],
+          },
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+      usageMetadata: usage,
+    });
+
+    const streamBody = geminiSSE([
+      {
+        candidates: [
+          { content: { role: "model", parts: [{ text: "Hello " }] }, index: 0 },
+        ],
+      },
+      {
+        candidates: [
+          { content: { role: "model", parts: [{ text: "world" }] }, index: 0 },
+        ],
+      },
+      {
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: {
+                    name: "get_weather",
+                    args: { location: "Boston" },
+                  },
+                },
+              ],
+            },
+            index: 0,
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [] },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: usage,
+      },
+    ]);
+
+    const jsonResult = await driveTurn(jsonBody, "application/json");
+    const streamResult = await driveTurn(streamBody, "text/event-stream");
+
+    expect(jsonResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+    expect(streamResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+
+    const jt = jsonResult.turn;
+    const st = streamResult.turn;
+    if (jt === undefined || st === undefined) {
+      throw new Error("both paths must produce a turn");
+    }
+    expect(jt.content).toEqual(st.content);
+
+    const jdone = jsonResult.events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    const sdone = streamResult.events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    expect(jdone?.data.usage).toEqual(sdone?.data.usage);
+  });
+
+  // The two mechanisms the reuse leans on most — the deferred thoughtSignature
+  // thread (signature arriving on a later part than the thinking block) and
+  // grounding-citation attribution to a text block — must reconcile across the
+  // split-vs-single boundary, not just decode correctly on the JSON path in
+  // isolation.
+  test("deferred signature and grounding reconcile across split streaming and single JSON", async () => {
+    const usage = {
+      promptTokenCount: 30,
+      candidatesTokenCount: 12,
+      thoughtsTokenCount: 5,
+    };
+    const grounding = {
+      groundingChunks: [{ web: { uri: "https://a.example", title: "A" } }],
+      groundingSupports: [
+        {
+          segment: { text: "Paris", startIndex: 0, endIndex: 5 },
+          groundingChunkIndices: [0],
+        },
+      ],
+    };
+
+    const jsonBody = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { text: "let me think", thought: true, thoughtSignature: "sig" },
+              { text: "The capital is Paris." },
+            ],
+          },
+          groundingMetadata: grounding,
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+      usageMetadata: usage,
+    });
+
+    const streamBody = geminiSSE([
+      {
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "let me ", thought: true }],
+            },
+            index: 0,
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { text: "think", thought: true, thoughtSignature: "sig" },
+              ],
+            },
+            index: 0,
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "The capital " }] },
+            index: 0,
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "is Paris." }] },
+            index: 0,
+          },
+        ],
+      },
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [] },
+            groundingMetadata: grounding,
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: usage,
+      },
+    ]);
+
+    const j = await driveTurn(jsonBody, "application/json");
+    const s = await driveTurn(streamBody, "text/event-stream");
+
+    expect(j.events.some((e) => e.type === "inference.error")).toBe(false);
+    expect(s.events.some((e) => e.type === "inference.error")).toBe(false);
+
+    if (j.turn === undefined || s.turn === undefined) {
+      throw new Error("both paths must produce a turn");
+    }
+    expect(j.turn.content).toEqual(s.turn.content);
+
+    // Citation payloads must match (block index + data); the streaming path
+    // emits more deltas so the harness-assigned seq legitimately differs and
+    // is not compared.
+    const citations = (evs: InferenceEvent[]) =>
+      evs.filter((e) => e.type === "inference.citation").map((e) => e.data);
+    expect(citations(j.events)).toEqual(citations(s.events));
+    expect(citations(j.events)).toHaveLength(1);
+  });
+
+  test("parseJSONResponse mints fresh parser state per call", () => {
+    // Two calls on the SAME adapter instance. The body has two blocks
+    // (thinking then text), so a leaked block-index counter — or a persisted
+    // currentBlock from the first call — would offset the second call's block
+    // indices (the thinking block would land past 0). A fresh per-call state
+    // keeps them stable. Driving through runInference cannot exercise this,
+    // since each call there builds its own adapter.
+    const parseJSON = adapter.parseJSONResponse;
+    if (parseJSON === undefined) {
+      throw new Error("expected the adapter to implement parseJSONResponse");
+    }
+    const body = JSON.stringify({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [{ text: "reasoning", thought: true }, { text: "answer" }],
+          },
+          finishReason: "STOP",
+          index: 0,
+        },
+      ],
+      usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 1 },
+    });
+    const thinkingIndex = (evs: InferenceEvent[]): number => {
+      const delta = evs.find(
+        (
+          e,
+        ): e is Extract<InferenceEvent, { type: "inference.thinking.delta" }> =>
+          e.type === "inference.thinking.delta",
+      );
+      if (delta === undefined) throw new Error("expected a thinking delta");
+      const idx = delta.data.index;
+      if (idx === undefined) throw new Error("thinking delta carried no index");
+      return idx;
+    };
+    expect(thinkingIndex(parseJSON(body))).toBe(0);
+    expect(thinkingIndex(parseJSON(body))).toBe(0);
   });
 });
