@@ -16,6 +16,7 @@ function createStubAdapter(url: string): ProviderAdapter {
   return {
     buildRequest: () => ({ url, headers: {}, body: "" }),
     parseResponse: () => [],
+    parseJSONResponse: () => [],
   };
 }
 

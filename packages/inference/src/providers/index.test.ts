@@ -36,6 +36,7 @@ describe("loadAdapterRegistry", () => {
     const customAdapter: ProviderAdapter = {
       buildRequest: () => ({ url: "custom", headers: {}, body: "" }),
       parseResponse: () => [],
+      parseJSONResponse: () => [],
     };
     const customFactory: AdapterFactory = () => customAdapter;
     const importer: ModuleImporter = (specifier) => {

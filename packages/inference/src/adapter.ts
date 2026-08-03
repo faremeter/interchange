@@ -75,7 +75,7 @@ export type PacingExtractor = (headers: Headers) => number | undefined;
 export type ProviderAdapter = {
   buildRequest: RequestBuilder;
   parseResponse: ResponseParser;
-  parseJSONResponse?: JSONResponseParser;
+  parseJSONResponse: JSONResponseParser;
   extractRetryAfterMs?: RetryAfterExtractor;
   extractPacingDelayMs?: PacingExtractor;
 };

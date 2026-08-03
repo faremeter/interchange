@@ -4204,6 +4204,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         headers: {},
         body: JSON.stringify({}),
       }),
+      parseJSONResponse: () => [],
       // Each SSE frame carries a single integer index into the queue;
       // the parser returns that event. The queue holds the strictly-
       // typed `InferenceEvent` values, so no narrowing is required.
