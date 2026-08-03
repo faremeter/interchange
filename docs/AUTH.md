@@ -135,7 +135,10 @@ grant
   id              text PK        -- grt_...
   tenant_id       text FK -> tenant
 
-  -- Target: who receives this grant (exactly one is non-null)
+  -- Target: who receives this grant. Exactly one of role_id / principal_id is
+  -- non-null -- enforced by the grant_target_exactly_one CHECK constraint
+  -- (num_nonnulls(principal_id, role_id) = 1), not merely a write-path
+  -- convention.
   role_id         text FK -> role
   principal_id    text FK -> principal
 

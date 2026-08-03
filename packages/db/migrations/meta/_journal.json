@@ -505,6 +505,13 @@
       "when": 1785788422511,
       "tag": "0072_add_workflow_definition_credential_bindings",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1785791424774,
+      "tag": "0073_grant_target_exactly_one_check",
+      "breakpoints": true
     }
   ]
 }

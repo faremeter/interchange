@@ -1,0 +1,1 @@
+ALTER TABLE "grant" ADD CONSTRAINT "grant_target_exactly_one" CHECK (num_nonnulls("grant"."principal_id", "grant"."role_id") = 1);
