@@ -163,7 +163,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (result.outcome !== "materialized") {
         throw new Error(`expected materialized, got ${result.outcome}`);
       }
-      await result.commit();
 
       // Exactly one workflow-kind principal keyed on the runId.
       const principals = await h.db
@@ -225,15 +224,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (first.outcome !== "materialized") {
         throw new Error(`expected materialized, got ${first.outcome}`);
       }
-      await first.commit();
 
       const firstGrants = await h.db.select().from(grant);
       const firstGrantCount = firstGrants.length;
       expect(firstGrantCount).toBeGreaterThan(0);
 
       // Second delivery of the SAME runId: the deterministic principal id and
-      // the in-transaction guard make the commit a true no-op. A fresh random
-      // principal id would break the principal foreign key on redelivery
+      // the in-transaction guard make the reservation a true no-op. A fresh
+      // random principal id would break the principal foreign key on redelivery
       // (the conflict-noop principal insert would leave the new id unwritten
       // while the grant rows referenced it), and re-running the grant inserts
       // would duplicate rows -- both of which the assertions below rule out.
@@ -245,7 +243,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error(`expected materialized, got ${second.outcome}`);
       }
 
-      // The two stagings derive the SAME run principal id from the shared
+      // The two materializations derive the SAME run principal id from the shared
       // runId, confirming the derivation is deterministic. A random id would
       // differ here and leave the persisted grant rows referencing an id the
       // conflict-noop principal insert never wrote.
@@ -258,14 +256,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(firstPrincipalIds.size).toBe(1);
       expect(secondPrincipalIds).toEqual(firstPrincipalIds);
 
-      await second.commit();
-
       const principals = await h.db
         .select()
         .from(principal)
         .where(eq(principal.refId, RUN_ID));
       expect(principals).toHaveLength(1);
-      // The single persisted principal is exactly the id both stagings
+      // The single persisted principal is exactly the id both materializations
       // derived, so the grant rows' FK resolves against it.
       expect(firstPrincipalIds.has(principals[0]?.id ?? "")).toBe(true);
 
@@ -282,8 +278,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("a creator shortfall rejects and writes zero rows", async () => {
       // The creator-sourced requirement names a resource the creator does not
       // hold, so staging rejects (403). The rejection is RETURNED (not
-      // thrown), and because staging never committed, NOTHING is written --
-      // no orphaned principal, run, or grant rows.
+      // thrown), and because authorization fails before reservation, NOTHING
+      // is written -- no orphaned principal, run, or grant rows.
       const result = await materializeOnce(
         workflowJson("secret:locked"),
         RUN_ID,
@@ -293,8 +289,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(result.status).toBe(403);
       }
 
-      // No creator-requirement rejection ever staged a commit closure, so the
-      // tables carry no run principal, run row, or run grants.
+      // No creator-requirement rejection reaches reservation, so the tables
+      // carry no run principal, run row, or run grants.
       const principals = await h.db
         .select()
         .from(principal)

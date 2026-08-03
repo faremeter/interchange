@@ -88,6 +88,20 @@ export {
   type WorkflowAllocationServiceDeps,
 } from "./workflow-allocation-service";
 export {
+  createWorkflowDispatchService,
+  type WorkflowDispatchAcknowledgement,
+  type WorkflowDispatchService,
+  type WorkflowDispatchServiceDeps,
+} from "./workflow-dispatch-service";
+export {
+  listAcceptedWorkflowDispatches,
+  listConsumedWorkflowDispatches,
+  listReceivedWorkflowSignals,
+  type AcceptedWorkflowDispatch,
+  type ConsumedWorkflowDispatch,
+  type ReceivedWorkflowSignal,
+} from "./workflow-dispatch-settlement";
+export {
   skillKindHandler,
   skillAuthorize,
   skillFrontmatterSchema,

@@ -2,6 +2,7 @@ import {
   createDB,
   createGrantStore,
   createSidecarAllocationStore,
+  createWorkflowRunDispatchStore,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode } from "@intx/types";
@@ -22,6 +23,7 @@ import {
   createSidecarRouter,
   createSidecarCredentialResolver,
   createWorkflowAllocationService,
+  createWorkflowDispatchService,
   WORKSPACE_BUILTINS_REGISTRY,
   type WsHandle,
 } from "@intx/hub-sessions";
@@ -245,8 +247,21 @@ const workflowAllocationService = createWorkflowAllocationService({
   preparedDeployer: sessionService,
   credentialCipher,
 });
+const sidecarAllocationStore = createSidecarAllocationStore(db);
+const workflowDispatchService = createWorkflowDispatchService({
+  dispatchStore: createWorkflowRunDispatchStore(db),
+  allocationStore: sidecarAllocationStore,
+  router: sidecarRouter,
+  resolveAnchorAddress: async (anchorRunId) => {
+    const row = await db.query.workflowRun.findFirst({
+      where: (run, { eq }) => eq(run.id, anchorRunId),
+      columns: { address: true },
+    });
+    return row?.address ?? null;
+  },
+});
 const sidecarAllocationReconciler = createSidecarAllocationReconciler({
-  allocationStore: createSidecarAllocationStore(db),
+  allocationStore: sidecarAllocationStore,
   plugins: sidecarPlugins,
   router: sidecarRouter,
   hubWebSocketUrl:
@@ -254,6 +269,9 @@ const sidecarAllocationReconciler = createSidecarAllocationReconciler({
     `ws://127.0.0.1:${String(port)}/api/sidecars/ws`,
   onReady: async (allocation) => {
     await workflowAllocationService.deployReadyAllocation(allocation);
+    await workflowDispatchService.requeueForReadyAllocation(
+      allocation.anchorRunId,
+    );
   },
 });
 
@@ -264,6 +282,13 @@ sidecarRouter.events.on("sidecar.disconnect", ({ allocated }) => {
 });
 sidecarRouter.events.on("sidecar.allocated.connected", (allocated) =>
   sidecarAllocationReconciler.handleConnected(allocated),
+);
+sidecarRouter.events.on(
+  "mail.inbound.acknowledged",
+  ({ messageId, allocated }) => {
+    if (allocated === undefined) return;
+    return workflowDispatchService.acknowledge({ ...allocated, messageId });
+  },
 );
 
 const ALLOCATION_RECONCILIATION_INTERVAL_MS = 1_000;
@@ -280,6 +305,7 @@ function scheduleAllocationReconciliation(delayMs: number): void {
 async function reconcileSidecarAllocations(): Promise<void> {
   try {
     await sidecarAllocationReconciler.reconcileUntilIdle();
+    await workflowDispatchService.reconcileUntilIdle();
     if (Date.now() >= nextAllocationConnectionRepairAt) {
       nextAllocationConnectionRepairAt =
         Date.now() + ALLOCATION_CONNECTION_REPAIR_INTERVAL_MS;
@@ -306,6 +332,7 @@ const app = createApp({
   sidecarRouter,
   sessionService,
   workflowAllocationService,
+  workflowDispatchService,
   eventCollectors,
   credentialCipher,
   assetService,

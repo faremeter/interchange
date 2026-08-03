@@ -29,6 +29,7 @@ import type {
   SessionService,
   SidecarRouter,
   WorkflowAllocationService,
+  WorkflowDispatchService,
 } from "@intx/hub-sessions";
 
 import { createMeRoutes } from "./routes/me";
@@ -108,6 +109,7 @@ export type MountHubRoutesDeps = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
+  workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -158,6 +160,7 @@ export function mountHubRoutes(
     sidecarRouter,
     sessionService,
     workflowAllocationService,
+    workflowDispatchService,
     eventCollectors,
     sidecarWsHandler,
     assetService,
@@ -311,6 +314,9 @@ export function mountHubRoutes(
         ...(workflowAllocationService !== undefined
           ? { workflowAllocationService }
           : {}),
+        ...(workflowDispatchService !== undefined
+          ? { workflowDispatchService }
+          : {}),
         sidecarRouter,
         assetService,
         repoStore,
@@ -325,6 +331,9 @@ export function mountHubRoutes(
     createApprovalRoutes({
       db,
       sidecarRouter,
+      ...(workflowDispatchService !== undefined
+        ? { workflowDispatchService }
+        : {}),
       grantStore,
       conditionRegistry,
       approvalStore,
@@ -461,6 +470,7 @@ export type CreateAppOpts = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
+  workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -490,6 +500,7 @@ export function createApp({
   sidecarRouter,
   sessionService,
   workflowAllocationService,
+  workflowDispatchService,
   eventCollectors,
   credentialCipher,
   grantStore,
@@ -519,6 +530,9 @@ export function createApp({
     sessionService,
     ...(workflowAllocationService !== undefined
       ? { workflowAllocationService }
+      : {}),
+    ...(workflowDispatchService !== undefined
+      ? { workflowDispatchService }
       : {}),
     eventCollectors,
     ...(credentialCipher ? { credentialCipher } : {}),

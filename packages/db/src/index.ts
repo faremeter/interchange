@@ -30,10 +30,12 @@ export {
 } from "./workflow-run-launch-spec-store";
 export {
   createWorkflowRunDispatchStore,
+  WorkflowRunDispatchPayloadConflictError,
   type AcknowledgeWorkflowRunDispatchArgs,
   type ClaimWorkflowRunDispatchArgs,
   type EnqueueWorkflowRunDispatchArgs,
   type EnqueueWorkflowRunDispatchResult,
+  type EnqueueWorkflowSignalDispatchArgs,
   type RetryWorkflowRunDispatchArgs,
   type WorkflowRunDispatchStore,
 } from "./workflow-run-dispatch-store";

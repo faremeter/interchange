@@ -77,6 +77,7 @@ const WorkflowRunDispatchStatusValidator = type.enumerated(
   "settled",
   "failed",
 );
+const WorkflowRunDispatchKindValidator = type.enumerated("mail", "signal");
 
 const WorkflowDefinitionStatusValidator = type.enumerated(
   ...workflowDefinitionStatuses,
@@ -230,6 +231,7 @@ export function parseWorkflowRunDispatchRow(
 ) {
   return {
     ...row,
+    kind: WorkflowRunDispatchKindValidator.assert(row.kind),
     status: WorkflowRunDispatchStatusValidator.assert(row.status),
     stepGrants: WireGrantRuleArray.assert(row.stepGrants),
   };

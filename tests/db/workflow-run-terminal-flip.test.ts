@@ -20,7 +20,10 @@ import { configureSync, getConfig, resetSync } from "@intx/log";
 import { collectReachableObjects } from "@intx/storage-isogit";
 import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
-import { createWorkflowRunStore } from "@intx/db";
+import {
+  createWorkflowRunDispatchStore,
+  createWorkflowRunStore,
+} from "@intx/db";
 import { principal, workflowRun } from "@intx/db/schema";
 import {
   createAgentRepoStore,
@@ -131,13 +134,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return d;
     }
 
-    // Build a workflow-run pack whose tip commit adds each run's event log
-    // ending in its terminal event. The genesis commit carries a
+    // Build a workflow-run pack whose tip commit adds each run's event log.
+    // The genesis commit carries a
     // `.gitignore`-only tree (the kind handler's accepted initial commit); the
-    // tip adds every run's RunStarted + terminal events in one commit, so a
-    // single pack carries a batch of newly-terminal runs.
+    // tip adds every requested event in one commit.
     async function buildPack(
-      runs: { runId: string; terminalType: string }[],
+      runs: {
+        runId: string;
+        terminalType?: string;
+        signalId?: string;
+      }[],
     ): Promise<{ pack: Uint8Array; tip: string }> {
       const srcDir = await makeTempDir("wfr-terminal-src-");
       await git.init({ fs, dir: srcDir, defaultBranch: "events" });
@@ -154,15 +160,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const files: Record<string, string> = {};
-      for (const { runId, terminalType } of runs) {
+      for (const { runId, terminalType, signalId } of runs) {
         files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`] = eventBody(
           0,
           "RunStarted",
         );
-        files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/1.json`] = eventBody(
-          1,
-          terminalType,
-        );
+        let seq = 1;
+        if (signalId !== undefined) {
+          files[
+            `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
+          ] = JSON.stringify({ seq, type: "SignalReceived", signalId });
+          seq += 1;
+        }
+        if (terminalType !== undefined) {
+          files[
+            `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
+          ] = eventBody(seq, terminalType);
+        }
       }
       for (const [rel, body] of Object.entries(files)) {
         const full = path.join(srcDir, rel);
@@ -363,6 +377,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(principal)
         .where(eq(principal.id, "prn-bystander"));
       expect(bystander?.status).toBe("active");
+    });
+
+    test("settles a retained signal from its internal run event log", async () => {
+      const dispatchStore = createWorkflowRunDispatchStore(h.db);
+      await dispatchStore.enqueueSignal({
+        id: "dispatch-internal-signal",
+        anchorRunId: DEPLOYMENT,
+        signal: {
+          agentAddress: DEPLOYMENT_ADDRESS,
+          runId: "run-internal-signal",
+          signalName: "approval:resolved",
+          signalId: "signal-internal",
+          payload: { approved: true },
+        },
+      });
+
+      const { pack, tip } = await buildPack([
+        { runId: "run-internal-signal", signalId: "signal-internal" },
+      ]);
+      const verdict = await receiveWith(h.db, pack, tip);
+
+      expect(verdict).toEqual({ accepted: true });
+      expect(
+        (await dispatchStore.findById("dispatch-internal-signal"))?.status,
+      ).toBe("settled");
     });
 
     test("a terminal event with no run row logs loudly and still acks", async () => {

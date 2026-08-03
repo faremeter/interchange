@@ -14,7 +14,8 @@
 // transport, so each orchestrates delivery itself around the shared
 // staging and commit below.
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { type } from "arktype";
 
 import {
@@ -24,11 +25,11 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import type { DB } from "@intx/db";
+import type { DB, DBExecutor } from "@intx/db";
 import { createWorkflowRunStore } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import { GrantRequirement, type GrantEffect } from "@intx/types";
-import type { RunGrantsFrame } from "@intx/types/sidecar";
+import { RunGrantsFrame } from "@intx/types/sidecar";
 import {
   workflowDefinitionEnvelopeSchema,
   WORKFLOW_JSON_PATH,
@@ -69,7 +70,7 @@ const EFFECT_GRANT_PREFIX = "effect:";
  * `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
  * Every distinct grant string across all steps becomes one creator-origin
  * `grant` row with `action: invoke`. The run's runtime authority is
- * definition-pure: identical across every run of the deployment, so the walk
+ * definition-pure for the deployment's stable top-level run, so the walk
  * output alone determines it.
  *
  * Tool grants carry the effect the tool's static declaration requested (`ask`
@@ -233,8 +234,8 @@ export type StageRunGrantsResult =
  * runtime `tool:`/`effect:` grants plus the resolved declared
  * requirements. Returns the staged rows and their wire projection, or a
  * rejection when a declared requirement's authority is insufficient. No
- * database write happens here -- `commitRunGrants` performs it once the
- * caller has accepted delivery.
+ * database write happens here -- `commitRunGrants` performs the canonical
+ * reservation before a caller exposes those grants to a delivery transport.
  */
 export async function stageRunGrants(
   args: StageRunGrantsArgs,
@@ -339,23 +340,94 @@ export type CommitRunGrantsArgs = {
   grantRows: MaterializedGrantRow[];
 };
 
+export type CommittedRunGrants = {
+  runPrincipalId: string;
+  stepGrants: RunGrantsFrame["stepGrants"];
+};
+
+/** Lock and classify one run row owned by a deployment. */
+export async function lockWorkflowRunState(
+  tx: DBExecutor,
+  deploymentId: string,
+  runId: string,
+): Promise<"absent" | "running" | "terminal"> {
+  const [run] = await tx
+    .select({ status: workflowRun.status })
+    .from(workflowRun)
+    .where(
+      and(
+        eq(workflowRun.id, runId),
+        eq(workflowRun.deploymentId, deploymentId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (run === undefined) return "absent";
+  return run.status === "running" ? "running" : "terminal";
+}
+
+async function loadCommittedRunGrantsFromExecutor(
+  executor: DBExecutor,
+  tenantId: string,
+  runId: string,
+): Promise<CommittedRunGrants | null> {
+  const [runPrincipal] = await executor
+    .select({ id: principalTable.id })
+    .from(principalTable)
+    .where(
+      and(
+        eq(principalTable.tenantId, tenantId),
+        eq(principalTable.kind, "workflow"),
+        eq(principalTable.refId, runId),
+      ),
+    )
+    .limit(1);
+  if (runPrincipal === undefined) return null;
+
+  const rows = await executor
+    .select()
+    .from(grantTable)
+    .where(eq(grantTable.principalId, runPrincipal.id))
+    .orderBy(asc(grantTable.id));
+  const validated = RunGrantsFrame.assert({
+    type: "run.grants",
+    agentAddress: "persisted@validation.invalid",
+    runId,
+    stepGrants: rows.map((row) => ({
+      id: row.id,
+      resource: row.resource,
+      action: row.action,
+      effect: row.effect,
+      origin: row.origin,
+      conditions: row.conditions,
+      expiresAt: row.expiresAt,
+      roleId: row.roleId,
+      principalId: row.principalId,
+    })),
+  });
+  return {
+    runPrincipalId: runPrincipal.id,
+    stepGrants: validated.stepGrants,
+  };
+}
+
+/** Load the one canonical grant snapshot already reserved for a stable run. */
+export async function loadCommittedRunGrants(
+  db: DB["db"],
+  tenantId: string,
+  runId: string,
+): Promise<CommittedRunGrants | null> {
+  return loadCommittedRunGrantsFromExecutor(db, tenantId, runId);
+}
+
 /**
- * Idempotently commit a run's principal, run row, and grant rows in one
- * transaction, keyed on the run id -- the deployment's mail address,
- * shared by every run of the deployment (see `deriveWorkflowRunId`).
+ * Idempotently reserve a run's principal, run row, and immutable grant rows
+ * in one transaction, keyed on the deployment's stable top-level run id.
  *
- * The transaction opens with an already-materialized GUARD: it looks up
- * the principal for `(tenantId, kind: "workflow", refId: runId)` and, if
- * one is present, returns without writing anything. Because the runId is
- * stable across every trigger of a deployment, the FIRST trigger
- * materializes the principal, run row, and grants and every later trigger
- * (and any redelivery) is a true no-op that neither throws nor duplicates
- * rows -- the grant table has no natural unique key, so re-running the
- * inserts would otherwise append a second copy of every grant. The guard
- * reads inside the
- * transaction, so a concurrent first commit either has not yet inserted
- * the principal (this call proceeds and the principal's unique constraint
- * serializes the race) or has committed it (this call sees it and skips).
+ * The transaction that wins the unique principal insert owns the grant
+ * inserts. A concurrent or later caller returns those exact persisted grants
+ * instead of sending its independently staged snapshot. This keeps the
+ * database and Git authorization views identical when first deliveries race.
  *
  * On the first commit the `runPrincipalId` is derived deterministically
  * from `(tenantId, runId)` by the caller, so the principal insert and the
@@ -363,31 +435,52 @@ export type CommitRunGrantsArgs = {
  */
 export async function commitRunGrants(
   args: CommitRunGrantsArgs,
-): Promise<void> {
+  tx?: DBExecutor,
+): Promise<RunGrantsFrame["stepGrants"]> {
   const workflowRunStore = createWorkflowRunStore(args.db);
-  await args.db.transaction(async (tx) => {
-    const existing = await tx
-      .select({ id: principalTable.id })
-      .from(principalTable)
-      .where(
-        and(
-          eq(principalTable.tenantId, args.tenantId),
-          eq(principalTable.kind, "workflow"),
-          eq(principalTable.refId, args.runId),
-        ),
-      )
-      .limit(1);
-    if (existing.length > 0) return;
+  const commit = async (
+    executor: DBExecutor,
+  ): Promise<RunGrantsFrame["stepGrants"]> => {
+    const existing = await loadCommittedRunGrantsFromExecutor(
+      executor,
+      args.tenantId,
+      args.runId,
+    );
+    if (existing !== null) return existing.stepGrants;
 
-    await tx.insert(principalTable).values({
-      id: args.runPrincipalId,
-      tenantId: args.tenantId,
-      kind: "workflow",
-      refId: args.runId,
-      status: "active",
-      createdAt: args.now,
-      updatedAt: args.now,
-    });
+    const [insertedPrincipal] = await executor
+      .insert(principalTable)
+      .values({
+        id: args.runPrincipalId,
+        tenantId: args.tenantId,
+        kind: "workflow",
+        refId: args.runId,
+        status: "active",
+        createdAt: args.now,
+        updatedAt: args.now,
+      })
+      .onConflictDoNothing({
+        target: [
+          principalTable.tenantId,
+          principalTable.kind,
+          principalTable.refId,
+        ],
+      })
+      .returning({ id: principalTable.id });
+    if (insertedPrincipal === undefined) {
+      const winner = await loadCommittedRunGrantsFromExecutor(
+        executor,
+        args.tenantId,
+        args.runId,
+      );
+      if (winner === null) {
+        throw new Error(
+          `commitRunGrants: principal race for ${args.runId} did not expose the winning grant snapshot`,
+        );
+      }
+      return winner.stepGrants;
+    }
+
     await workflowRunStore.anchorWithPrincipal(
       {
         id: args.runId,
@@ -397,12 +490,19 @@ export async function commitRunGrants(
         principalId: args.runPrincipalId,
         status: "running",
       },
-      tx,
+      executor,
     );
     for (const g of args.grantRows) {
-      await tx.insert(grantTable).values(g);
+      await executor.insert(grantTable).values(g);
     }
-  });
+    return [...args.grantRows]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((grant) => runGrantToWire(grant));
+  };
+  if (tx !== undefined) {
+    return commit(tx);
+  }
+  return args.db.transaction(commit);
 }
 
 export type MailTriggeredRunGrantsDeps = {
@@ -424,12 +524,10 @@ export type MailTriggeredRunGrantsDeps = {
  * before staging, so `resolveGrantMaterialization` keeps its
  * reject-on-insufficient-invoker contract intact for the external route.
  *
- * The materializer STAGES only -- it does not write to the database. It
- * returns a discriminated result the caller orders against delivery,
- * committing the run principal, run row, and grants (deterministic
- * principal id, idempotent on the runId) after the mail is accepted. This
- * mirrors the external trigger route's commit-last discipline so a
- * delivery that never lands leaves no orphaned authz state.
+ * The materializer reserves the stable run and its immutable grants before
+ * delivery. A delivery failure can therefore leave a grants-only run, which
+ * is intentionally still eligible for its first fire; the durable event log,
+ * not the authorization row, is the fired/not-fired authority.
  */
 export function createMailTriggeredRunGrantsMaterializer(
   deps: MailTriggeredRunGrantsDeps,
@@ -438,31 +536,43 @@ export function createMailTriggeredRunGrantsMaterializer(
   runId: string;
 }) => Promise<MailTriggeredRunGrantsResult> {
   return async ({ agentAddress, runId }) => {
-    // Resolve the deployment's anchor run by its address and, through its
-    // definition, the workflow asset the run grants derive from. The anchor run
-    // (id = deployment id) is gated on a live "running" status, the analog of
-    // the deployment's "deployed"; the inner join yields the asset id and the
-    // definition id off the run in one read.
+    const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
       .select({
         deploymentId: workflowRun.id,
         tenantId: workflowRun.tenantId,
         definitionId: workflowRun.definitionId,
         definitionAssetId: workflowDefinition.assetId,
+        anchorStatus: workflowRun.status,
+        topLevelRunStatus: topLevelRun.status,
       })
       .from(workflowRun)
       .innerJoin(
         workflowDefinition,
         eq(workflowRun.definitionId, workflowDefinition.id),
       )
-      .where(
+      .leftJoin(
+        topLevelRun,
         and(
-          eq(workflowRun.address, agentAddress),
-          eq(workflowRun.status, "running"),
+          eq(topLevelRun.id, runId),
+          eq(topLevelRun.deploymentId, workflowRun.id),
         ),
       )
+      .where(eq(workflowRun.address, agentAddress))
       .limit(1);
     if (anchor === undefined) return { outcome: "skip" };
+    if (
+      anchor.anchorStatus !== "running" ||
+      (anchor.topLevelRunStatus !== null &&
+        anchor.topLevelRunStatus !== "running")
+    ) {
+      return {
+        outcome: "rejected",
+        status: 409,
+        code: "workflow_run_terminal",
+        message: `Workflow run ${runId} is terminal and cannot receive more mail`,
+      };
+    }
     if (anchor.definitionAssetId === null) {
       throw new Error(
         `mail-triggered run ${runId} for ${agentAddress}: anchor run's definition has no asset`,
@@ -471,6 +581,14 @@ export function createMailTriggeredRunGrantsMaterializer(
     const definitionAssetId = anchor.definitionAssetId;
     const tenantId = anchor.tenantId;
     const deploymentId = anchor.deploymentId;
+
+    const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
+    if (committed !== null) {
+      return {
+        outcome: "materialized",
+        stepGrants: committed.stepGrants,
+      };
+    }
 
     const definition = await hydrateDefinition(
       deps.assetService,
@@ -502,10 +620,8 @@ export function createMailTriggeredRunGrantsMaterializer(
     );
 
     // Derive the run principal id from `(tenantId, runId)`. The runId is the
-    // stable deployment address, so every trigger of the deployment mints
-    // the same principal id; the commit's already-materialized guard makes
-    // all but the first a no-op, leaving the grant rows pointing at the id
-    // that is actually present.
+    // stable deployment address, so all trigger occurrences resolve the same
+    // principal and canonical grant snapshot.
     const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
     const now = new Date();
     const staged = await stageRunGrants({
@@ -526,13 +642,16 @@ export function createMailTriggeredRunGrantsMaterializer(
       };
     }
 
-    return {
-      outcome: "materialized",
-      stepGrants: staged.stepGrants,
-      commit: async () => {
-        // Anchor the run on the deployment's definition -- the one the anchor
-        // run already carries, resolved above.
-        await commitRunGrants({
+    const stepGrants = await deps.db.transaction(async (tx) => {
+      if (
+        (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==
+          "running" ||
+        (await lockWorkflowRunState(tx, deploymentId, runId)) === "terminal"
+      ) {
+        return null;
+      }
+      return commitRunGrants(
+        {
           db: deps.db,
           tenantId,
           deploymentId,
@@ -541,8 +660,21 @@ export function createMailTriggeredRunGrantsMaterializer(
           runPrincipalId,
           now,
           grantRows: staged.grantRows,
-        });
-      },
+        },
+        tx,
+      );
+    });
+    if (stepGrants === null) {
+      return {
+        outcome: "rejected",
+        status: 409,
+        code: "workflow_run_terminal",
+        message: `Workflow run ${runId} is terminal and cannot receive more mail`,
+      };
+    }
+    return {
+      outcome: "materialized",
+      stepGrants,
     };
   };
 }
