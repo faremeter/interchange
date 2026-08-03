@@ -29,6 +29,7 @@
   "devDependencies": {
     "@intx/crypto": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
+    "@intx/test-harness": "workspace:*",
     "hono": "catalog:"
   },
   "files": [

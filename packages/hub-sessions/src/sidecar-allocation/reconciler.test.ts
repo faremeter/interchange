@@ -41,6 +41,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
   };
   return {
     beginReplacement: notUsed("beginReplacement"),
+    beginUnrecoverableRelease: notUsed("beginUnrecoverableRelease"),
     bindInitialSidecar: notUsed("bindInitialSidecar"),
     bindReplacementSidecar: notUsed("bindReplacementSidecar"),
     claimNextReconcilable: async () => null,
@@ -564,13 +565,14 @@ describe("createSidecarAllocationReconciler", () => {
         return replacing;
       },
     });
-    const reconciler = createSidecarAllocationReconciler(
-      deps({
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
         store,
         ready: false,
         waitError: new Error("connect timeout"),
       }),
-    );
+      enableAutomaticReplacementRecovery: true,
+    });
 
     await reconciler.reconcileNext();
 
@@ -705,6 +707,56 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(releaseStarted).toBe(false);
     expect(parked).toBe(true);
+  });
+
+  test("fails a lost allocated worker instead of recovering by default", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-old",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+    });
+    const releasing = allocation({
+      status: "releasing",
+      generation: 2,
+      sidecarId: "sc-old",
+    });
+    let failure:
+      | { failureCode: string; failureMessage: string; expectedLeaseId: string }
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => allocated,
+      beginUnrecoverableRelease: async (args) => {
+        failure = {
+          failureCode: args.failureCode,
+          failureMessage: args.failureMessage,
+          expectedLeaseId: args.expectedLeaseId,
+        };
+        return releasing;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: false,
+        waitError: new Error("connect timeout"),
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(failure).toEqual({
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "Automatic recovery is disabled: connect timeout",
+      expectedLeaseId: "lease-1",
+    });
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
   });
 
   test("rebuilds fences without erasing durable retry schedules", async () => {

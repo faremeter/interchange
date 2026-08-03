@@ -128,7 +128,8 @@ export type SendPackOptions = {
    * Override the `repoId` emitted on the wire. The agent-state flow
    * defaults to `{ kind: "agent-state", id: agentAddress }`; asset
    * packs must pass the SOURCE asset's id so audit can correlate the
-   * pack back to its hub-side origin.
+   * pack back to its hub-side origin. Workflow-run restoration uses a
+   * dedicated allocation-bound sender that supplies its derived repo id.
    */
   repoId?: RepoId;
 };
@@ -308,6 +309,8 @@ export type SidecarAllocationRouter = {
   ): Promise<void>;
   /** Check exact allocated readiness without parking a reconciliation worker. */
   isAllocatedSidecarReady(target: AllocatedSidecarTarget): Promise<boolean>;
+  /** Check whether the exact generation already hosts its workflow supervisor. */
+  isAllocatedWorkflowActive(target: AllocatedSidecarTarget): Promise<boolean>;
   sendAgentDeployToAllocation(
     target: AllocatedSidecarTarget,
     agentAddress: string,
@@ -321,6 +324,17 @@ export type SidecarAllocationRouter = {
     ref: string,
     commitSha: string,
     options?: SendPackOptions,
+  ): Promise<void>;
+  /**
+   * Restore one Hub-authoritative workflow-run ref onto the exact allocation
+   * generation before its deployment address is routed or supervisor spawned.
+   */
+  sendWorkflowRunPackToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
   ): Promise<void>;
   bindAllocatedStepRoute(
     target: AllocatedSidecarTarget,
@@ -2481,6 +2495,18 @@ export function createSidecarRouter(
     }
   }
 
+  async function isAllocatedWorkflowActive(
+    target: AllocatedSidecarTarget,
+  ): Promise<boolean> {
+    try {
+      const { conn } = await getAllocatedConnection(target, "readiness");
+      if (conn.identity.kind !== "allocated") return false;
+      return conn.workflowAddresses.has(conn.identity.workflowRunAddress);
+    } catch {
+      return false;
+    }
+  }
+
   async function waitForAllocatedSidecar(
     target: AllocatedSidecarTarget,
     timeoutMs: number,
@@ -2727,6 +2753,37 @@ export function createSidecarRouter(
       commitSha,
       options,
     );
+  }
+
+  async function sendWorkflowRunPackToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (conn.identity.kind !== "allocated") {
+      throw new Error(
+        `Allocation ${target.allocationId} resolved to a shared sidecar`,
+      );
+    }
+    if (agentAddress !== conn.identity.workflowRunAddress) {
+      throw new Error(
+        `Allocation ${target.allocationId} cannot restore unrelated address ${agentAddress}`,
+      );
+    }
+    if (conn.workflowAddresses.has(agentAddress)) {
+      throw new Error(
+        `Allocation ${target.allocationId} already hosts active workflow ${agentAddress}; refusing to overwrite its run history`,
+      );
+    }
+    return sendPackOnConnection(ws, conn, agentAddress, pack, ref, commitSha, {
+      repoId: {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(agentAddress),
+      },
+    });
   }
 
   function routeMail(
@@ -3346,9 +3403,11 @@ export function createSidecarRouter(
     sendCredentialsUpdate,
     sendPack,
     sendPackToAllocation,
+    sendWorkflowRunPackToAllocation,
     fenceAllocation,
     waitForAllocatedSidecar,
     isAllocatedSidecarReady,
+    isAllocatedWorkflowActive,
     sendAgentDeployToAllocation,
     bindStepRoute,
     bindAllocatedStepRoute,

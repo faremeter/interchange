@@ -148,12 +148,16 @@ function createMockAllocationRouter(): SidecarAllocationRouter & {
     },
     waitForAllocatedSidecar: async () => undefined,
     isAllocatedSidecarReady: async () => true,
+    isAllocatedWorkflowActive: async () => false,
     sendAgentDeployToAllocation: async (...args) => {
       calls.push({ method: "sendAgentDeployToAllocation", args });
       return { publicKey: "allocated-public-key" };
     },
     sendPackToAllocation: async (...args) => {
       calls.push({ method: "sendPackToAllocation", args });
+    },
+    sendWorkflowRunPackToAllocation: async (...args) => {
+      calls.push({ method: "sendWorkflowRunPackToAllocation", args });
     },
     bindAllocatedStepRoute: async (...args) => {
       calls.push({ method: "bindAllocatedStepRoute", args });
@@ -1535,6 +1539,148 @@ describe("deployWorkflowDefinition", () => {
       deploymentAddress: "ins_dep_xyz@workflow.test",
       publicKey: "ed25519-supervisor-pubkey",
     });
+  });
+});
+
+describe("deployPreparedWorkflowDefinition recovery", () => {
+  async function createPreparedDeployFixture() {
+    const allocationRouter = createMockAllocationRouter();
+    const repoStore = createMockRepoStore();
+    const restoreSha = "f".repeat(40);
+    const substrate: RepoStore = {
+      ...unusedRepoStore(),
+      async resolveRef(_principal, repoId, ref) {
+        return repoId.kind === "workflow-run" && ref === "refs/heads/main"
+          ? restoreSha
+          : null;
+      },
+      async createPack(_principal, repoId, ref) {
+        if (repoId.kind !== "workflow-run" || ref !== "refs/heads/main") {
+          throw new Error(`unexpected restore pack ${repoId.kind}/${ref}`);
+        }
+        return {
+          pack: new Uint8Array([9, 8, 7]),
+          commitSha: restoreSha,
+          ref,
+        };
+      },
+      async writeTree() {
+        return {
+          commitSha: "e".repeat(40),
+          newlyTerminalRuns: [],
+        };
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the throwing substrate with the narrow restore/workflow-writer fixture
+    (repoStore as unknown as { repoStore: RepoStore }).repoStore = substrate;
+
+    const fakeDb = {
+      update(table: unknown) {
+        if (table !== workflowRunTable) {
+          throw new Error("unexpected prepared-deploy update table");
+        }
+        return {
+          set(_values: unknown) {
+            return {
+              where(_predicate: unknown) {
+                return {
+                  returning() {
+                    return Promise.resolve([{ id: "dep_restore_order" }]);
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+    };
+
+    const { defineAgent } = await import("@intx/agent");
+    const { defineWorkflow } = await import("@intx/workflow/definition");
+    const source = {
+      id: "source-restore",
+      provider: "anthropic",
+      baseURL: "https://api.example/anthropic",
+      apiKey: "secret",
+      model: "mock-model",
+    };
+    const definition = defineWorkflow({
+      id: "wf_restore_order",
+      trigger: { type: "manual" },
+      agent: defineAgent({
+        id: "restore-agent",
+        systemPrompt: "continue the recovered run",
+        tools: [],
+        capabilities: [],
+        inference: {
+          sources: [{ provider: "anthropic", model: "mock-model" }],
+        },
+      }),
+    });
+    const params = {
+      tenantId: "tenant-1",
+      deploymentId: "dep_restore_order",
+      deploymentDomain: "workflow.test",
+      definition,
+      config: {
+        sessionId: "ses-restore-order",
+        agentId: "ins_dep_restore_order",
+        tenantId: "tenant-1",
+        principalId: "principal-1",
+        agentAddress: "ins_dep_restore_order@workflow.test",
+        systemPrompt: "continue the recovered run",
+        tools: [],
+        grants: [],
+        sources: [source],
+        defaultSource: source.id,
+      } satisfies HarnessConfig,
+      deployContent: { systemPrompt: "continue the recovered run" },
+      allocationTarget: { allocationId: "alloc-restore", generation: 3 },
+    };
+    const service = createSessionService({
+      sidecarRouter: createMockRouter(),
+      sidecarAllocationRouter: allocationRouter,
+      agentRepoStore: repoStore,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fake db implements the prepared anchor public-key update only
+      db: fakeDb as unknown as NonNullable<
+        Parameters<typeof createSessionService>[0]["db"]
+      >,
+    });
+
+    return { allocationRouter, params, repoStore, service };
+  }
+
+  test("acknowledges restored history before sending the frame that spawns the supervisor", async () => {
+    const { allocationRouter, params, service } =
+      await createPreparedDeployFixture();
+
+    await service.deployPreparedWorkflowDefinition(params);
+
+    const methods = allocationRouter.calls.map((call) => call.method);
+    const restoreIndex = methods.indexOf("sendWorkflowRunPackToAllocation");
+    const spawnIndex = methods.indexOf("sendAgentDeployToAllocation");
+    expect(restoreIndex).toBeGreaterThanOrEqual(0);
+    expect(spawnIndex).toBeGreaterThan(restoreIndex);
+  });
+
+  test("does not stage or spawn the workflow when history restoration fails", async () => {
+    const { allocationRouter, params, repoStore, service } =
+      await createPreparedDeployFixture();
+    allocationRouter.sendWorkflowRunPackToAllocation = async (...args) => {
+      allocationRouter.calls.push({
+        method: "sendWorkflowRunPackToAllocation",
+        args,
+      });
+      throw new Error("restore rejected");
+    };
+
+    await expect(
+      service.deployPreparedWorkflowDefinition(params),
+    ).rejects.toThrow("restore rejected");
+    expect(allocationRouter.calls.map((call) => call.method)).toEqual([
+      "sendWorkflowRunPackToAllocation",
+    ]);
+    expect(repoStore.calls).toEqual([]);
   });
 });
 

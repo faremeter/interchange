@@ -291,6 +291,54 @@ Debug and telemetry data (state inspection, trace output, log tailing) flows onl
 
 Debug streams require explicit authorization — not all clients are permitted to attach debuggers to agents.
 
+## Exclusive Sidecar Allocation and Recovery
+
+Architecture describes the exclusive-placement guarantee. This section describes how the Hub preserves it across a sidecar or infrastructure failure while retaining main's anchor-run workflow model.
+
+### Durable preparation
+
+An exclusive deployment is prepared transactionally before infrastructure is requested:
+
+- The deployment's stable id is also the id of its anchor `workflow_run`; the anchor points its `deployment_id` back to itself and owns the deployment address.
+- `workflow_run_launch_spec` stores the workflow definition snapshot and hash, session/domain metadata, catalog offering ids, deploy content, and optional tool-package pins.
+- `sidecar_allocation` stores the provisioner binding, placement, lifecycle state, and generation for that anchor.
+
+The launch spec deliberately stores catalog offering ids rather than resolved provider secrets. Every initial deployment or replacement resolves those offerings again under the original authority, so rotated or revoked credentials take effect during recovery and no raw provider credential becomes recovery state.
+
+The Hub contains the versioned provisioner contract and registry but no built-in infrastructure backend. An operator must inject a provisioner with a stable id, API version, and non-secret binding fingerprint. Without a configured default, exclusive preparation returns an error and creates no partially shared deployment.
+
+### Allocation state and generation fence
+
+An allocation moves through `pending → provisioning → allocated`. An uncertain provision outcome moves it through `replacing` before another generation is created. A structured provisioner rejection certifies that no infrastructure exists for that generation; a non-retryable rejection terminally fails the allocation and its active runs, while a retryable rejection advances the fence and backs off before replacement. Provisioners throw when they cannot determine whether an ensure request took effect. After an allocated worker is lost, explicitly enabled recovery also uses `replacing`; otherwise the active runs are failed and the allocation uses `releasing → released`. `failed` is reserved for a terminal case where the Hub knows no infrastructure exists. One allocation is permitted per anchor, and an active sidecar id can belong to only one allocation.
+
+Every replacement increments `generation`. The generation is persisted before the provisioner is called and appears in the ensure/destroy request and the sidecar's authenticated identity. Provisioners must make ensure/destroy idempotent and reject a generation older than one they have already observed. The Hub separately records `ensure_accepted_generation`; registration may occur while capacity is converging, but readiness and routing require the exact generation to be accepted.
+
+Raw sidecar bearer tokens are never persisted. Each stored token hash is durably scoped as either shared or allocated, so an allocated identity without a current matching allocation is rejected rather than admitted to the shared pool. If the Hub restarts after binding a generation but before recording ensure acceptance, it treats the outcome as uncertain, fences that generation, destroys it idempotently, and mints a replacement identity. On Hub startup, every active allocation fence is rebuilt before allocated sockets are admitted.
+
+An allocated WebSocket may register only the anchor's deployment address. Shared scheduling excludes any sidecar with an allocation row. All allocated deploy, mail, and signal sends resolve the exact `(allocationId, generation)` and revalidate its database identity before routing. A generation advance closes the prior socket and rejects its waiters.
+
+Workflow-run pack ingestion applies the fence in the reverse direction. The wire layer derives pack ownership from the authenticated socket, requires the repository id to equal the slug derived from its owned deployment address, and passes that source to the Hub lookup. Immediately before advancing the Git ref, the lookup revalidates the running anchor and the current accepted allocation generation. A shared connection cannot write a deployment that has an allocation, and terminal events are projected into SQL only when their run row belongs to that anchor.
+
+### Replacement and replay
+
+The allocation reconciler uses database leases and retry timestamps rather than process-local jobs. It persists a sidecar identity and connect deadline before calling `ensure`, parks an accepted generation while waiting for its WebSocket, and wakes immediately on an exact-generation connect event. A disconnect starts durable reconnect grace. The runtime periodically repairs an allocated generation that has neither a live connection nor a durable schedule, without replacing a concurrent wake or reconciliation lease. If the deadline expires, the default behavior atomically fails the deployment's active runs, deactivates their principals, advances the fence, and releases the uncertain worker. Trigger enqueue transactions lock and revalidate the allocation, reread the authoritative Git lifecycle under that fence, and revalidate the deployment's SQL run state, so they cannot enqueue after either representation becomes terminal. An operator may explicitly enable automatic recovery; only then does the reconciler provision the next generation under the same allocation.
+
+Once a replacement is ready, the Hub rebuilds the deployment from its launch spec and the current workflow-run Git refs. The deployment id, mail address, definition, and workflow-run repository remain unchanged. This is what lets the workflow supervisor reconstruct committed event history and continue a run rather than starting a new run id.
+
+Hub-originated triggers have a separate durable replay path in `workflow_run_dispatch`:
+
+- Mail stores the immutable MIME bytes and the stable run's canonical step grants in the same transaction that reserves the run principal/grants. The exact generation receives `run.grants` then `mail.inbound` on one FIFO WebSocket. Later trigger occurrences reuse that snapshot; a grants-only reservation with no `RunStarted` event is still eligible for its first delivery.
+- A sidecar `mail.inbound.ack` proves only that the local inbox accepted the message. The Hub retains it until an accepted workflow-run Git pack shows either the matching `RunStarted` event or a claim-check entry under `addresses/*/consumed/`. An explicit supervisor rejection fails the dispatch instead of settling it.
+- Signals store a validated `signal.deliver` frame and are redelivered with the same `signalId`. Approval decisions for exclusive deployments enqueue that frame in the same transaction that resolves the approval. There is no sidecar signal ack; the Hub settles the row only after an accepted pack contains the corresponding `SignalReceived` event.
+- When a generation becomes ready, every unsettled dispatch is requeued. Mail claim checks and signal ids make replay idempotent across a worker loss at any point in delivery.
+- Once the stable top-level run becomes terminal, the Hub first settles every dispatch id already recorded by its run log and then fails the genuinely unconsumed remainder. This ordering prevents the terminal event from racing the firing mail's immediately-following claim-check receipt.
+
+### Recovery boundary
+
+Recovery covers state committed to Hub-owned Git plus Hub database state: workflow event history, claim-check mail state, grants snapshots committed by the supervisor, the secret-free launch specification, allocation state, and unsettled Hub dispatches. It does not snapshot arbitrary files in a POSIX workspace, Docker volume, `/tmp`, or an external isolation provider. A workflow that needs those artifacts after replacement must persist them through a durable service or regenerate them from committed workflow state. Because the Hub cannot currently prove that condition, automatic replacement recovery defaults to disabled.
+
+The settlement projection currently scans the retained consumed-mail index and workflow event logs after each accepted pack. This is correct and idempotent, but it is intentionally a first implementation; a future projection cursor can avoid rescanning long histories. The allocation store and reconciler also implement release, but the current workflow API does not yet initiate release/reuse as part of deployment teardown.
+
 ## Workflow Process: Supervisor/Child IPC
 
 A deployed workflow runs in two processes per active deployment. The supervisor lives in the sidecar — it holds the mail-bus identity for the deployment's addresses, owns the per-deployment Ed25519 signing key the hub trusts, and reads the per-step credential snapshots out of each step's `agent-state` repo. The workflow-process is a Bun child the supervisor spawns; it loads operator-supplied workflow code (tools, directors, agent prompts) and executes runs against the runtime adapters. The supervisor is the authoritative side; the workflow-process is the untrusted side.
@@ -431,7 +479,7 @@ ChannelSender` writes against; the event channel is the
    the downstream uses, signed under the IPC keypair the supervisor
    minted at spawn time.
 5. **Control-loop.** The child consumes the receiver iterator:
-   - `trigger.fire` -> open a new run via `runtimeRun`.
+   - `trigger.fire` -> fire the deployment's top-level run only when its durable event log is absent. A live log is recovered, and a terminal log is rejected rather than cleared.
    - `grants-updated` -> swap the active credentialsSnapshot.
    - `drain` -> forward to the drain controller (no-op placeholder
      in this commit; the real controller lands separately).
@@ -1246,7 +1294,7 @@ If the WebSocket disconnects mid-transfer, no git state is corrupted: the sideca
 
 On reconnect the sidecar restores its workflow deployments from local disk (see the deployment restore path) and re-announces them so the hub restores their routes. A workflow-deployment address is **not** keyless: it carries the deployment's own Ed25519 key (minted at deploy, acked to the hub), so it proves ownership through the same challenge/response a launched agent does.
 
-1. Sidecar sends an empty `register` frame to establish the connection, then a `reconnect` frame carrying its live workflow-deployment addresses (in `agentAddresses`)
+1. After local restoration, the sidecar sends exactly one initial handshake: an empty `register` when it hosts no live workflow deployment, or a `reconnect` carrying its complete live workflow-deployment address set (in `agentAddresses`). A restored sidecar never sends a preliminary empty `register`, so the Hub cannot mistake its not-yet-announced inventory for an empty one
 2. For each address the hub resolves the stored deployment key (`workflow_deployment.publicKey`, gated on a live `deployed` status), issues a random nonce, and routes the address only after the sidecar returns a valid signature over `nonce ‖ address`. An address with no live key fails closed and stays unrouted — a token-holding sidecar cannot reclaim a deployment's route without the deployment's key
 3. The hub does not run its deploy-ref freshness catch-up for a workflow-deployment address — that pack-transfer path is launched-agent only (`isWorkflowDerivedAddress` short-circuits it). A deployment's in-flight run state is reconstructed sidecar-locally at restore, not re-fetched from the hub
 

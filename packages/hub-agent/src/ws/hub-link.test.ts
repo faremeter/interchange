@@ -10,6 +10,7 @@ import {
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, signEd25519, verifySSHSignature } from "@intx/crypto";
+import { stopServerBounded } from "@intx/test-harness/bun-server";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 
@@ -22,6 +23,7 @@ import {
 import type {
   AgentErrorFrame,
   PackRejectFrame,
+  RepoId,
   SessionErrorFrame,
 } from "@intx/types/sidecar";
 import type { AgentKeyStore } from "../agent-key-store";
@@ -467,68 +469,6 @@ describe("sidecar↔hub integration", () => {
     expect(env.router.getRoutableAddresses()).not.toContain(deploymentAddress);
   });
 
-  test("a failing deploy-ref read closes the socket instead of silently dropping the reconnect", async () => {
-    const failEnv = startTestServer();
-
-    // Capture the reconnect callback so no real timer fires during the
-    // test. Its presence is also the proof we assert on: the re-announce
-    // catch closes the socket, and the close handler schedules a reconnect
-    // through this scheduler. Without the fix the deploy-ref rejection is
-    // an unhandled promise, no close occurs, and this stays null.
-    let pendingReconnect: (() => void) | null = null;
-    const fakeScheduleReconnect: ReconnectScheduler = (cb) => {
-      pendingReconnect = cb;
-      return () => {
-        pendingReconnect = null;
-      };
-    };
-
-    const transport = createInMemoryTransport();
-    const deploymentAddress = "ins_dep_reffail1@integration.interchange";
-    // The deploy-ref read rejects the way a corrupt or unreadable ref
-    // would. The re-announce IIFE must catch it and close the socket
-    // rather than let the reconnect vanish with nothing logged.
-    const sessions: SessionManager = {
-      ...createMockSessionManager(),
-      getDeployRef: () =>
-        Promise.reject(new Error("simulated corrupt deploy ref")),
-    };
-
-    const client = createHubLink({
-      hubURL: `ws://localhost:${failEnv.server.port}/ws`,
-      sidecarId: "sc-ref-fail",
-      token: "test-token",
-      transport,
-      sessions,
-      ...withTestDeployBindings(),
-      getWorkflowAddresses: () => [deploymentAddress],
-      scheduleReconnect: fakeScheduleReconnect,
-    });
-
-    try {
-      client.connect();
-      // On open the register frame is sent, then the re-announce IIFE
-      // reads the deploy ref and the read rejects. The catch closes the
-      // socket, and the close handler schedules a reconnect through the
-      // fake scheduler. Observing that pending callback is the proof the
-      // socket was closed rather than the failure swallowed. Without the
-      // fix the rejection is an unhandled promise, no close occurs, and
-      // this stays null until the wait times out. (The connect→reject→
-      // close cycle is faster than a poll interval, so the transient
-      // connected state is deliberately not asserted -- the scheduled
-      // reconnect is the durable signal.)
-      await waitFor(() => pendingReconnect !== null);
-
-      // No reconnect frame was ever sent, so the address never routed.
-      expect(failEnv.router.getRoutableAddresses()).not.toContain(
-        deploymentAddress,
-      );
-    } finally {
-      client.close();
-      await failEnv.server.stop(true);
-    }
-  });
-
   test("repo.pack.reject sent when applyDeployPack throws signature_invalid", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
@@ -912,6 +852,76 @@ describe("sidecar↔hub integration", () => {
       client.close();
       await waitFor(
         () => !env.router.getConnectedSidecars().includes("sc-asset-route"),
+      );
+    }
+  });
+
+  test("workflow-run packs route through the restore boundary instead of the deploy tree", async () => {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deployCalls: string[] = [];
+    const restoreCalls: {
+      agentAddress: string;
+      repoId: RepoId;
+      ref: string;
+      commitSha: string;
+      pack: Uint8Array;
+    }[] = [];
+    sessions.applyDeployPack = (address) => {
+      deployCalls.push(address);
+      return Promise.resolve();
+    };
+    const address = "ins_dep_restore@workflow.test";
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: "ins_dep_restore-workflow-test",
+    };
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: "sc-workflow-restore-route",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      applyWorkflowRunPack: async (args) => {
+        restoreCalls.push(args);
+      },
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getConnectedSidecars().includes("sc-workflow-restore-route"),
+      );
+      await env.router.sendAgentDeploy(address, TEST_CONFIG);
+
+      const pack = new Uint8Array([7, 8, 9]);
+      await env.router.sendPack(
+        address,
+        pack,
+        "refs/heads/events",
+        "c".repeat(40),
+        { repoId },
+      );
+
+      expect(deployCalls).toEqual([]);
+      expect(restoreCalls).toEqual([
+        {
+          agentAddress: address,
+          repoId,
+          ref: "refs/heads/events",
+          commitSha: "c".repeat(40),
+          pack,
+        },
+      ]);
+    } finally {
+      client.close();
+      await waitFor(
+        () =>
+          !env.router
+            .getConnectedSidecars()
+            .includes("sc-workflow-restore-route"),
       );
     }
   });
@@ -1485,8 +1495,8 @@ describe("sidecar↔hub integration", () => {
   });
 });
 
-describe("register + reconnect frames on connect", () => {
-  test("ships an empty register then a challenged reconnect carrying the workflow addresses", async () => {
+describe("initial handshake on connect", () => {
+  test("sends a ref-bearing reconnect before flushing queued frames", async () => {
     const frames: string[] = [];
     const app = new Hono();
     app.get(
@@ -1502,8 +1512,27 @@ describe("register + reconnect frames on connect", () => {
     const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
 
     const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const workflowAddresses = ["ins_dep_reg1@integration.interchange"];
+    let deployRefReads = 0;
+    let deployRefReadStarted = false;
+    let resolveDeployRef: ((ref: string | null) => void) | undefined;
+    const sessions: SessionManager = {
+      ...createMockSessionManager(),
+      getDeployRef: () => {
+        deployRefReads++;
+        deployRefReadStarted = true;
+        return new Promise((resolve) => {
+          resolveDeployRef = resolve;
+        });
+      },
+    };
+    function finishDeployRefRead(ref: string): void {
+      const resolve = resolveDeployRef;
+      if (resolve === undefined) {
+        throw new Error("deploy-ref read was not pending");
+      }
+      resolve(ref);
+    }
+    const restoredAddresses = ["plain-agent@integration.interchange"];
 
     const client = createHubLink({
       hubURL: `ws://localhost:${server.port}/ws`,
@@ -1512,15 +1541,26 @@ describe("register + reconnect frames on connect", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => workflowAddresses,
+      getWorkflowAddresses: () => restoredAddresses,
     });
 
     client.connect();
     try {
-      await waitFor(() => {
-        const types = frames.map((s) => JSON.parse(s).type);
-        return types.includes("register") && types.includes("reconnect");
+      await waitFor(() => deployRefReadStarted);
+      client.sendEvent(restoredAddresses[0]!, "sess-queued", {
+        type: "reactor.start",
+        seq: 0,
+        data: {},
       });
+
+      // While deploy-ref collection is pending, neither a partial handshake
+      // nor an ordinary application frame may reach the Hub.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(frames).toEqual([]);
+
+      finishDeployRefRead("refs/heads/deploy/plain-agent");
+      await waitFor(() => frames.length === 2);
+
       const parsed = frames.map((s) => JSON.parse(s));
       const registerFrames = parsed.filter(
         (f: { type: string }) => f.type === "register",
@@ -1528,16 +1568,365 @@ describe("register + reconnect frames on connect", () => {
       const reconnectFrames = parsed.filter(
         (f: { type: string }) => f.type === "reconnect",
       );
-      // First-connect register carries no addresses and no workflow field:
-      // a workflow deployment is announced only through the challenged
-      // reconnect, never as a keyless register route.
+      expect(registerFrames).toHaveLength(0);
+      expect(reconnectFrames).toHaveLength(1);
+      expect(reconnectFrames[0].agentAddresses).toEqual(restoredAddresses);
+      expect(reconnectFrames[0].deployRefs).toEqual({
+        [restoredAddresses[0]!]: "refs/heads/deploy/plain-agent",
+      });
+      expect(parsed.map((frame: { type: string }) => frame.type)).toEqual([
+        "reconnect",
+        "agent.event",
+      ]);
+      expect(deployRefReads).toBe(1);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("a deploy-ref read failure closes without sending a partial handshake", async () => {
+    const frames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    let pendingReconnect: (() => void) | null = null;
+    const scheduleReconnect: ReconnectScheduler = (callback) => {
+      pendingReconnect = callback;
+      return () => {
+        if (pendingReconnect === callback) pendingReconnect = null;
+      };
+    };
+    const sessions: SessionManager = {
+      ...createMockSessionManager(),
+      getDeployRef: () =>
+        Promise.reject(new Error("simulated corrupt deploy ref")),
+    };
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-ref-fail",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [
+        "plain-agent-ref-fail@integration.interchange",
+      ],
+      scheduleReconnect,
+    });
+
+    client.connect();
+    try {
+      await waitFor(() => pendingReconnect !== null);
+      expect(frames).toEqual([]);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("ignores a stale deploy-ref completion from a superseded socket", async () => {
+    const frames: {
+      connection: number;
+      frame: unknown;
+    }[] = [];
+    let connectionCount = 0;
+    let closeFirstConnection: (() => void) | undefined;
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => {
+        let connection = 0;
+        return {
+          onOpen(_evt, ws) {
+            connection = ++connectionCount;
+            if (connection === 1) {
+              closeFirstConnection = () => ws.close();
+            }
+          },
+          onMessage(evt, _ws) {
+            if (typeof evt.data === "string") {
+              frames.push({
+                connection,
+                frame: JSON.parse(evt.data),
+              });
+            }
+          },
+        };
+      }),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const resolveDeployRefs: ((ref: string | null) => void)[] = [];
+    let deployRefReads = 0;
+    const sessions: SessionManager = {
+      ...createMockSessionManager(),
+      getDeployRef: () => {
+        deployRefReads++;
+        return new Promise((resolve) => {
+          resolveDeployRefs.push(resolve);
+        });
+      },
+    };
+    let pendingReconnect: (() => void) | null = null;
+    const scheduleReconnect: ReconnectScheduler = (callback) => {
+      pendingReconnect = callback;
+      return () => {
+        if (pendingReconnect === callback) pendingReconnect = null;
+      };
+    };
+    function closeInitialConnection(): void {
+      const closeConnection = closeFirstConnection;
+      if (closeConnection === undefined) {
+        throw new Error("initial connection was not open");
+      }
+      closeConnection();
+    }
+    function runPendingReconnect(): void {
+      const reconnect = pendingReconnect;
+      if (reconnect === null) {
+        throw new Error("reconnect was not scheduled");
+      }
+      pendingReconnect = null;
+      reconnect();
+    }
+    function finishDeployRefRead(index: number, ref: string): void {
+      const resolve = resolveDeployRefs[index];
+      if (resolve === undefined) {
+        throw new Error(`deploy-ref read ${String(index)} was not pending`);
+      }
+      resolve(ref);
+    }
+    const restoredAddress = "plain-agent-stale@integration.interchange";
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-ref-stale",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions,
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [restoredAddress],
+      scheduleReconnect,
+    });
+
+    client.connect();
+    try {
+      await waitFor(
+        () => deployRefReads === 1 && closeFirstConnection !== undefined,
+      );
+      closeInitialConnection();
+      await waitFor(() => pendingReconnect !== null);
+
+      runPendingReconnect();
+      await waitFor(() => deployRefReads === 2);
+
+      finishDeployRefRead(0, "refs/heads/deploy/stale");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(frames).toEqual([]);
+
+      finishDeployRefRead(1, "refs/heads/deploy/current");
+      await waitFor(() => frames.length === 1);
+      expect(frames).toEqual([
+        {
+          connection: 2,
+          frame: {
+            type: "reconnect",
+            sidecarId: "sc-ref-stale",
+            token: "test-token",
+            agentAddresses: [restoredAddress],
+            deployRefs: {
+              [restoredAddress]: "refs/heads/deploy/current",
+            },
+          },
+        },
+      ]);
+    } finally {
+      client.close();
+      await stopServerBounded(server);
+    }
+  });
+
+  test("drops a challenge response completed for a superseded socket", async () => {
+    const responseFrames: { connection: number; frame: unknown }[] = [];
+    let connectionCount = 0;
+    let closeFirstConnection: (() => void) | undefined;
+    const restoredAddress = "plain-agent-challenge@integration.interchange";
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => {
+        let connection = 0;
+        return {
+          onOpen(_evt, ws) {
+            connection = ++connectionCount;
+            if (connection === 1) {
+              closeFirstConnection = () => ws.close();
+            }
+          },
+          onMessage(evt, ws) {
+            if (typeof evt.data !== "string") return;
+            const frame: unknown = JSON.parse(evt.data);
+            if (typeof frame !== "object" || frame === null) return;
+            if (!("type" in frame)) return;
+            if (frame.type === "reconnect") {
+              ws.send(
+                JSON.stringify({
+                  type: "challenge",
+                  challenges: [
+                    { address: restoredAddress, nonce: "00".repeat(32) },
+                  ],
+                }),
+              );
+            } else if (frame.type === "challenge.response") {
+              responseFrames.push({ connection, frame });
+            }
+          },
+        };
+      }),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const bindings = withTestDeployBindings();
+    let signAttempts = 0;
+    let firstSignFinished = false;
+    let resolveFirstSign: ((signature: Uint8Array) => void) | undefined;
+    bindings.keyStore.signChallenge = async () => {
+      signAttempts++;
+      if (signAttempts === 1) {
+        const signature = await new Promise<Uint8Array>((resolve) => {
+          resolveFirstSign = resolve;
+        });
+        firstSignFinished = true;
+        return signature;
+      }
+      return new Uint8Array([2]);
+    };
+
+    let pendingReconnect: (() => void) | null = null;
+    const scheduleReconnect: ReconnectScheduler = (callback) => {
+      pendingReconnect = callback;
+      return () => {
+        if (pendingReconnect === callback) pendingReconnect = null;
+      };
+    };
+    function closeInitialConnection(): void {
+      const closeConnection = closeFirstConnection;
+      if (closeConnection === undefined) {
+        throw new Error("initial connection was not open");
+      }
+      closeConnection();
+    }
+    function finishFirstSign(): void {
+      const resolve = resolveFirstSign;
+      if (resolve === undefined) {
+        throw new Error("first challenge signature was not pending");
+      }
+      resolve(new Uint8Array([1]));
+    }
+    function runPendingReconnect(): void {
+      const reconnect = pendingReconnect;
+      if (reconnect === null) {
+        throw new Error("reconnect was not scheduled");
+      }
+      pendingReconnect = null;
+      reconnect();
+    }
+
+    const routableAttempts: string[][] = [];
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-challenge-stale",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...bindings,
+      getWorkflowAddresses: () => [restoredAddress],
+      onWorkflowAddressesRoutable: (addresses) => {
+        routableAttempts.push(addresses);
+      },
+      scheduleReconnect,
+    });
+
+    client.connect();
+    try {
+      await waitFor(
+        () => signAttempts === 1 && closeFirstConnection !== undefined,
+      );
+      closeInitialConnection();
+      await waitFor(() => pendingReconnect !== null);
+
+      finishFirstSign();
+      await waitFor(() => firstSignFinished);
+      runPendingReconnect();
+
+      await waitFor(() => responseFrames.length > 0);
+      expect(signAttempts).toBe(2);
+      expect(routableAttempts).toEqual([[restoredAddress]]);
+      expect(responseFrames).toEqual([
+        {
+          connection: 2,
+          frame: {
+            type: "challenge.response",
+            responses: [{ address: restoredAddress, signature: "02" }],
+          },
+        },
+      ]);
+    } finally {
+      client.close();
+      await stopServerBounded(server);
+    }
+  });
+
+  test("ships only an empty register when no deployment was restored", async () => {
+    const frames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-empty",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getWorkflowAddresses: () => [],
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        frames.some((frame) => JSON.parse(frame).type === "register"),
+      );
+      const parsed = frames.map((frame) => JSON.parse(frame));
+      const registerFrames = parsed.filter(
+        (frame: { type: string }) => frame.type === "register",
+      );
+      const reconnectFrames = parsed.filter(
+        (frame: { type: string }) => frame.type === "reconnect",
+      );
       expect(registerFrames).toHaveLength(1);
       expect(registerFrames[0].agentAddresses).toEqual([]);
-      expect(registerFrames[0].workflowAddresses).toBeUndefined();
-      // The reconnect frame announces the workflow addresses in
-      // agentAddresses, so each proves ownership via the Ed25519 challenge.
-      expect(reconnectFrames).toHaveLength(1);
-      expect(reconnectFrames[0].agentAddresses).toEqual(workflowAddresses);
+      expect(reconnectFrames).toHaveLength(0);
     } finally {
       client.close();
       await server.stop(true);

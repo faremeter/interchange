@@ -5623,6 +5623,35 @@ describe("SidecarRouter", () => {
       await tick();
       expect(mailCount(ws2, "mid-allocated-reconnect")).toBe(1);
     });
+
+    test("reports an active workflow advertised by the allocated generation", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: ["workflow@exclusive"],
+        }),
+      );
+      await tick();
+
+      expect(
+        await allocatedRouter.isAllocatedWorkflowActive({
+          allocationId: "alloc-1",
+          generation: 1,
+        }),
+      ).toBe(true);
+    });
+
     test("routes only allocation-targeted deploys to an allocated worker", async () => {
       const allocatedRouter = createTestRouter({
         authenticateSidecar: async () => allocationIdentity,
@@ -5671,6 +5700,144 @@ describe("SidecarRouter", () => {
         }),
       );
       await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
+    });
+
+    test("disconnect rejects an allocation-targeted deploy", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+        hubPublicKey: TEST_HUB_KEY,
+        requestTimeoutMs: 500,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      const deployed = allocatedRouter.sendAgentDeployToAllocation(
+        { allocationId: "alloc-1", generation: 1 },
+        "workflow@exclusive",
+        allocationConfig,
+      );
+      await tick();
+      allocatedRouter.handleClose(ws);
+
+      await expect(deployed).rejects.toThrow("disconnected");
+    });
+
+    test("restores a workflow-run pack before the deployment address is routed", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+        hubPublicKey: TEST_HUB_KEY,
+        requestTimeoutMs: 500,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      expect(allocatedRouter.getRoutableAddresses()).not.toContain(
+        allocationIdentity.workflowRunAddress,
+      );
+      const restored = allocatedRouter.sendWorkflowRunPackToAllocation(
+        { allocationId: "alloc-1", generation: 1 },
+        allocationIdentity.workflowRunAddress,
+        new Uint8Array([1, 2, 3]),
+        "refs/heads/events",
+        "d".repeat(40),
+      );
+      await tick();
+
+      const done = lastSent(ws);
+      expect(done).toMatchObject({
+        type: "repo.pack.done",
+        agentAddress: allocationIdentity.workflowRunAddress,
+        repoId: {
+          kind: "workflow-run",
+          id: deriveWorkflowRunRepoId(allocationIdentity.workflowRunAddress),
+        },
+        ref: "refs/heads/events",
+        commitSha: "d".repeat(40),
+      });
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.ack",
+          agentAddress: allocationIdentity.workflowRunAddress,
+          repoId: done.repoId,
+          transferId: done.transferId,
+        }),
+      );
+
+      await expect(restored).resolves.toBeUndefined();
+      expect(allocatedRouter.getRoutableAddresses()).not.toContain(
+        allocationIdentity.workflowRunAddress,
+      );
+    });
+
+    test("refuses to restore Hub history over an already-active workflow", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+        hubPublicKey: TEST_HUB_KEY,
+        requestTimeoutMs: 500,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+      const routableWhenConnected: string[][] = [];
+      allocatedRouter.events.on("sidecar.allocated.connected", () => {
+        routableWhenConnected.push(allocatedRouter.getRoutableAddresses());
+      });
+
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [allocationIdentity.workflowRunAddress],
+          deployRefs: {},
+        }),
+      );
+      await tick();
+      const sentBeforeRestore = ws.sent.length;
+
+      expect(routableWhenConnected).toEqual([
+        [allocationIdentity.workflowRunAddress],
+      ]);
+
+      await expect(
+        allocatedRouter.sendWorkflowRunPackToAllocation(
+          { allocationId: "alloc-1", generation: 1 },
+          allocationIdentity.workflowRunAddress,
+          new Uint8Array([1, 2, 3]),
+          "refs/heads/main",
+          "d".repeat(40),
+        ),
+      ).rejects.toThrow("refusing to overwrite its run history");
+      expect(ws.sent).toHaveLength(sentBeforeRestore);
     });
 
     test("delivers grants and durable mail to the exact generation and emits its ack", async () => {

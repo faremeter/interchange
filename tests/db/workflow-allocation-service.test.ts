@@ -13,6 +13,8 @@ import {
   createSidecarAllocationStore,
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
+import { workflowRun } from "@intx/db/schema";
+import { eq } from "drizzle-orm";
 import {
   createWorkflowAllocationService,
   type DeployPreparedWorkflowDefinitionParams,
@@ -137,6 +139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("persists a secret-free launch spec and reconstructs it for the accepted generation", async () => {
       const deployCalls: DeployPreparedWorkflowDefinitionParams[] = [];
+      let workflowActive = false;
       const service = createWorkflowAllocationService({
         db: h.db,
         plugins: {
@@ -144,16 +147,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
           getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
         },
         preparedDeployer: {
-          deployPreparedWorkflowDefinition: (params) => {
+          deployPreparedWorkflowDefinition: async (params) => {
             deployCalls.push(params);
-            return Promise.resolve({
+            const result = {
               deploymentId: params.deploymentId,
               deploymentAddress: params.config.agentAddress,
               publicKey: "supervisor-public-key",
-            });
+            };
+            await h.db
+              .update(workflowRun)
+              .set({ publicKey: result.publicKey })
+              .where(eq(workflowRun.id, params.deploymentId));
+            return result;
           },
         },
         credentialCipher: CREDENTIAL_CIPHER,
+        allocationRouter: {
+          isAllocatedWorkflowActive: async () => workflowActive,
+        },
         createAllocationId: () => "sal-workflow-allocation",
         now: () => new Date("2026-08-03T12:00:00.000Z"),
       });
@@ -194,6 +205,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       if (allocated === null) throw new Error("allocation was not accepted");
 
+      workflowActive = true;
       await service.deployReadyAllocation(allocated);
 
       expect(deployCalls).toHaveLength(1);
@@ -213,6 +225,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         ],
       });
+
+      await expect(
+        service.deployReadyAllocation(allocated),
+      ).resolves.toBeNull();
+      expect(deployCalls).toHaveLength(1);
     });
   },
 );

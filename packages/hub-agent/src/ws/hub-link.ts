@@ -13,6 +13,8 @@ import { type } from "arktype";
 import {
   HubFrame,
   type SidecarFrame,
+  type RegisterFrame,
+  type ReconnectFrame,
   type AgentDeployFrame,
   type AgentErrorFrame,
   type SessionErrorFrame,
@@ -404,6 +406,20 @@ export interface CredentialsInboundRouter {
   tryRoute(frame: CredentialsUpdateFrame): Promise<boolean>;
 }
 
+/**
+ * Applies one Hub-authoritative workflow-run ref before a replacement
+ * supervisor is allowed to spawn. The host owns the workflow substrate, so
+ * the websocket layer validates and assembles the transfer but delegates the
+ * actual ref update through this boundary.
+ */
+export type WorkflowRunPackApplier = (args: {
+  agentAddress: string;
+  repoId: RepoId;
+  pack: Uint8Array;
+  ref: string;
+  commitSha: string;
+}) => Promise<void>;
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -484,6 +500,12 @@ export type HubLinkConfig = {
    * with no reply hangs the hub's request.
    */
   credentialsInboundRouter?: CredentialsInboundRouter;
+  /**
+   * Restore boundary for Hub→sidecar workflow-run packs. Optional for hosts
+   * that never accept exclusive workflow allocations; receiving such a pack
+   * without an applier fails closed with `repo.pack.reject`.
+   */
+  applyWorkflowRunPack?: WorkflowRunPackApplier;
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts a live supervisor for. Called on every (re)connect to
@@ -588,6 +610,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     grantsInboundRouter,
     sourcesInboundRouter,
     credentialsInboundRouter,
+    applyWorkflowRunPack,
     getWorkflowAddresses = () => [],
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -603,6 +626,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let cancelReconnect: (() => void) | null = null;
   let lastPongAt = 0;
+  // An OPEN socket is not application-ready until its one authoritative
+  // register/reconnect frame is on the wire. Async deploy-ref reads can keep
+  // that handshake pending briefly, so ordinary outbound traffic remains in
+  // the existing bounded queue until the handshake has been sent.
+  let handshakePending = true;
 
   const packReceiver = createPackReceiver();
   // One sender owns the agent-state push path (`handleSyncRequest`,
@@ -617,8 +645,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // fire-and-forget on the wire and can be lost on an open socket or evicted
   // from the bounded queue below; the acker re-sends on a tight watchdog while
   // the link is open and gives up on disconnect, leaving the reconnect re-emit
-  // as the backstop. `isOpen` mirrors `send`'s OPEN check so a retry never
-  // fires onto a dead or not-yet-challenged socket.
+  // as the backstop. `isOpen` tracks the transport lifetime; `send` separately
+  // holds retries in the queue until the initial handshake is on the wire.
   const registerAcker = createRegisterAcker({
     sendFrame: (frame) => send(frame),
     isOpen: () => ws !== null && ws.readyState === WebSocket.OPEN,
@@ -635,7 +663,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   const queue: SidecarFrame[] = [];
 
   function send(frame: SidecarFrame): void {
-    if (ws !== null && ws.readyState === WebSocket.OPEN) {
+    if (
+      ws !== null &&
+      ws.readyState === WebSocket.OPEN &&
+      (!handshakePending || frame.type === "ping")
+    ) {
       ws.send(JSON.stringify(frame));
       return;
     }
@@ -650,10 +682,37 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     while (
       queue.length > 0 &&
       ws !== null &&
-      ws.readyState === WebSocket.OPEN
+      ws.readyState === WebSocket.OPEN &&
+      !handshakePending
     ) {
       ws.send(JSON.stringify(queue.shift()));
     }
+  }
+
+  function sendOnConnection(
+    connection: WebSocket,
+    frame: SidecarFrame,
+  ): boolean {
+    if (ws !== connection || connection.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    connection.send(JSON.stringify(frame));
+    return true;
+  }
+
+  /**
+   * Send the initial handshake only if `connection` is still the active
+   * socket. Deploy-ref collection is asynchronous; this attempt fence keeps a
+   * late completion from sending onto (or flushing the queue through) a newer
+   * reconnect attempt.
+   */
+  function completeHandshake(
+    connection: WebSocket,
+    frame: RegisterFrame | ReconnectFrame,
+  ): void {
+    if (!sendOnConnection(connection, frame)) return;
+    handshakePending = false;
+    flush();
   }
 
   // Wire the transport's remote send handler to push mail.outbound frames
@@ -803,7 +862,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
   }
 
-  async function handleChallenge(frame: ChallengeFrame): Promise<void> {
+  async function handleChallenge(
+    frame: ChallengeFrame,
+    connection: WebSocket,
+  ): Promise<void> {
     const responses: { address: string; signature: string }[] = [];
 
     for (const { address, nonce } of frame.challenges) {
@@ -825,7 +887,18 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       });
     }
 
-    send({ type: "challenge.response", responses });
+    // A challenge response belongs only to the socket that received its
+    // nonce. Signing is asynchronous, so a disconnect can supersede this
+    // handler before it finishes; never queue that stale response onto the
+    // next connection, where it could consume the next attempt's challenge.
+    if (
+      !sendOnConnection(connection, {
+        type: "challenge.response",
+        responses,
+      })
+    ) {
+      return;
+    }
 
     // Signal the workflow-run pack pusher that these addresses are becoming
     // routable again, so it can re-drive a push a disconnect cancelled. Fires
@@ -878,7 +951,25 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
 
     try {
-      if (frame.mountPath !== undefined) {
+      if (frame.repoId.kind === "workflow-run") {
+        if (frame.mountPath !== undefined) {
+          throw new Error(
+            "workflow_run_restore_invalid: workflow-run packs cannot carry mountPath",
+          );
+        }
+        if (applyWorkflowRunPack === undefined) {
+          throw new Error(
+            "workflow_run_restore_unconfigured: no workflow-run pack applier is configured",
+          );
+        }
+        await applyWorkflowRunPack({
+          agentAddress: frame.agentAddress,
+          repoId: frame.repoId,
+          pack: result.pack,
+          ref: result.ref,
+          commitSha: result.commitSha,
+        });
+      } else if (frame.mountPath !== undefined) {
         // Asset pack: route to the workspace materializer. Use
         // frame.agentAddress for destination routing — frame.repoId.id
         // names the source asset at the hub, which is a different
@@ -1243,7 +1334,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  async function handleMessage(data: string): Promise<void> {
+  async function handleMessage(
+    data: string,
+    connection: WebSocket,
+  ): Promise<void> {
     let raw: unknown;
     try {
       raw = JSON.parse(data) as unknown;
@@ -1331,7 +1425,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         await handleAgentUndeploy(frame);
         break;
       case "challenge":
-        await handleChallenge(frame);
+        await handleChallenge(frame, connection);
         break;
       case "pong":
         lastPongAt = Date.now();
@@ -1385,9 +1479,15 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       throw new Error("HubLink.connect called after close");
     }
 
-    ws = new WebSocket(hubURL);
+    handshakePending = true;
+    const connection = new WebSocket(hubURL);
+    ws = connection;
 
-    ws.addEventListener("open", () => {
+    connection.addEventListener("open", () => {
+      if (ws !== connection) {
+        connection.close();
+        return;
+      }
       logger.info`Connected to hub at ${hubURL}`;
 
       lastPongAt = Date.now();
@@ -1398,7 +1498,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
             clearInterval(pingTimer);
             pingTimer = null;
           }
-          ws?.close();
+          connection.close();
           return;
         }
         send({ type: "ping" });
@@ -1412,31 +1512,24 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       // this fresh, not-yet-challenged socket would only land unrouted.
       registerAcker.cancelAll();
 
-      // Announce this sidecar to the hub for routing. The hub learns of a
-      // sidecar only from a register frame; `connections` is the map
-      // `sendAgentDeploy` consults to route a deploy. This first-connect
-      // register carries no addresses -- it only establishes the sidecar in
-      // that map. Restored deployments are announced through the CHALLENGED
-      // reconnect frame below.
-      send({
-        type: "register",
-        sidecarId,
-        token,
-        agentAddresses: [],
-      });
-      flush();
-
-      // Re-announce every deployment restored at boot through the reconnect
-      // frame so the hub proves ownership of each address (Ed25519
-      // challenge/response, signed by the deployment's own key via
-      // `signChallenge`) before it routes mail. Routing a restored address
-      // through `register`/`workflowAddresses` -- unchallenged -- would let a
-      // rogue sidecar holding a valid token reclaim a victim's address.
-      // Restore runs before `connect()`, so `getWorkflowAddresses()` is
-      // already populated; the only async work is reading each address's
-      // deploy ref for the hub's deploy-pack freshness check.
+      // The first handshake is the sidecar's complete hosted-address
+      // announcement. A fresh sidecar sends register; one that restored a
+      // deployment sends reconnect instead. Sending an empty register before
+      // reconnect would expose a false empty inventory and let allocation
+      // reconciliation restore Hub state over the live workflow.
       const restoredAddresses = getWorkflowAddresses();
-      if (restoredAddresses.length > 0) {
+      if (restoredAddresses.length === 0) {
+        completeHandshake(connection, {
+          type: "register",
+          sidecarId,
+          token,
+          agentAddresses: [],
+        });
+      } else {
+        // The active-address inventory includes both workflow-derived and
+        // current plain-agent addresses. The Hub skips deploy-ref freshness
+        // for workflow-derived addresses, but plain agents still require
+        // their refs to avoid an unnecessary full deploy-pack catch-up.
         void (async () => {
           try {
             const deployRefs: Record<string, string> = {};
@@ -1446,32 +1539,28 @@ export function createHubLink(config: HubLinkConfig): HubLink {
                 deployRefs[address] = ref;
               }
             }
-            send({
+            completeHandshake(connection, {
               type: "reconnect",
               sidecarId,
               token,
               agentAddresses: restoredAddresses,
               ...(Object.keys(deployRefs).length > 0 ? { deployRefs } : {}),
             });
-            flush();
           } catch (err) {
-            // A failing deploy-ref read (corrupt or unreadable ref state)
-            // must not silently drop the reconnect. Without this frame the
-            // hub never re-challenges these addresses, so their routes
-            // vanish with nothing logged. Surface the failure and close the
-            // socket to force a clean reconnect retry. No partial reconnect
-            // frame is sent: the send sits after the loop, so a throw skips
-            // it. This IIFE runs in the `open` handler, outside the
-            // `messageQueue` tail-catch, so this catch is its only net.
+            // A failed ref read leaves the Hub unable to determine whether a
+            // plain agent needs catch-up. Retry the whole connection instead
+            // of sending a partial inventory. The attempt fence prevents a
+            // late failure from closing a newer socket.
+            if (ws !== connection) return;
             const msg = err instanceof Error ? err.message : String(err);
             logger.error`Deployment re-announce failed, closing connection: ${msg}`;
-            ws?.close();
+            connection.close();
           }
         })();
       }
     });
 
-    ws.addEventListener("message", (event) => {
+    connection.addEventListener("message", (event) => {
       if (typeof event.data === "string") {
         // Attach a tail `.catch` to the chained handler so any
         // unhandled throw inside `handleMessage` is observed and
@@ -1492,7 +1581,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // dispatch would break that rollback.
         const data = event.data;
         messageQueue = messageQueue.then(() =>
-          handleMessage(data).catch((err: unknown) => {
+          handleMessage(data, connection).catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : String(err);
             logger.warn`Unhandled error in handleMessage: ${msg}`;
           }),
@@ -1500,9 +1589,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
     });
 
-    ws.addEventListener("close", () => {
+    connection.addEventListener("close", () => {
+      // A late close from a superseded attempt must not null or reschedule the
+      // active socket. Normal reconnects also pass this fence: the next socket
+      // is not created until this handler schedules it.
+      if (ws !== connection) return;
       logger.info`Disconnected from hub`;
       ws = null;
+      handshakePending = true;
       if (pingTimer !== null) {
         clearInterval(pingTimer);
         pingTimer = null;
@@ -1537,7 +1631,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
     });
 
-    ws.addEventListener("error", (event) => {
+    connection.addEventListener("error", (event) => {
       logger.warn`WebSocket error: ${String(event)}`;
     });
   }

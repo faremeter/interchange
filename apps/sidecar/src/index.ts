@@ -45,6 +45,7 @@ import {
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
+import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 
 await setup();
@@ -298,6 +299,13 @@ const workflowRunPackClient = createWorkflowRunPackClient({
     },
   },
 });
+const restoreWorkflowRunPack = createWorkflowRunPackRestorer({
+  // Restore into the unwrapped substrate. Running Hub-authored history
+  // through the push facade would echo the same pack straight back to the
+  // Hub and incorrectly present it as a new supervisor write.
+  substrate: agentRepoStore.repoStore,
+  markRestored: workflowRunPackClient.markRestored,
+});
 
 // Wrap the substrate's RepoStore with the boot-edge facade so a
 // successful supervisor write against a workflow-run repo fires the
@@ -388,6 +396,7 @@ const orchestrator = createSidecarOrchestrator({
   grantsInboundRouter: multistepGrantsRouter,
   sourcesInboundRouter: multistepSourcesRouter,
   credentialsInboundRouter: multistepCredentialsRouter,
+  applyWorkflowRunPack: restoreWorkflowRunPack,
   // The hub link calls this on every (re)connect to announce the workflow
   // deployments this sidecar hosts so the hub re-registers their routes.
   // `createDeployRouter` runs synchronously during construction (below), so

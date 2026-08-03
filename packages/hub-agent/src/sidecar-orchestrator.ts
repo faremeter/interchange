@@ -33,6 +33,7 @@ import {
   type GrantsInboundRouter,
   type SourcesInboundRouter,
   type CredentialsInboundRouter,
+  type WorkflowRunPackApplier,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 
@@ -149,6 +150,8 @@ export type SidecarOrchestratorConfig = {
    * `createHubLink`.
    */
   sourcesInboundRouter?: SourcesInboundRouter;
+  /** Apply Hub-authoritative workflow-run refs before replacement deploy. */
+  applyWorkflowRunPack: WorkflowRunPackApplier;
   /**
    * Optional inbound credential-delivery dispatcher the link consults on every
    * inbound `credentials.update` frame. Production wires this against the
@@ -216,6 +219,7 @@ export function createSidecarOrchestrator(
     grantsInboundRouter,
     sourcesInboundRouter,
     credentialsInboundRouter,
+    applyWorkflowRunPack,
     getWorkflowAddresses,
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -299,6 +303,7 @@ export function createSidecarOrchestrator(
     sessions,
     keyStore,
     deployRouter,
+    applyWorkflowRunPack,
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),
     ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
     ...(drainInboundRouter !== undefined ? { drainInboundRouter } : {}),
