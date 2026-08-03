@@ -262,15 +262,18 @@ describe("in-process child parent-abort", () => {
     const spawn = createSidecarSpawnSuspendableChild(sharedDeps(substrate));
     const abort = new AbortController();
     const childRunId = "run-body-suspendable";
-    const handle = await spawn({
-      definition: bodyDefinition("body"),
-      definitionRef: REF,
-      childRunId,
-      input: { text: "event-0" },
-      parentRunId,
-      parentStepId: "section",
-      signal: abort.signal,
-    });
+    const handle = await spawn(
+      {
+        definition: bodyDefinition("body"),
+        definitionRef: REF,
+        childRunId,
+        input: { text: "event-0" },
+        parentRunId,
+        parentStepId: "section",
+        signal: abort.signal,
+      },
+      () => undefined,
+    );
 
     // The body parked on an approval and the handle surfaced it: the child is
     // live. Abort the parent now.

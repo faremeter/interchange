@@ -33,6 +33,7 @@ import type {
   ApprovalSnapshot,
   AuditStore,
   ContextStore,
+  InferenceEvent,
   MessageTransport,
   PendingOperation,
 } from "@intx/types/runtime";
@@ -986,6 +987,7 @@ export type SidecarBodyStepInvoker = (
   req: StepInvokeRequest,
   authorize: WorkflowAuthorizeFn,
   sourcesRef: SourcesSnapshotRef,
+  onEvent: (event: InferenceEvent) => void,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -1297,14 +1299,10 @@ export function createSidecarSpawnSuspendableChild(
   // rather than silently spawning.
   const runChild = createSidecarRunChild(deps);
 
-  return async ({
-    definition,
-    childRunId,
-    input,
-    parentRunId,
-    signal,
-    resumeFromEvents,
-  }) => {
+  return async (
+    { definition, childRunId, input, parentRunId, signal, resumeFromEvents },
+    onEvent,
+  ) => {
     const { env: baseEnv, signalChannel } = await buildChildRunEnv({
       deps,
       directors,
@@ -1318,9 +1316,11 @@ export function createSidecarSpawnSuspendableChild(
       // The BODY env runs real agent steps (INTR-310) when the factory wired a
       // body invoker; the body's own childWorkflow grandchildren, built via the
       // internal `createSidecarRunChild(deps)` above, do NOT get it and stay on
-      // the stub.
+      // the stub. The live event sink is paired with the body invoker: it feeds
+      // the body's inference to the parent run's event channel, and is omitted
+      // for the stub path (which runs no agent).
       ...(deps.bodyInvokeStep !== undefined
-        ? { bodyStepInvoker: deps.bodyInvokeStep }
+        ? { bodyStepInvoker: deps.bodyInvokeStep, onEvent }
         : {}),
     });
 
@@ -1493,6 +1493,14 @@ async function buildChildRunEnv(args: {
    * `ChildStepNotImplementedError` stub).
    */
   bodyStepInvoker?: SidecarBodyStepInvoker;
+  /**
+   * Per-run live inference-event sink, threaded from the parent run's event
+   * channel. Required WHENEVER `bodyStepInvoker` is present (a real body agent
+   * emits inference the hub stream must see); a missing sink there is a wiring
+   * defect, not a silent drop. Absent for the childWorkflow stub path, which
+   * runs no agent.
+   */
+  onEvent?: (event: InferenceEvent) => void;
 }): Promise<{
   env: WorkflowRuntimeEnv;
   signalChannel: ReturnType<typeof createWorkflowHostSignalChannel>;
@@ -1508,6 +1516,7 @@ async function buildChildRunEnv(args: {
     childRunId,
     parentRunId,
     bodyStepInvoker,
+    onEvent,
   } = args;
   // Inherit the parent run's grants. A spawned child runs under the
   // authority of the run that spawned it, so its authorize resolves
@@ -1628,10 +1637,17 @@ async function buildChildRunEnv(args: {
         "sidecar body child: bodyStepInvoker is wired but deps.dataDir is missing; the body's sources.json cannot be resolved",
       );
     }
+    if (onEvent === undefined) {
+      throw new Error(
+        "sidecar body child: bodyStepInvoker is wired but onEvent is missing; body inference events would be silently dropped from the hub stream",
+      );
+    }
     const bodySourcesRef: SourcesSnapshotRef = {
       current: await readBodyStepInferenceSources(deps.dataDir, definition.id),
     };
-    invokeStep = (req) => bodyStepInvoker(req, authorize, bodySourcesRef);
+    const bodyOnEvent = onEvent;
+    invokeStep = (req) =>
+      bodyStepInvoker(req, authorize, bodySourcesRef, bodyOnEvent);
   }
   const env: WorkflowRuntimeEnv = {
     repoStore,
@@ -1917,9 +1933,11 @@ export function createSidecarSubstrateFactory(
     // run-boundary mirror) and TOOLLESS (the build-env skips tool
     // materialization, so a body stepId colliding with a parent step id can
     // never read the parent's tools). The per-body `sourcesRef` is threaded in
-    // by `buildChildRunEnv`, disjoint from the top level's. `onEvent` is omitted:
-    // attributing body inference events to the body run id on the hub timeline
-    // is a required follow-up plumb, tracked separately.
+    // by `buildChildRunEnv`, disjoint from the top level's. `onEvent` is the
+    // per-run event funnel `buildChildRunEnv` threads in from the parent run's
+    // event channel, so a body agent's live inference events reach the hub
+    // stream at the deployment-level granularity the top level already has
+    // (per-run attribution stays durable via runs/<childRunId>/events/).
     const coldBodyBuildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
@@ -1943,12 +1961,14 @@ export function createSidecarSubstrateFactory(
       req,
       authorize,
       sourcesRef,
+      onEvent,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
         buildEnv: (buildReq) => coldBodyBuildStepEnv(buildReq, sourcesRef),
         agentFactory: stepAgentFactory,
         sourcesRef,
+        onEvent,
       })(req);
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's

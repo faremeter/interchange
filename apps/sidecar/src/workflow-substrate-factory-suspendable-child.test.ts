@@ -213,15 +213,18 @@ describe("createSidecarSpawnSuspendableChild", () => {
     const record: { resumeDecision?: unknown } = {};
     const spawn = makeSpawner(substrate, suspendThenComplete(record));
 
-    const handle = await spawn({
-      definition: bodyDefinition("body-wf"),
-      definitionRef: REF,
-      childRunId: "run-body-0",
-      input: { text: "event-0" },
-      parentRunId,
-      parentStepId: "section",
-      signal: new AbortController().signal,
-    });
+    const handle = await spawn(
+      {
+        definition: bodyDefinition("body-wf"),
+        definitionRef: REF,
+        childRunId: "run-body-0",
+        input: { text: "event-0" },
+        parentRunId,
+        parentStepId: "section",
+        signal: new AbortController().signal,
+      },
+      () => undefined,
+    );
 
     // The body step suspended -> the handle surfaces the approval park on the
     // reserved correlation, carrying the step's snapshot.

@@ -93,6 +93,7 @@ import type { InferenceSource } from "@intx/types/runtime";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
+import type { HostSpawnSuspendableChild } from "../adapters/spawn-child";
 import {
   createControlChannelSender,
   createEventChannelSender,
@@ -306,8 +307,13 @@ export interface RunWorkflowChildBindings {
    * because it is only needed to service `onTrigger` sections -- a child
    * process that never runs one omits it, and `runOnTrigger` fails loud if a
    * workflow uses a section the env did not wire.
+   *
+   * Host-widened with an `onEvent` sink (`HostSpawnSuspendableChild`): the
+   * runtime env exposes the narrow `SpawnSuspendableChild`, and `buildRuntimeEnv`
+   * injects the run's event-channel funnel into this binding so a body's live
+   * inference events reach the hub stream. The runtime contract stays narrow.
    */
-  spawnSuspendableChild?: SpawnSuspendableChild;
+  spawnSuspendableChild?: HostSpawnSuspendableChild;
   /** Host-process scheduler singleton. The child consumes the same instance. */
   scheduler: Scheduler;
   /** Grant evaluator wired against the host's grant-rule grammar. */
@@ -1199,6 +1205,17 @@ function buildRuntimeEnv(args: {
       args.sourcesRef,
     );
   };
+  // Adapt the host binding (which takes the run's `onEvent` sink) down to the
+  // runtime's narrow `SpawnSuspendableChild` by injecting THIS run's event
+  // funnel -- the same closure `invokeStep` forwards -- so a body's live
+  // inference events ride the parent run's event channel to the hub stream
+  // (and inherit its loud-on-failure logging), while the runtime env keeps the
+  // narrow contract with no event slot.
+  const hostSuspendable = args.bindings.spawnSuspendableChild;
+  const spawnSuspendableChild: SpawnSuspendableChild | undefined =
+    hostSuspendable === undefined
+      ? undefined
+      : (spawnInput) => hostSuspendable(spawnInput, args.onEvent);
   return {
     repoStore: args.runtimeRepoStore,
     scheduler: args.bindings.scheduler,
@@ -1211,9 +1228,7 @@ function buildRuntimeEnv(args: {
     // Wire the suspendable-child seam only when the host supplied it; a child
     // that never runs an onTrigger section omits the binding, and the runtime
     // body fails loud if a workflow reaches a section the env did not wire.
-    ...(args.bindings.spawnSuspendableChild !== undefined
-      ? { spawnSuspendableChild: args.bindings.spawnSuspendableChild }
-      : {}),
+    ...(spawnSuspendableChild !== undefined ? { spawnSuspendableChild } : {}),
     clock: args.clock,
     newId: args.newId,
     drain: args.drainController,

@@ -98,6 +98,16 @@ const hasChildCompleted = (
     (e) => e.type === "ChildCompleted" && e.body["childRunId"] === childRunId,
   );
 
+// Whether a captured agent-event payload is a live inference event (its type is
+// in the `inference.*` family the reactor emits during a step's `agent.send`).
+function isLiveInferenceEvent(event: unknown): boolean {
+  if (typeof event !== "object" || event === null || !("type" in event)) {
+    return false;
+  }
+  const { type } = event;
+  return typeof type === "string" && type.startsWith("inference.");
+}
+
 describe("onTrigger body runs a real agent step through the body invoker", () => {
   test("sidecar registers with hub", () => {
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
@@ -333,6 +343,23 @@ describe("onTrigger body runs a real agent step through the body invoker", () =>
     // The body agent's inference call actually reached the mock provider, so the
     // reply is real model output rather than a synthesized constant.
     expect(env.inference.requests.length).toBeGreaterThan(0);
+
+    // The onEvent plumb (INTR-310 follow-up): the body agent's LIVE inference
+    // events reach the hub's agent-event stream. Before the body invoker's
+    // onEvent was wired they were SILENTLY DROPPED -- durable per-run events
+    // still landed under runs/<childRunId>/events/, but the live firehose saw
+    // nothing from the body. The onTrigger container runs no agent of its own,
+    // so an inference-typed event on this deployment's stream can only have
+    // originated in the body. This is the regression guard: an omitted callback
+    // and a wired-but-dead one are indistinguishable without it.
+    await waitFor(
+      () =>
+        env.hub.agentEvents.some(
+          (e) =>
+            e.addr === deploymentMailAddress && isLiveInferenceEvent(e.event),
+        ),
+      { diagnostics: env.sidecarDiagnostics, timeoutMs: 10_000 },
+    );
 
     // The section re-arms on its input park for the next event and never
     // self-completes -- the body running a real agent didn't disturb the

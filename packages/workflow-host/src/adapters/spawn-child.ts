@@ -64,6 +64,7 @@ import { type } from "arktype";
 
 import type { Principal, RepoStore } from "@intx/hub-sessions/substrate";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
+import type { InferenceEvent } from "@intx/types/runtime";
 import type {
   SpawnChildWorkflow,
   SpawnSuspendableChild,
@@ -199,16 +200,39 @@ export function createWorkflowSpawnChild(
  * `WorkflowDefinition` alongside the parent attribution the runtime body
  * produced.
  */
-export type RunSuspendableChild = (input: {
-  definition: WorkflowDefinition;
-  definitionRef: string;
-  childRunId: string;
-  input: unknown;
-  parentRunId: string;
-  parentStepId: string;
-  signal: AbortSignal;
-  resumeFromEvents?: readonly WorkflowEvent[];
-}) => Promise<SuspendableChildHandle>;
+export type RunSuspendableChild = (
+  input: {
+    definition: WorkflowDefinition;
+    definitionRef: string;
+    childRunId: string;
+    input: unknown;
+    parentRunId: string;
+    parentStepId: string;
+    signal: AbortSignal;
+    resumeFromEvents?: readonly WorkflowEvent[];
+  },
+  /**
+   * Live inference-event sink for the child's agent steps. Threaded from the
+   * host's per-run funnel (the parent run's event-channel closure) so the
+   * body's inference events reach the hub's live stream instead of being
+   * silently dropped. Per-run durable attribution is unaffected -- the child
+   * runtime commits its events under `runs/<childRunId>/events/` regardless.
+   */
+  onEvent: (event: InferenceEvent) => void,
+) => Promise<SuspendableChildHandle>;
+
+/**
+ * Host-side widening of the runtime {@link SpawnSuspendableChild} contract: the
+ * same input plus the per-run `onEvent` sink the host injects. The runtime
+ * calls the narrow `SpawnSuspendableChild` (no event slot); the host binding
+ * wired into the runtime env closes over the run's funnel and forwards it here,
+ * mirroring how `ChildStepInvoker` widens the runtime `StepInvoker` with
+ * `onEvent`. The runtime contract in `@intx/workflow` stays untouched.
+ */
+export type HostSpawnSuspendableChild = (
+  input: Parameters<SpawnSuspendableChild>[0],
+  onEvent: (event: InferenceEvent) => void,
+) => ReturnType<SpawnSuspendableChild>;
 
 export interface WorkflowSpawnSuspendableChildOpts {
   /**
@@ -249,16 +273,19 @@ export interface WorkflowSpawnSuspendableChildOpts {
  */
 export function createWorkflowSpawnSuspendableChild(
   opts: WorkflowSpawnSuspendableChildOpts,
-): SpawnSuspendableChild {
-  return async ({
-    definitionRef,
-    childRunId,
-    input,
-    parentRunId,
-    parentStepId,
-    signal,
-    resumeFromEvents,
-  }) => {
+): HostSpawnSuspendableChild {
+  return async (
+    {
+      definitionRef,
+      childRunId,
+      input,
+      parentRunId,
+      parentStepId,
+      signal,
+      resumeFromEvents,
+    },
+    onEvent,
+  ) => {
     if (signal.aborted) {
       throw abortError(signal);
     }
@@ -276,16 +303,19 @@ export function createWorkflowSpawnSuspendableChild(
       throw abortError(signal);
     }
 
-    return opts.runSuspendableChild({
-      definition,
-      definitionRef,
-      childRunId,
-      input,
-      parentRunId,
-      parentStepId,
-      signal,
-      ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
-    });
+    return opts.runSuspendableChild(
+      {
+        definition,
+        definitionRef,
+        childRunId,
+        input,
+        parentRunId,
+        parentStepId,
+        signal,
+        ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
+      },
+      onEvent,
+    );
   };
 }
 
