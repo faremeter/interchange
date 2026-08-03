@@ -12,6 +12,7 @@ import {
   principalKinds,
   principalStatuses,
   signalKinds,
+  TenantConfig,
   workflowDefinitionStatuses,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
@@ -237,7 +238,7 @@ export function parseModelOfferingRow(row: typeof modelOffering.$inferSelect) {
 export function parseTenantRow(row: typeof tenant.$inferSelect) {
   return {
     ...row,
-    config: row.config !== null ? JSONObject.assert(row.config) : null,
+    config: row.config !== null ? TenantConfig.assert(row.config) : null,
   };
 }
 

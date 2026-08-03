@@ -54,6 +54,10 @@ export {
   type HubSessionRouterFacade,
 } from "./hub-session-orchestrator";
 export { pushSourceUpdates, pushSourceUpdatesSubtree } from "./credential-push";
+export {
+  resolveEffectiveSidecarPlacement,
+  type ResolveEffectiveSidecarPlacementOpts,
+} from "./sidecar-allocation";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export {
   skillKindHandler,
