@@ -6,6 +6,10 @@ export { matchPattern } from "./patterns";
 export { patternSpecificity, grantSpecificity } from "./specificity";
 export { evaluateConditions } from "./conditions";
 export { timeWindowEvaluator } from "./time-window";
+export {
+  toolConsumerEvaluator,
+  CREDENTIAL_USE_CONDITIONS,
+} from "./tool-consumer";
 export { createInMemoryGrantStore } from "./memory-store";
 export type {
   AuthzResult,

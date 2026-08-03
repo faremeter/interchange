@@ -20,6 +20,7 @@ export type EvalOptions = {
   registry?: ConditionRegistry;
   principalId?: string;
   tenantId?: string;
+  consumer?: string;
 };
 
 /**
@@ -47,6 +48,7 @@ export async function evaluateGrants(
     action,
     principalId: opts?.principalId ?? "",
     tenantId: opts?.tenantId ?? "",
+    consumer: opts?.consumer ?? "",
   };
 
   const matching: MatchedGrant[] = [];

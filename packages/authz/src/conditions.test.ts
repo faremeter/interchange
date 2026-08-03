@@ -10,6 +10,7 @@ function ctx(overrides?: Partial<ConditionContext>): ConditionContext {
     action: "read",
     principalId: "prn_1",
     tenantId: "tnt_1",
+    consumer: "",
     ...overrides,
   };
 }
