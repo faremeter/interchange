@@ -784,7 +784,8 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)
-  .or(PackRejectFrame);
+  .or(PackRejectFrame)
+  .or(MailInboundAckFrame);
 export type SidecarFrame = typeof SidecarFrame.infer;
 
 /** All frame types the hub sends to the sidecar. */

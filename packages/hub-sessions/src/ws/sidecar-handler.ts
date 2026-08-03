@@ -273,6 +273,13 @@ export type SidecarRouterConfig = {
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
   pingTimeoutMs?: number;
+  /** Interval between redelivery attempts of a connected-window `mail.inbound`
+   * the sidecar has not yet acknowledged with `mail.inbound.ack`. */
+  mailAckRetryIntervalMs?: number;
+  /** Maximum redelivery attempts before the hub stops retrying an un-acked
+   * connected-window `mail.inbound`. Bounds the retry so a sidecar that never
+   * acks does not accumulate an unbounded timer per delivery. */
+  mailAckMaxRetries?: number;
   /** Query handlers the wire layer issues during frame processing.
    * Each lookup is one-handler-returns-a-value; for multi-subscriber
    * notifications use `router.events.on(...)` instead.
@@ -297,6 +304,8 @@ const DEFAULT_CHALLENGE_TIMEOUT_MS = 30_000;
 const DEFAULT_DISCONNECT_QUEUE_MAX_SIZE = 100;
 const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PING_TIMEOUT_MS = 60_000;
+const DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS = 10_000;
+const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
 
 export function createSidecarRouter(
   config: SidecarRouterConfig,
@@ -309,6 +318,8 @@ export function createSidecarRouter(
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
+    mailAckRetryIntervalMs = DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS,
+    mailAckMaxRetries = DEFAULT_MAIL_ACK_MAX_RETRIES,
     lookups = {},
   } = config;
 
@@ -345,6 +356,23 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const disconnectedAgents = new Map<string, DisconnectedAgent>();
+  // agentAddress → messageId → connected-window mail awaiting a
+  // `mail.inbound.ack`. A `mail.inbound` delivered over a LIVE connection with
+  // a hub-minted messageId is tracked here and redelivered -- identical bytes,
+  // same messageId -- on a timer until the sidecar acknowledges its durable
+  // inbox write, so a frame silently dropped in the connected window (a socket
+  // that half-died before the sidecar wrote the message) is recovered rather
+  // than lost. The sidecar inbox is idempotent on messageId, so a redelivery
+  // of a message the sidecar already wrote is deduped there: at-least-once
+  // redelivery is effectively-once.
+  type PendingMailEntry = {
+    agentAddress: string;
+    messageId: string;
+    frame: HubFrame;
+    attempts: number;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const pendingMail = new Map<string, Map<string, PendingMailEntry>>();
   // agentAddress → set of subscriber callbacks for agent events
   const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
   // agentAddress → cached connector-thread state, populated by
@@ -457,6 +485,97 @@ export function createSidecarRouter(
     }
   }
 
+  // Track a connected-window `mail.inbound` for redelivery until the sidecar
+  // acks its durable inbox write. Replaces any prior entry for the same
+  // (agentAddress, messageId) -- clearing its timer first so no timer leaks --
+  // which keeps a re-sent delivery from arming a second concurrent retry loop.
+  function trackPendingMail(
+    agentAddress: string,
+    messageId: string,
+    frame: HubFrame,
+  ): void {
+    let byId = pendingMail.get(agentAddress);
+    if (byId === undefined) {
+      byId = new Map();
+      pendingMail.set(agentAddress, byId);
+    }
+    const existing = byId.get(messageId);
+    if (existing !== undefined) clearTimeout(existing.timer);
+    byId.set(messageId, {
+      agentAddress,
+      messageId,
+      frame,
+      attempts: 0,
+      timer: setTimeout(
+        () => retryPendingMail(agentAddress, messageId),
+        mailAckRetryIntervalMs,
+      ),
+    });
+  }
+
+  function deletePendingMail(
+    byId: Map<string, PendingMailEntry>,
+    agentAddress: string,
+    messageId: string,
+  ): void {
+    byId.delete(messageId);
+    if (byId.size === 0) pendingMail.delete(agentAddress);
+  }
+
+  function retryPendingMail(agentAddress: string, messageId: string): void {
+    const byId = pendingMail.get(agentAddress);
+    if (byId === undefined) return;
+    const entry = byId.get(messageId);
+    if (entry === undefined) return;
+
+    if (entry.attempts >= mailAckMaxRetries) {
+      // The sidecar never acked within the retry budget. Stop retrying and
+      // drop the pending entry so its timer does not leak. Surface a warn
+      // rather than a `mail.outbound.undelivered` event: the mail was accepted
+      // over a live connection and most likely delivered, so relaying it onto
+      // an external transport would risk a duplicate.
+      deletePendingMail(byId, agentAddress, messageId);
+      logger.warn`Gave up redelivering mail ${messageId} to ${agentAddress} after ${String(entry.attempts)} un-acked attempt(s)`;
+      return;
+    }
+
+    // Redeliver over the address's CURRENT owner: a verified reconnect may have
+    // moved the address to a new connection since the original delivery.
+    const ws = addressIndex.get(agentAddress);
+    const conn = ws !== undefined ? connections.get(ws) : undefined;
+    if (conn === undefined) {
+      // No live connection to recover into. Connected-window redelivery only
+      // applies while the address is routable; a disconnected address is not
+      // retried here.
+      deletePendingMail(byId, agentAddress, messageId);
+      logger.warn`Dropping un-acked mail ${messageId} for ${agentAddress}: no live connection to redeliver over`;
+      return;
+    }
+
+    entry.attempts += 1;
+    conn.send(entry.frame);
+    entry.timer = setTimeout(
+      () => retryPendingMail(agentAddress, messageId),
+      mailAckRetryIntervalMs,
+    );
+  }
+
+  function resolvePendingMail(agentAddress: string, messageId: string): void {
+    const byId = pendingMail.get(agentAddress);
+    if (byId === undefined) return;
+    const entry = byId.get(messageId);
+    if (entry === undefined) return;
+    clearTimeout(entry.timer);
+    deletePendingMail(byId, agentAddress, messageId);
+  }
+
+  function dropPendingMailForAddress(agentAddress: string): void {
+    const byId = pendingMail.get(agentAddress);
+    if (byId === undefined) return;
+    for (const entry of byId.values()) clearTimeout(entry.timer);
+    pendingMail.delete(agentAddress);
+  }
+
   function resetLivenessTimer(ws: WsHandle): void {
     const existing = livenessTimers.get(ws);
     if (existing !== undefined) clearTimeout(existing);
@@ -557,6 +676,7 @@ export function createSidecarRouter(
       case "mail.outbound":
       case "agent.event":
       case "connector.state.changed":
+      case "mail.inbound.ack":
       case "signal.correlation.register":
       case "repo.pack.push":
       case "repo.pack.done":
@@ -643,6 +763,22 @@ export function createSidecarRouter(
           connectorState: frame.connectorState,
         });
         return;
+      case "mail.inbound.ack": {
+        // Terminal receipt for a connected-window `mail.inbound`: the sidecar
+        // has durably written the message to its inbox. Gate on ownership --
+        // like connector.state.changed and signal.correlation.register -- so a
+        // sidecar cannot clear another sidecar's pending mail. The messageId is
+        // a hub-minted id only the owning sidecar ever received on the frame,
+        // so the ownership check is defense-in-depth, not the sole guard.
+        const conn = connections.get(ws);
+        if (conn === undefined) return;
+        if (!connOwnsAddress(conn, frame.agentAddress)) {
+          logger.warn`Dropping mail.inbound.ack for ${frame.agentAddress}: not registered to this sidecar`;
+          return;
+        }
+        resolvePendingMail(frame.agentAddress, frame.messageId);
+        return;
+      }
       case "signal.correlation.register":
         return handleSignalCorrelationRegister(ws, frame);
       case "session.ack":
@@ -1429,6 +1565,11 @@ export function createSidecarRouter(
         // reconnect re-bootstraps via the router's
         // restore-fires-callback path.
         connectorStates.delete(addr);
+        // Cancel connected-window mail redelivery for this address: its
+        // in-flight retry timers target a connection that is gone. The mail
+        // was accepted over the now-closed socket and is not re-driven from
+        // here -- reconnect redelivery is a separate mechanism.
+        dropPendingMailForAddress(addr);
         const deployReq = pendingDeploys.get(addr);
         if (deployReq !== undefined && deployReq.ws === ws) {
           clearTimeout(deployReq.timer);
@@ -1464,6 +1605,10 @@ export function createSidecarRouter(
     for (const addr of conn.workflowAddresses) {
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
+        // Workflow trigger mail is tracked for connected-window redelivery
+        // too; cancel its retry timers on close for the same reason as the
+        // session loop above.
+        dropPendingMailForAddress(addr);
       }
     }
     connections.delete(ws);
@@ -1924,6 +2069,13 @@ export function createSidecarRouter(
       const conn = connections.get(ws);
       if (conn !== undefined) {
         conn.send(frame);
+        // Track the delivery for redelivery until the sidecar acks its durable
+        // inbox write. Only mail carrying a hub-minted messageId participates
+        // in the ack handshake; relayed agent-to-agent mail omits it and is
+        // delivered fire-and-forget as before.
+        if (messageId !== undefined) {
+          trackPendingMail(agentAddress, messageId, frame);
+        }
         return true;
       }
     }

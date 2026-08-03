@@ -4736,4 +4736,235 @@ describe("SidecarRouter", () => {
       expect(ack).toBeUndefined();
     });
   });
+
+  describe("connected-window mail redelivery (mail.inbound.ack)", () => {
+    // Establish an address over the challenged reconnect path so it enters the
+    // routing table under a verified connection -- the same path a real
+    // sidecar hosting a keyed address takes. Routing a keyed address via a
+    // plain register is refused by the key-existence gate.
+    async function connectViaChallenge(
+      r: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+      addr: string,
+      privateKey: Uint8Array,
+      sidecarId = "sc-1",
+    ) {
+      r.handleOpen(ws);
+      r.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId,
+          token: "tok",
+          agentAddresses: [addr],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, privateKey),
+          }),
+        ),
+      );
+      r.handleMessage(
+        ws,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+    }
+
+    // Count `mail.inbound` frames the ws received carrying `messageId`. Each
+    // (re)delivery is a fresh send of identical bytes, so the count is the
+    // original delivery plus every redelivery attempt.
+    function inboundCount(
+      ws: ReturnType<typeof createMockWs>,
+      messageId: string,
+    ): number {
+      return ws.sent
+        .map((s) => JSON.parse(s))
+        .filter((f) => f.type === "mail.inbound" && f.messageId === messageId)
+        .length;
+    }
+
+    test("redelivers identical bytes until the sidecar acks", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 5,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws = createMockWs();
+      await connectViaChallenge(router, ws, "agent@local", kp.privateKey);
+
+      expect(router.routeMail("agent@local", "aGVsbG8=", "mid-1")).toBe(true);
+      // Delivered once immediately, carrying the messageId.
+      expect(inboundCount(ws, "mid-1")).toBe(1);
+      const delivered = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "mail.inbound" && f.messageId === "mid-1");
+      expect(delivered.rawMessage).toBe("aGVsbG8=");
+
+      // Withhold the ack: the retry timer redelivers identical bytes.
+      await new Promise((res) => setTimeout(res, 50));
+      expect(inboundCount(ws, "mid-1")).toBeGreaterThanOrEqual(2);
+      const redelivered = ws.sent
+        .map((s) => JSON.parse(s))
+        .filter((f) => f.type === "mail.inbound" && f.messageId === "mid-1");
+      // Every redelivery replays the same bytes and messageId.
+      for (const f of redelivered) {
+        expect(f.rawMessage).toBe("aGVsbG8=");
+      }
+    });
+
+    test("an ack stops redelivery", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 5,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws = createMockWs();
+      await connectViaChallenge(router, ws, "agent@local", kp.privateKey);
+
+      expect(router.routeMail("agent@local", "aGk=", "mid-2")).toBe(true);
+      expect(inboundCount(ws, "mid-2")).toBe(1);
+
+      // The sidecar acks its durable inbox write.
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "mail.inbound.ack",
+          agentAddress: "agent@local",
+          messageId: "mid-2",
+        }),
+      );
+      await tick();
+
+      // No redelivery fires after the ack clears the pending entry.
+      await new Promise((res) => setTimeout(res, 60));
+      expect(inboundCount(ws, "mid-2")).toBe(1);
+    });
+
+    test("redelivery is bounded by the retry budget", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 3,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws = createMockWs();
+      await connectViaChallenge(router, ws, "agent@local", kp.privateKey);
+
+      const warnings: string[] = [];
+      const restore = installWarningCapture(warnings);
+      try {
+        expect(router.routeMail("agent@local", "eA==", "mid-3")).toBe(true);
+        // Wait well past the full budget (interval * (maxRetries + 1)).
+        await new Promise((res) => setTimeout(res, 200));
+      } finally {
+        restore();
+      }
+
+      // One original delivery plus exactly maxRetries redeliveries, then stop.
+      expect(inboundCount(ws, "mid-3")).toBe(4);
+      expect(
+        warnings.some(
+          (w) => w.includes("mid-3") && w.includes("Gave up redelivering"),
+        ),
+      ).toBe(true);
+    });
+
+    test("mail without a messageId is not tracked for redelivery", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 5,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws = createMockWs();
+      await connectViaChallenge(router, ws, "agent@local", kp.privateKey);
+
+      expect(router.routeMail("agent@local", "eXk=")).toBe(true);
+      const before = ws.sent.filter(
+        (s) => JSON.parse(s).type === "mail.inbound",
+      ).length;
+      expect(before).toBe(1);
+
+      await new Promise((res) => setTimeout(res, 60));
+      const after = ws.sent.filter(
+        (s) => JSON.parse(s).type === "mail.inbound",
+      ).length;
+      // No retry fired: the delivery carried no messageId, so no ack handshake.
+      expect(after).toBe(1);
+    });
+
+    test("an ack from a non-owning sidecar does not clear pending mail", async () => {
+      const kp = await generateKeyPair();
+      const other = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 5,
+        lookups: {
+          lookupPublicKey: async (addr: string) =>
+            addr === "agent@local"
+              ? hexEncode(kp.publicKey)
+              : hexEncode(other.publicKey),
+        },
+      });
+      const ownerWs = createMockWs();
+      await connectViaChallenge(router, ownerWs, "agent@local", kp.privateKey);
+      const rogueWs = createMockWs();
+      await connectViaChallenge(
+        router,
+        rogueWs,
+        "other@local",
+        other.privateKey,
+        "sc-2",
+      );
+
+      expect(router.routeMail("agent@local", "aGV5", "mid-4")).toBe(true);
+      expect(inboundCount(ownerWs, "mid-4")).toBe(1);
+
+      // A sidecar that does not own agent@local acks its messageId. The gate
+      // drops it, so the pending entry survives and redelivery continues.
+      router.handleMessage(
+        rogueWs,
+        JSON.stringify({
+          type: "mail.inbound.ack",
+          agentAddress: "agent@local",
+          messageId: "mid-4",
+        }),
+      );
+      await tick();
+
+      await new Promise((res) => setTimeout(res, 50));
+      expect(inboundCount(ownerWs, "mid-4")).toBeGreaterThanOrEqual(2);
+    });
+  });
 });
