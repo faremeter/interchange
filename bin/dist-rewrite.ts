@@ -129,7 +129,20 @@ export function rewriteSpecifiers(
 /** Resolve a relative specifier against the emitted tree: a sibling file
  *  (`spec.js`) or a directory barrel (`spec/index.js`). `tsc` emits a
  *  `.js` beside every `.d.ts`, so probing the `.js` covers both file
- *  kinds. Returns null when neither exists. */
+ *  kinds. Returns null when neither exists.
+ *
+ *  Probing only `.js`/`index.js` is complete, not a coverage gap: every
+ *  extensionless relative specifier that reaches here targets a file
+ *  `tsc` emitted as `.js`. A specifier already carrying a Node-resolvable
+ *  extension (`.json`, `.node`, `.mjs`, `.cjs`) is treated as resolved by
+ *  `isRewritable` and never reaches this function; and an extensionless
+ *  specifier pointing at a non-`.js` file (e.g. a bare `./data` for a
+ *  sibling `./data.json`) cannot be emitted at all — under this repo's
+ *  `moduleResolution: "bundler"` config it fails to type-check (TS2307)
+ *  and the build aborts before the rewriter runs. The invariant holds
+ *  only while that resolution mode and the all-`.ts`-sources assumption
+ *  do; switching `moduleResolution`, or adding `.mts`/`.cts` sources,
+ *  would require revisiting the probe set. */
 function resolveAgainstTree(spec: string, fromDir: string): string | null {
   if (existsSync(join(fromDir, `${spec}.js`))) return `${spec}.js`;
   if (existsSync(join(fromDir, spec, "index.js"))) return `${spec}/index.js`;
