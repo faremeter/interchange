@@ -21,7 +21,9 @@
 //     the declaration is present and well-formed rather than computing it
 //     from a central list of package names. A package that forgets to
 //     declare it fails the gate loudly instead of being silently forced to
-//     `false` and tree-shaken away.
+//     `false` and tree-shaken away. Each declared glob must also name a
+//     module that exists on disk or ships via `files`, so a typo or an
+//     unshipped path is caught rather than shipped as a dead declaration.
 //
 // Those three are publish-tarball concerns, so they apply only to the
 // non-private packages under `packages/` (the ones that ship). A fourth
@@ -103,12 +105,49 @@ function eq(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// Validate a package's declared `sideEffects` globs against what it ships.
+// A glob is satisfied when it matches a file on disk or its root segment is
+// a directory the package ships via `files`; the latter accepts a `./dist/*`
+// entry even though `dist` is unbuilt at check time (this runs in `make
+// lint`, before any dist emit). The array as a whole must also name at least
+// one shipped module — a declaration of only source paths would be absent
+// from the published tarball and silently tree-shaken — which `anyShipped`
+// reports.
+//
+// Because `dist` is unbuilt here, this guard cannot confirm the emitted
+// filenames themselves: a glob whose root ships (like `./dist/foo.js`)
+// passes even if `foo.js` is never emitted. Confirming an emitted filename
+// needs a built or packed tree, which a lint-time guard does not have.
+function resolveSideEffectGlobs(
+  dir: string,
+  files: unknown,
+  globs: string[],
+): { unshipped: string[]; anyShipped: boolean } {
+  const shipped = new Set(
+    Array.isArray(files)
+      ? files.filter((f): f is string => typeof f === "string")
+      : [],
+  );
+  const unshipped: string[] = [];
+  let anyShipped = false;
+  for (const glob of globs) {
+    const matches = !new Bun.Glob(glob).scanSync(dir).next().done;
+    const relative = glob.replace(/^\.\//, "");
+    const slash = relative.indexOf("/");
+    const rootSegment = slash === -1 ? relative : relative.slice(0, slash);
+    const rootShipped = shipped.has(rootSegment);
+    if (rootShipped) anyShipped = true;
+    if (!matches && !rootShipped) unshipped.push(glob);
+  }
+  return { unshipped, anyShipped };
+}
+
 export async function checkWorkspaceMetadata(
   repoRoot: string,
 ): Promise<MetadataReport> {
   const violations: string[] = [];
   const list = readWorkspacePackages(repoRoot);
-  for (const { name, manifestPath } of list) {
+  for (const { name, dir, manifestPath } of list) {
     const raw = await readRaw(manifestPath);
     if (!eq(raw["files"], expectedFiles(name))) {
       violations.push(
@@ -125,10 +164,29 @@ export async function checkWorkspaceMetadata(
       violations.push(
         `${name}: "sideEffects" must be declared (false or a non-empty array of glob strings)`,
       );
-    } else if (sideEffectsSchema(sideEffects) instanceof type.errors) {
-      violations.push(
-        `${name}: "sideEffects" must be false or a non-empty array of glob strings`,
-      );
+    } else {
+      const validated = sideEffectsSchema(sideEffects);
+      if (validated instanceof type.errors) {
+        violations.push(
+          `${name}: "sideEffects" must be false or a non-empty array of glob strings`,
+        );
+      } else if (validated !== false) {
+        const { unshipped, anyShipped } = resolveSideEffectGlobs(
+          dir,
+          raw["files"],
+          validated,
+        );
+        for (const glob of unshipped) {
+          violations.push(
+            `${name}: "sideEffects" entry ${glob} matches no file on disk and is not under a shipped path`,
+          );
+        }
+        if (!anyShipped) {
+          violations.push(
+            `${name}: "sideEffects" declares only unshipped modules; at least one entry must be under a shipped path (e.g. ./dist/...)`,
+          );
+        }
+      }
     }
   }
   return { violations, packageCount: list.length };
