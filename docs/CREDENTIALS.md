@@ -75,29 +75,37 @@ A credential requirement specifies:
 - **Source**: whose credential to use -- the tenant's organizational credential, the agent creator's personal credential, or the invoking user's personal credential
 - **Name**: an optional tiebreaker when multiple credentials match the same provider, source, and scope requirements
 
-The source field maps to the architecture document's three-source model. Creator-granted credentials are resolved at agent launch time against the definition author's principal and persist for the agent's lifetime. Invoker-granted credentials are resolved at launch time against the invoker's principal, delegated for the duration of the agent's lifetime. Tenant-sourced credentials are resolved from the tenant hierarchy. Both credentials and grants follow the same requirement/resolution/materialization pattern — declared on the definition, resolved at launch, consumed at runtime.
+The source field maps to the architecture document's three-source model. A definition binds a tool package's declared credential handle to a concrete provider and source through a **credential binding** (`credentialBindings` on the definition). At launch the control plane resolves each binding to a specific tenant-owned credential and materializes a consumer-scoped `credential:{id}` / `use` grant on the agent's principal, authorized by tenant ownership within the hierarchy — the walk-up resolution already proves it, so the grant is stamped `origin = 'system'` directly and scoped to the consuming tool package by a `{ tool }` condition, not delegated from a creator or invoker. The resolved secret is then **delivered** to the tool over the sidecar control channel (decrypted at launch, never written to disk or the spawn environment) and **gated at runtime by a per-consumer capability**: a tool resolves its declared handle to an origin-pinned mediated credential only if its own package holds the `credential:{id}` / `use` grant, and the secret is read fresh on each use so a rotation — or a revocation delivered by omission — reaches an already-shaped handle. General provider/scope requirement resolution outside the binding mechanism is not yet built.
 
 ## Resolution at Launch Time
 
-When the control plane launches an agent into a harness, it processes each credential requirement:
+The control plane resolves each **credential binding** at launch by the algorithm below, materializes the resulting authorization grant, and delivers the resolved secret to the harness (step 7). The harness gates use at runtime through a per-consumer capability that enforces the materialized grant's consumer scope: each tool package receives a capability scoped to its own consumer identity, so one package's grant cannot authorize another's resolve. General provider/scope requirement resolution outside the binding mechanism is not yet built.
+
+When the control plane launches an agent into a harness, it processes each credential binding:
 
 1. Resolve the provider by name, walking up the tenant hierarchy
 2. Find credentials matching the provider, source (principal filter), and scopes
 3. If a name is specified, narrow to that name
 4. If multiple credentials still match, the launch fails -- the administrator must resolve the ambiguity
-5. Validate that the creator has appropriate grants for the resolved credential, using the creator's context (via `creatorPrincipalId` on the definition)
+5. Authorize use: a **tenant-owned** credential (`principalId IS NULL`) is authorized by ownership within the hierarchy — the walk-up in step 1–2 already proves it — and the launch stamps a `credential:{id}` / `use` grant with `origin = 'system'` directly (scoped to the consuming tool package for a binding). A **principal-owned** credential is not a tenant resource: it is not usable through a shared catalog offering or a tool binding today, and owner-delegated use is Planned / Not Yet Implemented
 6. If zero matches, the launch fails (missing required credential)
 7. If all checks pass, the resolved credential is included in the harness's launch payload
 
-The grant validation ensures that a definition creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent launch time: the control plane resolves the definition's credential requirements using the creator's context (via `creatorPrincipalId` on the definition) and validates that the creator holds appropriate grants for every resolved credential.
+Step 5 is the ownership boundary: a tenant's own credentials are usable by ownership, with no personal grant to hold. Principal-owned credential use — whether owner-delegated or invoker-_brought_ (an invoker supplying their own credential material for an allowed provider) — remains Planned / Not Yet Implemented.
 
-At launch time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of tenant, creator, and invoker credentials, subject to each party's authorization.
+The whole tool-credential rail is exercised end-to-end by `tests/workflow-deploy/single-step-credential-tool.test.ts`: a real credential-consuming tool package is pinned into a deployed step, its credential delivered on the deploy frame (and, in a second case, over the live rotation push), resolved through the per-consumer capability, and used to authenticate an http request to a mock origin — asserting the exact delivered secret arrives as a bearer, that a rotated secret supersedes it, and that a run lacking the `credential:{id}` / `use` grant fails the resolve closed so nothing reaches the origin.
 
-### Model-Source Credential Authorization (Interim)
+### Credential-Use Authorization
 
-Model-source (tenant-catalog) credentials carry an additional gate: the secret behind a catalog offering only enters a launchable inference source when the agent's creator holds a `credential:{id}` / `use` grant for the referenced credential. This is enforced fail-closed — anything other than an `allow` effect (including `ask`, `deny`, or no matching grant) withholds the secret — at agent launch and again on credential rotation, so a rotated secret is never pushed to a running instance whose creator lacks the grant.
+Credential use — whether by the inference layer (a tenant-catalog model key) or by an agent's tool — is authorized the same way: by **tenant ownership within the hierarchy**. A tenant-owned credential (`principalId IS NULL`) is usable by the tenant that owns it and by any descendant tenant, resolved through the same ancestor walk-up that credential, provider, and OAuth resolution already run on. There is no role grant, no per-principal grant, and no seeded authority: a tenant may use what it (or an ancestor) owns, and descendants inherit. The check is fail-closed — a credential that is not tenant-owned, or not reachable in the launching tenant's chain, withholds — and runs at launch and again on rotation, so a rotated or newly-eligible credential is picked up live without materializing any grant.
 
-This is a deliberate interim tightening. Catalog credentials are tenant-owned (tenant-source), and under the source-based authority model (tenant/creator/invoker) a tenant-source credential would be authorized by tenant/role policy rather than by a per-principal `use` grant. Gating catalog-credential use on the creator's explicit grant is stricter than that model requires. Unifying catalog-credential authorization with the source-based model is planned; until then the creator `use` grant is the authoritative check on this path.
+One ownership rule, two transports. The inference gate (`buildSource`) and the tool-binding path resolve ownership through the same rule — a tenant-owned credential reachable in the launching tenant's ancestor chain — and neither consults a creator, role, or seeded grant. They differ only in what a resolved credential feeds. The inference gate emits the secret straight into a launchable source: its consumer is the harness itself, so no durable grant is needed. A tool binding delivers the secret to a sandboxed tool package and stamps a `credential:{id}` / `use` grant carrying a `{ tool }` condition, which the runtime per-consumer gate reads to decide which package may resolve the handle. Only that runtime gate needs a durable grant; ownership itself is settled at resolution and never re-checked. Because ownership is the authority, an agent definition needs no creator to launch a tenant-owned inference source.
+
+A **principal-owned** credential is not a tenant resource: it is not usable through a shared catalog offering or a tool binding today, and it fails closed. Owner-delegated use of a principal-owned credential is Planned / Not Yet Implemented.
+
+Authorization is distinct from secret transport. How the secret is resolved, pushed to the sidecar, and bounded in confidentiality over time is a separate concern — see "Credential Updates and Refresh" for the rotation push. Because tenant-owned credential use is ownership-derived, it is revoked by removing or re-owning the credential rather than by withdrawing a grant.
+
+Revoking authority does not retract a secret already delivered to a running instance. For a tenant-owned credential, authority is ownership, so revocation means removing the credential or moving it out of the subtree. The change pushes nothing to running sidecars and takes effect only when the deployment next re-resolves — the delivered secret is refreshed on the sidecar only by a rotation or catalog edit, which re-resolves and re-pushes the instance's sources. Re-resolution re-checks ownership live, so no re-push delivers a secret the tenant no longer owns. Until a re-resolution occurs, a running agent retains a secret delivered earlier — a confidentiality-bounded revocation latency, not an authorization hole.
 
 ## Walk-up Resolution
 
@@ -107,7 +115,7 @@ For providers: resolution is by name. A child tenant's "github" provider shadows
 
 For OAuth clients: resolution is by provider. If a child tenant doesn't have an OAuth client for a given provider, the parent's client is used.
 
-For credentials: resolution is by the combination of provider, source, scopes, and optionally name. The first tenant in the hierarchy that has a matching credential wins.
+For credentials: the live model-source gate resolves a specific credential by ID through this walk-up — the first tenant in the hierarchy with a matching credential wins. Matching a binding's requirement by provider, source, scopes, and optional name is the credential-binding resolution now wired at launch (see "Resolution at Launch Time"); general credential-requirement resolution outside the binding mechanism is not yet built.
 
 This model is consistent with the architecture document's statement that child tenants inherit policies from their parent. The walk-up resolution extends this inheritance to integration configuration and credentials.
 
@@ -157,9 +165,7 @@ This is not two separate mechanisms but two uses of the same bidirectional chann
 
 Credential access is governed by the existing grant-based authorization system. Grants determine which principals can use which credentials. The agent definition references credentials by capability, but the grant system validates access by credential ID after resolution.
 
-The key constraint is that a definition creator cannot grant an agent access to credentials the creator doesn't have access to themselves. This is enforced at agent launch time: the control plane resolves the definition's credential requirements using the creator's context (via `creatorPrincipalId` on the definition) and validates that the creator holds appropriate grants for every resolved credential.
-
-At launch time, if the agent requires invoker-sourced credentials, the invoker's grants are additionally validated. The effective credential set is the union of tenant, creator, and invoker credentials, subject to each party's authorization.
+The key constraint is that a definition creator cannot grant an agent access to credentials the creator doesn't have access to themselves. For a **principal-owned** credential this is the setuid delegation check at launch: the resolved `credential:{id}` / `use` requirement is validated against the binding authority's own grants (see "Resolution at Launch Time"). A **tenant-owned** credential needs no such delegation — it is authorized by tenant ownership within the hierarchy (see "Credential-Use Authorization"), so any agent launched in the owning subtree may use it, uniformly for the inference layer and for tools. Invoker-_brought_ credential material remains Planned / Not Yet Implemented.
 
 ## OAuth2 Implementation and better-auth
 
@@ -201,7 +207,16 @@ For proactive refresh, the control plane would use the same provider objects tha
 
 For reactive refresh (when a harness reports a 401), the same path applies: the control plane resolves the provider, calls its refresh method, and pushes the result back to the harness.
 
+## Encryption at Rest
+
+Credential secrets are encrypted at rest: the credential `secret` and `refresh_secret` columns and the OAuth client's `client_secret` column are stored as AES-256-GCM ciphertext, never plaintext. Each ciphertext is bound to its row id and column as authenticated data, so a ciphertext cannot be transplanted between rows or columns and still decrypt. Encryption happens at the write boundary and decryption at the single point of use (an inference source's `apiKey`); the decrypt is strict, so a value that is not a ciphertext fails closed rather than being delivered as a key.
+
+Encryption is a pluggable seam, the `CredentialCipher`. The built-in implementation encrypts under a single operator-provided key, `CREDENTIAL_ENCRYPTION_KEY` (32 bytes, hex); the hub refuses to start without it. A future KMS or envelope-encryption plugin implements the same seam and can keep key material inside the KMS without touching any call site.
+
+The threat model this addresses is **database-only compromise** — a stolen backup, a replica leak, a SQL-injection read, a snoop over the table. It does **not** defend against full host compromise, where the attacker holds both the key and the data; that requires a KMS/envelope plugin.
+
+Deploying encryption over a database whose rows predate it requires a one-time re-key of the legacy plaintext. With the hub **stopped** (so no write races an un-re-keyed row against the strict read path), run `bin/rekey-credential-secrets.ts` with the hub's environment sourced, then start the hub. The pass is idempotent — already-encrypted rows are skipped — so it is safe to re-run or resume.
+
 ## What This Design Does Not Cover
 
-- **Encryption at rest**: secrets are currently stored as plaintext. Envelope encryption or KMS integration is a separate concern to be addressed independently.
 - **Harness injection protocol**: the mechanism by which the control plane transmits resolved credentials to harnesses is not specified here. It depends on the harness implementation and deployment environment. In the prototype sidecar implementation, credentials are pushed as part of the `agent.deploy` frame — both for initial deployment and for restoration after sidecar reconnect. See HARNESS_DESIGN.md for the wire protocol.
