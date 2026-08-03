@@ -6,7 +6,10 @@
 -- history is an audit record, so a definition with live sessions must not be
 -- droppable out from under them.
 --
--- The guard runs before any write (the migration runner is not transactional).
+-- The guard runs before any write. The production path applies migrations under
+-- `drizzle-kit migrate`, which wraps the pending set in a transaction, and
+-- PostgreSQL DDL is transactional, so an aborting guard rolls the whole set
+-- back -- there is no partial commit to defend against.
 -- Unlike the offering (0058) and agent_role (0063) re-points, it guards the
 -- AGENT table, not agent_session: the launch handler writes a fresh
 -- agent_session row at runtime for an agent that may have no existing sessions,

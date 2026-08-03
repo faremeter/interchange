@@ -6,13 +6,15 @@
 -- the agent field did -- so the copy preserves null verbatim and the column
 -- takes no NOT NULL constraint.
 --
--- Guard first (the migration runner is not transactional): the backfill joins
--- each folded definition to its agent over origin_agent_id, a plain text column
--- rather than an FK. If any folded definition names an agent that does not
--- exist, the join silently skips it and its column stays null --
--- indistinguishable from a legitimately-null manifest. Fail loud before writing
--- so a broken back-reference surfaces here, not as a mysteriously unlaunchable
--- agent later.
+-- Guard first: the backfill joins each folded definition to its agent over
+-- origin_agent_id, a plain text column rather than an FK. If any folded
+-- definition names an agent that does not exist, the join silently skips it and
+-- its column stays null -- indistinguishable from a legitimately-null manifest.
+-- Fail loud before writing so a broken back-reference surfaces here, not as a
+-- mysteriously unlaunchable agent later. The production path applies migrations
+-- under `drizzle-kit migrate`, which wraps the pending set in a transaction, and
+-- PostgreSQL DDL is transactional, so an aborting guard rolls the whole set back
+-- rather than leaving a half-applied backfill.
 DO $$
 BEGIN
   IF EXISTS (

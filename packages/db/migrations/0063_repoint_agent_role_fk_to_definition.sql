@@ -5,8 +5,10 @@
 -- the join matches at most one definition). Role assignments follow the
 -- definition so they survive the agent table's retirement.
 --
--- The guard runs before any write -- the migration runner is not transactional,
--- so a half-applied rewrite must be caught up front. It aborts loudly if any
+-- The guard runs before any write. The production path applies migrations under
+-- `drizzle-kit migrate`, which wraps the pending set in a transaction, and
+-- PostgreSQL DDL is transactional, so an aborting guard rolls the whole set
+-- back -- there is no partial commit to defend against. It aborts loudly if any
 -- agent_role row references an agent with no folded definition, meaning the
 -- agent fold has not run; the total fold makes that impossible in a folded
 -- database, so the guard is a fail-loud assertion.

@@ -4,8 +4,10 @@
 -- folded to exactly one definition, linked by workflow_definition.origin_agent_id
 -- (a partial unique index, so the join matches at most one definition).
 --
--- The guard runs before any write -- the migration runner is not transactional,
--- so a half-applied rewrite must be caught up front. It aborts loudly if any
+-- The guard runs before any write. The production path applies migrations under
+-- `drizzle-kit migrate`, which wraps the pending set in a transaction, and
+-- PostgreSQL DDL is transactional, so an aborting guard rolls the whole set
+-- back -- there is no partial commit to defend against. It aborts loudly if any
 -- offering's agent has no folded definition, meaning the agent fold has not
 -- run; the total fold makes that impossible in a folded database, so the guard
 -- is a fail-loud assertion.

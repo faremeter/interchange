@@ -14,9 +14,11 @@
 -- fold populates. The guard below aborts the migration before it writes
 -- anything if any deployment still needing an anchor run has no folded
 -- definition, so the backfill reconstructs every anchor run completely or
--- writes nothing and tells the operator to run the fold first. The migration
--- runner is not transactional, so the guard runs first rather than inserting
--- and rolling back.
+-- writes nothing and tells the operator to run the fold first. The production
+-- path applies migrations under `drizzle-kit migrate`, which wraps the pending
+-- set in a transaction, and PostgreSQL DDL is transactional, so an aborting
+-- guard rolls the whole set back -- there is no partial commit to re-run from
+-- the top, so the guard is simply a clear up-front precondition.
 DO $$
 BEGIN
   IF EXISTS (

@@ -1,9 +1,11 @@
 -- The fold onto workflow_definition/workflow_run is complete: nothing reads
 -- the legacy agent tables or workflow_definition.origin_agent_id anymore. Drop
 -- them. Child-first order (no CASCADE) so a bare DROP fails loudly if an
--- unmodelled dependent survives; IF EXISTS on every statement makes the file
--- idempotent, since the runner is non-transactional and re-runs from the top
--- after a partial failure.
+-- unmodelled dependent survives. The production path applies migrations under
+-- `drizzle-kit migrate`, which wraps the pending set in a transaction, and
+-- PostgreSQL DDL is transactional, so a guard's abort rolls the whole set back;
+-- there is no partial-commit re-run-from-top mode. The IF EXISTS clauses keep
+-- each drop tolerant of an already-absent relation regardless.
 --
 -- Guard first: agent_instance holds legacy routing, mail, and turn state that
 -- the workflow-asset fold never converted into workflow_run (the fold projected
