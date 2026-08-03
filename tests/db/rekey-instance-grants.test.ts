@@ -14,7 +14,7 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants } from "@intx/test-harness/seed";
+import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 import { grant } from "@intx/db/schema";
 
 // Load migration 0054 itself rather than a copy of its SQL, so the test and the
@@ -48,10 +48,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function seedGrants(): Promise<void> {
       await seedTenants(h.db, [{ id: "tnt_root" }]);
+      // Each grant needs a target to satisfy the grant_target_exactly_one
+      // CHECK; migration 0054 re-keys by resource and ignores the target.
+      await seedPrincipal(h.db, { id: "prn_x", tenantId: "tnt_root" });
       await h.db.insert(grant).values([
         {
           id: "g_wild",
           tenantId: "tnt_root",
+          principalId: "prn_x",
           resource: "instance:*",
           action: "create",
           effect: "allow",
@@ -60,6 +64,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         {
           id: "g_id",
           tenantId: "tnt_root",
+          principalId: "prn_x",
           resource: "instance:ins_abc",
           action: "read",
           effect: "allow",
@@ -68,6 +73,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         {
           id: "g_state",
           tenantId: "tnt_root",
+          principalId: "prn_x",
           resource: "agent-state:ins_abc",
           action: "read",
           effect: "allow",
@@ -76,6 +82,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         {
           id: "g_run",
           tenantId: "tnt_root",
+          principalId: "prn_x",
           resource: "workflow-run:dep_1",
           action: "read",
           effect: "allow",
