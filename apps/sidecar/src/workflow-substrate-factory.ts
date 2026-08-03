@@ -979,9 +979,9 @@ export type SidecarChildStepInvoker = (
  * with the body's own per-step inference `sourcesRef` -- built fresh per body
  * spawn from the body's on-disk `sources.json`, disjoint from the top-level's
  * mutable source table so a top-level source rotation never leaks into a body.
- * It carries no `onEvent`: body inference observability (attributing the
- * child's inference events to the body run id on the hub timeline) is a
- * required follow-up plumb, not part of this landing.
+ * It also carries an `onEvent` funnel that attributes the body child's live
+ * inference events to the body run id on the hub timeline, giving a body the
+ * same per-run observability the top level has.
  */
 export type SidecarBodyStepInvoker = (
   req: StepInvokeRequest,
