@@ -19,14 +19,14 @@ describe("multistep router lifecycle: unregister", () => {
   test("MailRouter.unregister drops the handler so stale frames are not claimed", () => {
     const router = createMultistepMailRouter();
     const delivered: Uint8Array[] = [];
-    router.register("dep-A@x.example", (msg) => {
+    router.register("dep-A@x.example", async (msg) => {
       delivered.push(msg);
     });
 
     router.unregister("dep-A@x.example");
 
     const claimed = router.tryRoute("dep-A@x.example", new Uint8Array([1]));
-    expect(claimed).toBe(false);
+    expect(claimed).toBeNull();
     expect(delivered).toHaveLength(0);
   });
 

@@ -564,62 +564,76 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
 });
 
 describe("createMultistepMailRouter", () => {
-  test("tryRoute returns false when no handler is registered", () => {
+  test("tryRoute returns null when no handler is registered", () => {
     const router = createMultistepMailRouter();
     expect(
       router.tryRoute("dep@integration.interchange", new Uint8Array([1])),
-    ).toBe(false);
+    ).toBeNull();
   });
 
-  test("a registered handler receives the inbound message and tryRoute returns true", () => {
+  test("a registered handler receives the inbound message and tryRoute returns its settlement", async () => {
     const router = createMultistepMailRouter();
     const received: Uint8Array[] = [];
-    router.register("dep@integration.interchange", (msg) => {
+    router.register("dep@integration.interchange", async (msg) => {
       received.push(msg);
     });
     const message = new Uint8Array([1, 2, 3, 4]);
-    const claimed = router.tryRoute("dep@integration.interchange", message);
-    expect(claimed).toBe(true);
+    const durable = router.tryRoute("dep@integration.interchange", message);
+    expect(durable).not.toBeNull();
+    await durable;
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual(message);
+  });
+
+  test("tryRoute propagates the handler's rejection as the withhold signal", async () => {
+    const router = createMultistepMailRouter();
+    router.register("dep@integration.interchange", async () => {
+      throw new Error("durable write failed");
+    });
+    const durable = router.tryRoute(
+      "dep@integration.interchange",
+      new Uint8Array([1]),
+    );
+    expect(durable).not.toBeNull();
+    await expect(durable).rejects.toThrow(/durable write failed/);
   });
 
   test("registration is per-address; an unrelated address falls through", () => {
     const router = createMultistepMailRouter();
     const received: Uint8Array[] = [];
-    router.register("dep-a@integration.interchange", (msg) => {
+    router.register("dep-a@integration.interchange", async (msg) => {
       received.push(msg);
     });
     expect(
       router.tryRoute("dep-b@integration.interchange", new Uint8Array([9])),
-    ).toBe(false);
+    ).toBeNull();
     expect(received).toHaveLength(0);
   });
 
   test("unregister removes the handler", () => {
     const router = createMultistepMailRouter();
     const received: Uint8Array[] = [];
-    router.register("dep@integration.interchange", (msg) => {
+    router.register("dep@integration.interchange", async (msg) => {
       received.push(msg);
     });
     router.unregister("dep@integration.interchange");
     expect(
       router.tryRoute("dep@integration.interchange", new Uint8Array([1])),
-    ).toBe(false);
+    ).toBeNull();
     expect(received).toHaveLength(0);
   });
 
-  test("re-registering an address replaces the prior handler", () => {
+  test("re-registering an address replaces the prior handler", async () => {
     const router = createMultistepMailRouter();
     const first: Uint8Array[] = [];
     const second: Uint8Array[] = [];
-    router.register("dep@integration.interchange", (msg) => {
+    router.register("dep@integration.interchange", async (msg) => {
       first.push(msg);
     });
-    router.register("dep@integration.interchange", (msg) => {
+    router.register("dep@integration.interchange", async (msg) => {
       second.push(msg);
     });
-    router.tryRoute("dep@integration.interchange", new Uint8Array([7]));
+    await router.tryRoute("dep@integration.interchange", new Uint8Array([7]));
     expect(first).toHaveLength(0);
     expect(second).toHaveLength(1);
   });

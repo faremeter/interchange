@@ -1019,15 +1019,15 @@ describe("sidecar↔hub integration", () => {
     // sidecar puts it on the register frame's `agentAddresses` list
     // so the hub-side router accepts it as routable. Routing a
     // mail.inbound for it goes through the link's switch case, which
-    // must consult mailInboundRouter first and -- on a `true` return
+    // must consult mailInboundRouter first and -- on a non-null return
     // -- skip transport.deliver and sessions.commitInboundMail.
     const deploymentAddress = "ins_dep_mail1@integration.interchange";
 
     const routed: { address: string; bytes: Uint8Array }[] = [];
     const mailInboundRouter = {
-      tryRoute(address: string, message: Uint8Array): boolean {
+      tryRoute(address: string, message: Uint8Array): Promise<void> | null {
         routed.push({ address, bytes: message });
-        return true;
+        return Promise.resolve();
       },
     };
 

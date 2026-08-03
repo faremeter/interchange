@@ -11,7 +11,7 @@
 import type {
   DequeueToProcessingResult,
   EnqueueInboxArgs,
-  EnqueueInboxResult,
+  EnqueueInboxOutcome,
   MarkConsumedArgs,
   MarkConsumedResult,
   Principal,
@@ -107,7 +107,13 @@ export type PrincipalSigner = (
  *
  * `subscribeMailForAddress` returns a disposer the supervisor calls
  * during teardown. The supplied handler is invoked with the raw RFC
- * 2822 message bytes of each inbound message at the address.
+ * 2822 message bytes of each inbound message at the address, and returns
+ * a promise that resolves once the message is durably accepted (its inbox
+ * write landed, or the message was already durably present) and rejects
+ * when it was not (a transient failure, a stale refusal, or a phase where
+ * the deployment is tearing down). The host propagates that settlement to
+ * the wire so a durable-receipt ack is sent only on resolution -- resolve
+ * is the ack signal, reject is the withhold signal.
  *
  * `sendOutbound` is the OUTBOUND half of mailbox ownership (§3a). The
  * supervisor is the sole mail owner: the workflow-process child never
@@ -132,7 +138,7 @@ export interface MailBusBindings {
   unregisterAddress(address: string): void;
   subscribeMailForAddress(
     address: string,
-    handler: (rawMessage: Uint8Array) => void,
+    handler: (rawMessage: Uint8Array) => Promise<void>,
   ): () => void;
   sendOutbound(
     senderAddress: string,
@@ -235,7 +241,7 @@ export interface InboxPrimitives {
     principal: Principal,
     repoId: RepoId,
     args: EnqueueInboxArgs,
-  ): Promise<EnqueueInboxResult>;
+  ): Promise<EnqueueInboxOutcome>;
   dequeueToProcessing(
     store: SubstrateRepoStore,
     principal: Principal,

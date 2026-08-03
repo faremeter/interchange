@@ -258,6 +258,7 @@ function createMemoryInbox(): InboxPrimitives & {
       };
       s.inbox.set(key, env);
       return {
+        outcome: "enqueued",
         commitSha: "memory",
         inboxKey: key,
         envelope: {

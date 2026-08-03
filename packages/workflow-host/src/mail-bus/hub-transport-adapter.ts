@@ -30,14 +30,19 @@ import type { MailBusBindings } from "../supervisor/types";
  */
 export interface HubTransportMailBusAdapter extends MailBusBindings {
   /**
-   * Fan a delivered message out to every handler subscribed at
-   * `address`. Returns immediately if no handler is registered --
-   * the supervisor's lifecycle (`subscribeMailForAddress` returns a
-   * disposer the supervisor calls on teardown) is the authoritative
-   * source of which addresses are live; addresses without an active
-   * subscriber drop the message silently.
+   * Fan a delivered message out to every handler subscribed at `address` and
+   * return the combined durable settlement: the promise resolves once every
+   * subscribed handler has durably accepted the message and rejects if any
+   * handler rejected. The host propagates that settlement to the wire, so
+   * resolution is the durable-receipt ACK signal and rejection is WITHHOLD.
+   *
+   * An address with NO active subscriber rejects rather than resolving. The
+   * supervisor's lifecycle (`subscribeMailForAddress` returns a disposer it
+   * calls on teardown) is the authoritative source of which addresses are
+   * live; a message routed to an address with no live handler was not
+   * durably accepted, so it must withhold-and-be-redelivered, never ack.
    */
-  routeInbound(address: string, message: Uint8Array): void;
+  routeInbound(address: string, message: Uint8Array): Promise<void>;
 }
 
 /**
@@ -51,7 +56,10 @@ export interface HubTransportMailBusAdapter extends MailBusBindings {
 export function wrapHubTransportAsMailBus(
   transport: HubTransport,
 ): HubTransportMailBusAdapter {
-  const subscribers = new Map<string, Set<(rawMessage: Uint8Array) => void>>();
+  const subscribers = new Map<
+    string,
+    Set<(rawMessage: Uint8Array) => Promise<void>>
+  >();
   return {
     registerAddress(address: string) {
       // The supervisor's address registration is the seam where the
@@ -69,7 +77,7 @@ export function wrapHubTransportAsMailBus(
     },
     subscribeMailForAddress(
       address: string,
-      handler: (rawMessage: Uint8Array) => void,
+      handler: (rawMessage: Uint8Array) => Promise<void>,
     ) {
       let set = subscribers.get(address);
       if (set === undefined) {
@@ -82,10 +90,18 @@ export function wrapHubTransportAsMailBus(
         current?.delete(handler);
       };
     },
-    routeInbound(address: string, message: Uint8Array) {
+    async routeInbound(address: string, message: Uint8Array): Promise<void> {
       const set = subscribers.get(address);
-      if (set === undefined) return;
-      for (const handler of set) handler(message);
+      if (set === undefined || set.size === 0) {
+        // No live handler accepted the message, so it was not durably
+        // received. Reject so the caller withholds the ack and the hub
+        // redelivers, rather than silently dropping (which under the ack
+        // model would be an acked loss).
+        throw new Error(
+          `no active mail subscriber for ${address}; message not durably accepted`,
+        );
+      }
+      await Promise.all([...set].map((handler) => handler(message)));
     },
     async sendOutbound(
       senderAddress: string,

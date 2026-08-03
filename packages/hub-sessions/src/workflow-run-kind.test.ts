@@ -2006,6 +2006,8 @@ describe("claim-check API — enqueueInbox", () => {
       receivedAt: 100,
       mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
+    expect(result.outcome).toBe("enqueued");
+    if (result.outcome !== "enqueued") throw new Error("expected enqueued");
     expect(result.inboxKey).toBe("100-msg-1");
     expect(result.envelope.messageId).toBe("msg-1");
 
@@ -2052,7 +2054,7 @@ describe("claim-check API — enqueueInbox", () => {
     expect(entries.sort()).toEqual(["100-msg-1.json", "200-msg-2.json"]);
   });
 
-  test("rejects an enqueue against a messageId already in processing", async () => {
+  test("returns already-present for a messageId already in processing", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-enq-dup-");
     await enqueueInbox(store, principal, repoId, {
@@ -2062,14 +2064,16 @@ describe("claim-check API — enqueueInbox", () => {
       mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
-    await expect(
-      enqueueInbox(store, principal, repoId, {
-        address: ADDRESS,
-        messageId: "msg-1",
-        receivedAt: 300,
-        mailAuditRef: { store: "audit", path: "mail/msg-1" },
-      }),
-    ).rejects.toThrow(/claim_check_already_processing/);
+    const outcome = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 300,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    expect(outcome).toEqual({
+      outcome: "already-present",
+      reason: "processing",
+    });
   });
 });
 
@@ -2491,11 +2495,11 @@ describe("claim-check API — resume-owned processing entries survive replay", (
 // The validatePush atomicity Set was keyed by kind, so two inbox
 // entries with the same messageId and different receivedAt produced
 // a single-element {"inbox"} Set and did not trip the check.
-// After the fix, the second enqueue throws claim_check_already_inbox
-// and the inbox directory holds exactly one entry.
+// After the fix, the second enqueue is caught as already-present
+// (reason "already_inbox") and the inbox directory holds exactly one entry.
 
 describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", () => {
-  test("rejects a second enqueue for the same messageId at a different receivedAt", async () => {
+  test("returns already-present for a second enqueue of the same messageId at a different receivedAt", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-enq-dup-inbox-");
     await enqueueInbox(store, principal, repoId, {
@@ -2504,14 +2508,16 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
       receivedAt: 100,
       mailAuditRef: { store: "audit", path: "mail/X" },
     });
-    await expect(
-      enqueueInbox(store, principal, repoId, {
-        address: ADDRESS,
-        messageId: "msg-X",
-        receivedAt: 200,
-        mailAuditRef: { store: "audit", path: "mail/X" },
-      }),
-    ).rejects.toThrow(/claim_check_already_inbox/);
+    const outcome = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-X",
+      receivedAt: 200,
+      mailAuditRef: { store: "audit", path: "mail/X" },
+    });
+    expect(outcome).toEqual({
+      outcome: "already-present",
+      reason: "already_inbox",
+    });
     const repoDir = store.getRepoDir(repoId);
     const inboxDir = path.join(
       repoDir,
@@ -2521,7 +2527,7 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
     expect(entries.sort()).toEqual(["100-msg-X.json"]);
   });
 
-  test("rejects a duplicate enqueue for the same messageId at the same receivedAt", async () => {
+  test("returns already-present for a duplicate enqueue of the same messageId at the same receivedAt", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-enq-dup-key-");
     await enqueueInbox(store, principal, repoId, {
@@ -2530,14 +2536,16 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
       receivedAt: 100,
       mailAuditRef: { store: "audit", path: "mail/D" },
     });
-    await expect(
-      enqueueInbox(store, principal, repoId, {
-        address: ADDRESS,
-        messageId: "msg-D",
-        receivedAt: 100,
-        mailAuditRef: { store: "audit", path: "mail/D" },
-      }),
-    ).rejects.toThrow(/claim_check_duplicate_inbox/);
+    const outcome = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-D",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/D" },
+    });
+    expect(outcome).toEqual({
+      outcome: "already-present",
+      reason: "duplicate",
+    });
   });
 });
 
@@ -2666,6 +2674,9 @@ describe("workflow-run substrate — per-commit pack validation", () => {
         mailAuditRef: { store: "audit", path: "mail/msg-1" },
       },
     );
+    if (enqueueResult.outcome !== "enqueued") {
+      throw new Error("expected enqueued outcome");
+    }
     const dequeued = await dequeueToProcessing(
       sourceStore,
       HUB_PRINCIPAL,
@@ -3700,15 +3711,14 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     // Re-submit the same messageId still within the window (its
     // consumed/ entry is retained). receivedAt is a fresh, later value
     // but >= watermark, so the stale-reject does NOT fire; the
-    // consumed-dedup does.
-    await expect(
-      enqueueInbox(store, principal, repoId, {
-        address: ADDRESS,
-        messageId: "msg-1",
-        receivedAt: 3000,
-        mailAuditRef: { store: "audit", path: "mail/msg-1" },
-      }),
-    ).rejects.toThrow(/claim_check_already_consumed/);
+    // consumed-dedup does, surfacing as an already-present outcome.
+    const outcome = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 3000,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
   });
 
   // Gate 1(b): a message whose receivedAt is below the watermark (its
@@ -3773,6 +3783,8 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       receivedAt: 100_500,
       mailAuditRef: { store: "audit", path: "mail/msg-fresh" },
     });
+    expect(r.outcome).toBe("enqueued");
+    if (r.outcome !== "enqueued") throw new Error("expected enqueued");
     expect(r.inboxKey).toBe("100500-msg-fresh");
   });
 
@@ -3969,7 +3981,8 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
 
     // 5. No double-process: nothing remains to dequeue, and a
     //    re-enqueue of the same content (fresh receivedAt >= watermark)
-    //    is now deduped by the retained consumed entry.
+    //    is now deduped by the retained consumed entry, surfacing as an
+    //    already-present outcome.
     const drained = await dequeueToProcessing(
       store,
       principal,
@@ -3977,14 +3990,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       ADDRESS,
     );
     expect(drained).toBeNull();
-    await expect(
-      enqueueInbox(store, principal, repoId, {
-        address: ADDRESS,
-        messageId: "inflight",
-        receivedAt: 102_000,
-        mailAuditRef: { store: "audit", path: "mail/inflight" },
-      }),
-    ).rejects.toThrow(/claim_check_already_consumed/);
+    const outcome = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "inflight",
+      receivedAt: 102_000,
+      mailAuditRef: { store: "audit", path: "mail/inflight" },
+    });
+    expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
   });
 });
 

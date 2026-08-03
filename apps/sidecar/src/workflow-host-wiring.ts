@@ -596,8 +596,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
 
 export type SidecarWorkflowSupervisor = {
   supervisor: WorkflowSupervisor;
-  /** Hand a delivered inbound message off to the supervisor's mail subscription. */
-  routeInbound(message: Uint8Array): void;
+  /**
+   * Hand a delivered inbound message off to the supervisor's mail
+   * subscription. The returned promise resolves once the message is durably
+   * accepted and rejects when it was not, so the hub-link can send a
+   * `mail.inbound.ack` only on resolution (resolve = ack, reject = withhold).
+   */
+  routeInbound(message: Uint8Array): Promise<void>;
   /** Snapshot accessor that proxies the supervisor's credentials view. */
   getCredentialsSnapshot(): CredentialsSnapshot | null;
   /**
@@ -1595,9 +1600,9 @@ export function createSidecarDeployRouter(deps: {
       // supervisor's mail-bus subscription. Registration happens after
       // `spawn` succeeds so a spawn-time rejection leaves the registry
       // untouched.
-      deps.multistepMailRouter?.register(spec.agentAddress, (message) => {
-        wired.routeInbound(message);
-      });
+      deps.multistepMailRouter?.register(spec.agentAddress, (message) =>
+        wired.routeInbound(message),
+      );
       // Register the signal-delivery handler so a hub `signal.deliver` frame
       // dispatches through the supervisor's `deliverSignal`.
       deps.multistepSignalRouter?.register(spec.agentAddress, async (args) => {
@@ -2319,7 +2324,7 @@ export function createSidecarWorkflowSupervisor(
   return {
     supervisor,
     routeInbound(message) {
-      mailBus.routeInbound(opts.deploymentMailAddress, message);
+      return mailBus.routeInbound(opts.deploymentMailAddress, message);
     },
     getCredentialsSnapshot: () => supervisor.getCredentialsSnapshot(),
     onRunStart,

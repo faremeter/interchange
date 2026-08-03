@@ -271,11 +271,16 @@ export interface DeployRouter {
 export interface MailInboundRouter {
   /**
    * Attempt to dispatch `message` to a handler registered against
-   * `agentAddress`. Returns `true` if a handler claimed the message;
-   * `false` if no handler is registered, in which case the link logs
-   * and drops the mail.
+   * `agentAddress`. Returns `null` if no handler is registered, in which
+   * case the link logs and drops the mail (and sends no ack). Otherwise
+   * returns the handler's durable settlement: a promise that resolves once
+   * the message is durably accepted (its inbox write landed, or it was
+   * already durably present) and rejects when it was not (a transient
+   * failure, a stale refusal, or a tearing-down phase). The link sends a
+   * `mail.inbound.ack` only on resolution, so resolve is the ack signal and
+   * reject is the withhold signal.
    */
-  tryRoute(agentAddress: string, message: Uint8Array): boolean;
+  tryRoute(agentAddress: string, message: Uint8Array): Promise<void> | null;
 }
 
 /**
@@ -1198,23 +1203,52 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // no receiver -- the in-process session runtime that once backed
         // it is retired -- so it is logged and dropped.
         //
-        // Guard the router call with try/catch so a throwing handler
-        // does not reject this `handleMessage` promise and wedge the
-        // per-connection `messageQueue` chain. A rejected chain would
-        // silently drop every subsequent frame -- including the
-        // heartbeat `pong` -- and stall the link. Logging-and-dropping
-        // mirrors the `signal.deliver` / `drain.deliver` arms.
-        let routed = false;
+        // Guard the router call with try/catch so a synchronous throw does
+        // not reject this `handleMessage` promise and wedge the per-connection
+        // `messageQueue` chain. A rejected chain would silently drop every
+        // subsequent frame -- including the heartbeat `pong` -- and stall the
+        // link. The durable settlement is observed off the chain (below).
+        let durable: Promise<void> | null = null;
         if (mailInboundRouter !== undefined) {
           try {
-            routed = mailInboundRouter.tryRoute(frame.agentAddress, rawBytes);
+            durable = mailInboundRouter.tryRoute(frame.agentAddress, rawBytes);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.warn`mail.inbound router threw for ${frame.agentAddress}: ${msg}`;
           }
         }
-        if (!routed) {
+        if (durable === null) {
           logger.warn`Dropping mail.inbound for ${frame.agentAddress}: no registered handler`;
+          break;
+        }
+        // Acknowledge durable receipt only AFTER the inbox write settles, and
+        // only for hub-originated mail carrying a hub-minted messageId (the
+        // ack handshake). Observe the settlement DETACHED from the
+        // `messageQueue` chain so a slow or failing inbox write never wedges
+        // frame processing; on rejection (transient failure, stale refusal, or
+        // a tearing-down phase) no ack is sent, so the hub redelivers.
+        const ackMessageId = frame.messageId;
+        if (ackMessageId !== undefined) {
+          void durable
+            .then(() => {
+              send({
+                type: "mail.inbound.ack",
+                agentAddress: frame.agentAddress,
+                messageId: ackMessageId,
+              });
+            })
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.warn`Withholding mail.inbound.ack for ${frame.agentAddress} ${ackMessageId}; hub will redeliver: ${msg}`;
+            });
+        } else {
+          // Relayed agent-to-agent mail carries no hub-minted messageId and
+          // does not participate in the ack handshake. Still observe the
+          // settlement so a rejection is logged, not left unhandled.
+          void durable.catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn`Inbound mail delivery failed for ${frame.agentAddress}: ${msg}`;
+          });
         }
         break;
       }

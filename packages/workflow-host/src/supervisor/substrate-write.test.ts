@@ -147,7 +147,10 @@ function createMockMailBus(): MailBusBindings & {
   deliver(address: string, message: Uint8Array): void;
 } {
   const registered: string[] = [];
-  const subscribers = new Map<string, Set<(rawMessage: Uint8Array) => void>>();
+  const subscribers = new Map<
+    string,
+    Set<(rawMessage: Uint8Array) => Promise<void>>
+  >();
   return {
     registerAddress(address: string) {
       registered.push(address);
@@ -178,7 +181,7 @@ function createMockMailBus(): MailBusBindings & {
     deliver(address: string, message: Uint8Array) {
       const set = subscribers.get(address);
       if (set === undefined) return;
-      for (const handler of set) handler(message);
+      for (const handler of set) void handler(message).catch(() => undefined);
     },
   };
 }
@@ -341,6 +344,7 @@ function createMemoryInboxPrimitives(opts: {
       };
       s.inbox.set(k, envelope);
       return {
+        outcome: "enqueued",
         commitSha: "memory",
         inboxKey: k,
         envelope: {

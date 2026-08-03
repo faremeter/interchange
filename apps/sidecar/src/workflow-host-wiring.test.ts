@@ -110,7 +110,7 @@ describe("createSidecarWorkflowSupervisor", () => {
     expect(result.seq).toBe(0);
   });
 
-  test("routeInbound forwards delivered messages to the supervisor's mail subscription", () => {
+  test("routeInbound rejects when no subscriber is registered so undelivered mail is withheld", async () => {
     const transport = createInMemoryTransport();
     // generateKeyPair is async; this test only exercises the
     // mail-routing path so we synthesize a 32-byte seed without
@@ -135,12 +135,13 @@ describe("createSidecarWorkflowSupervisor", () => {
         throw new Error("spawner not invoked in this test");
       },
     });
-    // Without a subscriber, routeInbound is a no-op rather than a
-    // throw -- the wiring's mail bus map is a per-address Set that
-    // returns early when no handler is registered.
-    expect(() =>
+    // Without a subscriber the delivery is not durably accepted, so
+    // routeInbound rejects: the hub-link then withholds the ack and the hub
+    // redelivers, rather than silently dropping (which under the ack model
+    // would be an acked loss).
+    await expect(
       wired.routeInbound(new TextEncoder().encode("hello")),
-    ).not.toThrow();
+    ).rejects.toThrow(/no active mail subscriber/);
   });
 
   test("onRunStart fails a poisoned run and passes an unpoisoned one", async () => {
@@ -1083,7 +1084,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       frame.agentAddress,
       new Uint8Array([1, 2, 3]),
     );
-    expect(claimed).toBe(true);
+    expect(claimed).not.toBeNull();
+    // Settle the durable promise so its resolution/rejection is not left as an
+    // unhandled rejection; this assertion only checks the address is claimed,
+    // not the enqueue outcome for this synthetic payload.
+    await claimed?.catch(() => undefined);
 
     // Teardown.
     void supervisorToChild;
@@ -1233,9 +1238,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       /ENOENT: binary missing/,
     );
 
-    expect(mailRouter.tryRoute(frame.agentAddress, new Uint8Array([1]))).toBe(
-      false,
-    );
+    expect(
+      mailRouter.tryRoute(frame.agentAddress, new Uint8Array([1])),
+    ).toBeNull();
   });
 
   test("a soft-failed deploy (spawn rejects) leaves no restore record", async () => {

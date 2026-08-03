@@ -6,59 +6,85 @@ import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { wrapHubTransportAsMailBus } from "./hub-transport-adapter";
 
 describe("wrapHubTransportAsMailBus", () => {
-  test("routeInbound fans messages out to every subscribed handler", () => {
+  test("routeInbound fans messages out to every subscribed handler and resolves", async () => {
     const transport = createInMemoryTransport();
     const adapter = wrapHubTransportAsMailBus(transport);
     const observedA: string[] = [];
     const observedB: string[] = [];
     const decoder = new TextDecoder();
-    adapter.subscribeMailForAddress("a@example.com", (bytes) => {
+    adapter.subscribeMailForAddress("a@example.com", async (bytes) => {
       observedA.push(decoder.decode(bytes));
     });
-    adapter.subscribeMailForAddress("a@example.com", (bytes) => {
+    adapter.subscribeMailForAddress("a@example.com", async (bytes) => {
       observedB.push(decoder.decode(bytes));
     });
-    adapter.routeInbound("a@example.com", new TextEncoder().encode("hello"));
+    await adapter.routeInbound(
+      "a@example.com",
+      new TextEncoder().encode("hello"),
+    );
     expect(observedA).toEqual(["hello"]);
     expect(observedB).toEqual(["hello"]);
   });
 
-  test("subscribe disposer removes the handler from the per-address set", () => {
+  test("routeInbound rejects when a handler rejects", async () => {
+    const transport = createInMemoryTransport();
+    const adapter = wrapHubTransportAsMailBus(transport);
+    adapter.subscribeMailForAddress("a@example.com", async () => {
+      throw new Error("durable write failed");
+    });
+    await expect(
+      adapter.routeInbound("a@example.com", new TextEncoder().encode("hi")),
+    ).rejects.toThrow(/durable write failed/);
+  });
+
+  test("subscribe disposer removes the handler from the per-address set", async () => {
     const transport = createInMemoryTransport();
     const adapter = wrapHubTransportAsMailBus(transport);
     const observed: string[] = [];
     const dispose = adapter.subscribeMailForAddress(
       "a@example.com",
-      (bytes) => {
+      async (bytes) => {
         observed.push(new TextDecoder().decode(bytes));
       },
     );
-    adapter.routeInbound("a@example.com", new TextEncoder().encode("first"));
+    await adapter.routeInbound(
+      "a@example.com",
+      new TextEncoder().encode("first"),
+    );
     dispose();
-    adapter.routeInbound("a@example.com", new TextEncoder().encode("second"));
+    // No subscriber remains, so the delivery is not durably accepted:
+    // routeInbound rejects and nothing new is observed.
+    await expect(
+      adapter.routeInbound("a@example.com", new TextEncoder().encode("second")),
+    ).rejects.toThrow(/no active mail subscriber/);
     expect(observed).toEqual(["first"]);
   });
 
-  test("routeInbound is a no-op when no handler is registered", () => {
+  test("routeInbound rejects when no handler is registered", async () => {
     const transport = createInMemoryTransport();
     const adapter = wrapHubTransportAsMailBus(transport);
-    expect(() =>
+    await expect(
       adapter.routeInbound(
         "nobody@example.com",
         new TextEncoder().encode("ignored"),
       ),
-    ).not.toThrow();
+    ).rejects.toThrow(/no active mail subscriber/);
   });
 
-  test("unregisterAddress drops the per-address subscriber set", () => {
+  test("unregisterAddress drops the per-address subscriber set", async () => {
     const transport = createInMemoryTransport();
     const adapter = wrapHubTransportAsMailBus(transport);
     const observed: string[] = [];
-    adapter.subscribeMailForAddress("a@example.com", (bytes) => {
+    adapter.subscribeMailForAddress("a@example.com", async (bytes) => {
       observed.push(new TextDecoder().decode(bytes));
     });
     adapter.unregisterAddress("a@example.com");
-    adapter.routeInbound("a@example.com", new TextEncoder().encode("ignored"));
+    await expect(
+      adapter.routeInbound(
+        "a@example.com",
+        new TextEncoder().encode("ignored"),
+      ),
+    ).rejects.toThrow(/no active mail subscriber/);
     expect(observed).toEqual([]);
   });
 

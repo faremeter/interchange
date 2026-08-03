@@ -9,6 +9,8 @@ import { generateKeyPair } from "@intx/crypto";
 import { hexDecode, hexEncode, signalName } from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import { StaleInboxEnqueueError } from "@intx/hub-sessions";
+import type { EnqueueInboxOutcome } from "@intx/hub-sessions";
 
 import {
   createWorkflowSupervisor,
@@ -279,7 +281,10 @@ function createMockMailBus(): MailBusBindings & {
   deliver(address: string, message: Uint8Array): void;
 } {
   const registered: string[] = [];
-  const subscribers = new Map<string, Set<(rawMessage: Uint8Array) => void>>();
+  const subscribers = new Map<
+    string,
+    Set<(rawMessage: Uint8Array) => Promise<void>>
+  >();
   return {
     registerAddress(address: string) {
       registered.push(address);
@@ -291,7 +296,7 @@ function createMockMailBus(): MailBusBindings & {
     },
     subscribeMailForAddress(
       address: string,
-      handler: (rawMessage: Uint8Array) => void,
+      handler: (rawMessage: Uint8Array) => Promise<void>,
     ) {
       let set = subscribers.get(address);
       if (set === undefined) {
@@ -313,7 +318,84 @@ function createMockMailBus(): MailBusBindings & {
     deliver(address: string, message: Uint8Array) {
       const set = subscribers.get(address);
       if (set === undefined) return;
-      for (const handler of set) handler(message);
+      for (const handler of set) void handler(message).catch(() => undefined);
+    },
+  };
+}
+
+// A mail bus that exposes the durable settlement of a delivery via `settle`
+// (the subscribed handler's returned promise), so the ack/withhold mapping can
+// be asserted directly. It RETAINS the subscribed handler after the disposer
+// runs, so a test can drive `onMailMessage`'s own phase gate after teardown --
+// the belt that guards the racy "mail arrives while the deployment is stopping"
+// window. Structurally a superset of `createMockMailBus`'s shape so it drops
+// into the same spawn fixture.
+function createSettleableMailBus(): ReturnType<typeof createMockMailBus> & {
+  settle(address: string, message: Uint8Array): Promise<void>;
+} {
+  const registered: string[] = [];
+  const handlers = new Map<string, (m: Uint8Array) => Promise<void>>();
+  return {
+    registerAddress(address: string) {
+      registered.push(address);
+    },
+    unregisterAddress(address: string) {
+      const idx = registered.lastIndexOf(address);
+      if (idx >= 0) registered.splice(idx, 1);
+    },
+    subscribeMailForAddress(
+      address: string,
+      handler: (rawMessage: Uint8Array) => Promise<void>,
+    ) {
+      handlers.set(address, handler);
+      return () => undefined;
+    },
+    sendOutbound() {
+      throw new Error("sendOutbound not exercised in this test");
+    },
+    registered(): readonly string[] {
+      return registered.slice();
+    },
+    deliver(address: string, message: Uint8Array) {
+      const handler = handlers.get(address);
+      if (handler === undefined) return;
+      void handler(message).catch(() => undefined);
+    },
+    settle(address: string, message: Uint8Array): Promise<void> {
+      const handler = handlers.get(address);
+      if (handler === undefined) {
+        throw new Error(`no subscriber for ${address}`);
+      }
+      return handler(message);
+    },
+  };
+}
+
+// Wrap the in-memory inbox primitives, replacing only `enqueueInbox` with a
+// programmable stub so a test can drive each enqueue outcome (a fresh enqueue,
+// an already-present message, a transient failure, a stale refusal) through
+// the supervisor's real mail-arrival path.
+function inboxPrimitivesWithEnqueue(
+  enqueue: InboxPrimitives["enqueueInbox"],
+): MemoryInboxPrimitives {
+  return { ...createMemoryInboxPrimitives(), enqueueInbox: enqueue };
+}
+
+function enqueuedOutcome(args: {
+  address: string;
+  messageId: string;
+  receivedAt: number;
+  mailAuditRef: { store: string; path: string };
+}): EnqueueInboxOutcome {
+  return {
+    outcome: "enqueued",
+    commitSha: "memory",
+    inboxKey: `${String(args.receivedAt)}-${args.messageId}`,
+    envelope: {
+      messageId: args.messageId,
+      receivedAt: args.receivedAt,
+      address: args.address,
+      mailAuditRef: args.mailAuditRef,
     },
   };
 }
@@ -461,23 +543,19 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
     async enqueueInbox(_store, _principal, _repoId, args) {
       const state = getOrCreate(args.address);
       const key = filenameKey(args.receivedAt, args.messageId);
+      // Mirror the real `enqueueInbox` contract: an already-present messageId
+      // is a returned outcome (ack-worthy), not a throw.
       if (state.consumed.has(args.messageId)) {
-        throw new Error(
-          `claim_check_already_consumed: ${args.address} ${args.messageId}`,
-        );
+        return { outcome: "already-present", reason: "consumed" };
       }
       for (const existingKey of state.inbox.keys()) {
         if (existingKey.endsWith(`-${args.messageId}`)) {
-          throw new Error(
-            `claim_check_already_inbox: ${args.address} ${args.messageId}`,
-          );
+          return { outcome: "already-present", reason: "already_inbox" };
         }
       }
       for (const existingKey of state.processing.keys()) {
         if (existingKey.endsWith(`-${args.messageId}`)) {
-          throw new Error(
-            `claim_check_already_processing: ${args.address} ${args.messageId}`,
-          );
+          return { outcome: "already-present", reason: "processing" };
         }
       }
       const envelope: MemoryInboxEntry = {
@@ -490,6 +568,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       };
       state.inbox.set(key, envelope);
       return {
+        outcome: "enqueued",
         commitSha: "memory-inbox",
         inboxKey: key,
         envelope: {
@@ -1075,6 +1154,133 @@ describe("createWorkflowSupervisor", () => {
     expect(frameTypes).not.toContain("grants-updated");
 
     await wired.supervisor.shutdown();
+  });
+
+  // Inbound-mail ack/withhold mapping. `onMailMessage` returns a promise the
+  // host propagates to the wire: resolve => send the durable-receipt ack,
+  // reject => withhold it (the hub redelivers). These assert the mapping of
+  // every enqueue disposition onto that boundary.
+  test("durable receipt resolves for a fresh enqueue and for an already-present message", async () => {
+    const baseDir = await makeTempDir("supervisor-ack-present-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    let mode: "enqueued" | "already-present" = "enqueued";
+    const inboxPrimitives = inboxPrimitivesWithEnqueue(
+      async (_store, _principal, _repoId, args) =>
+        mode === "already-present"
+          ? { outcome: "already-present", reason: "consumed" }
+          : enqueuedOutcome(args),
+    );
+    const mailBus = createSettleableMailBus();
+    const wired = await spawnWithRunStart({
+      baseDir,
+      inboxPrimitives,
+      mailBus,
+    });
+    const address = "deployment-x@example.com";
+
+    // A fresh enqueue is durably accepted -> the receipt resolves (ack).
+    await expect(
+      mailBus.settle(address, new TextEncoder().encode("m-fresh")),
+    ).resolves.toBeUndefined();
+
+    // An already-present message is also durably accounted for -> ack, and the
+    // hub stops retrying (no infinite retry on a message the sidecar holds).
+    mode = "already-present";
+    await expect(
+      mailBus.settle(address, new TextEncoder().encode("m-dup")),
+    ).resolves.toBeUndefined();
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("durable receipt rejects for a transient failure and a stale refusal, and self-heals on redelivery", async () => {
+    const baseDir = await makeTempDir("supervisor-withhold-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    let onEnqueue: (args: {
+      address: string;
+      messageId: string;
+      receivedAt: number;
+      mailAuditRef: { store: string; path: string };
+    }) => EnqueueInboxOutcome = () => {
+      throw new Error("disk exploded");
+    };
+    const inboxPrimitives = inboxPrimitivesWithEnqueue(
+      async (_store, _principal, _repoId, args) => onEnqueue(args),
+    );
+    const mailBus = createSettleableMailBus();
+    const wired = await spawnWithRunStart({
+      baseDir,
+      inboxPrimitives,
+      mailBus,
+    });
+    const address = "deployment-x@example.com";
+
+    // (a) A transient failure -> the receipt rejects, so no ack is sent and the
+    // hub redelivers.
+    await expect(
+      mailBus.settle(address, new TextEncoder().encode("m-1")),
+    ).rejects.toThrow(/disk exploded/);
+
+    // (b) A stale refusal also withholds, and surfaces as its own loud type
+    // rather than blending into generic failure noise.
+    onEnqueue = () => {
+      throw new StaleInboxEnqueueError("claim_check_stale_enqueue: synthetic");
+    };
+    let staleCause: unknown;
+    try {
+      await mailBus.settle(address, new TextEncoder().encode("m-1"));
+    } catch (err) {
+      staleCause = err;
+    }
+    expect(staleCause).toBeInstanceOf(StaleInboxEnqueueError);
+
+    // (c) Self-heal: the same message, redelivered once the failure clears,
+    // enqueues on a fresh receivedAt and the receipt resolves (ack).
+    onEnqueue = (args) => enqueuedOutcome(args);
+    await expect(
+      mailBus.settle(address, new TextEncoder().encode("m-1")),
+    ).resolves.toBeUndefined();
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("durable receipt rejects when the supervisor is not accepting mail (phase-drop)", async () => {
+    const baseDir = await makeTempDir("supervisor-phase-drop-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    // enqueue would resolve if it were reached; the phase gate must reject
+    // first, without touching the inbox.
+    const inboxPrimitives = inboxPrimitivesWithEnqueue(
+      async (_store, _principal, _repoId, args) => enqueuedOutcome(args),
+    );
+    const mailBus = createSettleableMailBus();
+    const wired = await spawnWithRunStart({
+      baseDir,
+      inboxPrimitives,
+      mailBus,
+    });
+    await wired.supervisor.shutdown();
+
+    // The bus retained the handler, so this drives onMailMessage's own phase
+    // gate: phase is "stopped", so it rejects BEFORE calling enqueue -> the
+    // ack is withheld and the hub redelivers into a live generation later.
+    await expect(
+      mailBus.settle(
+        "deployment-x@example.com",
+        new TextEncoder().encode("m-late"),
+      ),
+    ).rejects.toThrow(/not accepted: supervisor phase/);
   });
 
   // Harness for the ready-timeout tests: an injected FakeTimer registry

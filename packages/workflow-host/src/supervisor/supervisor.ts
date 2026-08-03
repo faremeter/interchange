@@ -57,6 +57,7 @@ import {
   markConsumed as defaultMarkConsumed,
   readOwnedMessageIds,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
+  StaleInboxEnqueueError,
   DEFAULT_CONSUMED_RETENTION_MS,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
@@ -654,7 +655,13 @@ export function createWorkflowSupervisor(
     void shutdownInternal({ reason });
   }
 
-  function onMailMessage(rawMessage: Uint8Array): void {
+  // Resolves once the inbound mail is durably accepted (its inbox write landed
+  // or the message was already durably present); rejects when it was not (a
+  // phase where the deployment is not accepting mail, a transient enqueue
+  // failure, or a stale refusal). The host propagates that settlement to the
+  // wire, so resolution is the durable-receipt ACK signal and rejection is the
+  // WITHHOLD signal -- a withheld message is redelivered by the hub.
+  async function onMailMessage(rawMessage: Uint8Array): Promise<void> {
     // Every inbound mail flows through the FIFO inbox claim-check
     // queue, regardless of the supervisor's current phase. The
     // dispatch loop (started by `spawn()` and restarted by the
@@ -669,15 +676,31 @@ export function createWorkflowSupervisor(
       state.phase === "stopping" ||
       state.phase === "stopped"
     ) {
-      // The host's higher-level lifecycle is already tearing the
-      // deployment down; the message drops on the floor rather than
-      // landing in an inbox no live dispatch loop will service.
-      return;
+      // The host's higher-level lifecycle is already tearing the deployment
+      // down; nothing is enqueued. Reject rather than silently drop so the
+      // ack is WITHHELD and the hub redelivers -- a later generation (or a
+      // recycle-installed dispatch loop) may accept it, and a permanently
+      // torn-down address exhausts the hub's bounded retry budget instead of
+      // losing a message a transiently-idle deployment would have taken.
+      throw new Error(
+        `inbound mail not accepted: supervisor phase is "${state.phase}"`,
+      );
     }
-    void enqueueInboundMail(rawMessage).catch((cause) => {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      logger.error`enqueueInbox failed: ${message}`;
-    });
+    try {
+      await enqueueInboundMail(rawMessage);
+    } catch (cause) {
+      // Both branches WITHHOLD (rethrow); the split only sets log severity so
+      // a stale refusal surfaces as its own loud signal rather than blending
+      // into ordinary enqueue-failure noise. The ack/withhold decision is the
+      // rethrow itself, never this classification.
+      if (cause instanceof StaleInboxEnqueueError) {
+        logger.error`inbound mail refused as stale, withholding ack (hub will redeliver): ${cause.message}`;
+      } else {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`enqueueInbox failed, withholding ack (hub will redeliver): ${message}`;
+      }
+      throw cause;
+    }
   }
 
   async function enqueueInboundMail(rawMessage: Uint8Array): Promise<void> {
@@ -700,7 +723,7 @@ export function createWorkflowSupervisor(
     // messageId, the same per-message key every in-window leg uses, so the
     // D2 per-message OLS fit groups the enqueue leg with the rest.
     legMarkStart(messageId, "enqueue");
-    await inboxPrimitives.enqueueInbox(
+    const outcome = await inboxPrimitives.enqueueInbox(
       bindings.repoStore,
       inboxWritePrincipal,
       bindings.workflowRunRepoId,
@@ -713,7 +736,19 @@ export function createWorkflowSupervisor(
       },
     );
     legMarkEnd(messageId, "enqueue");
-    wakeDispatch();
+    // Only a fresh enqueue added a new inbox entry; wake the dispatch loop for
+    // it alone. An `already-present` outcome landed nothing new -- returning
+    // (which acks) without waking is correct, since the earlier delivery of
+    // the same messageId already drives dispatch. This resolves for both
+    // outcomes: both mean the bytes are durably accounted for, so both ack.
+    if (outcome.outcome === "enqueued") {
+      wakeDispatch();
+    } else {
+      // A redelivery of a message already durably present: the ack still
+      // fires (it is on disk), but no new run is dispatched. Surface it so an
+      // at-least-once redelivery being made effectively-once is observable.
+      logger.info`inbound mail ${messageId} already durably present (${outcome.reason}); acknowledging without re-dispatch`;
+    }
   }
 
   /**

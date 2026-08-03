@@ -153,7 +153,7 @@ export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
  * supervisor's `routeInbound`, which dispatches into the workflow-host
  * mail-bus the multi-step child's `awaitSignal` subscribes against.
  */
-export type MultistepMailHandler = (message: Uint8Array) => void;
+export type MultistepMailHandler = (message: Uint8Array) => Promise<void>;
 
 /**
  * Per-deployment-address mail handler registry the sidecar hub-link
@@ -173,7 +173,14 @@ export type MultistepMailHandler = (message: Uint8Array) => void;
 export type MultistepMailRouter = {
   register(address: string, handler: MultistepMailHandler): void;
   unregister(address: string): void;
-  tryRoute(address: string, message: Uint8Array): boolean;
+  /**
+   * Dispatch `message` to the handler registered for `address`. Returns
+   * `null` when no handler is registered (the caller logs and drops, and
+   * sends no ack). Otherwise returns the handler's durable settlement: a
+   * promise that resolves once the message is durably accepted and rejects
+   * when it was not, so the caller acks only on resolution.
+   */
+  tryRoute(address: string, message: Uint8Array): Promise<void> | null;
 };
 
 export function createMultistepMailRouter(): MultistepMailRouter {
@@ -187,9 +194,8 @@ export function createMultistepMailRouter(): MultistepMailRouter {
     },
     tryRoute(address, message) {
       const handler = handlers.get(address);
-      if (handler === undefined) return false;
-      handler(message);
-      return true;
+      if (handler === undefined) return null;
+      return handler(message);
     },
   };
 }

@@ -255,13 +255,13 @@ describe("hub-link mail.inbound throwing router", () => {
     let calls = 0;
     const routedAfterThrow: Uint8Array[] = [];
     const mailInboundRouter = {
-      tryRoute(_address: string, message: Uint8Array): boolean {
+      tryRoute(_address: string, message: Uint8Array): Promise<void> | null {
         calls += 1;
         if (calls === 1) {
           throw new Error("simulated mail router failure");
         }
         routedAfterThrow.push(message);
-        return true;
+        return Promise.resolve();
       },
     };
 

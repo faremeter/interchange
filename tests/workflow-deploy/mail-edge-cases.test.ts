@@ -148,10 +148,10 @@ describe("mail-handling edge cases", () => {
     // Fire a second byte-identical mail. The supervisor's
     // `deriveMessageId` derives the same sha256 hash; the
     // claim-check substrate sees the messageId is already in
-    // `consumed/` (or `processing/`, depending on timing) and
-    // `enqueueInbox` throws `claim_check_already_*`. The
-    // supervisor's `onMailMessage` swallows the throw -- duplicate
-    // is dropped on the floor.
+    // `consumed/` (or `processing/`, depending on timing), so
+    // `enqueueInbox` returns an `already-present` outcome. The
+    // supervisor acknowledges it (the bytes are durably on disk) but
+    // dispatches no second run -- the duplicate is deduped.
     //
     // We pin the documented behavior: the duplicate must NOT
     // produce a second run. Wait for the supervisor's
@@ -176,16 +176,16 @@ describe("mail-handling edge cases", () => {
     const diagBeforeDuplicate = env.sidecarDiagnostics();
     await routeRaw(env, ctx.deploymentMailAddress, raw);
 
-    // The duplicate must produce the supervisor's `enqueueInbox
-    // failed` log line carrying one of the `claim_check_already_*`
-    // reasons. This is the positive signal the test pins instead of
-    // sleeping a fixed beat and re-reading the substrate.
+    // The duplicate must produce the supervisor's `already durably
+    // present` log line carrying one of the already-present reasons.
+    // This is the positive signal the test pins instead of sleeping a
+    // fixed beat and re-reading the substrate.
     await waitFor(
       () => {
         const fresh = env
           .sidecarDiagnostics()
           .slice(diagBeforeDuplicate.length);
-        return /enqueueInbox failed:.*claim_check_already_/.test(fresh);
+        return /already durably present/.test(fresh);
       },
       { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
     );
@@ -293,23 +293,23 @@ describe("mail-handling edge cases", () => {
     const consumedNamesBefore = new Set(consumedBefore.map((e) => e.filename));
     expect(consumedNamesBefore).toContain(`${messageId}.json`);
 
-    // Fire the duplicate. The supervisor's `enqueueInbox` rejects
-    // with `claim_check_already_consumed`; `onMailMessage` swallows
-    // the rejection. The dedup index stays at one entry; no second
-    // run materialises.
+    // Fire the duplicate. The supervisor's `enqueueInbox` returns an
+    // `already-present` outcome (reason `consumed`); `onMailMessage`
+    // acknowledges it without dispatching a run. The dedup index stays
+    // at one entry; no second run materialises.
     const diagBeforeDuplicate = env.sidecarDiagnostics();
     await routeRaw(env, ctx.deploymentMailAddress, raw2);
 
-    // Wait for the supervisor's `enqueueInbox failed` log line that
-    // carries the `claim_check_already_*` reason; pinning on the
-    // positive log signal beats sleeping a fixed beat and re-reading
-    // the substrate hoping nothing changed.
+    // Wait for the supervisor's `already durably present` log line
+    // carrying the already-present reason; pinning on the positive log
+    // signal beats sleeping a fixed beat and re-reading the substrate
+    // hoping nothing changed.
     await waitFor(
       () => {
         const fresh = env
           .sidecarDiagnostics()
           .slice(diagBeforeDuplicate.length);
-        return /enqueueInbox failed:.*claim_check_already_/.test(fresh);
+        return /already durably present/.test(fresh);
       },
       { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
     );
