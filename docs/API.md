@@ -1534,7 +1534,7 @@ Source: packages/types/src/me.ts
 Source: packages/types/src/observability.ts
 
 ### TenantResponse
-`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown }, parentId?: string | null }`
+`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, sidecarPlacement?: { sharing: "exclusive", reuse?: "never" | "same-deployment" } }, parentId?: string | null }`
 Source: packages/types/src/tenants.ts
 
 ### TraceResponse
@@ -1602,7 +1602,7 @@ Source: packages/types/src/providers.ts
 Source: packages/types/src/roles.ts
 
 ### UpdateTenant
-`{ config?: { [string]: unknown }, name?: string }`
+`{ config?: { [string]: unknown, sidecarPlacement?: { sharing: "exclusive", reuse?: "never" | "same-deployment" } }, name?: string }`
 Source: packages/types/src/tenants.ts
 
 ### UpdateWallet

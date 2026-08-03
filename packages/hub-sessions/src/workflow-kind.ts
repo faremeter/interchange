@@ -80,12 +80,18 @@ const StateObject = type("Record<string, unknown>").narrow((value, ctx) => {
   return true;
 });
 
+const SidecarPlacement = type({
+  sharing: "'exclusive'",
+  "reuse?": "'never' | 'same-deployment'",
+});
+
 export const workflowDefinitionEnvelopeSchema = type({
   id: "string > 0",
   triggers: "unknown[]",
   steps: StepsObject,
   stepOrder: "string[]",
   "state?": StateObject,
+  "sidecarPlacement?": SidecarPlacement,
   // `grantRequirements` passes through the envelope whether or not it is
   // declared here: arktype's `.onUndeclaredKey("ignore")` below is
   // passthrough, not stripping (only `"delete"` strips), so the hydrate read

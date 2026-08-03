@@ -1,5 +1,13 @@
 import { type } from "arktype";
 
+import { SidecarPlacementRequirement } from "./sidecar-placement";
+
+export const TenantConfig = type({
+  "[string]": "unknown",
+  "sidecarPlacement?": SidecarPlacementRequirement,
+});
+export type TenantConfig = typeof TenantConfig.infer;
+
 export const CreateTenant = type({
   name: "string",
   slug: "string",
@@ -8,7 +16,7 @@ export const CreateTenant = type({
 
 export const UpdateTenant = type({
   "name?": "string",
-  "config?": "Record<string, unknown>",
+  "config?": TenantConfig,
 });
 
 export const TenantResponse = type({
@@ -17,7 +25,7 @@ export const TenantResponse = type({
   slug: "string",
   domain: "string",
   "parentId?": "string | null",
-  "config?": "Record<string, unknown>",
+  "config?": TenantConfig,
   createdAt: "string",
   updatedAt: "string",
 });

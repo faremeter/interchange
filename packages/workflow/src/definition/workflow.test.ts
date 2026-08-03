@@ -387,6 +387,36 @@ describe("defineWorkflow", () => {
     expect(singular).toEqual(plural);
   });
 
+  test("preserves exclusive sidecar placement across authoring shapes", () => {
+    const planner = makeAgent("planner");
+    const singular = defineWorkflow({
+      id: "w",
+      agent: planner,
+      sidecarPlacement: { sharing: "exclusive" },
+    });
+    const plural = defineWorkflow({
+      id: "w",
+      steps: { default: step({ agent: planner }) },
+      sidecarPlacement: { sharing: "exclusive" },
+    });
+    expect(singular).toEqual(plural);
+    expect(singular.sidecarPlacement).toEqual({
+      sharing: "exclusive",
+      reuse: "never",
+    });
+  });
+
+  test("rejects an unknown sidecar sharing mode", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        steps: { work: step({ agent: makeAgent("worker") }) },
+        // @ts-expect-error Exercises runtime validation for JavaScript callers.
+        sidecarPlacement: { sharing: "shared" },
+      }),
+    ).toThrow(/exclusive/);
+  });
+
   test("validates after references against the steps record", () => {
     const a = makeAgent("a");
     expect(() =>
@@ -971,5 +1001,19 @@ describe("hashDefinition", () => {
       ],
     });
     expect(hashDefinition(withGrants)).not.toEqual(hashDefinition(base));
+  });
+
+  test("sidecar placement changes the content hash", () => {
+    const a = makeAgent("a");
+    const base = defineWorkflow({
+      id: "w",
+      steps: { a: step({ agent: a }) },
+    });
+    const exclusive = defineWorkflow({
+      id: "w",
+      steps: { a: step({ agent: a }) },
+      sidecarPlacement: { sharing: "exclusive" },
+    });
+    expect(hashDefinition(exclusive)).not.toEqual(hashDefinition(base));
   });
 });
