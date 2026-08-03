@@ -5593,6 +5593,68 @@ describe("SidecarRouter", () => {
       await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
     });
 
+    test("emits exact allocation lifecycle events only for the current socket", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+      const connected: { allocationId: string; generation: number }[] = [];
+      const disconnected: (
+        | {
+            allocationId: string;
+            generation: number;
+          }
+        | undefined
+      )[] = [];
+      allocatedRouter.events.on("sidecar.allocated.connected", (target) => {
+        connected.push(target);
+      });
+      allocatedRouter.events.on("sidecar.disconnect", ({ allocated }) => {
+        disconnected.push(allocated);
+      });
+
+      const oldWs = createMockWs();
+      allocatedRouter.handleOpen(oldWs);
+      allocatedRouter.handleMessage(
+        oldWs,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      const currentWs = createMockWs();
+      allocatedRouter.handleOpen(currentWs);
+      allocatedRouter.handleMessage(
+        currentWs,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      // The same-generation takeover closes the old socket but must not be
+      // interpreted as capacity loss. Closing the new current socket does.
+      expect(disconnected).toEqual([undefined]);
+      allocatedRouter.handleClose(currentWs);
+
+      expect(connected).toEqual([
+        { allocationId: "alloc-1", generation: 1 },
+        { allocationId: "alloc-1", generation: 1 },
+      ]);
+      expect(disconnected).toEqual([
+        undefined,
+        { allocationId: "alloc-1", generation: 1 },
+      ]);
+    });
+
     test("advancing the fence closes the previous generation", async () => {
       const allocatedRouter = createTestRouter({
         authenticateSidecar: async () => allocationIdentity,

@@ -422,5 +422,123 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(ready?.connectDeadline).toBeUndefined();
       expect(ready?.nextAttemptAt).toBeUndefined();
     });
+
+    test("persists reconnect grace only for the accepted generation", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-reconnect",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-reconnect",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-reconnect",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(Date.now() + 60_000),
+      });
+      await store.markAllocated({
+        allocationId: "alloc-reconnect",
+        generation: 1,
+      });
+      await store.markConnectionReady({
+        allocationId: "alloc-reconnect",
+        generation: 1,
+      });
+
+      const deadline = new Date(Date.now() + 120_000);
+      expect(
+        await store.markConnectionLost({
+          allocationId: "alloc-reconnect",
+          generation: 0,
+          connectDeadline: deadline,
+        }),
+      ).toBeNull();
+      const disconnected = await store.markConnectionLost({
+        allocationId: "alloc-reconnect",
+        generation: 1,
+        connectDeadline: deadline,
+      });
+
+      expect(disconnected?.connectDeadline).toEqual(deadline);
+      expect(disconnected?.nextAttemptAt).toEqual(deadline);
+    });
+
+    test("repairs reconnect grace only while an allocation remains unscheduled and unleased", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-repair",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-repair",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-repair",
+        tokenHashSha256: new Uint8Array([4, 5, 6]),
+        connectDeadline: new Date(Date.now() + 60_000),
+      });
+      await store.markAllocated({
+        allocationId: "alloc-repair",
+        generation: 1,
+      });
+      await store.markConnectionReady({
+        allocationId: "alloc-repair",
+        generation: 1,
+      });
+
+      const deadline = new Date(Date.now() + 120_000);
+      expect(
+        await store.scheduleReconnectIfUnscheduled({
+          allocationId: "alloc-repair",
+          generation: 0,
+          connectDeadline: deadline,
+        }),
+      ).toBeNull();
+      const repaired = await store.scheduleReconnectIfUnscheduled({
+        allocationId: "alloc-repair",
+        generation: 1,
+        connectDeadline: deadline,
+      });
+
+      expect(repaired?.connectDeadline).toEqual(deadline);
+      expect(repaired?.nextAttemptAt).toEqual(deadline);
+
+      expect(
+        await store.scheduleReconnectIfUnscheduled({
+          allocationId: "alloc-repair",
+          generation: 1,
+          connectDeadline: new Date(deadline.getTime() + 120_000),
+        }),
+      ).toBeNull();
+      const scheduled = await store.findById("alloc-repair");
+      expect(scheduled?.connectDeadline).toEqual(deadline);
+      expect(scheduled?.nextAttemptAt).toEqual(deadline);
+
+      await store.wakeReconciliation("alloc-repair", 1);
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "lease-repair",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed?.id).toBe("alloc-repair");
+
+      expect(
+        await store.scheduleReconnectIfUnscheduled({
+          allocationId: "alloc-repair",
+          generation: 1,
+          connectDeadline: new Date(deadline.getTime() + 120_000),
+        }),
+      ).toBeNull();
+      const leased = await store.findById("alloc-repair");
+      expect(leased?.reconciliationLeaseId).toBe("lease-repair");
+      expect(leased?.connectDeadline).toEqual(deadline);
+      expect(leased?.nextAttemptAt?.getTime()).toBeLessThanOrEqual(Date.now());
+    });
   },
 );

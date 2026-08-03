@@ -48,9 +48,11 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
     failWithoutInfrastructure: notUsed("failWithoutInfrastructure"),
     listActive: async () => [],
     markAllocated: notUsed("markAllocated"),
+    markConnectionLost: notUsed("markConnectionLost"),
     markConnectionReady: notUsed("markConnectionReady"),
     markReleased: notUsed("markReleased"),
     parkReconciliation: async () => true,
+    scheduleReconnectIfUnscheduled: notUsed("scheduleReconnectIfUnscheduled"),
     scheduleRetry: notUsed("scheduleRetry"),
     wakeReconciliation: async () => true,
     ...overrides,
@@ -163,6 +165,104 @@ describe("createSidecarAllocationReconciler", () => {
     expect(hexEncode(storedHash ?? new Uint8Array())).toBe(
       hexEncode(await sha256("token-new")),
     );
+  });
+
+  test("parks an accepted provision without waiting for its websocket", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    const allocated = allocation({
+      ...provisioning,
+      status: "allocated",
+      ensureAcceptedGeneration: 1,
+    });
+    let claimed = false;
+    let parked = false;
+    let waited = false;
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return pending;
+      },
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async () => allocated,
+      parkReconciliation: async () => {
+        parked = true;
+        return true;
+      },
+    });
+    const base = deps({ store, ready: false });
+    const reconciler = createSidecarAllocationReconciler({
+      ...base,
+      router: {
+        ...base.router,
+        waitForAllocatedSidecar: async () => {
+          waited = true;
+        },
+      },
+    });
+
+    await reconciler.reconcileNext();
+
+    expect(parked).toBe(true);
+    expect(waited).toBe(false);
+  });
+
+  test("initializes a worker that connects before ensure is accepted", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    const allocated = allocation({
+      ...provisioning,
+      status: "allocated",
+      ensureAcceptedGeneration: 1,
+    });
+    const calls: string[] = [];
+    let connected = false;
+    const store = fakeStore({
+      claimNextReconcilable: async () => pending,
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async () => allocated,
+      markConnectionReady: async () => {
+        calls.push("ready");
+        return allocated;
+      },
+    });
+    const provisioner = testProvisioner({
+      async ensure() {
+        connected = true;
+        return { kind: "accepted" };
+      },
+    });
+    const base = deps({
+      store,
+      provisioner,
+      onReady: async () => {
+        calls.push("initialize");
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler({
+      ...base,
+      router: {
+        ...base.router,
+        isAllocatedSidecarReady: async () => connected,
+      },
+    });
+
+    await reconciler.reconcileNext();
+
+    expect(calls).toEqual(["initialize", "ready"]);
   });
 
   test("fails terminally when ensure is rejected as non-retryable", async () => {
@@ -607,18 +707,38 @@ describe("createSidecarAllocationReconciler", () => {
     expect(parked).toBe(true);
   });
 
-  test("rebuilds and wakes all active fences on initialization", async () => {
+  test("rebuilds fences without erasing durable retry schedules", async () => {
+    const { nextAttemptAt: _nextAttemptAt, ...unscheduled } = allocation({
+      id: "alloc-unscheduled",
+      generation: 2,
+      status: "replacing",
+    });
     const active = [
-      allocation({ id: "alloc-a", generation: 1 }),
+      allocation({
+        id: "alloc-a",
+        generation: 1,
+        status: "replacing",
+        nextAttemptAt: new Date(NOW.getTime() + 30_000),
+      }),
+      unscheduled,
       allocation({ id: "alloc-b", status: "allocated", generation: 4 }),
     ];
     const wakes: [string, number][] = [];
+    const reconnects: [string, number, Date][] = [];
     const fences: [string, number][] = [];
     const store = fakeStore({
       listActive: async () => active,
       wakeReconciliation: async (id, generation) => {
         wakes.push([id, generation]);
         return true;
+      },
+      markConnectionLost: async (args) => {
+        reconnects.push([
+          args.allocationId,
+          args.generation,
+          args.connectDeadline,
+        ]);
+        return active[2] ?? null;
       },
     });
     const reconciler = createSidecarAllocationReconciler(
@@ -629,8 +749,104 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(fences).toEqual([
       ["alloc-a", 1],
+      ["alloc-unscheduled", 2],
       ["alloc-b", 4],
     ]);
-    expect(wakes).toEqual(fences);
+    expect(wakes).toEqual([["alloc-unscheduled", 2]]);
+    expect(reconnects).toEqual([
+      ["alloc-b", 4, new Date(NOW.getTime() + 120_000)],
+    ]);
+  });
+
+  test("durably schedules reconnect grace and wakes the exact generation on reconnect", async () => {
+    const calls: string[] = [];
+    const store = fakeStore({
+      markConnectionLost: async (args) => {
+        calls.push(
+          `lost:${args.allocationId}:${String(args.generation)}:${args.connectDeadline.toISOString()}`,
+        );
+        return allocation({ status: "allocated", generation: args.generation });
+      },
+      wakeReconciliation: async (id, generation) => {
+        calls.push(`connected:${id}:${String(generation)}`);
+        return true;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(deps({ store }));
+
+    await reconciler.handleDisconnect({
+      allocationId: "alloc-1",
+      generation: 3,
+    });
+    await reconciler.handleConnected({
+      allocationId: "alloc-1",
+      generation: 3,
+    });
+
+    expect(calls).toEqual([
+      "lost:alloc-1:3:2026-08-03T12:02:00.000Z",
+      "connected:alloc-1:3",
+    ]);
+  });
+
+  test("repairs an unscheduled allocation after its disconnect write fails", async () => {
+    const { nextAttemptAt: _nextAttemptAt, ...unscheduled } = allocation({
+      status: "allocated",
+      generation: 3,
+      ensureAcceptedGeneration: 3,
+    });
+    const repairs: [string, number, Date][] = [];
+    const store = fakeStore({
+      listActive: async () => [unscheduled],
+      markConnectionLost: async () => {
+        throw new Error("database unavailable");
+      },
+      scheduleReconnectIfUnscheduled: async (args) => {
+        repairs.push([
+          args.allocationId,
+          args.generation,
+          args.connectDeadline,
+        ]);
+        return unscheduled;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, ready: false }),
+    );
+
+    await expect(
+      reconciler.handleDisconnect({
+        allocationId: "alloc-1",
+        generation: 3,
+      }),
+    ).rejects.toThrow("database unavailable");
+    await reconciler.repairUnscheduledConnections();
+
+    expect(repairs).toEqual([
+      ["alloc-1", 3, new Date(NOW.getTime() + 120_000)],
+    ]);
+  });
+
+  test("does not repair an allocation with a ready connection", async () => {
+    const { nextAttemptAt: _nextAttemptAt, ...unscheduled } = allocation({
+      status: "allocated",
+      generation: 1,
+      ensureAcceptedGeneration: 1,
+    });
+    const repairs: string[] = [];
+    const store = fakeStore({
+      listActive: async () => [unscheduled],
+      scheduleReconnectIfUnscheduled: async (args) => {
+        repairs.push(args.allocationId);
+        return unscheduled;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, ready: true }),
+    );
+
+    await reconciler.repairUnscheduledConnections();
+
+    expect(repairs).toEqual([]);
   });
 });

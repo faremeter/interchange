@@ -10,6 +10,8 @@ export {
   type SessionService,
   type DeployWorkflowDefinitionParams,
   type DeployWorkflowDefinitionResult,
+  type DeployPreparedWorkflowDefinitionParams,
+  type PreparedWorkflowDeployer,
 } from "./session-service";
 export type { WorkflowDefinition } from "@intx/workflow/definition";
 export {
@@ -76,6 +78,15 @@ export {
   type SidecarAllocationReconcilerDeps,
 } from "./sidecar-allocation";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
+export {
+  createWorkflowAllocationService,
+  ExclusiveWorkflowPlacementError,
+  resolveWorkflowSidecarPlacement,
+  type PrepareExclusiveWorkflowDeploymentArgs,
+  type PreparedExclusiveWorkflowDeployment,
+  type WorkflowAllocationService,
+  type WorkflowAllocationServiceDeps,
+} from "./workflow-allocation-service";
 export {
   skillKindHandler,
   skillAuthorize,
