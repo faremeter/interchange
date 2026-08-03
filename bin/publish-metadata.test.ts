@@ -57,6 +57,16 @@ function makeWorkspace(
   return root;
 }
 
+// Create empty files under `packages/pN` so a `sideEffects` glob has
+// something to match on disk.
+function seedPackageFiles(root: string, index: number, relPaths: string[]) {
+  for (const rel of relPaths) {
+    const path = join(root, "packages", `p${index}`, rel);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "");
+  }
+}
+
 const canonical = (
   name: string,
   sideEffects: false | string[] = false,
@@ -84,12 +94,12 @@ test("expectedFiles adds package-root data dirs for db and inference-discovery",
 });
 
 test("a fully-set package produces no violations", async () => {
-  const { violations } = await checkWorkspaceMetadata(
-    makeWorkspace([
-      canonical("@x/a"),
-      canonical("@x/side", ["./src/index.ts", "./dist/index.js"]),
-    ]),
-  );
+  const root = makeWorkspace([
+    canonical("@x/a"),
+    canonical("@x/side", ["./src/index.ts", "./dist/index.js"]),
+  ]);
+  seedPackageFiles(root, 1, ["src/index.ts"]);
+  const { violations } = await checkWorkspaceMetadata(root);
   expect(violations).toEqual([]);
 });
 
@@ -108,12 +118,77 @@ test("a missing or wrong publishConfig.access is flagged", async () => {
 });
 
 test("any package may declare its own non-false sideEffects", async () => {
+  const root = makeWorkspace([
+    canonical("@x/registry", ["./src/register.ts", "./dist/register.js"]),
+  ]);
+  seedPackageFiles(root, 0, ["src/register.ts"]);
+  const { violations } = await checkWorkspaceMetadata(root);
+  expect(violations).toEqual([]);
+});
+
+test("a sideEffects array of only unshipped paths is flagged", async () => {
+  // `./src/*` matches on disk at lint time but is absent from the published
+  // tarball (files ships `dist`), so a source-only declaration would be
+  // silently tree-shaken. At least one entry must be under a shipped path.
+  const root = makeWorkspace([canonical("@x/a", ["./src/index.ts"])]);
+  seedPackageFiles(root, 0, ["src/index.ts"]);
+  const { violations } = await checkWorkspaceMetadata(root);
+  expect(violations.some((v) => v.includes("only unshipped modules"))).toBe(
+    true,
+  );
+});
+
+test("a sideEffects glob matching no file and no shipped path is flagged", async () => {
+  const root = makeWorkspace([canonical("@x/a", ["./src/nope.ts"])]);
+  const { violations } = await checkWorkspaceMetadata(root);
+  expect(violations.some((v) => v.includes("./src/nope.ts"))).toBe(true);
+});
+
+test("a log-shaped src-and-dist array passes with dist unbuilt", async () => {
+  const root = makeWorkspace([
+    canonical("@x/logish", [
+      "./src/index.ts",
+      "./src/hono.ts",
+      "./src/default-sink.ts",
+      "./dist/index.js",
+      "./dist/hono.js",
+      "./dist/default-sink.js",
+    ]),
+  ]);
+  // Source present, `dist` shipped via `files` but unbuilt — as at lint time.
+  seedPackageFiles(root, 0, [
+    "src/index.ts",
+    "src/hono.ts",
+    "src/default-sink.ts",
+  ]);
+  expect((await checkWorkspaceMetadata(root)).violations).toEqual([]);
+});
+
+test("a dist glob is flagged when the package does not ship dist", async () => {
   const { violations } = await checkWorkspaceMetadata(
     makeWorkspace([
-      canonical("@x/registry", ["./src/register.ts", "./dist/register.js"]),
+      {
+        name: "@x/a",
+        files: ["README.md", "LICENSE"],
+        sideEffects: ["./dist/index.js"],
+        publishConfig: { access: "public" },
+      },
     ]),
   );
-  expect(violations).toEqual([]);
+  expect(violations.some((v) => v.includes("./dist/index.js"))).toBe(true);
+});
+
+test("a glob is flagged when files is absent, shipping nothing", async () => {
+  const { violations } = await checkWorkspaceMetadata(
+    makeWorkspace([
+      {
+        name: "@x/a",
+        sideEffects: ["./dist/index.js"],
+        publishConfig: { access: "public" },
+      },
+    ]),
+  );
+  expect(violations.some((v) => v.includes("./dist/index.js"))).toBe(true);
 });
 
 test("an absent sideEffects is flagged", async () => {
