@@ -373,6 +373,13 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const pendingMail = new Map<string, Map<string, PendingMailEntry>>();
+  // agentAddress → retention TTL timer for un-acked pending mail held across a
+  // disconnect. On close the per-entry retry timers are cleared (the socket is
+  // gone) but the entries are RETAINED so a verified reconnect can redeliver
+  // them; this timer bounds that retention so a sidecar that never reconnects
+  // does not leak entries. Cleared when the address reconnects (redelivery) or
+  // its last pending entry is acked.
+  const pendingMailRetention = new Map<string, ReturnType<typeof setTimeout>>();
   // agentAddress → set of subscriber callbacks for agent events
   const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
   // agentAddress → cached connector-thread state, populated by
@@ -519,7 +526,16 @@ export function createSidecarRouter(
     messageId: string,
   ): void {
     byId.delete(messageId);
-    if (byId.size === 0) pendingMail.delete(agentAddress);
+    if (byId.size === 0) {
+      pendingMail.delete(agentAddress);
+      // The retention TTL guards a non-empty pending set; drop it once the set
+      // is empty so it never outlives the entries it was bounding.
+      const retention = pendingMailRetention.get(agentAddress);
+      if (retention !== undefined) {
+        clearTimeout(retention);
+        pendingMailRetention.delete(agentAddress);
+      }
+    }
   }
 
   function retryPendingMail(agentAddress: string, messageId: string): void {
@@ -569,11 +585,58 @@ export function createSidecarRouter(
     deletePendingMail(byId, agentAddress, messageId);
   }
 
-  function dropPendingMailForAddress(agentAddress: string): void {
+  // Hold an address's un-acked pending mail across a disconnect. The per-entry
+  // retry timers are cleared -- retrying over the dead socket is pointless --
+  // but the entries are KEPT so a verified reconnect can redeliver them. A
+  // retention TTL (the disconnect-queue horizon) bounds the hold so a sidecar
+  // that never reconnects does not leak; on expiry the entries are dropped with
+  // a warn rather than surfaced through `mail.outbound.undelivered`, since the
+  // mail was accepted over a live connection and most likely already delivered.
+  function retainPendingMailForAddress(agentAddress: string): void {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
     for (const entry of byId.values()) clearTimeout(entry.timer);
-    pendingMail.delete(agentAddress);
+    const existing = pendingMailRetention.get(agentAddress);
+    if (existing !== undefined) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      pendingMailRetention.delete(agentAddress);
+      const expired = pendingMail.get(agentAddress);
+      pendingMail.delete(agentAddress);
+      if (expired !== undefined && expired.size > 0) {
+        logger.warn`Dropping ${String(expired.size)} un-acked message(s) for ${agentAddress}: pending-mail retention TTL expired`;
+      }
+    }, disconnectQueueTTLMs);
+    pendingMailRetention.set(agentAddress, timer);
+  }
+
+  // Redeliver an address's retained un-acked pending mail on a verified
+  // reconnect. Replays identical bytes (same messageId) over the new
+  // connection, so the sidecar's inbox dedups a message it already wrote
+  // (effectively-once) and processes one it had dropped (no loss). Re-arms the
+  // connected-window retry over the new connection with a fresh per-generation
+  // budget, so a redelivery that is itself dropped before its ack is retried.
+  function redeliverPendingMail(
+    agentAddress: string,
+    conn: SidecarConnection,
+  ): void {
+    const retention = pendingMailRetention.get(agentAddress);
+    if (retention !== undefined) {
+      clearTimeout(retention);
+      pendingMailRetention.delete(agentAddress);
+    }
+    const byId = pendingMail.get(agentAddress);
+    if (byId === undefined) return;
+    for (const entry of byId.values()) {
+      conn.send(entry.frame);
+      entry.attempts = 0;
+      entry.timer = setTimeout(
+        () => retryPendingMail(agentAddress, entry.messageId),
+        mailAckRetryIntervalMs,
+      );
+    }
+    if (byId.size > 0) {
+      logger.info`Redelivered ${String(byId.size)} un-acked message(s) to ${agentAddress} on reconnect`;
+    }
   }
 
   function resetLivenessTimer(ws: WsHandle): void {
@@ -1257,9 +1320,14 @@ export function createSidecarRouter(
       addressIndex.delete(addr);
     }
 
-    // Flush queued messages only for ready addresses.
+    // Flush queued messages and redeliver retained un-acked mail, only for
+    // ready addresses. The disconnect queue carries mail that arrived WHILE
+    // disconnected; pending-mail redelivery carries mail that was delivered
+    // over the prior live connection but never acked (the connected-window
+    // drop). Both replay over the verified new connection.
     for (const addr of ready) {
       flushDisconnectedQueue(addr, conn);
+      redeliverPendingMail(addr, conn);
     }
 
     // Re-deploy agents whose deploy ref is stale or absent. Fire-and-forget
@@ -1565,11 +1633,12 @@ export function createSidecarRouter(
         // reconnect re-bootstraps via the router's
         // restore-fires-callback path.
         connectorStates.delete(addr);
-        // Cancel connected-window mail redelivery for this address: its
-        // in-flight retry timers target a connection that is gone. The mail
-        // was accepted over the now-closed socket and is not re-driven from
-        // here -- reconnect redelivery is a separate mechanism.
-        dropPendingMailForAddress(addr);
+        // Retain this address's un-acked pending mail across the disconnect:
+        // its in-flight retry timers target a dead socket (cleared), but the
+        // entries are held so a verified reconnect redelivers them, closing the
+        // connected-window drop rather than losing the mail. Bounded by a
+        // retention TTL.
+        retainPendingMailForAddress(addr);
         const deployReq = pendingDeploys.get(addr);
         if (deployReq !== undefined && deployReq.ws === ws) {
           clearTimeout(deployReq.timer);
@@ -1605,10 +1674,12 @@ export function createSidecarRouter(
     for (const addr of conn.workflowAddresses) {
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
-        // Workflow trigger mail is tracked for connected-window redelivery
-        // too; cancel its retry timers on close for the same reason as the
-        // session loop above.
-        dropPendingMailForAddress(addr);
+        // Retain un-acked workflow trigger mail across the disconnect for the
+        // same reason as the session loop above -- a challenged reconnect
+        // redelivers it. This is un-acked TRIGGER mail, distinct from the
+        // deployment's in-flight run state (reconstructed sidecar-locally); the
+        // "no disconnect queue" note above is about that run state, not this.
+        retainPendingMailForAddress(addr);
       }
     }
     connections.delete(ws);

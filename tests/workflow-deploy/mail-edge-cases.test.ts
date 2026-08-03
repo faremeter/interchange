@@ -72,11 +72,13 @@ import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
 import {
   SESSION_ID,
   SIDECAR_ID,
+  dropHubLink,
   listRunIds,
   readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
+  waitForReconnect,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
@@ -88,6 +90,7 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 const NO_HEADER_DEPLOYMENT_ID = "mail-edge-no-header-1";
 const MALFORMED_DEPLOYMENT_ID = "mail-edge-malformed-1";
 const DUPLICATE_DEPLOYMENT_ID = "mail-edge-duplicate-1";
+const CONNECTED_WINDOW_DEPLOYMENT_ID = "mail-edge-connected-window-1";
 
 let env: DeployFlowEnv;
 
@@ -341,6 +344,117 @@ describe("mail-handling edge cases", () => {
     // Under the stable-runId model the runId is the deployment address.
     expect(runIds.filter((r) => r === runId).length).toBe(1);
   }, 60_000);
+
+  test("mail into a connected window that drops before the ack survives reconnect and is processed exactly once", async () => {
+    // The connected-window mail-loss gap, end to end against a real sidecar
+    // subprocess over a real socket. A `mail.inbound` carrying a hub-minted
+    // messageId is delivered over the LIVE link and the link is severed in the
+    // same tick, before the sidecar's durable-write ack round-trips. The hub
+    // retains the un-acked pending mail and redelivers it when the sidecar
+    // reconnects; identical bytes and the same messageId make the delivery
+    // effectively-once. The run reaching terminal completion is NO-LOSS (over a
+    // real socket the severed link drops the in-flight frame, so ONLY the
+    // reconnect redelivery gets the mail to the sidecar; without the retention
+    // the message is lost and the run never starts). A single RunStarted and a
+    // single consumed dedup entry are NO-DOUBLE-PROCESS.
+    //
+    // The run's grants are delivered and allowed to land on the sidecar's disk
+    // BEFORE the connected-window drop: run.grants has no ack handshake, so it
+    // is not part of what this test drops -- only the trigger mail is. The
+    // grants persist on the sidecar across the reconnect.
+    const ctx = await deployEdgeWorkflow(env, CONNECTED_WINDOW_DEPLOYMENT_ID);
+
+    // Keep the deployment stably routable for a beat so the drop lands well
+    // clear of the deploy window (a drop racing the key-ack would fail the
+    // reconnect challenge for reasons unrelated to mail retention).
+    const settleStart = Date.now();
+    let stableSince = Date.now();
+    while (Date.now() - stableSince < 1_000) {
+      if (
+        !env.hub.router
+          .getRoutableAddresses()
+          .includes(ctx.deploymentMailAddress)
+      ) {
+        stableSince = Date.now();
+      }
+      if (Date.now() - settleStart > 20_000) {
+        throw new Error(
+          `deployment never held routable for 1s\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    const messageId = "<connected-window-1@integration.interchange>";
+    const raw = buildMinimalMail({
+      from: "edge@integration.interchange",
+      to: ctx.deploymentMailAddress,
+      includeMessageIdHeader: true,
+      messageId,
+      body: "connected-window edge case body",
+    });
+    const runId = ctx.deploymentMailAddress;
+
+    // Deliver the run's grants and let them land durably on the sidecar before
+    // the drop (there is no run.grants ack to wait on, so allow a generous
+    // beat; the frame lands over localhost in well under this window).
+    const grantsDelivered = env.hub.router.sendRunGrants(
+      ctx.deploymentMailAddress,
+      runId,
+      [],
+    );
+    expect(grantsDelivered).toBe(true);
+    await new Promise((r) => setTimeout(r, 2_000));
+
+    // Deliver the trigger mail with its hub-minted messageId (the production
+    // workflow-trigger route carries it; the hub tracks it for redelivery),
+    // then sever the link in the same tick so the ack -- which fires only after
+    // the async durable write -- never round-trips.
+    const base64 = base64Encode(raw);
+    const delivered = env.hub.router.routeMail(
+      ctx.deploymentMailAddress,
+      base64,
+      messageId,
+    );
+    expect(delivered).toBe(true);
+    dropHubLink(env);
+
+    // The sidecar reconnects; the hub redelivers the retained pending mail.
+    await waitForReconnect(env, ctx.deploymentMailAddress, {
+      timeoutMs: 30_000,
+    });
+
+    // NO-LOSS: the run reaches terminal completion -- only the reconnect
+    // redelivery could have gotten the dropped mail to the sidecar.
+    const terminal = await waitForWorkflowRunComplete(
+      env,
+      CONNECTED_WINDOW_DEPLOYMENT_ID,
+      runId,
+      { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+    );
+    expect(terminal.type).toBe("RunCompleted");
+
+    // NO-DOUBLE-PROCESS: exactly one RunStarted (keyed to this messageId) and
+    // exactly one consumed dedup entry -- a redelivery of a message already
+    // written is deduped, not reprocessed.
+    const events = await readWorkflowRunEvents(
+      env,
+      CONNECTED_WINDOW_DEPLOYMENT_ID,
+      runId,
+    );
+    const runStarts = events.filter((e) => e.type === "RunStarted");
+    expect(runStarts.length).toBe(1);
+    expect(runStarts[0]?.body["consumedMessageId"]).toBe(messageId);
+
+    const consumed = await waitForConsumedFilename(
+      env,
+      ctx.workflowRunRepoId,
+      ctx.deploymentMailAddress,
+      `${messageId}.json`,
+      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+    );
+    expect(consumed.map((e) => e.filename)).toEqual([`${messageId}.json`]);
+  }, 180_000);
 });
 
 /**

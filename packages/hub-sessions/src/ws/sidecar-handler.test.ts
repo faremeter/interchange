@@ -4966,5 +4966,116 @@ describe("SidecarRouter", () => {
       await new Promise((res) => setTimeout(res, 50));
       expect(inboundCount(ownerWs, "mid-4")).toBeGreaterThanOrEqual(2);
     });
+
+    test("un-acked mail is retained across a disconnect and redelivered on reconnect", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        // Large intervals so neither the connected-window retry nor the
+        // retention TTL fires during the test window; the redelivery under
+        // test is driven by the reconnect, not a timer.
+        mailAckRetryIntervalMs: 10_000,
+        mailAckMaxRetries: 5,
+        disconnectQueueTTLMs: 60_000,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws1 = createMockWs();
+      await connectViaChallenge(router, ws1, "agent@local", kp.privateKey);
+      expect(router.routeMail("agent@local", "aGVsbG8=", "mid-r1")).toBe(true);
+      expect(inboundCount(ws1, "mid-r1")).toBe(1);
+
+      // Disconnect BEFORE any ack: the pending entry must be retained.
+      router.handleClose(ws1);
+
+      // Reconnect on a fresh connection; the retained mail is redelivered with
+      // identical bytes and the same messageId.
+      const ws2 = createMockWs();
+      await connectViaChallenge(router, ws2, "agent@local", kp.privateKey);
+      expect(inboundCount(ws2, "mid-r1")).toBe(1);
+      const redelivered = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "mail.inbound" && f.messageId === "mid-r1");
+      expect(redelivered.rawMessage).toBe("aGVsbG8=");
+    });
+
+    test("an ack after reconnect redelivery clears the retained mail", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 5,
+        disconnectQueueTTLMs: 60_000,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws1 = createMockWs();
+      await connectViaChallenge(router, ws1, "agent@local", kp.privateKey);
+      expect(router.routeMail("agent@local", "aGk=", "mid-r2")).toBe(true);
+      router.handleClose(ws1);
+
+      const ws2 = createMockWs();
+      await connectViaChallenge(router, ws2, "agent@local", kp.privateKey);
+      expect(inboundCount(ws2, "mid-r2")).toBeGreaterThanOrEqual(1);
+
+      // Ack over the reconnected connection; retries must stop afterward.
+      router.handleMessage(
+        ws2,
+        JSON.stringify({
+          type: "mail.inbound.ack",
+          agentAddress: "agent@local",
+          messageId: "mid-r2",
+        }),
+      );
+      await tick();
+      const countAtAck = inboundCount(ws2, "mid-r2");
+      await new Promise((res) => setTimeout(res, 60));
+      expect(inboundCount(ws2, "mid-r2")).toBe(countAtAck);
+    });
+
+    test("retained mail is dropped after the retention TTL and not redelivered", async () => {
+      const kp = await generateKeyPair();
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 10_000,
+        mailAckMaxRetries: 5,
+        disconnectQueueTTLMs: 30,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      const ws1 = createMockWs();
+      await connectViaChallenge(router, ws1, "agent@local", kp.privateKey);
+      expect(router.routeMail("agent@local", "eA==", "mid-r3")).toBe(true);
+
+      const warnings: string[] = [];
+      const restore = installWarningCapture(warnings);
+      try {
+        // Disconnect arms the retention TTL; wait past it so the entry drops.
+        router.handleClose(ws1);
+        await new Promise((res) => setTimeout(res, 80));
+      } finally {
+        restore();
+      }
+      expect(
+        warnings.some(
+          (w) =>
+            w.includes("agent@local") && w.includes("retention TTL expired"),
+        ),
+      ).toBe(true);
+
+      // A later reconnect finds nothing to redeliver.
+      const ws2 = createMockWs();
+      await connectViaChallenge(router, ws2, "agent@local", kp.privateKey);
+      expect(inboundCount(ws2, "mid-r3")).toBe(0);
+    });
   });
 });
