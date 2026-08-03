@@ -386,3 +386,80 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
     });
   });
 });
+
+describe("runInference — buffered JSON read timeout/abort (virtual clock)", () => {
+  // A response whose Content-Type routes the harness into its non-streaming
+  // JSON branch, but whose body never closes: `response.text()` never
+  // resolves on its own, so the harness parks in the buffered read until the
+  // total-timeout controller or the caller's AbortSignal aborts it. This is
+  // the JSON-path analogue of the SSE stall tests above — the buffered read
+  // reaches its abort classification before ever consulting the adapter's
+  // JSON parser, so it exercises the timeout/abort corner independently of
+  // whether the resolved adapter implements `parseJSONResponse`.
+  function stallingJSONFetch() {
+    return () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start() {
+              // Intentionally never enqueue or close.
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+  }
+
+  test("total timeout fires during a stalled JSON-body read", async () => {
+    await withHarness(async (harness) => {
+      let seq = 0;
+      const consumer = startConsumer(
+        runInference({
+          turns: makeTurns(),
+          source: SOURCE,
+          inferenceOptions: {
+            inactivityTimeoutMs: 5_000,
+            totalTimeoutMs: 200,
+            // Single-attempt policy so the assertion targets the first
+            // total-timeout fire; see the ABORT_ONLY_RETRY_POLICY rationale
+            // above.
+            ...ABORT_ONLY_RETRY_POLICY,
+          },
+          nextSeq: () => seq++,
+          deps: { ...harness.deps, fetch: stallingJSONFetch() },
+        }),
+      );
+
+      await harness.run();
+      const err = findError(await consumer.done);
+      expect(err?.category).toBe("timeout");
+      expect(err?.message).toMatch(/total/i);
+      expect(err?.message).toMatch(/200/);
+    });
+  });
+
+  test("caller abort during a stalled JSON-body read surfaces an aborted error", async () => {
+    await withHarness(async (harness) => {
+      const controller = new AbortController();
+      let seq = 0;
+      const consumer = startConsumer(
+        runInference({
+          turns: makeTurns(),
+          source: SOURCE,
+          signal: controller.signal,
+          inferenceOptions: {
+            totalTimeoutMs: 10_000,
+            ...ABORT_ONLY_RETRY_POLICY,
+          },
+          nextSeq: () => seq++,
+          deps: { ...harness.deps, fetch: stallingJSONFetch() },
+        }),
+      );
+
+      controller.abort();
+      await harness.run();
+      const err = findError(await consumer.done);
+      expect(err?.category).toBe("aborted");
+    });
+  });
+});

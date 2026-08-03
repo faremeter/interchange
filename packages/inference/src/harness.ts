@@ -36,6 +36,11 @@ import type {
 
 import { getLogger } from "@intx/log";
 
+import {
+  detectResponseKind,
+  type ResponseKind,
+} from "@intx/types/content-type";
+
 import type { AdapterRegistry } from "./adapter";
 import { parseSSE } from "./sse";
 import { injectCredentials } from "./auth";
@@ -45,6 +50,7 @@ import {
   classifyAbortError,
   classifyStreamError,
   classifyTimeoutError,
+  classifyProtocolMismatch,
   ProtocolMismatchError,
 } from "./errors";
 import { createDefaultRetryPolicy } from "./retry-policy";
@@ -460,15 +466,70 @@ async function* runSingleAttempt(
       };
       return;
     }
+    // Captured as a const so the non-null narrowing from the guard above
+    // carries into the SSE branch of the event-source generator below (a
+    // bare `response.body` re-widens to nullable across the closure).
+    const responseBody = response.body;
+
+    let responseKind: ResponseKind;
+    try {
+      responseKind = detectResponseKind(response.headers);
+    } catch (cause) {
+      // A 2xx whose Content-Type is neither SSE nor JSON is a protocol
+      // violation, not a transient failure — surface it loudly rather than
+      // pushing unknown bytes through the SSE parser to yield an empty turn.
+      yield {
+        type: "inference.error",
+        seq: nextSeq(),
+        data: {
+          error: classifyProtocolMismatch(
+            cause instanceof Error ? cause.message : String(cause),
+          ),
+          partial: snapshotPartial(partial),
+        },
+      };
+      return;
+    }
 
     // Arm the inactivity timer now that the SSE stream is open. Every
     // event we yield below resets it; sustained silence past
     // `inactivityTimeoutMs` aborts the controller and the loop's catch
-    // surfaces the timeout error.
-    armInactivity();
+    // surfaces the timeout error. A non-streaming JSON body has no
+    // inter-event silence to detect, so the timer stays disarmed there and
+    // the total-timeout controller alone bounds the buffered read.
+    if (responseKind === "sse") {
+      armInactivity();
+    }
+
+    // The event source: one branch per response kind, both feeding batches
+    // of raw adapter events into the shared accumulator below. SSE yields
+    // one batch per wire chunk; JSON buffers the whole body and yields a
+    // single batch.
+    const rawEventBatches = async function* (): AsyncGenerator<
+      InferenceEvent[]
+    > {
+      if (responseKind === "json") {
+        const body = await awaitWithSignal(response.text(), fetchSignal);
+        const parseJSONResponse = adapter.parseJSONResponse;
+        if (parseJSONResponse === undefined) {
+          throw new ProtocolMismatchError(
+            `harness: provider ${lastCycleSource.provider} returned a ` +
+              `non-streaming JSON response but its adapter provides no ` +
+              `JSON response parser`,
+          );
+        }
+        yield parseJSONResponse(body);
+        return;
+      }
+      for await (const sseData of parseSSE(responseBody)) {
+        // Reset inactivity timer — we just got something from the wire.
+        armInactivity();
+        yield adapter.parseResponse(sseData);
+      }
+    };
 
     try {
-      for await (const sseData of parseSSE(response.body)) {
+      for await (const rawEvents of rawEventBatches()) {
         if (timeoutReason !== null) {
           // The timeout aborted the stream; bubble up the right error
           // shape rather than letting the abort masquerade as a
@@ -498,11 +559,6 @@ async function* runSingleAttempt(
           };
           return;
         }
-
-        // Reset inactivity timer — we just got something from the wire.
-        armInactivity();
-
-        const rawEvents = adapter.parseResponse(sseData);
 
         for (const raw of rawEvents) {
           switch (raw.type) {

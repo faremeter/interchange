@@ -38,6 +38,28 @@ export type RequestBuilder = (
 // adapter-detected failures can surface is `ProtocolMismatchError`.
 export type ResponseParser = (sseData: string) => InferenceEvent[];
 
+// A JSON response parser converts a complete non-streaming response body (a
+// single `application/json` document) into the same internal inference events
+// the streaming `ResponseParser` produces. It exists for providers that answer
+// with a buffered JSON body instead of an SSE stream.
+//
+// It returns the SAME `InferenceEvent` vocabulary as `parseResponse` —
+// text/thinking/refusal deltas, tool_call.*, usage, citation, safety_rating,
+// image_output, code_execution.* — re-expressing the whole response in the
+// harness's delta/marker protocol (e.g. the entire assistant text as a single
+// text.delta). It is not a new "whole message" event shape: the harness runs
+// the returned events through the same accumulator as the SSE path, and that
+// switch silently drops event types it does not model, so an invented event
+// shape yields a silently-empty turn.
+//
+// Every delta event MUST carry an `index` — the harness's `requireIndex`
+// throws otherwise, exactly as on the SSE path — and the parser synthesizes
+// indices the same way its SSE sibling does. It MUST emit `inference.usage`
+// from the body's usage object, or the harness synthesizes zero token counts.
+// Like `ResponseParser` it MAY throw only `ProtocolMismatchError`; no other
+// throw type is permitted.
+export type JSONResponseParser = (body: string) => InferenceEvent[];
+
 // An adapter pairs a request builder with a response parser. Registration
 // is a map keyed by provider identifier — no class hierarchy required.
 
@@ -53,6 +75,7 @@ export type PacingExtractor = (headers: Headers) => number | undefined;
 export type ProviderAdapter = {
   buildRequest: RequestBuilder;
   parseResponse: ResponseParser;
+  parseJSONResponse?: JSONResponseParser;
   extractRetryAfterMs?: RetryAfterExtractor;
   extractPacingDelayMs?: PacingExtractor;
 };

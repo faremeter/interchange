@@ -12,6 +12,7 @@ import {
   createDefaultDependencies,
   loadAdapterRegistry,
 } from "./providers";
+import { createAdapterRegistry } from "./adapter";
 import type { AdapterFactory, AdapterRegistry } from "./adapter";
 import type {
   ConversationTurn,
@@ -740,5 +741,153 @@ describe("runInference — source quirks reach the adapter registry", () => {
       }),
     );
     expect(quirksCalls).toEqual([undefined]);
+  });
+});
+
+describe("runInference — non-streaming JSON responses", () => {
+  const JSON_SOURCE: InferenceSource = {
+    id: "test-json:model-x",
+    provider: "test-json",
+    baseURL: "https://example.test",
+    apiKey: "test",
+    model: "model-x",
+  };
+
+  function jsonDeps(
+    body: string,
+    contentType: string,
+    factory: AdapterFactory,
+  ): Dependencies {
+    return {
+      fetch: () =>
+        Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: { "content-type": contentType },
+          }),
+        ),
+      scheduler: createDefaultScheduler(),
+      adapters: createAdapterRegistry({ "test-json": factory }),
+    };
+  }
+
+  // Re-expresses a whole non-streaming body as the harness's delta/marker
+  // protocol: the assistant text as a single indexed text.delta plus a usage
+  // event, exactly as an SSE parser would emit them incrementally.
+  const decodingFactory: AdapterFactory = (source) => ({
+    buildRequest: (_messages, model) => ({
+      url: "https://example.test/v1/json",
+      headers: {},
+      body: JSON.stringify({ model }),
+    }),
+    parseResponse: () => [],
+    parseJSONResponse: (raw) => {
+      const parsed: unknown = JSON.parse(raw);
+      const token = typeof parsed === "string" ? parsed : "";
+      return [
+        {
+          type: "inference.text.delta",
+          seq: 0,
+          data: { token, partial: { text: "" }, index: 0 },
+        },
+        {
+          type: "inference.usage",
+          seq: 0,
+          data: {
+            usage: {
+              input: 7,
+              output: 3,
+              cacheRead: 0,
+              cacheWrite: 0,
+              thinking: 0,
+            },
+            source,
+          },
+        },
+      ];
+    },
+  });
+
+  const noJSONFactory: AdapterFactory = () => ({
+    buildRequest: () => ({
+      url: "https://example.test/v1/json",
+      headers: {},
+      body: "{}",
+    }),
+    parseResponse: () => [],
+  });
+
+  test("decodes a JSON body through the adapter's parseJSONResponse", async () => {
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: JSON_SOURCE,
+        nextSeq: () => ++seq,
+        deps: jsonDeps(
+          JSON.stringify("hello from json"),
+          "application/json",
+          decodingFactory,
+        ),
+      }),
+    );
+
+    const textDelta = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.text.delta" }> =>
+        e.type === "inference.text.delta",
+    );
+    if (textDelta === undefined) throw new Error("missing text delta");
+    expect(textDelta.data.token).toBe("hello from json");
+
+    const usage = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.usage" }> =>
+        e.type === "inference.usage",
+    );
+    if (usage === undefined) throw new Error("missing usage");
+    expect(usage.data.usage.input).toBe(7);
+    expect(usage.data.usage.output).toBe(3);
+
+    expect(events.some((e) => e.type === "inference.done")).toBe(true);
+  });
+
+  test("surfaces a protocol mismatch when a JSON response has no JSON parser", async () => {
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: JSON_SOURCE,
+        nextSeq: () => ++seq,
+        deps: jsonDeps("{}", "application/json", noJSONFactory),
+      }),
+    );
+
+    const errorEvent = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (errorEvent === undefined) throw new Error("missing inference.error");
+    expect(errorEvent.data.error.category).toBe("protocol_mismatch");
+    expect(errorEvent.data.error.message).toContain("JSON response parser");
+    expect(events.some((e) => e.type === "inference.done")).toBe(false);
+  });
+
+  test("surfaces a protocol mismatch on an unsupported content-type", async () => {
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: JSON_SOURCE,
+        nextSeq: () => ++seq,
+        deps: jsonDeps("plain body", "text/plain", decodingFactory),
+      }),
+    );
+
+    const errorEvent = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (errorEvent === undefined) throw new Error("missing inference.error");
+    expect(errorEvent.data.error.category).toBe("protocol_mismatch");
+    expect(errorEvent.data.error.message).toContain("text/plain");
   });
 });
