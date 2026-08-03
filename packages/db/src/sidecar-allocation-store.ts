@@ -72,6 +72,16 @@ export type ClaimSidecarAllocationArgs = {
   readonly leaseDurationMs: number;
 };
 
+export type ParkSidecarReconciliationPolicy =
+  | {
+      readonly kind: "await-connection";
+      readonly fallbackNextAttemptAt: Date;
+    }
+  | {
+      readonly kind: "retry-after-error";
+      readonly notBefore: Date;
+    };
+
 export type BindInitialSidecarArgs = {
   readonly allocationId: string;
   readonly expectedGeneration: number;
@@ -107,6 +117,10 @@ export type ScheduleSidecarAllocationRetryArgs = {
   readonly nextAttemptAt: Date;
   readonly expectedLeaseId?: string;
   readonly attempt?: "ensure" | "destroy";
+  readonly failure?: {
+    readonly code: string;
+    readonly message: string;
+  };
   readonly now?: Date;
 };
 
@@ -115,6 +129,7 @@ export type BeginSidecarReplacementArgs = {
   readonly expectedStatus: "provisioning" | "allocated";
   readonly expectedGeneration: number;
   readonly expectedLeaseId: string;
+  readonly nextAttemptAt: Date;
   readonly failureCode: string;
   readonly failureMessage: string;
   readonly now?: Date;
@@ -134,6 +149,13 @@ export type BeginSidecarReleaseArgs = {
 };
 
 export type MarkSidecarReleasedArgs = {
+  readonly allocationId: string;
+  readonly generation: number;
+  readonly expectedLeaseId?: string;
+  readonly now?: Date;
+};
+
+export type MarkSidecarConnectionReadyArgs = {
   readonly allocationId: string;
   readonly generation: number;
   readonly expectedLeaseId?: string;
@@ -426,8 +448,6 @@ export function createSidecarAllocationStore(db: DBHandle) {
           ensureAcceptedGeneration: args.generation,
           externalRef: args.externalRef ?? null,
           nextAttemptAt: sidecarAllocation.connectDeadline,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
           ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
           failureCode: null,
           failureMessage: null,
@@ -460,6 +480,12 @@ export function createSidecarAllocationStore(db: DBHandle) {
           ...(args.attempt === "destroy"
             ? { destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1` }
             : {}),
+          ...(args.failure !== undefined
+            ? {
+                failureCode: args.failure.code,
+                failureMessage: args.failure.message,
+              }
+            : {}),
           updatedAt: databaseTimestamp(args.now),
         })
         .where(
@@ -484,7 +510,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           status: "replacing",
           generation: args.expectedGeneration + 1,
           ensureAcceptedGeneration: null,
-          nextAttemptAt: now,
+          nextAttemptAt: args.nextAttemptAt,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
           connectDeadline: null,
@@ -646,14 +672,74 @@ export function createSidecarAllocationStore(db: DBHandle) {
       });
     },
 
-    async parkReconciliation(
+    async extendReconciliationLease(
       allocationId: string,
       leaseId: string,
+      leaseDurationMs: number,
     ): Promise<boolean> {
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          nextAttemptAt: sql`case when ${sidecarAllocation.connectDeadline} is null then null else coalesce(${sidecarAllocation.nextAttemptAt}, ${sidecarAllocation.connectDeadline}) end`,
+          reconciliationLeaseExpiresAt: sql`now() + (${leaseDurationMs} * interval '1 millisecond')`,
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, allocationId),
+            eq(sidecarAllocation.reconciliationLeaseId, leaseId),
+          ),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
+    },
+
+    async markConnectionReady(
+      args: MarkSidecarConnectionReadyArgs,
+    ): Promise<SidecarAllocation | null> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline: null,
+          nextAttemptAt: null,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          failureCode: null,
+          failureMessage: null,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "allocated"),
+            eq(sidecarAllocation.generation, args.generation),
+            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
+    async parkReconciliation(
+      allocationId: string,
+      leaseId: string,
+      policy: ParkSidecarReconciliationPolicy,
+    ): Promise<boolean> {
+      const fallbackNextAttemptAt =
+        policy.kind === "await-connection"
+          ? policy.fallbackNextAttemptAt
+          : policy.notBefore;
+      const fallback = sql.param(
+        fallbackNextAttemptAt,
+        sidecarAllocation.nextAttemptAt,
+      );
+      const nextAttemptAt =
+        policy.kind === "await-connection"
+          ? sql`case when ${sidecarAllocation.connectDeadline} is null then ${fallback} else coalesce(${sidecarAllocation.nextAttemptAt}, ${sidecarAllocation.connectDeadline}) end`
+          : sql`greatest(coalesce(${sidecarAllocation.nextAttemptAt}, ${sidecarAllocation.connectDeadline}, ${fallback}), ${fallback})`;
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          nextAttemptAt,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
         })

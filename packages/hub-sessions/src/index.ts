@@ -59,6 +59,7 @@ export {
 export { pushSourceUpdates, pushSourceUpdatesSubtree } from "./credential-push";
 export {
   createSidecarPluginRegistry,
+  createSidecarAllocationReconciler,
   resolveEffectiveSidecarPlacement,
   type CreateSidecarPluginRegistryOpts,
   type DestroySidecarRequest,
@@ -71,6 +72,8 @@ export {
   type SidecarOperationFailure,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
+  type SidecarAllocationReconciler,
+  type SidecarAllocationReconcilerDeps,
 } from "./sidecar-allocation";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export {

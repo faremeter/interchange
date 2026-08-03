@@ -17,3 +17,8 @@ export type {
   SidecarOperationFailure,
   SidecarProvisioner,
 } from "./contracts";
+export {
+  createSidecarAllocationReconciler,
+  type SidecarAllocationReconciler,
+  type SidecarAllocationReconcilerDeps,
+} from "./reconciler";
