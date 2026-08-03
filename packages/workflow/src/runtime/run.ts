@@ -82,17 +82,17 @@ export interface RuntimeRunOptions {
    * step-boundary base are: an in-flight `loop` container (runLoop
    * re-derives its cursor), an `awaitSignal` step still `awaiting-signal`
    * (runAwaitSignal re-parks on the signal channel for a signal delivered
-   * later), and an `awaitSignal` step (no timeout) left `in-flight` by an
-   * already-logged `SignalReceived` (runAwaitSignal completes it from that
-   * logged event -- the crash-after-signal-before-StepCompleted window).
-   * A seed log whose tail leaves an invocation-boundary step -- an agent
-   * `step` or a deterministic `action` -- `in-flight` is a crash
+   * later), and an `awaitSignal` step left `in-flight` by a mover -- a
+   * received signal or, for a timed gate, a fired timeout -- which
+   * runAwaitSignal reconstructs from the log to complete (or, on timeout,
+   * route or fail) without parking (the crash-after-move-before-StepCompleted
+   * window). A seed log whose tail leaves an invocation-boundary step -- an
+   * agent `step` or a deterministic `action` -- `in-flight` is a crash
    * mid-invocation: the runtime settles it as a terminal `StepFailed`
    * (at-most-once refusal) instead of re-invoking it. A step left
    * `awaiting-timer`, mid-`map`, or otherwise `in-flight` (a
-   * `childWorkflow`, or a timeout-bearing `awaitSignal` left `in-flight`
-   * and indistinguishable in reduced state from a fired timeout) stays
-   * unsupported and surfaces as `RuntimeResumeUnsupportedError`.
+   * `childWorkflow`) stays unsupported and surfaces as
+   * `RuntimeResumeUnsupportedError`.
    *
    * When omitted, the runtime reduces canonical state from the durable
    * log for `runId`: an empty log starts fresh and emits `RunStarted`;
@@ -123,17 +123,16 @@ export interface RuntimeRunOptions {
  *   2. The seed log is either complete-or-cancelled, aligned on step
  *      boundaries, or left in one of the resumable carve-outs: an
  *      in-flight `loop` container, or an `awaitSignal` step (still
- *      `awaiting-signal`, or -- with no timeout -- `in-flight` from a
- *      received signal). An invocation-boundary step -- an agent `step`
+ *      `awaiting-signal`, or `in-flight` from a received signal or a
+ *      fired timeout). An invocation-boundary step -- an agent `step`
  *      or a deterministic `action` -- left `in-flight` is a crash
  *      mid-invocation and settles as a terminal `StepFailed` rather
  *      than re-invoking. A step left `awaiting-timer`, mid-`map`, or
- *      otherwise `in-flight` (including a timeout-bearing `awaitSignal`
- *      left `in-flight`) is unsupported: the runtime body has no surface
- *      for re-arming the timer scheduler entry or the inner-map
- *      iteration state from the log alone, so it surfaces as
- *      `RuntimeResumeUnsupportedError` and the host (supervisor) owns
- *      the recovery decision.
+ *      otherwise `in-flight` (a `childWorkflow`) is unsupported: the
+ *      runtime body has no surface for re-arming the timer scheduler
+ *      entry or the inner-map iteration state from the log alone, so it
+ *      surfaces as `RuntimeResumeUnsupportedError` and the host
+ *      (supervisor) owns the recovery decision.
  */
 export function runtimeRun(
   definition: WorkflowDefinition,
@@ -388,13 +387,11 @@ async function executeRunBody(
   // non-deterministic and unrecorded, so it cannot be replayed
   // exactly-once. Rather than re-invoke it (at-most-once refusal), settle
   // it as a terminal `StepFailed`. Every OTHER non-terminal residual --
-  // an `in-flight` coordination container (mid-`map`, timeout-bearing
-  // `awaitSignal` reduced to `in-flight`, `childWorkflow`), or an
-  // `awaiting-signal`/`awaiting-timer` step -- still surfaces
+  // an `in-flight` coordination container (mid-`map`, `childWorkflow`),
+  // or an `awaiting-signal`/`awaiting-timer` step -- still surfaces
   // `RuntimeResumeUnsupportedError`: those have a live re-arming surface
-  // the host owns (rebuild the map state, distinguish a fired timeout
-  // from a received signal, re-park on a later signal), so declining
-  // honestly is correct there.
+  // the host owns (rebuild the map state, re-park on a later signal), so
+  // declining honestly is correct there.
   //
   // The pass runs whenever canonical state is `running`, whether the
   // residual arrived via a `resumeFromEvents` seed OR was adopted from a
@@ -418,10 +415,11 @@ async function executeRunBody(
       //   - an `awaitSignal` step still `awaiting-signal`: runAwaitSignal
       //     skips its already-emitted markers and re-parks on the signal
       //     channel, holding a live awaiter for a later signal;
-      //   - an `awaitSignal` step (no timeout) left `in-flight` by an
-      //     already-logged `SignalReceived`: runAwaitSignal short-circuits
-      //     to completion from that logged event (the
-      //     crash-after-signal-before-StepCompleted window).
+      //   - an `awaitSignal` step left `in-flight` by a mover -- a received
+      //     signal or, for a timed gate, a fired timeout: runAwaitSignal
+      //     reconstructs the outcome from the log and short-circuits to
+      //     completion (or, on timeout, routes or fails) without parking
+      //     (the crash-after-move-before-StepCompleted window).
       if (
         isResumableInFlightLoopStep(definition, stepId, stepState.phase) ||
         isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
@@ -3161,6 +3159,24 @@ export function reconstructGateOutcome(
 }
 
 /**
+ * The timer id a timed `awaitSignal` gate armed, read from its durable
+ * `TimerSet`. `reconstructGateOutcome` folds a `TimerFired` for this id as the
+ * mover that competes with a delivered signal; a no-timeout gate has no
+ * `TimerSet`, so this returns `undefined`.
+ */
+function gateTimerId(
+  log: readonly WorkflowEvent[],
+  stepId: string,
+): string | undefined {
+  for (const event of log) {
+    if (event.kind === "TimerSet" && event.stepId === stepId) {
+      return event.timerId;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Whether any `awaitSignal` gate OTHER than `selfStepId` awaited `signalName`
  * anywhere in the run. `reconstructGateOutcome` replays the reducer FIFO scoped
  * to a SINGLE awaiter of the name, so a second same-name awaiter -- even one
@@ -3593,17 +3609,14 @@ async function runAwaitSignal(
   let state = await reloadState(env, runId);
   const resumed = state.steps.has(primitive.id);
 
-  // Short-circuit resume: an `awaitSignal` step found `in-flight` means an
-  // already-logged `SignalReceived` (or a pre-await queued signal consumed
-  // by `SignalAwaited`) moved it off `awaiting-signal`. The signal is
-  // logically received; the step only lacks its `StepCompleted` -- the
-  // crash-after-signal-before-StepCompleted window
-  // (`isResumableReceivedAwaitSignalStep`). The payload survives only on
-  // the durable log (the reduced `StepState` carries no payload slot), so
-  // recover it from the logged `SignalReceived` and complete without
-  // parking on `awaitNext`. The predicate admits this shape only when the
-  // step has no timeout, so a `TimerFired`-induced `in-flight`
-  // (indistinguishable in reduced state) never reaches here.
+  // Short-circuit resume: an `awaitSignal` step found `in-flight` means a
+  // mover already took it off `awaiting-signal` -- a `SignalReceived` (or a
+  // pre-await queued signal consumed by `SignalAwaited`), or, for a timed gate,
+  // a `TimerFired`. The step only lacks its `StepCompleted` (or, on timeout,
+  // its routing/failure) -- the crash-after-move-before-StepCompleted window
+  // (`isResumableReceivedAwaitSignalStep`). The reduced `StepState` records
+  // neither which mover won nor the payload, so reconstruct both from the
+  // durable log and complete without parking on `awaitNext`.
   if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
     const log = await env.repoStore.read(runId);
     // The in-flight gate's payload survives only on the log; the replay below
@@ -3618,12 +3631,23 @@ async function runAwaitSignal(
         `another awaitSignal gate for ${primitive.name} awaited the signal on a different step, so the consumed signal cannot be unambiguously bound to step ${primitive.id}`,
       );
     }
-    // A no-timeout gate has no timer to fold, so the replay recovers the
-    // consumed signal (or fails loud if the log shows none consumed).
-    const outcome = reconstructGateOutcome(log, primitive.name, primitive.id);
+    // Reconstruct which mover took the gate off `awaiting-signal`: a delivered
+    // signal (recovering its payload) or, for a timed gate, the gate's own
+    // `TimerFired`. That timer is the gate's durable `TimerSet`; a no-timeout
+    // gate has none to fold. Fail loud if the log shows nothing moved the gate.
+    const selfTimerId =
+      primitive.timeout !== undefined
+        ? gateTimerId(log, primitive.id)
+        : undefined;
+    const outcome = reconstructGateOutcome(
+      log,
+      primitive.name,
+      primitive.id,
+      selfTimerId,
+    );
     if (outcome === undefined) {
       throw new Error(
-        `runAwaitSignal resume: step ${primitive.id} is in-flight but the log shows no consumed signal for ${primitive.name}`,
+        `runAwaitSignal resume: step ${primitive.id} is in-flight but the log shows no mover (signal or timeout) for ${primitive.name}`,
       );
     }
     return completeAwaitSignalOutcome(

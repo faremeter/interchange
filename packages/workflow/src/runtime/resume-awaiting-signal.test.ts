@@ -6,16 +6,17 @@
 //      already-emitted StepStarted/SignalAwaited and RE-PARKS on the
 //      signal channel, so a signal delivered later (the operator signals
 //      AFTER the restart) resolves it.
-//   2. The tail already carries a `SignalReceived` for the gate (no
-//      timeout): the reduction moved the gate `in-flight` -- the
-//      crash-after-signal-before-`StepCompleted` window
-//      (`isResumableReceivedAwaitSignalStep`). runAwaitSignal recovers the
-//      payload from the logged event and completes the step without a live
-//      deliver.
+//   2. The tail already carries the gate's mover -- a `SignalReceived`, or,
+//      for a timed gate, a `TimerFired` -- so the reduction moved the gate
+//      `in-flight` (the crash-after-move-before-`StepCompleted` window,
+//      `isResumableReceivedAwaitSignalStep`). runAwaitSignal reconstructs the
+//      outcome from the log (folding the gate's own `TimerFired` as a
+//      competing mover) and completes -- or, on a fired timeout, routes via
+//      `onTimeout` or fails the step -- without a live deliver.
 //
-// A timeout-bearing `awaitSignal` left `in-flight` is REFUSED: its reduced
-// state is indistinguishable from a fired timeout, so completing it with a
-// signal payload would be wrong.
+// The reduced state cannot itself tell a signal-consumed in-flight from a
+// timed-out one; the durable log can, so a timed gate resumes to the same
+// terminal the crash interrupted rather than being refused.
 
 import { describe, test, expect } from "bun:test";
 
@@ -30,7 +31,6 @@ import {
   createNoopDrainController,
   defineWorkflow,
   runtimeRun,
-  RuntimeResumeUnsupportedError,
   step,
   type SignalChannel,
   type StepInvoker,
@@ -49,6 +49,34 @@ const gateOnlyTimeout = defineWorkflow({
   id: "wait-resume-timeout",
   trigger: { type: "manual" },
   steps: { w: awaitSignal({ name: "go", timeout: 60_000 }) },
+});
+
+// A short timeout so an UNCRASHED run can actually reach its timeout in a test,
+// giving the timer-won resume a reference terminal to be indistinguishable from.
+const gateOnlyTimeoutShort = defineWorkflow({
+  id: "wait-resume-timeout-short",
+  trigger: { type: "manual" },
+  steps: { w: awaitSignal({ name: "go", timeout: 20 }) },
+});
+
+function resumeAgent(id: string) {
+  return defineAgent({
+    id,
+    systemPrompt: "s",
+    tools: [],
+    capabilities: [],
+    inference: { sources: [{ provider: "anthropic", model: "m" }] },
+  });
+}
+
+const timedGateWithHandler = defineWorkflow({
+  id: "wait-resume-timeout-handler",
+  trigger: { type: "manual" },
+  steps: {
+    w: awaitSignal({ name: "go", timeout: 60_000, onTimeout: "recover" }),
+    recover: step({ agent: resumeAgent("recover"), after: ["w"] }),
+    normal: step({ agent: resumeAgent("normal"), after: ["w"] }),
+  },
 });
 
 const twoGatesSameName = defineWorkflow({
@@ -415,13 +443,134 @@ describe("resume awaiting signal", () => {
     }
   });
 
-  test("a timeout-bearing awaitSignal left in-flight stays rejected (indistinguishable from a fired timeout)", async () => {
-    const runId = "run-timeout";
+  test("a timed gate resumes on the signal branch when the signal arrived first", async () => {
+    const runId = "run-timed-signal";
     const env = buildEnv(gateOnlyTimeout);
-    // A timeout awaitSignal whose timer fired reduces to `in-flight` with
-    // no SignalReceived. The reduced state cannot tell that apart from a
-    // signal-consumed in-flight, so the runtime declines rather than risk
-    // completing a timed-out run with a signal payload.
+    // The signal arrived while the gate was awaiting (before the timer); the
+    // reduction consumed it and moved the gate in-flight. The later stale
+    // TimerFired does not un-consume it, so the gate completes with the signal.
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "w",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 3,
+        at,
+        stepId: "w",
+        signalName: "go",
+        timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      {
+        kind: "TimerSet",
+        seq: 4,
+        at,
+        timerId: "timer-1",
+        fireAt: new Date(Date.now() + 60_000).toISOString(),
+        stepId: "w",
+      },
+      {
+        kind: "SignalReceived",
+        seq: 5,
+        at,
+        signalName: "go",
+        signalId: "sig-live",
+        payload: { delivered: true },
+      },
+      { kind: "TimerFired", seq: 6, at, timerId: "timer-1" },
+    ];
+
+    const result = await runtimeRun(gateOnlyTimeout, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+    expect(result.terminalStatus).toBe("completed");
+    const completed = result.events.find(
+      (e) => e.kind === "StepCompleted" && e.stepId === "w",
+    );
+    if (completed?.kind !== "StepCompleted")
+      throw new Error("gate not completed");
+    expect(await env.blobs.resolveRef(completed.output.ref)).toEqual({
+      delivered: true,
+    });
+  });
+
+  test("a timed gate resumes on the signal branch when a pre-await queued signal was consumed", async () => {
+    const runId = "run-timed-preconsume";
+    const env = buildEnv(gateOnlyTimeout);
+    // A signal was delivered BEFORE the gate awaited (queued, no awaiter). The
+    // gate's SignalAwaited drained it, reducing straight to in-flight. The
+    // later stale TimerFired must not override that pre-consume as a timeout.
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "w",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "SignalReceived",
+        seq: 3,
+        at,
+        signalName: "go",
+        signalId: "sig-pre",
+        payload: { pre: true },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 4,
+        at,
+        stepId: "w",
+        signalName: "go",
+        timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      {
+        kind: "TimerSet",
+        seq: 5,
+        at,
+        timerId: "timer-1",
+        fireAt: new Date(Date.now() + 60_000).toISOString(),
+        stepId: "w",
+      },
+      { kind: "TimerFired", seq: 6, at, timerId: "timer-1" },
+    ];
+
+    const result = await runtimeRun(gateOnlyTimeout, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+    expect(result.terminalStatus).toBe("completed");
+    const completed = result.events.find(
+      (e) => e.kind === "StepCompleted" && e.stepId === "w",
+    );
+    if (completed?.kind !== "StepCompleted")
+      throw new Error("gate not completed");
+    expect(await env.blobs.resolveRef(completed.output.ref)).toEqual({
+      pre: true,
+    });
+  });
+
+  test("a timed gate with onTimeout routes to the handler on resume when the timer fired", async () => {
+    const runId = "run-timed-handler";
+    const invoked: string[] = [];
+    const env = buildEnv(timedGateWithHandler, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    // The timer fired (no signal); the reduction moved the gate in-flight. On
+    // resume the reconstruction reports timedOut, and completeAwaitSignalOutcome
+    // routes to the onTimeout target, pruning the normal successor.
     const seed: WorkflowEvent[] = [
       runStartedSeed(runId),
       {
@@ -451,11 +600,77 @@ describe("resume awaiting signal", () => {
       { kind: "TimerFired", seq: 5, at, timerId: "timer-1" },
     ];
 
-    await expect(
-      runtimeRun(gateOnlyTimeout, env, {
-        runId,
-        resumeFromEvents: seed,
-      }).complete,
-    ).rejects.toBeInstanceOf(RuntimeResumeUnsupportedError);
+    const result = await runtimeRun(timedGateWithHandler, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+    expect(result.terminalStatus).toBe("completed");
+    // The onTimeout target ran; the normal successor was pruned (never invoked).
+    expect(invoked).toEqual(["recover"]);
+    expect(
+      result.events.some((e) => e.kind === "StepCompleted" && e.stepId === "w"),
+    ).toBe(true);
+  });
+
+  test("a timed gate with no onTimeout that timed out resumes to a failure indistinguishable from an uncrashed timeout", async () => {
+    // Uncrashed reference: a live short-timeout gate that no signal reaches.
+    const liveEnv = buildEnv(gateOnlyTimeoutShort);
+    const live = await runtimeRun(gateOnlyTimeoutShort, liveEnv, {
+      runId: "live",
+      triggerPayload: null,
+    }).complete;
+    expect(live.terminalStatus).toBe("failed");
+    const liveFail = live.events.find((e) => e.kind === "StepFailed");
+    if (liveFail?.kind !== "StepFailed") {
+      throw new Error("live run did not fail on timeout");
+    }
+
+    // Resumed: the crash left the gate in-flight after the timer fired, no
+    // signal. The reconstruction reports timedOut, and with no onTimeout the
+    // gate FAILS "timed out" -- it does NOT surface RuntimeResumeUnsupported.
+    const env = buildEnv(gateOnlyTimeoutShort);
+    const seed: WorkflowEvent[] = [
+      runStartedSeed("resumed"),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "w",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 3,
+        at,
+        stepId: "w",
+        signalName: "go",
+        timeoutAt: new Date(Date.now() + 20).toISOString(),
+      },
+      {
+        kind: "TimerSet",
+        seq: 4,
+        at,
+        timerId: "timer-1",
+        fireAt: new Date(Date.now() + 20).toISOString(),
+        stepId: "w",
+      },
+      { kind: "TimerFired", seq: 5, at, timerId: "timer-1" },
+    ];
+    const resumed = await runtimeRun(gateOnlyTimeoutShort, env, {
+      runId: "resumed",
+      resumeFromEvents: seed,
+    }).complete;
+
+    // Indistinguishable from the uncrashed timeout: same terminal, same
+    // StepFailed shape and message. Downstream retry/error handling keys on it.
+    expect(resumed.terminalStatus).toBe(live.terminalStatus);
+    const resumedFail = resumed.events.find((e) => e.kind === "StepFailed");
+    if (resumedFail?.kind !== "StepFailed") {
+      throw new Error("resumed run did not fail on timeout");
+    }
+    expect(resumedFail.stepId).toBe(liveFail.stepId);
+    expect(resumedFail.error.message).toBe(liveFail.error.message);
+    expect(resumedFail.retriesExhausted).toBe(liveFail.retriesExhausted);
   });
 });
