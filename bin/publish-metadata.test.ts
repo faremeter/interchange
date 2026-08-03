@@ -250,6 +250,20 @@ test("fix never overwrites an existing sideEffects glob list", async () => {
   expect(m.publishConfig).toEqual({ access: "public" });
 });
 
+test("fix leaves a malformed sideEffects untouched for the check to reject", async () => {
+  const root = makeWorkspace([{ name: "@x/a", sideEffects: true }]);
+  await fixWorkspaceMetadata(root);
+  const m = JSON.parse(
+    readFileSync(join(root, "packages", "p0", "package.json"), "utf8"),
+  );
+  // A malformed value is the author's to correct; fix must not seed `false`
+  // over it (that would silently invent the declaration), only when absent.
+  expect(m.sideEffects).toBe(true);
+  // The value survives, so the check still flags it — fix cannot silence it.
+  const { violations } = await checkWorkspaceMetadata(root);
+  expect(violations.some((v) => v.includes("sideEffects"))).toBe(true);
+});
+
 test("fix is idempotent on an already-canonical workspace", async () => {
   const root = makeWorkspace([canonical("@x/a")]);
   expect(await fixWorkspaceMetadata(root)).toEqual([]);
