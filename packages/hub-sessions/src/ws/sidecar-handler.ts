@@ -7,7 +7,13 @@
 import { getLogger } from "@intx/log";
 import { verifyEd25519 } from "@intx/crypto";
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
-import { deriveWorkflowRunId, hexDecode, hexEncode } from "@intx/types";
+import {
+  base64Decode,
+  deriveMessageId,
+  deriveWorkflowRunId,
+  hexDecode,
+  hexEncode,
+} from "@intx/types";
 import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
@@ -1494,48 +1500,38 @@ export function createSidecarRouter(
           logger.error`Deployment ${recipient} is not routable for run ${runId}; abandoning mail-triggered run without committing grants`;
           return "unrouted";
         }
-        const outcome = routeInboundMail(recipient, rawMessage);
+        // Route through the messageId handshake `routeMail` -- NOT a
+        // fire-and-forget send. This branch COMMITS a run, so a mail dropped in
+        // the connected window (a socket that half-dies before the sidecar's
+        // durable-write ack) would otherwise leave the run row "running"
+        // forever with no body and no error. `routeMail` tracks the delivery
+        // and redelivers identical bytes on reconnect, bringing the mail-relay
+        // run-trigger to parity with the HTTP-trigger path. The messageId is the
+        // mail's own id (derived over the same bytes the sidecar derives), so a
+        // redelivery replays identically and the downstream RunStarted /
+        // stable-runId dedup makes it effectively-once.
+        const messageId = await deriveMessageId(base64Decode(rawMessage));
+        const outcome: "routed" | "unrouted" = routeMail(
+          recipient,
+          rawMessage,
+          messageId,
+        )
+          ? "routed"
+          : "unrouted";
         // Commit the run principal, run row, and grants only after the mail
         // is accepted, mirroring the external trigger route's commit-last
         // discipline so a dropped mail never leaves orphaned authz state.
+        // `routeMail` returns synchronously on the live-send/queue decision and
+        // the tracker owns redelivery until the ack, so commit-last holds.
         if (outcome === "routed") await result.commit();
         return outcome;
       }
       // `skip`: the address named no deployed workflow deployment. Forward
       // the mail without grants -- the run, if any, is not ours to
-      // authorize.
+      // authorize. No run is committed here, so no ack handshake is needed.
     }
 
-    return routeInboundMail(recipient, rawMessage);
-  }
-
-  // Route a single `mail.inbound` frame to a live connection or, failing
-  // that, a disconnect queue. Returns `unrouted` when neither is available.
-  function routeInboundMail(
-    recipient: string,
-    rawMessage: string,
-  ): "routed" | "unrouted" {
-    const targetWs = addressIndex.get(recipient);
-    if (targetWs !== undefined) {
-      const conn = connections.get(targetWs);
-      if (conn !== undefined) {
-        conn.send({
-          type: "mail.inbound",
-          agentAddress: recipient,
-          rawMessage,
-        });
-        return "routed";
-      }
-    }
-
-    const frame: HubFrame = {
-      type: "mail.inbound",
-      agentAddress: recipient,
-      rawMessage,
-    };
-    if (enqueueForDisconnected(recipient, frame)) return "routed";
-
-    return "unrouted";
+    return routeMail(recipient, rawMessage) ? "routed" : "unrouted";
   }
 
   async function handleMailPersist(

@@ -1485,6 +1485,11 @@ describe("SidecarRouter", () => {
       expect(frames[0]?.runId).toBe(WORKFLOW_ADDR);
       expect(frames[0]?.stepGrants).toEqual(SAMPLE_GRANTS);
       expect(frames[1]?.type).toBe("mail.inbound");
+      // The run-committing mail goes through the messageId handshake (routeMail),
+      // NOT a fire-and-forget send: the mail.inbound carries a messageId, so a
+      // connected-window drop before the ack is redelivered on reconnect and
+      // the committed run cannot be left bodiless.
+      expect(frames[1]?.messageId).toBeDefined();
       // The commit ran only after the mail was accepted for delivery.
       expect(committed).toBe(true);
     });
@@ -1617,6 +1622,135 @@ describe("SidecarRouter", () => {
       expect(called).toBe(false);
       expect(wfWs.sent).toHaveLength(0);
       expect(otherWs.sent).toHaveLength(0);
+    });
+
+    // Connect a keyed recipient through the challenged reconnect path so a
+    // later reconnect (which re-verifies ownership) can flush retained pending
+    // mail -- the register path leaves a keyed address unrouted until it passes
+    // a challenge, and redelivery fires only on the verified reconnect.
+    async function connectRecipientViaChallenge(
+      router: ReturnType<typeof createSidecarRouter>,
+      address: string,
+      privateKey: Uint8Array,
+      sidecarId = "sc-recipient",
+    ): Promise<ReturnType<typeof createMockWs>> {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId,
+          token: "tok",
+          agentAddresses: [address],
+        }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+      const challengeFrame = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f: { type: string }) => f.type === "challenge");
+      const responses = await Promise.all(
+        challengeFrame.challenges.map(
+          async (c: { address: string; nonce: string }) => ({
+            address: c.address,
+            signature: await signChallenge(c.nonce, c.address, privateKey),
+          }),
+        ),
+      );
+      router.handleMessage(
+        ws,
+        JSON.stringify({ type: "challenge.response", responses }),
+      );
+      await new Promise((res) => setTimeout(res, 50));
+      return ws;
+    }
+
+    test("a run-committing mail-relay is retained and redelivered on reconnect after a connected-window drop", async () => {
+      const kp = await generateKeyPair();
+      let committed = 0;
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        // Large so neither the connected-window retry nor the retention TTL
+        // fires during the test; the redelivery under test is reconnect-driven.
+        mailAckRetryIntervalMs: 10_000,
+        disconnectQueueTTLMs: 60_000,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === WORKFLOW_ADDR ? hexEncode(kp.publicKey) : null,
+          materializeMailTriggeredRunGrants: async () => ({
+            outcome: "materialized",
+            stepGrants: SAMPLE_GRANTS,
+            commit: async () => {
+              committed += 1;
+            },
+          }),
+        },
+      });
+
+      const ws1 = await connectRecipientViaChallenge(
+        router,
+        WORKFLOW_ADDR,
+        kp.privateKey,
+      );
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-relay-redeliver@tenant.example>"),
+        [WORKFLOW_ADDR],
+      );
+
+      // Delivered over the live connection via the handshake; the run committed.
+      const firstInbound = ws1.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "mail.inbound");
+      expect(firstInbound).toBeDefined();
+      expect(firstInbound.messageId).toBeDefined();
+      expect(committed).toBe(1);
+
+      // Drop BEFORE any ack: the pending relay mail must be retained.
+      router.handleClose(ws1);
+
+      // Reconnect: the retained relay mail is redelivered (identical bytes,
+      // same messageId) so the committed run's body is not left un-triggered.
+      const ws2 = await connectRecipientViaChallenge(
+        router,
+        WORKFLOW_ADDR,
+        kp.privateKey,
+        "sc-recipient-2",
+      );
+      const redelivered = ws2.sent
+        .map((s) => JSON.parse(s))
+        .find(
+          (f) =>
+            f.type === "mail.inbound" && f.messageId === firstInbound.messageId,
+        );
+      expect(redelivered).toBeDefined();
+      expect(redelivered.rawMessage).toBe(firstInbound.rawMessage);
+      // No re-materialization on redelivery: the run is committed exactly once;
+      // downstream dedup makes the replayed delivery effectively-once.
+      expect(committed).toBe(1);
+    });
+
+    test("a skip-path mail-relay is forwarded without the messageId handshake", async () => {
+      const router = createTestRouter({
+        lookups: {
+          lookupPublicKey: async () => null,
+          materializeMailTriggeredRunGrants: async () => ({ outcome: "skip" }),
+        },
+      });
+      const ws = await connectRecipient(router, WORKFLOW_ADDR);
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-relay-skip@tenant.example>"),
+        [WORKFLOW_ADDR],
+      );
+
+      const inbound = ws.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "mail.inbound");
+      expect(inbound).toBeDefined();
+      // The skip path commits no run, so it is forwarded fire-and-forget --
+      // no messageId, no ack handshake, no redelivery tracking.
+      expect(inbound.messageId).toBeUndefined();
     });
   });
 
