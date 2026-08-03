@@ -11,7 +11,6 @@ export {
   type ResponseBody,
   type WriteCaptureInput,
 } from "./write-capture";
-export { detectResponseKind, type ResponseKind } from "./content-type";
 export { assertNotCI } from "./ci-guard";
 export { requireEnv, requireEnvSet } from "./env";
 export {

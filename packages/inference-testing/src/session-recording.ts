@@ -13,7 +13,6 @@ import path from "node:path";
 
 import {
   assertNotCI,
-  detectResponseKind,
   writeCapture,
   type ResponseBody,
 } from "@intx/inference-discovery";
@@ -23,6 +22,7 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "@intx/inference";
+import { detectResponseKind } from "@intx/types/content-type";
 import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { InferenceEvent } from "@intx/types/runtime";
 

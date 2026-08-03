@@ -20,6 +20,11 @@
       "types": "./dist/audit.d.ts",
       "default": "./dist/audit.js"
     },
+    "./content-type": {
+      "intx-src": "./src/content-type.ts",
+      "types": "./dist/content-type.d.ts",
+      "default": "./dist/content-type.js"
+    },
     "./runtime": {
       "intx-src": "./src/runtime.ts",
       "types": "./dist/runtime.d.ts",
