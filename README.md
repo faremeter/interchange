@@ -187,19 +187,22 @@ consumers live in [`examples/`](./examples/README.md).
 
 ### Run the full stack
 
-Install workspace dependencies, then run the hub, sidecar, and admin
-UI with seed data:
+From a fresh clone, point git at the repo hooks, install workspace
+dependencies, build, then reset the database and start the hub,
+sidecar, and admin UI with seed data:
 
 ```bash
-bun install
-bin/db-reset && bin/dev --seed
+git config core.hooksPath .githooks   # required by the environment check
+bun install                           # workspace deps and @intx/* symlinks
+make                                   # lint, build, admin-ui bundle, test
+bin/db-reset && bin/dev --seed         # reset the db, then start the stack
 ```
 
 Entry points are in [`apps/`](./apps). Requires
-[Bun](https://bun.sh/) 1.2+ and PostgreSQL 15+. See
-[`DEV.md`](./DEV.md) for everything else — environment files, role
-setup, default ports, seed credentials, partial-stack variants, and
-reset recipes.
+[Bun](https://bun.sh/) 1.2+, [git](https://git-scm.com/) 2.34+, and
+PostgreSQL 15+. See [`DEV.md`](./DEV.md) for everything else —
+environment files, role setup, default ports, seed credentials,
+partial-stack variants, and reset recipes.
 
 ## How it works
 
