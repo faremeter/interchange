@@ -1,4 +1,4 @@
-import { evaluateGrants } from "@intx/authz";
+import { authorizeAction } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
 import type { GrantEffect, GrantOrigin, GrantRequirement } from "@intx/types";
 import { generateId } from "@intx/hub-common";
@@ -70,7 +70,7 @@ export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
  * grant rows to materialize on the target principal.
  *
  * Pure over its inputs: it runs creator- and invoker-sourced delegation
- * checks with `evaluateGrants` against the supplied collected grants and
+ * checks with `authorizeAction` against the supplied collected grants and
  * accumulates the rows to insert. Only `system`/`role`/`creator` grants can be
  * delegated, so invoker-origin grants are filtered out of the invoker's
  * delegatable set before resolving invoker-sourced requirements. Nothing is
@@ -103,12 +103,12 @@ export async function resolveGrantMaterialization({
     const effect = req.effect ?? "allow";
 
     if (req.source === "creator") {
-      const result = await evaluateGrants(
+      const decision = await authorizeAction(
         creatorGrants,
         req.resource,
         req.action,
       );
-      if (result.effect !== "allow") {
+      if (!decision.ok) {
         return {
           ok: false,
           rejection: {
@@ -132,12 +132,12 @@ export async function resolveGrantMaterialization({
         updatedAt: now,
       });
     } else if (req.source === "invoker") {
-      const result = await evaluateGrants(
+      const decision = await authorizeAction(
         delegatableInvokerGrants,
         req.resource,
         req.action,
       );
-      if (result.effect !== "allow") {
+      if (!decision.ok) {
         return {
           ok: false,
           rejection: {
@@ -175,12 +175,12 @@ export async function resolveGrantMaterialization({
   // Process ad-hoc invoker grants from the launch request.
   for (const ig of adHocInvokerGrants) {
     const effect = ig.effect ?? "allow";
-    const result = await evaluateGrants(
+    const decision = await authorizeAction(
       delegatableInvokerGrants,
       ig.resource,
       ig.action,
     );
-    if (result.effect !== "allow") {
+    if (!decision.ok) {
       return {
         ok: false,
         rejection: {
