@@ -5028,6 +5028,58 @@ describe("SidecarRouter", () => {
       ).toBe(true);
     });
 
+    test("give-up surfaces the un-acked mail as undelivered on a still-live connection", async () => {
+      const kp = await generateKeyPair();
+      const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 20,
+        mailAckMaxRetries: 3,
+        lookups: {
+          async lookupPublicKey() {
+            return hexEncode(kp.publicKey);
+          },
+        },
+      });
+      // The only channel through which a dropped mail is recovered externally.
+      router.events.on("mail.outbound.undelivered", (e) => {
+        undelivered.push(e);
+      });
+
+      const ws = createMockWs();
+      await connectViaChallenge(router, ws, "agent@local", kp.privateKey);
+
+      // A workflow-trigger mail carrying a hub-minted messageId; its run row is
+      // committed the instant routeMail returns true (commit-last discipline in
+      // deliverMailToRecipient), so durable delivery is the only thing keeping
+      // the run from being orphaned.
+      expect(router.routeMail("agent@local", "eA==", "mid-drop")).toBe(true);
+
+      const warnings: string[] = [];
+      const restore = installWarningCapture(warnings);
+      try {
+        // The sidecar never acks (its local substrate write persistently
+        // fails), but the WS stays open the whole time -- no ping timeout, no
+        // close. Wait well past the full budget.
+        await new Promise((res) => setTimeout(res, 200));
+      } finally {
+        restore();
+      }
+
+      // 1 original + 3 retries, then give up.
+      expect(inboundCount(ws, "mid-drop")).toBe(4);
+      // Give-up surfaces the mail for external relay exactly once, rather than
+      // silently dropping a committed run's trigger.
+      const forMidDrop = undelivered.filter((e) => e.rawMessage === "eA==");
+      expect(forMidDrop).toHaveLength(1);
+      expect(forMidDrop[0]?.recipients).toEqual(["agent@local"]);
+      expect(
+        warnings.some(
+          (w) => w.includes("mid-drop") && w.includes("Gave up redelivering"),
+        ),
+      ).toBe(true);
+    });
+
     test("mail without a messageId is not tracked for redelivery", async () => {
       const kp = await generateKeyPair();
       const router = createTestRouter({
