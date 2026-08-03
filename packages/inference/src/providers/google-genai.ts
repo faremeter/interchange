@@ -1611,6 +1611,38 @@ function parseResponse(
   return out;
 }
 
+// A non-streaming generateContent response is shaped exactly like a single
+// terminal streaming SSE event: one GeminiSSEEvent carrying the full parts
+// array and a terminal finishReason (or a promptFeedback.blockReason). Decode
+// it through the same parser with a fresh per-call state, so a replayed
+// non-streaming capture feeds the harness accumulator identically to its
+// streaming sibling — parity by construction, since the parser's state machine
+// is boundary-agnostic (nothing in it branches on SSE-event boundaries). The
+// "malformed JSON in SSE data payload" message parseResponse throws on a bad
+// body is path-neutral in substance (the body is JSON either way), so it is
+// left shared rather than forking the streaming parser's signature.
+function parseJSONResponse(
+  body: string,
+  source: LastCycleSource,
+): InferenceEvent[] {
+  const events = parseResponse(body, createParserState(), source);
+  // A complete non-streaming body MUST be terminal. The shared parser
+  // tolerates non-terminal events (correct mid-stream, where an intermediate
+  // event legitimately carries no finishReason), but here a body with no
+  // finishReason and no promptFeedback.blockReason is a truncated or malformed
+  // capture, not a silent empty decode. Both terminal paths emit
+  // inference.usage, so its absence is the faithful terminality signal.
+  if (!events.some((e) => e.type === "inference.usage")) {
+    throw new ProtocolMismatchError(
+      `google-genai parseJSONResponse: non-streaming body carried no terminal ` +
+        `finishReason or promptFeedback.blockReason; a complete ` +
+        `generateContent response must be terminal and emit usage.`,
+      body,
+    );
+  }
+  return events;
+}
+
 // The google-genai adapter carries no per-source accommodations today, so its
 // quirks shape is empty. A quirks bag is deployment configuration crossing
 // into the system at this boundary; rejecting unknown keys makes a
@@ -1636,5 +1668,6 @@ export function createGoogleGenAIAdapter(
   return {
     buildRequest,
     parseResponse: (sseData) => parseResponse(sseData, state, source),
+    parseJSONResponse: (body) => parseJSONResponse(body, source),
   };
 }
