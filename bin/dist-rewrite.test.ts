@@ -162,6 +162,26 @@ test("a sibling file resolves to `.js` and a directory barrel to `/index.js`", (
   expect(out).toContain('import { b } from "./bar/index.js";');
 });
 
+test("a compiling `.json` import resolves without aborting", () => {
+  // A `resolveJsonModule` import that type-checks emits with its `.json`
+  // extension, which `isRewritable` treats as already resolved. The
+  // rewriter must leave it in place, not report it unresolved. A naive
+  // "make `.json` rewritable" change would send `./data.json` to the
+  // resolver, which finds neither `./data.json.js` nor
+  // `./data.json/index.js`, falsely report it unresolved, and abort the
+  // build — which the empty-`unresolved` assertion below guards against.
+  const dir = makeTree({
+    "index.js":
+      'import data from "./data.json";\nexport const v = data.value;\n',
+    "data.json": '{ "value": 42 }\n',
+  });
+  const report = rewriteDistTree(dir);
+  expect(report.unresolved).toEqual([]);
+  expect(readFileSync(join(dir, "index.js"), "utf8")).toContain(
+    'import data from "./data.json";',
+  );
+});
+
 test("an unresolvable relative specifier is reported and left in place", () => {
   const dir = makeTree({
     "index.js": 'import { c } from "./missing";\n',
