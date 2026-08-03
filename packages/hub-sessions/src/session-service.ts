@@ -353,20 +353,6 @@ export function bridgeOrchestratorDeployContent(
 }
 
 /**
- * Wire the workflow-deploy orchestrator's `sendMultiStepDeploy`
- * dependency against `SidecarRouter.sendAgentDeploy`. The router
- * accepts an optional `workflow` projection on the deploy frame; the
- * sidecar's deploy router uses field presence to route the frame to
- * the workflow deploy path. The supervisor public key returned by the
- * sidecar's `agent.deploy.ack` is threaded back as the
- * `MultiStepDeployResult.publicKey`.
- *
- * Exported so the co-located caller-site test can assert that the
- * closure constructed in `launchSession` reaches the wire surface via
- * `sendAgentDeploy` with a `workflow` field structurally matching the
- * `AgentDeployFrame.workflow` schema.
- */
-/**
  * Project a `WorkflowDefinition` onto the wire envelope the sidecar deploy
  * router serializes verbatim into `workflow.json` and the workflow-process
  * child re-validates against `workflowDefinitionEnvelopeSchema`: `id`,
@@ -391,6 +377,20 @@ function toWireWorkflowDefinition(definition: WorkflowDefinition): {
   };
 }
 
+/**
+ * Wire the workflow-deploy orchestrator's `sendMultiStepDeploy`
+ * dependency against `SidecarRouter.sendAgentDeploy`. The router
+ * accepts an optional `workflow` projection on the deploy frame; the
+ * sidecar's deploy router uses field presence to route the frame to
+ * the workflow deploy path. The supervisor public key returned by the
+ * sidecar's `agent.deploy.ack` is threaded back as the
+ * `MultiStepDeployResult.publicKey`.
+ *
+ * Exported so the co-located caller-site test can assert that the
+ * closure constructed in `launchSession` reaches the wire surface via
+ * `sendAgentDeploy` with a `workflow` field structurally matching the
+ * `AgentDeployFrame.workflow` schema.
+ */
 export async function sendMultiStepDeployFrame(args: {
   sidecarRouter: SidecarRouter;
   agentAddress: string;
