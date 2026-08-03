@@ -319,7 +319,98 @@ describe("resume awaiting signal", () => {
     for (const f of failures) {
       if (f.kind !== "StepFailed") throw new Error("unreachable");
       expect(f.error.message).toContain(
-        "more than one concurrent awaitSignal gate for go consumed a signal",
+        "another awaitSignal gate for go awaited the signal on a different step",
+      );
+    }
+  });
+
+  test("a no-timeout gate in-flight-received refuses when a same-name sibling already completed", async () => {
+    const runId = "run-completed-sibling";
+    const env = buildEnv(twoGatesSameName);
+    // gateB's StepStarted is seeded FIRST, so the reducer's insertion-order
+    // scan pairs the first delivery to gateB and the second to gateA:
+    //   SignalReceived{sig-1} -> gateB (in-flight, consumed sig-1)
+    //   SignalReceived{sig-2} -> gateA (in-flight, then StepCompleted)
+    // gateA finished; gateB is the crash-window in-flight gate. A phase-scoped
+    // in-flight count would NOT see gateA (it is `completed`, not `in-flight`),
+    // so the retired count-guard saw one awaiter and let findConsumedSignal run
+    // -- and findConsumedSignal returns the LAST observed "go" (sig-2), binding
+    // gateB to gateA's payload: a silent mis-bind. hasForeignSameNameAwaiter
+    // keys on gateA's durable SignalAwaited, which outlives its completion, and
+    // refuses so gateB never completes with the wrong payload.
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "gateB",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 3, at, stepId: "gateB", signalName: "go" },
+      {
+        kind: "StepStarted",
+        seq: 4,
+        at,
+        stepId: "gateA",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 5, at, stepId: "gateA", signalName: "go" },
+      {
+        kind: "SignalReceived",
+        seq: 6,
+        at,
+        signalName: "go",
+        signalId: "sig-1",
+        payload: { which: "B" },
+      },
+      {
+        kind: "SignalReceived",
+        seq: 7,
+        at,
+        signalName: "go",
+        signalId: "sig-2",
+        payload: { which: "A" },
+      },
+      {
+        kind: "StepCompleted",
+        seq: 8,
+        at,
+        stepId: "gateA",
+        attempt: 1,
+        output: { ref: "inline:null" },
+      },
+    ];
+
+    const result = await runtimeRun(twoGatesSameName, env, {
+      runId,
+      resumeFromEvents: seed,
+    }).complete;
+
+    // Fail-loud, not silent mis-bind. gateB is refused; it never reaches
+    // StepCompleted (so it cannot have bound gateA's payload). gateA's seeded
+    // completion is the only StepCompleted.
+    expect(result.terminalStatus).toBe("failed");
+    // gateA's seeded completion stands; gateB never reaches StepCompleted, so
+    // it cannot have bound gateA's payload.
+    expect(
+      result.events.some(
+        (e) => e.kind === "StepCompleted" && e.stepId === "gateA",
+      ),
+    ).toBe(true);
+    expect(
+      result.events.some(
+        (e) => e.kind === "StepCompleted" && e.stepId === "gateB",
+      ),
+    ).toBe(false);
+    const failures = result.events.filter((e) => e.kind === "StepFailed");
+    expect(failures.length).toBeGreaterThan(0);
+    for (const f of failures) {
+      if (f.kind !== "StepFailed") throw new Error("unreachable");
+      expect(f.error.message).toContain(
+        "another awaitSignal gate for go awaited the signal on a different step",
       );
     }
   });

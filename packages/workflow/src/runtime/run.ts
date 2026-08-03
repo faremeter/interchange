@@ -3111,35 +3111,32 @@ function findConsumedSignal(
 }
 
 /**
- * Count how many `awaitSignal` gates for `signalName` are sitting in the
- * same crash window as the step being recovered: gates that emitted a
- * `SignalAwaited` for this name and are still `in-flight` (consumed a
- * signal, no `StepCompleted` yet). `findConsumedSignal` binds a payload to
- * a gate by signal name alone, so when more than one same-name gate is
- * concurrently in this window it cannot tell which gate consumed which
- * delivery -- returning the last matching payload would silently bind it
- * to the wrong gate. This count lets the short-circuit path refuse that
- * ambiguous topology while still recovering the provably-unambiguous
- * single-gate case.
+ * Whether any `awaitSignal` gate OTHER than `selfStepId` awaited `signalName`
+ * anywhere in the run. `findConsumedSignal` binds a consumed signal to a gate
+ * by signal name alone, so a second same-name awaiter -- even one that already
+ * COMPLETED -- makes the binding ambiguous: the log cannot say which gate
+ * consumed which delivery. The in-flight short-circuit refuses that topology
+ * rather than risk binding a payload to the wrong gate; only a run where
+ * `selfStepId` is the sole awaiter of the name is provably unambiguous. A
+ * completed same-name sibling is the case a phase-scoped in-flight count would
+ * miss, so the predicate keys on the durable `SignalAwaited` marker, which
+ * outlives the sibling's completion.
  */
-function countConcurrentInFlightAwaiters(
+function hasForeignSameNameAwaiter(
   log: readonly WorkflowEvent[],
   signalName: string,
-  state: RunState,
-): number {
-  const awaiterStepIds = new Set<string>();
+  selfStepId: string,
+): boolean {
   for (const event of log) {
-    if (event.kind === "SignalAwaited" && event.signalName === signalName) {
-      awaiterStepIds.add(event.stepId);
+    if (
+      event.kind === "SignalAwaited" &&
+      event.signalName === signalName &&
+      event.stepId !== selfStepId
+    ) {
+      return true;
     }
   }
-  let count = 0;
-  for (const stepId of awaiterStepIds) {
-    if (state.steps.get(stepId)?.phase === "in-flight") {
-      count += 1;
-    }
-  }
-  return count;
+  return false;
 }
 
 /**
@@ -3560,15 +3557,16 @@ async function runAwaitSignal(
   if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
     const log = await env.repoStore.read(runId);
     // `findConsumedSignal` matches by signal name only, so it cannot bind a
-    // payload to the right gate when more than one same-name gate consumed a
-    // delivery and none has completed. Refuse that ambiguous topology rather
-    // than silently recovering a wrong payload; the single-gate case (count
-    // === 1) stays provably correct.
-    if (countConcurrentInFlightAwaiters(log, primitive.name, state) > 1) {
+    // payload to the right gate when another step awaited the same name --
+    // including a same-name sibling that already completed. Refuse that
+    // ambiguous topology rather than silently recovering a wrong payload; only
+    // a run where this gate is the sole awaiter of the name is provably
+    // unambiguous.
+    if (hasForeignSameNameAwaiter(log, primitive.name, primitive.id)) {
       throw new RuntimeResumeUnsupportedError(
         primitive.id,
         "in-flight",
-        `more than one concurrent awaitSignal gate for ${primitive.name} consumed a signal with no StepCompleted, so the consumed payload cannot be bound to a gate`,
+        `another awaitSignal gate for ${primitive.name} awaited the signal on a different step, so the consumed signal cannot be unambiguously bound to step ${primitive.id}`,
       );
     }
     const received = findConsumedSignal(log, primitive.name, state);
