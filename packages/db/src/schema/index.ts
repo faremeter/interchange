@@ -13,6 +13,7 @@ export * from "./wallets";
 export * from "./offerings";
 export * from "./catalog";
 export * from "./sidecar";
+export * from "./sidecar-allocation";
 export * from "./sessions";
 export * from "./session-assets";
 export * from "./messages";

@@ -29,6 +29,21 @@ export {
   type WorkflowRunLaunchSpecStore,
 } from "./workflow-run-launch-spec-store";
 export {
+  createSidecarAllocationStore,
+  type BeginSidecarReleaseArgs,
+  type BeginSidecarReplacementArgs,
+  type BindInitialSidecarArgs,
+  type BindReplacementSidecarArgs,
+  type ClaimSidecarAllocationArgs,
+  type CreatePendingSidecarAllocationArgs,
+  type FailSidecarAllocationArgs,
+  type MarkSidecarAllocatedArgs,
+  type MarkSidecarReleasedArgs,
+  type ScheduleSidecarAllocationRetryArgs,
+  type SidecarAllocation,
+  type SidecarAllocationStore,
+} from "./sidecar-allocation-store";
+export {
   createWorkflowDefinitionStore,
   resolveDefinitionIdForAsset,
   type WorkflowDefinitionRollbackResult,

@@ -526,6 +526,13 @@
       "when": 1786055554289,
       "tag": "0075_workflow_run_launch_spec",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1786055582673,
+      "tag": "0076_sidecar_allocation",
+      "breakpoints": true
     }
   ]
 }
