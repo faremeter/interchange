@@ -34,5 +34,5 @@ test("signs up and loads the authenticated dashboard", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Your tenants" }),
   ).toBeVisible();
-  await expect(page.getByText("No running agents.")).toBeVisible();
+  await expect(page.getByText("No running workflows.")).toBeVisible();
 });
