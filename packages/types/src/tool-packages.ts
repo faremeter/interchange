@@ -13,6 +13,8 @@
 import { type } from "arktype";
 import semver from "semver";
 
+import { ToolCredentialDeclarationArray } from "./package-json";
+
 /**
  * npm's documented package-name rules expressed as an arktype regex
  * literal: lowercase, may begin with a scope (`@scope/`), the rest of
@@ -99,6 +101,42 @@ export const ToolPackagePinArray = ToolPackagePin.array().narrow(
 export type ToolPackagePinArray = typeof ToolPackagePinArray.infer;
 
 /**
+ * A top-level manifest entry: a pinned package at its concrete resolved
+ * version, carrying the credential declarations harvested from the package's
+ * `interchange.credentials` (absent when it declares none). Only top-level
+ * pins contribute declarations; transitive dependencies never do, which is why
+ * this shape hangs off `topLevel` rather than `entries`.
+ */
+export const ToolPackageTopLevelEntry = type({
+  name: ToolPackagePinName,
+  version: "string",
+  "credentials?": ToolCredentialDeclarationArray,
+});
+export type ToolPackageTopLevelEntry = typeof ToolPackageTopLevelEntry.infer;
+
+/**
+ * The manifest's top-level entries with the no-duplicate-name invariant
+ * preserved -- the same guarantee `ToolPackagePinArray` gives agent-side pins.
+ * Versions here are concrete (already picked by the resolver), so the
+ * semver-range check that guards agent-side pins is unnecessary.
+ */
+export const ToolPackageTopLevelArray = ToolPackageTopLevelEntry.array().narrow(
+  (entries, ctx) => {
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      if (seen.has(entry.name)) {
+        return ctx.mustBe(
+          `an array with no duplicate package names; "${entry.name}" appears more than once`,
+        );
+      }
+      seen.add(entry.name);
+    }
+    return true;
+  },
+);
+export type ToolPackageTopLevelArray = typeof ToolPackageTopLevelArray.infer;
+
+/**
  * A pinned entry's tarball lives inside an asset attached to the
  * agent at session time. `assetId` is the hub-side asset row id; the
  * sidecar resolves it against the deploy pack's `deploy/asset-mounts.json`
@@ -178,9 +216,9 @@ export type ToolPackageManifestEntry = typeof ToolPackageManifestEntry.infer;
  * dependencies materialized for runtime `require()` / `import`
  * resolution.
  *
- * Although `topLevel` shares the `ToolPackagePin` shape used at agent
- * definition time, the `version` field here is always a concrete
- * version (e.g. `"1.2.3"`), not a range. The resolver walks each
+ * `topLevel` extends the agent-side `ToolPackagePin` shape with the
+ * package's harvested `credentials` declarations. The `version` field
+ * here is always a concrete version (e.g. `"1.2.3"`), not a range. The resolver walks each
  * agent-side pin's range through `npm-pick-manifest` and writes the
  * picked version. The sidecar loader pairs `topLevel[i]` against
  * `entries[j]` by `${name}@${version}` equality, so a range-form
@@ -199,7 +237,7 @@ export const ToolPackageManifest = type({
   // when building the manifest; the validator is the second line of
   // defense for any third-party hub or hand-edited file that slips a
   // duplicate through.
-  topLevel: ToolPackagePinArray,
+  topLevel: ToolPackageTopLevelArray,
   entries: ToolPackageManifestEntry.array(),
 });
 export type ToolPackageManifest = typeof ToolPackageManifest.infer;

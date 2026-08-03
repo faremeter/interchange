@@ -160,7 +160,10 @@ async function packBuiltin(
   // referred to has been inlined into the bundle, so the published
   // tarball needs no transitive closure of its own.
   const packedPkgJson: Record<string, unknown> = { ...pkg };
-  packedPkgJson.interchange = { tools: outRel };
+  // Override `tools` with the bundled entry path but preserve the rest of the
+  // interchange block (notably `credentials`) -- reconstructing it with only
+  // `tools` would silently drop a package's static credential declarations.
+  packedPkgJson.interchange = { ...pkg.interchange, tools: outRel };
   delete packedPkgJson.dependencies;
   delete packedPkgJson.devDependencies;
   delete packedPkgJson.optionalDependencies;

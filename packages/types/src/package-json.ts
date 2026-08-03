@@ -11,15 +11,55 @@
 import { type } from "arktype";
 
 /**
- * Required fields plus the `interchange.tools` extension used to
- * identify tool packages. `onUndeclaredKey("ignore")` lets the
- * arbitrary upstream npm fields pass through without listing them.
+ * A tool package's static declaration of one provider-backed credential it
+ * needs: an abstract handle plus optional scopes. Advisory only -- a request
+ * the agent definition later binds to a concrete credential and the launch-time
+ * grant gate authorizes; a declaration consents to nothing on its own. The
+ * handle is the key the binding and the runtime delivery use.
+ */
+export const ToolCredentialHandle = type(/^[a-z0-9][a-z0-9._-]*$/);
+
+export const ToolCredentialDeclaration = type({
+  handle: ToolCredentialHandle,
+  "scopes?": "string[]",
+});
+export type ToolCredentialDeclaration = typeof ToolCredentialDeclaration.infer;
+
+/**
+ * The credential declarations for one package, with the unique-handle
+ * invariant enforced at parse time: a handle is the binding/delivery key, so a
+ * duplicate within a single package is a defect the upload boundary must
+ * reject rather than let collapse silently downstream.
+ */
+export const ToolCredentialDeclarationArray =
+  ToolCredentialDeclaration.array().narrow((decls, ctx) => {
+    const seen = new Set<string>();
+    for (const decl of decls) {
+      if (seen.has(decl.handle)) {
+        return ctx.mustBe(
+          `an array with no duplicate credential handles; "${decl.handle}" appears more than once`,
+        );
+      }
+      seen.add(decl.handle);
+    }
+    return true;
+  });
+export type ToolCredentialDeclarationArray =
+  typeof ToolCredentialDeclarationArray.infer;
+
+/**
+ * Required fields plus the `interchange` extension used to identify tool
+ * packages: `tools` names the sidecar-bundle entry, and `credentials`
+ * statically declares the provider-backed credentials the package's tools may
+ * need. `onUndeclaredKey("ignore")` lets the arbitrary upstream npm fields pass
+ * through without listing them.
  */
 export const PackageJSON = type({
   name: "string",
   version: "string",
   "interchange?": type({
     "tools?": "string",
+    "credentials?": ToolCredentialDeclarationArray,
   }).onUndeclaredKey("ignore"),
 }).onUndeclaredKey("ignore");
 export type PackageJSON = typeof PackageJSON.infer;
