@@ -673,4 +673,60 @@ describe("resume awaiting signal", () => {
     expect(resumedFail.error.message).toBe(liveFail.error.message);
     expect(resumedFail.retriesExhausted).toBe(liveFail.retriesExhausted);
   });
+
+  test("resumes an in-flight window captured from the runtime's OWN emitted log, not a hand-authored seed", async () => {
+    // Every seed above is hand-authored, which leaves the emitter unproven:
+    // the resume path assumes the runtime emits a SignalAwaited/SignalReceived
+    // shape it can recover from. Here a REAL run drives the gate forward, we
+    // slice its durably-emitted log at the crash-after-signal-before-completed
+    // window (the exact shape the hand-authored in-flight seeds mimic), and
+    // resume from that slice -- so the emitter and the resume path are proven
+    // against each other end to end.
+    const liveRunId = "run-organic";
+    const channel = createInMemorySignalChannel();
+    const liveEnv = buildEnv(gateOnly, { signalChannel: channel });
+    const live = runtimeRun(gateOnly, liveEnv, {
+      runId: liveRunId,
+      triggerPayload: null,
+    });
+    // Let the gate park on the channel, then deliver so the runtime emits its
+    // own SignalAwaited then SignalReceived and moves the gate in-flight.
+    await new Promise((r) => setTimeout(r, 50));
+    await channel.deliver("go", { delivered: "organically" }, "sig-organic");
+    const liveResult = await live.complete;
+    expect(liveResult.terminalStatus).toBe("completed");
+
+    // The durably-emitted log, sliced at the in-flight window: everything the
+    // runtime committed up to (not including) StepCompleted{w}.
+    const emitted = await liveEnv.repoStore.read(liveRunId);
+    const completedIdx = emitted.findIndex(
+      (e) => e.kind === "StepCompleted" && e.stepId === "w",
+    );
+    expect(completedIdx).toBeGreaterThan(-1);
+    const inFlightWindow = emitted.slice(0, completedIdx);
+
+    // The captured window is the emitter's own output, not a hand-built seed:
+    // it carries a SignalAwaited and its SignalReceived but no StepCompleted.
+    const windowKinds = inFlightWindow.map((e) => e.kind);
+    expect(windowKinds.filter((k) => k === "SignalAwaited").length).toBe(1);
+    expect(windowKinds.filter((k) => k === "SignalReceived").length).toBe(1);
+    expect(windowKinds.filter((k) => k === "StepCompleted").length).toBe(0);
+
+    // Resume a fresh runtime from the captured window; the gate recovers and
+    // completes with the delivered payload without a live re-deliver.
+    const resumeEnv = buildEnv(gateOnly);
+    const resumed = await runtimeRun(gateOnly, resumeEnv, {
+      runId: liveRunId,
+      resumeFromEvents: inFlightWindow,
+    }).complete;
+    expect(resumed.terminalStatus).toBe("completed");
+    const completed = resumed.events.find(
+      (e) => e.kind === "StepCompleted" && e.stepId === "w",
+    );
+    if (completed?.kind !== "StepCompleted")
+      throw new Error("gate not completed on resume");
+    expect(await resumeEnv.blobs.resolveRef(completed.output.ref)).toEqual({
+      delivered: "organically",
+    });
+  });
 });
