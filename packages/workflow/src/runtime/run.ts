@@ -1895,6 +1895,15 @@ async function runOnTrigger(
           signalId: plan.signalId,
         };
         break;
+      case "advance-with-input":
+        // The next event's trigger already arrived durably on the input channel
+        // -- its SignalReceived consumed the re-arm, moving the container off
+        // `awaiting-signal` -- but the body spawn had not yet committed. Advance
+        // to that event with the delivered input WITHOUT re-parking, so the
+        // trigger is not dropped.
+        currentInput = plan.input;
+        eventIndex = plan.eventIndex + 1;
+        break;
       case "reawait-input": {
         // The current event's body completed; the section is idle on its input
         // re-arm. Re-adopt the durable input park or mint a fresh one, await
@@ -2346,6 +2355,7 @@ type OnTriggerResumePlan =
       signalId: string;
     }
   | { kind: "reawait-input"; eventIndex: number; existingSignalName?: string }
+  | { kind: "advance-with-input"; eventIndex: number; input: unknown }
   | {
       kind: "terminal-is-final";
       eventIndex: number;
@@ -2407,6 +2417,20 @@ function planOnTriggerResume(
         kind: "reawait-input",
         eventIndex,
         existingSignalName: container.awaitingSignal.name,
+      };
+    }
+    // The re-arm's next trigger may have been DELIVERED before the crash
+    // spawned its body: the input `SignalReceived` moved the container to
+    // in-flight (awaitingSignal stripped), so it is not caught above. Advance
+    // to that event with the delivered payload rather than re-parking and
+    // dropping it -- the input sibling of the delivered-approval/relay windows
+    // on the body-in-flight side.
+    const delivered = recoverDeliveredInput(primitive.id, log);
+    if (delivered !== undefined) {
+      return {
+        kind: "advance-with-input",
+        eventIndex,
+        input: delivered.payload,
       };
     }
     return { kind: "reawait-input", eventIndex };
@@ -2519,6 +2543,62 @@ function recoverDeliveredApprovalGrant(
   }
   if (!found) return undefined;
   return { corr, decision };
+}
+
+/**
+ * Recover an input re-arm whose next trigger was delivered but whose body spawn
+ * had not yet committed at the crash -- the input sibling of
+ * `recoverDeliveredApprovalGrant`. After a body completes, the container
+ * re-arms an `input` park for event N+1; when that park's `SignalReceived`
+ * landed (moving the container to `in-flight` and stripping its
+ * `awaitingSignal`) but `ChildSpawned` N+1 was not written, the delivered
+ * trigger survives only in the log. Return its payload so the resume advances
+ * to N+1 instead of re-parking and dropping it.
+ *
+ * The seq DISCRIMINATOR is load-bearing: the input re-arm await must be NEWER
+ * than the highest `ChildSpawned` for this container. An input await OLDER than
+ * that belongs to an already-spawned event, and advancing on its
+ * already-consumed trigger would double-spawn the next event.
+ */
+function recoverDeliveredInput(
+  stepId: string,
+  log: readonly WorkflowEvent[],
+): { payload: unknown } | undefined {
+  let maxChildSpawnedSeq = -1;
+  for (const event of log) {
+    if (
+      event.kind === "ChildSpawned" &&
+      event.stepId === stepId &&
+      event.seq > maxChildSpawnedSeq
+    ) {
+      maxChildSpawnedSeq = event.seq;
+    }
+  }
+  let lastInputAwait: { name: string; seq: number } | undefined;
+  for (const event of log) {
+    if (
+      event.kind === "SignalAwaited" &&
+      event.stepId === stepId &&
+      controlParkKindOf(event) === "input"
+    ) {
+      lastInputAwait = { name: event.signalName, seq: event.seq };
+    }
+  }
+  if (lastInputAwait === undefined) return undefined;
+  if (lastInputAwait.seq <= maxChildSpawnedSeq) return undefined;
+  let payload: unknown;
+  let found = false;
+  for (const event of log) {
+    if (
+      event.kind === "SignalReceived" &&
+      event.signalName === lastInputAwait.name
+    ) {
+      payload = event.payload;
+      found = true;
+    }
+  }
+  if (!found) return undefined;
+  return { payload };
 }
 
 /**

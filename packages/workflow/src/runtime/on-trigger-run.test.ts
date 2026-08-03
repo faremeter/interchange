@@ -478,6 +478,225 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
+  test("advances to the next event with a trigger delivered before the crash spawned its body", async () => {
+    const runId = "sec-resume-input";
+    const inputChannel = signalName("input-corr-1");
+    // Event 0's body completed and the section re-armed an input park for event
+    // 1; that park's SignalReceived is durable but ChildSpawned section__1 was
+    // never written. The container reduces to in-flight with awaitingSignal
+    // stripped, so the delivered trigger lives only in the log -- the input
+    // sibling of the delivered-grant window. Resume must advance to event 1 with
+    // that payload, not re-park and drop it.
+    const seed: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "x",
+        trigger: { type: "manual", payload: { text: "event-0" } },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "section",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 3,
+        at,
+        stepId: "section",
+        childRunId: "section__0",
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "ChildCompleted",
+        seq: 4,
+        at,
+        childRunId: "section__0",
+        terminalStatus: "completed",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 5,
+        at,
+        stepId: "section",
+        signalName: inputChannel,
+        parkKind: "input",
+      },
+      {
+        kind: "SignalReceived",
+        seq: 6,
+        at,
+        signalName: inputChannel,
+        signalId: "trigger-1",
+        payload: { text: "event-1" },
+      },
+    ];
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    const spawnInputs: unknown[] = [];
+    const spawnSuspendableChild: SpawnSuspendableChild = async ({ input }) => {
+      spawnInputs.push(input);
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async () => {
+          throw new Error("no resume expected");
+        },
+        deliverSignal: async () => undefined,
+      };
+    };
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // Advances to event 1 on the durable trigger, spawns section__1 with the
+    // delivered payload, which completes and re-arms a fresh input park (#2).
+    await waitForPark(repoStore, runId, "input", 2);
+    expect(spawnInputs).toEqual([{ text: "event-1" }]);
+    const log = await repoStore.read(runId);
+    expect(
+      log.flatMap((e) => (e.kind === "ChildSpawned" ? [e.childRunId] : [])),
+    ).toEqual(["section__0", "section__1"]);
+    expect(log.filter((e) => e.kind === "ChildSpawned").length).toBe(2);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("does not advance on an already-consumed input older than the last spawn (no double-spawn)", async () => {
+    const runId = "sec-resume-stale-input";
+    const inputChannel1 = signalName("input-corr-a");
+    // Event 1 was fully serviced: its input await (seq 5) delivered (seq 6) and
+    // spawned section__1 (seq 7), which completed (seq 8). The crash landed
+    // before event 2 re-armed. The last input await (seq 5) is OLDER than the
+    // highest ChildSpawned (seq 7), so it belongs to an ALREADY-spawned event;
+    // advancing on it would double-spawn. The seq discriminator refuses, so the
+    // resume re-parks fresh and services event 2 only on a NEW delivery.
+    const seed: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "x",
+        trigger: { type: "manual", payload: { text: "event-0" } },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "section",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 3,
+        at,
+        stepId: "section",
+        childRunId: "section__0",
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "ChildCompleted",
+        seq: 4,
+        at,
+        childRunId: "section__0",
+        terminalStatus: "completed",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 5,
+        at,
+        stepId: "section",
+        signalName: inputChannel1,
+        parkKind: "input",
+      },
+      {
+        kind: "SignalReceived",
+        seq: 6,
+        at,
+        signalName: inputChannel1,
+        signalId: "trigger-1",
+        payload: { text: "event-1" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 7,
+        at,
+        stepId: "section",
+        childRunId: "section__1",
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "ChildCompleted",
+        seq: 8,
+        at,
+        childRunId: "section__1",
+        terminalStatus: "completed",
+      },
+    ];
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    const channel = createInMemorySignalChannel();
+    const spawnInputs: unknown[] = [];
+    const spawnSuspendableChild: SpawnSuspendableChild = async ({ input }) => {
+      spawnInputs.push(input);
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async () => {
+          throw new Error("no resume expected");
+        },
+        deliverSignal: async () => undefined,
+      };
+    };
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // Re-parks fresh for event 2 (input await #2) rather than advancing on the
+    // stale event-1 input. No section__2 is spawned until a NEW delivery.
+    const ch2 = await waitForPark(repoStore, runId, "input", 2);
+    const mid = await repoStore.read(runId);
+    expect(
+      mid.flatMap((e) => (e.kind === "ChildSpawned" ? [e.childRunId] : [])),
+    ).toEqual(["section__0", "section__1"]);
+    expect(spawnInputs).toEqual([]);
+
+    // A genuinely new event-2 delivery on the fresh channel spawns section__2.
+    await channel.deliver(ch2, { text: "event-2" }, "trigger-2");
+    await waitForPark(repoStore, runId, "input", 3);
+    const log = await repoStore.read(runId);
+    expect(
+      log.flatMap((e) => (e.kind === "ChildSpawned" ? [e.childRunId] : [])),
+    ).toEqual(["section__0", "section__1", "section__2"]);
+    expect(spawnInputs).toEqual([{ text: "event-2" }]);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
   // The fail-loud multi-section-same-name guard in `driveContainerSignalRelay`
   // (two sections concurrently proxy-parked on the same author name is refused,
   // as the container-scoped binding would otherwise diverge from the reducer's
@@ -487,6 +706,7 @@ describe("runOnTrigger", () => {
   // run-failure cascade) and whose topology is deferred to correlated
   // author-signals. It stands as defense-in-depth; the single-section path this
   // pass ships is always one active awaiter and stays faithful.
+
   test("proxies a body author-signal await up as a signal-relay and relays the signal", async () => {
     const runId = "sec-signal";
     const repoStore = createInMemoryRepoStore();
