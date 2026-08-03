@@ -260,9 +260,9 @@ describe("resume awaiting signal", () => {
     // durably before the crash: SignalReceived{sig-1} consumes gateA (first
     // awaiter), SignalReceived{sig-2} then consumes gateB. Both gates are
     // now `in-flight` with no StepCompleted -- the same crash window as the
-    // single-gate case, but findConsumedSignal (match by name only) cannot
-    // tell which delivery each gate consumed, so completing either would
-    // risk binding it to the other gate's payload.
+    // single-gate case, but a name-scoped binder cannot tell which delivery
+    // each gate consumed, so completing either would risk binding it to the
+    // other gate's payload.
     const seed: WorkflowEvent[] = [
       runStartedSeed(runId),
       {
@@ -331,13 +331,13 @@ describe("resume awaiting signal", () => {
     // scan pairs the first delivery to gateB and the second to gateA:
     //   SignalReceived{sig-1} -> gateB (in-flight, consumed sig-1)
     //   SignalReceived{sig-2} -> gateA (in-flight, then StepCompleted)
-    // gateA finished; gateB is the crash-window in-flight gate. A phase-scoped
-    // in-flight count would NOT see gateA (it is `completed`, not `in-flight`),
-    // so the retired count-guard saw one awaiter and let findConsumedSignal run
-    // -- and findConsumedSignal returns the LAST observed "go" (sig-2), binding
-    // gateB to gateA's payload: a silent mis-bind. hasForeignSameNameAwaiter
-    // keys on gateA's durable SignalAwaited, which outlives its completion, and
-    // refuses so gateB never completes with the wrong payload.
+    // gateA finished; gateB is the crash-window in-flight gate. gateA is
+    // `completed`, not `in-flight`, so a count of only in-flight same-name
+    // awaiters would miss it and admit the resume -- and a name-scoped binder
+    // would then recover the LAST observed "go" (sig-2) and bind gateB to
+    // gateA's payload: a silent mis-bind. hasForeignSameNameAwaiter keys on
+    // gateA's durable SignalAwaited, which outlives its completion, and refuses
+    // so gateB never completes with the wrong payload.
     const seed: WorkflowEvent[] = [
       runStartedSeed(runId),
       {

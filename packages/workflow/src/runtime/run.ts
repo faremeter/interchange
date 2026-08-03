@@ -2579,7 +2579,7 @@ function recoverDeliveredSignalRelay(
  * owns the queue -- `handleSignalReceived` queues a signal with no awaiter and
  * `handleSignalAwaited` consumes the queue head -- so recovering WHICH signal
  * paired with the await at `awaitSeq` means replaying that exact pairing, not
- * re-heuristicking it. `findConsumedSignal` will not do here: it returns the
+ * re-heuristicking it. A newest-observed heuristic will not do here: it returns the
  * NEWEST observed `SignalReceived` for the name, whereas the reducer consumes
  * the OLDEST queued one, so under multiple queued signals for a name it binds
  * the wrong payload.
@@ -3083,41 +3083,91 @@ async function emitStepCompletedWithValue(
   await emitStepCompleted(env, runId, stepId, ref);
 }
 
+type GateOutcome =
+  | { timedOut: false; payload: unknown; signalId: string }
+  | { timedOut: true };
+
 /**
- * Recover the `SignalReceived` that consumed an awaitSignal step on a
- * resume that finds the step `in-flight`. The reduced `StepState` carries
- * no payload, so the payload survives only on the durable log. Match the
- * signal by name and by membership in `observedSignalIds` (the reduction
- * that moved the step off `awaiting-signal` also recorded the signal's id
- * there), preferring the last such event so a name that legitimately
- * carried multiple deliveries resolves to the one actually consumed.
+ * Reconstruct how a single admitted `awaitSignal` gate left `awaiting-signal`,
+ * by replaying the reducer's signal FIFO over the full run log and folding the
+ * gate's own `TimerFired` as a competing mover. Returns whether a delivered
+ * signal moved the gate (with the bound payload and its `signalId`) or the
+ * gate's timer fired first, or `undefined` when the log shows nothing moved it
+ * (a corrupt in-flight residual the caller surfaces loudly).
+ *
+ * The caller guarantees, via {@link hasForeignSameNameAwaiter}, that
+ * `selfStepId` is the SOLE awaiter of `signalName`, so the reducer's global
+ * "first awaiting step for this name" scan can only ever resolve to this gate;
+ * a per-gate replay therefore reproduces the reduction faithfully. It mirrors
+ * the two reducer rules that decide the binding: a delivery arriving with no
+ * awaiter present queues, and the gate's `SignalAwaited` drains the queue HEAD
+ * (oldest-first), while a redelivered `signalId` is a dedup no-op. When
+ * `selfTimerId` is given, a `TimerFired` for it moves the gate off
+ * `awaiting-signal` exactly as `handleTimerFired` does, so whichever of the
+ * delivered signal or the fired timer moves the gate first wins the race.
+ *
+ * Deliberately NOT merged with {@link boundSignalForContainerAwait}: that
+ * binder is byte-frozen (the container-relay correctness crux), pairs a
+ * container awaiting single-file by `SignalAwaited` seq, honors
+ * `SignalAwaitAbandoned`, and returns a bound `signalId`; this one folds a
+ * timer mover and returns a timeout-vs-payload discriminant for a plain gate.
+ * Unifying them would require editing the frozen binder.
  */
-function findConsumedSignal(
+export function reconstructGateOutcome(
   log: readonly WorkflowEvent[],
   signalName: string,
-  state: RunState,
-): { payload: unknown; signalId: string } | undefined {
-  let found: { payload: unknown; signalId: string } | undefined;
+  selfStepId: string,
+  selfTimerId?: string,
+): GateOutcome | undefined {
+  const queue: { payload: unknown; signalId: string }[] = [];
+  const observed = new Set<string>();
+  let awaiting = false;
   for (const event of log) {
-    if (
-      event.kind === "SignalReceived" &&
+    if (event.kind === "SignalReceived" && event.signalName === signalName) {
+      if (observed.has(event.signalId)) continue;
+      observed.add(event.signalId);
+      if (awaiting) {
+        return {
+          timedOut: false,
+          payload: event.payload,
+          signalId: event.signalId,
+        };
+      }
+      queue.push({ payload: event.payload, signalId: event.signalId });
+    } else if (
+      event.kind === "SignalAwaited" &&
       event.signalName === signalName &&
-      state.observedSignalIds.has(event.signalId)
+      event.stepId === selfStepId
     ) {
-      found = { payload: event.payload, signalId: event.signalId };
+      const head = queue.shift();
+      if (head !== undefined) {
+        return {
+          timedOut: false,
+          payload: head.payload,
+          signalId: head.signalId,
+        };
+      }
+      awaiting = true;
+    } else if (
+      selfTimerId !== undefined &&
+      event.kind === "TimerFired" &&
+      event.timerId === selfTimerId &&
+      awaiting
+    ) {
+      return { timedOut: true };
     }
   }
-  return found;
+  return undefined;
 }
 
 /**
  * Whether any `awaitSignal` gate OTHER than `selfStepId` awaited `signalName`
- * anywhere in the run. `findConsumedSignal` binds a consumed signal to a gate
- * by signal name alone, so a second same-name awaiter -- even one that already
- * COMPLETED -- makes the binding ambiguous: the log cannot say which gate
- * consumed which delivery. The in-flight short-circuit refuses that topology
- * rather than risk binding a payload to the wrong gate; only a run where
- * `selfStepId` is the sole awaiter of the name is provably unambiguous. A
+ * anywhere in the run. `reconstructGateOutcome` replays the reducer FIFO scoped
+ * to a SINGLE awaiter of the name, so a second same-name awaiter -- even one
+ * that already COMPLETED -- breaks that assumption: the log can no longer say
+ * which gate consumed which delivery. The in-flight short-circuit refuses that
+ * topology rather than risk binding a payload to the wrong gate; only a run
+ * where `selfStepId` is the sole awaiter of the name is provably unambiguous. A
  * completed same-name sibling is the case a phase-scoped in-flight count would
  * miss, so the predicate keys on the durable `SignalAwaited` marker, which
  * outlives the sibling's completion.
@@ -3556,12 +3606,11 @@ async function runAwaitSignal(
   // (indistinguishable in reduced state) never reaches here.
   if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
     const log = await env.repoStore.read(runId);
-    // `findConsumedSignal` matches by signal name only, so it cannot bind a
-    // payload to the right gate when another step awaited the same name --
-    // including a same-name sibling that already completed. Refuse that
-    // ambiguous topology rather than silently recovering a wrong payload; only
-    // a run where this gate is the sole awaiter of the name is provably
-    // unambiguous.
+    // The in-flight gate's payload survives only on the log; the replay below
+    // binds it by signal name, which is faithful only while this gate is the
+    // sole awaiter of the name. Another step awaiting the same name -- even a
+    // sibling that already completed -- makes the binding ambiguous, so refuse
+    // rather than risk recovering a wrong payload.
     if (hasForeignSameNameAwaiter(log, primitive.name, primitive.id)) {
       throw new RuntimeResumeUnsupportedError(
         primitive.id,
@@ -3569,19 +3618,22 @@ async function runAwaitSignal(
         `another awaitSignal gate for ${primitive.name} awaited the signal on a different step, so the consumed signal cannot be unambiguously bound to step ${primitive.id}`,
       );
     }
-    const received = findConsumedSignal(log, primitive.name, state);
-    if (received === undefined) {
+    // A no-timeout gate has no timer to fold, so the replay recovers the
+    // consumed signal (or fails loud if the log shows none consumed).
+    const outcome = reconstructGateOutcome(log, primitive.name, primitive.id);
+    if (outcome === undefined) {
       throw new Error(
-        `runAwaitSignal resume: step ${primitive.id} is in-flight but no consumed SignalReceived for ${primitive.name} is in the log`,
+        `runAwaitSignal resume: step ${primitive.id} is in-flight but the log shows no consumed signal for ${primitive.name}`,
       );
     }
-    await emitStepCompletedWithValue(
+    return completeAwaitSignalOutcome(
+      definition,
       env,
       runId,
-      primitive.id,
-      received.payload,
+      primitive,
+      outcome,
+      abort,
     );
-    return received.payload;
   }
 
   if (!resumed) {

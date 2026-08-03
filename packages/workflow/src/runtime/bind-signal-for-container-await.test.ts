@@ -84,7 +84,7 @@ describe("boundSignalForContainerAwait", () => {
       received(3, "s2", { v: 2 }),
       awaited(4),
     ];
-    // The reducer consumes the queue HEAD (oldest). `findConsumedSignal` would
+    // The reducer consumes the queue HEAD (oldest). A newest-observed heuristic would
     // return the newest ("s2") -- the exact divergence this replay avoids.
     const bound = boundSignalForContainerAwait(log, N, SECTION, 4);
     expect(bound?.signalId).toBe("s1");
