@@ -3625,6 +3625,27 @@ async function runAwaitSignal(
     abort,
   );
 
+  return completeAwaitSignalOutcome(
+    definition,
+    env,
+    runId,
+    primitive,
+    result,
+    abort,
+  );
+}
+
+/**
+ * Settle an `awaitSignal` gate from its resolved {@link ParkResult}.
+ */
+async function completeAwaitSignalOutcome(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  primitive: AwaitSignalPrimitive,
+  result: ParkResult,
+  abort: AbortSignal,
+): Promise<unknown> {
   // No onTimeout: preserve the prior behavior -- a delivered signal completes
   // the gate with its payload; a fired timer fails the step.
   if (primitive.onTimeout === undefined) {
