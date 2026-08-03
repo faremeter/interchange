@@ -45,6 +45,20 @@ export type SidecarMailPersistedPayload = SidecarMailPersistedRow & {
   raw: Uint8Array;
 };
 
+/** Authenticated connection scope attached to a workflow-run pack. */
+export type WorkflowRunPackSource =
+  | {
+      readonly kind: "shared";
+      readonly agentAddress: string;
+    }
+  | {
+      readonly kind: "allocated";
+      readonly agentAddress: string;
+      readonly allocationId: string;
+      readonly anchorRunId: string;
+      readonly generation: number;
+    };
+
 /**
  * Outcome of reserving a mail-triggered run's grants. `skip` means the
  * recipient names no workflow deployment; `rejected` means the deployment's
@@ -318,18 +332,16 @@ export type SidecarLookups = {
   >;
 
   /** Ingests a received workflow-run pack and returns whether the wire
-   * layer should ack or reject the pack to the sidecar. `repoId.kind`
-   * is `"workflow-run"` and `repoId.id` is the deployment id (which the
-   * hub-side substrate maps to a `WorkflowRunSupervisorPrincipal`
-   * during the receivePack call). The wire layer dispatches on
-   * `repoId.kind` against the receive lookups before calling either;
-   * this lookup must reject any pack whose `repoId.kind` is not
-   * `"workflow-run"`. */
+   * layer should ack or reject the pack to the sidecar. `source` is derived
+   * from the authenticated socket, never from the frame. The lookup must
+   * revalidate that source against durable deployment/allocation ownership
+   * before advancing the Git ref. */
   receiveWorkflowRunPack?: (
     repoId: RepoId,
     pack: Uint8Array,
     ref: string,
     commitSha: string,
+    source: WorkflowRunPackSource,
   ) => Promise<
     { accepted: true } | { accepted: false; reason: PackRejectReason }
   >;

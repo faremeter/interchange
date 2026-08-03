@@ -46,6 +46,7 @@ import {
   type SidecarRouter,
   type WorkflowAllocationService,
   type WorkflowDispatchService,
+  type WorkflowRunLifecycle,
 } from "@intx/hub-sessions";
 import type { GetSession } from "../session";
 
@@ -670,7 +671,7 @@ function createMockAssetService(workflowJson: string | null): AssetService {
 
 function createStubRepoStore(
   repoDirById?: Map<string, string>,
-  runLifecycle: "absent" | "live" | "terminal" = "live",
+  runLifecycle: WorkflowRunLifecycle | (() => WorkflowRunLifecycle) = "live",
 ): RepoStore {
   const unused = () =>
     Promise.reject(new Error("stub repoStore is not wired in workflow tests"));
@@ -696,33 +697,37 @@ function createStubRepoStore(
       }
       return dir;
     },
-    openCommittedReads: async () => ({
-      async listDir(dirPath) {
-        const runPath = `runs/ins_${DEPLOYMENT_ID}@${DOMAIN}`;
-        if (dirPath === runPath) {
-          return runLifecycle === "absent"
-            ? []
-            : [{ name: "events", oid: "events", type: "tree" as const }];
-        }
-        if (dirPath === `${runPath}/events`) {
-          if (runLifecycle === "absent") return [];
-          return runLifecycle === "terminal"
-            ? [
-                { name: "0.json", oid: "started", type: "blob" as const },
-                { name: "1.json", oid: "terminal", type: "blob" as const },
-              ]
-            : [{ name: "0.json", oid: "started", type: "blob" as const }];
-        }
-        return [];
-      },
-      async readBlobByOid(oid) {
-        const event =
-          oid === "terminal"
-            ? { type: "RunCompleted", seq: 1 }
-            : { type: "RunStarted", seq: 0 };
-        return new TextEncoder().encode(JSON.stringify(event));
-      },
-    }),
+    openCommittedReads: async () => {
+      const lifecycle =
+        typeof runLifecycle === "function" ? runLifecycle() : runLifecycle;
+      return {
+        async listDir(dirPath) {
+          const runPath = `runs/ins_${DEPLOYMENT_ID}@${DOMAIN}`;
+          if (dirPath === runPath) {
+            return lifecycle === "absent"
+              ? []
+              : [{ name: "events", oid: "events", type: "tree" as const }];
+          }
+          if (dirPath === `${runPath}/events`) {
+            if (lifecycle === "absent") return [];
+            return lifecycle === "terminal"
+              ? [
+                  { name: "0.json", oid: "started", type: "blob" as const },
+                  { name: "1.json", oid: "terminal", type: "blob" as const },
+                ]
+              : [{ name: "0.json", oid: "started", type: "blob" as const }];
+          }
+          return [];
+        },
+        async readBlobByOid(oid) {
+          const event =
+            oid === "terminal"
+              ? { type: "RunCompleted", seq: 1 }
+              : { type: "RunStarted", seq: 0 };
+          return new TextEncoder().encode(JSON.stringify(event));
+        },
+      };
+    },
     openCommittedReadsAtCommit: unused,
     subscribe: () => {
       throw new Error("stub repoStore is not wired in workflow tests");
@@ -765,7 +770,7 @@ type TestAppOpts = {
   workflowSignalDispatchError?: Error;
   workflowJson?: string | null;
   repoDirById?: Map<string, string>;
-  runLifecycle?: "absent" | "live" | "terminal";
+  runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
 };
 
 function createTestApp(opts: TestAppOpts = {}) {
@@ -1343,6 +1348,31 @@ describe("POST /workflows/:deploymentId/signals", () => {
     expect(signalEnqueues).toHaveLength(1);
   });
 
+  test("rejects an exclusive signal if Git terminates while it waits for the allocation lock", async () => {
+    const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
+    const lifecycles = ["live", "terminal"] as const;
+    let lifecycleRead = 0;
+    const app = createTestApp({
+      grants: [manageGrant()],
+      workflowSignalDispatchEnqueues: signalEnqueues,
+      db: { deploymentRow, allocationId: "allocation-1" },
+      runLifecycle: () => lifecycles[lifecycleRead++] ?? "terminal",
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: RUN_ID,
+        signalName: "go",
+        signalId: "sig-git-terminal-race",
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("workflow_run_not_running");
+    expect(signalEnqueues).toEqual([]);
+    expect(lifecycleRead).toBe(2);
+  });
+
   test("returns 503 when durable signal dispatch is unavailable", async () => {
     const signalCalls: SignalCall[] = [];
     const app = createTestApp({
@@ -1714,6 +1744,56 @@ describe("POST /workflows/:deploymentId/mail", () => {
     if (queued === undefined) throw new Error("missing durable dispatch");
     expect(queued.anchorRunId).toBe(DEPLOYMENT_ID);
     expect(new TextDecoder().decode(queued.rawMessage)).toContain("kick off");
+  });
+
+  test("durably queues the first exclusive trigger while its Git run is absent", async () => {
+    const enqueues: WorkflowDispatchEnqueue[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      workflowDispatchEnqueues: enqueues,
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        allocationId: "allocation-1",
+        topLevelRunStatus: null,
+      },
+      runLifecycle: "absent",
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "start" }),
+    );
+
+    expect(res.status).toBe(202);
+    expect(enqueues).toHaveLength(1);
+  });
+
+  test("rejects exclusive mail if Git terminates while it waits for the allocation lock", async () => {
+    const enqueues: WorkflowDispatchEnqueue[] = [];
+    const inserts: InsertRecord[] = [];
+    const lifecycles = ["live", "terminal"] as const;
+    let lifecycleRead = 0;
+    const app = createTestApp({
+      grants: [manageGrant()],
+      workflowDispatchEnqueues: enqueues,
+      db: {
+        deploymentRow,
+        assetRow: workflowAssetRow,
+        allocationId: "allocation-1",
+        inserts,
+      },
+      runLifecycle: () => lifecycles[lifecycleRead++] ?? "terminal",
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "too late" }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("workflow_run_terminal");
+    expect(enqueues).toEqual([]);
+    expect(inserts).toEqual([]);
+    expect(lifecycleRead).toBe(2);
   });
 
   test("rejects mail when the allocation becomes terminal before commit", async () => {

@@ -680,7 +680,7 @@ Body: ApproveAction
 400: ErrorResponse -- Unsupported scope
 403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
-409: ErrorResponse -- Approval already resolved (takes precedence on retries) or workflow deployment unavailable
+409: ErrorResponse -- Approval already resolved (takes precedence on retries), workflow run no longer running, or workflow deployment unavailable
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
 ### POST /api/tenants/:tenantId/approvals/:approvalId/reject
@@ -693,7 +693,7 @@ Body: RejectAction
 200: ApprovalResponse -- Action rejected
 403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
-409: ErrorResponse -- Approval already resolved (takes precedence on retries) or workflow deployment unavailable
+409: ErrorResponse -- Approval already resolved (takes precedence on retries), workflow run no longer running, or workflow deployment unavailable
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
 ## Wallets

@@ -30,6 +30,7 @@ import {
   createHubSessionLookups,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "@intx/hub-sessions";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -44,11 +45,9 @@ import {
 
 const TENANT = "tnt";
 const ASSET = "ast";
-// The workflow-run repo slug the pack is received under. It is the id the
-// substrate maps to a `WorkflowRunSupervisorPrincipal`; it does not need to
-// match a deployment's anchor-run id, since the terminal flip keys off the run
-// id carried in the event tree, not the deployment.
 const DEPLOYMENT = "dep";
+const DEPLOYMENT_ADDRESS = "ins_dep@tnt.example";
+const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
 const WFR_REF = "refs/heads/events";
 
 function eventBody(seq: number, type: string): string {
@@ -115,6 +114,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: DEPLOYMENT,
         deploymentId: DEPLOYMENT,
         tenantId: TENANT,
+        address: DEPLOYMENT_ADDRESS,
       });
     });
 
@@ -228,10 +228,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentRepoStore: repoStore,
       });
       return lookups.receiveWorkflowRunPack(
-        { kind: "workflow-run", id: DEPLOYMENT },
+        { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
         pack,
         WFR_REF,
         tip,
+        { kind: "shared", agentAddress: DEPLOYMENT_ADDRESS },
       );
     }
 

@@ -14,7 +14,10 @@ import {
   hexDecode,
   hexEncode,
 } from "@intx/types";
-import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
+import {
+  deriveWorkflowRunRepoId,
+  isWorkflowDerivedAddress,
+} from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
   SidecarFrame,
@@ -70,6 +73,32 @@ export type SidecarConnection = {
 function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
   return (
     conn.agentAddresses.has(address) || conn.workflowAddresses.has(address)
+  );
+}
+
+/**
+ * Bind pack writes to the repository implied by the authenticated address.
+ * An allocated credential is narrower still: it may only write its one
+ * deployment's workflow-run repository and never a standalone agent-state
+ * repository.
+ */
+function connCanPushRepo(
+  conn: SidecarConnection,
+  agentAddress: string,
+  repoId: RepoId,
+): boolean {
+  if (
+    conn.identity.kind === "allocated" &&
+    agentAddress !== conn.identity.workflowRunAddress
+  ) {
+    return false;
+  }
+  if (repoId.kind === "agent-state") {
+    return conn.identity.kind === "shared" && repoId.id === agentAddress;
+  }
+  return (
+    repoId.kind === "workflow-run" &&
+    repoId.id === deriveWorkflowRunRepoId(agentAddress)
   );
 }
 
@@ -2198,9 +2227,11 @@ export function createSidecarRouter(
 
   function pickReceivePackLookup(
     repoId: RepoId,
-  ): SidecarLookups["receiveAgentStatePack"] | undefined {
+  ): SidecarLookups["receiveWorkflowRunPack"] | undefined {
     switch (repoId.kind) {
       case "agent-state":
+        // The agent-state lookup ignores the `source` argument the workflow-run
+        // lookup takes; the two are otherwise the same contract.
         return lookups.receiveAgentStatePack;
       case "workflow-run":
         return lookups.receiveWorkflowRunPack;
@@ -2214,6 +2245,17 @@ export function createSidecarRouter(
     if (conn === undefined) return;
     if (!connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.push for unrouted agent ${frame.agentAddress}`;
+      return;
+    }
+    if (!connCanPushRepo(conn, frame.agentAddress, frame.repoId)) {
+      logger.warn`Rejected repo.pack.push outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
+      conn.send({
+        type: "repo.pack.reject",
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        transferId: frame.transferId,
+        reason: "path_violation",
+      });
       return;
     }
 
@@ -2250,6 +2292,17 @@ export function createSidecarRouter(
     if (conn === undefined) return;
     if (!connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.done for unrouted agent ${frame.agentAddress}`;
+      return;
+    }
+    if (!connCanPushRepo(conn, frame.agentAddress, frame.repoId)) {
+      logger.warn`Rejected repo.pack.done outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
+      conn.send({
+        type: "repo.pack.reject",
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        transferId: frame.transferId,
+        reason: "path_violation",
+      });
       return;
     }
 
@@ -2294,6 +2347,15 @@ export function createSidecarRouter(
       result.pack,
       result.ref,
       result.commitSha,
+      conn.identity.kind === "allocated"
+        ? {
+            kind: "allocated",
+            agentAddress: frame.agentAddress,
+            allocationId: conn.identity.allocationId,
+            anchorRunId: conn.identity.anchorRunId,
+            generation: conn.identity.generation,
+          }
+        : { kind: "shared", agentAddress: frame.agentAddress },
     );
 
     // Connection may have closed during async verification.
