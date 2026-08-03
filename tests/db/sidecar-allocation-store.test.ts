@@ -6,12 +6,14 @@ import {
   expect,
   test,
 } from "bun:test";
+import { eq } from "drizzle-orm";
 
 import {
   createSidecarAllocationStore,
+  createWorkflowRunDispatchStore,
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
-import { workflowDefinition } from "@intx/db/schema";
+import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -124,6 +126,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(claimed?.id).toBe(pending.id);
       const replacementAt = new Date(Date.now() + 300_000);
 
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "generation-1-public-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+
       expect(
         await store.beginReplacement({
           allocationId: pending.id,
@@ -156,6 +163,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           leaseDurationMs: 60_000,
         }),
       ).toBeNull();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+          columns: { publicKey: true },
+        }),
+      ).toEqual({ publicKey: null });
 
       const replacement = await store.bindReplacementSidecar({
         allocationId: pending.id,
@@ -539,6 +552,256 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(leased?.reconciliationLeaseId).toBe("lease-repair");
       expect(leased?.connectDeadline).toEqual(deadline);
       expect(leased?.nextAttemptAt?.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    test("terminal allocation failure fails runs, principals, and dispatches", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn-terminal-run",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        refId: "run-terminal",
+        status: "active",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-terminal",
+        deploymentId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+        principalId: "prn-terminal-run",
+      });
+      const store = createSidecarAllocationStore(h.db);
+      const dispatchStore = createWorkflowRunDispatchStore(h.db);
+      await dispatchStore.enqueue({
+        id: "dispatch-terminal",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "message-terminal",
+        rawMessage: new Uint8Array([1, 2, 3]),
+        stepGrants: [],
+      });
+      await store.createPending({
+        id: "alloc-terminal",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-terminal",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-terminal",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(0),
+      });
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: "lease-terminal",
+          leaseDurationMs: 60_000,
+        }),
+      ).not.toBeNull();
+
+      const endedAt = new Date("2026-08-04T12:00:00.000Z");
+      expect(
+        await store.failWithoutInfrastructure({
+          allocationId: "alloc-terminal",
+          expectedStatus: "provisioning",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-stale",
+          code: "quota_disabled",
+          message: "stale reconciler",
+          now: endedAt,
+        }),
+      ).toBeNull();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, "run-terminal"),
+          columns: { status: true },
+        }),
+      ).toEqual({ status: "running" });
+      expect(
+        await h.db.query.principal.findFirst({
+          where: (row, { eq }) => eq(row.id, "prn-terminal-run"),
+          columns: { status: true },
+        }),
+      ).toEqual({ status: "active" });
+      expect((await dispatchStore.findById("dispatch-terminal"))?.status).toBe(
+        "pending",
+      );
+
+      const failed = await store.failWithoutInfrastructure({
+        allocationId: "alloc-terminal",
+        expectedStatus: "provisioning",
+        expectedGeneration: 1,
+        expectedLeaseId: "lease-terminal",
+        code: "quota_disabled",
+        message: "Provisioning is disabled for this account",
+        now: endedAt,
+      });
+
+      expect(failed?.status).toBe("failed");
+      expect(failed?.failureCode).toBe("quota_disabled");
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+          columns: { status: true, endedAt: true },
+        }),
+      ).toEqual({ status: "failed", endedAt });
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, "run-terminal"),
+          columns: { status: true, endedAt: true },
+        }),
+      ).toEqual({ status: "failed", endedAt });
+      expect(
+        await h.db.query.principal.findFirst({
+          where: (row, { eq }) => eq(row.id, "prn-terminal-run"),
+          columns: { status: true },
+        }),
+      ).toEqual({ status: "deactivated" });
+      expect(await dispatchStore.findById("dispatch-terminal")).toMatchObject({
+        status: "failed",
+        failureCode: "quota_disabled",
+        failureMessage: "Provisioning is disabled for this account",
+      });
+      expect(
+        await dispatchStore.claimNextPending({
+          leaseId: "dispatch-lease-after-terminal-failure",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
+    });
+
+    test("fails active runs when replacement recovery is disabled", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn-unrecoverable-run",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        refId: "run-unrecoverable",
+        status: "active",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-unrecoverable",
+        deploymentId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+        principalId: "prn-unrecoverable-run",
+      });
+      const store = createSidecarAllocationStore(h.db);
+      const dispatchStore = createWorkflowRunDispatchStore(h.db);
+      await store.createPending({
+        id: "alloc-unrecoverable",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-unrecoverable",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-unrecoverable",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(0),
+      });
+      await store.markAllocated({
+        allocationId: "alloc-unrecoverable",
+        generation: 1,
+      });
+      await dispatchStore.enqueue({
+        id: "dispatch-unrecoverable-pending",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "message-unrecoverable-pending",
+        rawMessage: new Uint8Array([1, 2, 3]),
+        stepGrants: [],
+      });
+      await dispatchStore.enqueue({
+        id: "dispatch-unrecoverable-acknowledged",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "message-unrecoverable-acknowledged",
+        rawMessage: new Uint8Array([4, 5, 6]),
+        stepGrants: [],
+      });
+      expect(
+        await dispatchStore.acknowledge({
+          allocationId: "alloc-unrecoverable",
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "message-unrecoverable-acknowledged",
+          generation: 1,
+        }),
+      ).toMatchObject({ status: "acknowledged" });
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "lease-unrecoverable",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed?.id).toBe("alloc-unrecoverable");
+
+      const endedAt = new Date("2026-08-04T12:00:00.000Z");
+      expect(
+        await store.beginUnrecoverableRelease({
+          allocationId: "alloc-unrecoverable",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-stale",
+          failureCode: "sidecar_connect_failed",
+          failureMessage: "stale reconciler",
+          now: endedAt,
+        }),
+      ).toBeNull();
+      expect(
+        await dispatchStore.findById("dispatch-unrecoverable-pending"),
+      ).toMatchObject({ status: "pending" });
+      expect(
+        await dispatchStore.findById("dispatch-unrecoverable-acknowledged"),
+      ).toMatchObject({ status: "acknowledged" });
+      const releasing = await store.beginUnrecoverableRelease({
+        allocationId: "alloc-unrecoverable",
+        expectedGeneration: 1,
+        expectedLeaseId: "lease-unrecoverable",
+        failureCode: "sidecar_connect_failed",
+        failureMessage: "Automatic recovery is disabled: connect timeout",
+        now: endedAt,
+      });
+
+      expect(releasing?.status).toBe("releasing");
+      expect(releasing?.generation).toBe(2);
+      expect(releasing?.failureCode).toBe("sidecar_connect_failed");
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+          columns: { status: true, endedAt: true },
+        }),
+      ).toEqual({ status: "failed", endedAt });
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, "run-unrecoverable"),
+          columns: { status: true, endedAt: true },
+        }),
+      ).toEqual({ status: "failed", endedAt });
+      expect(
+        await h.db.query.principal.findFirst({
+          where: (row, { eq }) => eq(row.id, "prn-unrecoverable-run"),
+          columns: { status: true },
+        }),
+      ).toEqual({ status: "deactivated" });
+      expect(
+        await dispatchStore.findById("dispatch-unrecoverable-pending"),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "sidecar_connect_failed",
+        failureMessage: "Automatic recovery is disabled: connect timeout",
+      });
+      expect(
+        await dispatchStore.findById("dispatch-unrecoverable-acknowledged"),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "sidecar_connect_failed",
+        failureMessage: "Automatic recovery is disabled: connect timeout",
+      });
+      expect(
+        await dispatchStore.claimNextPending({
+          leaseId: "dispatch-lease-after-unrecoverable-release",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
     });
   },
 );

@@ -178,6 +178,10 @@ export {
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 export {
+  restoreWorkflowRunToAllocation,
+  WORKFLOW_RUN_RESTORE_REFS,
+} from "./workflow-run-restore";
+export {
   createAssetService,
   AssetServiceError,
   DEFAULT_ASSET_REF,

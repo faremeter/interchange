@@ -658,8 +658,8 @@ export type PackPushFrame = typeof PackPushFrame.infer;
  *
  * When `mountPath` is set, the receiver materializes the pack at
  * `workspace/<mountPath>/` instead of the hardcoded agent deploy tree.
- * Absent for the agent-state deploy/state flows, which continue to apply
- * the pack to the agent's repo as before.
+ * Absent for agent-state deploy/state flows and workflow-run restoration.
+ * The receiver distinguishes those paths by `repoId.kind`.
  */
 export const PackDoneFrame = type({
   type: "'repo.pack.done'",

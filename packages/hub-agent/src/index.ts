@@ -24,6 +24,7 @@ export {
   type SignalInboundRouter,
   type DrainInboundRouter,
   type GrantsInboundRouter,
+  type WorkflowRunPackApplier,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 export {

@@ -8,7 +8,9 @@ import {
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
+import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import {
+  principal,
   sidecar,
   sidecarAllocation,
   workflowRun,
@@ -148,6 +150,15 @@ export type BeginSidecarReleaseArgs = {
   readonly now?: Date;
 };
 
+export type BeginUnrecoverableSidecarReleaseArgs = {
+  readonly allocationId: string;
+  readonly expectedGeneration: number;
+  readonly expectedLeaseId: string;
+  readonly failureCode: string;
+  readonly failureMessage: string;
+  readonly now?: Date;
+};
+
 export type MarkSidecarReleasedArgs = {
   readonly allocationId: string;
   readonly generation: number;
@@ -242,6 +253,8 @@ function leaseCondition(expectedLeaseId?: string) {
 }
 
 export function createSidecarAllocationStore(db: DBHandle) {
+  const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
+
   async function insertSidecarIdentity(
     tx: DBExecutor,
     args: {
@@ -259,6 +272,66 @@ export function createSidecarAllocationStore(db: DBHandle) {
       createdAt: args.now,
       updatedAt: args.now,
     });
+  }
+
+  async function failRunningRuns(
+    tx: DBExecutor,
+    anchorRunId: string,
+    now: Date | ReturnType<typeof sql>,
+  ): Promise<void> {
+    const failedRuns = await tx
+      .update(workflowRun)
+      .set({ status: "failed", endedAt: now })
+      .where(
+        and(
+          eq(workflowRun.deploymentId, anchorRunId),
+          eq(workflowRun.status, "running"),
+        ),
+      )
+      .returning({ principalId: workflowRun.principalId });
+    const principalIds = failedRuns.flatMap(({ principalId }) =>
+      principalId === null ? [] : [principalId],
+    );
+    if (principalIds.length > 0) {
+      await tx
+        .update(principal)
+        .set({ status: "deactivated", updatedAt: now })
+        .where(inArray(principal.id, principalIds));
+    }
+  }
+
+  async function beginRelease(
+    args: BeginSidecarReleaseArgs,
+    tx?: DBExecutor,
+  ): Promise<SidecarAllocation | null> {
+    const now = databaseTimestamp(args.now);
+    const [updated] = await (tx ?? db)
+      .update(sidecarAllocation)
+      .set({
+        status: "releasing",
+        generation: args.expectedGeneration + 1,
+        nextAttemptAt: now,
+        reconciliationLeaseId: null,
+        reconciliationLeaseExpiresAt: null,
+        connectDeadline: null,
+        ...(args.failureCode !== undefined
+          ? { failureCode: args.failureCode }
+          : {}),
+        ...(args.failureMessage !== undefined
+          ? { failureMessage: args.failureMessage }
+          : {}),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, args.expectedStatus),
+          eq(sidecarAllocation.generation, args.expectedGeneration),
+          ...leaseCondition(args.expectedLeaseId),
+        ),
+      )
+      .returning();
+    return updated === undefined ? null : parseSidecarAllocationRow(updated);
   }
 
   return {
@@ -518,64 +591,71 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: BeginSidecarReplacementArgs,
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          status: "replacing",
-          generation: args.expectedGeneration + 1,
-          ensureAcceptedGeneration: null,
-          nextAttemptAt: args.nextAttemptAt,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          connectDeadline: null,
-          failureCode: args.failureCode,
-          failureMessage: args.failureMessage,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, args.expectedStatus),
-            eq(sidecarAllocation.generation, args.expectedGeneration),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            status: "replacing",
+            generation: args.expectedGeneration + 1,
+            ensureAcceptedGeneration: null,
+            nextAttemptAt: args.nextAttemptAt,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            connectDeadline: null,
+            failureCode: args.failureCode,
+            failureMessage: args.failureMessage,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, args.expectedStatus),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning();
+        if (updated === undefined) return null;
+
+        // The anchor public key is durable proof that this allocation
+        // generation completed restore and deployment. Clear it atomically
+        // with the generation advance so a replacement cannot mistake stale
+        // local sidecar state for a successfully restored workflow.
+        await tx
+          .update(workflowRun)
+          .set({ publicKey: null })
+          .where(eq(workflowRun.id, updated.anchorRunId));
+
+        return parseSidecarAllocationRow(updated);
+      });
     },
 
-    async beginRelease(
-      args: BeginSidecarReleaseArgs,
-      tx?: DBExecutor,
+    beginRelease,
+
+    async beginUnrecoverableRelease(
+      args: BeginUnrecoverableSidecarReleaseArgs,
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
-      const [updated] = await (tx ?? db)
-        .update(sidecarAllocation)
-        .set({
-          status: "releasing",
-          generation: args.expectedGeneration + 1,
-          nextAttemptAt: now,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          connectDeadline: null,
-          ...(args.failureCode !== undefined
-            ? { failureCode: args.failureCode }
-            : {}),
-          ...(args.failureMessage !== undefined
-            ? { failureMessage: args.failureMessage }
-            : {}),
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, args.expectedStatus),
-            eq(sidecarAllocation.generation, args.expectedGeneration),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        const releasing = await beginRelease(
+          {
+            ...args,
+            expectedStatus: "allocated",
+          },
+          tx,
+        );
+        if (releasing === null) return null;
+
+        await failRunningRuns(tx, releasing.anchorRunId, now);
+        await workflowRunDispatchStore.failUnsettled(
+          releasing.anchorRunId,
+          args.failureCode,
+          args.failureMessage,
+          now,
+          tx,
+        );
+        return releasing;
+      });
     },
 
     async markReleased(
@@ -608,28 +688,44 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: FailSidecarAllocationArgs,
       tx?: DBExecutor,
     ): Promise<SidecarAllocation | null> {
-      const [updated] = await (tx ?? db)
-        .update(sidecarAllocation)
-        .set({
-          status: "failed",
-          failureCode: args.code,
-          failureMessage: args.message,
-          nextAttemptAt: null,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          connectDeadline: null,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, args.expectedStatus),
-            eq(sidecarAllocation.generation, args.expectedGeneration),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      const now = databaseTimestamp(args.now);
+      const fail = async (
+        executor: DBExecutor,
+      ): Promise<SidecarAllocation | null> => {
+        const [updated] = await executor
+          .update(sidecarAllocation)
+          .set({
+            status: "failed",
+            failureCode: args.code,
+            failureMessage: args.message,
+            nextAttemptAt: null,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            connectDeadline: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, args.expectedStatus),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning();
+        if (updated === undefined) return null;
+
+        await failRunningRuns(executor, updated.anchorRunId, now);
+        await workflowRunDispatchStore.failUnsettled(
+          updated.anchorRunId,
+          args.code,
+          args.message,
+          now,
+          executor,
+        );
+        return parseSidecarAllocationRow(updated);
+      };
+      return tx === undefined ? db.transaction(fail) : fail(tx);
     },
 
     async findById(id: string): Promise<SidecarAllocation | null> {

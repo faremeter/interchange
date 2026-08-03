@@ -246,6 +246,7 @@ const workflowAllocationService = createWorkflowAllocationService({
   plugins: sidecarPlugins,
   preparedDeployer: sessionService,
   credentialCipher,
+  allocationRouter: sidecarRouter,
 });
 const sidecarAllocationStore = createSidecarAllocationStore(db);
 const workflowDispatchService = createWorkflowDispatchService({

@@ -74,6 +74,7 @@ import type {
   SidecarRouter,
 } from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
+import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -1212,6 +1213,15 @@ export function createSessionService(
         "deployPreparedWorkflowDefinition requires a db handle to update the prepared anchor run",
       );
     }
+    await restoreWorkflowRunToAllocation({
+      agentRepoStore,
+      allocationRouter: requireAllocationRouter(),
+      allocationTarget: params.allocationTarget,
+      agentAddress: deriveDeploymentAddress({
+        deploymentId: params.deploymentId,
+        deploymentDomain: params.deploymentDomain,
+      }),
+    });
     const result = await executeWorkflowDefinitionDeploy(params);
     const [updated] = await db
       .update(workflowRunTable)

@@ -9,7 +9,7 @@ import {
   type SidecarAllocation,
 } from "@intx/db";
 import { grant, tenant as tenantTable, workflowRun } from "@intx/db/schema";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
 import {
   hexEncode,
@@ -34,6 +34,7 @@ import type {
   DeployWorkflowDefinitionResult,
   PreparedWorkflowDeployer,
 } from "./session-service";
+import type { SidecarAllocationRouter } from "./ws/sidecar-handler";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import { workflowDefinitionEnvelopeSchema } from "./workflow-kind";
 
@@ -77,7 +78,7 @@ export type WorkflowAllocationService = {
   ): Promise<PreparedExclusiveWorkflowDeployment>;
   deployReadyAllocation(
     allocation: SidecarAllocation,
-  ): Promise<DeployWorkflowDefinitionResult>;
+  ): Promise<DeployWorkflowDefinitionResult | null>;
 };
 
 export type WorkflowAllocationServiceDeps = {
@@ -85,6 +86,10 @@ export type WorkflowAllocationServiceDeps = {
   readonly plugins: SidecarPluginRegistry;
   readonly preparedDeployer: PreparedWorkflowDeployer;
   readonly credentialCipher?: CredentialCipher;
+  readonly allocationRouter: Pick<
+    SidecarAllocationRouter,
+    "isAllocatedWorkflowActive"
+  >;
   readonly createAllocationId?: () => string;
   readonly now?: () => Date;
 };
@@ -174,6 +179,7 @@ export function createWorkflowAllocationService({
   plugins,
   preparedDeployer,
   credentialCipher,
+  allocationRouter,
   createAllocationId = randomAllocationId,
   now = () => new Date(),
 }: WorkflowAllocationServiceDeps): WorkflowAllocationService {
@@ -290,7 +296,7 @@ export function createWorkflowAllocationService({
 
   async function deployReadyAllocation(
     allocation: SidecarAllocation,
-  ): Promise<DeployWorkflowDefinitionResult> {
+  ): Promise<DeployWorkflowDefinitionResult | null> {
     if (
       allocation.status !== "allocated" ||
       allocation.ensureAcceptedGeneration !== allocation.generation
@@ -298,6 +304,23 @@ export function createWorkflowAllocationService({
       throw new Error(
         `Allocation ${allocation.id} generation ${String(allocation.generation)} is not accepted for deployment`,
       );
+    }
+    const allocationTarget = {
+      allocationId: allocation.id,
+      generation: allocation.generation,
+    };
+    const anchor = await db.query.workflowRun.findFirst({
+      where: eq(workflowRun.id, allocation.anchorRunId),
+      columns: { publicKey: true },
+    });
+    if (anchor === undefined) {
+      throw new Error(`Allocation ${allocation.id} has no workflow anchor run`);
+    }
+    if (
+      anchor.publicKey !== null &&
+      (await allocationRouter.isAllocatedWorkflowActive(allocationTarget))
+    ) {
+      return null;
     }
     const spec = await launchSpecStore.get(allocation.anchorRunId);
     if (spec === null) {
@@ -356,10 +379,7 @@ export function createWorkflowAllocationService({
       definition,
       config,
       deployContent,
-      allocationTarget: {
-        allocationId: allocation.id,
-        generation: allocation.generation,
-      },
+      allocationTarget,
       ...(spec.toolPackagePins !== null
         ? { toolPackagePins: spec.toolPackagePins }
         : {}),

@@ -21,6 +21,7 @@ const logger = getLogger(["hub", "sidecar-allocation"]);
 type AllocationStore = Pick<
   SidecarAllocationStore,
   | "beginReplacement"
+  | "beginUnrecoverableRelease"
   | "bindInitialSidecar"
   | "bindReplacementSidecar"
   | "claimNextReconcilable"
@@ -47,6 +48,13 @@ export type SidecarAllocationReconcilerDeps = {
   readonly hubWebSocketUrl: string;
   /** Idempotently restores and deploys one connected allocation generation. */
   readonly onReady?: (allocation: SidecarAllocation) => Promise<void>;
+  /**
+   * Replace an allocated worker after its reconnect grace expires. Disabled by
+   * default because Hub recovery does not restore arbitrary sidecar or
+   * isolation-container filesystem state, so automatic continuation could run
+   * without state the previous worker produced.
+   */
+  readonly enableAutomaticReplacementRecovery?: boolean;
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly retryDelayMs?: (attempt: number) => number;
@@ -112,6 +120,7 @@ export function createSidecarAllocationReconciler({
   router,
   hubWebSocketUrl,
   onReady,
+  enableAutomaticReplacementRecovery = false,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   retryDelayMs = defaultRetryDelay,
@@ -172,6 +181,23 @@ export function createSidecarAllocationReconciler({
     code: string,
     message: string,
   ): Promise<void> {
+    if (
+      allocation.status === "allocated" &&
+      !enableAutomaticReplacementRecovery
+    ) {
+      const releasing = await allocationStore.beginUnrecoverableRelease({
+        allocationId: allocation.id,
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: leaseId,
+        failureCode: code,
+        failureMessage: `Automatic recovery is disabled: ${message}`,
+        now: now(),
+      });
+      if (releasing !== null) {
+        router.fenceAllocation(releasing.id, releasing.generation);
+      }
+      return;
+    }
     const replaced = await allocationStore.beginReplacement({
       allocationId: allocation.id,
       expectedStatus:

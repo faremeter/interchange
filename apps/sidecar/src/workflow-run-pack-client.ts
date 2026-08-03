@@ -46,6 +46,12 @@ export type WorkflowRunPackClient = {
     repoId: RepoId;
     ref: string;
   }): Promise<void>;
+  /**
+   * Seed the acknowledged-tip state after the Hub restores a ref into a fresh
+   * worker. This prevents a reconnect from trying to re-send an empty delta at
+   * the restored tip; the next real local commit remains incremental from it.
+   */
+  markRestored(repoId: RepoId, ref: string, commitSha: string): void;
 };
 
 export type CreateWorkflowRunPackClientOpts = {
@@ -76,6 +82,15 @@ export function createWorkflowRunPackClient(
   }
 
   return {
+    markRestored(repoId, ref, commitSha) {
+      if (repoId.kind !== "workflow-run") {
+        throw new Error(
+          `workflow-run pack client: restored repoId.kind must be "workflow-run", got ${JSON.stringify(repoId.kind)}`,
+        );
+      }
+      substrate.commitPackedTip(repoId, ref, commitSha);
+      lastAckedSha.set(ackKey(repoId, ref), commitSha);
+    },
     async push({ agentAddress, repoId, ref }) {
       if (repoId.kind !== "workflow-run") {
         throw new Error(
@@ -587,7 +602,7 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
  */
 export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;
-  packClient: WorkflowRunPackClient;
+  packClient: Pick<WorkflowRunPackClient, "push">;
   registry: DeploymentAddressRegistry;
 };
 

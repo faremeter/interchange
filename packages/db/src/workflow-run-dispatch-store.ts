@@ -435,9 +435,10 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       anchorRunId: string,
       code: string,
       message: string,
-      now = new Date(),
+      now: Date | SQL = new Date(),
+      tx?: DBExecutor,
     ): Promise<number> {
-      const rows = await db
+      const rows = await (tx ?? db)
         .update(workflowRunDispatch)
         .set({
           status: "failed",
