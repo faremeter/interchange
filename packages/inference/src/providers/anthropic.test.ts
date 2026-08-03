@@ -2,12 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import type {
+  AssistantTurn,
+  ContentBlock,
   ConversationTurn,
   InferenceEvent,
+  InferenceSource,
   LastCycleSource,
 } from "@intx/types/runtime";
 
 import { ProtocolMismatchError } from "../errors";
+import {
+  createDefaultScheduler,
+  runInference,
+  type Dependencies,
+} from "../harness";
+import { createBuiltinRegistry } from "../providers";
 import { createAnthropicAdapter } from "./anthropic";
 
 const TEST_SOURCE: LastCycleSource = {
@@ -852,5 +861,361 @@ describe("Anthropic adapter — tool-name codec round-trip", () => {
       },
     });
     expect(pickFirstToolCallStart(events).data.name).toBe(PREFIXED);
+  });
+});
+
+const JSON_SOURCE: InferenceSource = {
+  id: "anthropic:claude-test",
+  provider: "anthropic",
+  baseURL: "https://api.anthropic.com",
+  apiKey: "test",
+  model: "claude-test",
+};
+
+// Drives a response body through the real harness accumulator and returns the
+// assembled assistant turn plus every emitted event. Asserting on the decoded
+// turn (rather than the raw event array) is deliberate: the accumulator
+// silently drops unmodeled event types, ignores tool-call deltas with no open
+// call, and swallows argument-parse failures, so only the turn reflects
+// whether the parser actually decoded correctly. The content-type selects the
+// harness decode path (JSON body vs SSE stream), which lets one helper drive
+// both parseJSONResponse and parseResponse for cross-path parity.
+async function driveTurn(
+  body: string,
+  contentType = "application/json",
+): Promise<{
+  turn: AssistantTurn | undefined;
+  events: InferenceEvent[];
+}> {
+  const deps: Dependencies = {
+    fetch: () =>
+      Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": contentType },
+        }),
+      ),
+    scheduler: createDefaultScheduler(),
+    adapters: createBuiltinRegistry(),
+  };
+  let seq = 0;
+  const events: InferenceEvent[] = [];
+  for await (const ev of runInference({
+    turns: [
+      { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
+    ],
+    source: JSON_SOURCE,
+    nextSeq: () => ++seq,
+    deps,
+  })) {
+    events.push(ev);
+  }
+  const done = events.find(
+    (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+      e.type === "inference.done",
+  );
+  return { turn: done?.data.turn, events };
+}
+
+function blocksOfType<T extends ContentBlock["type"]>(
+  turn: AssistantTurn,
+  blockType: T,
+): Extract<ContentBlock, { type: T }>[] {
+  return turn.content.filter(
+    (b): b is Extract<ContentBlock, { type: T }> => b.type === blockType,
+  );
+}
+
+function requireTurn(turn: AssistantTurn | undefined): AssistantTurn {
+  if (turn === undefined) throw new Error("expected an inference.done turn");
+  return turn;
+}
+
+describe("createAnthropicAdapter — parseJSONResponse (non-streaming)", () => {
+  test("decodes a plain-text message into a text block and usage", async () => {
+    const body = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [{ type: "text", text: "The capital of France is Paris." }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 20, output_tokens: 10 },
+    });
+    const { turn, events } = await driveTurn(body);
+    const t = requireTurn(turn);
+    expect(blocksOfType(t, "text").map((b) => b.text)).toEqual([
+      "The capital of France is Paris.",
+    ]);
+    const done = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    expect(done?.data.usage.input).toBe(20);
+    expect(done?.data.usage.output).toBe(10);
+  });
+
+  test("decodes a tool_use block into a tool call with parsed arguments", async () => {
+    const body = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "get_weather",
+          input: { location: "Boston, MA" },
+        },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    const t = requireTurn((await driveTurn(body)).turn);
+    const calls = blocksOfType(t, "tool_call");
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    if (call === undefined) throw new Error("expected a tool call");
+    expect(call.name).toBe("get_weather");
+    expect(call.id).toBe("toolu_1");
+    expect(call.arguments).toEqual({ location: "Boston, MA" });
+  });
+
+  test("decodes a thinking block with its signature", async () => {
+    const body = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "thinking",
+          thinking: "Let me consider.",
+          signature: "sig-abc",
+        },
+        { type: "text", text: "Answer." },
+      ],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    const t = requireTurn((await driveTurn(body)).turn);
+    const thinking = blocksOfType(t, "thinking");
+    expect(thinking).toHaveLength(1);
+    const block = thinking[0];
+    if (block === undefined) throw new Error("expected a thinking block");
+    expect(block.thinking).toBe("Let me consider.");
+    expect(block.signature).toBe("sig-abc");
+  });
+
+  test("decodes a redacted_thinking block, preserving its opaque data", async () => {
+    const body = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [{ type: "redacted_thinking", data: "opaque-blob" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    const t = requireTurn((await driveTurn(body)).turn);
+    expect(blocksOfType(t, "redacted_thinking").map((b) => b.data)).toEqual([
+      "opaque-blob",
+    ]);
+  });
+
+  test("emits citations from a text block's inline citations", async () => {
+    const body = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "text",
+          text: "Grounded answer.",
+          citations: [
+            {
+              type: "web_search_result_location",
+              cited_text: "the source text",
+              url: "https://example.com/a",
+              title: "Example A",
+            },
+          ],
+        },
+      ],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    const t = requireTurn((await driveTurn(body)).turn);
+    const citations = blocksOfType(t, "citation");
+    expect(citations).toHaveLength(1);
+    const citation = citations[0];
+    if (citation === undefined) throw new Error("expected a citation block");
+    expect(citation.citedText).toBe("the source text");
+    expect(citation.source.uri).toBe("https://example.com/a");
+  });
+
+  test("ignores unmodeled server-tool blocks without failing the turn", async () => {
+    const body = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        { type: "server_tool_use", id: "srv_1", name: "web_search", input: {} },
+        { type: "text", text: "Result." },
+      ],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    const { turn, events } = await driveTurn(body);
+    const t = requireTurn(turn);
+    expect(blocksOfType(t, "text").map((b) => b.text)).toEqual(["Result."]);
+    expect(events.some((e) => e.type === "inference.error")).toBe(false);
+  });
+
+  test("surfaces a protocol mismatch on a non-message body", async () => {
+    // A streaming SSE event object (not a whole message) must not decode as a
+    // non-streaming response.
+    const body = JSON.stringify({ type: "message_start", message: {} });
+    const { events } = await driveTurn(body);
+    const error = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (error === undefined) throw new Error("expected inference.error");
+    expect(error.data.error.category).toBe("protocol_mismatch");
+  });
+});
+
+function sse(events: object[]): string {
+  return events.map((e) => `event: x\ndata: ${JSON.stringify(e)}\n\n`).join("");
+}
+
+describe("createAnthropicAdapter — streaming vs non-streaming parity", () => {
+  // The whole point of parseJSONResponse is that a replayed non-streaming
+  // capture decodes to the same turn its streaming sibling would. Drive one
+  // logically-equivalent multi-block response through both harness decode
+  // paths and assert the assembled turn and final usage are identical, so a
+  // future edit that drifts one path's index/callId/usage/citation semantics
+  // from the other cannot pass in isolation.
+  test("a multi-block turn decodes identically through both paths", async () => {
+    const jsonBody = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "text",
+          text: "Grounded.",
+          citations: [
+            {
+              type: "web_search_result_location",
+              cited_text: "src",
+              url: "https://example.com/a",
+              title: "A",
+            },
+          ],
+        },
+        { type: "thinking", thinking: "hmm", signature: "sig-1" },
+        { type: "redacted_thinking", data: "blob" },
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "get_weather",
+          input: { location: "Boston" },
+        },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 20, output_tokens: 10 },
+    });
+
+    const streamBody = sse([
+      {
+        type: "message_start",
+        message: { usage: { input_tokens: 20, output_tokens: 0 } },
+      },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Grounded." },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            cited_text: "src",
+            url: "https://example.com/a",
+            title: "A",
+          },
+        },
+      },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "thinking" },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "thinking_delta", thinking: "hmm" },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "signature_delta", signature: "sig-1" },
+      },
+      { type: "content_block_stop", index: 1 },
+      {
+        type: "content_block_start",
+        index: 2,
+        content_block: { type: "redacted_thinking", data: "blob" },
+      },
+      { type: "content_block_stop", index: 2 },
+      {
+        type: "content_block_start",
+        index: 3,
+        content_block: { type: "tool_use", id: "toolu_1", name: "get_weather" },
+      },
+      {
+        type: "content_block_delta",
+        index: 3,
+        delta: {
+          type: "input_json_delta",
+          partial_json: '{"location":"Boston"}',
+        },
+      },
+      { type: "content_block_stop", index: 3 },
+      { type: "message_delta", usage: { output_tokens: 10 } },
+      { type: "message_stop" },
+    ]);
+
+    const jsonResult = await driveTurn(jsonBody, "application/json");
+    const streamResult = await driveTurn(streamBody, "text/event-stream");
+
+    expect(jsonResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+    expect(streamResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+
+    const jt = requireTurn(jsonResult.turn);
+    const st = requireTurn(streamResult.turn);
+    expect(jt.content).toEqual(st.content);
+
+    const jdone = jsonResult.events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    const sdone = streamResult.events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    expect(jdone?.data.usage).toEqual(sdone?.data.usage);
   });
 });
