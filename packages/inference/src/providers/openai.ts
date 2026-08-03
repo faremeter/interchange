@@ -559,6 +559,23 @@ function getOrAssignToolCallIndex(
   return assigned;
 }
 
+// Maps OpenAI's wire usage object onto the internal TokenUsage, reading the
+// cached-token and reasoning-token detail sub-objects. Shared by the
+// streaming usage-only-chunk branch and the non-streaming parseJSONResponse,
+// whose usage objects carry the same field names. (The other usage branch in
+// the streaming parser — usage riding on a choice-bearing chunk — maps a
+// deliberately lossier subset and is left inline there; see the note at its
+// site.)
+function toInferenceUsage(usage: typeof OpenAIChunkUsage.infer): TokenUsage {
+  return {
+    input: usage.prompt_tokens ?? 0,
+    output: usage.completion_tokens ?? 0,
+    cacheRead: usage.prompt_tokens_details?.cached_tokens ?? 0,
+    cacheWrite: 0,
+    thinking: usage.completion_tokens_details?.reasoning_tokens ?? 0,
+  };
+}
+
 function parseResponse(
   sseData: string,
   indexer: OpenAIBlockIndexer,
@@ -601,15 +618,12 @@ function parseResponse(
     // Check for usage-only events (some providers send a final event with usage).
     const { usage } = chunk;
     if (usage != null) {
-      const tokenUsage: TokenUsage = {
-        input: usage.prompt_tokens ?? 0,
-        output: usage.completion_tokens ?? 0,
-        cacheRead: usage.prompt_tokens_details?.cached_tokens ?? 0,
-        cacheWrite: 0,
-        thinking: usage.completion_tokens_details?.reasoning_tokens ?? 0,
-      };
       return [
-        { type: "inference.usage", seq, data: { usage: tokenUsage, source } },
+        {
+          type: "inference.usage",
+          seq,
+          data: { usage: toInferenceUsage(usage), source },
+        },
       ];
     }
     return [];
@@ -774,6 +788,14 @@ function parseResponse(
   void choice.finish_reason;
 
   // Usage at end of stream (stream_options: { include_usage: true }).
+  //
+  // NOTE: this maps a lossier subset than `toInferenceUsage` — cacheRead and
+  // thinking are hardcoded to 0 rather than read from the detail sub-objects.
+  // It is left inline (not switched to the shared helper) because changing it
+  // alters streaming usage behavior, which is out of scope here; with OpenAI's
+  // `include_usage`, real usage arrives on a final choices-empty chunk that
+  // hits the full-mapping branch above, so this branch's asymmetry does not
+  // affect the corpus. The asymmetry is suspect and tracked separately.
   const usageInChunk = chunk.usage;
   if (usageInChunk != null) {
     const tokenUsage: TokenUsage = {
@@ -789,6 +811,210 @@ function parseResponse(
       data: { usage: tokenUsage, source },
     });
   }
+
+  return events;
+}
+
+// ---------------------------------------------------------------------------
+// Non-streaming response parsing
+//
+// The non-streaming Chat Completions endpoint returns the whole assistant
+// message in one JSON body. parseJSONResponse re-expresses it as the same
+// InferenceEvent vocabulary parseResponse emits from the stream, so a
+// replayed non-streaming capture feeds the harness accumulator identically to
+// its streaming sibling. See parseResponse for the streaming counterpart.
+// ---------------------------------------------------------------------------
+
+// A complete non-streaming tool call carries its id, type, and function name
+// and arguments in full — unlike a streaming delta, where these arrive
+// incrementally and are optional per chunk. Require them: a complete body
+// missing them is malformed and should fail loudly at the boundary rather
+// than decode into a tool call with a synthesized id or empty name.
+const NonStreamingToolCall = type({
+  "index?": "number",
+  id: "string",
+  type: "string",
+  function: {
+    name: "string",
+    arguments: "string",
+  },
+});
+
+const NonStreamingMessage = type({
+  "role?": "string",
+  "content?": "string | null",
+  "reasoning_content?": "string | null",
+  "reasoning?": "string | null",
+  "refusal?": "string | null",
+  "tool_calls?": NonStreamingToolCall.array(),
+});
+
+const NonStreamingCompletion = type({
+  object: "'chat.completion'",
+  choices: type({
+    "index?": "number",
+    message: NonStreamingMessage,
+    "finish_reason?": "string | null",
+  }).array(),
+  usage: OpenAIChunkUsage,
+});
+
+function parseJSONResponse(
+  body: string,
+  source: LastCycleSource,
+  reasoningFieldNames: readonly ReasoningField[],
+): InferenceEvent[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new ProtocolMismatchError(
+      `openai parseJSONResponse: malformed JSON response body: ${message}`,
+      body,
+    );
+  }
+
+  const completion = NonStreamingCompletion(parsed);
+  if (completion instanceof type.errors) {
+    throw new ProtocolMismatchError(
+      `openai parseJSONResponse: response failed schema validation: ${completion.summary}`,
+      parsed,
+    );
+  }
+
+  const seq = 0;
+
+  const choice = completion.choices[0];
+  if (choice === undefined) {
+    // No choices: emit only usage, mirroring a usage-only streaming chunk.
+    return [
+      {
+        type: "inference.usage",
+        seq,
+        data: { usage: toInferenceUsage(completion.usage), source },
+      },
+    ];
+  }
+  const { message } = choice;
+
+  // A fresh indexer per body. Content-block indices are synthesized on first
+  // observation, so this must not share the adapter-instance counter the
+  // streaming parser advances.
+  const indexer: OpenAIBlockIndexer = {
+    nextIndex: 0,
+    textIndex: null,
+    thinkingIndex: null,
+    refusalIndex: null,
+    toolCallBlockIndex: new Map<number, number>(),
+  };
+
+  const events: InferenceEvent[] = [];
+
+  // Walk the message fields in the SAME order the streaming parser processes a
+  // delta chunk (reasoning -> content -> refusal -> tool_calls) through the
+  // same getOrAssign* helpers. For OpenAI this reproduces the streaming
+  // arrival-order index assignment: reasoning models flush reasoning before
+  // answer text, refusal is exclusive with content, and text/thinking/refusal
+  // each collapse to a single cached slot — so a complete message's field
+  // order matches the order the stream would have assigned indices. Empty
+  // fields must NOT claim an index (every getOrAssign call stays behind a
+  // non-empty gate, as on the streaming path), or the decoded turn would carry
+  // a phantom block the stream never produced.
+  let reasoning: string | null | undefined;
+  for (const field of reasoningFieldNames) {
+    const value =
+      field === "reasoning_content"
+        ? message.reasoning_content
+        : message.reasoning;
+    if (value !== undefined && value !== null) {
+      reasoning = value;
+      break;
+    }
+  }
+  if (typeof reasoning === "string" && reasoning.length > 0) {
+    events.push({
+      type: "inference.thinking.delta",
+      seq,
+      data: {
+        token: reasoning,
+        partial: EMPTY_PARTIAL,
+        index: getOrAssignThinkingIndex(indexer),
+      },
+    });
+  }
+
+  const { content } = message;
+  if (typeof content === "string" && content.length > 0) {
+    events.push({
+      type: "inference.text.delta",
+      seq,
+      data: {
+        token: content,
+        partial: EMPTY_PARTIAL,
+        index: getOrAssignTextIndex(indexer),
+      },
+    });
+  }
+
+  const { refusal } = message;
+  if (typeof refusal === "string" && refusal.length > 0) {
+    events.push({
+      type: "inference.refusal.delta",
+      seq,
+      data: {
+        token: refusal,
+        partial: EMPTY_PARTIAL,
+        index: getOrAssignRefusalIndex(indexer),
+      },
+    });
+  }
+
+  for (const [position, toolCall] of (message.tool_calls ?? []).entries()) {
+    // Genuine OpenAI non-streaming responses omit `index` on tool_calls[]
+    // (only the streaming deltas carry it, and the opencode-zen backends
+    // include it on the array too). Key the block-index slot on the array
+    // position when the wire index is absent, so parallel tool calls get
+    // distinct slots instead of all collapsing onto slot 0 and colliding in
+    // the harness's per-index accumulator.
+    const blockIndex = getOrAssignToolCallIndex(
+      indexer,
+      toolCall.index ?? position,
+    );
+    // Mirror the streaming convention exactly: the start carries the real id
+    // and the block index; the args delta carries String(blockIndex) as its
+    // callId placeholder, which the harness resolves via the indexToCallId
+    // mapping it registers from the start event's index. Start must precede
+    // the delta, or the harness silently drops the fragment.
+    events.push({
+      type: "inference.tool_call.start",
+      seq,
+      data: {
+        callId: toolCall.id,
+        name: decodeToolName(toolCall.function.name),
+        partial: EMPTY_PARTIAL,
+        index: blockIndex,
+      },
+    });
+    if (toolCall.function.arguments.length > 0) {
+      events.push({
+        type: "inference.tool_call.delta",
+        seq,
+        data: {
+          callId: String(blockIndex),
+          argumentFragment: toolCall.function.arguments,
+          partial: EMPTY_PARTIAL,
+          index: blockIndex,
+        },
+      });
+    }
+  }
+
+  events.push({
+    type: "inference.usage",
+    seq,
+    data: { usage: toInferenceUsage(completion.usage), source },
+  });
 
   return events;
 }
@@ -882,6 +1108,8 @@ export function createOpenAIAdapter(
         source,
         resolvedQuirks.reasoningFieldNames,
       ),
+    parseJSONResponse: (body) =>
+      parseJSONResponse(body, source, resolvedQuirks.reasoningFieldNames),
     extractRetryAfterMs,
     extractPacingDelayMs,
   };
