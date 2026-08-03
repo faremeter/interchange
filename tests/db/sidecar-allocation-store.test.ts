@@ -122,6 +122,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         leaseDurationMs: 60_000,
       });
       expect(claimed?.id).toBe(pending.id);
+      const replacementAt = new Date(Date.now() + 300_000);
 
       expect(
         await store.beginReplacement({
@@ -129,6 +130,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expectedStatus: "allocated",
           expectedGeneration: 1,
           expectedLeaseId: "lease-stale",
+          nextAttemptAt: replacementAt,
           failureCode: "connection_lost",
           failureMessage: "stale reconciler",
         }),
@@ -139,6 +141,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedStatus: "allocated",
         expectedGeneration: 1,
         expectedLeaseId: "lease-current",
+        nextAttemptAt: replacementAt,
         failureCode: "connection_lost",
         failureMessage: "replacement grace expired",
       });
@@ -146,6 +149,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(replacing?.generation).toBe(2);
       expect(replacing?.sidecarId).toBe("sidecar-generation-1");
       expect(replacing?.externalRef).toBe("i-generation-1");
+      expect(replacing?.nextAttemptAt).toEqual(replacementAt);
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: "lease-too-early",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
 
       const replacement = await store.bindReplacementSidecar({
         allocationId: pending.id,
@@ -218,6 +228,199 @@ describe.skipIf(!harnessDbEnvAvailable())(
           leaseDurationMs: 60_000,
         }),
       ).toBeNull();
+    });
+
+    test("parks an unscheduled allocation at a fenced fallback retry", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-park-fallback",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.claimNextReconcilable({
+        leaseId: "lease-park-fallback",
+        leaseDurationMs: 60_000,
+      });
+      const fallbackNextAttemptAt = new Date(Date.now() + 300_000);
+
+      expect(
+        await store.parkReconciliation("alloc-park-fallback", "lease-stale", {
+          kind: "retry-after-error",
+          notBefore: fallbackNextAttemptAt,
+        }),
+      ).toBe(false);
+      expect(
+        await store.parkReconciliation(
+          "alloc-park-fallback",
+          "lease-park-fallback",
+          {
+            kind: "retry-after-error",
+            notBefore: fallbackNextAttemptAt,
+          },
+        ),
+      ).toBe(true);
+
+      const parked = await store.findById("alloc-park-fallback");
+      expect(parked?.nextAttemptAt).toEqual(fallbackNextAttemptAt);
+      expect(parked?.reconciliationLeaseId).toBeUndefined();
+      expect(parked?.reconciliationLeaseExpiresAt).toBeUndefined();
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: "lease-too-early",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
+    });
+
+    test("parking preserves a reconnect wake that races an accepted worker", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-park-wake",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.claimNextReconcilable({
+        leaseId: "lease-park-wake",
+        leaseDurationMs: 60_000,
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-park-wake",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-park-wake",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(Date.now() + 60_000),
+        expectedLeaseId: "lease-park-wake",
+      });
+      await store.markAllocated({
+        allocationId: "alloc-park-wake",
+        generation: 1,
+        expectedLeaseId: "lease-park-wake",
+      });
+      await store.wakeReconciliation("alloc-park-wake", 1);
+
+      expect(
+        await store.parkReconciliation("alloc-park-wake", "lease-park-wake", {
+          kind: "await-connection",
+          fallbackNextAttemptAt: new Date(Date.now() + 300_000),
+        }),
+      ).toBe(true);
+
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "lease-after-wake",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed?.id).toBe("alloc-park-wake");
+      expect(claimed?.reconciliationLeaseId).toBe("lease-after-wake");
+    });
+
+    test("parking after an error floors an allocated retry at the backoff", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-park-backoff",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-park-backoff",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-park-backoff",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(Date.now() + 60_000),
+      });
+      await store.markAllocated({
+        allocationId: "alloc-park-backoff",
+        generation: 1,
+      });
+      await store.wakeReconciliation("alloc-park-backoff", 1);
+      await store.claimNextReconcilable({
+        leaseId: "lease-park-backoff",
+        leaseDurationMs: 60_000,
+      });
+      const notBefore = new Date(Date.now() + 300_000);
+
+      expect(
+        await store.parkReconciliation(
+          "alloc-park-backoff",
+          "lease-park-backoff",
+          { kind: "retry-after-error", notBefore },
+        ),
+      ).toBe(true);
+
+      const parked = await store.findById("alloc-park-backoff");
+      expect(parked?.nextAttemptAt).toEqual(notBefore);
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: "lease-before-backoff",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
+
+      await store.wakeReconciliation("alloc-park-backoff", 1);
+      const reclaimed = await store.claimNextReconcilable({
+        leaseId: "lease-after-backoff-wake",
+        leaseDurationMs: 60_000,
+      });
+      expect(reclaimed?.id).toBe("alloc-park-backoff");
+      expect(reclaimed?.reconciliationLeaseId).toBe("lease-after-backoff-wake");
+    });
+
+    test("holds the reconciliation lease until the accepted worker connects", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-ready",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "lease-ready",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed).not.toBeNull();
+      const provisioning = await store.bindInitialSidecar({
+        allocationId: "alloc-ready",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-ready",
+        tokenHashSha256: new Uint8Array([7, 8, 9]),
+        connectDeadline: new Date(Date.now() + 60_000),
+        expectedLeaseId: "lease-ready",
+      });
+      expect(provisioning).not.toBeNull();
+      const accepted = await store.markAllocated({
+        allocationId: "alloc-ready",
+        generation: 1,
+        expectedLeaseId: "lease-ready",
+      });
+      expect(accepted?.reconciliationLeaseId).toBe("lease-ready");
+      expect(
+        await store.extendReconciliationLease(
+          "alloc-ready",
+          "lease-ready",
+          60_000,
+        ),
+      ).toBe(true);
+
+      const ready = await store.markConnectionReady({
+        allocationId: "alloc-ready",
+        generation: 1,
+        expectedLeaseId: "lease-ready",
+      });
+
+      expect(ready?.status).toBe("allocated");
+      expect(ready?.reconciliationLeaseId).toBeUndefined();
+      expect(ready?.connectDeadline).toBeUndefined();
+      expect(ready?.nextAttemptAt).toBeUndefined();
     });
   },
 );
