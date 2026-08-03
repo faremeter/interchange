@@ -19,4 +19,5 @@ export * from "./messages";
 export * from "./git-tokens";
 export * from "./workflow-definitions";
 export * from "./workflow-run";
+export * from "./workflow-run-launch-spec";
 export * from "./workflow-run-execution";
