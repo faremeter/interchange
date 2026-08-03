@@ -52,7 +52,7 @@ function mockGetSession(userId: string): GetSession {
 }
 
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 

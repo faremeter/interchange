@@ -47,6 +47,7 @@ export {
   type CreatePendingSidecarAllocationArgs,
   type FailSidecarAllocationArgs,
   type MarkSidecarAllocatedArgs,
+  type MarkSidecarConnectionLostArgs,
   type MarkSidecarConnectionReadyArgs,
   type MarkSidecarReleasedArgs,
   type ParkSidecarReconciliationPolicy,
@@ -99,7 +100,9 @@ export {
   resolveModelSources,
   resolveInferencePreferences,
   resolveInstanceModelSources,
+  resolveSourcesByOfferingIds,
   type CatalogSourceResolution,
+  type OfferingSourceResolution,
   type SourceSkip,
 } from "./model-source-resolution";
 export {

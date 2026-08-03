@@ -53,6 +53,15 @@ export type CatalogSourceResolution =
       skips: SourceSkip[];
     };
 
+export type OfferingSourceResolution =
+  | { ok: true; sources: InferenceSource[] }
+  | {
+      ok: false;
+      reason: "offering_unavailable";
+      offeringId: string;
+      skip?: SourceSkip;
+    };
+
 function byPriority(a: ResolvedOffering, b: ResolvedOffering): number {
   if (a.offering.priority !== b.offering.priority) {
     return a.offering.priority - b.offering.priority;
@@ -181,6 +190,40 @@ async function buildSource(
       ...(parsed.quirks !== null ? { quirks: parsed.quirks } : {}),
     },
   };
+}
+
+/**
+ * Rebuild an exact, ordered source chain from durable catalog offering ids.
+ * This is the recovery counterpart to launch-time source selection: it keeps
+ * secrets out of persisted launch specs and rechecks tenant visibility and
+ * credential ownership on every launch.
+ */
+export async function resolveSourcesByOfferingIds(
+  db: DB["db"],
+  tenantId: string,
+  offeringIds: readonly string[],
+  credentialCipher: CredentialCipher = createNoopCredentialCipher(),
+): Promise<OfferingSourceResolution> {
+  const visible = await listVisibleOfferings(db, tenantId);
+  const byId = new Map(visible.map((entry) => [entry.offering.id, entry]));
+  const sources: InferenceSource[] = [];
+  for (const offeringId of offeringIds) {
+    const offering = byId.get(offeringId);
+    if (offering === undefined) {
+      return { ok: false, reason: "offering_unavailable", offeringId };
+    }
+    const built = await buildSource(db, tenantId, offering, credentialCipher);
+    if (!built.ok) {
+      return {
+        ok: false,
+        reason: "offering_unavailable",
+        offeringId,
+        skip: built.skip,
+      };
+    }
+    sources.push(built.source);
+  }
+  return { ok: true, sources };
 }
 
 /**

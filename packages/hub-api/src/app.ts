@@ -28,6 +28,7 @@ import type {
   RepoStore,
   SessionService,
   SidecarRouter,
+  WorkflowAllocationService,
 } from "@intx/hub-sessions";
 
 import { createMeRoutes } from "./routes/me";
@@ -106,6 +107,7 @@ export type MountHubRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
+  workflowAllocationService?: WorkflowAllocationService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -155,6 +157,7 @@ export function mountHubRoutes(
     db,
     sidecarRouter,
     sessionService,
+    workflowAllocationService,
     eventCollectors,
     sidecarWsHandler,
     assetService,
@@ -305,6 +308,9 @@ export function mountHubRoutes(
       createWorkflowRoutes({
         db,
         sessionService,
+        ...(workflowAllocationService !== undefined
+          ? { workflowAllocationService }
+          : {}),
         sidecarRouter,
         assetService,
         repoStore,
@@ -454,6 +460,7 @@ export type CreateAppOpts = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
+  workflowAllocationService?: WorkflowAllocationService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -482,6 +489,7 @@ export function createApp({
   db,
   sidecarRouter,
   sessionService,
+  workflowAllocationService,
   eventCollectors,
   credentialCipher,
   grantStore,
@@ -509,6 +517,9 @@ export function createApp({
     db,
     sidecarRouter,
     sessionService,
+    ...(workflowAllocationService !== undefined
+      ? { workflowAllocationService }
+      : {}),
     eventCollectors,
     ...(credentialCipher ? { credentialCipher } : {}),
     assetService,

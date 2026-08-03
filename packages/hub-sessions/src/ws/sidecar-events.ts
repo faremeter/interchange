@@ -80,6 +80,17 @@ export type SidecarEventMap = {
    * alike -- so lifecycle teardown covers both. */
   "sidecar.disconnect": {
     ownedAddresses: string[];
+    /** Present only when the closing socket was the current allocated owner. */
+    allocated?: {
+      allocationId: string;
+      generation: number;
+    };
+  };
+
+  /** Notification after the exact authenticated allocation generation registers. */
+  "sidecar.allocated.connected": {
+    allocationId: string;
+    generation: number;
   };
 
   /** Notification. Emitted when a mail.outbound frame from a sidecar
@@ -162,6 +173,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
   const listeners: { [K in SidecarEventType]: Set<SidecarEventListener<K>> } = {
     "agent.event": new Set(),
     "sidecar.disconnect": new Set(),
+    "sidecar.allocated.connected": new Set(),
     "mail.outbound.undelivered": new Set(),
     "mail.persisted": new Set(),
     "agent.deploy.ack": new Set(),

@@ -7,6 +7,7 @@ import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
 import { base64Decode, ErrorResponse, signalName } from "@intx/types";
+import type { SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
@@ -37,9 +38,11 @@ import {
   type DeployWorkflowDefinitionParams,
   type DeployWorkflowDefinitionResult,
   type EventCollectorRegistry,
+  type PrepareExclusiveWorkflowDeploymentArgs,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
+  type WorkflowAllocationService,
 } from "@intx/hub-sessions";
 import type { GetSession } from "../session";
 
@@ -107,6 +110,11 @@ const deploymentRow = {
   createdAt: new Date("2025-01-02"),
 };
 
+type DeploymentProjectionRow = typeof deploymentRow & {
+  allocationStatus?: SidecarAllocationStatus | null;
+  allocationNextAttemptAt?: Date | null;
+};
+
 const WORKFLOW_JSON = JSON.stringify({
   id: "wf_demo",
   triggers: [{ type: "manual" }],
@@ -126,6 +134,11 @@ const WORKFLOW_JSON = JSON.stringify({
     },
     wait: { kind: "awaitSignal", id: "wait", name: "go", after: ["plan"] },
   },
+});
+
+const EXCLUSIVE_WORKFLOW_JSON = JSON.stringify({
+  ...JSON.parse(WORKFLOW_JSON),
+  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
 });
 
 // A workflow whose sole step declares two tools, one approval-gated. The
@@ -260,8 +273,9 @@ type InsertRecord = { table: unknown; values: unknown };
 type MockDBOpts = {
   assetRow?: typeof workflowAssetRow | undefined;
   deploymentRow?: typeof deploymentRow | undefined;
-  deploymentList?: (typeof deploymentRow)[];
+  deploymentList?: DeploymentProjectionRow[];
   inserts?: InsertRecord[];
+  tenantConfig?: unknown;
 };
 
 function createMockDB(opts: MockDBOpts) {
@@ -300,6 +314,7 @@ function createMockDB(opts: MockDBOpts) {
           joined = true;
           return chain;
         },
+        leftJoin: () => chain,
         where: () => ({
           orderBy: () => Promise.resolve(list),
           limit: () =>
@@ -328,7 +343,15 @@ function createMockDB(opts: MockDBOpts) {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query: {
-      tenant: { findFirst: async () => testTenant },
+      tenant: {
+        findFirst: async () => ({
+          ...testTenant,
+          config: opts.tenantConfig ?? null,
+        }),
+        findMany: async () => [
+          { id: testTenant.id, config: opts.tenantConfig ?? null },
+        ],
+      },
       principal: { findFirst: async () => testPrincipal },
       asset: { findFirst: async () => opts.assetRow },
     },
@@ -449,6 +472,27 @@ function createMockSessionService(
   };
 }
 
+function createMockWorkflowAllocationService(
+  prepareCalls: PrepareExclusiveWorkflowDeploymentArgs[],
+  prepareError?: Error,
+): WorkflowAllocationService {
+  return {
+    prepareExclusiveDeployment: (args) => {
+      prepareCalls.push(args);
+      if (prepareError !== undefined) throw prepareError;
+      return Promise.resolve({
+        deploymentId: DEPLOYMENT_ID,
+        deploymentAddress: `ins_${DEPLOYMENT_ID}@${DOMAIN}`,
+        allocationId: "sal_test",
+        status: "pending",
+      });
+    },
+    deployReadyAllocation: () => {
+      throw new Error("mock: deployReadyAllocation not implemented");
+    },
+  };
+}
+
 function createMockAssetService(workflowJson: string | null): AssetService {
   function notImpl(name: string): never {
     throw new Error(`mock: assetService.${name} not implemented`);
@@ -532,6 +576,8 @@ type TestAppOpts = {
   deployCalls?: DeployWorkflowDefinitionParams[];
   deployResult?: DeployWorkflowDefinitionResult;
   deployError?: Error;
+  allocationPrepareCalls?: PrepareExclusiveWorkflowDeploymentArgs[];
+  allocationPrepareError?: Error;
   workflowJson?: string | null;
   repoDirById?: Map<string, string>;
 };
@@ -558,6 +604,14 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.deployResult,
       opts.deployError,
     ),
+    ...(opts.allocationPrepareCalls !== undefined
+      ? {
+          workflowAllocationService: createMockWorkflowAllocationService(
+            opts.allocationPrepareCalls,
+            opts.allocationPrepareError,
+          ),
+        }
+      : {}),
     eventCollectors: createMockEventCollectors(),
     assetService: createMockAssetService(
       opts.workflowJson === undefined ? WORKFLOW_JSON : opts.workflowJson,
@@ -664,6 +718,7 @@ describe("POST /workflows/instances", () => {
           },
         ],
         defaultSource: "src",
+        toolPackages: [{ name: "@intx/tools-posix", version: "^1.2.3" }],
       }),
     );
 
@@ -681,6 +736,82 @@ describe("POST /workflows/instances", () => {
     expect(call.definitionAssetId).toBe(ASSET_ID);
     expect(call.definition.id).toBe("wf_demo");
     expect(call.definition.stepOrder).toEqual(["plan", "wait"]);
+    expect(call.toolPackagePins).toEqual([
+      { name: "@intx/tools-posix", version: "^1.2.3" },
+    ]);
+  });
+
+  test("prepares exclusive placement without deploying on shared capacity", async () => {
+    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+    const allocationPrepareCalls: PrepareExclusiveWorkflowDeploymentArgs[] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      deployCalls,
+      allocationPrepareCalls,
+      workflowJson: EXCLUSIVE_WORKFLOW_JSON,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/instances`, {
+        assetId: ASSET_ID,
+        sources: [
+          {
+            id: "offering-anthropic",
+            provider: "caller-value-is-not-persisted",
+            baseURL: "https://caller.example",
+            apiKey: "caller-secret-is-not-persisted",
+            model: "caller-model",
+          },
+        ],
+        defaultSource: "offering-anthropic",
+        toolPackages: [{ name: "@intx/tools-posix", version: "^1.2.3" }],
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      id: DEPLOYMENT_ID,
+      status: "pending",
+    });
+    expect(deployCalls).toHaveLength(0);
+    expect(allocationPrepareCalls).toHaveLength(1);
+    expect(allocationPrepareCalls[0]).toMatchObject({
+      tenantId: TENANT_ID,
+      definitionAssetId: ASSET_ID,
+      placement: { sharing: "exclusive", reuse: "same-deployment" },
+      sourceAuthorityPrincipalId: PRINCIPAL_ID,
+      sourceOfferingIds: ["offering-anthropic"],
+      defaultSourceOfferingId: "offering-anthropic",
+      toolPackagePins: [{ name: "@intx/tools-posix", version: "^1.2.3" }],
+    });
+  });
+
+  test("rejects invalid workflow tool package pins", async () => {
+    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      deployCalls,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/instances`, {
+        assetId: ASSET_ID,
+        sources: [
+          {
+            id: "src",
+            provider: "anthropic",
+            baseURL: "https://api.example",
+            apiKey: "secret",
+            model: "m",
+          },
+        ],
+        defaultSource: "src",
+        toolPackages: [{ name: "@intx/tools-posix", version: "invalid" }],
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(deployCalls).toHaveLength(0);
   });
 
   test("rejects a caller without the workflow create grant", async () => {
@@ -876,6 +1007,28 @@ describe("GET /workflows/instances", () => {
         status: "deployed",
         createdAt: deploymentRow.createdAt.toISOString(),
       },
+    ]);
+  });
+
+  test("reports an allocation replacement as recovering", async () => {
+    const app = createTestApp({
+      db: {
+        deploymentList: [
+          {
+            ...deploymentRow,
+            allocationStatus: "replacing",
+            allocationNextAttemptAt: new Date("2025-01-02T00:01:00.000Z"),
+          },
+        ],
+      },
+    });
+
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/instances`),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      expect.objectContaining({ id: DEPLOYMENT_ID, status: "recovering" }),
     ]);
   });
 });

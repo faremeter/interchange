@@ -162,6 +162,20 @@ export type MarkSidecarConnectionReadyArgs = {
   readonly now?: Date;
 };
 
+export type MarkSidecarConnectionLostArgs = {
+  readonly allocationId: string;
+  readonly generation: number;
+  readonly connectDeadline: Date;
+  readonly now?: Date;
+};
+
+export type ScheduleSidecarReconnectIfUnscheduledArgs = {
+  readonly allocationId: string;
+  readonly generation: number;
+  readonly connectDeadline: Date;
+  readonly now?: Date;
+};
+
 export type FailSidecarAllocationArgs = {
   readonly allocationId: string;
   readonly expectedStatus: "pending" | "provisioning";
@@ -713,6 +727,59 @@ export function createSidecarAllocationStore(db: DBHandle) {
             eq(sidecarAllocation.generation, args.generation),
             eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
             ...leaseCondition(args.expectedLeaseId),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
+    async markConnectionLost(
+      args: MarkSidecarConnectionLostArgs,
+    ): Promise<SidecarAllocation | null> {
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline: args.connectDeadline,
+          nextAttemptAt: args.connectDeadline,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "allocated"),
+            eq(sidecarAllocation.generation, args.generation),
+            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
+    async scheduleReconnectIfUnscheduled(
+      args: ScheduleSidecarReconnectIfUnscheduledArgs,
+    ): Promise<SidecarAllocation | null> {
+      const connectDeadline = sql.param(
+        args.connectDeadline,
+        sidecarAllocation.connectDeadline,
+      );
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline: sql`coalesce(${sidecarAllocation.connectDeadline}, ${connectDeadline})`,
+          nextAttemptAt: sql`coalesce(${sidecarAllocation.connectDeadline}, ${connectDeadline})`,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "allocated"),
+            eq(sidecarAllocation.generation, args.generation),
+            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+            isNull(sidecarAllocation.nextAttemptAt),
+            isNull(sidecarAllocation.reconciliationLeaseId),
+            isNull(sidecarAllocation.reconciliationLeaseExpiresAt),
           ),
         )
         .returning();

@@ -5,7 +5,10 @@ import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
 import { getLogger } from "@intx/log";
 import { hexEncode } from "@intx/types";
 
-import type { SidecarAllocationRouter } from "../ws/sidecar-handler";
+import type {
+  AllocatedSidecarTarget,
+  SidecarAllocationRouter,
+} from "../ws/sidecar-handler";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
@@ -25,9 +28,11 @@ type AllocationStore = Pick<
   | "failWithoutInfrastructure"
   | "listActive"
   | "markAllocated"
+  | "markConnectionLost"
   | "markConnectionReady"
   | "markReleased"
   | "parkReconciliation"
+  | "scheduleReconnectIfUnscheduled"
   | "scheduleRetry"
   | "wakeReconciliation"
 >;
@@ -54,6 +59,12 @@ export type SidecarAllocationReconcilerDeps = {
 export type SidecarAllocationReconciler = {
   /** Rebuild all trust fences before accepting allocated connections. */
   initialize(): Promise<void>;
+  /** Starts a durable reconnect grace period for the exact lost generation. */
+  handleDisconnect(target: AllocatedSidecarTarget): Promise<void>;
+  /** Wakes recovery as soon as the exact generation reconnects. */
+  handleConnected(target: AllocatedSidecarTarget): Promise<void>;
+  /** Repairs allocated generations left unscheduled after a lost event write. */
+  repairUnscheduledConnections(): Promise<void>;
   /** Reconcile at most one due allocation. Returns false when none are due. */
   reconcileNext(): Promise<boolean>;
   /** Drain the currently due queue, bounded to catch accidental hot loops. */
@@ -182,6 +193,7 @@ export function createSidecarAllocationReconciler({
   async function waitUntilReady(
     allocation: SidecarAllocation,
     leaseId: string,
+    connectionAlreadyReady = false,
   ): Promise<void> {
     const target = {
       allocationId: allocation.id,
@@ -191,7 +203,10 @@ export function createSidecarAllocationReconciler({
     const remaining =
       deadline === undefined ? 0 : deadline.getTime() - now().getTime();
     try {
-      if (!(await router.isAllocatedSidecarReady(target))) {
+      if (
+        !connectionAlreadyReady &&
+        !(await router.isAllocatedSidecarReady(target))
+      ) {
         await withLeaseHeartbeat(allocation, leaseId, () =>
           router.waitForAllocatedSidecar(target, Math.max(0, remaining)),
         );
@@ -303,7 +318,24 @@ export function createSidecarAllocationReconciler({
       expectedLeaseId: leaseId,
       now: now(),
     });
-    if (allocated !== null) await waitUntilReady(allocated, leaseId);
+    if (allocated !== null) {
+      const target = {
+        allocationId: allocated.id,
+        generation: allocated.generation,
+      };
+      if (await router.isAllocatedSidecarReady(target)) {
+        await waitUntilReady(allocated, leaseId, true);
+        return;
+      }
+      // Provisioning acceptance and websocket readiness are separate durable
+      // transitions. Do not hold the single reconciliation loop for the full
+      // connection timeout: park this lease at its persisted deadline and let
+      // sidecar.allocated.connected wake it immediately when the worker arrives.
+      await allocationStore.parkReconciliation(allocated.id, leaseId, {
+        kind: "await-connection",
+        fallbackNextAttemptAt: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
+      });
+    }
   }
 
   async function bindAndEnsure(
@@ -468,10 +500,73 @@ export function createSidecarAllocationReconciler({
   async function initialize(): Promise<void> {
     for (const allocation of await allocationStore.listActive()) {
       router.fenceAllocation(allocation.id, allocation.generation);
-      await allocationStore.wakeReconciliation(
-        allocation.id,
-        allocation.generation,
-      );
+      if (allocation.status === "allocated") {
+        await allocationStore.markConnectionLost({
+          allocationId: allocation.id,
+          generation: allocation.generation,
+          connectDeadline:
+            allocation.connectDeadline ??
+            new Date(now().getTime() + connectTimeoutMs),
+          now: now(),
+        });
+      } else if (allocation.nextAttemptAt === undefined) {
+        // Scheduled retries are durable state. Only repair an unscheduled
+        // active row; moving an existing deadline earlier would erase provider
+        // backoff whenever the Hub restarts.
+        await allocationStore.wakeReconciliation(
+          allocation.id,
+          allocation.generation,
+        );
+      }
+    }
+  }
+
+  async function handleDisconnect(
+    target: AllocatedSidecarTarget,
+  ): Promise<void> {
+    await allocationStore.markConnectionLost({
+      allocationId: target.allocationId,
+      generation: target.generation,
+      connectDeadline: new Date(now().getTime() + connectTimeoutMs),
+      now: now(),
+    });
+  }
+
+  async function handleConnected(
+    target: AllocatedSidecarTarget,
+  ): Promise<void> {
+    await allocationStore.wakeReconciliation(
+      target.allocationId,
+      target.generation,
+    );
+  }
+
+  async function repairUnscheduledConnections(): Promise<void> {
+    for (const allocation of await allocationStore.listActive()) {
+      if (
+        allocation.status !== "allocated" ||
+        allocation.nextAttemptAt !== undefined ||
+        allocation.reconciliationLeaseId !== undefined ||
+        allocation.reconciliationLeaseExpiresAt !== undefined
+      ) {
+        continue;
+      }
+      const target = {
+        allocationId: allocation.id,
+        generation: allocation.generation,
+      };
+      if (await router.isAllocatedSidecarReady(target)) continue;
+      try {
+        await allocationStore.scheduleReconnectIfUnscheduled({
+          ...target,
+          connectDeadline:
+            allocation.connectDeadline ??
+            new Date(now().getTime() + connectTimeoutMs),
+          now: now(),
+        });
+      } catch (error) {
+        logger.warn`Failed to repair allocation ${allocation.id} reconnect schedule: ${error instanceof Error ? error.message : String(error)}`;
+      }
     }
   }
 
@@ -502,5 +597,12 @@ export function createSidecarAllocationReconciler({
     return reconciled;
   }
 
-  return { initialize, reconcileNext, reconcileUntilIdle };
+  return {
+    initialize,
+    handleDisconnect,
+    handleConnected,
+    repairUnscheduledConnections,
+    reconcileNext,
+    reconcileUntilIdle,
+  };
 }

@@ -1085,6 +1085,10 @@ export function createSidecarRouter(
     }
     const current = allocatedConnections.get(identity.allocationId);
     if (current !== undefined && current.ws !== ws) {
+      // A current-generation takeover is a reconnect, not a capacity loss.
+      // Remove the old socket from the allocation index before closing it so
+      // handleClose does not emit a false allocated-disconnect event.
+      allocatedConnections.delete(identity.allocationId);
       handleClose(current.ws);
       current.ws.close();
     }
@@ -1119,6 +1123,10 @@ export function createSidecarRouter(
     }
     logger.info`Allocated sidecar ${identity.sidecarId} registered for allocation ${identity.allocationId} generation ${String(identity.generation)}`;
     await notifyAllocationWaiters(identity.allocationId);
+    events.emit("sidecar.allocated.connected", {
+      allocationId: identity.allocationId,
+      generation: identity.generation,
+    });
   }
 
   async function handleRegister(
@@ -1842,6 +1850,7 @@ export function createSidecarRouter(
   function handleClose(ws: WsHandle): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
+    let allocated: { allocationId: string; generation: number } | undefined;
 
     for (const addr of conn.agentAddresses) {
       // Only remove routing and pending state if this connection still
@@ -1900,6 +1909,10 @@ export function createSidecarRouter(
       const current = allocatedConnections.get(conn.identity.allocationId);
       if (current?.ws === ws) {
         allocatedConnections.delete(conn.identity.allocationId);
+        allocated = {
+          allocationId: conn.identity.allocationId,
+          generation: conn.identity.generation,
+        };
       }
     }
     connections.delete(ws);
@@ -1974,6 +1987,7 @@ export function createSidecarRouter(
 
     events.emit("sidecar.disconnect", {
       ownedAddresses: [...owned],
+      ...(allocated !== undefined ? { allocated } : {}),
     });
 
     logger.info`Sidecar ${conn.sidecarId} disconnected`;

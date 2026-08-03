@@ -4,7 +4,12 @@ import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { type } from "arktype";
 
-import { asset, workflowDefinition, workflowRun } from "@intx/db/schema";
+import {
+  asset,
+  sidecarAllocation,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
@@ -20,11 +25,15 @@ import {
   deriveWorkflowRunId,
   ErrorResponse,
   SendMessage,
+  type SidecarAllocationStatus,
 } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
 import type { HarnessConfig } from "@intx/types/runtime";
+import { ToolPackagePinArray } from "@intx/types/tool-packages";
 import {
   createWorkflowRunReader,
+  ExclusiveWorkflowPlacementError,
+  resolveWorkflowSidecarPlacement,
   type AssetService,
   type RepoId,
   type RepoStore,
@@ -32,6 +41,7 @@ import {
   type SidecarRouter,
   type WorkflowDefinition,
   type WorkflowRunEvent,
+  type WorkflowAllocationService,
 } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import {
@@ -91,6 +101,7 @@ const DeployWorkflow = type({
   assetId: "string",
   sources: InferenceSource.array(),
   defaultSource: "string",
+  "toolPackages?": ToolPackagePinArray,
 });
 
 // Request body for signal delivery. `signalId` is caller-supplied and
@@ -153,12 +164,17 @@ function formatRunEvent(event: WorkflowRunEvent) {
 // the run's definition; a null asset is a corrupt definition the deployment
 // contract cannot represent, so it surfaces loudly rather than emitting null
 // into a string field.
-function formatDeployment(row: {
-  id: string;
-  tenantId: string;
-  definitionAssetId: string | null;
-  createdAt: Date;
-}) {
+function formatDeployment(
+  row: {
+    id: string;
+    tenantId: string;
+    definitionAssetId: string | null;
+    createdAt: Date;
+    allocationStatus?: SidecarAllocationStatus | null;
+    allocationNextAttemptAt?: Date | null;
+  },
+  statusOverride?: string,
+) {
   if (row.definitionAssetId === null) {
     throw new Error(
       `deployment ${row.id}: anchor run's definition has no asset`,
@@ -168,9 +184,35 @@ function formatDeployment(row: {
     id: row.id,
     tenantId: row.tenantId,
     definitionAssetId: row.definitionAssetId,
-    status: "deployed",
+    status: statusOverride ?? formatAllocationStatus(row),
     createdAt: ts(row.createdAt),
   };
+}
+
+function formatAllocationStatus(row: {
+  allocationStatus?: SidecarAllocationStatus | null;
+  allocationNextAttemptAt?: Date | null;
+}): string {
+  switch (row.allocationStatus) {
+    case undefined:
+    case null:
+      return "deployed";
+    case "pending":
+    case "provisioning":
+      return "pending";
+    case "allocated":
+      return row.allocationNextAttemptAt == null ? "deployed" : "pending";
+    case "replacing":
+      return "recovering";
+    case "releasing":
+    case "released":
+    case "failed":
+      return row.allocationStatus;
+    default: {
+      const unreachable: never = row.allocationStatus;
+      return unreachable;
+    }
+  }
 }
 
 // A deployment exists iff its anchor run does -- the workflow_run whose id is
@@ -199,6 +241,7 @@ async function deploymentAnchorRunExists(
 export type CreateWorkflowRoutesDeps = {
   db: DB["db"];
   sessionService: SessionService;
+  workflowAllocationService?: WorkflowAllocationService;
   sidecarRouter: SidecarRouter;
   assetService: AssetService;
   repoStore: RepoStore;
@@ -209,6 +252,7 @@ export type CreateWorkflowRoutesDeps = {
 export function createWorkflowRoutes({
   db,
   sessionService,
+  workflowAllocationService,
   sidecarRouter,
   assetService,
   repoStore,
@@ -328,6 +372,28 @@ export function createWorkflowRoutes({
         );
       }
 
+      let placement;
+      try {
+        placement = await resolveWorkflowSidecarPlacement(
+          db,
+          tenant.id,
+          definition,
+        );
+      } catch (err) {
+        return c.json(
+          {
+            error: {
+              code: "placement_resolution_failed",
+              message:
+                err instanceof Error
+                  ? err.message
+                  : "Failed to resolve workflow sidecar placement",
+            },
+          },
+          500,
+        );
+      }
+
       const deploymentId = generateId("deployment");
       const sessionId = generateId("session");
       const config: HarnessConfig = {
@@ -343,46 +409,109 @@ export function createWorkflowRoutes({
         defaultSource: body.defaultSource,
       };
 
-      let result: Awaited<
-        ReturnType<SessionService["deployWorkflowDefinition"]>
-      >;
-      try {
-        result = await sessionService.deployWorkflowDefinition({
-          tenantId: tenant.id,
-          deploymentId,
-          deploymentDomain: tenant.domain,
-          definition,
-          definitionAssetId: assetRow.id,
-          config,
-          deployContent: { systemPrompt: "" },
-        });
-      } catch (err) {
-        // A single-step deploy whose source chain is invalid (head is not the
-        // default source, or a chain source the operator never approved) is a
-        // client/definition error, not a sidecar-reachability failure.
-        if (err instanceof WorkflowDefinitionInvalidError) {
+      let deployedId: string;
+      let deploymentStatus = "deployed";
+      if (placement?.sharing === "exclusive") {
+        if (workflowAllocationService === undefined) {
           return c.json(
             {
               error: {
-                code: "invalid_workflow",
-                message: err.message,
+                code: "exclusive_placement_unavailable",
+                message:
+                  "Exclusive workflow placement is not configured on this Hub",
               },
             },
             409,
           );
         }
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to deploy workflow",
+        try {
+          const prepared =
+            await workflowAllocationService.prepareExclusiveDeployment({
+              tenantId: tenant.id,
+              deploymentId,
+              deploymentDomain: tenant.domain,
+              definition,
+              definitionAssetId: assetRow.id,
+              placement,
+              sessionId,
+              sourceAuthorityPrincipalId: c.get("principal").id,
+              sourceOfferingIds: body.sources.map((source) => source.id),
+              defaultSourceOfferingId: body.defaultSource,
+              deployContent: { systemPrompt: "" },
+              ...(body.toolPackages !== undefined
+                ? { toolPackagePins: body.toolPackages }
+                : {}),
+            });
+          deployedId = prepared.deploymentId;
+          deploymentStatus = prepared.status;
+        } catch (err) {
+          if (err instanceof ExclusiveWorkflowPlacementError) {
+            return c.json(
+              {
+                error: {
+                  code: err.code,
+                  message: err.message,
+                },
+              },
+              409,
+            );
+          }
+          return c.json(
+            {
+              error: {
+                code: "exclusive_deployment_failed",
+                message:
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to prepare exclusive workflow deployment",
+              },
             },
-          },
-          502,
-        );
+            500,
+          );
+        }
+      } else {
+        try {
+          const result = await sessionService.deployWorkflowDefinition({
+            tenantId: tenant.id,
+            deploymentId,
+            deploymentDomain: tenant.domain,
+            definition,
+            definitionAssetId: assetRow.id,
+            config,
+            deployContent: { systemPrompt: "" },
+            ...(body.toolPackages !== undefined
+              ? { toolPackagePins: body.toolPackages }
+              : {}),
+          });
+          deployedId = result.deploymentId;
+        } catch (err) {
+          // A single-step deploy whose source chain is invalid (head is not the
+          // default source, or a chain source the operator never approved) is a
+          // client/definition error, not a sidecar-reachability failure.
+          if (err instanceof WorkflowDefinitionInvalidError) {
+            return c.json(
+              {
+                error: {
+                  code: "invalid_workflow",
+                  message: err.message,
+                },
+              },
+              409,
+            );
+          }
+          return c.json(
+            {
+              error: {
+                code: "sidecar_unavailable",
+                message:
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to deploy workflow",
+              },
+            },
+            502,
+          );
+        }
       }
 
       // The sidecar deploy succeeded; reading back the anchor run is an
@@ -403,20 +532,20 @@ export function createWorkflowRoutes({
           workflowDefinition,
           eq(workflowRun.definitionId, workflowDefinition.id),
         )
-        .where(eq(workflowRun.id, result.deploymentId))
+        .where(eq(workflowRun.id, deployedId))
         .limit(1);
       if (!row) {
         return c.json(
           {
             error: {
               code: "anchor_run_missing",
-              message: `anchor workflow_run ${result.deploymentId} missing after deploy`,
+              message: `anchor workflow_run ${deployedId} missing after deploy`,
             },
           },
           500,
         );
       }
-      return c.json(formatDeployment(row), 201);
+      return c.json(formatDeployment(row, deploymentStatus), 201);
     },
   );
 
@@ -443,23 +572,30 @@ export function createWorkflowRoutes({
       const tenant = c.get("tenant");
       // List the deployments as their anchor runs -- the workflow_run whose id
       // equals its own deployment_id. There is deliberately NO run-status
-      // filter: the old projection never tracked teardown and listed every
-      // deployment as "deployed", so enumerating every anchor run regardless of
-      // its run-level status preserves that exact row-set and value. The
-      // `id = deployment_id` predicate (with the explicit non-null, matching
-      // deploymentAnchorRunExists) is the anchor-run identity; child and folded
-      // runs never satisfy it.
+      // filter: allocation lifecycle is separate from run execution status.
+      // Shared deployments have no allocation row and retain the legacy
+      // "deployed" projection; exclusive deployments derive their public
+      // lifecycle from the allocation joined below. The `id = deployment_id`
+      // predicate (with the explicit non-null, matching
+      // deploymentAnchorRunExists) is the anchor-run identity; child and
+      // folded runs never satisfy it.
       const rows = await db
         .select({
           id: workflowRun.id,
           tenantId: workflowRun.tenantId,
           definitionAssetId: workflowDefinition.assetId,
           createdAt: workflowRun.createdAt,
+          allocationStatus: sidecarAllocation.status,
+          allocationNextAttemptAt: sidecarAllocation.nextAttemptAt,
         })
         .from(workflowRun)
         .innerJoin(
           workflowDefinition,
           eq(workflowRun.definitionId, workflowDefinition.id),
+        )
+        .leftJoin(
+          sidecarAllocation,
+          eq(sidecarAllocation.anchorRunId, workflowRun.id),
         )
         .where(
           and(
@@ -469,7 +605,7 @@ export function createWorkflowRoutes({
           ),
         )
         .orderBy(desc(workflowRun.createdAt));
-      return c.json(rows.map(formatDeployment));
+      return c.json(rows.map((row) => formatDeployment(row)));
     },
   );
 
