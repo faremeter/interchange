@@ -17,6 +17,7 @@ import {
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
+import { ToolPackagePinArray } from "@intx/types/tool-packages";
 
 import type {
   approval,
@@ -37,9 +38,11 @@ import type {
   workflowDefinition,
   workflowDefinitionVersion,
   workflowRun,
+  workflowRunLaunchSpec,
 } from "./schema";
 
 const JSONObject = type("Record<string, unknown>");
+const StringArray = type("string[]");
 
 const GrantEffectValidator = type.enumerated(...grantEffects);
 const GrantOriginValidator = type.enumerated(...grantOrigins);
@@ -194,6 +197,42 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
         ? InvokerModelPreferences.assert(row.modelPreferences)
         : null,
   };
+}
+
+export function parseWorkflowRunLaunchSpecRow(
+  row: typeof workflowRunLaunchSpec.$inferSelect,
+) {
+  const sourceOfferingIds = StringArray.assert(row.sourceOfferingIds);
+  assertLaunchSpecSources(sourceOfferingIds, row.defaultSourceOfferingId);
+  return {
+    ...row,
+    definitionSnapshot: JSONObject.assert(row.definitionSnapshot),
+    sourceOfferingIds,
+    deployContent: JSONObject.assert(row.deployContent),
+    toolPackagePins:
+      row.toolPackagePins !== null
+        ? ToolPackagePinArray.assert(row.toolPackagePins)
+        : null,
+  };
+}
+
+function assertLaunchSpecSources(
+  sourceOfferingIds: readonly string[],
+  defaultSourceOfferingId: string,
+): void {
+  if (sourceOfferingIds.length === 0) {
+    throw new Error(
+      "workflow launch spec requires at least one source offering",
+    );
+  }
+  if (new Set(sourceOfferingIds).size !== sourceOfferingIds.length) {
+    throw new Error("workflow launch spec source offering ids must be unique");
+  }
+  if (!sourceOfferingIds.includes(defaultSourceOfferingId)) {
+    throw new Error(
+      `workflow launch spec default source ${defaultSourceOfferingId} is not in its source offering ids`,
+    );
+  }
 }
 
 export function parseOfferingRow(row: typeof offering.$inferSelect) {

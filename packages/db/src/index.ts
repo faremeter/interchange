@@ -25,6 +25,10 @@ export {
   type WorkflowRunStore,
 } from "./workflow-run-store";
 export {
+  createWorkflowRunLaunchSpecStore,
+  type WorkflowRunLaunchSpecStore,
+} from "./workflow-run-launch-spec-store";
+export {
   createWorkflowDefinitionStore,
   resolveDefinitionIdForAsset,
   type WorkflowDefinitionRollbackResult,
@@ -78,6 +82,7 @@ export {
   parsePrincipalRow,
   parseSignalCorrelationRow,
   parseWorkflowRunRow,
+  parseWorkflowRunLaunchSpecRow,
   parseWorkflowDefinitionRow,
   parseWorkflowDefinitionVersionRow,
   parseOfferingRow,
