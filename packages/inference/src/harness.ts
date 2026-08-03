@@ -510,15 +510,7 @@ async function* runSingleAttempt(
     > {
       if (responseKind === "json") {
         const body = await awaitWithSignal(response.text(), fetchSignal);
-        const parseJSONResponse = adapter.parseJSONResponse;
-        if (parseJSONResponse === undefined) {
-          throw new ProtocolMismatchError(
-            `harness: provider ${lastCycleSource.provider} returned a ` +
-              `non-streaming JSON response but its adapter provides no ` +
-              `JSON response parser`,
-          );
-        }
-        yield parseJSONResponse(body);
+        yield adapter.parseJSONResponse(body);
         return;
       }
       for await (const sseData of parseSSE(responseBody)) {

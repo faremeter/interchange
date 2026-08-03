@@ -399,6 +399,7 @@ describe("runInference — providerOptions merge precedence", () => {
         };
       },
       parseResponse: () => [],
+      parseJSONResponse: () => [],
     });
     const adapters = await loadAdapterRegistry(
       [{ provider: providerName, specifier: "x", export: "make" }],
@@ -695,6 +696,7 @@ describe("runInference — source quirks reach the adapter registry", () => {
             body: "{}",
           }),
           parseResponse: () => [],
+          parseJSONResponse: () => [],
         };
       },
     };
@@ -808,15 +810,6 @@ describe("runInference — non-streaming JSON responses", () => {
     },
   });
 
-  const noJSONFactory: AdapterFactory = () => ({
-    buildRequest: () => ({
-      url: "https://example.test/v1/json",
-      headers: {},
-      body: "{}",
-    }),
-    parseResponse: () => [],
-  });
-
   test("decodes a JSON body through the adapter's parseJSONResponse", async () => {
     let seq = 0;
     const events = await collect(
@@ -848,27 +841,6 @@ describe("runInference — non-streaming JSON responses", () => {
     expect(usage.data.usage.output).toBe(3);
 
     expect(events.some((e) => e.type === "inference.done")).toBe(true);
-  });
-
-  test("surfaces a protocol mismatch when a JSON response has no JSON parser", async () => {
-    let seq = 0;
-    const events = await collect(
-      runInference({
-        turns: [userTurn("hi")],
-        source: JSON_SOURCE,
-        nextSeq: () => ++seq,
-        deps: jsonDeps("{}", "application/json", noJSONFactory),
-      }),
-    );
-
-    const errorEvent = events.find(
-      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
-        e.type === "inference.error",
-    );
-    if (errorEvent === undefined) throw new Error("missing inference.error");
-    expect(errorEvent.data.error.category).toBe("protocol_mismatch");
-    expect(errorEvent.data.error.message).toContain("JSON response parser");
-    expect(events.some((e) => e.type === "inference.done")).toBe(false);
   });
 
   test("surfaces a protocol mismatch on an unsupported content-type", async () => {

@@ -256,6 +256,7 @@ describe("runInference — citation interleaving", () => {
         headers: { "content-type": "application/json" },
         body: "{}",
       }),
+      parseJSONResponse: () => [],
       parseResponse: (sse: string): InferenceEvent[] => {
         if (sse !== "go") return [];
         return [
@@ -343,6 +344,7 @@ describe("runInference — citation interleaving", () => {
         headers: { "content-type": "application/json" },
         body: "{}",
       }),
+      parseJSONResponse: () => [],
       parseResponse: (sse: string): InferenceEvent[] => {
         // The stub emits a fixed event sequence on the "go" payload
         // and nothing on others. Sequence numbers and partial-state
