@@ -40,7 +40,6 @@ import { ToolPackagePinArray } from "@intx/types/tool-packages";
 import {
   createWorkflowRunReader,
   ExclusiveWorkflowPlacementError,
-  readCommittedWorkflowRunLifecycle,
   resolveWorkflowSidecarPlacement,
   type AssetService,
   type RepoId,
@@ -55,7 +54,6 @@ import {
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import {
   deriveDeploymentAddress,
-  deriveWorkflowRunRepoId,
   WorkflowDefinitionInvalidError,
 } from "@intx/workflow-deploy";
 
@@ -73,6 +71,11 @@ import {
 } from "../run-grant-materialization";
 import { ts } from "../format";
 import type { MaterializedGrantRow } from "../grant-materialization";
+import {
+  readDurableWorkflowRunLifecycle,
+  workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_REF,
+} from "../workflow-run-lifecycle";
 
 // DoS guard on the trigger route body. Sized identically to the agent
 // mail route: above the legitimate ceiling (the 30 MB per-message
@@ -81,10 +84,6 @@ import type { MaterializedGrantRow } from "../grant-materialization";
 // with a structured error, while genuine garbage is rejected here
 // before the JSON parser allocates a giant string.
 const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
-
-// Workflow-run events commit on the substrate's default branch; the
-// supervisor wires the workflow-process child against this ref.
-const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // The sidecar's deploy router keys the workflow-run repo by
 // `deriveWorkflowRunRepoId(deploymentAddress)`, where the deployment
@@ -99,10 +98,7 @@ function workflowRunRepoId(deploymentId: string, tenantDomain: string): RepoId {
     deploymentId,
     deploymentDomain: tenantDomain,
   });
-  return {
-    kind: "workflow-run",
-    id: deriveWorkflowRunRepoId(deploymentAddress),
-  };
+  return workflowRunRepoIdForAddress(deploymentAddress);
 }
 
 async function lockDispatchableAllocation(
@@ -303,12 +299,11 @@ export function createWorkflowRoutes({
     tenantDomain: string,
     runId: string,
   ) {
-    const reads = await repoStore.openCommittedReads(
-      { kind: "hub" },
-      workflowRunRepoId(deploymentId, tenantDomain),
-      WORKFLOW_RUN_REF,
-    );
-    return readCommittedWorkflowRunLifecycle(reads, runId);
+    const deploymentAddress = deriveDeploymentAddress({
+      deploymentId,
+      deploymentDomain: tenantDomain,
+    });
+    return readDurableWorkflowRunLifecycle(repoStore, deploymentAddress, runId);
   }
 
   app.post(
@@ -847,6 +842,15 @@ export function createWorkflowRoutes({
             ) {
               return "allocation-unavailable" as const;
             }
+            // Pack receipt advances Git while holding this allocation lock. Read
+            // again after acquiring it so the preflight result cannot go stale
+            // while this transaction waits behind a terminal pack.
+            if (
+              (await readRunLifecycle(deploymentId, tenant.domain, runId)) !==
+              "live"
+            ) {
+              return "run-not-running" as const;
+            }
             if (
               (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==
                 "running" ||
@@ -1269,6 +1273,14 @@ export function createWorkflowRoutes({
             !(await lockDispatchableAllocation(tx, allocationId, deploymentId))
           ) {
             return "allocation-unavailable" as const;
+          }
+          // The allocation lock serializes this read with authoritative pack
+          // advancement. An absent run is still valid for its first mail.
+          if (
+            (await readRunLifecycle(deploymentId, tenant.domain, runId)) ===
+            "terminal"
+          ) {
+            return "run-terminal" as const;
           }
           if (
             (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==

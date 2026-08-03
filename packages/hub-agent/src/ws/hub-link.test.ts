@@ -1431,7 +1431,9 @@ describe("sidecar↔hub integration", () => {
 
       const repoId = {
         kind: "workflow-run",
-        id: "dep-bootstrap-race",
+        // `deriveWorkflowRunRepoId(agentAddress)`; kept literal here so this
+        // package's tests do not acquire a runtime dependency on the deployer.
+        id: "race-agent-test-interchange",
       } as const;
       const ref = "refs/heads/events";
       const commitSha = "a".repeat(40);

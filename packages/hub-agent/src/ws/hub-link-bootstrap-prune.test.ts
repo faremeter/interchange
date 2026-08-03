@@ -8,9 +8,10 @@
 // The contract is asserted behaviorally through the wire surface:
 //   1. Deploy agent A. Push a workflow-run pack; the hub rejects the
 //      first attempt with `corrupt` and accepts the retry. The link
-//      marks the `(workflow-run, dep-prune-X, ref)` key as bootstrapped.
+//      marks the `(workflow-run, <address-derived-repo-id>, ref)` key as
+//      bootstrapped.
 //   2. Undeploy agent A. The fix prunes the bootstrap entry whose
-//      `repoId.id` matches the agent's deploymentId.
+//      sender ownership was recorded under that agent address.
 //   3. Re-deploy agent A. Push another workflow-run pack to the same
 //      `(repoId, ref)`; the hub rejects the first attempt again.
 //   4. The push only succeeds because the link's bootstrap-retry arm
@@ -267,7 +268,9 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
 
       const repoId = {
         kind: "workflow-run" as const,
-        id: "dep-prune-1",
+        // `deriveWorkflowRunRepoId(agentAddress)`; kept literal here so this
+        // package's tests do not acquire a runtime dependency on the deployer.
+        id: "agent-prune-test-interchange",
       };
       const ref = "refs/heads/events";
       const commitSha = "a".repeat(40);

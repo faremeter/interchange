@@ -9,6 +9,8 @@ import {
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ApprovalStore, SignalCorrelationStore, DB } from "@intx/db";
+import { sidecarAllocation, workflowRun } from "@intx/db/schema";
+import type { WorkflowRunLifecycle } from "@intx/hub-sessions";
 
 import { createApp } from "../app";
 import {
@@ -99,6 +101,11 @@ function createMockDB(
   approvalList: NonNullable<ParsedApproval>[] = [],
   sidecarAllocationStatus?: SidecarAllocationStatus,
   allocationLocks: string[] = [],
+  workflowRunStatuses: readonly ("running" | "completed")[] = [
+    "running",
+    "running",
+  ],
+  operationOrder: string[] = [],
 ): DB["db"] {
   // The resolver locks an exclusive allocation inside `db.transaction`; the
   // injected stores ignore the rest of the tx handle. The list route reads
@@ -112,23 +119,38 @@ function createMockDB(
       principal: { findFirst: async () => testPrincipal },
       approval: { findMany: async () => approvalList },
     },
-    transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+      let workflowRunLockIndex = 0;
+      return fn({
         select: () => ({
-          from: () => ({
+          from: (table: unknown) => ({
             where: () => ({
               limit: () => ({
                 for: async (lock: string) => {
-                  allocationLocks.push(lock);
-                  return sidecarAllocationStatus === undefined
-                    ? []
-                    : [{ id: "sal_test", status: sidecarAllocationStatus }];
+                  if (table === sidecarAllocation) {
+                    allocationLocks.push(lock);
+                    operationOrder.push("allocation-lock");
+                    return sidecarAllocationStatus === undefined
+                      ? []
+                      : [{ id: "sal_test", status: sidecarAllocationStatus }];
+                  }
+                  if (table === workflowRun) {
+                    const index = workflowRunLockIndex;
+                    workflowRunLockIndex += 1;
+                    operationOrder.push(
+                      index === 0 ? "anchor-lock" : "target-lock",
+                    );
+                    const status = workflowRunStatuses[index];
+                    return status === undefined ? [] : [{ status }];
+                  }
+                  throw new Error("mock: unexpected table lock");
                 },
               }),
             }),
           }),
         }),
-      }),
+      });
+    },
   } as unknown as DB["db"];
 }
 
@@ -142,6 +164,7 @@ type MockApprovalStoreOpts = {
   transactionalApproval?: NonNullable<ParsedApproval> | null;
   resolveResult?: NonNullable<ParsedApproval> | null;
   resolveCalls: ResolveCall[];
+  operationOrder?: string[];
 };
 
 function createMockApprovalStore(opts: MockApprovalStoreOpts): ApprovalStore {
@@ -159,6 +182,7 @@ function createMockApprovalStore(opts: MockApprovalStoreOpts): ApprovalStore {
         : opts.approval;
     },
     resolve: async (_correlationId, args) => {
+      opts.operationOrder?.push("resolve");
       opts.resolveCalls.push({ status: args.status, scope: args.scope });
       return opts.resolveResult === undefined
         ? {
@@ -177,6 +201,7 @@ type ClaimCall = { correlationId: string; signalId: string | null };
 type MockSignalStoreOpts = {
   claimResult: { agentAddress: string; runId: string } | null;
   claimCalls: ClaimCall[];
+  operationOrder?: string[];
 };
 
 function createMockSignalCorrelationStore(
@@ -190,6 +215,7 @@ function createMockSignalCorrelationStore(
     registerIfAbsent: () => notImpl("registerIfAbsent"),
     resolveRoute: () => notImpl("resolveRoute"),
     claimTerminal: async (correlationId, _resolvedAt, signalId) => {
+      opts.operationOrder?.push("claim");
       opts.claimCalls.push({ correlationId, signalId });
       if (opts.claimResult === null) return null;
       return {
@@ -308,6 +334,7 @@ function createMockWorkflowDispatchService(
   enqueues: WorkflowSignalDispatchEnqueue[],
   transactionalEnqueues: boolean[],
   wakeCalls: string[],
+  operationOrder: string[] = [],
 ): WorkflowDispatchService {
   function notImpl(name: string): never {
     throw new Error(`mock: workflowDispatchService.${name} not implemented`);
@@ -315,6 +342,7 @@ function createMockWorkflowDispatchService(
   return {
     enqueue: () => notImpl("enqueue"),
     async enqueueSignal(args, tx) {
+      operationOrder.push("enqueue");
       enqueues.push(args);
       transactionalEnqueues.push(tx !== undefined);
       const now = args.now ?? new Date();
@@ -370,6 +398,12 @@ type TestAppOpts = {
   transactionalEnqueues?: boolean[];
   dispatchWakeCalls?: string[];
   allocationLocks?: string[];
+  runLifecycles?: {
+    topLevel: WorkflowRunLifecycle;
+    target: WorkflowRunLifecycle;
+  };
+  workflowRunStatuses?: readonly ("running" | "completed")[];
+  operationOrder?: string[];
 };
 
 function createTestApp(opts: TestAppOpts = {}) {
@@ -388,6 +422,8 @@ function createTestApp(opts: TestAppOpts = {}) {
         ? (opts.sidecarAllocationStatus ?? "allocated")
         : undefined,
       opts.allocationLocks,
+      opts.workflowRunStatuses,
+      opts.operationOrder,
     ),
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
     approvalStore: createMockApprovalStore({
@@ -399,10 +435,16 @@ function createTestApp(opts: TestAppOpts = {}) {
         ? { resolveResult: opts.resolveResult }
         : {}),
       resolveCalls: opts.resolveCalls ?? [],
+      ...(opts.operationOrder !== undefined
+        ? { operationOrder: opts.operationOrder }
+        : {}),
     }),
     signalCorrelationStore: createMockSignalCorrelationStore({
       claimResult,
       claimCalls: opts.claimCalls ?? [],
+      ...(opts.operationOrder !== undefined
+        ? { operationOrder: opts.operationOrder }
+        : {}),
     }),
     sidecarRouter: createMockSidecarRouter(
       opts.signalCalls ?? [],
@@ -414,7 +456,16 @@ function createTestApp(opts: TestAppOpts = {}) {
             opts.workflowSignalEnqueues,
             opts.transactionalEnqueues ?? [],
             opts.dispatchWakeCalls ?? [],
+            opts.operationOrder,
           ),
+        }
+      : {}),
+    ...(opts.workflowSignalEnqueues !== undefined
+      ? {
+          readRunLifecycles: async () => {
+            opts.operationOrder?.push("git-lifecycle");
+            return opts.runLifecycles ?? { topLevel: "live", target: "live" };
+          },
         }
       : {}),
     sessionService: createMockSessionService(),
@@ -504,6 +555,7 @@ describe("POST /approvals/:approvalId/approve", () => {
     const transactionalEnqueues: boolean[] = [];
     const wakeCalls: string[] = [];
     const allocationLocks: string[] = [];
+    const operationOrder: string[] = [];
     const app = createTestApp({
       hasSidecarAllocation: true,
       signalCalls,
@@ -512,6 +564,7 @@ describe("POST /approvals/:approvalId/approve", () => {
       transactionalEnqueues,
       dispatchWakeCalls: wakeCalls,
       allocationLocks,
+      operationOrder,
     });
 
     const res = await app.fetch(
@@ -522,6 +575,15 @@ describe("POST /approvals/:approvalId/approve", () => {
     expect(signalCalls).toHaveLength(0);
     expect(transactionalEnqueues).toEqual([true]);
     expect(allocationLocks).toEqual(["update"]);
+    expect(operationOrder).toEqual([
+      "allocation-lock",
+      "git-lifecycle",
+      "anchor-lock",
+      "target-lock",
+      "claim",
+      "resolve",
+      "enqueue",
+    ]);
     expect(wakeCalls).toEqual(["wake"]);
     expect(enqueues).toHaveLength(1);
     const enqueue = enqueues[0];
@@ -537,6 +599,101 @@ describe("POST /approvals/:approvalId/approve", () => {
       signalId: claimCalls[0]?.signalId,
       payload: { outcome: "approved" },
     });
+  });
+
+  for (const terminalRun of ["topLevel", "target"] as const) {
+    test(`does not resolve when the durable ${terminalRun} run is terminal`, async () => {
+      const claimCalls: ClaimCall[] = [];
+      const resolveCalls: ResolveCall[] = [];
+      const enqueues: WorkflowSignalDispatchEnqueue[] = [];
+      const operationOrder: string[] = [];
+      const app = createTestApp({
+        hasSidecarAllocation: true,
+        claimCalls,
+        resolveCalls,
+        workflowSignalEnqueues: enqueues,
+        runLifecycles: {
+          topLevel: terminalRun === "topLevel" ? "terminal" : "live",
+          target: terminalRun === "target" ? "terminal" : "live",
+        },
+        operationOrder,
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${APPROVAL_ID}/approve`, { scope: "once" }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe("workflow_run_not_running");
+      expect(operationOrder).toEqual(["allocation-lock", "git-lifecycle"]);
+      expect(claimCalls).toEqual([]);
+      expect(resolveCalls).toEqual([]);
+      expect(enqueues).toEqual([]);
+    });
+  }
+
+  for (const terminalRun of ["anchor", "target"] as const) {
+    test(`does not resolve when the SQL ${terminalRun} run is terminal`, async () => {
+      const claimCalls: ClaimCall[] = [];
+      const resolveCalls: ResolveCall[] = [];
+      const enqueues: WorkflowSignalDispatchEnqueue[] = [];
+      const operationOrder: string[] = [];
+      const app = createTestApp({
+        hasSidecarAllocation: true,
+        claimCalls,
+        resolveCalls,
+        workflowSignalEnqueues: enqueues,
+        workflowRunStatuses:
+          terminalRun === "anchor"
+            ? ["completed", "running"]
+            : ["running", "completed"],
+        operationOrder,
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${APPROVAL_ID}/approve`, { scope: "once" }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe("workflow_run_not_running");
+      expect(operationOrder).toEqual([
+        "allocation-lock",
+        "git-lifecycle",
+        "anchor-lock",
+        "target-lock",
+      ]);
+      expect(claimCalls).toEqual([]);
+      expect(resolveCalls).toEqual([]);
+      expect(enqueues).toEqual([]);
+    });
+  }
+
+  test("preserves already-resolved precedence after a terminal lifecycle check", async () => {
+    const claimCalls: ClaimCall[] = [];
+    const resolveCalls: ResolveCall[] = [];
+    const enqueues: WorkflowSignalDispatchEnqueue[] = [];
+    const app = createTestApp({
+      transactionalApproval: pendingApproval({
+        status: "approved",
+        scope: "once",
+        resolvedAt: new Date("2025-01-03"),
+      }),
+      hasSidecarAllocation: true,
+      claimCalls,
+      resolveCalls,
+      workflowSignalEnqueues: enqueues,
+      runLifecycles: { topLevel: "live", target: "terminal" },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${APPROVAL_ID}/approve`, { scope: "once" }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("already_resolved");
+    expect(claimCalls).toEqual([]);
+    expect(resolveCalls).toEqual([]);
+    expect(enqueues).toEqual([]);
   });
 
   for (const sidecarAllocationStatus of [

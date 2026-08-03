@@ -25,4 +25,5 @@ export {
   type SidecarMailPersistedRow,
   type SidecarMailPersistedPayload,
   type MailTriggeredRunGrantsResult,
+  type WorkflowRunPackSource,
 } from "./sidecar-events";

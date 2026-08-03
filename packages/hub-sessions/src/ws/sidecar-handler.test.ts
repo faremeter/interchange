@@ -3,6 +3,7 @@ import { configureSync, getConfig, resetSync } from "@intx/log";
 import { generateKeyPair, signEd25519 } from "@intx/crypto";
 import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import type {
   PackRejectReason,
   RepoId,
@@ -4562,11 +4563,14 @@ describe("SidecarRouter", () => {
     test("workflow-run pack frames invoke receiveWorkflowRunPack and ack the sidecar", async () => {
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
-      const addr = "agent-wfr@local";
+      const addr = "ins_dep-wfr-1@local";
       await registerAddr(r, ws, "sc-wfr", addr);
 
       const transferId = "t-wfr-1";
-      const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-1" };
+      const repoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(addr),
+      };
       const ref = "refs/heads/events";
       const commitSha = "f".repeat(40);
       const pack = new Uint8Array([1, 2, 3, 4, 5]);
@@ -4612,7 +4616,10 @@ describe("SidecarRouter", () => {
       const addr = "ins_dep_wfr@local";
       await registerAddr(r, ws, "sc-wfr", addr);
 
-      const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-2" };
+      const repoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(addr),
+      };
       pushPack(r, ws, {
         agentAddress: addr,
         repoId,
@@ -4639,7 +4646,10 @@ describe("SidecarRouter", () => {
       // connection so its close leaves the new owner alone.
       const { router: r, calls } = buildPackRouter();
       const addr = "ins_dep_reclaim@local";
-      const repoId: RepoId = { kind: "workflow-run", id: "dep-reclaim" };
+      const repoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(addr),
+      };
       const pack = new Uint8Array([4, 5, 6, 7]);
       const transferId = "t-reclaim";
 
@@ -4707,7 +4717,10 @@ describe("SidecarRouter", () => {
         },
       });
       const addr = "ins_dep_reclaim_rc@local";
-      const repoId: RepoId = { kind: "workflow-run", id: "dep-reclaim-rc" };
+      const repoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(addr),
+      };
       const pack = new Uint8Array([4, 5, 6, 7]);
       const transferId = "t-reclaim-rc";
 
@@ -4802,7 +4815,10 @@ describe("SidecarRouter", () => {
       const stateRepoId: RepoId = { kind: "agent-state", id: addr };
 
       const wfrPack = new Uint8Array([20, 21, 22]);
-      const wfrRepoId: RepoId = { kind: "workflow-run", id: "dep-mix-1" };
+      const wfrRepoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(addr),
+      };
 
       // Push the agent-state chunk first, then a workflow-run chunk
       // sharing the same transferId. If state were shared, the
@@ -4880,16 +4896,100 @@ describe("SidecarRouter", () => {
       expect(Array.from(wfrCall.pack)).toEqual(Array.from(wfrPack));
     });
 
+    test("an allocated connection can push only its authenticated workflow repository", async () => {
+      const addr = "ins_dep-exclusive-pack@tenant.example";
+      const identity = {
+        kind: "allocated" as const,
+        sidecarId: "sc-exclusive-pack",
+        allocationId: "allocation-exclusive-pack",
+        tenantId: "tenant-1",
+        anchorRunId: "dep-exclusive-pack",
+        workflowRunAddress: addr,
+        generation: 3,
+      };
+      const sources: unknown[] = [];
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => identity,
+        validateSidecarIdentity: async () => true,
+        lookups: {
+          async receiveWorkflowRunPack(
+            _repoId,
+            _pack,
+            _ref,
+            _commitSha,
+            source,
+          ) {
+            sources.push(source);
+            return { accepted: true };
+          },
+        },
+      });
+      allocatedRouter.fenceAllocation(identity.allocationId, 3);
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: identity.sidecarId,
+          token: "token",
+          agentAddresses: [addr],
+        }),
+      );
+      await tick();
+
+      pushPack(allocatedRouter, ws, {
+        agentAddress: addr,
+        repoId: { kind: "workflow-run", id: "another-deployment" },
+        transferId: "allocated-wrong-repo",
+        pack: new Uint8Array([1]),
+        ref: "refs/heads/main",
+        commitSha: "a".repeat(40),
+      });
+      await tick();
+      expect(lastSent(ws)).toMatchObject({
+        type: "repo.pack.reject",
+        reason: "path_violation",
+      });
+      expect(sources).toEqual([]);
+
+      pushPack(allocatedRouter, ws, {
+        agentAddress: addr,
+        repoId: {
+          kind: "workflow-run",
+          id: deriveWorkflowRunRepoId(addr),
+        },
+        transferId: "allocated-owned-repo",
+        pack: new Uint8Array([2]),
+        ref: "refs/heads/main",
+        commitSha: "b".repeat(40),
+      });
+      await tick();
+      expect(lastSent(ws).type).toBe("repo.pack.ack");
+      expect(sources).toEqual([
+        {
+          kind: "allocated",
+          agentAddress: addr,
+          allocationId: identity.allocationId,
+          anchorRunId: identity.anchorRunId,
+          generation: 3,
+        },
+      ]);
+    });
+
     test("workflow-run pack receive rejection is forwarded to the sidecar", async () => {
       const { router: r } = buildPackRouter({
         workflowRun: { accepted: false, reason: "path_violation" },
       });
       const ws = createMockWs();
-      const addr = "agent-wfr-rej@local";
+      const addr = "ins_dep-wfr-rej@local";
       await registerAddr(r, ws, "sc-wfr-rej", addr);
 
       const transferId = "t-wfr-rej";
-      const repoId: RepoId = { kind: "workflow-run", id: "dep-wfr-rej" };
+      const repoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveWorkflowRunRepoId(addr),
+      };
       pushPack(r, ws, {
         agentAddress: addr,
         repoId,

@@ -12,6 +12,7 @@ import { parseApprovalRow } from "@intx/db";
 import type {
   SidecarRouter,
   WorkflowDispatchService,
+  WorkflowRunLifecycle,
 } from "@intx/hub-sessions";
 import {
   ApprovalResponse,
@@ -26,6 +27,7 @@ import {
 
 import type { TenantEnv } from "../context";
 import { ts } from "../format";
+import { lockWorkflowRunState } from "../run-grant-materialization";
 import {
   cursorCondition,
   pageOrder,
@@ -62,11 +64,21 @@ export type CreateApprovalRoutesDeps = {
     WorkflowDispatchService,
     "enqueueSignal" | "wake"
   >;
+  readRunLifecycles?: ReadRunLifecycles;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   approvalStore: ApprovalStore;
   signalCorrelationStore: SignalCorrelationStore;
 };
+
+export type ReadRunLifecycles = (
+  agentAddress: string,
+  topLevelRunId: string,
+  targetRunId: string,
+) => Promise<{
+  topLevel: WorkflowRunLifecycle;
+  target: WorkflowRunLifecycle;
+}>;
 
 type ResolveApprovalArgs = {
   approvalId: string;
@@ -83,7 +95,13 @@ type ResolveApprovalResult =
   | { kind: "forbidden" }
   | { kind: "already_resolved" }
   | { kind: "deployment_unavailable" }
+  | { kind: "run_not_running" }
   | { kind: "dispatch_unavailable" };
+
+type PendingFailureKind = Extract<
+  ResolveApprovalResult["kind"],
+  "deployment_unavailable" | "run_not_running" | "dispatch_unavailable"
+>;
 
 /**
  * Close the approval round-trip: authorize the approver, claim the correlation
@@ -109,6 +127,7 @@ async function resolveApproval(
     db,
     sidecarRouter,
     workflowDispatchService,
+    readRunLifecycles,
     grantStore,
     conditionRegistry,
     approvalStore,
@@ -135,6 +154,21 @@ async function resolveApproval(
   const resolvedAt = new Date();
   const signalId = generateId("signal");
   const claimed = await db.transaction(async (tx) => {
+    const failIfStillPending = async (kind: PendingFailureKind) => {
+      const currentApproval = await approvalStore.findById(args.approvalId, tx);
+      if (
+        currentApproval === null ||
+        currentApproval.tenantId !== args.tenantId ||
+        currentApproval.deploymentId !== approval.deploymentId
+      ) {
+        return { kind: "not_found" } as const;
+      }
+      if (currentApproval.status !== "pending") {
+        return { kind: "already_resolved" } as const;
+      }
+      return { kind };
+    };
+
     const [allocation] = await tx
       .select({
         id: sidecarAllocation.id,
@@ -148,26 +182,53 @@ async function resolveApproval(
       allocation !== undefined &&
       !isSidecarAllocationDispatchable(allocation.status);
     const dispatchUnavailable =
-      allocation !== undefined && workflowDispatchService === undefined;
+      allocation !== undefined &&
+      (workflowDispatchService === undefined ||
+        readRunLifecycles === undefined);
     if (allocationUnavailable || dispatchUnavailable) {
-      const currentApproval = await approvalStore.findById(args.approvalId, tx);
-      if (
-        currentApproval === null ||
-        currentApproval.tenantId !== args.tenantId ||
-        currentApproval.deploymentId !== approval.deploymentId
-      ) {
-        return { kind: "not_found" } as const;
-      }
-      if (currentApproval.status !== "pending") {
-        return { kind: "already_resolved" } as const;
-      }
       if (allocationUnavailable) {
-        return { kind: "deployment_unavailable" } as const;
+        return failIfStillPending("deployment_unavailable");
       }
-      return { kind: "dispatch_unavailable" } as const;
+      return failIfStillPending("dispatch_unavailable");
     }
     const exclusiveDispatchService =
       allocation === undefined ? undefined : workflowDispatchService;
+
+    if (exclusiveDispatchService !== undefined) {
+      if (readRunLifecycles === undefined) {
+        throw new Error(
+          "exclusive approval dispatch is missing its durable lifecycle reader",
+        );
+      }
+      // Pack receipt advances the committed Git ref while holding this same
+      // allocation lock. Re-read lifecycle evidence after acquiring the fence
+      // so a terminal pack cannot race between this check and the claim.
+      const lifecycles = await readRunLifecycles(
+        approval.agentAddress,
+        approval.agentAddress,
+        approval.runId,
+      );
+      if (lifecycles.topLevel !== "live" || lifecycles.target !== "live") {
+        return failIfStillPending("run_not_running");
+      }
+
+      const anchorState = await lockWorkflowRunState(
+        tx,
+        approval.deploymentId,
+        approval.deploymentId,
+      );
+      const targetState =
+        approval.runId === approval.deploymentId
+          ? anchorState
+          : await lockWorkflowRunState(
+              tx,
+              approval.deploymentId,
+              approval.runId,
+            );
+      if (anchorState !== "running" || targetState !== "running") {
+        return failIfStillPending("run_not_running");
+      }
+    }
 
     const claim = await signalCorrelationStore.claimTerminal(
       approval.correlationId,
@@ -437,7 +498,7 @@ export function createApprovalRoutes(
         },
         409: {
           description:
-            "Approval already resolved (takes precedence on retries) or workflow deployment unavailable",
+            "Approval already resolved (takes precedence on retries), workflow run no longer running, or workflow deployment unavailable",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -511,7 +572,7 @@ export function createApprovalRoutes(
         },
         409: {
           description:
-            "Approval already resolved (takes precedence on retries) or workflow deployment unavailable",
+            "Approval already resolved (takes precedence on retries), workflow run no longer running, or workflow deployment unavailable",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -584,6 +645,16 @@ function respond(c: Context<TenantEnv>, result: ResolveApprovalResult) {
           error: {
             code: "deployment_unreachable",
             message: "Workflow deployment allocation is no longer active",
+          },
+        },
+        409,
+      );
+    case "run_not_running":
+      return c.json(
+        {
+          error: {
+            code: "workflow_run_not_running",
+            message: "Workflow run is no longer running",
           },
         },
         409,

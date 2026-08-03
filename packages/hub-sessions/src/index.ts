@@ -39,6 +39,7 @@ export {
   type SidecarMailPersistedPayload,
   type SidecarMailPersistedRow,
   type MailTriggeredRunGrantsResult,
+  type WorkflowRunPackSource,
 } from "./ws";
 export {
   createHubSessionLookups,
