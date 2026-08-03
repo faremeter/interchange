@@ -366,6 +366,17 @@ function handleSignalAwaited(state: RunState, e: SignalAwaited): RunState {
   return { ...state, steps, lastSeq: e.seq };
 }
 
+/**
+ * Owner of the single-consumer signal FIFO: the Map-insertion-order scan for
+ * the first awaiting step, the `observedSignalIds` dedup, and the queue-on-no-
+ * awaiter rule live here and nowhere else authoritative. Two out-of-band read-
+ * side replayers in `runtime/run.ts` reproduce these exact semantics off the
+ * durable log -- `reconstructGateOutcome` (per-gate) and
+ * `boundSignalForContainerAwait` (container-relay binder) -- so any change to
+ * the FIFO, dedup, or queue behavior here must be mirrored in both. The
+ * `reconstruct-gate-outcome` reducer-fidelity oracle cross-checks the replay
+ * against this reducer and fails on drift.
+ */
 function handleSignalReceived(state: RunState, e: SignalReceived): RunState {
   // At-least-once delivery: duplicate signalIds are no-ops.
   if (state.observedSignalIds.has(e.signalId)) {
