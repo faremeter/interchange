@@ -1730,6 +1730,81 @@ describe("SidecarRouter", () => {
       expect(committed).toBe(1);
     });
 
+    test("redelivery re-emits the run's grants ahead of the mail on reconnect", async () => {
+      const kp = await generateKeyPair();
+      let materializations = 0;
+      let committed = 0;
+      const router = createTestRouter({
+        requestTimeoutMs: 500,
+        // Large so neither the connected-window retry nor the retention TTL
+        // fires during the test; the redelivery under test is reconnect-driven.
+        mailAckRetryIntervalMs: 10_000,
+        disconnectQueueTTLMs: 60_000,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === WORKFLOW_ADDR ? hexEncode(kp.publicKey) : null,
+          materializeMailTriggeredRunGrants: async () => {
+            materializations += 1;
+            return {
+              outcome: "materialized",
+              stepGrants: SAMPLE_GRANTS,
+              commit: async () => {
+                committed += 1;
+              },
+            };
+          },
+        },
+      });
+
+      const ws1 = await connectRecipientViaChallenge(
+        router,
+        WORKFLOW_ADDR,
+        kp.privateKey,
+      );
+      await sendOutbound(
+        router,
+        mailWithMessageId("<mail-grants-redeliver@tenant.example>"),
+        [WORKFLOW_ADDR],
+      );
+      const firstInbound = ws1.sent
+        .map((s) => JSON.parse(s))
+        .find((f) => f.type === "mail.inbound");
+      expect(firstInbound).toBeDefined();
+
+      // Drop BEFORE any ack. The run.grants frame the sidecar first saw is lost
+      // with the connection; the run's grants are NOT re-fetched anywhere, so
+      // without replay the redelivered trigger would run with no grants and
+      // fail its onRunStart barrier closed on a hub-committed run.
+      router.handleClose(ws1);
+
+      const ws2 = await connectRecipientViaChallenge(
+        router,
+        WORKFLOW_ADDR,
+        kp.privateKey,
+        "sc-recipient-2",
+      );
+      const frames = ws2.sent.map((s) => JSON.parse(s));
+      const grantsIdx = frames.findIndex(
+        (f) => f.type === "run.grants" && f.runId === WORKFLOW_ADDR,
+      );
+      const mailIdx = frames.findIndex(
+        (f) =>
+          f.type === "mail.inbound" && f.messageId === firstInbound.messageId,
+      );
+      expect(grantsIdx).toBeGreaterThanOrEqual(0);
+      expect(mailIdx).toBeGreaterThanOrEqual(0);
+      // The run.grants lands AHEAD of the redelivered mail (same-connection
+      // FIFO), so the redelivered run resolves its grants instead of failing
+      // closed on the barrier.
+      expect(grantsIdx).toBeLessThan(mailIdx);
+      // The replayed snapshot is the SAME materialized bytes, not a re-fetch:
+      // materialization and commit each ran exactly once, at the original
+      // delivery.
+      expect(frames[grantsIdx]?.stepGrants).toEqual(SAMPLE_GRANTS);
+      expect(materializations).toBe(1);
+      expect(committed).toBe(1);
+    });
+
     test("a skip-path mail-relay is forwarded without the messageId handshake", async () => {
       const router = createTestRouter({
         lookups: {

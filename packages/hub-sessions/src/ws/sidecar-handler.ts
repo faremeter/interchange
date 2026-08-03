@@ -377,6 +377,13 @@ export function createSidecarRouter(
     frame: HubFrame;
     attempts: number;
     timer: ReturnType<typeof setTimeout>;
+    // When this mail triggers a workflow run, the run's already-materialized
+    // grants ride alongside it. Redelivery replays this snapshot as a
+    // `run.grants` frame AHEAD of the mail so the redelivered trigger lands on
+    // a sidecar that has the run's grants, rather than failing its onRunStart
+    // barrier closed. Re-materializing at redelivery time is unsafe (it carries
+    // commit/authority semantics); replaying the same bytes is not.
+    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] };
   };
   const pendingMail = new Map<string, Map<string, PendingMailEntry>>();
   // agentAddress → retention TTL timer for un-acked pending mail held across a
@@ -506,6 +513,7 @@ export function createSidecarRouter(
     agentAddress: string,
     messageId: string,
     frame: HubFrame,
+    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
   ): void {
     let byId = pendingMail.get(agentAddress);
     if (byId === undefined) {
@@ -523,6 +531,24 @@ export function createSidecarRouter(
         () => retryPendingMail(agentAddress, messageId),
         mailAckRetryIntervalMs,
       ),
+      ...(runGrants !== undefined ? { runGrants } : {}),
+    });
+  }
+
+  // Replay a mail-triggered run's grants ahead of a redelivery of its trigger
+  // mail. Same-connection FIFO lands the `run.grants` frame before the mail, so
+  // the redelivered run resolves its onRunStart barrier instead of failing
+  // closed on missing grants.
+  function replayRunGrantsAhead(
+    conn: SidecarConnection,
+    entry: PendingMailEntry,
+  ): void {
+    if (entry.runGrants === undefined) return;
+    conn.send({
+      type: "run.grants",
+      agentAddress: entry.agentAddress,
+      runId: entry.runGrants.runId,
+      stepGrants: entry.runGrants.stepGrants,
     });
   }
 
@@ -581,6 +607,7 @@ export function createSidecarRouter(
     }
 
     entry.attempts += 1;
+    replayRunGrantsAhead(conn, entry);
     conn.send(entry.frame);
     entry.timer = setTimeout(
       () => retryPendingMail(agentAddress, messageId),
@@ -646,6 +673,7 @@ export function createSidecarRouter(
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
     for (const entry of byId.values()) {
+      replayRunGrantsAhead(conn, entry);
       conn.send(entry.frame);
       entry.attempts = 0;
       entry.timer = setTimeout(
@@ -1528,6 +1556,7 @@ export function createSidecarRouter(
           recipient,
           rawMessage,
           messageId,
+          { runId, stepGrants: result.stepGrants },
         )
           ? "routed"
           : "unrouted";
@@ -2131,6 +2160,7 @@ export function createSidecarRouter(
     agentAddress: string,
     rawMessage: string,
     messageId?: string,
+    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
   ): boolean {
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
@@ -2152,9 +2182,11 @@ export function createSidecarRouter(
         // Track the delivery for redelivery until the sidecar acks its durable
         // inbox write. Only mail carrying a hub-minted messageId participates
         // in the ack handshake; relayed agent-to-agent mail omits it and is
-        // delivered fire-and-forget as before.
+        // delivered fire-and-forget as before. A mail that triggered a workflow
+        // run carries the run's grants so redelivery can replay them ahead of
+        // the mail.
         if (messageId !== undefined) {
-          trackPendingMail(agentAddress, messageId, frame);
+          trackPendingMail(agentAddress, messageId, frame, runGrants);
         }
         return true;
       }
