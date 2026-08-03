@@ -53,6 +53,12 @@ export const workflowDefinition = pgTable(
     // which supplies its sources at deploy time. Validated as ModelRequirements
     // at parse time.
     modelRequirements: jsonb("model_requirements"),
+    // Credential bindings manifest: maps a tool package's declared credential
+    // handle (package, handle) to a concrete credential resolved fresh at
+    // launch (by locator + provider + name against the tenant walk-up).
+    // Validated as CredentialBinding[] at parse time. A binding is a request
+    // the launch-time grant gate authorizes; it consents to nothing on its own.
+    credentialBindings: jsonb("credential_bindings"),
     currentVersion: text("current_version").notNull().default("1"),
     status: text("status", {
       enum: ["deployed", "stopped"],

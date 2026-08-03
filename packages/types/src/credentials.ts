@@ -1,5 +1,7 @@
 import { type } from "arktype";
 
+import { ToolCredentialHandle } from "./package-json";
+
 export const credentialTypes = [
   "api_key",
   "oauth_token",
@@ -27,6 +29,38 @@ export type CredentialRequirementSource =
 const CredType = type.enumerated(...credentialTypes);
 const CredStatus = type.enumerated(...credentialStatuses);
 const CredentialSourceType = type.enumerated(...credentialRequirementSources);
+
+// A credential binding on an agent definition maps a tool package's declared
+// credential handle -- keyed `(package, handle)` against the tool-package
+// declaration -- to a concrete credential resolved fresh at launch. `locator`
+// is which credential namespace the name is resolved in; today only `tenant`
+// exists (a tenant-owned credential, authorized by ownership). A second locator
+// that resolves a principal-owned credential -- and the delegation authority
+// axis it would need -- is future work, added with the code that consumes it.
+export const credentialBindingLocators = ["tenant"] as const;
+export type CredentialBindingLocator =
+  (typeof credentialBindingLocators)[number];
+
+const BindingLocator = type.enumerated(...credentialBindingLocators);
+
+export const CredentialBinding = type({
+  package: type("string").describe(
+    "The tool package the declared handle belongs to; matches the resolved manifest's top-level package name.",
+  ),
+  handle: ToolCredentialHandle.describe(
+    "The credential handle the tool package declared; unique within its package.",
+  ),
+  provider: type("string").describe(
+    "The provider the bound credential resolves against.",
+  ),
+  "name?": type("string").describe(
+    "Optional credential name, a tiebreaker when several credentials match the provider and locator.",
+  ),
+  locator: BindingLocator.describe(
+    "Which credential namespace the binding resolves the credential in. `tenant` resolves a tenant-owned credential by provider/name through the tenant walk-up; its use is authorized by tenant ownership.",
+  ),
+});
+export type CredentialBinding = typeof CredentialBinding.infer;
 
 const credentialTypeDescription =
   "Kind of secret material this credential holds: `api_key`, `oauth_token`, `certificate`, or `other`. Determines how `secret` (and `refreshSecret` for OAuth) is interpreted when the credential is used.";
