@@ -68,7 +68,11 @@ import {
   type Asset,
   type AssetService,
 } from "./asset-service";
-import type { SidecarRouter } from "./ws/sidecar-handler";
+import type {
+  AllocatedSidecarTarget,
+  SidecarAllocationRouter,
+  SidecarRouter,
+} from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
@@ -106,6 +110,7 @@ export type SessionService = {
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
+    allocationTarget?: AllocatedSidecarTarget;
   }): Promise<void>;
 
   /**
@@ -209,6 +214,13 @@ export type DeployWorkflowDefinitionParams = {
   toolPackagePins?: readonly ToolPackagePin[];
 };
 
+export type DeployPreparedWorkflowDefinitionParams = Omit<
+  DeployWorkflowDefinitionParams,
+  "definitionAssetId"
+> & {
+  allocationTarget: AllocatedSidecarTarget;
+};
+
 export type DeployWorkflowDefinitionResult = {
   /** Echoes the deployment id recorded on the projection row. */
   deploymentId: string;
@@ -216,6 +228,13 @@ export type DeployWorkflowDefinitionResult = {
   deploymentAddress: string;
   /** Supervisor principal public key from the sidecar's deploy ack. */
   publicKey: string;
+};
+
+export type PreparedWorkflowDeployer = {
+  /** Deploy an anchor that was durably prepared before capacity was requested. */
+  deployPreparedWorkflowDefinition(
+    params: DeployPreparedWorkflowDefinitionParams,
+  ): Promise<DeployWorkflowDefinitionResult>;
 };
 
 export type UserMessageParams = {
@@ -234,6 +253,8 @@ export type UserMessageParams = {
 
 export type SessionServiceDeps = {
   sidecarRouter: SidecarRouter;
+  /** Present when this Hub can route deploy phases to exclusive allocations. */
+  sidecarAllocationRouter?: SidecarAllocationRouter;
   agentRepoStore: AgentRepoStore;
   /**
    * Optional asset attachment integration. When set, the deploy flow
@@ -293,6 +314,13 @@ type ResolvedAttachment = {
   repoId: RepoId;
   pack: Uint8Array;
   ref: string;
+};
+
+type SessionAssetRecord = {
+  instanceId: string;
+  mountPath: string;
+  assetPackSha: string;
+  sourceCommitSha: string;
 };
 
 async function createPackSha(pack: Uint8Array): Promise<string> {
@@ -369,6 +397,11 @@ function toWireWorkflowDefinition(definition: WorkflowDefinition): {
   stepOrder: string[];
   steps: Record<string, unknown>;
   state?: Record<string, unknown>;
+  grantRequirements?: unknown[];
+  sidecarPlacement?: {
+    sharing: "exclusive";
+    reuse?: "never" | "same-deployment";
+  };
 } {
   return {
     id: definition.id,
@@ -376,6 +409,12 @@ function toWireWorkflowDefinition(definition: WorkflowDefinition): {
     stepOrder: [...definition.stepOrder],
     steps: definition.steps as Record<string, unknown>,
     ...(definition.state !== undefined ? { state: definition.state } : {}),
+    ...(definition.grantRequirements !== undefined
+      ? { grantRequirements: [...definition.grantRequirements] }
+      : {}),
+    ...(definition.sidecarPlacement !== undefined
+      ? { sidecarPlacement: definition.sidecarPlacement }
+      : {}),
   };
 }
 
@@ -395,6 +434,8 @@ function toWireWorkflowDefinition(definition: WorkflowDefinition): {
  */
 export async function sendMultiStepDeployFrame(args: {
   sidecarRouter: SidecarRouter;
+  sidecarAllocationRouter?: SidecarAllocationRouter;
+  allocationTarget?: AllocatedSidecarTarget;
   agentAddress: string;
   config: HarnessConfig;
   definition: WorkflowDefinition;
@@ -409,7 +450,7 @@ export async function sendMultiStepDeployFrame(args: {
   credentials?: CredentialDelivery;
 }): Promise<{ publicKey: string }> {
   const wireDefinition = toWireWorkflowDefinition(args.definition);
-  return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
+  const workflow = {
     definition: wireDefinition,
     sources: args.sources,
     ...(args.referencedDefinitions !== undefined &&
@@ -424,7 +465,23 @@ export async function sendMultiStepDeployFrame(args: {
     ...(args.credentials !== undefined
       ? { credentials: args.credentials }
       : {}),
-  });
+  };
+  if (args.allocationTarget !== undefined) {
+    if (args.sidecarAllocationRouter === undefined) {
+      throw new Error("Exclusive deployment routing is not configured");
+    }
+    return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
+      args.allocationTarget,
+      args.agentAddress,
+      args.config,
+      workflow,
+    );
+  }
+  return args.sidecarRouter.sendAgentDeploy(
+    args.agentAddress,
+    args.config,
+    workflow,
+  );
 }
 
 /**
@@ -455,9 +512,12 @@ function createHubWorkflowRepoWriter(
   };
 }
 
-export function createSessionService(deps: SessionServiceDeps): SessionService {
+export function createSessionService(
+  deps: SessionServiceDeps,
+): SessionService & PreparedWorkflowDeployer {
   const {
     sidecarRouter,
+    sidecarAllocationRouter,
     agentRepoStore,
     assetService,
     db,
@@ -473,6 +533,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     throw new Error(
       "createSessionService: db is required when toolPackageRegistries is set",
     );
+  }
+
+  function requireAllocationRouter(): SidecarAllocationRouter {
+    if (sidecarAllocationRouter === undefined) {
+      throw new Error("Exclusive deployment routing is not configured");
+    }
+    return sidecarAllocationRouter;
   }
 
   /**
@@ -522,6 +589,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
      * Mutually exclusive with `workflowFrame`.
      */
     stageOnly?: boolean;
+    allocationTarget?: AllocatedSidecarTarget;
   }): Promise<{ publicKey: string } | undefined> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
     const toolPackagePins = params.toolPackagePins ?? [];
@@ -638,7 +706,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     // route is held only for the pack window and dropped in the `finally`.
     if (stageOnly) {
       try {
-        sidecarRouter.bindStepRoute(agentAddress);
+        if (params.allocationTarget === undefined) {
+          sidecarRouter.bindStepRoute(agentAddress);
+        } else {
+          await requireAllocationRouter().bindAllocatedStepRoute(
+            params.allocationTarget,
+            agentAddress,
+          );
+        }
       } catch (err) {
         throw new SessionLaunchError("provision", err, false);
       }
@@ -659,6 +734,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         if (workflowFrame !== undefined) {
           const ack = await sendMultiStepDeployFrame({
             sidecarRouter,
+            ...(sidecarAllocationRouter !== undefined
+              ? { sidecarAllocationRouter }
+              : {}),
+            ...(params.allocationTarget !== undefined
+              ? { allocationTarget: params.allocationTarget }
+              : {}),
             agentAddress,
             config,
             definition: workflowFrame.definition,
@@ -672,7 +753,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           });
           deployAckPublicKey = ack.publicKey;
         } else if (stageOnly) {
-          await sidecarRouter.sendProvisionStep(agentAddress, config);
+          if (params.allocationTarget === undefined) {
+            await sidecarRouter.sendProvisionStep(agentAddress, config);
+          } else {
+            await requireAllocationRouter().sendProvisionStepToAllocation(
+              params.allocationTarget,
+              agentAddress,
+              config,
+            );
+          }
         } else {
           // Every caller supplies `workflowFrame` (single-step head) or
           // `stageOnly` (multi-step per-step). A deploy with neither has no
@@ -696,18 +785,31 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // deployment overwrites the orphaned repo. This is an acceptable minor
       // leak on the exceptional staging-failure path, not a live-path cost.
       try {
-        await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
+        if (params.allocationTarget === undefined) {
+          await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
+        } else {
+          await requireAllocationRouter().sendPackToAllocation(
+            params.allocationTarget,
+            agentAddress,
+            pack,
+            ref,
+            commitSha,
+          );
+        }
       } catch (err) {
-        if (!stageOnly) await attemptCleanup(agentAddress, "pack", err);
+        if (!stageOnly && params.allocationTarget === undefined) {
+          await attemptCleanup(agentAddress, "pack", err);
+        }
         throw new SessionLaunchError("pack", err, false);
       }
 
       // Phase 2b: Asset-pack fan-out. For each attached asset, build a
-      // pack, insert the manifest row, then send the pack. The manifest
-      // insert MUST happen before the pack send: if the sidecar acks
+      // pack, reserve the manifest row, then send the pack. The manifest
+      // reservation MUST happen before the pack send: if the sidecar acks
       // but the row is missing, the session has materialization without
-      // a recorded manifest. If the row insert fails, the pack send
-      // must not happen.
+      // a recorded manifest. An allocated replacement may reuse the exact
+      // row its predecessor recorded; ordinary launches still require a new
+      // row. If reservation fails, the pack send must not happen.
       //
       // The fan-out materializes the package-registry assets the
       // tool-package resolver picked. They live behind tenant
@@ -716,21 +818,25 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // `manifestAssetAttachments`.
       const fanOut: ResolvedAttachment[] = manifestAssetAttachments;
       if (assetService !== undefined && fanOut.length > 0) {
-        // Track every successfully committed attachment so a later
-        // fan-out failure can roll back the earlier rows in lockstep
-        // with the sidecar undeploy. Without this, fan-out[0] succeeds,
-        // fan-out[1] fails, attemptCleanup tears down the sidecar — but
-        // fan-out[0]'s session_asset row survives and a future
-        // materialization query reads a manifest the sidecar no longer
-        // honors.
-        const committed: ResolvedAttachment[] = [];
+        // Track the rows this attempt owns so a later fan-out failure can roll
+        // them back in lockstep with the sidecar undeploy. Allocated rows are
+        // durable recovery intent, not attempt-owned materialization state, so
+        // replacement failures must leave them in place for the next worker.
+        const committed: SessionAssetRecord[] = [];
         for (const att of fanOut) {
           try {
-            await sendAttachmentPack(instanceId, agentAddress, att);
-            committed.push(att);
+            const committedRecord = await sendAttachmentPack(
+              instanceId,
+              agentAddress,
+              att,
+              params.allocationTarget,
+            );
+            if (committedRecord !== null) committed.push(committedRecord);
           } catch (err) {
-            await rollbackCommittedAttachments(instanceId, committed);
-            if (!stageOnly) await attemptCleanup(agentAddress, "pack", err);
+            await rollbackCommittedAttachments(committed);
+            if (!stageOnly && params.allocationTarget === undefined) {
+              await attemptCleanup(agentAddress, "pack", err);
+            }
             throw new SessionLaunchError("pack", err, false);
           }
         }
@@ -741,7 +847,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         : { publicKey: deployAckPublicKey };
     } finally {
       if (stageOnly) {
-        sidecarRouter.unbindStepRoute(agentAddress);
+        if (params.allocationTarget === undefined) {
+          sidecarRouter.unbindStepRoute(agentAddress);
+        } else {
+          requireAllocationRouter().unbindAllocatedStepRoute(
+            params.allocationTarget,
+            agentAddress,
+          );
+        }
       }
     }
   }
@@ -757,7 +870,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * yields a deploy-ack key; its absence is a wiring bug, not a
    * tolerable case.
    */
-  const deploySingleStepAtHead: DeploySingleStepFn = async (deployParams) => {
+  async function deploySingleStepAtHeadForRoute(
+    deployParams: Parameters<DeploySingleStepFn>[0],
+    allocationTarget?: AllocatedSidecarTarget,
+  ): Promise<{ publicKey: string }> {
     const result = await executeLaunchPhases({
       agentAddress: deployParams.agentAddress,
       agentId: deployParams.agentId,
@@ -779,6 +895,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       ...(deployParams.toolPackagePins !== undefined
         ? { toolPackagePins: deployParams.toolPackagePins }
         : {}),
+      ...(allocationTarget !== undefined ? { allocationTarget } : {}),
     });
     if (result === undefined) {
       throw new Error(
@@ -786,7 +903,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       );
     }
     return result;
-  };
+  }
+
+  const deploySingleStepAtHead: DeploySingleStepFn = (deployParams) =>
+    deploySingleStepAtHeadForRoute(deployParams);
 
   /**
    * Build the workflow-deploy orchestrator (with its launch-session and
@@ -798,6 +918,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     workflowRepo: WorkflowRepoWriter;
     directorRegistry: DirectorRegistry;
     deployArgs: DeployWorkflowArgs;
+    allocationTarget?: AllocatedSidecarTarget;
   }): Promise<DeployWorkflowResult> {
     // The per-step launcher: stage each step's deploy tree WITHOUT a warm
     // harness (the supervised child runs the step), with the orchestrator's
@@ -815,11 +936,20 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         ...(orchestratorParams.toolPackagePins !== undefined
           ? { toolPackagePins: orchestratorParams.toolPackagePins }
           : {}),
+        ...(args.allocationTarget !== undefined
+          ? { allocationTarget: args.allocationTarget }
+          : {}),
       });
 
     const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
       sendMultiStepDeployFrame({
         sidecarRouter,
+        ...(sidecarAllocationRouter !== undefined
+          ? { sidecarAllocationRouter }
+          : {}),
+        ...(args.allocationTarget !== undefined
+          ? { allocationTarget: args.allocationTarget }
+          : {}),
         agentAddress: deployParams.agentAddress,
         config: deployParams.config,
         definition: deployParams.definition,
@@ -834,7 +964,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       workflowRepo: args.workflowRepo,
       launchSession: launchSessionCallback,
       sendMultiStepDeploy: sendMultiStepDeployCallback,
-      deploySingleStepAtHead,
+      deploySingleStepAtHead: (deployParams) =>
+        deploySingleStepAtHeadForRoute(deployParams, args.allocationTarget),
     });
 
     return orchestrator.deployWorkflow(args.deployArgs);
@@ -857,6 +988,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
+    allocationTarget?: AllocatedSidecarTarget;
   }): Promise<void> {
     await executeLaunchPhases({
       agentAddress: params.agentAddress,
@@ -867,6 +999,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       stageOnly: true,
       ...(params.toolPackagePins !== undefined
         ? { toolPackagePins: params.toolPackagePins }
+        : {}),
+      ...(params.allocationTarget !== undefined
+        ? { allocationTarget: params.allocationTarget }
         : {}),
     });
   }
@@ -948,26 +1083,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     });
   }
 
-  async function deployWorkflowDefinition(
-    params: DeployWorkflowDefinitionParams,
+  async function executeWorkflowDefinitionDeploy(
+    params: Omit<DeployWorkflowDefinitionParams, "definitionAssetId"> & {
+      allocationTarget?: AllocatedSidecarTarget;
+    },
   ): Promise<DeployWorkflowDefinitionResult> {
-    const {
-      tenantId,
-      deploymentId,
-      deploymentDomain,
-      definition,
-      definitionAssetId,
-      config,
-      deployContent,
-    } = params;
-
     // The deploy is initiated by an authorized tenant operator against a
     // workflow asset they authored; approve exactly the grant surface the
     // definition declares. The same director registry feeds both this
     // approval-set derivation and the orchestrator's gate so the walk the
     // route approves and the walk the orchestrator enforces are identical.
     const directorRegistry = createDefaultDirectorRegistry();
-    const walk = walkCapabilities(definition, directorRegistry);
+    const walk = walkCapabilities(params.definition, directorRegistry);
     const operatorApprovals: ApprovalSet = new Set<string>(
       [...walk.perStep.values()].flatMap((declarations) => [
         ...declarations.grants,
@@ -978,18 +1105,43 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       workflowRepo: createHubWorkflowRepoWriter(agentRepoStore),
       directorRegistry,
       deployArgs: {
-        workflow: definition,
-        deploymentId,
-        deploymentDomain,
-        config,
-        deployContent,
+        workflow: params.definition,
+        deploymentId: params.deploymentId,
+        deploymentDomain: params.deploymentDomain,
+        config: params.config,
+        deployContent: params.deployContent,
         operatorApprovals,
         hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
         ...(params.toolPackagePins !== undefined
           ? { toolPackagePins: params.toolPackagePins }
           : {}),
       },
+      ...(params.allocationTarget !== undefined
+        ? { allocationTarget: params.allocationTarget }
+        : {}),
     });
+
+    return {
+      deploymentId: params.deploymentId,
+      deploymentAddress: deriveDeploymentAddress({
+        deploymentId: params.deploymentId,
+        deploymentDomain: params.deploymentDomain,
+      }),
+      publicKey: result.publicKey,
+    };
+  }
+
+  async function deployWorkflowDefinition(
+    params: DeployWorkflowDefinitionParams,
+  ): Promise<DeployWorkflowDefinitionResult> {
+    const {
+      tenantId,
+      deploymentId,
+      deploymentDomain,
+      definitionAssetId,
+      config,
+    } = params;
+    const result = await executeWorkflowDefinitionDeploy(params);
 
     if (db === undefined) {
       throw new Error(
@@ -1026,6 +1178,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         deploymentId,
         definitionId,
         address: deriveDeploymentAddress({ deploymentId, deploymentDomain }),
+        publicKey: result.publicKey,
         status: "running",
         createdAt: now,
       });
@@ -1048,37 +1201,59 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       });
     });
 
-    return {
-      deploymentId,
-      deploymentAddress: deriveDeploymentAddress({
-        deploymentId,
-        deploymentDomain,
-      }),
-      publicKey: result.publicKey,
-    };
+    return result;
+  }
+
+  async function deployPreparedWorkflowDefinition(
+    params: DeployPreparedWorkflowDefinitionParams,
+  ): Promise<DeployWorkflowDefinitionResult> {
+    if (db === undefined) {
+      throw new Error(
+        "deployPreparedWorkflowDefinition requires a db handle to update the prepared anchor run",
+      );
+    }
+    const result = await executeWorkflowDefinitionDeploy(params);
+    const [updated] = await db
+      .update(workflowRunTable)
+      .set({ publicKey: result.publicKey })
+      .where(
+        and(
+          eq(workflowRunTable.id, params.deploymentId),
+          eq(workflowRunTable.deploymentId, params.deploymentId),
+          eq(workflowRunTable.tenantId, params.tenantId),
+        ),
+      )
+      .returning({ id: workflowRunTable.id });
+    if (updated === undefined) {
+      throw new Error(
+        `Prepared anchor run ${params.deploymentId} is missing after allocated deploy`,
+      );
+    }
+    return result;
   }
 
   async function rollbackCommittedAttachments(
-    instanceId: string,
-    committed: readonly ResolvedAttachment[],
+    committed: readonly SessionAssetRecord[],
   ): Promise<void> {
     if (db === undefined) return;
     if (committed.length === 0) return;
     // Per-row try/catch so a single rollback failure does not stop the
     // sweep — every committed row needs to come off the books before
     // the caller emits the original sendPack error.
-    for (const att of committed) {
+    for (const record of committed) {
       try {
         await db
           .delete(sessionAssetTable)
           .where(
             and(
-              eq(sessionAssetTable.instanceId, instanceId),
-              eq(sessionAssetTable.mountPath, att.mountPath),
+              eq(sessionAssetTable.instanceId, record.instanceId),
+              eq(sessionAssetTable.mountPath, record.mountPath),
+              eq(sessionAssetTable.assetPackSha, record.assetPackSha),
+              eq(sessionAssetTable.sourceCommitSha, record.sourceCommitSha),
             ),
           );
       } catch (err) {
-        logger.warn`session_asset rollback failed for earlier-committed instance=${instanceId} mountPath=${att.mountPath}: ${err instanceof Error ? err.message : String(err)}`;
+        logger.warn`session_asset rollback failed for earlier-committed instance=${record.instanceId} mountPath=${record.mountPath}: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
   }
@@ -1087,7 +1262,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     instanceId: string,
     agentAddress: string,
     attachment: ResolvedAttachment,
-  ): Promise<void> {
+    allocationTarget?: AllocatedSidecarTarget,
+  ): Promise<SessionAssetRecord | null> {
     if (db === undefined) {
       // Guarded at construction; reassert defensively so the
       // narrowing is visible to readers and a future refactor cannot
@@ -1098,49 +1274,114 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const { mountPath, sourceCommitSha, repoId, pack, ref } = attachment;
 
     const assetPackSha = await createPackSha(pack);
-
-    // Insert manifest row before the pack send so we never end up in
-    // the materialized-without-manifest state.
-    await db.insert(sessionAssetTable).values({
+    const record: SessionAssetRecord = {
       instanceId,
       mountPath,
       assetPackSha,
       sourceCommitSha,
-      materializedAt: new Date(),
-    });
+    };
+
+    // Reserve the manifest row before the pack send so we never end up in the
+    // materialized-without-manifest state. Only an allocated launch may reuse
+    // an identical row: replacement workers keep the stable instance id and
+    // mount path, while the shared path retains its duplicate-launch guard.
+    const rollbackRecord = allocationTarget === undefined ? record : null;
+    if (allocationTarget === undefined) {
+      await db
+        .insert(sessionAssetTable)
+        .values({ ...record, materializedAt: new Date() });
+    } else {
+      const inserted = await db
+        .insert(sessionAssetTable)
+        .values({ ...record, materializedAt: new Date() })
+        .onConflictDoNothing({
+          target: [sessionAssetTable.instanceId, sessionAssetTable.mountPath],
+        })
+        .returning({ instanceId: sessionAssetTable.instanceId });
+      if (inserted.length === 0) {
+        const existing = await db.query.sessionAsset.findFirst({
+          where: and(
+            eq(sessionAssetTable.instanceId, instanceId),
+            eq(sessionAssetTable.mountPath, mountPath),
+          ),
+          columns: {
+            assetPackSha: true,
+            sourceCommitSha: true,
+          },
+        });
+        if (existing === undefined) {
+          throw new Error(
+            `session_asset ${instanceId}/${mountPath} disappeared after its insert conflicted`,
+          );
+        }
+        if (
+          existing.assetPackSha !== assetPackSha ||
+          existing.sourceCommitSha !== sourceCommitSha
+        ) {
+          throw new Error(
+            `session_asset ${instanceId}/${mountPath} conflicts with the allocated workflow's restored asset`,
+          );
+        }
+      }
+    }
 
     try {
-      await sidecarRouter.sendPack(agentAddress, pack, ref, sourceCommitSha, {
-        mountPath,
-        repoId,
-      });
+      const options = { mountPath, repoId };
+      if (allocationTarget === undefined) {
+        await sidecarRouter.sendPack(
+          agentAddress,
+          pack,
+          ref,
+          sourceCommitSha,
+          options,
+        );
+      } else {
+        await requireAllocationRouter().sendPackToAllocation(
+          allocationTarget,
+          agentAddress,
+          pack,
+          ref,
+          sourceCommitSha,
+          options,
+        );
+      }
     } catch (err) {
-      // Roll back the manifest row when the send fails so the manifest
-      // and the materialized state on the sidecar can never disagree.
+      // Shared launches own the row they just created and roll it back when
+      // the send fails. Allocated rows are durable recovery intent: even a row
+      // first inserted by this attempt can already be reused by another
+      // reconciler, so no replacement attempt may delete it.
       // The forensic value of a manifest-without-materialization row is
       // negligible because no agent will read against it. Wrap the
       // rollback in its own try/catch so a rollback failure (DB gone,
       // connection killed mid-launch) is logged rather than masking the
       // primary sendPack error — the caller needs to see the original
       // failure, not the secondary one.
-      try {
-        await db
-          .delete(sessionAssetTable)
-          .where(
-            and(
-              eq(sessionAssetTable.instanceId, instanceId),
-              eq(sessionAssetTable.mountPath, mountPath),
-            ),
-          );
-      } catch (rollbackErr) {
-        const msg =
-          rollbackErr instanceof Error
-            ? rollbackErr.message
-            : String(rollbackErr);
-        logger.warn`session_asset rollback failed for instance=${instanceId} mountPath=${mountPath}: ${msg}`;
+      if (rollbackRecord !== null) {
+        try {
+          await db
+            .delete(sessionAssetTable)
+            .where(
+              and(
+                eq(sessionAssetTable.instanceId, rollbackRecord.instanceId),
+                eq(sessionAssetTable.mountPath, rollbackRecord.mountPath),
+                eq(sessionAssetTable.assetPackSha, rollbackRecord.assetPackSha),
+                eq(
+                  sessionAssetTable.sourceCommitSha,
+                  rollbackRecord.sourceCommitSha,
+                ),
+              ),
+            );
+        } catch (rollbackErr) {
+          const msg =
+            rollbackErr instanceof Error
+              ? rollbackErr.message
+              : String(rollbackErr);
+          logger.warn`session_asset rollback failed for instance=${instanceId} mountPath=${mountPath}: ${msg}`;
+        }
       }
       throw err;
     }
+    return rollbackRecord;
   }
 
   /**
@@ -1365,6 +1606,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     deployInstanceAtHead,
     deploySingleStepAtHead,
     deployWorkflowDefinition,
+    deployPreparedWorkflowDefinition,
     sendUserMessage,
     endSession,
   };

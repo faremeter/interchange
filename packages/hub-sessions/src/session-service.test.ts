@@ -13,6 +13,7 @@ import { extractAttachments } from "@intx/mime";
 import {
   asset as assetTable,
   grant as grantTable,
+  sessionAsset as sessionAssetTable,
   workflowDefinition as workflowDefinitionTable,
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
@@ -25,7 +26,11 @@ import {
   SessionLaunchError,
   type UserMessageParams,
 } from "./session-service";
-import type { SendPackOptions, SidecarRouter } from "./ws/sidecar-handler";
+import type {
+  SendPackOptions,
+  SidecarAllocationRouter,
+  SidecarRouter,
+} from "./ws/sidecar-handler";
 import { createSidecarEmitter } from "./ws/sidecar-events";
 
 type Call = { method: string; args: unknown[] };
@@ -130,6 +135,36 @@ function createMockRouter(): SidecarRouter & {
     events: createSidecarEmitter(),
   };
   return mock;
+}
+
+function createMockAllocationRouter(): SidecarAllocationRouter & {
+  calls: Call[];
+} {
+  const calls: Call[] = [];
+  return {
+    calls,
+    fenceAllocation() {
+      throw new Error("mock allocation fence is not used by session service");
+    },
+    waitForAllocatedSidecar: async () => undefined,
+    isAllocatedSidecarReady: async () => true,
+    sendAgentDeployToAllocation: async (...args) => {
+      calls.push({ method: "sendAgentDeployToAllocation", args });
+      return { publicKey: "allocated-public-key" };
+    },
+    sendPackToAllocation: async (...args) => {
+      calls.push({ method: "sendPackToAllocation", args });
+    },
+    bindAllocatedStepRoute: async (...args) => {
+      calls.push({ method: "bindAllocatedStepRoute", args });
+    },
+    unbindAllocatedStepRoute(...args) {
+      calls.push({ method: "unbindAllocatedStepRoute", args });
+    },
+    sendProvisionStepToAllocation: async (...args) => {
+      calls.push({ method: "sendProvisionStepToAllocation", args });
+    },
+  };
 }
 
 function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
@@ -330,6 +365,33 @@ describe("SessionService", () => {
       "unbindStepRoute",
     ]);
     expect(methods).not.toContain("sendAgentDeploy");
+  });
+
+  test("stageWorkflowStep keeps every phase on its allocated worker", async () => {
+    const allocationRouter = createMockAllocationRouter();
+    const service = createSessionService({
+      sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
+      agentRepoStore: repoStore,
+    });
+    const target = { allocationId: "alloc-1", generation: 2 };
+
+    await service.stageWorkflowStep({
+      agentAddress: AGENT_ADDRESS,
+      agentId: AGENT_ID,
+      instanceId: INSTANCE_ID,
+      config: MOCK_CONFIG,
+      deployContent: MOCK_CONTENT,
+      allocationTarget: target,
+    });
+
+    expect(allocationRouter.calls.map((call) => call.method)).toEqual([
+      "bindAllocatedStepRoute",
+      "sendProvisionStepToAllocation",
+      "sendPackToAllocation",
+      "unbindAllocatedStepRoute",
+    ]);
+    expect(router.calls).toEqual([]);
   });
 
   test("stageWorkflowStep unbinds the route even when the pack fails", async () => {
@@ -587,6 +649,245 @@ describe("SessionService", () => {
   // ---------------------------------------------------------------------
   // Attachment fan-out
   // ---------------------------------------------------------------------
+
+  async function createAllocatedAssetFixture() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ss-allocated-asset-"));
+    const packageDir = path.join(dir, "package");
+    await fs.mkdir(packageDir, { recursive: true });
+    await fs.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "tools-allocated", version: "1.0.0" }),
+    );
+    const tarballPath = path.join(dir, "tools-allocated-1.0.0.tgz");
+    await tar.create({ cwd: dir, gzip: true, file: tarballPath }, ["package"]);
+    const tarballBytes = await fs.readFile(tarballPath);
+
+    const assetId = "ast_allocated_registry";
+    const assetName = "allocated-registry";
+    const assetService: AssetService = {
+      createAsset: () => {
+        throw new Error("not used");
+      },
+      populateAsset: () => {
+        throw new Error("not used");
+      },
+      readAssetBlob: async ({ assetId: requestedAssetId, path: blobPath }) => {
+        if (requestedAssetId !== assetId) {
+          throw new Error(`unexpected assetId: ${requestedAssetId}`);
+        }
+        if (blobPath !== "tarballs/tools-allocated-1.0.0.tgz") {
+          throw new Error(`unexpected blob path: ${blobPath}`);
+        }
+        return tarballBytes;
+      },
+      listAssetBlobs: async ({ assetId: requestedAssetId, dir: blobDir }) => {
+        if (requestedAssetId !== assetId) {
+          throw new Error(`unexpected assetId: ${requestedAssetId}`);
+        }
+        if (blobDir !== "tarballs") {
+          throw new Error(`unexpected list dir: ${blobDir}`);
+        }
+        return ["tools-allocated-1.0.0.tgz"];
+      },
+    };
+    const assetRow = {
+      id: assetId,
+      tenantId: MOCK_CONFIG.tenantId,
+      kind: "package-registry" as const,
+      name: assetName,
+      displayName: null,
+      creatorPrincipalId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const state: {
+      row: CapturedSessionAssetRow | undefined;
+      insertAttempts: number;
+      deleteCalls: number;
+    } = {
+      row: undefined,
+      insertAttempts: 0,
+      deleteCalls: 0,
+    };
+    const fakeDb = {
+      query: {
+        tenant: {
+          findFirst: async (_args: unknown) => ({ parentId: null }),
+        },
+        asset: {
+          findMany: async (_args: unknown) => [assetRow],
+        },
+        sessionAsset: {
+          findFirst: async (_args: unknown) => state.row,
+        },
+      },
+      insert(table: unknown) {
+        if (table !== sessionAssetTable) {
+          throw new Error("unexpected insert table");
+        }
+        return {
+          values(row: CapturedSessionAssetRow) {
+            return {
+              onConflictDoNothing() {
+                return {
+                  returning() {
+                    state.insertAttempts += 1;
+                    if (state.row !== undefined) return Promise.resolve([]);
+                    state.row = row;
+                    return Promise.resolve([{ instanceId: row.instanceId }]);
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+      delete(table: unknown) {
+        if (table !== sessionAssetTable) {
+          throw new Error("unexpected delete table");
+        }
+        return {
+          where(_predicate: unknown) {
+            state.deleteCalls += 1;
+            state.row = undefined;
+            return Promise.resolve();
+          },
+        };
+      },
+    };
+    const packsByAssetId = new Map<string, FakeAssetPackEntry>([
+      [
+        assetId,
+        {
+          pack: new Uint8Array([42, 43, 44]),
+          commitSha: "e".repeat(40),
+          ref: "refs/heads/main",
+        },
+      ],
+    ]);
+    const fakeRepoStore = createFakeRepoStore(packsByAssetId);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the empty unusedRepoStore with the resolving fake for this fixture
+    (repoStore as unknown as { repoStore: RepoStore }).repoStore =
+      fakeRepoStore;
+    const allocationRouter = createMockAllocationRouter();
+    const service = createSessionService({
+      sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
+      agentRepoStore: repoStore,
+      assetService,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow allocated-asset surface exercised here
+      db: fakeDb as unknown as NonNullable<
+        Parameters<typeof createSessionService>[0]["db"]
+      >,
+      toolPackageRegistries: {
+        httpRegistries: new Map(),
+        defaultRegistry: assetName,
+      },
+    });
+    const allocationTarget = { allocationId: "alloc-asset", generation: 2 };
+    const launch = () =>
+      service.stageWorkflowStep({
+        agentAddress: AGENT_ADDRESS,
+        agentId: AGENT_ID,
+        instanceId: INSTANCE_ID,
+        config: MOCK_CONFIG,
+        deployContent: MOCK_CONTENT,
+        toolPackagePins: [{ name: "tools-allocated", version: "1.0.0" }],
+        allocationTarget,
+      });
+    const assetPackCallCount = () =>
+      allocationRouter.calls.filter(
+        (call) =>
+          call.method === "sendPackToAllocation" && call.args[5] !== undefined,
+      ).length;
+    const failAssetPacks = () => {
+      const sendPack =
+        allocationRouter.sendPackToAllocation.bind(allocationRouter);
+      allocationRouter.sendPackToAllocation = async (
+        target,
+        agentAddress,
+        pack,
+        ref,
+        commitSha,
+        options,
+      ) => {
+        if (options !== undefined) throw new Error("replacement pack failed");
+        await sendPack(target, agentAddress, pack, ref, commitSha, options);
+      };
+      return () => {
+        allocationRouter.sendPackToAllocation = sendPack;
+      };
+    };
+
+    return {
+      allocationRouter,
+      assetId,
+      assetPackCallCount,
+      failAssetPacks,
+      launch,
+      packsByAssetId,
+      state,
+    };
+  }
+
+  test("allocated asset restoration reuses its materialization record", async () => {
+    const fixture = await createAllocatedAssetFixture();
+
+    await fixture.launch();
+    const originalRow = fixture.state.row;
+    expect(originalRow).toBeDefined();
+
+    await fixture.launch();
+    expect(fixture.state.row).toEqual(originalRow);
+    expect(fixture.state.insertAttempts).toBe(2);
+    expect(fixture.state.deleteCalls).toBe(0);
+    expect(fixture.assetPackCallCount()).toBe(2);
+
+    fixture.failAssetPacks();
+
+    const err = await fixture.launch().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(SessionLaunchError);
+    expect(fixture.state.row).toEqual(originalRow);
+    expect(fixture.state.deleteCalls).toBe(0);
+  });
+
+  test("allocated asset restoration rejects a conflicting record", async () => {
+    const fixture = await createAllocatedAssetFixture();
+    await fixture.launch();
+    const originalRow = fixture.state.row;
+    expect(originalRow).toBeDefined();
+
+    fixture.packsByAssetId.set(fixture.assetId, {
+      pack: new Uint8Array([45, 46, 47]),
+      commitSha: "f".repeat(40),
+      ref: "refs/heads/main",
+    });
+
+    const err = await fixture.launch().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(SessionLaunchError);
+    if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(err.message).toContain("conflicts with the allocated workflow");
+    expect(fixture.state.row).toEqual(originalRow);
+    expect(fixture.state.deleteCalls).toBe(0);
+    expect(fixture.assetPackCallCount()).toBe(1);
+  });
+
+  test("allocated asset failure preserves a newly created recovery record", async () => {
+    const fixture = await createAllocatedAssetFixture();
+    const restoreAssetPacks = fixture.failAssetPacks();
+
+    const err = await fixture.launch().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(SessionLaunchError);
+    const recoveryRow = fixture.state.row;
+    expect(recoveryRow).toBeDefined();
+    expect(fixture.state.deleteCalls).toBe(0);
+
+    restoreAssetPacks();
+    await fixture.launch();
+    expect(fixture.state.row).toEqual(recoveryRow);
+    expect(fixture.state.insertAttempts).toBe(2);
+    expect(fixture.state.deleteCalls).toBe(0);
+  });
 
   test("launchSession writes a resolved-source session_asset row for resolver-derived packs", async () => {
     // Build a single-tarball asset registry, fake the DB query path
