@@ -13,10 +13,15 @@
 //   - `publishConfig.access: "public"`: scoped packages default to
 //     restricted; without this an `@intx/*` publish is not installable by
 //     outside consumers.
-//   - `sideEffects`: `false` so bundlers may tree-shake, except where a
-//     module installs something at import time. `@intx/log` does (its
-//     entry points import the default console sink), so it names those
-//     files instead.
+//   - `sideEffects`: each publishable package declares its own — `false`
+//     so bundlers may tree-shake, or a list of the modules that install
+//     something at import time so those survive tree-shaking. Whether a
+//     module has an import-time side effect is a fact about that package's
+//     own source, known only to its author, so the guard validates that
+//     the declaration is present and well-formed rather than computing it
+//     from a central list of package names. A package that forgets to
+//     declare it fails the gate loudly instead of being silently forced to
+//     `false` and tree-shaken away.
 //
 // Those three are publish-tarball concerns, so they apply only to the
 // non-private packages under `packages/` (the ones that ship). A fourth
@@ -28,13 +33,17 @@
 //     private members included — so this check enumerates all members the
 //     root `workspaces` globs declare, not just the publishable packages.
 //
-// This module is both the one-time transform that sets the three tarball
-// fields and the check that keeps them, mirroring `exports-shape`. It runs
-// in `make lint`, so a package added later without the fields fails the
-// gate rather than shipping a broken or oversized tarball. The transform
-// never authors a `description` — wording is written by hand — so `--fix`
-// sets the three mechanical fields and then fails loudly on any member
-// still missing one rather than reporting a success a later check-mode run
+// This module is both the one-time transform that sets the tarball fields
+// and the check that keeps them, mirroring `exports-shape`. It runs in
+// `make lint`, so a package added later without the fields fails the gate
+// rather than shipping a broken or oversized tarball. `files` and
+// `publishConfig` are mechanical — the transform computes and sets them —
+// but `sideEffects` and `description` are author-owned: `--fix` seeds a
+// missing `sideEffects` with the safe `false` default and never overwrites
+// a real declaration, and it never authors a `description`. So `--fix`
+// sets the mechanical fields, seeds a missing `sideEffects`, and then fails
+// loudly on any member still carrying a malformed `sideEffects` or missing
+// a `description` rather than reporting a success a later check-mode run
 // would contradict.
 
 import { join } from "node:path";
@@ -61,23 +70,18 @@ export function expectedFiles(name: string): string[] {
   return ["dist", ...(EXTRA_FILES[name] ?? []), "README.md", "LICENSE"];
 }
 
-// The only package with an import-time side effect: `src/index.ts` and
-// `src/hono.ts` both `import "./default-sink"`, which installs the default
-// console sink. Both source and emitted paths are named so the import
-// survives tree-shaking whichever a downstream bundler resolves.
-const LOG_SIDE_EFFECTS = [
-  "./src/index.ts",
-  "./src/hono.ts",
-  "./src/default-sink.ts",
-  "./dist/index.js",
-  "./dist/hono.js",
-  "./dist/default-sink.js",
-];
-
-/** The canonical `sideEffects` value for a package by name. */
-export function expectedSideEffects(name: string): false | string[] {
-  return name === "@intx/log" ? LOG_SIDE_EFFECTS : false;
-}
+// A well-formed `sideEffects` declaration: `false` (tree-shakeable), or a
+// non-empty list of non-empty glob strings naming the modules that install
+// something at import time. An empty array is rejected — "nothing has side
+// effects" is spelled `false`, not `[]`.
+const sideEffectsSchema = type("false | string[]").narrow((value, ctx) => {
+  if (value === false) return true;
+  if (value.length === 0)
+    return ctx.mustBe("false or a non-empty array of glob strings");
+  if (value.some((glob) => glob.trim().length === 0))
+    return ctx.mustBe("false or an array of non-empty glob strings");
+  return true;
+});
 
 const rawObjectSchema = type({ "[string]": "unknown" }).narrow((value, ctx) =>
   Array.isArray(value) ? ctx.mustBe("a non-array object") : true,
@@ -116,9 +120,14 @@ export async function checkWorkspaceMetadata(
         `${name}: "publishConfig" must be ${JSON.stringify({ access: ACCESS })}`,
       );
     }
-    if (!eq(raw["sideEffects"], expectedSideEffects(name))) {
+    const sideEffects = raw["sideEffects"];
+    if (sideEffects === undefined) {
       violations.push(
-        `${name}: "sideEffects" must be ${JSON.stringify(expectedSideEffects(name))}`,
+        `${name}: "sideEffects" must be declared (false or a non-empty array of glob strings)`,
+      );
+    } else if (sideEffectsSchema(sideEffects) instanceof type.errors) {
+      violations.push(
+        `${name}: "sideEffects" must be false or a non-empty array of glob strings`,
       );
     }
   }
@@ -154,27 +163,34 @@ export async function checkWorkspaceDescriptions(
   return { violations, manifestCount: paths.length };
 }
 
-/** Set the three fields on every non-private package. Returns the packages
- *  changed. */
+/** Set the mechanical fields (`files`, `publishConfig`) on every non-private
+ *  package and seed a missing `sideEffects` with the safe `false` default.
+ *  An existing `sideEffects` declaration is never overwritten — a real glob
+ *  list is authored knowledge, and a malformed value is left for the check
+ *  to reject. Returns the packages changed. */
 export async function fixWorkspaceMetadata(
   repoRoot: string,
 ): Promise<string[]> {
   const changed: string[] = [];
   for (const { name, manifestPath: path } of readWorkspacePackages(repoRoot)) {
     const raw = await readRaw(path);
-    const sideEffects = expectedSideEffects(name);
-    if (
-      eq(raw["files"], expectedFiles(name)) &&
-      eq(raw["publishConfig"], { access: ACCESS }) &&
-      eq(raw["sideEffects"], sideEffects)
-    ) {
-      continue;
+    let mutated = false;
+    if (!eq(raw["files"], expectedFiles(name))) {
+      raw["files"] = expectedFiles(name);
+      mutated = true;
     }
-    raw["files"] = expectedFiles(name);
-    raw["sideEffects"] = sideEffects;
-    raw["publishConfig"] = { access: ACCESS };
-    await Bun.write(path, JSON.stringify(raw, null, 2) + "\n");
-    changed.push(name);
+    if (!eq(raw["publishConfig"], { access: ACCESS })) {
+      raw["publishConfig"] = { access: ACCESS };
+      mutated = true;
+    }
+    if (raw["sideEffects"] === undefined) {
+      raw["sideEffects"] = false;
+      mutated = true;
+    }
+    if (mutated) {
+      await Bun.write(path, JSON.stringify(raw, null, 2) + "\n");
+      changed.push(name);
+    }
   }
   return changed;
 }
@@ -190,13 +206,17 @@ if (import.meta.main) {
     const changed = await fixWorkspaceMetadata(repoRoot);
     for (const name of changed) console.log(`  set metadata on ${name}`);
     console.log(`publish-metadata: updated ${changed.length} package(s)`);
-    // `--fix` never authors a description. A member left without one is a
-    // real failure, so surface it and exit non-zero rather than reporting a
-    // success that the check-mode run in `make lint` would contradict.
-    const { violations } = await checkWorkspaceDescriptions(repoRoot);
+    // `--fix` cannot author a `description` or repair a malformed
+    // `sideEffects` — both are author-owned. Anything still wrong after the
+    // fix is a real failure, so surface it and exit non-zero rather than
+    // reporting a success that the check-mode run in `make lint` would
+    // contradict.
+    const metadata = await checkWorkspaceMetadata(repoRoot);
+    const descriptions = await checkWorkspaceDescriptions(repoRoot);
+    const violations = [...metadata.violations, ...descriptions.violations];
     if (violations.length > 0) {
       console.error(
-        `\npublish-metadata: ${violations.length} member(s) still need a hand-written "description":\n`,
+        `\npublish-metadata: ${violations.length} violation(s) remain after --fix:\n`,
       );
       for (const v of violations) console.error(`  - ${v}`);
       process.exit(1);
