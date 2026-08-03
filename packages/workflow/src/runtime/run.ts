@@ -2141,25 +2141,28 @@ async function driveContainerSignalRelay(
 
   // Fail-loud guard on the one residual divergence from the reducer's pairing:
   // `boundSignalForContainerAwait` is container-scoped and faithful ONLY while
-  // THIS container is the sole step awaiting `name`. If another section's
-  // container is already proxy-parked on the SAME author name in this parent
-  // run, the reducer would consume a delivery by `state.steps` Map-insertion
-  // order across ALL steps (see `handleSignalReceived`), not this container's
-  // seq order, so the helper could mis-bind. Refuse the topology loudly rather
-  // than route a signal to the wrong section. Two concurrent same-name sections
-  // are only meaningful with correlated author-signal addressing, which is
-  // deferred; a single section re-awaiting a name sequentially is always one
-  // active awaiter and stays faithful.
+  // THIS container is the sole step awaiting `name`. If ANY other step is
+  // already awaiting the SAME author name in this parent run -- another
+  // section's signal-relay proxy OR a plain author `awaitSignal` gate (which
+  // reduces with no parkKind) -- the reducer consumes a delivery by
+  // `state.steps` Map-insertion order across ALL steps (see
+  // `handleSignalReceived`), not this container's seq order, so the helper
+  // could mis-bind and relay a payload the reducer delivered to the other
+  // awaiter. Refuse the topology loudly rather than route a signal to the wrong
+  // step. Mirrors `hasForeignSameNameAwaiter` on the plain-gate resume path; a
+  // single section re-awaiting a name sequentially is always one active awaiter
+  // and stays faithful. Parity with the resume guard is why the parkKind is NOT
+  // filtered here -- a plain-gate sibling reduces to `"approval"` and would slip
+  // a signal-relay-only check.
   for (const [otherStepId, otherStep] of state.steps) {
     if (
       otherStepId !== containerStepId &&
       otherStep.phase === "awaiting-signal" &&
-      otherStep.awaitingSignal?.name === name &&
-      controlParkKindOf(otherStep.awaitingSignal) === "signal-relay"
+      otherStep.awaitingSignal?.name === name
     ) {
       throw new Error(
-        `onTrigger ${containerStepId} signal-relay: section ${otherStepId} is ` +
-          `already awaiting the same signal name ${name}; two sections ` +
+        `onTrigger ${containerStepId} signal-relay: step ${otherStepId} is ` +
+          `already awaiting the same signal name ${name}; two steps ` +
           `awaiting the same signal name concurrently is not supported`,
       );
     }

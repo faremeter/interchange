@@ -17,6 +17,7 @@ import { signalName } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import {
+  awaitSignal,
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
@@ -697,15 +698,108 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
-  // The fail-loud multi-section-same-name guard in `driveContainerSignalRelay`
-  // (two sections concurrently proxy-parked on the same author name is refused,
-  // as the container-scoped binding would otherwise diverge from the reducer's
-  // Map-order consume) is not unit-covered here: it needs two concurrent
-  // long-lived sections whose bodies park on the same name at the same time,
-  // whose deterministic construction is fragile (long-lived sections + the
-  // run-failure cascade) and whose topology is deferred to correlated
-  // author-signals. It stands as defense-in-depth; the single-section path this
-  // pass ships is always one active awaiter and stays faithful.
+  // The widened same-name guard in `driveContainerSignalRelay` (ANY other step
+  // awaiting the same author name is refused, not just a signal-relay sibling)
+  // is unit-covered below for a plain author `awaitSignal` gate -- the case a
+  // signal-relay-only guard would have admitted and mis-bound. The
+  // two-concurrent-sections topology stays deferred (its deterministic
+  // construction is fragile and correlated author-signals are not yet wired);
+  // the guard stands as defense-in-depth there.
+  test("refuses a plain author awaitSignal sibling awaiting the same name", async () => {
+    const runId = "sec-guard-plain-gate";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    const section: Primitive = {
+      kind: "onTrigger",
+      id: "",
+      on: { type: "mail", to: "ins_sec@t.example" },
+      body: { ref: "body-ref" },
+      drainBehavior: "wait",
+    };
+    // A plain author `awaitSignal` gate sharing the body's author name. It
+    // reduces with NO parkKind (controlParkKindOf -> "approval"), so a
+    // signal-relay-only guard would have MISSED it and let the container-scoped
+    // FIFO mis-bind a delivery the reducer routed to this gate.
+    const def = defineWorkflow({
+      id: "on-trigger-guard",
+      steps: { section, gate: awaitSignal({ name: "go" }) },
+    });
+    let signalParked = false;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let stage = 0;
+      return {
+        next: async () => {
+          stage += 1;
+          if (stage === 1) {
+            // Wait until the plain `gate` sibling is parked on "go" so the guard
+            // deterministically observes the collision, then signal-park.
+            for (let i = 0; i < 300; i += 1) {
+              const events = await repoStore.read(runId);
+              if (
+                events.some(
+                  (e) =>
+                    e.kind === "SignalAwaited" &&
+                    e.stepId === "gate" &&
+                    e.signalName === "go",
+                )
+              ) {
+                break;
+              }
+              await new Promise((r) => setTimeout(r, 10));
+            }
+            signalParked = true;
+            return { kind: "signal-park", name: "go" };
+          }
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+
+    // The body signal-parks on "go" -> the guard runs. The section fails on the
+    // guard, but its StepFailed stays BUFFERED while the plain gate keeps the run
+    // parked (a failed sibling does not auto-cancel a live awaiter), so cancel to
+    // flush the durable log and unwind.
+    for (let i = 0; i < 500 && !signalParked; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(signalParked).toBe(true);
+    await run.cancel("supervisor-operator", "test done");
+    const result = await run.complete.catch(() => undefined);
+    const events = result?.events ?? (await repoStore.read(runId));
+
+    // The widened guard refused loudly: the section failed with the same-name
+    // message BEFORE the container emitted its own signal-relay await (a
+    // signal-relay-only guard would have admitted the plain gate and mis-bound).
+    const sectionFailed = events.find(
+      (e) => e.kind === "StepFailed" && e.stepId === "section",
+    );
+    expect(sectionFailed?.kind).toBe("StepFailed");
+    if (sectionFailed?.kind === "StepFailed") {
+      expect(sectionFailed.error.message).toContain(
+        "already awaiting the same signal name go",
+      );
+    }
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "SignalAwaited" &&
+          e.stepId === "section" &&
+          e.parkKind === "signal-relay",
+      ),
+    ).toBe(false);
+  });
 
   test("proxies a body author-signal await up as a signal-relay and relays the signal", async () => {
     const runId = "sec-signal";
