@@ -4,12 +4,21 @@ import { wire } from "@intx/inference-testing";
 import {
   parseSSE,
   ProtocolMismatchError,
+  runInference,
+  createDefaultScheduler,
   type ProviderAdapter,
+  type Dependencies,
 } from "@intx/inference";
-import { createOpenAIAdapter } from "@intx/inference/providers";
+import {
+  createOpenAIAdapter,
+  createBuiltinRegistry,
+} from "@intx/inference/providers";
 import type {
+  AssistantTurn,
+  ContentBlock,
   ConversationTurn,
   InferenceEvent,
+  InferenceSource,
   LastCycleSource,
 } from "@intx/types/runtime";
 
@@ -1375,5 +1384,337 @@ describe("OpenAI adapter: quirks", () => {
     if (events[0]?.type === "inference.thinking.delta") {
       expect(events[0].data.token).toBe("xyz");
     }
+  });
+});
+
+const JSON_SOURCE: InferenceSource = {
+  id: "openai:test-model",
+  provider: "openai",
+  baseURL: "https://test.invalid/v1",
+  apiKey: "test",
+  model: "test-model",
+};
+
+// Drives a response body through the real harness accumulator and returns the
+// assembled turn plus every event. The content-type selects the decode path
+// (JSON body vs SSE stream), so one helper drives both parseJSONResponse and
+// parseResponse. Asserting the decoded turn (not the raw events) is deliberate:
+// the accumulator silently drops unmodeled events and unmatched tool deltas.
+async function driveTurn(
+  body: string,
+  contentType = "application/json",
+): Promise<{ turn: AssistantTurn | undefined; events: InferenceEvent[] }> {
+  const deps: Dependencies = {
+    fetch: () =>
+      Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": contentType },
+        }),
+      ),
+    scheduler: createDefaultScheduler(),
+    adapters: createBuiltinRegistry(),
+  };
+  let seq = 0;
+  const events: InferenceEvent[] = [];
+  for await (const ev of runInference({
+    turns: [
+      { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
+    ],
+    source: JSON_SOURCE,
+    nextSeq: () => ++seq,
+    deps,
+  })) {
+    events.push(ev);
+  }
+  const done = events.find(
+    (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+      e.type === "inference.done",
+  );
+  return { turn: done?.data.turn, events };
+}
+
+function blocksOfType<T extends ContentBlock["type"]>(
+  turn: AssistantTurn,
+  blockType: T,
+): Extract<ContentBlock, { type: T }>[] {
+  return turn.content.filter(
+    (b): b is Extract<ContentBlock, { type: T }> => b.type === blockType,
+  );
+}
+
+function requireTurn(turn: AssistantTurn | undefined): AssistantTurn {
+  if (turn === undefined) throw new Error("expected an inference.done turn");
+  return turn;
+}
+
+function sseBody(parts: Uint8Array[]): string {
+  const dec = new TextDecoder();
+  return parts.map((p) => dec.decode(p)).join("");
+}
+
+describe("createOpenAIAdapter — parseJSONResponse (non-streaming)", () => {
+  test("decodes plain text and the full usage detail sub-objects", async () => {
+    const body = JSON.stringify({
+      object: "chat.completion",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "The capital of France is Paris.",
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 19,
+        completion_tokens: 23,
+        prompt_tokens_details: { cached_tokens: 5 },
+        completion_tokens_details: { reasoning_tokens: 7 },
+      },
+    });
+    const { turn, events } = await driveTurn(body);
+    const t = requireTurn(turn);
+    expect(blocksOfType(t, "text").map((b) => b.text)).toEqual([
+      "The capital of France is Paris.",
+    ]);
+    const done = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    // cacheRead and thinking prove the full toInferenceUsage mapping is used,
+    // not the lossy in-chunk mapping that zeroes them.
+    expect(done?.data.usage.input).toBe(19);
+    expect(done?.data.usage.output).toBe(23);
+    expect(done?.data.usage.cacheRead).toBe(5);
+    expect(done?.data.usage.thinking).toBe(7);
+  });
+
+  test("decodes tool_calls with empty content into a tool call at index 0", async () => {
+    const body = JSON.stringify({
+      object: "chat.completion",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "get_weather",
+                  arguments: '{"location":"Boston, MA"}',
+                },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 3 },
+    });
+    const t = requireTurn((await driveTurn(body)).turn);
+    // Empty content must not produce a text block or claim an index.
+    expect(blocksOfType(t, "text")).toHaveLength(0);
+    const calls = blocksOfType(t, "tool_call");
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    if (call === undefined) throw new Error("expected a tool call");
+    expect(call.name).toBe("get_weather");
+    expect(call.id).toBe("call_1");
+    expect(call.arguments).toEqual({ location: "Boston, MA" });
+  });
+
+  test("reasoning precedence: an empty reasoning_content shadows a populated reasoning", async () => {
+    // Mirrors the streaming quirk exactly: the first non-null reasoning field
+    // claims the slot and stops the search, then the non-empty length gate
+    // drops the empty value, so reasoning is emitted from neither field.
+    const body = JSON.stringify({
+      object: "chat.completion",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            reasoning_content: "",
+            reasoning: "should be shadowed",
+            content: "answer",
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 3 },
+    });
+    const t = requireTurn((await driveTurn(body)).turn);
+    expect(blocksOfType(t, "thinking")).toHaveLength(0);
+    expect(blocksOfType(t, "text").map((b) => b.text)).toEqual(["answer"]);
+  });
+
+  test("surfaces a protocol mismatch on a non-completion body", async () => {
+    // A streaming chunk shape (object chat.completion.chunk, no usage) must
+    // not decode as a non-streaming completion.
+    const body = JSON.stringify({
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: { content: "x" } }],
+    });
+    const { events } = await driveTurn(body);
+    const error = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (error === undefined) throw new Error("expected inference.error");
+    expect(error.data.error.category).toBe("protocol_mismatch");
+  });
+});
+
+describe("createOpenAIAdapter — streaming vs non-streaming parity", () => {
+  // The point of parseJSONResponse is that a replayed non-streaming capture
+  // decodes to the same turn its streaming sibling would. Drive one
+  // logically-equivalent reasoning + text + tool_call response through both
+  // decode paths and assert the turn and usage are identical. The SSE fixture
+  // is built in natural arrival order (reasoning, then content, then the tool
+  // call), which is the order the JSON field-walk reproduces.
+  test("a reasoning + text + tool_call turn decodes identically through both paths", async () => {
+    const jsonBody = JSON.stringify({
+      object: "chat.completion",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            reasoning_content: "thinking about weather",
+            content: "Let me check.",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "get_weather",
+                  arguments: '{"location":"Boston"}',
+                },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: 10,
+        prompt_tokens_details: { cached_tokens: 4 },
+        completion_tokens_details: { reasoning_tokens: 6 },
+      },
+    });
+
+    const streamBody = sseBody([
+      wire.openai.chunk({ reasoningContent: "thinking about weather" }),
+      wire.openai.chunk({ content: "Let me check." }),
+      wire.openai.toolCallStart(0, "call_1", "get_weather"),
+      wire.openai.toolCallArgumentsDelta(0, '{"location":"Boston"}'),
+      wire.openai.usageChunk({
+        promptTokens: 20,
+        completionTokens: 10,
+        cachedTokens: 4,
+        reasoningTokens: 6,
+      }),
+      wire.openai.done(),
+    ]);
+
+    const jsonResult = await driveTurn(jsonBody, "application/json");
+    const streamResult = await driveTurn(streamBody, "text/event-stream");
+
+    expect(jsonResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+    expect(streamResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+
+    const jt = requireTurn(jsonResult.turn);
+    const st = requireTurn(streamResult.turn);
+    expect(jt.content).toEqual(st.content);
+
+    const jdone = jsonResult.events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    const sdone = streamResult.events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.done" }> =>
+        e.type === "inference.done",
+    );
+    expect(jdone?.data.usage).toEqual(sdone?.data.usage);
+  });
+});
+
+describe("createOpenAIAdapter — parseJSONResponse parallel tool calls", () => {
+  // Regression: genuine OpenAI non-streaming responses omit `index` on the
+  // tool_calls[] items. Two parallel calls must land on distinct block
+  // indices (via their array position), not collapse onto slot 0 and collide
+  // in the harness accumulator. The streaming form (distinct wire indices) is
+  // the parity control.
+  test("two indexless parallel tool calls decode to two distinct calls", async () => {
+    const jsonBody = JSON.stringify({
+      object: "chat.completion",
+      model: "test-model",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "call_a",
+                type: "function",
+                function: { name: "get_weather", arguments: '{"city":"A"}' },
+              },
+              {
+                id: "call_b",
+                type: "function",
+                function: { name: "get_time", arguments: '{"tz":"B"}' },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 3 },
+    });
+
+    const streamBody = sseBody([
+      wire.openai.toolCallStart(0, "call_a", "get_weather"),
+      wire.openai.toolCallArgumentsDelta(0, '{"city":"A"}'),
+      wire.openai.toolCallStart(1, "call_b", "get_time"),
+      wire.openai.toolCallArgumentsDelta(1, '{"tz":"B"}'),
+      wire.openai.usageChunk({ promptTokens: 5, completionTokens: 3 }),
+      wire.openai.done(),
+    ]);
+
+    const jsonResult = await driveTurn(jsonBody, "application/json");
+    const streamResult = await driveTurn(streamBody, "text/event-stream");
+
+    expect(jsonResult.events.some((e) => e.type === "inference.error")).toBe(
+      false,
+    );
+
+    const jt = requireTurn(jsonResult.turn);
+    const calls = blocksOfType(jt, "tool_call");
+    expect(calls).toHaveLength(2);
+    expect(calls.map((c) => c.name)).toEqual(["get_weather", "get_time"]);
+    expect(calls.map((c) => c.id)).toEqual(["call_a", "call_b"]);
+    expect(calls.map((c) => c.arguments)).toEqual([{ city: "A" }, { tz: "B" }]);
+
+    // Parity with the streaming form (which carries distinct wire indices).
+    const st = requireTurn(streamResult.turn);
+    expect(jt.content).toEqual(st.content);
   });
 });
