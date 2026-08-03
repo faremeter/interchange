@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_definition" ADD COLUMN "credential_bindings" jsonb;

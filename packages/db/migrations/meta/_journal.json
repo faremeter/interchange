@@ -498,6 +498,13 @@
       "when": 1785519721882,
       "tag": "0070_flashy_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1785788422511,
+      "tag": "0072_add_workflow_definition_credential_bindings",
+      "breakpoints": true
     }
   ]
 }

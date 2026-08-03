@@ -2,6 +2,7 @@ import { type } from "arktype";
 
 import {
   Capability,
+  CredentialBinding,
   GrantRequirement,
   grantEffects,
   grantOrigins,
@@ -126,6 +127,14 @@ export function parseWorkflowDefinitionRow(
       row.modelRequirements !== null
         ? ModelRequirements.assert(row.modelRequirements)
         : null,
+    // Nullable jsonb: `null` on a real drizzle row, `undefined` only on a
+    // partial row-shaped test stub that predates the column. Both mean "no
+    // bindings" -- treat them alike rather than asserting `undefined` as an
+    // array.
+    credentialBindings:
+      row.credentialBindings === null || row.credentialBindings === undefined
+        ? null
+        : CredentialBinding.array().assert(row.credentialBindings),
   };
 }
 
