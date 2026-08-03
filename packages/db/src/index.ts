@@ -29,6 +29,15 @@ export {
   type WorkflowRunLaunchSpecStore,
 } from "./workflow-run-launch-spec-store";
 export {
+  createWorkflowRunDispatchStore,
+  type AcknowledgeWorkflowRunDispatchArgs,
+  type ClaimWorkflowRunDispatchArgs,
+  type EnqueueWorkflowRunDispatchArgs,
+  type EnqueueWorkflowRunDispatchResult,
+  type RetryWorkflowRunDispatchArgs,
+  type WorkflowRunDispatchStore,
+} from "./workflow-run-dispatch-store";
+export {
   createSidecarAllocationStore,
   type BeginSidecarReleaseArgs,
   type BeginSidecarReplacementArgs,
@@ -97,6 +106,7 @@ export {
   parsePrincipalRow,
   parseSignalCorrelationRow,
   parseWorkflowRunRow,
+  parseWorkflowRunDispatchRow,
   parseWorkflowRunLaunchSpecRow,
   parseWorkflowDefinitionRow,
   parseWorkflowDefinitionVersionRow,
