@@ -3,15 +3,29 @@ import { sha256 } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import type { DB } from "@intx/db";
 
-import { createSidecarTokenAuthenticator } from "./sidecar-token-authenticator";
+import {
+  createSidecarCredentialResolver,
+  createSidecarTokenAuthenticator,
+} from "./sidecar-token-authenticator";
 
 type SidecarRow = {
   id: string;
   tokenHashSha256: Uint8Array;
+  credentialScope: "shared" | "allocated";
 };
 
 type MockDBOpts = {
   sidecar?: SidecarRow | null;
+  allocation?: {
+    id: string;
+    sidecarId: string;
+    tenantId: string;
+    anchorRunId: string;
+    status: string;
+    generation: number;
+    ensureAcceptedGeneration: number | null;
+  } | null;
+  anchorAddress?: string | null;
   onFindFirst?: (args: { where: unknown }) => void;
 };
 
@@ -26,6 +40,15 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
             : undefined;
         },
       },
+      sidecarAllocation: {
+        findFirst: async () => opts.allocation ?? undefined,
+      },
+      workflowRun: {
+        findFirst: async () =>
+          opts.anchorAddress === undefined
+            ? undefined
+            : { address: opts.anchorAddress },
+      },
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
@@ -37,13 +60,17 @@ describe("createSidecarTokenAuthenticator", () => {
     const token = "sidecar-secret";
     const authenticate = createSidecarTokenAuthenticator({
       db: createMockDB({
-        sidecar: { id: "sc-1", tokenHashSha256: await sha256(token) },
+        sidecar: {
+          id: "sc-1",
+          tokenHashSha256: await sha256(token),
+          credentialScope: "shared",
+        },
       }),
     });
 
     const identity = await authenticate({ sidecarId: "sc-1", token });
 
-    expect(identity).toEqual({ kind: "sidecar", sidecarId: "sc-1" });
+    expect(identity).toEqual({ kind: "shared", sidecarId: "sc-1" });
   });
 
   test("rejects an unknown token with null", async () => {
@@ -63,13 +90,17 @@ describe("createSidecarTokenAuthenticator", () => {
     const token = "sidecar-secret";
     const authenticate = createSidecarTokenAuthenticator({
       db: createMockDB({
-        sidecar: { id: "sc-real", tokenHashSha256: await sha256(token) },
+        sidecar: {
+          id: "sc-real",
+          tokenHashSha256: await sha256(token),
+          credentialScope: "shared",
+        },
       }),
     });
 
     const identity = await authenticate({ sidecarId: "sc-claimed", token });
 
-    expect(identity).toEqual({ kind: "sidecar", sidecarId: "sc-real" });
+    expect(identity).toEqual({ kind: "shared", sidecarId: "sc-real" });
   });
 
   test("looks up by the token's hash, never the raw token", async () => {
@@ -94,6 +125,59 @@ describe("createSidecarTokenAuthenticator", () => {
     const foundHex = bytesFound.map(hexEncode);
     expect(foundHex).toContain(hexEncode(await sha256(token)));
     expect(foundHex).not.toContain(hexEncode(new TextEncoder().encode(token)));
+  });
+
+  test("resolves and revalidates an allocated credential generation", async () => {
+    const token = "allocated-secret";
+    const resolver = createSidecarCredentialResolver({
+      db: createMockDB({
+        sidecar: {
+          id: "sc-allocated",
+          tokenHashSha256: await sha256(token),
+          credentialScope: "allocated",
+        },
+        allocation: {
+          id: "alloc-1",
+          sidecarId: "sc-allocated",
+          tenantId: "tenant-1",
+          anchorRunId: "run-anchor",
+          status: "allocated",
+          generation: 2,
+          ensureAcceptedGeneration: 2,
+        },
+        anchorAddress: "workflow@exclusive",
+      }),
+    });
+
+    const identity = await resolver.resolve(token);
+
+    expect(identity).toEqual({
+      kind: "allocated",
+      sidecarId: "sc-allocated",
+      allocationId: "alloc-1",
+      tenantId: "tenant-1",
+      anchorRunId: "run-anchor",
+      workflowRunAddress: "workflow@exclusive",
+      generation: 2,
+    });
+    if (identity === null) throw new Error("expected allocated identity");
+    expect(await resolver.isCurrent(identity, "routing")).toBe(true);
+  });
+
+  test("rejects an allocated credential without a current allocation", async () => {
+    const token = "stale-allocated-secret";
+    const resolver = createSidecarCredentialResolver({
+      db: createMockDB({
+        sidecar: {
+          id: "sc-replaced",
+          tokenHashSha256: await sha256(token),
+          credentialScope: "allocated",
+        },
+        allocation: null,
+      }),
+    });
+
+    expect(await resolver.resolve(token)).toBeNull();
   });
 });
 

@@ -59,7 +59,7 @@ const stubRepoStore = new Proxy(
 ) as AgentRepoStore;
 
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 

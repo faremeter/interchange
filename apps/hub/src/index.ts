@@ -14,7 +14,7 @@ import {
   createHubSessionOrchestrator,
   createSessionService,
   createSidecarRouter,
-  createSidecarTokenAuthenticator,
+  createSidecarCredentialResolver,
   WORKSPACE_BUILTINS_REGISTRY,
   type WsHandle,
 } from "@intx/hub-sessions";
@@ -169,9 +169,11 @@ const lookups = {
   }),
 };
 
+const sidecarCredentials = createSidecarCredentialResolver({ db });
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
-  authenticateSidecar: createSidecarTokenAuthenticator({ db }),
+  authenticateSidecar: async ({ token }) => sidecarCredentials.resolve(token),
+  validateSidecarIdentity: sidecarCredentials.isCurrent,
   lookups,
 });
 

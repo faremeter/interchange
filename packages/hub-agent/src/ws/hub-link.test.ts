@@ -30,7 +30,7 @@ import type { SessionManager } from "../session-manager";
 // These tests exercise routing and the hub-link protocol, not handshake
 // auth, so the router accepts any token and keys off the claimed id.
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 
