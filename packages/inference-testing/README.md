@@ -520,7 +520,7 @@ captured session for a regression test.
   rejects it at load time.
 - **Response content-types must be `text/event-stream` or
   `application/json`.** The recording wrapper buffers the response
-  via `detectResponseKind` from `@intx/inference-discovery`, which
+  via `detectResponseKind` from `@intx/types/content-type`, which
   throws on missing or unrecognised content-types. The current
   inference adapters only ever produce SSE or JSON responses;
   recording another shape (`text/plain`, `application/octet-stream`)

@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { detectResponseKind } from "@intx/types/content-type";
 import type { Capability, CapabilityIntent } from "./catalog";
-import { detectResponseKind } from "./content-type";
 import { buildManifest } from "./manifest";
 import type { CaptureStep, CapturedResponse, ProviderPlugin } from "./plugin";
 import {
