@@ -36,6 +36,17 @@ export const CreateGrant = type({
   ),
   origin: Origin.describe(originDescription),
   "expiresAt?": "string | null",
+}).narrow((g, ctx) => {
+  // A grant targets exactly one of a role or a principal -- the same invariant
+  // the `grant_target_exactly_one` DB CHECK enforces. Rejecting both/neither
+  // here surfaces a malformed request as a 400 rather than a database 500.
+  const targets = (g.roleId != null ? 1 : 0) + (g.principalId != null ? 1 : 0);
+  if (targets !== 1) {
+    return ctx.mustBe(
+      "a grant with exactly one target: set roleId or principalId, not both and not neither",
+    );
+  }
+  return true;
 });
 
 export const UpdateGrant = type({

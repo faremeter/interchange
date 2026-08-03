@@ -1,1 +1,13 @@
+-- Every grant targets exactly one of a role or a principal. This CHECK is the
+-- universal backstop: it holds for every insert path, including the internal
+-- seeding and materialization sites that never touch the CreateGrant HTTP
+-- validator. On the HTTP path, CreateGrant additionally enforces the same
+-- exactly-one rule so a malformed POST is rejected with a 400 rather than
+-- tripping this constraint as a 500.
+--
+-- On an existing database, ADD CONSTRAINT validates every row and FAILS LOUDLY
+-- if a pre-existing grant carries both targets (or neither) -- rows a prior,
+-- looser write path could have created. That is intentional: a both-target row
+-- is ambiguous to auto-repair, so the migration surfaces it for manual
+-- resolution rather than silently guessing which target to keep.
 ALTER TABLE "grant" ADD CONSTRAINT "grant_target_exactly_one" CHECK (num_nonnulls("grant"."principal_id", "grant"."role_id") = 1);

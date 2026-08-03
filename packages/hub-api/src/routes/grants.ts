@@ -232,19 +232,10 @@ export function createGrantRoutes({
     validator("json", CreateGrant),
     async (c) => {
       const tenantCtx = c.get("tenant");
+      // The body validator (CreateGrant) already enforces exactly one target
+      // -- roleId or principalId, not both and not neither -- so a malformed
+      // request is a 400 before this handler runs.
       const body = c.req.valid("json");
-
-      if (!body.roleId && !body.principalId) {
-        return c.json(
-          {
-            error: {
-              code: "bad_request",
-              message: "Either roleId or principalId must be provided",
-            },
-          },
-          400,
-        );
-      }
 
       const now = new Date();
       const row = first(
