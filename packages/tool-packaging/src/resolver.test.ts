@@ -28,6 +28,7 @@ function packument(
       peerDependenciesMeta?: Record<string, { optional?: boolean }>;
       os?: string[];
       cpu?: string[];
+      credentials?: { handle: string; scopes?: string[] }[];
       integrity?: string;
     }
   >,
@@ -58,6 +59,9 @@ function packument(
             : {}),
           ...(body.os !== undefined ? { os: body.os } : {}),
           ...(body.cpu !== undefined ? { cpu: body.cpu } : {}),
+          ...(body.credentials !== undefined
+            ? { credentials: body.credentials }
+            : {}),
         },
       ]),
     ),
@@ -626,6 +630,89 @@ describe("resolveClosure top-level versions", () => {
   });
 });
 
+describe("resolveClosure credential declarations", () => {
+  test("harvests a top-level package's declaration onto the manifest", async () => {
+    const src = httpSource(
+      { name: "npmjs", url: "https://r.test" },
+      {
+        "tools-root": packument("tools-root", {
+          "1.0.0": { credentials: [{ handle: "gh", scopes: ["repo"] }] },
+        }),
+      },
+    );
+    const resolver = createClosureResolver({
+      registries: registriesOf(src),
+      defaultRegistry: "npmjs",
+    });
+    const manifest = await resolver.resolveClosure([
+      { name: "tools-root", version: "1.0.0" },
+    ]);
+    expect(manifest.topLevel).toEqual([
+      {
+        name: "tools-root",
+        version: "1.0.0",
+        credentials: [{ handle: "gh", scopes: ["repo"] }],
+      },
+    ]);
+  });
+
+  test("a package with no declaration carries no credentials field", async () => {
+    const src = httpSource(
+      { name: "npmjs", url: "https://r.test" },
+      { "tools-root": packument("tools-root", { "1.0.0": {} }) },
+    );
+    const resolver = createClosureResolver({
+      registries: registriesOf(src),
+      defaultRegistry: "npmjs",
+    });
+    const manifest = await resolver.resolveClosure([
+      { name: "tools-root", version: "1.0.0" },
+    ]);
+    // Absent, not [] or null -- the field is omitted entirely.
+    expect(manifest.topLevel).toEqual([
+      { name: "tools-root", version: "1.0.0" },
+    ]);
+    expect(manifest.topLevel[0]).not.toHaveProperty("credentials");
+  });
+
+  test("a transitive dependency's declaration does not surface on topLevel", async () => {
+    const src = httpSource(
+      { name: "npmjs", url: "https://r.test" },
+      {
+        "tools-root": packument("tools-root", {
+          "1.0.0": {
+            dependencies: { "dep-lib": "1.0.0" },
+            credentials: [{ handle: "root-cred" }],
+          },
+        }),
+        "dep-lib": packument("dep-lib", {
+          "1.0.0": { credentials: [{ handle: "dep-cred" }] },
+        }),
+      },
+    );
+    const resolver = createClosureResolver({
+      registries: registriesOf(src),
+      defaultRegistry: "npmjs",
+    });
+    const manifest = await resolver.resolveClosure([
+      { name: "tools-root", version: "1.0.0" },
+    ]);
+    // Only the top-level pin's declaration is harvested; dep-lib is a
+    // transitive entry, not a topLevel contributor.
+    expect(manifest.topLevel).toEqual([
+      {
+        name: "tools-root",
+        version: "1.0.0",
+        credentials: [{ handle: "root-cred" }],
+      },
+    ]);
+    expect(manifest.entries.map((e) => e.name).sort()).toEqual([
+      "dep-lib",
+      "tools-root",
+    ]);
+  });
+});
+
 describe("resolveClosure duplicate-pin gate", () => {
   test("rejects two pins with the same name but different ranges", async () => {
     const src = httpSource(
@@ -980,6 +1067,41 @@ describe("AssetRegistrySource", () => {
     });
     expect(entry?.tarballUrl).toBeUndefined();
     expect(entry?.integrity).toMatch(/^sha512-/);
+  });
+
+  test("harvests interchange.credentials from a tarball's package.json onto topLevel", async () => {
+    const fixture = await buildAssetFixture([
+      {
+        name: "tools-alpha",
+        version: "1.0.0",
+        pkgJsonExtras: {
+          interchange: {
+            tools: "./dist/bundle.js",
+            credentials: [{ handle: "gh", scopes: ["repo"] }],
+          },
+        },
+      },
+    ]);
+    const src = new AssetRegistrySource({
+      name: "workspace-builtins",
+      assetId: "asset_workspace_builtins",
+      readBlob: fixture.readBlob,
+      listBlobs: fixture.listBlobs,
+    });
+    const resolver = createClosureResolver({
+      registries: registriesOf(src),
+      defaultRegistry: "workspace-builtins",
+    });
+    const manifest = await resolver.resolveClosure([
+      { name: "tools-alpha", version: "1.0.0" },
+    ]);
+    expect(manifest.topLevel).toEqual([
+      {
+        name: "tools-alpha",
+        version: "1.0.0",
+        credentials: [{ handle: "gh", scopes: ["repo"] }],
+      },
+    ]);
   });
 
   test("computes per-tarball SRI from bytes — divergent contents yield divergent integrities", async () => {

@@ -40,7 +40,10 @@ import semver from "semver";
 import ssri from "ssri";
 
 import { getLogger } from "@intx/log";
-import type { PackageJSON } from "@intx/types/package-json";
+import type {
+  PackageJSON,
+  ToolCredentialDeclaration,
+} from "@intx/types/package-json";
 
 import { extractTarballPackageJSON } from "./package-json-extract";
 
@@ -105,6 +108,12 @@ export interface PackumentVersion {
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   os?: string[];
   cpu?: string[];
+  // Static provider-backed credential declarations from the package's
+  // `interchange.credentials`. The AssetRegistrySource populates this from the
+  // arktype-validated package.json. An HTTP registry only carries it when its
+  // packument serves the field (abbreviated packuments strip custom fields);
+  // an under-served declaration is fail-closed downstream, never a bypass.
+  credentials?: ToolCredentialDeclaration[];
 }
 
 /**
@@ -393,6 +402,11 @@ export class AssetRegistrySource implements RegistrySource {
         version: validated.version,
         dist: { tarball: repoPath, integrity },
         ...readDependencyFields(extracted.raw),
+        // Read from the arktype-validated `parsed` (credentials is in-schema),
+        // not `raw`. Absent stays absent -- never defaulted to an empty array.
+        ...(validated.interchange?.credentials !== undefined
+          ? { credentials: validated.interchange.credentials }
+          : {}),
       };
       if (packument === undefined) {
         byName.set(validated.name, {
@@ -634,6 +648,13 @@ export function createClosureResolver(
       // top-level resolution.
       const topLevelNames = new Set(pins.map((p) => p.name));
       const topLevelResolved = new Map<string, string>();
+      // Credential declarations harvested from each top-level package,
+      // captured alongside the resolved version. Only top-level pins
+      // contribute; a transitive dependency's declaration is never recorded.
+      const topLevelDeclarations = new Map<
+        string,
+        ToolCredentialDeclaration[]
+      >();
 
       // Optional-subtree bookkeeping. Subtree-tagged entries and peer
       // declarations stay in their per-subtree stash until the whole
@@ -761,6 +782,9 @@ export function createClosureResolver(
 
         if (topLevelNames.has(next.name) && !topLevelResolved.has(next.name)) {
           topLevelResolved.set(next.name, picked.version);
+          if (picked.credentials !== undefined) {
+            topLevelDeclarations.set(next.name, picked.credentials);
+          }
         }
 
         const key = `${picked.name}@${picked.version}`;
@@ -904,7 +928,12 @@ export function createClosureResolver(
               `resolver internal error: top-level pin ${p.name}@${p.version} did not resolve to a concrete version`,
             );
           }
-          return { name: p.name, version: resolved };
+          const credentials = topLevelDeclarations.get(p.name);
+          return {
+            name: p.name,
+            version: resolved,
+            ...(credentials !== undefined ? { credentials } : {}),
+          };
         }),
         entries: Array.from(entries.values()),
       };
