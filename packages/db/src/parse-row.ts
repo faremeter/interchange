@@ -16,6 +16,7 @@ import {
   workflowDefinitionStatuses,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
+import { WireGrantRule } from "@intx/types/grant-wire";
 import { RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
 
@@ -38,11 +39,13 @@ import type {
   workflowDefinition,
   workflowDefinitionVersion,
   workflowRun,
+  workflowRunDispatch,
   workflowRunLaunchSpec,
 } from "./schema";
 
 const JSONObject = type("Record<string, unknown>");
 const StringArray = type("string[]");
+const WireGrantRuleArray = WireGrantRule.array();
 
 const GrantEffectValidator = type.enumerated(...grantEffects);
 const GrantOriginValidator = type.enumerated(...grantOrigins);
@@ -68,6 +71,12 @@ const workflowRunStatuses = [
   "cancelled",
 ] as const;
 const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
+const WorkflowRunDispatchStatusValidator = type.enumerated(
+  "pending",
+  "acknowledged",
+  "settled",
+  "failed",
+);
 
 const WorkflowDefinitionStatusValidator = type.enumerated(
   ...workflowDefinitionStatuses,
@@ -213,6 +222,16 @@ export function parseWorkflowRunLaunchSpecRow(
       row.toolPackagePins !== null
         ? ToolPackagePinArray.assert(row.toolPackagePins)
         : null,
+  };
+}
+
+export function parseWorkflowRunDispatchRow(
+  row: typeof workflowRunDispatch.$inferSelect,
+) {
+  return {
+    ...row,
+    status: WorkflowRunDispatchStatusValidator.assert(row.status),
+    stepGrants: WireGrantRuleArray.assert(row.stepGrants),
   };
 }
 
