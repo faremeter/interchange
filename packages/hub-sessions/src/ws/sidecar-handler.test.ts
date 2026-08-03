@@ -20,7 +20,7 @@ import {
 // rather than auth use it so the handshake succeeds; tests that assert
 // auth behavior pass their own authenticator instead.
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 
@@ -299,7 +299,7 @@ describe("SidecarRouter", () => {
       // token to a different verified id, and routing must key off that.
       const router = createTestRouter({
         authenticateSidecar: async () => ({
-          kind: "sidecar",
+          kind: "shared",
           sidecarId: "verified-sc",
         }),
         lookups: { lookupPublicKey: async () => null },
@@ -327,7 +327,7 @@ describe("SidecarRouter", () => {
       const router = createTestRouter({
         authenticateSidecar: async ({ sidecarId }) => {
           calls += 1;
-          return { kind: "sidecar", sidecarId };
+          return { kind: "shared", sidecarId };
         },
         lookups: { lookupPublicKey: async () => null },
       });
@@ -1884,6 +1884,66 @@ describe("SidecarRouter", () => {
       expect(router.getRoutableAddresses()).toContain("new-agent@local");
     });
 
+    test("agent.deploy ignores an acknowledgement from another connection", async () => {
+      const primary = createMockWs();
+      const other = createMockWs();
+      for (const [ws, sidecarId] of [
+        [primary, "sc-primary"],
+        [other, "sc-other"],
+      ] as const) {
+        router.handleOpen(ws);
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "register",
+            sidecarId,
+            token: "tok",
+            agentAddresses: [],
+          }),
+        );
+      }
+      await tick();
+
+      const promise = router.sendAgentDeploy("connection-bound@local", {
+        sessionId: "ses_test",
+        agentId: "a1",
+        tenantId: "t1",
+        principalId: "prin_test",
+        agentAddress: "connection-bound@local",
+        systemPrompt: "test",
+        tools: [],
+        grants: [],
+        sources: TEST_SOURCES,
+        defaultSource: TEST_DEFAULT_SOURCE,
+      });
+      expect(lastSent(primary).type).toBe("agent.deploy");
+
+      let settled = false;
+      void promise.finally(() => {
+        settled = true;
+      });
+      router.handleMessage(
+        other,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "connection-bound@local",
+          publicKey: "wrong-connection-key",
+        }),
+      );
+      await tick();
+      expect(settled).toBe(false);
+
+      router.handleMessage(
+        primary,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "connection-bound@local",
+          publicKey: "primary-key",
+        }),
+      );
+      await expect(promise).resolves.toEqual({ publicKey: "primary-key" });
+    });
+
     test("agent.deploy.ack invokes subscribers before resolving", async () => {
       const ackCalls: { address: string; publicKey: string }[] = [];
       const router = createTestRouter({
@@ -2197,6 +2257,59 @@ describe("SidecarRouter", () => {
       router.handleClose(ws);
 
       await expect(promise).rejects.toThrow(/disconnected/);
+    });
+
+    test("pack acknowledgement must come from the receiving connection", async () => {
+      const owner = createMockWs();
+      router.handleOpen(owner);
+      router.handleMessage(
+        owner,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-pack-owner",
+          token: "tok",
+          agentAddresses: ["pack-owner@local"],
+        }),
+      );
+      await tick();
+
+      const rogue = createMockWs();
+      router.handleOpen(rogue);
+      const promise = router.sendPack(
+        "pack-owner@local",
+        new Uint8Array([1, 2, 3]),
+        "refs/heads/main",
+        "a".repeat(40),
+      );
+      const done = lastSent(owner);
+      expect(done.type).toBe("repo.pack.done");
+
+      let settled = false;
+      void promise.finally(() => {
+        settled = true;
+      });
+      router.handleMessage(
+        rogue,
+        JSON.stringify({
+          type: "repo.pack.ack",
+          agentAddress: done.agentAddress,
+          repoId: done.repoId,
+          transferId: done.transferId,
+        }),
+      );
+      await tick();
+      expect(settled).toBe(false);
+
+      router.handleMessage(
+        owner,
+        JSON.stringify({
+          type: "repo.pack.ack",
+          agentAddress: done.agentAddress,
+          repoId: done.repoId,
+          transferId: done.transferId,
+        }),
+      );
+      await expect(promise).resolves.toBeUndefined();
     });
 
     test("preserves routing when address re-registered during a request await", async () => {
@@ -5337,6 +5450,201 @@ describe("SidecarRouter", () => {
       const ws2 = createMockWs();
       await connectViaChallenge(router, ws2, "agent@local", kp.privateKey);
       expect(inboundCount(ws2, "mid-r3")).toBe(0);
+    });
+  });
+
+  describe("exclusive allocation routing", () => {
+    const allocationIdentity = {
+      kind: "allocated" as const,
+      sidecarId: "sc-allocated",
+      allocationId: "alloc-1",
+      tenantId: "tenant-1",
+      anchorRunId: "run-anchor",
+      workflowRunAddress: "workflow@exclusive",
+      generation: 1,
+    };
+
+    const allocationConfig = {
+      sessionId: "ses-exclusive",
+      agentId: "workflow",
+      tenantId: "tenant-1",
+      principalId: "principal-1",
+      agentAddress: "workflow@exclusive",
+      systemPrompt: "test",
+      tools: [],
+      grants: [],
+      sources: TEST_SOURCES,
+      defaultSource: TEST_DEFAULT_SOURCE,
+    };
+
+    test("redelivers retained mail once when an allocated generation reconnects", async () => {
+      const mailCount = (
+        ws: ReturnType<typeof createMockWs>,
+        messageId: string,
+      ) =>
+        ws.sent
+          .map((sent) => JSON.parse(sent))
+          .filter(
+            (frame) =>
+              frame.type === "mail.inbound" && frame.messageId === messageId,
+          ).length;
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+        mailAckRetryIntervalMs: 10_000,
+        disconnectQueueTTLMs: 60_000,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+
+      const ws1 = createMockWs();
+      allocatedRouter.handleOpen(ws1);
+      allocatedRouter.handleMessage(
+        ws1,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [allocationIdentity.workflowRunAddress],
+        }),
+      );
+      await tick();
+      expect(
+        allocatedRouter.routeMail(
+          allocationIdentity.workflowRunAddress,
+          "aGVsbG8=",
+          "mid-allocated-reconnect",
+        ),
+      ).toBe(true);
+
+      allocatedRouter.handleClose(ws1);
+
+      const ws2 = createMockWs();
+      allocatedRouter.handleOpen(ws2);
+      const reconnectFrame = JSON.stringify({
+        type: "reconnect",
+        sidecarId: "sc-allocated",
+        token: "token",
+        agentAddresses: [allocationIdentity.workflowRunAddress],
+      });
+      allocatedRouter.handleMessage(ws2, reconnectFrame);
+      await tick();
+
+      expect(mailCount(ws2, "mid-allocated-reconnect")).toBe(1);
+      const redelivered = ws2.sent
+        .map((sent) => JSON.parse(sent))
+        .find(
+          (frame) =>
+            frame.type === "mail.inbound" &&
+            frame.messageId === "mid-allocated-reconnect",
+        );
+      expect(redelivered.rawMessage).toBe("aGVsbG8=");
+
+      allocatedRouter.handleMessage(ws2, reconnectFrame);
+      await tick();
+      expect(mailCount(ws2, "mid-allocated-reconnect")).toBe(1);
+    });
+    test("routes only allocation-targeted deploys to an allocated worker", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+        hubPublicKey: TEST_HUB_KEY,
+        requestTimeoutMs: 500,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      expect(
+        await allocatedRouter.isAllocatedSidecarReady({
+          allocationId: "alloc-1",
+          generation: 1,
+        }),
+      ).toBe(true);
+      await expect(
+        allocatedRouter.sendAgentDeploy("ordinary@shared", allocationConfig),
+      ).rejects.toThrow("No sidecar available");
+
+      const deployed = allocatedRouter.sendAgentDeployToAllocation(
+        { allocationId: "alloc-1", generation: 1 },
+        "workflow@exclusive",
+        allocationConfig,
+      );
+      await tick();
+      expect(lastSent(ws).type).toBe("agent.deploy");
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "workflow@exclusive",
+          publicKey: "b".repeat(64),
+        }),
+      );
+      await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
+    });
+
+    test("advancing the fence closes the previous generation", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      allocatedRouter.fenceAllocation("alloc-1", 2);
+
+      expect(ws.closed).toBe(true);
+      expect(
+        await allocatedRouter.isAllocatedSidecarReady({
+          allocationId: "alloc-1",
+          generation: 1,
+        }),
+      ).toBe(false);
+    });
+
+    test("rejects an allocated credential claiming an unrelated address", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: ["other@tenant"],
+          deployRefs: {},
+        }),
+      );
+      await tick();
+
+      expect(ws.closed).toBe(true);
+      expect(allocatedRouter.getRoutableAddresses()).toEqual([]);
     });
   });
 });

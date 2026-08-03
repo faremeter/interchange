@@ -48,11 +48,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function seedSidecar(opts: {
       id: string;
       token: string;
+      credentialScope?: "shared" | "allocated";
     }): Promise<void> {
       await h.db.insert(sidecar).values({
         id: opts.id,
         url: "ws://dev-sidecar",
         tokenHashSha256: await sha256(opts.token),
+        ...(opts.credentialScope !== undefined
+          ? { credentialScope: opts.credentialScope }
+          : {}),
       });
     }
 
@@ -63,7 +67,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const identity = await authenticate({ sidecarId: "sc-1", token });
 
-      expect(identity).toEqual({ kind: "sidecar", sidecarId: "sc-1" });
+      expect(identity).toEqual({ kind: "shared", sidecarId: "sc-1" });
     });
 
     test("rejects a wrong token with null", async () => {
@@ -90,6 +94,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(identity).toBeNull();
     });
 
+    test("rejects an allocated token without a current allocation", async () => {
+      const token = "stale-allocated-secret";
+      await seedSidecar({
+        id: "sc-replaced",
+        token,
+        credentialScope: "allocated",
+      });
+      const authenticate = createSidecarTokenAuthenticator({ db: h.db });
+
+      expect(
+        await authenticate({ sidecarId: "sc-replaced", token }),
+      ).toBeNull();
+    });
+
     test("derives identity from the token, not a spoofed claimed sidecarId", async () => {
       const token = "sidecar-secret";
       await seedSidecar({ id: "sc-real", token });
@@ -97,7 +115,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const identity = await authenticate({ sidecarId: "sc-spoofed", token });
 
-      expect(identity).toEqual({ kind: "sidecar", sidecarId: "sc-real" });
+      expect(identity).toEqual({ kind: "shared", sidecarId: "sc-real" });
     });
 
     test("selects the matching row by hash among several sidecars", async () => {
@@ -112,11 +130,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual({
-        kind: "sidecar",
+        kind: "shared",
         sidecarId: "sc-a",
       });
       expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual({
-        kind: "sidecar",
+        kind: "shared",
         sidecarId: "sc-b",
       });
     });

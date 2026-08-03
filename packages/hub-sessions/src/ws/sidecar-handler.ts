@@ -18,10 +18,13 @@ import { isWorkflowDerivedAddress } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
   SidecarFrame,
+  type AgentDeployAckFrame,
   type AgentDeployFrame,
+  type PackAckFrame,
   type HubFrame,
   type PackPushFrame,
   type PackDoneFrame,
+  type PackRejectFrame,
   type RepoId,
   type RunGrantsFrame,
   type SignalCorrelationRegisterFrame,
@@ -32,6 +35,7 @@ import type {
   HarnessConfig,
   InferenceSource,
 } from "@intx/types/runtime";
+import type { SidecarCredentialIdentity } from "../sidecar-allocation/contracts";
 import {
   createSidecarEmitter,
   type SidecarEventEmitter,
@@ -43,6 +47,7 @@ const logger = getLogger(["hub", "ws", "sidecar"]);
 
 export type SidecarConnection = {
   sidecarId: string;
+  identity: SidecarAuthIdentity;
   agentAddresses: Set<string>;
   // Workflow-substrate deployment addresses (ins_dep_...) this connection
   // hosts. Kept separate from `agentAddresses`: these are hub-minted and
@@ -257,7 +262,51 @@ export type SidecarRouter = {
  * principal (e.g. an operator user) can be added as an additional arm
  * without changing existing consumers.
  */
-export type SidecarAuthIdentity = { kind: "sidecar"; sidecarId: string };
+export type SidecarAuthIdentity = SidecarCredentialIdentity;
+
+export type AllocatedSidecarTarget = {
+  readonly allocationId: string;
+  readonly generation: number;
+};
+
+export type SidecarAllocationRouter = {
+  /** Advance the in-memory trust boundary before provisioning a generation. */
+  fenceAllocation(allocationId: string, generation: number): void;
+  /** Resolve once the exact authenticated allocation generation is connected. */
+  waitForAllocatedSidecar(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+  ): Promise<void>;
+  /** Check exact allocated readiness without parking a reconciliation worker. */
+  isAllocatedSidecarReady(target: AllocatedSidecarTarget): Promise<boolean>;
+  sendAgentDeployToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    config: HarnessConfig,
+    workflow?: AgentDeployFrame["workflow"],
+  ): Promise<{ publicKey: string }>;
+  sendPackToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+    options?: SendPackOptions,
+  ): Promise<void>;
+  bindAllocatedStepRoute(
+    target: AllocatedSidecarTarget,
+    stepAddress: string,
+  ): Promise<void>;
+  unbindAllocatedStepRoute(
+    target: AllocatedSidecarTarget,
+    stepAddress: string,
+  ): void;
+  sendProvisionStepToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    config: HarnessConfig,
+  ): Promise<void>;
+};
 
 /**
  * Resolves the credentials a sidecar presents on the handshake to a
@@ -280,6 +329,11 @@ export type SidecarRouterConfig = {
    * identity. Required: without it a connection could route on an
    * unverified frame claim. Return null to reject the handshake. */
   authenticateSidecar: SidecarAuthenticator;
+  /** Revalidate durable identity at registration and routing boundaries. */
+  validateSidecarIdentity?: (
+    identity: SidecarAuthIdentity,
+    use: "registration" | "readiness" | "routing",
+  ) => Promise<boolean>;
   challengeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
@@ -320,12 +374,13 @@ const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
 
 export function createSidecarRouter(
   config: SidecarRouterConfig,
-): SidecarRouter {
+): SidecarRouter & SidecarAllocationRouter {
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     challengeTimeoutMs = DEFAULT_CHALLENGE_TIMEOUT_MS,
     hubPublicKey: hubPublicKeyHex,
     authenticateSidecar,
+    validateSidecarIdentity = async () => true,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
@@ -340,6 +395,21 @@ export function createSidecarRouter(
 
   // ws handle → registered connection
   const connections = new Map<WsHandle, SidecarConnection>();
+  const allocatedConnections = new Map<
+    string,
+    {
+      ws: WsHandle;
+      identity: Extract<SidecarAuthIdentity, { kind: "allocated" }>;
+    }
+  >();
+  const allocationFences = new Map<string, number>();
+  type AllocationWaiter = {
+    generation: number;
+    resolve(): void;
+    reject(error: Error): void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const allocationWaiters = new Map<string, Set<AllocationWaiter>>();
   // agentAddress → ws handle (routing table)
   const addressIndex = new Map<string, WsHandle>();
   // requestId → pending promise
@@ -348,7 +418,7 @@ export function createSidecarRouter(
   type PendingDeploy = {
     agentAddress: string;
     ws: WsHandle;
-    resolve(): void;
+    resolve(publicKey: string): void;
     reject(error: string): void;
     timer: ReturnType<typeof setTimeout>;
   };
@@ -423,6 +493,8 @@ export function createSidecarRouter(
   type PendingPack = {
     transferId: string;
     ws: WsHandle;
+    agentAddress: string;
+    repoId: RepoId;
     resolve(): void;
     reject(error: string): void;
     timer: ReturnType<typeof setTimeout>;
@@ -827,13 +899,13 @@ export function createSidecarRouter(
       case "challenge.response":
         return handleChallengeResponse(ws, frame.responses);
       case "agent.deploy.ack":
-        return handleDeployAck(frame.agentAddress, frame.publicKey);
+        return handleDeployAck(ws, frame);
       case "agent.error":
-        rejectDeployPending(frame.agentAddress, frame.error);
-        rejectUndeployPending(frame.agentAddress, frame.error);
+        rejectDeployPendingFromFrame(ws, frame.agentAddress, frame.error);
+        rejectUndeployPending(ws, frame.agentAddress, frame.error);
         return;
       case "agent.undeploy.ack":
-        resolveUndeployPending(frame.agentAddress);
+        resolveUndeployPending(ws, frame.agentAddress);
         return;
       case "ping":
         handlePing(ws);
@@ -903,10 +975,10 @@ export function createSidecarRouter(
         rejectPending(frame.requestId, frame.error);
         return;
       case "repo.pack.ack":
-        resolvePackPending(frame.transferId);
+        resolvePackPending(ws, frame);
         return;
       case "repo.pack.reject":
-        rejectPackPending(frame.transferId, frame.reason);
+        rejectPackPending(ws, frame);
         return;
       case "repo.pack.push":
         handlePackPush(ws, frame);
@@ -949,7 +1021,104 @@ export function createSidecarRouter(
     if (identity.sidecarId !== frame.sidecarId) {
       logger.warn`Sidecar ${frame.type} claimed id ${frame.sidecarId} but token verifies as ${identity.sidecarId}; keying off the verified id`;
     }
+    if (!(await validateSidecarIdentity(identity, "registration"))) {
+      logger.warn`Rejected ${frame.type} from sidecar ${identity.sidecarId}: credential identity is no longer current`;
+      ws.close();
+      return;
+    }
     await run(identity);
+  }
+
+  async function notifyAllocationWaiters(allocationId: string): Promise<void> {
+    const waiters = allocationWaiters.get(allocationId);
+    const current = allocatedConnections.get(allocationId);
+    if (waiters === undefined || current === undefined) return;
+    if (!(await validateSidecarIdentity(current.identity, "readiness"))) return;
+
+    for (const waiter of [...waiters]) {
+      if (waiter.generation !== current.identity.generation) continue;
+      clearTimeout(waiter.timer);
+      waiters.delete(waiter);
+      waiter.resolve();
+    }
+    if (waiters.size === 0) allocationWaiters.delete(allocationId);
+  }
+
+  async function handleAllocatedRegister(
+    ws: WsHandle,
+    identity: Extract<SidecarAuthIdentity, { kind: "allocated" }>,
+    agentAddresses: string[],
+  ): Promise<void> {
+    if (allocationFences.get(identity.allocationId) !== identity.generation) {
+      logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} generation ${String(identity.generation)} is not fenced as current`;
+      ws.close();
+      return;
+    }
+    if (
+      agentAddresses.length > 0 &&
+      !(await validateSidecarIdentity(identity, "routing"))
+    ) {
+      logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} is not ready to reclaim routes`;
+      ws.close();
+      return;
+    }
+
+    const existingOnSocket = connections.get(ws);
+    const newlyRoutedAddresses = new Set<string>();
+    for (const address of agentAddresses) {
+      const alreadyOwned =
+        existingOnSocket?.identity.kind === "allocated" &&
+        existingOnSocket.identity.allocationId === identity.allocationId &&
+        addressIndex.get(address) === ws &&
+        connOwnsAddress(existingOnSocket, address);
+      if (!alreadyOwned && address !== identity.workflowRunAddress) {
+        logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} claimed unrelated address ${address}`;
+        ws.close();
+        return;
+      }
+      if (!alreadyOwned) newlyRoutedAddresses.add(address);
+    }
+
+    if (allocationFences.get(identity.allocationId) !== identity.generation) {
+      ws.close();
+      return;
+    }
+    const current = allocatedConnections.get(identity.allocationId);
+    if (current !== undefined && current.ws !== ws) {
+      handleClose(current.ws);
+      current.ws.close();
+    }
+
+    const conn: SidecarConnection = existingOnSocket ?? {
+      sidecarId: identity.sidecarId,
+      identity,
+      agentAddresses: new Set(),
+      workflowAddresses: new Set(),
+      send(frame: HubFrame) {
+        ws.send(JSON.stringify(frame));
+      },
+    };
+    if (
+      conn.identity.kind !== "allocated" ||
+      conn.identity.allocationId !== identity.allocationId ||
+      conn.identity.generation !== identity.generation
+    ) {
+      logger.warn`Rejected allocated sidecar ${identity.sidecarId}: socket identity changed during registration`;
+      ws.close();
+      return;
+    }
+
+    connections.set(ws, conn);
+    for (const address of agentAddresses) {
+      conn.workflowAddresses.add(address);
+      addressIndex.set(address, ws);
+    }
+    allocatedConnections.set(identity.allocationId, { ws, identity });
+    for (const address of newlyRoutedAddresses) {
+      redeliverPendingMail(address, conn);
+    }
+    logger.info`Allocated sidecar ${identity.sidecarId} registered for allocation ${identity.allocationId} generation ${String(identity.generation)}`;
+    await notifyAllocationWaiters(identity.allocationId);
   }
 
   async function handleRegister(
@@ -957,6 +1126,10 @@ export function createSidecarRouter(
     identity: SidecarAuthIdentity,
     agentAddresses: string[],
   ): Promise<void> {
+    if (identity.kind === "allocated") {
+      await handleAllocatedRegister(ws, identity, agentAddresses);
+      return;
+    }
     const sidecarId = identity.sidecarId;
 
     // Key-existence gate. A register frame is token-authenticated but carries
@@ -1052,6 +1225,7 @@ export function createSidecarRouter(
 
     const conn: SidecarConnection = {
       sidecarId,
+      identity,
       agentAddresses: addrSet,
       workflowAddresses: workflowSet,
       send(frame: HubFrame) {
@@ -1092,6 +1266,10 @@ export function createSidecarRouter(
     agentAddresses: string[],
     deployRefs: Record<string, string> = {},
   ): Promise<void> {
+    if (identity.kind === "allocated") {
+      await handleAllocatedRegister(ws, identity, agentAddresses);
+      return;
+    }
     const sidecarId = identity.sidecarId;
 
     const lookupKey = lookups.lookupPublicKey;
@@ -1682,13 +1860,6 @@ export function createSidecarRouter(
         // connected-window drop rather than losing the mail. Bounded by a
         // retention TTL.
         retainPendingMailForAddress(addr);
-        const deployReq = pendingDeploys.get(addr);
-        if (deployReq !== undefined && deployReq.ws === ws) {
-          clearTimeout(deployReq.timer);
-          pendingDeploys.delete(addr);
-          deployReq.reject(`Sidecar ${conn.sidecarId} disconnected`);
-        }
-
         // Create a queue entry so messages can accumulate while the
         // sidecar is disconnected. Skip if the agent is being undeployed --
         // there is no point queuing messages for an agent being torn down.
@@ -1725,6 +1896,12 @@ export function createSidecarRouter(
         retainPendingMailForAddress(addr);
       }
     }
+    if (conn.identity.kind === "allocated") {
+      const current = allocatedConnections.get(conn.identity.allocationId);
+      if (current?.ws === ws) {
+        allocatedConnections.delete(conn.identity.allocationId);
+      }
+    }
     connections.delete(ws);
 
     // Cancel the liveness timer for this connection.
@@ -1749,6 +1926,16 @@ export function createSidecarRouter(
       if (req.ws !== ws) continue;
       clearTimeout(req.timer);
       pending.delete(requestId);
+      req.reject(`Sidecar ${conn.sidecarId} disconnected`);
+    }
+
+    // Reject every deploy issued on this socket, including allocated
+    // workflow deployments stored in `workflowAddresses` rather than
+    // `agentAddresses`.
+    for (const [agentAddress, req] of pendingDeploys) {
+      if (req.ws !== ws) continue;
+      clearTimeout(req.timer);
+      pendingDeploys.delete(agentAddress);
       req.reject(`Sidecar ${conn.sidecarId} disconnected`);
     }
 
@@ -1856,36 +2043,63 @@ export function createSidecarRouter(
     req.reject(error);
   }
 
-  function resolvePackPending(transferId: string): void {
-    const entry = pendingPacks.get(transferId);
+  function packResponseMatches(
+    entry: PendingPack,
+    ws: WsHandle,
+    frame: PackAckFrame | PackRejectFrame,
+  ): boolean {
+    return (
+      entry.ws === ws &&
+      entry.agentAddress === frame.agentAddress &&
+      entry.repoId.kind === frame.repoId.kind &&
+      entry.repoId.id === frame.repoId.id
+    );
+  }
+
+  function resolvePackPending(ws: WsHandle, frame: PackAckFrame): void {
+    const entry = pendingPacks.get(frame.transferId);
     if (entry === undefined) return;
+    if (!packResponseMatches(entry, ws, frame)) {
+      logger.warn`Ignoring repo.pack.ack for transfer ${frame.transferId} from a connection that does not own the pending transfer`;
+      return;
+    }
     clearTimeout(entry.timer);
-    pendingPacks.delete(transferId);
+    pendingPacks.delete(frame.transferId);
     entry.resolve();
   }
 
-  function rejectPackPending(transferId: string, reason: string): void {
-    const entry = pendingPacks.get(transferId);
+  function rejectPackPending(ws: WsHandle, frame: PackRejectFrame): void {
+    const entry = pendingPacks.get(frame.transferId);
     if (entry === undefined) return;
+    if (!packResponseMatches(entry, ws, frame)) {
+      logger.warn`Ignoring repo.pack.reject for transfer ${frame.transferId} from a connection that does not own the pending transfer`;
+      return;
+    }
     clearTimeout(entry.timer);
-    pendingPacks.delete(transferId);
-    entry.reject(reason);
+    pendingPacks.delete(frame.transferId);
+    entry.reject(frame.reason);
   }
 
-  function resolveUndeployPending(agentAddress: string): void {
+  function resolveUndeployPending(ws: WsHandle, agentAddress: string): void {
     const req = pendingUndeploys.get(agentAddress);
     if (req === undefined) {
       logger.warn`Received agent.undeploy.ack for "${agentAddress}" with no pending undeploy`;
       return;
     }
+    if (req.ws !== ws) return;
     clearTimeout(req.timer);
     pendingUndeploys.delete(agentAddress);
     req.resolve();
   }
 
-  function rejectUndeployPending(agentAddress: string, error: string): void {
+  function rejectUndeployPending(
+    ws: WsHandle,
+    agentAddress: string,
+    error: string,
+  ): void {
     const req = pendingUndeploys.get(agentAddress);
     if (req === undefined) return;
+    if (req.ws !== ws) return;
     clearTimeout(req.timer);
     pendingUndeploys.delete(agentAddress);
     req.reject(error);
@@ -2047,6 +2261,137 @@ export function createSidecarRouter(
    * never persisted into the reconnect set and never resurrected on
    * reconnect.
    */
+  function fenceAllocation(allocationId: string, generation: number): void {
+    const existing = allocationFences.get(allocationId);
+    if (existing !== undefined && generation < existing) {
+      throw new Error(
+        `Cannot move allocation ${allocationId} fence backward from ${String(existing)} to ${String(generation)}`,
+      );
+    }
+    allocationFences.set(allocationId, generation);
+
+    const current = allocatedConnections.get(allocationId);
+    if (current !== undefined && current.identity.generation !== generation) {
+      handleClose(current.ws);
+      current.ws.close();
+    }
+
+    const waiters = allocationWaiters.get(allocationId);
+    if (waiters === undefined) return;
+    for (const waiter of [...waiters]) {
+      if (waiter.generation === generation) continue;
+      clearTimeout(waiter.timer);
+      waiters.delete(waiter);
+      waiter.reject(
+        new Error(
+          `Allocation ${allocationId} advanced to generation ${String(generation)}`,
+        ),
+      );
+    }
+    if (waiters.size === 0) allocationWaiters.delete(allocationId);
+  }
+
+  async function getAllocatedConnection(
+    target: AllocatedSidecarTarget,
+    use: "readiness" | "routing",
+  ): Promise<{ ws: WsHandle; conn: SidecarConnection }> {
+    if (allocationFences.get(target.allocationId) !== target.generation) {
+      throw new Error(
+        `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
+      );
+    }
+    const current = allocatedConnections.get(target.allocationId);
+    if (
+      current === undefined ||
+      current.identity.generation !== target.generation
+    ) {
+      throw new Error(
+        `Allocated sidecar is not connected for allocation ${target.allocationId} generation ${String(target.generation)}`,
+      );
+    }
+    if (!(await validateSidecarIdentity(current.identity, use))) {
+      if (allocatedConnections.get(target.allocationId) === current) {
+        handleClose(current.ws);
+        current.ws.close();
+      }
+      throw new Error(
+        `Allocated sidecar identity is no longer current for allocation ${target.allocationId}`,
+      );
+    }
+    if (allocatedConnections.get(target.allocationId) !== current) {
+      throw new Error(
+        `Allocated sidecar connection changed for allocation ${target.allocationId}`,
+      );
+    }
+    const conn = connections.get(current.ws);
+    if (
+      conn === undefined ||
+      conn.identity.kind !== "allocated" ||
+      conn.identity.allocationId !== target.allocationId ||
+      conn.identity.generation !== target.generation
+    ) {
+      throw new Error(
+        `Allocated sidecar is not connected for allocation ${target.allocationId}`,
+      );
+    }
+    return { ws: current.ws, conn };
+  }
+
+  async function isAllocatedSidecarReady(
+    target: AllocatedSidecarTarget,
+  ): Promise<boolean> {
+    try {
+      await getAllocatedConnection(target, "readiness");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function waitForAllocatedSidecar(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+  ): Promise<void> {
+    if (await isAllocatedSidecarReady(target)) return;
+    if (allocationFences.get(target.allocationId) !== target.generation) {
+      throw new Error(
+        `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
+      );
+    }
+    if (timeoutMs <= 0) {
+      throw new Error(
+        `Timed out waiting for allocated sidecar ${target.allocationId}`,
+      );
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const waiter: AllocationWaiter = {
+        generation: target.generation,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          const current = allocationWaiters.get(target.allocationId);
+          current?.delete(waiter);
+          if (current?.size === 0) {
+            allocationWaiters.delete(target.allocationId);
+          }
+          reject(
+            new Error(
+              `Timed out waiting for allocated sidecar ${target.allocationId} generation ${String(target.generation)}`,
+            ),
+          );
+        }, timeoutMs),
+      };
+      let waiters = allocationWaiters.get(target.allocationId);
+      if (waiters === undefined) {
+        waiters = new Set();
+        allocationWaiters.set(target.allocationId, waiters);
+      }
+      waiters.add(waiter);
+      void notifyAllocationWaiters(target.allocationId);
+    });
+  }
+
   function bindStepRoute(stepAddress: string): void {
     const ws =
       addressIndex.get(stepAddress) ?? findSidecarForNewAgent(stepAddress);
@@ -2059,6 +2404,26 @@ export function createSidecarRouter(
     if (conn === undefined) {
       throw new Error(
         `No sidecar connected to stage workflow step "${stepAddress}"`,
+      );
+    }
+    if (conn.identity.kind !== "shared") {
+      throw new Error(
+        `Allocated sidecar ${conn.sidecarId} cannot receive ordinary workflow step ${stepAddress}`,
+      );
+    }
+    conn.workflowAddresses.add(stepAddress);
+    addressIndex.set(stepAddress, ws);
+  }
+
+  async function bindAllocatedStepRoute(
+    target: AllocatedSidecarTarget,
+    stepAddress: string,
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    const existing = addressIndex.get(stepAddress);
+    if (existing !== undefined && existing !== ws) {
+      throw new Error(
+        `Workflow step ${stepAddress} is already routed to another sidecar`,
       );
     }
     conn.workflowAddresses.add(stepAddress);
@@ -2077,6 +2442,22 @@ export function createSidecarRouter(
     if (conn !== undefined) {
       conn.workflowAddresses.delete(stepAddress);
     }
+    addressIndex.delete(stepAddress);
+  }
+
+  function unbindAllocatedStepRoute(
+    target: AllocatedSidecarTarget,
+    stepAddress: string,
+  ): void {
+    const current = allocatedConnections.get(target.allocationId);
+    if (
+      current === undefined ||
+      current.identity.generation !== target.generation
+    ) {
+      return;
+    }
+    if (addressIndex.get(stepAddress) !== current.ws) return;
+    connections.get(current.ws)?.workflowAddresses.delete(stepAddress);
     addressIndex.delete(stepAddress);
   }
 
@@ -2103,6 +2484,33 @@ export function createSidecarRouter(
       );
     }
 
+    if (conn.identity.kind !== "shared") {
+      return Promise.reject(
+        new Error(
+          `Allocated sidecar ${conn.sidecarId} requires allocation-bound pack routing for "${agentAddress}"`,
+        ),
+      );
+    }
+    return sendPackOnConnection(
+      ws,
+      conn,
+      agentAddress,
+      pack,
+      ref,
+      commitSha,
+      options,
+    );
+  }
+
+  function sendPackOnConnection(
+    ws: WsHandle,
+    conn: SidecarConnection,
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+    options?: SendPackOptions,
+  ): Promise<void> {
     const transferId = `pack-${++packCounter}`;
     // For the agent-state flow the destination agent and the source repo
     // are the same entity, so `repoId.id === agentAddress`. Asset packs
@@ -2129,6 +2537,8 @@ export function createSidecarRouter(
       pendingPacks.set(transferId, {
         transferId,
         ws,
+        agentAddress,
+        repoId,
         resolve,
         reject(error: string) {
           reject(new Error(`Pack rejected: ${error}`));
@@ -2159,6 +2569,31 @@ export function createSidecarRouter(
         ...(mountPath !== undefined ? { mountPath } : {}),
       });
     });
+  }
+
+  async function sendPackToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+    options?: SendPackOptions,
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (addressIndex.get(agentAddress) !== ws) {
+      throw new Error(
+        `Address ${agentAddress} is not routed on allocation ${target.allocationId}`,
+      );
+    }
+    return sendPackOnConnection(
+      ws,
+      conn,
+      agentAddress,
+      pack,
+      ref,
+      commitSha,
+      options,
+    );
   }
 
   function routeMail(
@@ -2235,48 +2670,91 @@ export function createSidecarRouter(
   }
 
   async function handleDeployAck(
-    agentAddress: string,
-    publicKey: string,
+    ws: WsHandle,
+    frame: AgentDeployAckFrame,
   ): Promise<void> {
-    if (!pendingDeploys.has(agentAddress)) {
-      logger.warn`Received agent.deploy.ack for "${agentAddress}" with no pending deploy`;
+    const req = pendingDeploys.get(frame.agentAddress);
+    if (req === undefined) {
+      logger.warn`Received agent.deploy.ack for "${frame.agentAddress}" with no pending deploy`;
       return;
     }
+    if (req.ws !== ws) return;
 
     if (events.listenerCount("agent.deploy.ack") > 0) {
       try {
         await events.emitAndAwait("agent.deploy.ack", {
-          agentAddress,
-          publicKey,
+          agentAddress: frame.agentAddress,
+          publicKey: frame.publicKey,
         });
       } catch (err) {
         rejectDeployPending(
-          agentAddress,
+          req,
           `Failed to store public key: ${err instanceof Error ? err.message : String(err)}`,
         );
         return;
       }
     }
-    resolveDeployPending(agentAddress);
+    resolveDeployPending(req, frame.publicKey);
   }
 
-  function resolveDeployPending(agentAddress: string): void {
-    const req = pendingDeploys.get(agentAddress);
-    if (req === undefined) return;
+  function resolveDeployPending(req: PendingDeploy, publicKey: string): void {
+    if (pendingDeploys.get(req.agentAddress) !== req) return;
     clearTimeout(req.timer);
-    pendingDeploys.delete(agentAddress);
-    req.resolve();
+    pendingDeploys.delete(req.agentAddress);
+    req.resolve(publicKey);
   }
 
-  function rejectDeployPending(agentAddress: string, error: string): void {
-    const req = pendingDeploys.get(agentAddress);
-    if (req === undefined) return;
+  function rejectDeployPending(req: PendingDeploy, error: string): void {
+    if (pendingDeploys.get(req.agentAddress) !== req) return;
     clearTimeout(req.timer);
-    pendingDeploys.delete(agentAddress);
+    pendingDeploys.delete(req.agentAddress);
     req.reject(error);
   }
 
+  function rejectDeployPendingFromFrame(
+    ws: WsHandle,
+    agentAddress: string,
+    error: string,
+  ): void {
+    const req = pendingDeploys.get(agentAddress);
+    if (req === undefined || req.ws !== ws) return;
+    rejectDeployPending(req, error);
+  }
+
   async function sendAgentDeploy(
+    agentAddress: string,
+    harnessConfig: HarnessConfig,
+    workflow?: AgentDeployFrame["workflow"],
+  ): Promise<{ publicKey: string }> {
+    if (hubPublicKeyHex === undefined) {
+      throw new Error("Hub signing key is required for agent deployment");
+    }
+    const ws =
+      addressIndex.get(agentAddress) ?? findSidecarForNewAgent(agentAddress);
+    if (ws === undefined) {
+      throw new Error(`No sidecar available for agent "${agentAddress}"`);
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+    }
+    if (conn.identity.kind !== "shared") {
+      throw new Error(
+        `Allocated sidecar ${conn.sidecarId} requires allocation-bound deploy routing`,
+      );
+    }
+    return sendAgentDeployOnConnection(
+      ws,
+      conn,
+      agentAddress,
+      harnessConfig,
+      workflow,
+    );
+  }
+
+  function sendAgentDeployOnConnection(
+    ws: WsHandle,
+    conn: SidecarConnection,
     agentAddress: string,
     harnessConfig: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
@@ -2289,40 +2767,18 @@ export function createSidecarRouter(
       throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
     }
 
-    const ws =
-      addressIndex.get(agentAddress) ?? findSidecarForNewAgent(agentAddress);
-
-    if (ws === undefined) {
-      throw new Error(`No sidecar available for agent "${agentAddress}"`);
-    }
-
-    const conn = connections.get(ws);
-    if (conn === undefined) {
-      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
-    }
-
-    conn.agentAddresses.add(agentAddress);
+    const addressSet =
+      conn.identity.kind === "allocated"
+        ? conn.workflowAddresses
+        : conn.agentAddresses;
+    addressSet.add(agentAddress);
     addressIndex.set(agentAddress, ws);
 
     return new Promise<{ publicKey: string }>((resolve, reject) => {
-      // The deploy-ack handler does not currently thread the
-      // sidecar-reported public key back through the pending-deploy
-      // resolver; it only fires `agent.deploy.ack` listeners and then
-      // resolves the pending deploy. Capture the key via a one-shot
-      // listener so the return value carries it without a wire-shape
-      // change to `agent.deploy.ack`.
-      let capturedPublicKey: string | undefined;
-      const detachListener = events.on("agent.deploy.ack", (payload) => {
-        if (payload.agentAddress === agentAddress) {
-          capturedPublicKey = payload.publicKey;
-        }
-      });
-
       const timer = setTimeout(() => {
-        detachListener();
         pendingDeploys.delete(agentAddress);
         if (addressIndex.get(agentAddress) === ws) {
-          conn.agentAddresses.delete(agentAddress);
+          addressSet.delete(agentAddress);
           addressIndex.delete(agentAddress);
         }
         reject(
@@ -2335,22 +2791,12 @@ export function createSidecarRouter(
       pendingDeploys.set(agentAddress, {
         agentAddress,
         ws,
-        resolve() {
-          detachListener();
-          if (capturedPublicKey === undefined) {
-            reject(
-              new Error(
-                `Deploy of "${agentAddress}" resolved without an agent.deploy.ack publicKey payload`,
-              ),
-            );
-            return;
-          }
-          resolve({ publicKey: capturedPublicKey });
+        resolve(publicKey) {
+          resolve({ publicKey });
         },
         reject(error: string) {
-          detachListener();
           if (addressIndex.get(agentAddress) === ws) {
-            conn.agentAddresses.delete(agentAddress);
+            addressSet.delete(agentAddress);
             addressIndex.delete(agentAddress);
           }
           reject(new Error(error));
@@ -2367,6 +2813,38 @@ export function createSidecarRouter(
         ...(workflow !== undefined ? { workflow } : {}),
       });
     });
+  }
+
+  async function sendAgentDeployToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    harnessConfig: HarnessConfig,
+    workflow?: AgentDeployFrame["workflow"],
+  ): Promise<{ publicKey: string }> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (conn.identity.kind !== "allocated") {
+      throw new Error(
+        `Allocation ${target.allocationId} resolved to a shared sidecar`,
+      );
+    }
+    if (agentAddress !== conn.identity.workflowRunAddress) {
+      throw new Error(
+        `Allocation ${target.allocationId} cannot deploy unrelated address ${agentAddress}`,
+      );
+    }
+    const existing = addressIndex.get(agentAddress);
+    if (existing !== undefined && existing !== ws) {
+      throw new Error(
+        `Deployment ${agentAddress} is already routed to another sidecar`,
+      );
+    }
+    return sendAgentDeployOnConnection(
+      ws,
+      conn,
+      agentAddress,
+      harnessConfig,
+      workflow,
+    );
   }
 
   /**
@@ -2387,12 +2865,6 @@ export function createSidecarRouter(
     agentAddress: string,
     harnessConfig: HarnessConfig,
   ): Promise<void> {
-    if (hubPublicKeyHex === undefined) {
-      throw new Error("Hub signing key is required for step provisioning");
-    }
-    if (pendingDeploys.has(agentAddress)) {
-      throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
-    }
     const ws = addressIndex.get(agentAddress);
     if (ws === undefined) {
       throw new Error(
@@ -2402,6 +2874,26 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn === undefined) {
       throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+    }
+    if (conn.identity.kind !== "shared") {
+      throw new Error(
+        `Allocated sidecar ${conn.sidecarId} requires allocation-bound step provisioning`,
+      );
+    }
+    return sendProvisionStepOnConnection(ws, conn, agentAddress, harnessConfig);
+  }
+
+  function sendProvisionStepOnConnection(
+    ws: WsHandle,
+    conn: SidecarConnection,
+    agentAddress: string,
+    harnessConfig: HarnessConfig,
+  ): Promise<void> {
+    if (hubPublicKeyHex === undefined) {
+      throw new Error("Hub signing key is required for step provisioning");
+    }
+    if (pendingDeploys.has(agentAddress)) {
+      throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
     }
 
     const hubKey = hubPublicKeyHex;
@@ -2421,7 +2913,7 @@ export function createSidecarRouter(
       pendingDeploys.set(agentAddress, {
         agentAddress,
         ws,
-        resolve() {
+        resolve(_publicKey) {
           resolve();
         },
         reject(error: string) {
@@ -2441,10 +2933,25 @@ export function createSidecarRouter(
     });
   }
 
+  async function sendProvisionStepToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    harnessConfig: HarnessConfig,
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (addressIndex.get(agentAddress) !== ws) {
+      throw new Error(
+        `Step route ${agentAddress} is not bound to allocation ${target.allocationId}`,
+      );
+    }
+    return sendProvisionStepOnConnection(ws, conn, agentAddress, harnessConfig);
+  }
+
   function findSidecarForNewAgent(_agentAddress: string): WsHandle | undefined {
-    const first = connections.entries().next();
-    if (first.done) return undefined;
-    return first.value[0];
+    for (const [ws, conn] of connections) {
+      if (conn.identity.kind === "shared") return ws;
+    }
+    return undefined;
   }
 
   function sendAgentUndeploy(
@@ -2655,9 +3162,17 @@ export function createSidecarRouter(
     sendSourcesUpdate,
     sendCredentialsUpdate,
     sendPack,
+    sendPackToAllocation,
+    fenceAllocation,
+    waitForAllocatedSidecar,
+    isAllocatedSidecarReady,
+    sendAgentDeployToAllocation,
     bindStepRoute,
+    bindAllocatedStepRoute,
     unbindStepRoute,
+    unbindAllocatedStepRoute,
     sendProvisionStep,
+    sendProvisionStepToAllocation,
     sendSyncRequest,
     sendSignalDeliver,
     sendDrain,

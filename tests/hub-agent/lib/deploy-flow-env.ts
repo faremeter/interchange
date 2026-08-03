@@ -774,9 +774,9 @@ export async function startHub(
     // resolve to the fixed integration sidecar id, exercising the real
     // token-authenticated handshake rather than accepting any token.
     authenticateSidecar: async ({ token }) => {
-      if (token === TOKEN) return { kind: "sidecar", sidecarId: SIDECAR_ID };
+      if (token === TOKEN) return { kind: "shared", sidecarId: SIDECAR_ID };
       if (token === SECOND_TOKEN) {
-        return { kind: "sidecar", sidecarId: SECOND_SIDECAR_ID };
+        return { kind: "shared", sidecarId: SECOND_SIDECAR_ID };
       }
       return null;
     },

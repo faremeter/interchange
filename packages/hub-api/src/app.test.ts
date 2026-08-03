@@ -22,7 +22,7 @@ const OpenAPISpec = type({
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 const sidecarRouter = createSidecarRouter({

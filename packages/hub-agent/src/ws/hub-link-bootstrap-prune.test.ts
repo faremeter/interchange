@@ -170,7 +170,7 @@ function startTestServer(): TestEnv {
   let currentEpoch = 0;
 
   const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-    kind: "sidecar",
+    kind: "shared",
     sidecarId,
   });
   const router = createSidecarRouter({
