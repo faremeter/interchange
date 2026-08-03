@@ -614,20 +614,23 @@ Body: unknown
 202: (no content) -- Signal accepted for delivery
 400: ErrorResponse -- Reserved signal name or a runId that is not the deployment's addressable run
 404: ErrorResponse -- Workflow deployment not found
+409: ErrorResponse -- Workflow run has not started, is terminal, its deployment allocation is no longer active, or the signalId conflicts with a previously accepted payload
 502: ErrorResponse -- Sidecar unavailable
+503: ErrorResponse -- Durable workflow dispatch unavailable
 
 ### POST /api/tenants/:tenantId/workflows/:deploymentId/mail
 Trigger a workflow run
 
-Assembles a fresh signed conversation message and delivers it to the deployment's inbound mail address, starting a new workflow run. The run id is minted by the supervisor and is not returned synchronously; correlate the resulting RunStarted via the returned messageId.
+Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence.
 
 Body: SendMessage
 
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, or its top-level run is terminal
 413: ErrorResponse -- Request body exceeds the maximum allowed size
+503: ErrorResponse -- Durable workflow dispatch unavailable
 
 ### GET /api/tenants/:tenantId/workflows/:deploymentId/runs
 List workflow runs
@@ -677,7 +680,8 @@ Body: ApproveAction
 400: ErrorResponse -- Unsupported scope
 403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
-409: ErrorResponse -- Approval already resolved
+409: ErrorResponse -- Approval already resolved (takes precedence on retries) or workflow deployment unavailable
+503: ErrorResponse -- Durable workflow dispatch unavailable
 
 ### POST /api/tenants/:tenantId/approvals/:approvalId/reject
 Reject an action
@@ -689,7 +693,8 @@ Body: RejectAction
 200: ApprovalResponse -- Action rejected
 403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
-409: ErrorResponse -- Approval already resolved
+409: ErrorResponse -- Approval already resolved (takes precedence on retries) or workflow deployment unavailable
+503: ErrorResponse -- Durable workflow dispatch unavailable
 
 ## Wallets
 

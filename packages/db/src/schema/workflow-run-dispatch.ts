@@ -23,6 +23,9 @@ export const workflowRunDispatchStatuses = [
 export type WorkflowRunDispatchStatus =
   (typeof workflowRunDispatchStatuses)[number];
 
+export const workflowRunDispatchKinds = ["mail", "signal"] as const;
+export type WorkflowRunDispatchKind = (typeof workflowRunDispatchKinds)[number];
+
 /**
  * Hub-owned delivery state for one inbound workflow message. The raw payload
  * remains durable until the workflow-run Git claim-check reaches `consumed`;
@@ -36,6 +39,10 @@ export const workflowRunDispatch = pgTable(
       .notNull()
       .references(() => workflowRun.id, { onDelete: "cascade" }),
     messageId: text("message_id").notNull(),
+    kind: text("kind")
+      .$type<WorkflowRunDispatchKind>()
+      .notNull()
+      .default("mail"),
     rawMessage: bytea("raw_message").notNull(),
     stepGrants: jsonb("step_grants").notNull(),
     status: text("status")
@@ -69,6 +76,10 @@ export const workflowRunDispatch = pgTable(
     check(
       "workflow_run_dispatch_status_check",
       sql`${t.status} in ('pending', 'acknowledged', 'settled', 'failed')`,
+    ),
+    check(
+      "workflow_run_dispatch_kind_check",
+      sql`${t.kind} in ('mail', 'signal')`,
     ),
     check(
       "workflow_run_dispatch_attempt_count_check",

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   and,
   asc,
@@ -12,7 +14,9 @@ import {
 
 import {
   RunGrantsFrame,
+  SignalDeliverFrame,
   type RunGrantsFrame as RunGrantsFrameType,
+  type SignalDeliverFrame as SignalDeliverFrameType,
 } from "@intx/types/sidecar";
 
 import type { DB, DBExecutor } from "./client";
@@ -31,10 +35,41 @@ export type EnqueueWorkflowRunDispatchArgs = {
   readonly now?: Date;
 };
 
+export type EnqueueWorkflowSignalDispatchArgs = {
+  readonly id: string;
+  readonly anchorRunId: string;
+  readonly signal: Omit<SignalDeliverFrameType, "type">;
+  readonly now?: Date;
+};
+
 export type EnqueueWorkflowRunDispatchResult = {
   readonly dispatch: ParsedDispatch;
   readonly created: boolean;
 };
+
+type InsertOrReconcileDispatchArgs = {
+  readonly operation: "enqueue" | "enqueueSignal";
+  readonly id: string;
+  readonly anchorRunId: string;
+  readonly messageId: string;
+  readonly kind: ParsedDispatch["kind"];
+  readonly rawMessage: Uint8Array;
+  readonly stepGrants: RunGrantsFrameType["stepGrants"];
+  readonly now?: Date;
+};
+
+export class WorkflowRunDispatchPayloadConflictError extends Error {
+  constructor(
+    readonly messageId: string,
+    readonly payloadKind: "message" | "signal",
+    operation: InsertOrReconcileDispatchArgs["operation"],
+  ) {
+    super(
+      `workflowRunDispatchStore.${operation}: ${payloadKind} ${messageId} conflicts with its durable payload`,
+    );
+    this.name = "WorkflowRunDispatchPayloadConflictError";
+  }
+}
 
 export type ClaimWorkflowRunDispatchArgs = {
   readonly leaseId: string;
@@ -58,6 +93,14 @@ export type RetryWorkflowRunDispatchArgs = {
   readonly now?: Date;
 };
 
+export type FailWorkflowRunDispatchArgs = {
+  readonly anchorRunId: string;
+  readonly messageId: string;
+  readonly code: string;
+  readonly message: string;
+  readonly now?: Date;
+};
+
 function databaseTimestamp(override?: Date) {
   return override ?? sql`now()`;
 }
@@ -77,7 +120,7 @@ function grantsEqual(
   left: RunGrantsFrameType["stepGrants"],
   right: RunGrantsFrameType["stepGrants"],
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return isDeepStrictEqual(left, right);
 }
 
 function validateStepGrants(
@@ -90,6 +133,74 @@ function validateStepGrants(
     runId: anchorRunId,
     stepGrants,
   }).stepGrants;
+}
+
+async function insertOrReconcileDispatch(
+  executor: DBExecutor,
+  args: InsertOrReconcileDispatchArgs,
+): Promise<EnqueueWorkflowRunDispatchResult> {
+  const [anchor] = await executor
+    .select({ deploymentId: workflowRun.deploymentId })
+    .from(workflowRun)
+    .where(eq(workflowRun.id, args.anchorRunId))
+    .limit(1);
+  if (anchor?.deploymentId !== args.anchorRunId) {
+    throw new Error(
+      `workflowRunDispatchStore.${args.operation}: run ${args.anchorRunId} is not a deployment anchor`,
+    );
+  }
+
+  const now = databaseTimestamp(args.now);
+  const [inserted] = await executor
+    .insert(workflowRunDispatch)
+    .values({
+      id: args.id,
+      anchorRunId: args.anchorRunId,
+      messageId: args.messageId,
+      kind: args.kind,
+      rawMessage: args.rawMessage,
+      stepGrants: args.stepGrants,
+      status: "pending",
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({
+      target: [workflowRunDispatch.anchorRunId, workflowRunDispatch.messageId],
+    })
+    .returning();
+  if (inserted !== undefined) {
+    return {
+      dispatch: parseWorkflowRunDispatchRow(inserted),
+      created: true,
+    };
+  }
+
+  const existing = await executor.query.workflowRunDispatch.findFirst({
+    where: and(
+      eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
+      eq(workflowRunDispatch.messageId, args.messageId),
+    ),
+  });
+  if (existing === undefined) {
+    throw new Error(
+      `workflowRunDispatchStore.${args.operation}: conflicting row disappeared for ${args.anchorRunId}/${args.messageId}`,
+    );
+  }
+  const parsed = parseWorkflowRunDispatchRow(existing);
+  if (
+    parsed.kind !== args.kind ||
+    !byteArraysEqual(parsed.rawMessage, args.rawMessage) ||
+    !grantsEqual(parsed.stepGrants, args.stepGrants)
+  ) {
+    const payloadKind = args.kind === "mail" ? "message" : "signal";
+    throw new WorkflowRunDispatchPayloadConflictError(
+      args.messageId,
+      payloadKind,
+      args.operation,
+    );
+  }
+  return { dispatch: parsed, created: false };
 }
 
 async function acknowledgeMatchingDispatch(
@@ -124,66 +235,38 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       args: EnqueueWorkflowRunDispatchArgs,
       tx?: DBExecutor,
     ): Promise<EnqueueWorkflowRunDispatchResult> {
-      const executor = tx ?? db;
       const stepGrants = validateStepGrants(args.anchorRunId, args.stepGrants);
-      const [anchor] = await executor
-        .select({ deploymentId: workflowRun.deploymentId })
-        .from(workflowRun)
-        .where(eq(workflowRun.id, args.anchorRunId))
-        .limit(1);
-      if (anchor?.deploymentId !== args.anchorRunId) {
-        throw new Error(
-          `workflowRunDispatchStore.enqueue: run ${args.anchorRunId} is not a deployment anchor`,
-        );
-      }
-      const now = databaseTimestamp(args.now);
-      const [inserted] = await executor
-        .insert(workflowRunDispatch)
-        .values({
-          id: args.id,
-          anchorRunId: args.anchorRunId,
-          messageId: args.messageId,
-          rawMessage: args.rawMessage,
-          stepGrants,
-          status: "pending",
-          nextAttemptAt: now,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoNothing({
-          target: [
-            workflowRunDispatch.anchorRunId,
-            workflowRunDispatch.messageId,
-          ],
-        })
-        .returning();
-      if (inserted !== undefined) {
-        return {
-          dispatch: parseWorkflowRunDispatchRow(inserted),
-          created: true,
-        };
-      }
-      const existing = await executor.query.workflowRunDispatch.findFirst({
-        where: and(
-          eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
-          eq(workflowRunDispatch.messageId, args.messageId),
-        ),
+      return insertOrReconcileDispatch(tx ?? db, {
+        operation: "enqueue",
+        id: args.id,
+        anchorRunId: args.anchorRunId,
+        messageId: args.messageId,
+        kind: "mail",
+        rawMessage: args.rawMessage,
+        stepGrants,
+        ...(args.now !== undefined ? { now: args.now } : {}),
       });
-      if (existing === undefined) {
-        throw new Error(
-          `workflowRunDispatchStore.enqueue: conflicting row disappeared for ${args.anchorRunId}/${args.messageId}`,
-        );
-      }
-      const parsed = parseWorkflowRunDispatchRow(existing);
-      if (
-        !byteArraysEqual(parsed.rawMessage, args.rawMessage) ||
-        !grantsEqual(parsed.stepGrants, stepGrants)
-      ) {
-        throw new Error(
-          `workflowRunDispatchStore.enqueue: message ${args.messageId} conflicts with its durable payload`,
-        );
-      }
-      return { dispatch: parsed, created: false };
+    },
+
+    async enqueueSignal(
+      args: EnqueueWorkflowSignalDispatchArgs,
+      tx?: DBExecutor,
+    ): Promise<EnqueueWorkflowRunDispatchResult> {
+      const signal = SignalDeliverFrame.assert({
+        type: "signal.deliver",
+        ...args.signal,
+      });
+      const encoded = new TextEncoder().encode(JSON.stringify(signal));
+      return insertOrReconcileDispatch(tx ?? db, {
+        operation: "enqueueSignal",
+        id: args.id,
+        anchorRunId: args.anchorRunId,
+        messageId: signal.signalId,
+        kind: "signal",
+        rawMessage: encoded,
+        stepGrants: [],
+        ...(args.now !== undefined ? { now: args.now } : {}),
+      });
     },
 
     async claimNextPending(
@@ -255,6 +338,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           [
             eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
             eq(workflowRunDispatch.messageId, args.messageId),
+            eq(workflowRunDispatch.kind, "mail"),
             eq(workflowRunDispatch.status, "pending"),
           ],
           args.now,
@@ -317,6 +401,61 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       return updated === undefined
         ? null
         : parseWorkflowRunDispatchRow(updated);
+    },
+
+    async fail(
+      args: FailWorkflowRunDispatchArgs,
+    ): Promise<ParsedDispatch | null> {
+      const now = args.now ?? new Date();
+      const [updated] = await db
+        .update(workflowRunDispatch)
+        .set({
+          status: "failed",
+          nextAttemptAt: null,
+          deliveryLeaseId: null,
+          deliveryLeaseExpiresAt: null,
+          failureCode: args.code,
+          failureMessage: args.message,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
+            eq(workflowRunDispatch.messageId, args.messageId),
+            inArray(workflowRunDispatch.status, ["pending", "acknowledged"]),
+          ),
+        )
+        .returning();
+      return updated === undefined
+        ? null
+        : parseWorkflowRunDispatchRow(updated);
+    },
+
+    async failUnsettled(
+      anchorRunId: string,
+      code: string,
+      message: string,
+      now = new Date(),
+    ): Promise<number> {
+      const rows = await db
+        .update(workflowRunDispatch)
+        .set({
+          status: "failed",
+          nextAttemptAt: null,
+          deliveryLeaseId: null,
+          deliveryLeaseExpiresAt: null,
+          failureCode: code,
+          failureMessage: message,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(workflowRunDispatch.anchorRunId, anchorRunId),
+            inArray(workflowRunDispatch.status, ["pending", "acknowledged"]),
+          ),
+        )
+        .returning({ id: workflowRunDispatch.id });
+      return rows.length;
     },
 
     async requeueUnsettled(anchorRunId: string): Promise<number> {

@@ -46,13 +46,10 @@ export type SidecarMailPersistedPayload = SidecarMailPersistedRow & {
 };
 
 /**
- * Outcome of staging a mail-triggered run's grants, discriminated so the
- * `mail.outbound` handler can order delivery against the commit. `skip`
- * means the recipient names no deployed workflow deployment; `rejected`
- * means a declared requirement's authority is insufficient (the run must
- * not launch); `materialized` carries the staged wire rows plus a
- * deferred, idempotent `commit` the caller invokes only after delivery is
- * accepted.
+ * Outcome of reserving a mail-triggered run's grants. `skip` means the
+ * recipient names no workflow deployment; `rejected` means the deployment's
+ * stable run is terminal or its requirements cannot be authorized;
+ * `materialized` carries the canonical persisted wire rows.
  */
 export type MailTriggeredRunGrantsResult =
   | { outcome: "skip" }
@@ -60,7 +57,6 @@ export type MailTriggeredRunGrantsResult =
   | {
       outcome: "materialized";
       stepGrants: RunGrantsFrame["stepGrants"];
-      commit: () => Promise<void>;
     };
 
 export type SidecarEventMap = {
@@ -107,6 +103,21 @@ export type SidecarEventMap = {
    * the rows; this event fires for each so subscribers can react
    * per-row (e.g. dispatch a delivered event). */
   "mail.persisted": SidecarMailPersistedPayload;
+
+  /** Notification after a sidecar confirms a mail trigger is in its durable
+   * local inbox. For an exclusive worker, `allocated` identifies the exact
+   * generation that acknowledged the message. This is not workflow
+   * settlement; the Hub retains the payload until the Git claim-check records
+   * consumption. */
+  "mail.inbound.acknowledged": {
+    agentAddress: string;
+    messageId: string;
+    allocated?: {
+      allocationId: string;
+      anchorRunId: string;
+      generation: number;
+    };
+  };
 
   /** Awaited. Emitted when an agent.deploy.ack frame arrives. Rejection
    * fails the pending deploy with the listener's error. */
@@ -176,6 +187,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "sidecar.allocated.connected": new Set(),
     "mail.outbound.undelivered": new Set(),
     "mail.persisted": new Set(),
+    "mail.inbound.acknowledged": new Set(),
     "agent.deploy.ack": new Set(),
     "agent.reconnected": new Set(),
     "deploy.ref.stale": new Set(),
@@ -272,20 +284,19 @@ export type SidecarLookups = {
     approvalSnapshot: ApprovalSnapshot;
   }) => Promise<void>;
 
-  /** Stages a mail-triggered workflow run's grants from the receiving
-   * deployment's definition WITHOUT committing, returning a discriminated
-   * result the `mail.outbound` handler orders against delivery. Called for
-   * each recipient that is a workflow deployment. The `runId` is the mail's
-   * Message-ID, derived identically to the sidecar's supervisor, so the
-   * grants land under the runId the supervisor will consume the mail as.
+  /** Reserves a mail-triggered workflow run's grants from the receiving
+   * deployment's definition, returning a discriminated result the
+   * `mail.outbound` handler orders against delivery. Called for each recipient
+   * that is a workflow deployment. The `runId` is the deployment's stable
+   * address-derived run id.
    *
-   * On `materialized` the caller sends `stepGrants` ahead of the inbound
-   * mail and, only once delivery is accepted, calls `commit` -- idempotent
-   * on the runId, so a redelivered inbound mail neither double-mints nor
-   * throws. On `skip` the address names no deployed workflow deployment, so
-   * no grants are sent and the mail still forwards. On `rejected` a declared
-   * requirement's authority is insufficient; the caller fails the mail
-   * closed for that recipient. */
+   * On `materialized`, `stepGrants` are already persisted and the caller sends
+   * them ahead of the inbound mail. Reservation is idempotent on the runId, so
+   * a redelivered inbound mail neither double-mints nor throws. On `skip` the
+   * address names no deployed workflow deployment, so no grants are sent and
+   * the mail still forwards. On `rejected` the stable run is terminal or a
+   * declared requirement's authority is insufficient; the caller fails the
+   * mail closed for that recipient. */
   materializeMailTriggeredRunGrants?: (args: {
     agentAddress: string;
     runId: string;

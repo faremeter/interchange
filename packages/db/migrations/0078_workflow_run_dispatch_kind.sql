@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_run_dispatch" ADD COLUMN "kind" text DEFAULT 'mail' NOT NULL;--> statement-breakpoint
+ALTER TABLE "workflow_run_dispatch" ADD CONSTRAINT "workflow_run_dispatch_kind_check" CHECK ("workflow_run_dispatch"."kind" in ('mail', 'signal'));

@@ -1450,7 +1450,6 @@ describe("SidecarRouter", () => {
 
     test("materializes grants and sends them before the inbound mail for a workflow recipient", async () => {
       const calls: { agentAddress: string; runId: string }[] = [];
-      let committed = false;
       const router = createTestRouter({
         lookups: {
           lookupPublicKey: async () => null,
@@ -1459,9 +1458,6 @@ describe("SidecarRouter", () => {
             return {
               outcome: "materialized",
               stepGrants: SAMPLE_GRANTS,
-              commit: async () => {
-                committed = true;
-              },
             };
           },
         },
@@ -1490,8 +1486,6 @@ describe("SidecarRouter", () => {
       // connected-window drop before the ack is redelivered on reconnect and
       // the committed run cannot be left bodiless.
       expect(frames[1]?.messageId).toBeDefined();
-      // The commit ran only after the mail was accepted for delivery.
-      expect(committed).toBe(true);
     });
 
     test("does not materialize grants for a non-workflow recipient", async () => {
@@ -1667,7 +1661,6 @@ describe("SidecarRouter", () => {
 
     test("a run-committing mail-relay is retained and redelivered on reconnect after a connected-window drop", async () => {
       const kp = await generateKeyPair();
-      let committed = 0;
       const router = createTestRouter({
         requestTimeoutMs: 500,
         // Large so neither the connected-window retry nor the retention TTL
@@ -1680,9 +1673,6 @@ describe("SidecarRouter", () => {
           materializeMailTriggeredRunGrants: async () => ({
             outcome: "materialized",
             stepGrants: SAMPLE_GRANTS,
-            commit: async () => {
-              committed += 1;
-            },
           }),
         },
       });
@@ -1698,13 +1688,12 @@ describe("SidecarRouter", () => {
         [WORKFLOW_ADDR],
       );
 
-      // Delivered over the live connection via the handshake; the run committed.
+      // Delivered over the live connection via the handshake.
       const firstInbound = ws1.sent
         .map((s) => JSON.parse(s))
         .find((f) => f.type === "mail.inbound");
       expect(firstInbound).toBeDefined();
       expect(firstInbound.messageId).toBeDefined();
-      expect(committed).toBe(1);
 
       // Drop BEFORE any ack: the pending relay mail must be retained.
       router.handleClose(ws1);
@@ -1725,15 +1714,13 @@ describe("SidecarRouter", () => {
         );
       expect(redelivered).toBeDefined();
       expect(redelivered.rawMessage).toBe(firstInbound.rawMessage);
-      // No re-materialization on redelivery: the run is committed exactly once;
-      // downstream dedup makes the replayed delivery effectively-once.
-      expect(committed).toBe(1);
+      // No re-materialization on redelivery; downstream dedup makes the
+      // replayed delivery effectively-once.
     });
 
     test("redelivery re-emits the run's grants ahead of the mail on reconnect", async () => {
       const kp = await generateKeyPair();
       let materializations = 0;
-      let committed = 0;
       const router = createTestRouter({
         requestTimeoutMs: 500,
         // Large so neither the connected-window retry nor the retention TTL
@@ -1748,9 +1735,6 @@ describe("SidecarRouter", () => {
             return {
               outcome: "materialized",
               stepGrants: SAMPLE_GRANTS,
-              commit: async () => {
-                committed += 1;
-              },
             };
           },
         },
@@ -1798,11 +1782,9 @@ describe("SidecarRouter", () => {
       // closed on the barrier.
       expect(grantsIdx).toBeLessThan(mailIdx);
       // The replayed snapshot is the SAME materialized bytes, not a re-fetch:
-      // materialization and commit each ran exactly once, at the original
-      // delivery.
+      // materialization ran exactly once, at the original delivery.
       expect(frames[grantsIdx]?.stepGrants).toEqual(SAMPLE_GRANTS);
       expect(materializations).toBe(1);
-      expect(committed).toBe(1);
     });
 
     test("a skip-path mail-relay is forwarded without the messageId handshake", async () => {
@@ -5237,10 +5219,8 @@ describe("SidecarRouter", () => {
       const ws = createMockWs();
       await connectViaChallenge(router, ws, "agent@local", kp.privateKey);
 
-      // A workflow-trigger mail carrying a hub-minted messageId; its run row is
-      // committed the instant routeMail returns true (commit-last discipline in
-      // deliverMailToRecipient), so durable delivery is the only thing keeping
-      // the run from being orphaned.
+      // A tracked mail carrying a hub-minted messageId. Durable delivery is
+      // what keeps the accepted bytes available through the retry window.
       expect(router.routeMail("agent@local", "eA==", "mid-drop")).toBe(true);
 
       const warnings: string[] = [];
@@ -5591,6 +5571,104 @@ describe("SidecarRouter", () => {
         }),
       );
       await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
+    });
+
+    test("delivers grants and durable mail to the exact generation and emits its ack", async () => {
+      const allocatedRouter = createTestRouter({
+        authenticateSidecar: async () => allocationIdentity,
+        validateSidecarIdentity: async () => true,
+        hubPublicKey: TEST_HUB_KEY,
+      });
+      allocatedRouter.fenceAllocation("alloc-1", 1);
+      const acknowledgements: unknown[] = [];
+      allocatedRouter.events.on("mail.inbound.acknowledged", (event) => {
+        acknowledgements.push(event);
+      });
+      const ws = createMockWs();
+      allocatedRouter.handleOpen(ws);
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-allocated",
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      const deployed = allocatedRouter.sendAgentDeployToAllocation(
+        { allocationId: "alloc-1", generation: 1 },
+        "workflow@exclusive",
+        allocationConfig,
+      );
+      await tick();
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.deploy.ack",
+          agentAddress: "workflow@exclusive",
+          publicKey: "b".repeat(64),
+        }),
+      );
+      await deployed;
+
+      await allocatedRouter.sendWorkflowRunDispatchToAllocation(
+        { allocationId: "alloc-1", generation: 1 },
+        "workflow@exclusive",
+        "workflow@exclusive",
+        [],
+        "cmF3LW1haWw=",
+        "message-1",
+      );
+
+      const frames = ws.sent.map((raw) => JSON.parse(raw));
+      expect(frames.slice(-2).map((frame) => frame.type)).toEqual([
+        "run.grants",
+        "mail.inbound",
+      ]);
+      expect(frames.at(-1)).toMatchObject({
+        agentAddress: "workflow@exclusive",
+        messageId: "message-1",
+        rawMessage: "cmF3LW1haWw=",
+      });
+
+      allocatedRouter.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "mail.inbound.ack",
+          agentAddress: "workflow@exclusive",
+          messageId: "message-1",
+        }),
+      );
+      await tick();
+      expect(acknowledgements).toEqual([
+        {
+          agentAddress: "workflow@exclusive",
+          messageId: "message-1",
+          allocated: {
+            allocationId: "alloc-1",
+            anchorRunId: "run-anchor",
+            generation: 1,
+          },
+        },
+      ]);
+
+      await allocatedRouter.sendSignalDeliverToAllocation(
+        { allocationId: "alloc-1", generation: 1 },
+        {
+          agentAddress: "workflow@exclusive",
+          runId: "workflow@exclusive",
+          signalName: "continue",
+          signalId: "signal-1",
+          payload: { approved: true },
+        },
+      );
+      expect(lastSent(ws)).toMatchObject({
+        type: "signal.deliver",
+        signalId: "signal-1",
+        payload: { approved: true },
+      });
     });
 
     test("emits exact allocation lifecycle events only for the current socket", async () => {

@@ -164,6 +164,12 @@ function createMockAllocationRouter(): SidecarAllocationRouter & {
     sendProvisionStepToAllocation: async (...args) => {
       calls.push({ method: "sendProvisionStepToAllocation", args });
     },
+    sendWorkflowRunDispatchToAllocation: async (...args) => {
+      calls.push({ method: "sendWorkflowRunDispatchToAllocation", args });
+    },
+    sendSignalDeliverToAllocation: async (...args) => {
+      calls.push({ method: "sendSignalDeliverToAllocation", args });
+    },
   };
 }
 

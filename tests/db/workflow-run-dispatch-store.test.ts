@@ -8,12 +8,16 @@ import {
 } from "bun:test";
 import { eq } from "drizzle-orm";
 
-import { createWorkflowRunDispatchStore } from "@intx/db";
+import {
+  createWorkflowRunDispatchStore,
+  WorkflowRunDispatchPayloadConflictError,
+} from "@intx/db";
 import {
   sidecar,
   sidecarAllocation,
   workflowDefinition,
 } from "@intx/db/schema";
+import { RunGrantsFrame, SignalDeliverFrame } from "@intx/types/sidecar";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -91,6 +95,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         stepGrants: [],
       });
       expect(enqueued.created).toBe(true);
+      expect(enqueued.dispatch.kind).toBe("mail");
       expect(enqueued.dispatch.status).toBe("pending");
 
       const claimed = await store.claimNextPending({
@@ -118,12 +123,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("deduplicates an exact message and rejects a conflicting payload", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
+      const stepGrants = RunGrantsFrame.assert({
+        type: "run.grants",
+        agentAddress: "workflow@tenant.example",
+        runId: ANCHOR_RUN_ID,
+        stepGrants: [
+          {
+            id: "grant-1",
+            resource: "tool:mail",
+            action: "send",
+            effect: "allow",
+            origin: "creator",
+            conditions: null,
+            expiresAt: null,
+            roleId: null,
+            principalId: null,
+          },
+        ],
+      }).stepGrants;
       const args = {
         id: "dispatch-dedup",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "dispatch-message-dedup",
         rawMessage: new Uint8Array([1, 2, 3]),
-        stepGrants: [],
+        stepGrants,
       };
       expect((await store.enqueue(args)).created).toBe(true);
       expect(
@@ -139,6 +162,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ...args,
           id: "dispatch-conflict",
           rawMessage: new Uint8Array([9, 9, 9]),
+        }),
+      ).rejects.toThrow(/conflicts with its durable payload/);
+      await expect(
+        store.enqueue({
+          ...args,
+          id: "dispatch-grant-conflict",
+          stepGrants: [],
         }),
       ).rejects.toThrow(/conflicts with its durable payload/);
     });
@@ -217,6 +247,175 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect((await store.findById("dispatch-fenced-ack"))?.status).toBe(
         "pending",
       );
+    });
+
+    test("persists and deduplicates an idempotent signal payload", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      const args = {
+        id: "dispatch-signal",
+        anchorRunId: ANCHOR_RUN_ID,
+        signal: {
+          agentAddress: "workflow@tenant.example",
+          runId: "workflow@tenant.example",
+          signalName: "continue",
+          signalId: "signal-1",
+          payload: { approved: true },
+        },
+      };
+
+      const enqueued = await store.enqueueSignal(args);
+      expect(enqueued.created).toBe(true);
+      expect(enqueued.dispatch.kind).toBe("signal");
+      expect(
+        SignalDeliverFrame.assert(
+          JSON.parse(new TextDecoder().decode(enqueued.dispatch.rawMessage)),
+        ),
+      ).toEqual({ type: "signal.deliver", ...args.signal });
+      expect(
+        (
+          await store.enqueueSignal({
+            ...args,
+            id: "dispatch-signal-redelivery",
+          })
+        ).created,
+      ).toBe(false);
+      await expect(
+        store.enqueueSignal({
+          ...args,
+          id: "dispatch-signal-conflict",
+          signal: { ...args.signal, payload: { approved: false } },
+        }),
+      ).rejects.toBeInstanceOf(WorkflowRunDispatchPayloadConflictError);
+    });
+
+    test("rejects a message id already owned by the other dispatch kind", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      const signalFirst = {
+        id: "dispatch-signal-first",
+        anchorRunId: ANCHOR_RUN_ID,
+        signal: {
+          agentAddress: "workflow@tenant.example",
+          runId: "workflow@tenant.example",
+          signalName: "continue",
+          signalId: "shared-id-signal-first",
+          payload: { approved: true },
+        },
+      };
+      const signalDispatch = await store.enqueueSignal(signalFirst);
+      await expect(
+        store.enqueue({
+          id: "dispatch-mail-second",
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: signalFirst.signal.signalId,
+          rawMessage: signalDispatch.dispatch.rawMessage,
+          stepGrants: [],
+        }),
+      ).rejects.toThrow(/conflicts with its durable payload/);
+
+      const mailFirstSignal = {
+        agentAddress: "workflow@tenant.example",
+        runId: "workflow@tenant.example",
+        signalName: "continue",
+        signalId: "shared-id-mail-first",
+        payload: { approved: true },
+      };
+      const encodedSignal = new TextEncoder().encode(
+        JSON.stringify(
+          SignalDeliverFrame.assert({
+            type: "signal.deliver",
+            ...mailFirstSignal,
+          }),
+        ),
+      );
+      await store.enqueue({
+        id: "dispatch-mail-first",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: mailFirstSignal.signalId,
+        rawMessage: encodedSignal,
+        stepGrants: [],
+      });
+      await expect(
+        store.enqueueSignal({
+          id: "dispatch-signal-second",
+          anchorRunId: ANCHOR_RUN_ID,
+          signal: mailFirstSignal,
+        }),
+      ).rejects.toThrow(/conflicts with its durable payload/);
+    });
+
+    test("uses the supplied transaction for both dispatch kinds", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      await expect(
+        h.db.transaction(async (tx) => {
+          await store.enqueue(
+            {
+              id: "dispatch-mail-rollback",
+              anchorRunId: ANCHOR_RUN_ID,
+              messageId: "message-rollback",
+              rawMessage: new Uint8Array([1, 2, 3]),
+              stepGrants: [],
+            },
+            tx,
+          );
+          await store.enqueueSignal(
+            {
+              id: "dispatch-signal-rollback",
+              anchorRunId: ANCHOR_RUN_ID,
+              signal: {
+                agentAddress: "workflow@tenant.example",
+                runId: "workflow@tenant.example",
+                signalName: "continue",
+                signalId: "signal-rollback",
+                payload: null,
+              },
+            },
+            tx,
+          );
+          throw new Error("force rollback");
+        }),
+      ).rejects.toThrow("force rollback");
+      expect(await store.findById("dispatch-mail-rollback")).toBeNull();
+      expect(await store.findById("dispatch-signal-rollback")).toBeNull();
+    });
+
+    test("fails only unsettled dispatches when the stable run terminates", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      await store.enqueue({
+        id: "dispatch-already-consumed",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "message-consumed",
+        rawMessage: new Uint8Array([1]),
+        stepGrants: [],
+      });
+      await store.enqueueSignal({
+        id: "dispatch-too-late",
+        anchorRunId: ANCHOR_RUN_ID,
+        signal: {
+          agentAddress: "workflow@tenant.example",
+          runId: "workflow@tenant.example",
+          signalName: "continue",
+          signalId: "signal-too-late",
+          payload: null,
+        },
+      });
+      await store.settle(ANCHOR_RUN_ID, "message-consumed");
+
+      await expect(
+        store.failUnsettled(
+          ANCHOR_RUN_ID,
+          "workflow_run_terminal",
+          "run is terminal",
+        ),
+      ).resolves.toBe(1);
+      expect((await store.findById("dispatch-already-consumed"))?.status).toBe(
+        "settled",
+      );
+      expect(await store.findById("dispatch-too-late")).toMatchObject({
+        status: "failed",
+        failureCode: "workflow_run_terminal",
+        failureMessage: "run is terminal",
+        nextAttemptAt: null,
+      });
     });
   },
 );

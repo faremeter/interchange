@@ -540,6 +540,13 @@
       "when": 1786055601046,
       "tag": "0077_workflow_run_dispatch",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1786055642946,
+      "tag": "0078_workflow_run_dispatch_kind",
+      "breakpoints": true
     }
   ]
 }

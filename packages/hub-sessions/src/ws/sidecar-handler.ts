@@ -126,8 +126,8 @@ export type SidecarRouter = {
    * address moves to `workflowAddresses`, which carries no queue (that
    * generation's in-flight state is reconstructed sidecar-locally); a
    * `run.grants` then has no queue to ride and this returns `false`. Returns
-   * `false` whenever the address is unroutable, so the caller can abandon the
-   * run without leaving orphaned grant state behind.
+   * `false` whenever the address is unroutable; the caller keeps any stable-run
+   * grant reservation so a later first-delivery attempt reuses it.
    */
   sendRunGrants(
     agentAddress: string,
@@ -306,6 +306,32 @@ export type SidecarAllocationRouter = {
     agentAddress: string,
     config: HarnessConfig,
   ): Promise<void>;
+  /**
+   * Deliver one durable workflow trigger to the exact allocation generation.
+   * Grants and mail are written to the same websocket in FIFO order. The
+   * returned promise proves only that both frames were sent; the sidecar's
+   * durable-inbox acknowledgement is surfaced separately through
+   * `mail.inbound.acknowledged`.
+   */
+  sendWorkflowRunDispatchToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    runId: string,
+    stepGrants: RunGrantsFrame["stepGrants"],
+    rawMessage: string,
+    messageId: string,
+  ): Promise<void>;
+  /** Deliver an idempotent signal to the exact exclusive generation. */
+  sendSignalDeliverToAllocation(
+    target: AllocatedSidecarTarget,
+    opts: {
+      agentAddress: string;
+      runId: string;
+      signalName: string;
+      signalId: string;
+      payload: unknown;
+    },
+  ): Promise<void>;
 };
 
 /**
@@ -459,6 +485,8 @@ export function createSidecarRouter(
     // barrier closed. Re-materializing at redelivery time is unsafe (it carries
     // commit/authority semantics); replaying the same bytes is not.
     runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] };
+    /** Present for a durable trigger pinned to an exclusive allocation. */
+    allocatedTarget?: AllocatedSidecarTarget;
   };
   const pendingMail = new Map<string, Map<string, PendingMailEntry>>();
   // agentAddress → retention TTL timer for un-acked pending mail held across a
@@ -591,6 +619,7 @@ export function createSidecarRouter(
     messageId: string,
     frame: HubFrame,
     runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
+    allocatedTarget?: AllocatedSidecarTarget,
   ): void {
     let byId = pendingMail.get(agentAddress);
     if (byId === undefined) {
@@ -609,6 +638,7 @@ export function createSidecarRouter(
         mailAckRetryIntervalMs,
       ),
       ...(runGrants !== undefined ? { runGrants } : {}),
+      ...(allocatedTarget !== undefined ? { allocatedTarget } : {}),
     });
   }
 
@@ -674,7 +704,16 @@ export function createSidecarRouter(
     // moved the address to a new connection since the original delivery.
     const ws = addressIndex.get(agentAddress);
     const conn = ws !== undefined ? connections.get(ws) : undefined;
-    if (conn === undefined) {
+    const allocated =
+      entry.allocatedTarget === undefined
+        ? undefined
+        : allocatedConnections.get(entry.allocatedTarget.allocationId);
+    const targetStillOwnsAddress =
+      entry.allocatedTarget === undefined ||
+      (allocated !== undefined &&
+        allocated.identity.generation === entry.allocatedTarget.generation &&
+        allocated.ws === ws);
+    if (conn === undefined || !targetStillOwnsAddress) {
       // No live connection to recover into. Connected-window redelivery only
       // applies while the address is routable; a disconnected address is not
       // retried here.
@@ -749,7 +788,20 @@ export function createSidecarRouter(
     }
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
-    for (const entry of byId.values()) {
+    for (const entry of [...byId.values()]) {
+      if (
+        entry.allocatedTarget !== undefined &&
+        (conn.identity.kind !== "allocated" ||
+          conn.identity.allocationId !== entry.allocatedTarget.allocationId ||
+          conn.identity.generation !== entry.allocatedTarget.generation)
+      ) {
+        // The Hub-owned dispatch row survives generation replacement and will
+        // be requeued by the allocation-ready callback. Do not leak or replay
+        // this generation-local retry entry onto a different worker.
+        clearTimeout(entry.timer);
+        deletePendingMail(byId, agentAddress, entry.messageId);
+        continue;
+      }
       replayRunGrantsAhead(conn, entry);
       conn.send(entry.frame);
       entry.attempts = 0;
@@ -964,6 +1016,19 @@ export function createSidecarRouter(
           return;
         }
         resolvePendingMail(frame.agentAddress, frame.messageId);
+        events.emit("mail.inbound.acknowledged", {
+          agentAddress: frame.agentAddress,
+          messageId: frame.messageId,
+          ...(conn.identity.kind === "allocated"
+            ? {
+                allocated: {
+                  allocationId: conn.identity.allocationId,
+                  anchorRunId: conn.identity.anchorRunId,
+                  generation: conn.identity.generation,
+                },
+              }
+            : {}),
+        });
         return;
       }
       case "signal.correlation.register":
@@ -1694,13 +1759,13 @@ export function createSidecarRouter(
   //     so the mail is deliberately DROPPED for this recipient (not relayed)
   //     to keep its run from starting under-authorized.
   //
-  // A workflow deployment is the only recipient whose inbound mail births a
-  // run. Its grants are staged, the `run.grants` frame is sent BEFORE the
-  // mail -- same-address FIFO guarantees it lands ahead of the mail that
-  // dispatches the run, so the run's `onRunStart` barrier resolves its
-  // grants rather than failing closed -- and the run principal + grants are
-  // committed only AFTER the mail is accepted for delivery, so an
-  // unroutable deployment leaves no orphaned authz state.
+  // A workflow deployment is the only recipient whose inbound mail can first
+  // fire its stable run. Its grants are reserved, and the `run.grants` frame is
+  // sent BEFORE the mail. Same-address FIFO guarantees it lands ahead of the
+  // mail that dispatches the run, so the run's `onRunStart` barrier resolves its
+  // grants rather than failing closed. Reservation happens before routing so
+  // concurrent first deliveries cannot send different snapshots; a routing
+  // failure leaves a grants-only, still-unfired run.
   async function deliverMailToRecipient(
     recipient: string,
     rawMessage: string,
@@ -1716,20 +1781,18 @@ export function createSidecarRouter(
       });
       if (result.outcome === "rejected") {
         // The run's grants could not be materialized with sufficient
-        // authority. Fail the mail closed for this recipient: routing it
-        // would start the run under-authorized, and relaying it externally
-        // would leak the trigger past the fail-closed decision. The run
-        // correctly does not launch and is not orphaned (nothing committed).
+        // authority or it is already terminal. Fail the mail closed for this
+        // recipient: routing or external relay would bypass that decision.
         logger.error`Refusing mail-triggered run ${runId} for ${recipient}: grant materialization rejected (${result.code}): ${result.message}`;
         return "failed-closed";
       }
       if (result.outcome === "materialized") {
         // Send the run's grants ahead of the mail. A `false` here means the
-        // deployment is unroutable; abandon the run without committing any
-        // authz state (no orphaned principal, run, or grant rows) and do
-        // not route the mail that would dispatch it.
+        // deployment is unroutable. Do not route the mail that would dispatch
+        // it; the grants-only reservation remains the canonical snapshot for a
+        // later first-delivery attempt.
         if (!sendRunGrants(recipient, runId, result.stepGrants)) {
-          logger.error`Deployment ${recipient} is not routable for run ${runId}; abandoning mail-triggered run without committing grants`;
+          logger.error`Deployment ${recipient} is not routable for run ${runId}; retaining the unfired run's grant reservation for retry`;
           return "unrouted";
         }
         // Route through the messageId handshake `routeMail` -- NOT a
@@ -1751,12 +1814,6 @@ export function createSidecarRouter(
         )
           ? "routed"
           : "unrouted";
-        // Commit the run principal, run row, and grants only after the mail
-        // is accepted, mirroring the external trigger route's commit-last
-        // discipline so a dropped mail never leaves orphaned authz state.
-        // `routeMail` returns synchronously on the live-send/queue decision and
-        // the tracker owns redelivery until the ack, so commit-last holds.
-        if (outcome === "routed") await result.commit();
         return outcome;
       }
       // `skip`: the address named no deployed workflow deployment. Forward
@@ -2683,6 +2740,37 @@ export function createSidecarRouter(
     return enqueueForDisconnected(agentAddress, frame);
   }
 
+  async function sendWorkflowRunDispatchToAllocation(
+    target: AllocatedSidecarTarget,
+    agentAddress: string,
+    runId: string,
+    stepGrants: RunGrantsFrame["stepGrants"],
+    rawMessage: string,
+    messageId: string,
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (addressIndex.get(agentAddress) !== ws) {
+      throw new Error(
+        `Address ${agentAddress} is not routed on allocation ${target.allocationId}`,
+      );
+    }
+    const runGrants = { runId, stepGrants };
+    conn.send({
+      type: "run.grants",
+      agentAddress,
+      runId,
+      stepGrants,
+    });
+    const frame: HubFrame = {
+      type: "mail.inbound",
+      agentAddress,
+      rawMessage,
+      messageId,
+    };
+    conn.send(frame);
+    trackPendingMail(agentAddress, messageId, frame, runGrants, target);
+  }
+
   async function handleDeployAck(
     ws: WsHandle,
     frame: AgentDeployAckFrame,
@@ -3145,6 +3233,25 @@ export function createSidecarRouter(
     });
   }
 
+  async function sendSignalDeliverToAllocation(
+    target: AllocatedSidecarTarget,
+    opts: {
+      agentAddress: string;
+      runId: string;
+      signalName: string;
+      signalId: string;
+      payload: unknown;
+    },
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (addressIndex.get(opts.agentAddress) !== ws) {
+      throw new Error(
+        `Address ${opts.agentAddress} is not routed on allocation ${target.allocationId}`,
+      );
+    }
+    conn.send({ type: "signal.deliver", ...opts });
+  }
+
   function sendDrain(opts: { agentAddress: string; deadlineMs: number }): void {
     const ws = addressIndex.get(opts.agentAddress);
     if (ws === undefined) {
@@ -3187,8 +3294,10 @@ export function createSidecarRouter(
     unbindAllocatedStepRoute,
     sendProvisionStep,
     sendProvisionStepToAllocation,
+    sendWorkflowRunDispatchToAllocation,
     sendSyncRequest,
     sendSignalDeliver,
+    sendSignalDeliverToAllocation,
     sendDrain,
     subscribeAgent,
     dispatchAgentEvent: dispatchToSubscribers,
