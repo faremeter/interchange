@@ -55,8 +55,19 @@ export {
 } from "./hub-session-orchestrator";
 export { pushSourceUpdates, pushSourceUpdatesSubtree } from "./credential-push";
 export {
+  createSidecarPluginRegistry,
   resolveEffectiveSidecarPlacement,
+  type CreateSidecarPluginRegistryOpts,
+  type DestroySidecarRequest,
+  type DestroySidecarResult,
+  type EnsureSidecarRequest,
+  type EnsureSidecarResult,
   type ResolveEffectiveSidecarPlacementOpts,
+  type SidecarCredentialIdentity,
+  type SidecarCredentialResolver,
+  type SidecarOperationFailure,
+  type SidecarPluginRegistry,
+  type SidecarProvisioner,
 } from "./sidecar-allocation";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export {
