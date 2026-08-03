@@ -35,6 +35,10 @@ export type ConditionContext = {
   action: string;
   principalId: string;
   tenantId: string;
+  // Identity of the capability consumer the decision is being made for
+  // (e.g. a `tool:<handle>` consumer). Empty when no consumer is in scope;
+  // a consumer-scoped condition fails closed against an empty consumer.
+  consumer: string;
 };
 
 export type ConditionEvaluator = (

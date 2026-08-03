@@ -10,6 +10,7 @@ function makeCtx(date: Date): ConditionContext {
     action: "invoke",
     principalId: "p-1",
     tenantId: "t-1",
+    consumer: "",
   };
 }
 
