@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import {
   INTENTS,
   SUPPORT_MATRIX,
-  getFixtureDir,
+  getSessionDir,
   type SupportEntry,
 } from "@intx/inference-discovery/catalog";
 import {
@@ -28,8 +28,8 @@ function buildHelpText(): string {
   return `Usage: bun bin/discover.ts --provider <name> [--all | --only <capability>] [--model <name>] [-h]
 
 Captures live inference responses from a provider plug-in and writes
-fixture bundles into the provider's discovery package, under
-wire/<provider>/<model>/<capability>/.
+session bundles into the provider's discovery package, under
+sessions/<provider>/<model>/<capability>/.
 
 Options:
   --provider <name>     Required. Selects the provider plug-in to invoke.
@@ -125,10 +125,10 @@ async function main(): Promise<number> {
 
   for (const entry of entries) {
     const intent = INTENTS[entry.capability];
-    const relDir = getFixtureDir(entry);
+    const relDir = getSessionDir(entry);
     if (relDir === null) {
       throw new Error(
-        `getFixtureDir returned null for captured entry ${entry.provider}/${entry.model}/${entry.capability}`,
+        `getSessionDir returned null for captured entry ${entry.provider}/${entry.model}/${entry.capability}`,
       );
     }
     const outDir = resolve(ROOT, relDir);

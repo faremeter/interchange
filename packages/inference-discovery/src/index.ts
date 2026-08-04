@@ -21,7 +21,6 @@ export {
   type ParsedCLIHelp,
   type ParsedCLIError,
 } from "./cli";
-export { buildManifest, type BuildManifestOpts } from "./manifest";
 export {
   extractDispatches,
   writeDispatches,
