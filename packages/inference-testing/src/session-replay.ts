@@ -23,6 +23,9 @@ import type {
   InferenceSource,
 } from "@intx/types/runtime";
 
+import { runInference, type Dependencies } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
+
 import { UnmatchedFetchError } from "./errors";
 import { setupHarness } from "./harness";
 import {
@@ -835,4 +838,103 @@ export async function createReplayHarness(
     capturedDispatches: dispatches,
     dispose: () => inner.dispose(),
   };
+}
+
+// Anything-goes parser replay: drive each captured JSON exchange's response
+// through the real adapter with a stub fetch, ignoring the request body and
+// the conversation entirely. This is the loose counterpart to
+// createReplayHarness's strict, body-matched, chained replay — it lets the
+// parser regression exercise every captured response's decoding without
+// threading a multi-turn conversation or dispatches.
+//
+// It shares the session loader (loadExchanges) with strict replay but drives
+// the raw @intx/inference `runInference` directly, NOT the inner harness, so a
+// captured response that terminates on a tool_call collects its events instead
+// of tripping the inner harness's auto-dispatch (which throws for want of a
+// registered handler). Raw-byte (Files-API upload) exchanges are skipped
+// per-exchange rather than rejecting the whole session, so a two-step
+// Files-API session's generate exchange is still exercised.
+export type ParserReplayResult =
+  | { index: number; kind: "replayed"; events: InferenceEvent[] }
+  | { index: number; kind: "skipped"; reason: "raw_request" };
+
+export async function replayResponsesForParsing(
+  sessionDir: string,
+): Promise<ParserReplayResult[]> {
+  const manifest = await loadCaptureManifest(sessionDir);
+  const exchanges = await loadExchanges(sessionDir);
+  if (exchanges.length === 0) {
+    throw new Error(
+      `Parser replay: ${sessionDir} contains no exchanges; nothing to replay`,
+    );
+  }
+
+  const source: InferenceSource = {
+    id: `${manifest.source.provider}:${manifest.source.model}`,
+    provider: manifest.source.provider,
+    baseURL: manifest.source.baseURL,
+    apiKey: "session-replay-stub",
+    model: manifest.source.model,
+  };
+
+  // Build the adapter registry + scheduler once; only `fetch` (which closes
+  // over the per-exchange call counter and captured bytes) varies per turn.
+  const baseDeps = createDefaultDependencies();
+
+  const results: ParserReplayResult[] = [];
+  for (const exchange of exchanges) {
+    if (exchange.requestKind === "raw") {
+      // A Files-API upload step is not a runInference call; there is no
+      // adapter response to parse, so skip it. The sibling generate exchange
+      // is a normal JSON exchange and is still replayed.
+      results.push({
+        index: exchange.index,
+        kind: "skipped",
+        reason: "raw_request",
+      });
+      continue;
+    }
+
+    // Serve the captured response verbatim, including its content-type header,
+    // which the harness branches on to pick the SSE or JSON decode path. An
+    // abort-only retry policy keeps a parse failure surfacing as one
+    // inference.error event rather than a retry that re-opens the fetch; a
+    // single fetch call is therefore expected.
+    let fetchCallCount = 0;
+    const headers = new Headers(exchange.responseHeaders);
+    const deps: Dependencies = {
+      ...baseDeps,
+      fetch: () => {
+        fetchCallCount++;
+        return Promise.resolve(
+          new Response(exchange.responseBytes, { status: 200, headers }),
+        );
+      },
+    };
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const event of runInference({
+      turns: [
+        { role: "user", content: [{ type: "text", text: "x" }], timestamp: 0 },
+      ],
+      source,
+      nextSeq: () => ++seq,
+      deps,
+      inferenceOptions: { retryPolicy: () => ({ kind: "abort" }) },
+    })) {
+      events.push(event);
+    }
+
+    if (fetchCallCount !== 1) {
+      throw new Error(
+        `Parser replay: exchange ${String(exchange.index)} in ${sessionDir} ` +
+          `opened ${String(fetchCallCount)} fetch call(s); expected exactly one.`,
+      );
+    }
+
+    results.push({ index: exchange.index, kind: "replayed", events });
+  }
+
+  return results;
 }

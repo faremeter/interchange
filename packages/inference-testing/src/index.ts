@@ -90,12 +90,14 @@ export type {
 
 export {
   createReplayHarness,
+  replayResponsesForParsing,
   SessionReplayMismatchError,
 } from "./session-replay";
 export type {
   CapturedDispatch,
   CapturedExchange,
   CreateReplayHarnessOpts,
+  ParserReplayResult,
   ReplayHarness,
   RunTurnOpts,
 } from "./session-replay";
