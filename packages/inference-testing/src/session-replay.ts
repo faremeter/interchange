@@ -32,6 +32,11 @@ import {
   loadCaptureManifest,
   type CaptureManifest,
 } from "@intx/inference-discovery/catalog";
+import {
+  INVARIANTS,
+  type Invariant,
+  type InvariantViolation,
+} from "./invariants";
 import { isDelayedEnvelope } from "./tool-handler";
 
 /**
@@ -854,13 +859,31 @@ export async function createReplayHarness(
 // registered handler). Raw-byte (Files-API upload) exchanges are skipped
 // per-exchange rather than rejecting the whole session, so a two-step
 // Files-API session's generate exchange is still exercised.
+//
+// Each replayed exchange also carries the invariant violations found over its
+// decoded event stream, so a caller checking parser output against the wire
+// contract reads events and violations from one uniform result rather than
+// re-running the invariants itself.
 export type ParserReplayResult =
-  | { index: number; kind: "replayed"; events: InferenceEvent[] }
+  | {
+      index: number;
+      kind: "replayed";
+      events: InferenceEvent[];
+      violations: InvariantViolation[];
+    }
   | { index: number; kind: "skipped"; reason: "raw_request" };
 
+export type ParserReplayOpts = {
+  sessionDir: string;
+  /** Invariants to apply to each replayed exchange. Defaults to INVARIANTS. */
+  invariants?: readonly Invariant[];
+};
+
 export async function replayResponsesForParsing(
-  sessionDir: string,
+  opts: ParserReplayOpts,
 ): Promise<ParserReplayResult[]> {
+  const { sessionDir } = opts;
+  const checks = opts.invariants ?? INVARIANTS;
   const manifest = await loadCaptureManifest(sessionDir);
   const exchanges = await loadExchanges(sessionDir);
   if (exchanges.length === 0) {
@@ -933,7 +956,17 @@ export async function replayResponsesForParsing(
       );
     }
 
-    results.push({ index: exchange.index, kind: "replayed", events });
+    const violations: InvariantViolation[] = [];
+    for (const invariant of checks) {
+      violations.push(...invariant.check(events));
+    }
+
+    results.push({
+      index: exchange.index,
+      kind: "replayed",
+      events,
+      violations,
+    });
   }
 
   return results;

@@ -97,6 +97,7 @@ export type {
   CapturedDispatch,
   CapturedExchange,
   CreateReplayHarnessOpts,
+  ParserReplayOpts,
   ParserReplayResult,
   ReplayHarness,
   RunTurnOpts,

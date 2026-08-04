@@ -5,6 +5,7 @@ import path from "node:path";
 
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
+import type { Invariant } from "./invariants";
 import { createRecordingHarness } from "./session-recording";
 import {
   createReplayHarness,
@@ -812,7 +813,7 @@ describe("replayResponsesForParsing (anything-goes)", () => {
       },
     ]);
 
-    const results = await replayResponsesForParsing(dir);
+    const results = await replayResponsesForParsing({ sessionDir: dir });
     expect(results).toHaveLength(1);
     const r = results[0];
     if (r === undefined || r.kind !== "replayed") {
@@ -834,7 +835,7 @@ describe("replayResponsesForParsing (anything-goes)", () => {
       { responseBytes: sseBytes, contentType: "text/event-stream" },
     ]);
 
-    const results = await replayResponsesForParsing(dir);
+    const results = await replayResponsesForParsing({ sessionDir: dir });
     expect(results).toHaveLength(1);
     const r = results[0];
     if (r === undefined || r.kind !== "replayed") {
@@ -863,7 +864,7 @@ describe("replayResponsesForParsing (anything-goes)", () => {
       },
     ]);
 
-    const results = await replayResponsesForParsing(dir);
+    const results = await replayResponsesForParsing({ sessionDir: dir });
     expect(results.map((r) => r.kind)).toEqual(["replayed", "replayed"]);
   });
 
@@ -889,7 +890,7 @@ describe("replayResponsesForParsing (anything-goes)", () => {
       },
     ]);
 
-    const results = await replayResponsesForParsing(dir);
+    const results = await replayResponsesForParsing({ sessionDir: dir });
     expect(results).toHaveLength(2);
     const upload = results[0];
     const generate = results[1];
@@ -912,7 +913,7 @@ describe("replayResponsesForParsing (anything-goes)", () => {
     // A malformed body must not trip the fetchCallCount === 1 guard: the
     // abort-only retry policy surfaces the parse failure as a single
     // inference.error rather than a retry that re-opens the fetch.
-    const results = await replayResponsesForParsing(dir);
+    const results = await replayResponsesForParsing({ sessionDir: dir });
     expect(results).toHaveLength(1);
     const r = results[0];
     if (r === undefined || r.kind !== "replayed") {
@@ -922,5 +923,86 @@ describe("replayResponsesForParsing (anything-goes)", () => {
       1,
     );
     expect(r.events.some((e) => e.type === "inference.done")).toBe(false);
+  });
+
+  test("applies the provided invariants over each replayed exchange's decoded events", async () => {
+    const dir = await makeTmpDir();
+    const toolCallBody = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "get_weather",
+          input: { location: "SF" },
+        },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    await writeParserSession(dir, [
+      {
+        responseBytes: new TextEncoder().encode(toolCallBody),
+        contentType: "application/json",
+      },
+    ]);
+
+    const seenBatches: InferenceEvent[][] = [];
+    const recordingInvariant: Invariant = {
+      name: "recording_probe",
+      check(events) {
+        seenBatches.push([...events]);
+        return [
+          {
+            invariant: "recording_probe",
+            message: "always reports",
+            events: [],
+          },
+        ];
+      },
+    };
+
+    const results = await replayResponsesForParsing({
+      sessionDir: dir,
+      invariants: [recordingInvariant],
+    });
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    if (r === undefined || r.kind !== "replayed") {
+      throw new Error("expected a replayed result");
+    }
+
+    // The invariant ran over the real decoded event stream, not an empty array.
+    const firstBatch = seenBatches[0];
+    if (firstBatch === undefined) {
+      throw new Error("expected the invariant to have been invoked once");
+    }
+    const seenTypes = firstBatch.map((e) => e.type);
+    expect(seenTypes).toContain("inference.tool_call.end");
+    expect(seenTypes).toContain("inference.done");
+
+    // Its violation surfaces on the replayed result.
+    expect(r.violations).toHaveLength(1);
+    expect(r.violations[0]?.invariant).toBe("recording_probe");
+  });
+
+  test("reports no violations for a clean capture under the default invariants", async () => {
+    const dir = await makeTmpDir();
+    const sseBytes = mergeChunks(
+      wire.completeResponse("anthropic", { text: "Hello" }),
+    );
+    await writeParserSession(dir, [
+      { responseBytes: sseBytes, contentType: "text/event-stream" },
+    ]);
+
+    const results = await replayResponsesForParsing({ sessionDir: dir });
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    if (r === undefined || r.kind !== "replayed") {
+      throw new Error("expected a replayed result");
+    }
+    expect(r.violations).toEqual([]);
   });
 });
