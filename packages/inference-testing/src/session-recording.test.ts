@@ -186,7 +186,9 @@ describe("createRecordingHarness end-to-end", () => {
     expect(events.some((e) => e.type === "inference.done")).toBe(true);
 
     const manifest = await loadCaptureManifest(dir);
-    expect(manifest.schemaVersion).toBe("1");
+    expect(manifest.schemaVersion).toBe("2");
+    // Recorded through the fetch-override seam, so provenance is synthetic.
+    expect(manifest.origin).toBe("synthetic");
     expect(manifest.source.provider).toBe("anthropic");
     expect(manifest.capturedAt).toBe("2026-05-25T12:00:00.000Z");
 
@@ -623,6 +625,6 @@ describe("createRecordingHarness end-to-end", () => {
     await harness.finalize();
 
     const parsed = await readJSONRecord(path.join(dir, "session.json"));
-    expect(expectStringField(parsed, "schemaVersion")).toBe("1");
+    expect(expectStringField(parsed, "schemaVersion")).toBe("2");
   });
 });

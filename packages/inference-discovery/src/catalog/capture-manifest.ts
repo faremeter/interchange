@@ -11,13 +11,31 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { type } from "arktype";
 
+import { Capability } from "./capability";
+
 export const CaptureManifest = type({
-  schemaVersion: "'1'",
+  schemaVersion: "'2'",
   source: type({
     provider: "string",
     model: "string",
     baseURL: "string",
   }),
+  // Distinguishes a capture recorded against a real provider endpoint
+  // ("live") from one produced through the recording harness's synthetic wire
+  // DSL fetch seam ("synthetic"). Derived at write time from whether a fetch
+  // override was supplied — never accepted as a separate input, so it cannot
+  // contradict the seam that actually produced the bytes.
+  origin: "'live' | 'synthetic'",
+  // Present for discovery-derived captures (each is a catalog cell); absent
+  // for orchestration recordings, which are not catalog cells. Kept optional
+  // deliberately: the two populations are separated by directory location,
+  // not by this field, so the catalog — the layer that walks the discovery
+  // corpus — is where a manifest missing its capability must be rejected, not
+  // this shared type.
+  "capability?": Capability,
+  // The provider-reported model version observed at capture time, when the
+  // provider surfaces one distinct from the requested `source.model`.
+  "observedModelVersion?": "string | null",
   capturedAt: "string",
 });
 export type CaptureManifest = typeof CaptureManifest.infer;

@@ -557,8 +557,13 @@ export function createRecordingHarness(
     // the user as a partially-loadable artifact than a black hole.
     const capturedAt = (now ?? (() => new Date()))().toISOString();
     await writeCaptureManifest(outputDir, {
-      schemaVersion: "1",
+      schemaVersion: "2",
       source,
+      // Provenance is owned by the fetch seam: a supplied `fetch` override
+      // means the bytes came from the synthetic wire DSL, its absence means a
+      // real provider endpoint. Read it here rather than accepting a separate
+      // origin input that could contradict the seam.
+      origin: fetchOverride !== undefined ? "synthetic" : "live",
       capturedAt,
     });
     if (inFlightDispatches.length > 0) {
