@@ -8,6 +8,7 @@ import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 import { createRecordingHarness } from "./session-recording";
 import {
   createReplayHarness,
+  requestBytesMatch,
   SessionReplayMismatchError,
 } from "./session-replay";
 import { userTurn } from "./turns";
@@ -321,7 +322,7 @@ describe("createReplayHarness", () => {
     );
   });
 
-  test("rejects when an exchange has a raw-body request capture", async () => {
+  test("rejects a raw-byte (Files-API upload) exchange the runInference driver cannot drive", async () => {
     const dir = await makeTmpDir();
     await fs.writeFile(
       path.join(dir, "session.json"),
@@ -350,8 +351,60 @@ describe("createReplayHarness", () => {
       "{}",
     );
     await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
-      /raw-body request \(request\.bin\)/,
+      /raw-byte request \(Files-API upload\).*cannot drive/s,
     );
+  });
+
+  test("rejects an exchange with both request.json and request.bin", async () => {
+    const dir = await makeTmpDir();
+    await fs.writeFile(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        schemaVersion: "2",
+        source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
+        capturedAt: "2026-05-25T12:00:00Z",
+      }),
+    );
+    await fs.mkdir(path.join(dir, "exchanges", "0"), { recursive: true });
+    await fs.writeFile(path.join(dir, "exchanges", "0", "request.json"), "{}");
+    await fs.writeFile(
+      path.join(dir, "exchanges", "0", "request.bin"),
+      new Uint8Array([1, 2, 3]),
+    );
+    await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
+      /both.*request\.json and request\.bin/s,
+    );
+  });
+
+  test("rejects an exchange with neither request.json nor request.bin", async () => {
+    const dir = await makeTmpDir();
+    await fs.writeFile(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        schemaVersion: "2",
+        source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
+        capturedAt: "2026-05-25T12:00:00Z",
+      }),
+    );
+    await fs.mkdir(path.join(dir, "exchanges", "0"), { recursive: true });
+    await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
+      /no request\.json and no request\.bin/,
+    );
+  });
+
+  test("requestBytesMatch compares raw request bodies by byte equality", () => {
+    expect(
+      requestBytesMatch(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 3])),
+    ).toBe(true);
+    expect(
+      requestBytesMatch(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 4])),
+    ).toBe(false);
+    expect(
+      requestBytesMatch(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2])),
+    ).toBe(false);
+    expect(requestBytesMatch(new Uint8Array(), new Uint8Array())).toBe(true);
   });
 
   test("rejects when an exchange has both response.sse and response.json", async () => {
