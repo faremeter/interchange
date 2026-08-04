@@ -21,10 +21,13 @@ export const CaptureManifest = type({
     baseURL: "string",
   }),
   // Distinguishes a capture recorded against a real provider endpoint
-  // ("live") from one produced through the recording harness's synthetic wire
-  // DSL fetch seam ("synthetic"). Derived at write time from whether a fetch
-  // override was supplied — never accepted as a separate input, so it cannot
-  // contradict the seam that actually produced the bytes.
+  // ("live") from one produced through the synthetic wire DSL ("synthetic").
+  // Each writer records the provenance it can account for: the recording
+  // harness derives it from its fetch override (a supplied override is its
+  // synthetic-DSL delivery seam), the discovery probe rig stamps "live"
+  // because its only production seam is the real network, and the
+  // wire-to-session converter carries forward the origin its caller asserts —
+  // it copies already-recorded bytes and has no live seam of its own.
   origin: "'live' | 'synthetic'",
   // Present for discovery-derived captures (each is a catalog cell); absent
   // for orchestration recordings, which are not catalog cells. Kept optional
