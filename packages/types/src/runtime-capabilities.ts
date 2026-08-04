@@ -10,6 +10,7 @@
 // keys here so every host sees the same canonical map.
 
 import type { MessageTransport } from "./runtime";
+import type { CredentialCapability } from "./mediated-credential";
 
 /**
  * Registry of capability keys to the value types they resolve to. Keys are
@@ -25,6 +26,15 @@ export interface RuntimeCapabilityMap {
    * for sending and receiving mail.
    */
   "mail.transport": MessageTransport;
+
+  /**
+   * Provider-backed credentials the agent's tools resolve by their declared
+   * handle. Unlike the other keys, its value is itself a sub-registry: the set
+   * of bound handles is per-deploy runtime data, not known at compile time, so
+   * the dynamic axis lives inside `CredentialCapability` while this outer map
+   * stays fixed and typed. Resolution is consumer-scoped and fail-closed.
+   */
+  credentials: CredentialCapability;
 }
 
 export type RuntimeCapabilityKey = keyof RuntimeCapabilityMap;

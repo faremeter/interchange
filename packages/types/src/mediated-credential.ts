@@ -85,3 +85,18 @@ export interface CredentialProvider {
   readonly key: string;
   shape(context: CredentialShapeContext): MediatedCredential;
 }
+
+/**
+ * The runtime `credentials` capability: a sub-registry a consumer queries by
+ * the credential handle it declared, receiving a mediated credential. It is the
+ * dynamic (per-binding) axis that lives under the fixed, statically-typed
+ * capability map.
+ *
+ * Resolution is consumer-scoped and fail-closed: it yields a handle only for a
+ * credential the calling consumer is authorized to use. An unbound handle, or
+ * one the consumer lacks a `credential:{id}` / `use` grant for, throws. `resolve`
+ * is async because the authorization check is.
+ */
+export interface CredentialCapability {
+  resolve(handle: string): Promise<MediatedCredential>;
+}
