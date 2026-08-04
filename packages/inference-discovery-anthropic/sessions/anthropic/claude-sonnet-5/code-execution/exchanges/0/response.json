@@ -1,0 +1,58 @@
+{
+  "model": "claude-sonnet-5",
+  "id": "msg_011CdHSmssXx7i4q3bX8kSFR",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "Et0CCokBCBAYAipApX2Huz/bP5PMbpprsRVP8/ETiOUhBrw1UvRG3RKmVN48b+cv1Ab4kznUcvMHBWd8st13JXsYyU/cPJG2x2sFETIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIS+RJtx9Mp+kk3JkxoM2prCQc3aXPGzq2blIjBmt4XVILdQW7eAVHgqHumaQ+Nvf7KgRUCXrlCLjllSmH2U7fr+Qzsn7/YTlPLJVW4qgAF3kFt4CcidXgyw+76Nu4JFgL+H1viC7yROHI5kkWG2COGbUttS8zVHWiE1dMce2zxmU8tmQMqwjaq4vGouZcDOR+QKFGkxOuil2MmA2arE5a9UTOiuRU+NZA5mYyYorAIrOXAoAlvX8Qt4OG1HJZLgrrzLJhSdX2ZrpgwWRTiJ2xgB"
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01QZYD6cMpUmLy3NdQKDzrRS",
+      "name": "code_execution",
+      "input": {
+        "code": "\ndef fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n\n# Using F1=1, F2=1 convention\nprint(\"F(1..12):\", [fib(i) for i in range(1,13)])\nprint(\"12th Fibonacci number (F12):\", fib(12))\n"
+      }
+    },
+    {
+      "type": "code_execution_tool_result",
+      "tool_use_id": "srvtoolu_01QZYD6cMpUmLy3NdQKDzrRS",
+      "content": {
+        "type": "code_execution_result",
+        "stdout": "F(1..12): [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144]\n12th Fibonacci number (F12): 144",
+        "stderr": "",
+        "return_code": 0,
+        "content": [],
+        "abort_reason": null
+      }
+    },
+    {
+      "type": "text",
+      "text": "The 12th Fibonacci number is **144**.\n\nUsing the standard convention where F(1) = 1, F(2) = 1, F(3) = 2, and so on, the sequence up to the 12th term is:\n\n1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, **144**"
+    }
+  ],
+  "container": {
+    "id": "container_01QcCxiUZwuhaux5pdBhh9o6",
+    "expires_at": "2026-07-22T17:54:07.184470Z"
+  },
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 2305,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 312,
+    "output_tokens_details": { "thinking_tokens": 52 },
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "server_tool_use": { "web_search_requests": 0, "web_fetch_requests": 0 }
+  }
+}

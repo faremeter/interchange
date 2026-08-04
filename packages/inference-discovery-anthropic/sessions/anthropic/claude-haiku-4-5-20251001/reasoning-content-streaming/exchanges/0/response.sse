@@ -1,0 +1,66 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_014qHVhTKZKHvpwazBqRJoq5","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":77,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"not_available"}}       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}      }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me set up equations"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" for this problem.\n\nLet b = cost of the ball\nLet t = cost of the bat\n\nFrom the problem:\n1) The bat and ball cost $1.10 together: t + b = 1.10"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n2) The bat costs $1.00 more than the ball: t = b + 1.00\n\nNow I'll substitute equation 2 into equation 1:\n(b + 1.00) +"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" b = 1.10\n2b + 1.00 = 1.10\n2b = 1.10 - 1.00\n2b = 0.10\nb = 0.05\n\nSo the ball costs $0.05"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n\nLet me verify:\n- Ball costs: $0.05\n- Bat costs: $0.05 + $1.00 = $1.05\n- Together: $0.05 + $1.05 = $1.10 "}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"✓\n- Bat costs $1.00 more than ball: $1.05 - $0.05 = $1.00 ✓"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EuoFCm0IDhgCKkB6d2sdRetOsWLULFVhJLwMvMm/rRYErs9ZVtoEoQHOPIczuSPHKn93p7hgMiUacmI9CSwQ9RVmeXDZsIA+qRM2MhljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxOABCCHRoaW5raW5nEgx9/skqEABRHdoLtEkaDMp+lw2frG6+R6/NfCIwxEPvEmiHvcm/F9JJ/l1vKJJ9c0i0iChNwrym33GAQpSYLLeRtghIoNC8CNfP20EAKqoEIQ6pLAKatThBc8mriQ8He3wBU+A0hViYirJIhVP9g949fbD/z/xBQrbyjxVMeCIdYKRfVtPOuxY3shesVEB38jvXUzHrZSYe32pQU/XxR2LCzmzEGdWoA7jE05CUKO3XmYzw8uHuOt6l4zwhcCCbexf/fU/WxeX4LEQRSrXGWLw/B6Xq652S68cVt2+wDV8XIvNCyS1dPLYjA/bA47/t5nlNZnB/Wq0mS+hW5YYZifQS1gLWB9iT8qQANhyvqukBEQUEhG3tjwDRDV3cTXsKBTVUbRGwMRVPkjc2pUAOhqZdxu/1gvUn0LAs/AWSQ+/VPLwrTiKwRVG+mY4iBD6wyErRxQ3g9Eq9S3dt7W7/by6o7YQEFNPtvKJufiJLYWfQLVRtFXTeSAWpDnKIWN7qeZRh6MOWD5iDBD8CLpwRlnfF3IY1UauEIHJ+M3ZGWYUQylMGtRnzvGzClQP+aFTCc5dr5OPGk3Q7vonocTBwxBuxWRLUtThfctv2/Mbv0IoZcgTTVrSz2uFhhaVKhv3lQ8z08iGPFISNyF/8/hrGhZx5dO+DKTk12DP9OPpLlaEbieLqX9Ylu0W73yLTQjsGT+lL5sMPMGTjjc4UYtakNzzf7tSGdRtMyaq3FeXdgZcJdcjhknguq2QwtCdVJb8VOYbpWu86lH7KzLTBTYGRSUs1h1ev+MNZmJ8xMe+fIbLUn8UcHL5I7P1SPD9fcs5vXRZi1XIyamvYVAgYAQ=="}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"# Solving the Ball"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" and Bat Problem\n\n## Setting Up Equations\n\nLet me define variables:\n- Let **b** = cost of the ball\n- Let **t** = cost of the bat\n\nFrom the problem"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":", I can write two equations:\n1. **t + b = 1.10** (together they cost $1.10)\n2. **t = b + 1.00** (bat"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" costs $1.00 more than ball)\n\n## Solving\n\nI'll substitute equation 2 into equation 1:\n\n(b + 1.00) + b = 1.10\n\n2"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"b + 1.00 = 1.10\n\n2b = 0.10\n\n**b = 0.05**\n\n## Verification\n\n- Ball costs: $0.05\n- Bat costs: $0."}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"05 + $1.00 = $1.05\n- Total: $0.05 + $1.05 = $1.10 ✓\n- Difference: $1.05 - $0.05 = $1."}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"00 ✓\n\n## Final Answer\n\n**The ball costs $0.05 (or 5 cents)**"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1    }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":77,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":535}             }
+
+event: message_stop
+data: {"type":"message_stop"    }
+

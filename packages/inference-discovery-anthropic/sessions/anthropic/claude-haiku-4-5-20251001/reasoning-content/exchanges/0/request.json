@@ -1,0 +1,14 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "A bat and a ball cost $1.10 together. The bat costs $1.00 more than the ball. How much does the ball cost? Show your reasoning before the final answer."
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is today's top news headline? Cite a web source."
+    }
+  ],
+  "tools": [
+    {
+      "type": "web_search_20250305",
+      "name": "web_search"
+    }
+  ]
+}

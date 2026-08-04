@@ -1,0 +1,28 @@
+{
+  "model": "claude-sonnet-5",
+  "id": "msg_011CdHSoSny6KJ9G7frNydpC",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "This document is the table of contents for \"The Adventures of Tom Sawyer\" by Mark Twain, listing chapter numbers (I through XVII, cut off mid-entry) along with brief descriptive phrases outlining the key events and themes of each chapter, from Tom's early mischief and adventures to his time as a \"pirate\" with friends."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 2240,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 112,
+    "output_tokens_details": { "thinking_tokens": 0 },
+    "service_tier": "standard",
+    "inference_geo": "global"
+  }
+}

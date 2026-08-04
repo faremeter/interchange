@@ -1,0 +1,36 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011CdV2F3xtW7xF625FUzFav","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":86,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"global"}}             }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}          }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAIShAYKhwEIEBgCKkDVsKnBZm9YTO/+RbXaSonDMnHLCc6t8z31xSAcn2BNsGSVJrNmd86yBl2jusa3nBz4cEn2REjKrRVeFgQ5nOhtMg1jbGF1ZGUtb3B1cy01OAFCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPciagVV5vhh7M7ZIhoMneeKxleNboY70aTvIjCX2jzfUBKtucep2xWGkvoENg9zlF2HoY3rg8/u4DaXXK3/yD2oT0Ox3k6HfETbdqMqqQTwOOgBH1GlGLf+Tecz5jJJShMrLtZ6wUopj+x+58/iSy4lvJXtzN1YgV6Mg3Cm1Z+qQKaG/18h5XL/d+cVERVv/FTw48nX+MkkRmG3UjzVDd+6F4SJjgQNNcsDjcRm0Ip9ndH6Qyia937UWP/yanmuaZjxWzUVQcL2NtsKMwLbUORAUJyMTWv06ueR5A872ZSWBrlY/WshO2O/PmYQOWfquPo3hKtS0s77/m2xKTHBsz8qNMvz3aC4x2MkrGKqoqzHAbK+7hniOgcr6RetETSmIxgi6LigAhdt7iHgjxIcnbiY2+E9gK4HDjfnaAwXXkne1b/0hipEmnk4mUOcAcHjSpEjERaEvf0zFXmd5Dg7SkzMY//gM8o9wlyJBNUmqTxFSOJrzAbGHGmjc2m1rk/g2sJuRj7MDW6FGpeYTLC/awRzwTPgpGB2vBP7trnNM6DTD3Q1r6qM6rRziBzM04RISMO3jiCEZG8ZAofrKR2U855JgwfE8gdOJTVO4s4uea5P8okeXS8FKpqv0LGwfdx1ZcS3OrRZ3RHVpmt3DD66lZrP9BqGy3R9sEOTILRLHqUiTroK6JdbxJZPnxVqUzzIOz7FC8JOMVDb3T/ZCYoaAKrrgz3zIRSlFkonelfoAQP9/bP00o/9ReOoqKMlQgcB9CiL8gLg1YLZa+s3NA/9W0lmngRKbFUUbKO1XM0IY7EA5KEJi3ZxcA+ArB42wcAADEKet2sOYmyJGAE="}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"It looks like your message contains a test string rather than an actual question or request. I don"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"'t see anything here I can meaningfully respond to.\n\nIs there something I can help you with? Feel free to send"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" along whatever you're working on."}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1        }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":86,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":221,"output_tokens_details":{"thinking_tokens":154}}       }
+
+event: message_stop
+data: {"type":"message_stop"              }
+
