@@ -418,7 +418,7 @@ describe("runInference — per-index protocol violations", () => {
     const err = errorOf(events);
     expect(err.category).toBe("protocol_mismatch");
     expect(err.message).toMatch(
-      /thinking\.signature at index 2 targets an existing text block, not a thinking block/,
+      /block\.signature at index 2 targets an existing text block, not a thinking block/,
     );
   });
 
@@ -442,7 +442,7 @@ describe("runInference — per-index protocol violations", () => {
     const err = errorOf(events);
     expect(err.category).toBe("protocol_mismatch");
     expect(err.message).toMatch(
-      /thinking\.signature at index 7 has no preceding thinking block/,
+      /block\.signature at index 7 has no preceding thinking block/,
     );
   });
 });

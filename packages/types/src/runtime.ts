@@ -1191,7 +1191,7 @@ export const InferenceEvent = type({
     },
   })
   .or({
-    type: "'inference.thinking.signature'",
+    type: "'inference.block.signature'",
     seq: "number",
     data: { signature: "string", "index?": "number" },
   })
@@ -1463,7 +1463,7 @@ export type InferenceEvent =
       data: { token: string; partial: PartialMessage; index?: number };
     }
   | {
-      type: "inference.thinking.signature";
+      type: "inference.block.signature";
       seq: number;
       data: { signature: string; index?: number };
     }

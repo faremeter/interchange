@@ -981,7 +981,7 @@ function emitPart(
     // part takes precedence.
     if (part.thoughtSignature !== undefined) {
       out.push({
-        type: "inference.thinking.signature",
+        type: "inference.block.signature",
         seq,
         data: { signature: part.thoughtSignature, index },
       });
@@ -1413,7 +1413,7 @@ function settleCarrierOpportunity(
   state.pendingSignatureAnchor = null;
 }
 
-// Emit `inference.thinking.signature` against the pending anchor and
+// Emit `inference.block.signature` against the pending anchor and
 // clear it. A signature with no pending anchor is a state-corruption
 // case: Gemini placed a thoughtSignature on a part with no preceding
 // thinking block in this request. Surface as a protocol mismatch.
@@ -1432,7 +1432,7 @@ function consumeSignature(
     );
   }
   out.push({
-    type: "inference.thinking.signature",
+    type: "inference.block.signature",
     seq,
     data: {
       signature,

@@ -66,11 +66,11 @@ function pickFirstThinkingDelta(
 
 function pickFirstThinkingSignature(
   events: InferenceEvent[],
-): Extract<InferenceEvent, { type: "inference.thinking.signature" }> {
+): Extract<InferenceEvent, { type: "inference.block.signature" }> {
   const ev = events[0];
   if (ev === undefined) throw new Error("expected at least one event");
-  if (ev.type !== "inference.thinking.signature") {
-    throw new Error(`expected inference.thinking.signature, got ${ev.type}`);
+  if (ev.type !== "inference.block.signature") {
+    throw new Error(`expected inference.block.signature, got ${ev.type}`);
   }
   return ev;
 }

@@ -2066,7 +2066,7 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.thinking.signature",
+      "inference.block.signature",
       "inference.tool_call.start",
       "inference.tool_call.delta",
       "inference.usage",
@@ -2079,8 +2079,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     expect(thinkingDelta.data.index).toBe(0);
 
     const signature = events[1];
-    if (signature?.type !== "inference.thinking.signature") {
-      throw new Error("expected inference.thinking.signature");
+    if (signature?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
     }
     expect(signature.data.index).toBe(0);
     expect(signature.data.signature).toBe("OPAQUE_SIGNATURE");
@@ -2295,11 +2295,11 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.thinking.signature",
+      "inference.block.signature",
     ]);
     const sig = events[1];
-    if (sig?.type !== "inference.thinking.signature") {
-      throw new Error("expected inference.thinking.signature");
+    if (sig?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
     }
     expect(sig.data.signature).toBe("EMPTY_CARRIER_SIG");
     expect(sig.data.index).toBe(0);
@@ -2412,11 +2412,11 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.thinking.signature",
+      "inference.block.signature",
     ]);
     const sig = events[1];
-    if (sig?.type !== "inference.thinking.signature") {
-      throw new Error("expected inference.thinking.signature");
+    if (sig?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
     }
     expect(sig.data.signature).toBe("SIG_ONLY");
     expect(sig.data.index).toBe(0);
@@ -2546,15 +2546,15 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.thinking.signature",
+      "inference.block.signature",
       "inference.tool_call.start",
       "inference.tool_call.delta",
       "inference.usage",
     ]);
 
     const signature = events[1];
-    if (signature?.type !== "inference.thinking.signature") {
-      throw new Error("expected inference.thinking.signature");
+    if (signature?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
     }
     // Signature attaches to the thinking block at index 0, NOT to
     // the tool_call block at index 1. Decoupling thinking-block
@@ -3095,14 +3095,14 @@ describe("Google GenAI adapter: parseResponse image output", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.thinking.signature",
+      "inference.block.signature",
       "inference.image_output",
       "inference.usage",
     ]);
 
     const sig = events[1];
-    if (sig?.type !== "inference.thinking.signature") {
-      throw new Error("expected inference.thinking.signature");
+    if (sig?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
     }
     expect(sig.data.signature).toBe("IMG_CARRIER_SIG");
     expect(sig.data.index).toBe(0);
