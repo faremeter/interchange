@@ -10,6 +10,7 @@ export {
   SUPPORT_MATRIX,
   SupportEntry,
   getFixtureDir,
+  getSessionDir,
   isFixtureBearing,
 } from "./support-matrix";
 export { catalogCapabilitiesFor } from "./catalog-capabilities";

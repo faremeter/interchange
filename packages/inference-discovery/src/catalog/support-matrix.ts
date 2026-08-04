@@ -488,6 +488,32 @@ export function getFixtureDir(entry: SupportEntry): string | null {
   return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;
 }
 
+// The session corpus lives in the same per-provider package as the wire
+// corpus, under a sibling `sessions/` tree with the identical
+// {provider}/{model}/{capability} layout. `session.json` inside each leaf is
+// authoritative for the capability, model, and origin the directory holds;
+// the brand provider is NOT in the manifest (its `source.provider` is the
+// adapter-registry name, and both `openai` and `opencode-zen` map to
+// `openai-compatible`), so the brand is composed here from the matrix entry.
+export function getSessionDir(entry: SupportEntry): string | null {
+  if (!isFixtureBearing(entry)) return null;
+  const wireRoot = FIXTURE_ROOTS[entry.provider];
+  if (wireRoot === undefined) {
+    throw new Error(
+      `no fixture root registered for provider '${entry.provider}' ` +
+        `(${entry.model}/${entry.capability}); add it to FIXTURE_ROOTS`,
+    );
+  }
+  const root = wireRoot.replace(/\/wire$/, "/sessions");
+  if (root === wireRoot) {
+    throw new Error(
+      `fixture root for provider '${entry.provider}' does not end in /wire ` +
+        `(${wireRoot}); cannot derive its sessions root`,
+    );
+  }
+  return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;
+}
+
 // Enforces the notes/outcome pairing on a single entry: a notes-free outcome
 // must carry no notes; every other outcome must carry a non-empty notes
 // explanation. Applied to every entry at module load below, so it covers the
