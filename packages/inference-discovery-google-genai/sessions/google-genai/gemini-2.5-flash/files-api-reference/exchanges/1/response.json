@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "This document presents a list of the first seventeen chapter titles from \"The Adventures of Tom Sawyer,\" outlining key events and themes throughout those initial sections of the book."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 268,
+    "candidatesTokenCount": 32,
+    "totalTokenCount": 466,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 10
+      },
+      {
+        "modality": "DOCUMENT",
+        "tokenCount": 258
+      }
+    ],
+    "thoughtsTokenCount": 166,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "rAwSaqbmF6PfjMcPsOH98Ag"
+}

@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "The weather"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 115,"candidatesTokenCount": 2,"totalTokenCount": 117,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 115}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "UQppara4A5atz7IPtdb1-QM"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " in Boston, MA is currently unavailable as the tool returned no data."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 115,"candidatesTokenCount": 16,"totalTokenCount": 131,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 115}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "UQppara4A5atz7IPtdb1-QM"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EjQKMgERTTIPeor65fofLVRc/Wdz1Mgn3L3kDNBSC66GQWltF3onCbpKGioxIx5/UmtkF5Ku"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 173,"candidatesTokenCount": 16,"totalTokenCount": 189,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 173}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "UQppara4A5atz7IPtdb1-QM"}
+

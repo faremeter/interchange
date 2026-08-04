@@ -1,0 +1,36 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The video shows a side-by-side comparison of a celestial body's albedo and water signature, with a blue arrow highlighting a water detection at the pole.",
+            "thoughtSignature": "EpwLCpkLARFNMg9NCaPC7A3CaRe4/+Ryw39afPjj+nplVpSuELItVQbonQYh3sDWBbayqy78VVsGf6B+0e5ZbMGFa/52nXonnUIYDlPBGlExOGuQIKhjiFDuAcEDCMGrnphIQPcGbAVhLvC7boX1Rp5I+D6rSZ39H6KHiYWQpqN/pbbCP31ZQYdRowOp/FPXWctTwsMlHvrE+ClDaF4IqH2ORpDb1gytKTBaBqrXkKbX7xcRYFZQbYEvy0rCSDM+2rkhVMVuSjzGSY9Ia4dAwjeC5lv5BjOvoCzSITad6OkTyUC5zxG5ssRJwWdacVZCZzKG+7s2IeJYaVBXejx4Ux5Zx+afRFkQgJpIHr8pXBOEkYONVMO08b6EGVXWCGGat7JHT6tqAPCHHgLJGIN2Wwm2Rp0fS/11dOpeXf2ClxSn2obEiCWIxbedeAx21NP7U0N3LZiMWkWL9F7HF7Mce9hXuonU1PEmHj7mpmohO9SFNDy7/Y/qlnKOM9yduHOkRsY7zJTnpOx4TXV7nop/Cn2ZJHalSs9bELhNikJxgNoFyIyyMlskzKzgiY6mALJ3ognbWzfX8Z+Cz7Mk1XVpiyr8+0uG+9NdimdeuRna/boliu9MkbWBLD1gsYZjinvt30ITlQrwRb4414XWd4VpAoG4izITKfQi17NlgBu82hyeVDvB432fG4UFveR1dOWb+1sfhbVKnoKbcsfhI834ckoA47IhQOicUNRnG9c7/8NyirLFiCQ8nl7bRCtY0uYXxF/+byweC17bksP+mweluJgctstLG9MljFDEyXQFrMjGH4+S+rOBxClwM2+yKiZCzDV1TfdRMXcm7fCDPn3/NYfWwPvbmYWHnY5kCmoIKGsROMhnTb9K3mbMX6TgsA0esuwRwvgNwZY9Ri4FU5OYj/AtMNXu71nraeDhwS7xT/D8V+AofEvDc2H/VMD0S3tkSb5s5qIRL96p9wXuEBKGvBg1/C2pNulhG4/qn238pBGH9kvEKmBsP+rus0F0WJTty7jPtnoAUGvrdEt0mUA6oO1ZY7ISqvf1yF6N5xfAkwSVifBXjNFiSnBGZuDzNbrPvqIZAR8UOnkaDgQeJHgr9bjUldt47SLecFSZXSTKKOHqZ3MATbX544gErv/4/Te6OkJipWv2QKDTNkj/GNA9D714veWPJCy9Q0AocWw3sEXc98aNfA2yP5hjUA8zI/GbGY3B8sfjMbBrOf8PlJv7uKkuGJlDw6IAoIECQdMmgysBXJBBw8zlXtroVvjb6Vg+H+GjKebt1BRGxLTzcjy5M1Z8gjFqjszL/TW8RAW8A/kUiCBxc0x3fz1Vh7pxOeXUFIQj+AIB6pTucqU5VMQGb9njb5sWYwy2lWTgp3DoEuOy8EMJgfj1snQBbfU69vK81hRjDyUGYD3BGqDD1/rAPUKo0CmwnTpg5R86MrG/QTs5jUg48HuFpB0eSSRGh7tzQMMAKN7ze8RVvzkcqhgW267Tuww0z0NiCYTx/xNpUhlRSMEBcxBWn+x8u/jLIMdN10YCtBRtET2JzI6Xpf503PJeKiqwacbrg/Wl5s7I6cMIEyp6psMnrbGhEzbCE//gqjxXqfw+M7E8bN3ahLbR6DnkdO39PNargPja5MZSA6Hi2Yqzp862BoaYUEK21TRt7UTE5Cbkzf8IC81wsBzx/4/7SY92diPv7ZFZhq3njnwWlApFh5MQ4A+7FXJgDcOlc3U2ZV+AmyHuwN1sV3mvAM0MWlNRbo29LtcwwREATRgLef/qlY45TC9SdxMiRvfpxMCp0uw+ceJvi97d3IIcF8uFn71XCQVxl/KOp1ROBofTTLiW81w9tHImyxcM11ZRrKdgYGNa4UMy2Vp7yhvPpmiMaXbOg/N5HdHqNmKlHo2NsxsIXujNfFWDOkVIsIs="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 393,
+    "candidatesTokenCount": 34,
+    "totalTokenCount": 770,
+    "promptTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 380
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      }
+    ],
+    "thoughtsTokenCount": 343,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.5-flash",
+  "responseId": "XQppaqSiLM-sz7IPyqzz-A8"
+}

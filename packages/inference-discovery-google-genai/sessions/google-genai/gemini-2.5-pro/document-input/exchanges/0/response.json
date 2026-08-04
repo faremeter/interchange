@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "This document lists the descriptive titles for the first seventeen chapters of the novel *The Adventures of Tom Sawyer*."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 268,
+    "candidatesTokenCount": 21,
+    "totalTokenCount": 1081,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 10
+      },
+      {
+        "modality": "DOCUMENT",
+        "tokenCount": 258
+      }
+    ],
+    "thoughtsTokenCount": 792,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "ghRhat2KCZWFz7IPs4yYiQo"
+}

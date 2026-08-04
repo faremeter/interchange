@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "This video shows a static slide comparing a map of the Moon's surface reflectivity (albedo) with a map indicating its water signature, primarily at the poles."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 1459,
+    "candidatesTokenCount": 33,
+    "totalTokenCount": 2041,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 1315
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 131
+      }
+    ],
+    "thoughtsTokenCount": 549,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "cxRhaoSMHcWHz7IPzsWLiQ0"
+}

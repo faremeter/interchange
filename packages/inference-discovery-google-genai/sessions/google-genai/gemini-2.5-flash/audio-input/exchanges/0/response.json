@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "I got that. Yeah."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 139,
+    "candidatesTokenCount": 6,
+    "totalTokenCount": 189,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 11
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 128
+      }
+    ],
+    "thoughtsTokenCount": 44,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "MeMNauSXFK2N_PUP6tzvoQo"
+}

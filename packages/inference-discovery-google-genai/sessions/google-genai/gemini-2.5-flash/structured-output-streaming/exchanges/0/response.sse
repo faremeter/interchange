@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"parts": [{"text": "{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 39,"candidatesTokenCount": 18,"totalTokenCount": 170,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 39}],"thoughtsTokenCount": 113,"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "7sQUatWfK5TVjMcPwMf_oAc"}
+

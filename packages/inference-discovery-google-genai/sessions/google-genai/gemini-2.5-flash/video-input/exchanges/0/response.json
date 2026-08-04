@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The video displays lunar maps highlighting the presence of water signatures, particularly in areas near the Moon's poles."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 1458,
+    "candidatesTokenCount": 22,
+    "totalTokenCount": 1756,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 12
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 1315
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 131
+      }
+    ],
+    "thoughtsTokenCount": 276,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "M-MNatngAa2N_PUP-tzvoQo"
+}

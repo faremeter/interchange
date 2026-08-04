@@ -1,0 +1,30 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The current weather in Boston, MA is partly cloudy with a temperature of 62 degrees Fahrenheit and winds at 8 mph."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 137,
+    "candidatesTokenCount": 26,
+    "totalTokenCount": 163,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 137
+      }
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "SOANaryYL9eb9MoPtfmegAE"
+}

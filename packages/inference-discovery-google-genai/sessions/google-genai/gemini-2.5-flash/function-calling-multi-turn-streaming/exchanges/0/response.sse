@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "getCurrentWeather","args": {"location": "Boston, MA"}}}],"role": "model"},"finishReason": "STOP","index": 0,"finishMessage": "Model generated function call(s)."}],"usageMetadata": {"promptTokenCount": 81,"candidatesTokenCount": 16,"totalTokenCount": 97,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 81}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "LPQNapjCAfaOjMcP6rW4uAM"}
+

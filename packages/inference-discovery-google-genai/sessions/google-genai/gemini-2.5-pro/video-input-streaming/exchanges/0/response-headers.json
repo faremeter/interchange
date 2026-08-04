@@ -1,0 +1,13 @@
+{
+  "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+  "content-disposition": "attachment",
+  "content-type": "text/event-stream",
+  "date": "Wed, 22 Jul 2026 19:05:37 GMT",
+  "server": "scaffolding on HTTPServer2",
+  "server-timing": "gfet4t7; dur=7461",
+  "transfer-encoding": "chunked",
+  "vary": "Origin, X-Origin, Referer",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "SAMEORIGIN",
+  "x-xss-protection": "0"
+}

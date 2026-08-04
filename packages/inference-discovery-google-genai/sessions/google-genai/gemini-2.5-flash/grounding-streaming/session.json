@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "google-genai",
+    "model": "gemini-2.5-flash",
+    "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+  },
+  "origin": "live",
+  "capturedAt": "2026-05-22T00:00:00Z",
+  "capability": "grounding-streaming"
+}
