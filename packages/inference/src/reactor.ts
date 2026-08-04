@@ -267,6 +267,10 @@ export function createReactor(config: ReactorConfig): Reactor {
   let running = false;
   let done = false;
   let shutdownStarted = false;
+  // Correlation state is empty until context loading and gate rehydration
+  // finish. Hold early deliveries so a resumed approval cannot be mistaken
+  // for a new conversation message during that startup window.
+  let startupDeliveries: InboundMessage[] | null = [];
 
   // Per-message run-bracket state. Set when the loop dequeues a
   // message.received and begins per-message work; cleared at the
@@ -1479,6 +1483,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         initialOps = loaded.pendingOperations;
         initialUsage = loaded.tokenUsage;
       } catch (cause) {
+        done = true;
+        startupDeliveries = null;
         logger.error`Context store load failed: ${cause}`;
         emitError(
           `Context store load failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -1516,9 +1522,19 @@ export function createReactor(config: ReactorConfig): Reactor {
 
         emit({ type: "reactor.start", seq: nextSeq(), data: {} });
 
+        const bufferedDeliveries = startupDeliveries;
+        startupDeliveries = null;
+        if (bufferedDeliveries !== null) {
+          for (const message of bufferedDeliveries) {
+            processDelivery(message);
+          }
+        }
+
         await loop();
       } catch (cause) {
         const msg = cause instanceof Error ? cause.message : String(cause);
+        done = true;
+        startupDeliveries = null;
         logger.error`Reactor loop threw unexpectedly: ${cause}`;
         emitError(`Internal reactor error: ${msg}`, true);
         closeMessageRun("failed", {
@@ -1532,8 +1548,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
-  function deliver(message: InboundMessage): void {
-    if (done) return;
+  function processDelivery(message: InboundMessage): void {
     void (async () => {
       let correlated: boolean;
       try {
@@ -1567,7 +1582,21 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
+  function deliver(message: InboundMessage): void {
+    if (done) return;
+    if (startupDeliveries !== null) {
+      startupDeliveries.push(message);
+      return;
+    }
+    processDelivery(message);
+  }
+
   function abort(reason: AbortReason): void {
+    // The loop cannot dequeue the abort event while it is awaiting an active
+    // inference or tool batch. Signal that operation immediately so it can
+    // settle and return control to the loop, where the queued abort retains
+    // its priority over every other event.
+    operationController.abort();
     enqueue({ type: "abort", reason });
   }
 
