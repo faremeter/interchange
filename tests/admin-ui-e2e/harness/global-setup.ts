@@ -131,6 +131,7 @@ const ProvisionResult = type({
     DB_USER: "string",
     DB_PASSWORD: "string",
     BETTER_AUTH_SECRET: "string",
+    CREDENTIAL_ENCRYPTION_KEY: "string",
   },
 });
 

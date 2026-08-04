@@ -620,7 +620,9 @@
       "name": "@intx/test-harness",
       "version": "0.2.2",
       "dependencies": {
+        "@intx/crypto": "workspace:*",
         "@intx/db": "workspace:*",
+        "@intx/types": "workspace:*",
         "drizzle-orm": "catalog:",
         "postgres": "catalog:",
       },

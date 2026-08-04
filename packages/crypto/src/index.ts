@@ -18,4 +18,7 @@ export {
 } from "./pgp";
 export { createSSHSignature, verifySSHSignature } from "./sshsig";
 export { aeadEncrypt, aeadDecrypt, AEAD_KEY_BYTES } from "./aead";
-export { createEnvKeyCredentialCipher } from "./credential-cipher";
+export {
+  createEnvKeyCredentialCipher,
+  createNoopCredentialCipher,
+} from "./credential-cipher";
