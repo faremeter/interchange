@@ -1,0 +1,169 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "id": "msg_01WZZ6fCTjzLVnfNK18hsyrK",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01Sh1tQJcXkWDcKeq1eMciQb",
+      "name": "web_search",
+      "input": {
+        "query": "top news today"
+      }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_01Sh1tQJcXkWDcKeq1eMciQb",
+      "content": [
+        {
+          "type": "web_search_result",
+          "title": "NASCAR champion Kyle Busch’s cause of death revealed by family",
+          "url": "https://www.foxnews.com/sports/nascar-kyle-busch-cause-death-revealed-family",
+          "encrypted_content": "EuMDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDDU+iUQJrXpFqvH8uxoMjtbL5Q47vK46NCawIjCmRKKbwnliyH4ctF/dPmojuE+6ZzcPAFQ0Z6jgScx1apPFVp+Vz0Y5MAyvZzFJzVQq5gK+fHIpTyjRgtc3PwDX4DxhJyo9U34DtpVku8RWS/ww6qnYHCmReHReF341/KZ+OEzZlfro++EhH57PCZSyTMbsC90RuMKyfdI12QslLA4aW9k/le5CnOpFhvYovRdVEignfUDUvKFE9QZOMHtyYLAptqSv7vRYFSPTMyfZtQyyV2+ZLjPsiCeq6jZS5TdGyThqrpLyqPN83hDx2RQNE7co/F4ulLuOqgk+5EfjHQr5mhs/hg7az0FLn6tnQ2a8UIghvShxFyYbROivdkREcJ95xlhUwPjdhB5QhPZDp04/i5nkRATORFfalBqiTswy0k3uH1hRXAJSK+5ck2hLzRfBkPqY7HAPdnEoYd/wQwBMrYUDm7XPsn9nl+qlMUNkm/Lr5nuIHSloqgqfJJTnXIz/MhtYa7w40BRMo7K6zaI7Ga9G0mm+J/Ulvw/a6+FQRK0GNdsOXlf7Znif+nTMNdnID4oKAZDYGAM=",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "EXCLUSIVE: Tulsi Gabbard resigns from Trump Cabinet",
+          "url": "https://www.foxnews.com/politics/exclusive-tulsi-gabbard-resigns-from-trump-cabinet",
+          "encrypted_content": "ErIDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDDAVfZXhc+Q2vRjySBoM7eD9xlAlmHsLkwNhIjAXg/OAXqY0eAiGndkzyJH4Q0BO3EWLbnjnTg8ZjOZJoHA8272HEHdk/2qaLjX6J24qtQJWAYNgpK3dpRaqcWW6JNBwzqOiKRPwEPdGnxn/3Wtzczp+4382diVsdmtyHmUU18GB/jOAN1br8xOzlo3TZH8xJpS2g9EoZm7fTwafef7tFBG3U9k3C1NKEkE091jiC3XBXu7DhL28NrcwBN4rQFqAJ3lVgkHm12RFAzvRzobjRMjrMjP7KKCny3ob6qu1XO0vzG+mMh6D6uLKgcRfnN7J4AvLgS9QMeYHTMV6AiRxm+yR3LZwa/ryuCarMTKg57HosdyDNJEUqs9L2Dt/RqyYKf8iTbEHszxjk5SkspStGnMO6zqSSu2z3/Oxl1/rheUI4Oc322LVxaNx2OQM+1yPEBNZZWlzA0QKh8V/FbkXREjoQYdI6PLMgLj9BGfBIlUSEfsF9eMY77rYafyljW0PtVUg+TEYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "California officials warn massive chemical tank will likely spill thousands of gallons or 'blow up'",
+          "url": "https://www.foxnews.com/us/california-officials-warn-massive-chemical-tank-likely-spill-thousands-gallons-blow",
+          "encrypted_content": "ErIJCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIE6GeKtK5mZt139pxoM7MtBXYNe2EAp4hTwIjBVy4JHFf+FToUddoe/yObVZP5toPbO+dX8KB4WkeuRnKXzlPBPoD2mq/LS79w3/SYqtQhIMBFuMuOehr8Uemv3JmSJRVwFMxUXNrLFGQl/PA4FcJ73cl7umBQGrqppa6AS5j6BhEiye/PrhGXfr8SYanYhhKDg+30RWYndrWerRO18rFiF/ce6u1pnh9MM+ULJ71vv+IvrznEGaCfaieRglZGq12gtRGGPuubmdnSkBuNbsCbdSx1DDa/vZMoADVTgxEtJ+GJHHSXlq+6+v82+x6XUHhcjJITKaoFI05JVyTngwc5XqOXSEWosPj8+oWW1uzcD3JZSIiBHXFCc25dgUxrNnyiouCFfJm6VACTuDMJ5ruylNjrQlTsHWF9KRpMAtFePnoxn1NYX6CorB/Zq8rQink5x2f0fsWZhwoWRpkmQAHGSb/RZk1HwdeGkya0VqScrdT7br8p8Gwco8gnBn7n11fxW+ZB+JMm1ulIWfQu2b7vp4eTs2AKywHSRwOyfjbVOUihQ9MI5OywuKWihLV5f3vsjfyZJZifZWXnAVHE+Rai1ckfUNGZIwilN9Vio808thzC/5GpKIaJcNuAPmk3UU9cKHb9fnMdsLaHxfJyYaeZi8btt+PNNW05gc/bS8ctw+VWOx8lthcn79eM2OCnjAM+WbbCMR4RbbibzemEnWMkXvfi8JV+kSDVNi9rFzUZ4a/xPFfcIZa6Woppj65z6eQJOuAYo5cU27+z3rFqU8F3bMQlSftjiGLLXwDi/FOxgS4Nvf7FAXDGFi3gguT3O67l89FKbwQknDJ4uPeR6LTngB84/KmDzxHhFd87SzsFwV8yaxGtZQyiI4agjRTSP7K5h9GQ+M2mkPWAfW0DtONiJOQ+uhj8yt3zqJfXygXfO+qJwVl6kSAtNgJLJGJmyilghzeRJExl2gjoqOMT9qg9s+L0itxMj8YHk1x63Njc02ggsHJ3D1ZvScu8N3DsjwC9uOPMXRex93+j8yK10lpkerftnfZ/BvL2Y4dQfwgdnqcuoXq7Ysdp59xHUQffVT1/AHj3J4xPMXO1Rbg0mLQn8iGIluvYKi59mXqa8TQ+lAbcHl7TMzx18tktwl9AqVLHvttzmqKtV8MTSHbct1tLA9T1i00P/cPzrgLyXgzGtdC8PwRPRRydq+RsQ9Ho7Vx84q0fouHw4/FGQwi9kHNDaOHiOonE3Kz6N0Q3fjEHtuHXNOhEWy6HSzJmwo//TgVc0AlLsv4jaVF8OjGp5l5RHaifs/G3IbOhPY4xjN5A78pAjlM9G86igbxAJzxFV+RCekbK/KgjMMRzNC4d7J9QNOu8bxOviXX8607TCgWk508hkanJOW3KHpi0yw97VcE5IZ798Vvcupp8vuZAnUxbdpafUfyl00HSeQuhGHrHBYagqL10bVd5HSk4QEpLd2Me1B/iCRhEDKTKKly9KbrR93z85ayDvzUBJMS/YyBpLHRI5OK0Y2svARN8liJVo3vS1oYoYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Trump says U.S. will only sign Iran agreement if we get everything we want",
+          "url": "https://www.cbsnews.com/live-updates/iran-war-trump-us-peace-talks-strait-of-hormuz-control/",
+          "encrypted_content": "Ep0DCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDLhAlOgPdYIVotNYsxoMPNF+o0BfNonjQWNGIjA5kLfaVF3ijsQqis0sHTudXUZ6ysUPmBngzX5tfAMbwYLADdmfJEsmNALlnDhNgeYqoALzWgTqsaCpl1bTIZ8x8/1AX1rwrZ7tADgVIFMYvMEf6Rp9OzyyzEw13odYSDDIIs1u/3VPYTJbyFXW+zpMTZJVpio1OuMNf2GBP3cPhXbFLxPc8dg7mv8jB7xr07f59KTSyHGIMlqzKV5bRbADZnn8DEXxDJPjcpfYO/FWOh735DBpKtA2ggIjTJhADI2I9+A1Mho7Am6qhy6Y4uArbyRdYSg5znI2viYgFwCQ7e5AS3ddiu09F8NZT7N4NMhZFWeWqin01+fW+AsxfHlPg+m5K66vOPk9tOZsGjyvsski6GK3nsEa2N9noOTydmCn/AR41wsJn/DJWAQHIG7yjsydzeGyx3ye9UJ8hSVO/ZO+Vl356GEyG+gMHBBOvHM8ZbgYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Viral staff photo reveals just how bloated Stephen Colbert's 'Late Show' operation really was",
+          "url": "https://www.foxnews.com/outkick-culture/viral-staff-photo-reveals-bloated-stephen-colberts-late-show-operation-really",
+          "encrypted_content": "EssDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDOXiKBVsSYyhs8IU3RoMcK6ur0zhezoajT29IjD2HmqtDKVWK1ZBMb9Nh1zsjiDPP2Pk5GJ/lUUkgfCIkHeidb7/Nf3F77pej7oqsb4qzgL4M1BumHFHy/n19M16mF86D2i/0sN8/Myw+kOcnIAb4OljO3Td/svunAEZKQMbPMRuB2FFYRyuGFigL4wbjXLhJQQY5IblKxTGOKCwI59BQprDfLlO9n2tA/HUnCGY2oV8GKNBksgSD1oRJnTlgLokx0sZO9GfsHOjVaGkylfa3FB1GTQWnH/qJNXci8E+8WDzrAJKlyan9EiAxkLvFxGk/wbsyl9/lAAHeQa3rgoOBLoAy2PCYIc4zfSbOVGjTONy5NK+NT1OrLr+BpxTGoDIxv3fwFfoOuTyeboatWbCm/r2ZKvMJL2t4ObMul6b7CcSMW0I5rXPyDsbhdeIMUU3cMjI8RjTg4xPhbu0R0BmHpgrHgneavxoZDycvPw/uay1TXOxXT1u0QhaHIEtZBUd6ayjlcxDWYRcWzB4AhVlguioJsaXP4l9AqJz5mnhGAM=",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "DOJ vows to appeal after judge dismisses smuggling charges against Kilmar Abrego Garcia as 'vindictive'",
+          "url": "https://www.foxnews.com/politics/doj-vows-appeal-judge-dismisses-smuggling-charges-kilmar-abrego-garcia-vindictive",
+          "encrypted_content": "EtYDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDBcpgxa3QIa/+55PLRoMP+Tdj57UAnmx5LVVIjCxwJNzPo31i+bOWiPfK2nsUNAmwaB1flXRxTmiW2Xwd3E9ZWpnM9Kr585EM+StseEq2QLQhBspTRU7K8ioXP6nX3ibYzhOGb7yv9JHOAC4CBcaSkk1M1epiXP65izuo/Z8V+UM9GPVuMiIoz4IZa5drVxuZmvwTtO5WqMEFQTqDdmUiprY1YDEGOborqxKA4s9lPaeMpWSmGPQyi/FlkDISdC6kBswMg/ov0XS6/9jdlabHT8+G+moqgpZrEwEiHDcpsM73Z3EFtyc9oMF8+ykFRebt2GVxhydB1fd0M8+av6NlEgbo2Jy/SnNov751SqKGYfUzWMRR00VRG04z4lOvX2Rnj/oIYsSsp5t+9MJblFKE/i04ON6NVkTLRtZA7OiV25JFT/x3d5KIkBpc6YccOVR9vr/hfpyQCb4L6RSdFWJN6fqV5TpKvgOvHaFlKk+EQRgG20SutpWcJHcYpLU87MJTJM/gkAf7UWnqf4cqNGSw4UmJVYIKB9DytCNgm3uKAMjNc2/iYV1pBcYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Donald Trump Jr marries Bettina Anderson ahead of Bahamas wedding celebration",
+          "url": "https://www.foxnews.com/lifestyle/donald-trump-jr-marries-bettina-anderson-ahead-bahamas-wedding-celebration",
+          "encrypted_content": "EtMDCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIkQOBEOWMmxvNoDixoM/BK+dAi4d6s/0ReuIjC8PxvPIOPaJjo3bTxSg5Hu6Y0oLX+RLfMyhNUjJWsaKzqa1B1GKhOwPgXUhbnWk0sq1gKcPap+oDGb6X9m99EyCmS57zzh+kMXOAlhAG/G6/2Q1+HVZFSSrReskohzMM6APy2Sjkh+i5t91goATIHRPZtEXd6YEiIKIPa/z5yFvEdOdXDQpHCaumS9xTAm5s3nUGAMMeammFqtkMxoX8O54q5jYuKeboQcVvj2eTcDsJ7qX7Ne+so3zR2VvHGk04K/FgFK0UQmdshSVeIOGYZGLmU7xDGbY9KgBRTBf85DVQi/Tl12XbWU+rI2lAvJ8yBK8JhBhW2I+1Elw5ufhyt0HBRYBMmfGX/DlE0pZka7sd++iTaGUQG8hS0ccPnFhIHUc9wICD0k41bzx+Rd0KvvsFcDRE+AqVQW3b8MmusC9kYlGigD31k7BAcyaxeXhbYMFZ1zhHsW1ld54x05u8deeyrMqIHhG41qRU99beuQ5vM3IhjWTjl9mLy5jOCd4mM7JkxLljYftLUYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Pentagon releases more UFO files: Speechless after these observations",
+          "url": "https://www.cbsnews.com/news/ufo-files-pentagon-videos-documents/",
+          "encrypted_content": "Eq8DCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDDsljWATMHWx6OjF4BoMjqOgRD/ZZX9apndGIjCvY8+/JHGp4BeaUNO7ShMPQu9fIu9v6/XOQfXorAWYy8isFXkFixh493Q0BUGPICgqsgJgyHBxyqkQxwqfUgxkJn26ZbWRPoXmKH3Chb0psjKgR+f0NL+V4N2b+JorJl8Vt2X0Lw0zclepoH0JtCLO9Es4HzBsN66sbVwu7NTX9/L7TcNiByiaxDz75D+Mo/teKz07X65Bu5hTSvzQqqsEnI9Ktbz3revH72QSuHMgG6VenDmluD/1Sf8+D34OoJ14ZPlsy+fc+f29kUcv4ziaHx0UCq6b7CqhdFZ+mceUOIxFm09shUw3l9TQ/zA9itsAYnvTYIC37RWSmVT/Fjzi9v5UpAgvZW/BVd4FB3gGuozSlWuq2dpzN1UPCO72NvUq495WaS5LwBCuPY/fvqaIYBhI6XFGHVSewVXfYQ9VrehhlIuNB5tiJAqR6Gu3oGRhrHlnXxGQVyHMh6+gYTxoXB3CQMcYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Gas prices threaten Memorial Day road trips as pump costs hit historic highs",
+          "url": "https://www.foxnews.com/politics/gas-prices-threaten-memorial-day-road-trips-pump-costs-hit-historic-highs",
+          "encrypted_content": "ErADCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIIyNsNvq1uYJ+vpjhoMggAGJHZOTnn8ffT4IjDZTSATSPTkl1Np29J7ZBYdN3Ae55Fu0MEg4keHHsrMjkoj9NGUZneWA/EtqIHJSu4qswLlisZrq5BqUegxnLqJsKa7EVNB5ShfoY7XcOAnDRDFU1uALpt8Sx9SN55gLMjggoJQaAGrZK7Pvot8LAr69zwx+BYDFr0GD8uCMvrfgOX8zuvqjleNFBPYMd4NlzV4drkf5Btg7mbiOxsPTkVqf20ZmASPfWYvqH9kDA6VOpt6JFg2jPQMHLB+QF7R5g++45TvFHuQXVadb+/E17VtmToLy/iSYfXYB8iNfZ3tvZm7wrirvbYyGnXX9w9mwZ4ymj0A9fB6bBpm/EdaORYAyBlWgaeg1skGX9J4uUrGa1XvlIO5z9qHkBKmxa+eT+zY79YwUhtBjyMPL/xrSx00AVjsUk0nNdTL0U7HC5qH+lTjqIE8ajaEZI17MwQFDymP05EMmPxCUmGl5watiRYX4GLw6OckGAM=",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Marco Rubio visits India: What’s at stake with Trump-Modi ties strained?",
+          "url": "https://www.aljazeera.com/news/2026/5/22/marco-rubio-visits-india-whats-at-stake-with-trump-modi-ties-strained?traffic_source=rss",
+          "encrypted_content": "EvMCCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIUsx1zG+/tfJlZy3xoMuuVpP9fmrP61S+qWIjBZhqqg2hk5o7E9LexD4vkAJbj9M8nhQWtzEq2/Cz9q6aZYLzJXTbQ2MjRKwLdBx3sq9gE33wXONpDycT20EfSbC6OMwI1Zh6/dUqgfq3GSGch7cA0B9JvMFTMYGHSqIEQoaoHP2paP4Ap/mb+Ee5UQI4if9e+jrZNk/WrUYUpxJ4M6YhhJJFrONNV9/JC2NbdM/6LNolgZJ/4zl6h01ImDazgHYsRw5TZs8KCmK0VgdhkE9xgAtWrK6EBJ2cAtNBqOcjqw+K43eRS11geA528nFuSooM4RsObTPvhZkr8NHBfZaj15SfJ/duRwfzHfSNMD2jrhTrPylDYOs/BPeZGaURtMymppVOWqnRXfKGjtyHklzUesk/mdvK39bXeFfWorVuLYqBQ/fuEYAw==",
+          "page_age": null
+        }
+      ],
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "text",
+      "text": "Based on today's news, one of the top headlines is: "
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "BREAKING NEWS: NASCAR champion Kyle Busch’s cause of death revealed by family\n\nTwo-time NASCAR Cup Series champion Kyle Busch died Thursday from compl...",
+          "url": "https://www.foxnews.com/sports/nascar-kyle-busch-cause-death-revealed-family",
+          "title": "NASCAR champion Kyle Busch’s cause of death revealed by family",
+          "encrypted_index": "Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDAcCiuK3KaN/Rx+a+xoMH1WqZukMRNkC0CzIIjATHoTqjESepjd86yYbD77QXFLfcXt5VMeNnLn7EGHJM2+g/1UZbBfWK9MQXGjyKacqExDZNoHxt6x0hKG81+fiOmadnkMYBA=="
+        }
+      ],
+      "type": "text",
+      "text": "NASCAR champion Kyle Busch died Thursday from complications related to \"severe pneumonia [that] progressed into sepsis,\" according to a family statement obtained by FOX Sports on Saturday."
+    },
+    {
+      "type": "text",
+      "text": "\n\nOther major stories today include "
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "BREAKING NEWS: EXCLUSIVE: Tulsi Gabbard resigns from Trump Cabinet\n\nTulsi Gabbard is resigning as Director of National Intelligence to support her hus...",
+          "url": "https://www.foxnews.com/politics/exclusive-tulsi-gabbard-resigns-from-trump-cabinet",
+          "title": "EXCLUSIVE: Tulsi Gabbard resigns from Trump Cabinet",
+          "encrypted_index": "Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDA+04pfMO2kUQ2Q0zhoMT8FrRtblpv0AcwGFIjCjcWldMGUtabGDgJwEbet8oi9N2Dt8Q3vusWmpMA5wyGqjBCzxLQ9DcMWE8IgLeBEqE4odJSK95q750c8QlUqTeTIZLCgYBA=="
+        }
+      ],
+      "type": "text",
+      "text": "Tulsi Gabbard resigning as Director of National Intelligence to support her husband Abraham through his battle with an extremely rare form of bone cancer, effective June 30"
+    },
+    {
+      "type": "text",
+      "text": ", and "
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "BREAKING NEWS: Trump says U.S. will only sign Iran agreement if we get everything we want\n\nPresident Trump noted that \"Final aspects and details of th...",
+          "url": "https://www.cbsnews.com/live-updates/iran-war-trump-us-peace-talks-strait-of-hormuz-control/",
+          "title": "Trump says U.S. will only sign Iran agreement if we get everything we want",
+          "encrypted_index": "Eo8BCioIEBgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPG185/5YModIgaBIRoMJFZVvnq14U3M+VjVIjAnbLx2CNNOskOjyCciy/hPn/vmb09TIYsJ3qVJb67exgwo38Qk9m+qEy88InFalLIqEw5+hNJ0abo9m0iE4pM6AQOi3s8YBA=="
+        }
+      ],
+      "type": "text",
+      "text": "Trump stating that the U.S. will only sign an Iran agreement if it gets everything it wants"
+    },
+    {
+      "type": "text",
+      "text": "."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 7080,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 222,
+    "service_tier": "standard",
+    "inference_geo": "not_available",
+    "server_tool_use": {
+      "web_search_requests": 1,
+      "web_fetch_requests": 0
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "anthropic",
+    "model": "claude-opus-5",
+    "baseURL": "https://api.anthropic.com"
+  },
+  "origin": "live",
+  "capturedAt": "2026-07-28T19:38:41.983Z",
+  "capability": "files-api-reference-streaming"
+}

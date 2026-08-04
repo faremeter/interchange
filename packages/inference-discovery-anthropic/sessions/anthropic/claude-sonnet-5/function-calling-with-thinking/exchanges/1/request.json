@@ -1,0 +1,67 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "Er0ECokBCBAYAipAN6FWoiBkNFeHhicPx0pf9USIzZr/OEUJXEcrD0Ra0oEnzhBjiPItyoaeCWmmrknRXn4ZPT4ogXdVO2W2jad/OzIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDGdFhKrg6KU7mfLR+RoMKYTWj9yWwdzbSx4HIjAxl+eTi6pZqr55WSgij0qLy7zGwsI1K1V6bB8meZRZbLAAF7gFl/bNPMHlANXnLSAq4AKD8czZcVkrDHF/gsdEw8/+vDdX5yLe8GJ9ejmgXddejA2LwhC/gHEVKs1WOi9fucNSPlh+M9XYmrcX/5nWeuJgAZF05xVL0P1JHtCPlJXKbmRQVbKfRoDyAKiY8S5bT3dzm9skiW7JqRpeqYkJ5dWTUR25b8euhgsW+TJesO/tLFNkeAyrF4dYWMJfr9WyMXA0Wi+OrNXf12idFwS1QcfWyZ+4qUPJfC041EdbMBmaBRHNnnRinpuX4Ve+xbotw/RCoguRuNXUwWQlt0YDfZ3gnYR8ug5NzgXdR6i0TdsrQsFKGVy9GjkC5RG3u5NWYDGNmdftNrhepmxDv5OUyzx9TRGcdtl1iOvbmLYkj96rztBleKnwr8hpBqW13d1VBHdDcHPan5rCa9pCY/ruqjjs9UXyPDqWM0LWlUUayBjHl/R1eUpgn/46QyEzr9u9gypQevo0uU+0imA4dYmhgC/sGAE="
+        },
+        {
+          "type": "text",
+          "text": "I need to find the current weather for Boston, MA. This is a straightforward request that requires calling the `get_weather` function with the location parameter set to \"Boston, MA\"."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01HN7tkJNMkzxDxX7dnC8rn4",
+          "name": "get_weather",
+          "input": {
+            "location": "Boston, MA"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01HN7tkJNMkzxDxX7dnC8rn4",
+          "content": "{}"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Look up the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": ["location"]
+      }
+    }
+  ],
+  "thinking": {
+    "type": "adaptive"
+  },
+  "output_config": {
+    "effort": "max"
+  }
+}

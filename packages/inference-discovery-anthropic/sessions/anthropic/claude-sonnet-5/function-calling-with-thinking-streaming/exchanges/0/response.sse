@@ -1,0 +1,63 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011CdHUwN5uAFyoKTgiUDzTE","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":487,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"global"}} }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eo4HCokBCBAYAipAQsSg33eaqRes/uovjKhy9rvFCsk2Ajk3APO47ysxCr+2ktzDByULjP4PKvq+lIqpV5rNvziYZfp052dPxRVh9jIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDJ4gFBZaqPLRmd/G+BoMM5ydsG45km0mPcpWIjAz+BADUoL/Qs9f7VDdO4lvHabztDQzF6CsFsgnTcFC5HjsPPYAVN6PGk5QFgxk4BIqsQWmGATqp78zuNNo+0WYXgdIWE51K8w6okG6q3elyhTByxat/XmX2x/8hMLXWINbv1h4Z+6vlFxRGPGfANCqE+98vrHRD+gj+hLy0OJ7bV9L+81MLLc+V8zgPMW6oHg8B96rUaJoWIt/4RhTpXshAmVwqp07FBRnHSHvh8cvTPjVkYkjx3xNQARaRc6UPu7NjFqqs3DUftoSTK8LDGPHwIgP4NbbxZqfsJ00oTqGZ/lBLwiW6REb6L8MjCDPCdiUyDvBzdAUBRHHRaSOrcekJSakJ5Kf0FxUaSsEiC7OchIuD/BnNmxP+3pqA8B8po9SyftToQZEcDXV36I6E8xLendnsTagypt/53mGOizXlbMojOx6O/Y7WbA0vMdqcd8iVKO4UV2+9C00hDz2SJCVQrdqYM+Q5OghTjeGHq8POA6foUCe5TPDUDTXUccswe9Fb/SGC2R/2VlmMMjI+WeEAhz+sYFnhyPlsaY2dXd1QpYd2hwI39V/w5KlXUUoMotbdL5AqbYePV+1GdeZPYRAGSDqb1BGjTy6xZk/zMbLgJMejFXU+jd33+zYE6Pe07rHEvvZHTY6Mfu+CHi2xF78XQC4kMRjLYJ0mS1YUvaA4uT8i+TXi97hxnXkdu8sAOdvXpT/3BTtt8F2NWRYB5lx84/1oC6RJJCsoMH8arFMp27svGhMll1N5dD9z+SAIF1AL5Zaj6imbpS2Aca5T5DF72VEq9GdzvHH6pDGbf/hSUoKgs8GqOejRV9gAygRkVe2vJkDmItdtY09CHpsJSKXdDU86gf9togQKlcJLp4gpRhLRcJbEIfm7zmMdrP5RONQ5hryFz1DQOPWqOoiis/nYLTOeYotFFVdnkCNg8UE8Fk80RDfx4hjW9tNoZ8I2sJihfGHKxiw53fPqlseAed6Ll91/hgB"}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I need to find the current weather for Boston, MA."}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Looking at my available tools, I have a `get_weather` function that accepts a location parameter in the format \"City, Region\" — which matches exactly what's needed here."}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Since this is a single, straightforward request with no dependencies on other calls, I'll make one call to this function."}               }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01UaYjuZwKohGmsaVGc2VheG","name":"get_weather","input":{},"caller":{"type":"direct"}}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"loca"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"tion\": "}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"B"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"os"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ton, "}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"MA\"}"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":487,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":357,"output_tokens_details":{"thinking_tokens":203}}}
+
+event: message_stop
+data: {"type":"message_stop"       }
+

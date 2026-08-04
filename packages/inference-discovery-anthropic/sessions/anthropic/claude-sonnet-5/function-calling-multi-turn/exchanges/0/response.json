@@ -1,0 +1,36 @@
+{
+  "model": "claude-sonnet-5",
+  "id": "msg_011CdHSedcM2MbtagpJfeYQe",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "ErkCCokBCBAYAipAxjRAbJDvF+KFAdiRtp+ISg8CAKLy+3at+wYKq9CEFNuQo/oKDxtafjVCW0wAGXAglI+Qg8Z/UdnpoyINX+tpJTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDF//I3qdS41TLQKNFxoMK/e/cmWLliVRBXddIjCf3kuFGLnOarHgZpJzFtsDn+WmfHPJ67vwdelHRZhxLko7dujMFed/qKsmNjTEf5gqXafunF7+aYJFk8tEIbvZFVA2H97lnK7dfHlWLmR6rVt9N/NLL7W1jLddNbMfwbXPa5MJTwT2ttujnlZlPOo18J3mvLkFCopD16TFvASPHT2Y5CCn7984Aem/0reGIRgB"
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01PVjoMw3MSNgaCXandWvZPn",
+      "name": "get_weather",
+      "input": { "location": "Boston, MA" },
+      "caller": { "type": "direct" }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 479,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 83,
+    "output_tokens_details": { "thinking_tokens": 28 },
+    "service_tier": "standard",
+    "inference_geo": "global"
+  }
+}

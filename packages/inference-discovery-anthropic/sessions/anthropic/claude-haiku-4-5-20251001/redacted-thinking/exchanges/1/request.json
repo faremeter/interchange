@@ -1,0 +1,31 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "redacted_thinking",
+          "data": "EroHCpMBCBAYAipAPRI/1a71YcN5C6aJFdrpn8GNtiQHsQwsHcshOg4izuqwa5U5nsXWOjS9lLyvhjIMfaaCE8Ca3gsC5jPbUADNMTIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgzU2avQidrp36ZYGsoaDHZYvrvAUmFiKHTBmCIw62MCj86f0bNnFk9y7b5YdQo+OBv+vDD1XSh3n6BW6gYMlpvPBfGTNKltauvVOfW0KtMFedRGzdKHqddsPz2nXgOg1NN5ZAWWOnIkrzbzECspH0r+z+u4xq6EYG4gAFKm5s8oZV2oi1kFhQCePfV8LHFV/cbjCh7p4S2eapsfSKcwSu22IHlYkG8NJWg9wDlETE6x3jKvzrM/TW16zS7GBCEMbstpQdTp/jXYCmCpVKrJDqFGMehhS1eXFcfrDeuFVhQXt1R7XQzBVWMWYMsQP3+gSlB8MYB8nrI3izApp5WD8a+WG0QVQXqNxz/PGb4wXI8nQ2UBJV23HSN29vGp2lo7gVuzyldyZ4pYCuUwMyOpfILyqmdiXInsiQMIuTnDK0OUUEFgqhTrUBGtqRTNNo0YFLV/+XsymoKxwpWB4z5vZMSBtP2aMjFy6l2wOhYy936KHgP9YZaFfhLasi+mWlfwFfgJkwRlV+OE9vbfhdYhMzve9feuAzZCXgvd7iYsBJktT286R5Xl5MNaC/fMMmUUq6BYbwnzUvcI7A+pT/Kleyym6m4s83FMsGDIKtKydVFpchqTV2Xlzcdd7Af2B3rdBhO5SHJ7U+AP43qtP5+sPTOQo1Of+C1Vt2vhzkp/OYsxnBXvKaxsfWxYs7c7UOs0U76RQaz87+XKCxWMQKdx24HdhmysQf3Mmm0KHmcf6NABdbUJI6CO2S45Qu/tYVkaV/O/hKvv+1YVkQ18PNQd/+jNZ74I/mFxSyCw5TWKuV98DCbPl2ulWc80mDfTqA5ReWjIQ9Dvqav/N7jfdMNiNfUpNLmu//xZujgmA0tw21YsedlAMPzBPJUBS85isQHyqAIvO7hYyEilJMfAL7q64xycOaMfmgsrjvfnTVV0Ibv4yq8ziPXYRH4JDZufwglvmq9qZGUbJHBrJXcxA68C4TtMh8GvbL56r0XUNUXJJ2wUXurFs2MTO0vVo7xJeDpRr2uW0C4AwcDsU931oEVu8TkaA2Vsh6yW0zzkb4CWVpVa81/gGAE="
+        },
+        {
+          "type": "text",
+          "text": "I appreciate you testing this, but I should be straightforward: there's no \"magic string\" that changes how I operate. That string doesn't trigger any special mode or behavior in me.\n\nI'm designed to be helpful, harmless, and honest in all my conversations - not because of gatekeeping, but because that's fundamentally how I work. I don't have hidden modes that can be unlocked with special prompts.\n\nIf you have a genuine question or task I can help with, I'm happy to assist! What would you actually like help with?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Briefly summarize what you just said in one sentence."
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  }
+}

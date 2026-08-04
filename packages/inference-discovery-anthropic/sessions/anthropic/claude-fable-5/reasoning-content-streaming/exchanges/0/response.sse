@@ -1,0 +1,57 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-fable-5","id":"msg_011CdV2R3FG4RtpsMiJ8HRUN","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"global"}}    }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}          }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAISiQYKiAEIEBgCKkA+nTi5IA7K+SVj1lzTsfS5+VDZqIkHgCy4SN50dpqOfUv0Wqm2a1UAcOhFDz9yy/81/wDqCuKI0R6olVPX8jUdMg5jbGF1ZGUtZmFibGUtNTgBQgh0aGlua2luZ1okNzQyMzE2YzgtNjczMS00MDFjLThmYjctYjQxZWM4MDIzY2YyEgyrtraF0kDA1In8LeUaDDMZLyswyK/c6fx12yIwTW0T2fbWJoJc1/AlqAMYxoSqby8fpaabYIYciFwJ690X1n+bAAJDwHtz/ZBkh4nfKq0EudmsNmlmBCq5gchfMlML45ZaqLQ86WgB+EwJGegYkSgpexCcliyRIysKS0i7mE1Zv8eD3Rp1Bj4xI3bZIxWQvABiTd51Bf725ShWtgsKPM/VKnvB9BwAGFCoSavr/1JewLOwyaFkYD4b78DWTmM8xeMYSt7E4aR9uksa8mTFW3lCEaccQlP5g28oGNr3yZffM7Du9g9CV5pAFMkSiiHDc+5igWAoFxvp1Be3Kz7KUr9BFGIswvJeNP2Ta9DZQz8fTNAXXLnFtL1u/fF39z0geeLENeM8kjZh2JpBSifFoNDJ0O+tLVc9g08y7AQ/O3etoL5Bbx6CPt6b0Rveh4aQNEV5EEONR0vTbfs+hwW7vETxHYuEdIZcMa3LY8NvSt0GSwZt+MTsUXVvgG2/NF+5nn19yaVrd6Z9zu5m4Ger7+HoZOHrr/ySw3i7fYkIBH0b7DelINL5EzPOL+NDRI4sMoYU3nPHYQh6b6ZpZdMC3JFeXA9yeR5Kf3WKbJ/Im9fnvgAa9BGqEFH3krO+22hYUI2yWFtpaRqDlhmY0NpUMPXHm5Vc6AyLexNvmv/OqCG+BicUlWdKlpmGPriCOcNeoL2bc9mbuG4JCcAQCXAki3sKonKEPvspjpNEinHEvq+fy5OlBLBMQlQABBnU8wp9CHt3zG1ovHYPDGgmE+kVFbRtgcRwgFMeCDY7lBSYOIFwWTKUqO83VyIsCsMRlrKfiqVYn1dfESEE1GTXXgMYAQ=="}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"# Setting Up the Problem\n\nLet me define a"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" variable:\n- Let **x** = the cost of the ball\n- Then the bat costs **x + $1.00** (since it's $1.00 *"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"more than* the ball)\n\n# Writing the Equation\n\nTogether they cost $1.10:\n\n$$x + (x + 1.00) = 1.10$$\n\n# Sol"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ving\n\n$$2x + 1.00 = 1.10$$\n\n$$2x = 0.10$$\n\n$$x = 0.05$$\n\n# Checking the Answer\n\n- Ball: **"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"$0.05**\n- Bat: $0.05 + $1.00 = **$1.05**\n- Total: $0.05 + $1.05 = **$1.10** ✓\n- Difference: $1."}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"05 − $0.05 = **$1.00** ✓ (bat costs exactly $1.00 more)\n\n# Why the Intuitive Answer F"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ails\n\nMany people instinctively say **$0.10**, but check it: if the ball were $0.10, the bat would be"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" $1.10 (a dollar more), making the total **$1.20** — too much. The $0"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":".10 difference from $1.00 must be *split* between the two items.\n\n# Final Answer\n\n**The ball costs $0.05 (5"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" cents).**"}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1            }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":654,"output_tokens_details":{"thinking_tokens":258}}          }
+
+event: message_stop
+data: {"type":"message_stop"       }
+

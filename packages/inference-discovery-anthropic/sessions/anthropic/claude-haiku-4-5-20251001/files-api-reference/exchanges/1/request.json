@@ -1,0 +1,22 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "document",
+          "source": {
+            "type": "file",
+            "file_id": "file_011CbLEivLhwD9aLQTR9vonW"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Summarize the attached document in one sentence."
+        }
+      ]
+    }
+  ]
+}

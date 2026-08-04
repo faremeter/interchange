@@ -1,0 +1,22 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "document",
+          "source": {
+            "type": "file",
+            "file_id": "file_011CdHSoMqpBoq8i2Bh1iVgL"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Summarize the attached document in one sentence."
+        }
+      ]
+    }
+  ]
+}

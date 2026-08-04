@@ -1,0 +1,23 @@
+{
+  "model": "claude-fable-5",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "document",
+          "source": {
+            "type": "file",
+            "file_id": "file_011CdV2SYFYrr6Zqqab4z7DN"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Summarize the attached document in one sentence."
+        }
+      ]
+    }
+  ],
+  "stream": true
+}

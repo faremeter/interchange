@@ -1,0 +1,57 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "ErkCCokBCBAYAipAxjRAbJDvF+KFAdiRtp+ISg8CAKLy+3at+wYKq9CEFNuQo/oKDxtafjVCW0wAGXAglI+Qg8Z/UdnpoyINX+tpJTIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDF//I3qdS41TLQKNFxoMK/e/cmWLliVRBXddIjCf3kuFGLnOarHgZpJzFtsDn+WmfHPJ67vwdelHRZhxLko7dujMFed/qKsmNjTEf5gqXafunF7+aYJFk8tEIbvZFVA2H97lnK7dfHlWLmR6rVt9N/NLL7W1jLddNbMfwbXPa5MJTwT2ttujnlZlPOo18J3mvLkFCopD16TFvASPHT2Y5CCn7984Aem/0reGIRgB"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01PVjoMw3MSNgaCXandWvZPn",
+          "name": "get_weather",
+          "input": {
+            "location": "Boston, MA"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01PVjoMw3MSNgaCXandWvZPn",
+          "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Look up the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": ["location"]
+      }
+    }
+  ]
+}

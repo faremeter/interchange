@@ -1,0 +1,210 @@
+{
+  "model": "claude-sonnet-5",
+  "id": "msg_011CdHSoy2eVdASvqKoiuUMu",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01EtdtBmuLDb9bkBdfX2YtR1",
+      "name": "web_search",
+      "input": { "query": "top news headline today" }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_01EtdtBmuLDb9bkBdfX2YtR1",
+      "content": [
+        {
+          "type": "web_search_result",
+          "title": "CBS News | Breaking news, top stories & today's latest headlines",
+          "url": "https://www.cbsnews.com/",
+          "encrypted_content": "EvEICioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDBOueBTA0P1uUGegXBoM9AGUIZJz15mMQGmdIjCzLQROXgPyVu9Hdb9K/zH55zqT8lRDd6BBfYgMUvdOe28xMzfmgJUnUaiY2T23xrgq9AfeKAS0BPKQc5FNLO1TcxnG9QlD4plqH9/6iRNoHXFekldtgTP7jOS/pGWZ+fDny50E63jxGAJGVVE5br3L9onj8pOioSot5YisKJpYk/jfoW62NL2Fag0YkLNNZGzVITLzFCAPQIx4YQ+UlYM9NmBVZhUl83MCsMw/zAQqJF8CvQhi0jTyoQLhRRvFn9YTqk3UDMvQVOnpjtybAGDHKTCOUs9XvHhLsp6CyeBAzajGvEXf+SPg/C115YEKbcXLZ5Zi3nmFx+oe3dA3nvM4hwaTCSORIrSbx5riKy5ai4CeOANGL2xseoH3DMccDg4QNf0bun/kwsDkGJ+Uwq4KFnQj7LliGRr+oQLcTEUTc05H+Vu6g2wq2IFAUXlw6+Q3z7uvu9jyA6vhWhvCrp+nXfXQEDC8VLXlQpPPfTwsshcEaZkcMaN3H1J3ISqjJMXPTNvw2+Q10/XfepRZumyuEGq/JtbEFX/bjX6QKXVc1febQ4BuDl+yV07aU2cn39doK6ljN0mhJl/STzFY7asbSdpN37cS9hDwxX3u+izN987XAEY4epB+tuZ2BnBRnYOr66T6pXaY/3yhDGqHnV1UKnCciKZ3fUI7Yxmw7OHr28QFxG2/WrN6cKlq7KEvO3gqaK7nKOPrOLRFUTPCYDQ72NbxUAAxaDkIBm3QcjyQEKSrpgTn4yQBM+MZzQ7fD55C5dWLb1+ndRNjgP4CAXN9KyQv2K6Qi2joTdeUOjHMEUYgbQoh5biieh0PUl7qB0m7/GRewNuC7fvZYeH7ycsldgs9ezKxZaC8XuQruVuXC3AB6RhndEc0JjBE8fwnv/KJzRw7aQtuthpulmDb9FbUhP+6tAF/0Y/Rw74Fsk3QW3TQpKHKBWRPHAdlNKkuVTD2mCCh76F/578ObeOcYSubL341R+NmKfrwrdm/wpNynKbI4o4Y5m/gpQ+qeEpAfgD5odzN850h4ViwJ8aD6GQuJOdkHaljFZc/boDN5Q7rpbQSauAJP3TucJe8BwAnHgMm6bVN3CMYl8fASij/J2OQrLPMqBf7lIDy3ZbmcGYz7FosOq/+pnEDfxOeuTUHE3UJ5SAbFjEDRZ1ge/95etie2R9ZTlTnslTgPd8cULtY4M49hKqSiopwzZI8pl+0cj01UEjbD+HK9rWn/Us3cUyTpunC/EAPbQLNkO+ffG7zOeXAh21VBGtwg4xIGJHHFW3i4GmWv5GimnatWY3orhd4MG84RpqCSCKatPoaFwojJO8kmrzfSXfKwZdSqBSQgjd37B2nZuNh6ag/WyKQMBRmswNPdIThFr5tKp3wzj/C1OiV/9gBUlplRAVExlJ1g5JMDbAP4Ii7GAM=",
+          "page_age": "3 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "world news",
+          "url": "https://www.euronews.com/tag/world-news?p=226",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "top stories",
+          "url": "https://www.euronews.com/tag/top-stories?p=198",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "top stories",
+          "url": "https://www.euronews.com/tag/top-stories?p=145",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "world news",
+          "url": "https://www.euronews.com/tag/world-news?p=220",
+          "encrypted_content": "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",
+          "page_age": null
+        }
+      ],
+      "caller": { "type": "direct" }
+    },
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "Et0CCokBCBAYAipARp6p5WGtBzls8xNgOqrMMQxzr2HXTijS361wm5g/OT/0ANPbp4ZFZ675W/IJ7Dc5BPafbARzxCXv3Mc8IRQ4xDIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPjitY3uIrq1/KffjxoM8Cv4RM3pz0PPtMhaIjCmUvvnq9Iw7rS/OCjK8Yickoy/1xmrbjRw61GNqSEF9UxdjvMevge9IswXSWDvlz8qgAHGpbr08OiCBgo59vOyrYptvEHsQj9dQ5ELp3j1xZPdbsNQr2jndpHxXMc2MLsgKM+Z1He+t859H6gxdG8iCIyQDi3vemwemOEF8zpdY4a1oM/6n9WhLHqDG593j5KE5fRu4jLu485SGCaiPey+660/GXOTk7lIlMvFbfbrrMmTwBgB"
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_015NNJbh7fqzXB2ifK33DDjy",
+      "name": "web_search",
+      "input": { "query": "breaking news July 22 2026" }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_015NNJbh7fqzXB2ifK33DDjy",
+      "content": [
+        {
+          "type": "web_search_result",
+          "title": "ABC7 News at 5am - July 22, 2026 - ABC7 San Francisco",
+          "url": "https://abc7news.com/videoClip/19556414/",
+          "encrypted_content": "Eu0GCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDMPvWXq3qM6AXeT4PxoMkMOydXU7XA6nNg9EIjBEnPbU1TIk9QQTscaZf2GsiuHsVHXAC9OqY65L0XYd3TeK+91SNtxfjg+lhPzBjdMq8AUWh54MQtpHyvdNFQ9dqPOwSULPyCHqgWOj+k2mYHm2MFvJ1pvAnsjm2H19Zrp6djle6KN+08mbMlaFQ2zHCdcIWZH3ERoGlGCkH4rtZRusUMooZWJOjVjg61tS5AcXjSooAMADLRZp9Z59f77CsIZhX5aGZLzeG/S+8P9lgruqePw3RZcmjcaVYZr9WyCXAJo4spVDm63Aggfb1z4yC2Pel9WtgydXDbKSYdVZrCO7dXFYAufIXC/B92NO9mdFvPcMUlp7aO/VxpOfuED7mImk0yqQ6QYq5/qyjFZvPG1bS88IxeW2WVNFnIpWnfgS+y7y+gTWlLSYRym1lZxRZLAb53m3fl8ZAS74vtPG1/rVauOZltD/8y7UZwmH2sghMrGogcQaccPwwUpmjf5CSGF2ROwDK7jyOMwPG8ViNPBKrBuCFDGfkXumQq8ofxcxQwMBSN9Y2TPZZ7Jcv1S1/1zwIdgb/ReI8opgJ2VKgtZjw9xkY13VUslrbGT1Xef0qGgnmkvk9TD7/bTbSqII3AvLLc7+21H9P3MWFqNvpoM8QLp+muTPBeqohIAwnEettMy4OWhzkJnAb6gQV8WOg/dXvy03djSwENE1nGhCLUkXdvsBkzX0s0b+loh+zDmoqXxD0Ugjg5oBtOdHeG105Q9jsD6pWx5qhVYpJxAR/lQz4Q+OEfJcZBjOnbZBZ+SaFQtFjGpz8+kRvFgIf6sSDh9FowkYcHtPLY65LHgA8ZmOWu7/KfYxKhiUofG8ZiD5g7i1xgy8sKrWoBCfIgLK5NhJKI8r1BsJVNZ/C1DH/arpIxxts6oI+zoiAxFFMv29HnLruS+Q4gjgL7iotwf/jJYd+A9qO2OXEzK+kEGD6j7CbesE+Gx11BnDvBMG4lIx/GJYCL4fO76eVV6Ndx1YupeD4tF5ku+AAPI1HUinTSUBpf7a99Bnr+woRzh9nRNkvUvtJCsIMpZH+upW/aoD/9xyib2oTq9hbYr0n1kd4yMpSBgD",
+          "page_age": "3 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Video. Latest news bulletin | July 22nd, 2026 – Morning | Euronews",
+          "url": "https://www.euronews.com/video/2026/07/22/latest-news-bulletin-july-22nd-2026-morning",
+          "encrypted_content": "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",
+          "page_age": "12 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Early Edition: July 22, 2026",
+          "url": "https://www.justsecurity.org/148692/early-edition-july-22-2026/",
+          "encrypted_content": "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",
+          "page_age": "4 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Americans tourists stabbed outside Athens' Acropolis as police detain suspect in apparent random attack",
+          "url": "https://www.foxnews.com/us/american-tourists-stabbed-outside-athens-acropolis-police-detain-suspect-apparent-random-attack",
+          "encrypted_content": "EuwICioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDMNWAxQZB6JKn6FZSBoM2n/nFvwepGmwjrMHIjAmZtlwlH2SxsbYsSoUQJtp0PB11pjiL2y+t03jh+nJeuFK18B1QEQr9cOKHwtXqzUq7wdjkMLC1ml5UytxjtId5JRuOmDDaDJqCFH5ernUv2qKHDyDjBKm+p+4OFStZET+fE2rsWDYKRjhMB84WUWp9FYWgEDLeOnnLq6ifLABnOx0teuJnrevukKCrRb3KkvKHAT9kGxW1D14bbwaibtaAg43TMd1GeLdhmUTMuh52nwPQejQrsB+YhlxXi6gHmiQAU2UzIoqgMBdIfGz/4ZD0gu9PgyC2dkK56CpNIUO1Egsyb2eoTd493IvTow+brXmP3xd//A7gqTiIEiHfbgnHI7Zaidc47VURQ9Q7OV9NcwGHduu1VGZc0Nl5NqassLJZFz/EB4t3LqMgQxCUVnymLU2Jx0VkHc/XU4RnS3urNkZBI77EeHZMVT3ZTyNCMEYvfifXNaBGAMoCLStn6bRVnStUQrefs3hzCsCqYTNjGeuKlJpOL/TwKrNJuJttVQ6fRnK+fM1o+f/uEDopIc5EOVn+hXkstENGxk0K/Il0o6zbkUq+J0Lb1qiw7F04/9byUCnTWUKWoa6as4Ut9rdnES/Ok5B3J3GpN7d1+QcW3dYDjennmfFr6XhAJYslvwZ4HmZxaC6WJQvy2JDAWfOlldpBdjS8plJ3dq9oV2Z7hWy6cXasq+VA+pHOVYYT8cOEyaumXHiey1mERpBIW90or55TuQFG70pVT7jeFxyQOA/dCEPcdxwLn1S9kimxlDygh2gYG/rWtxR2OtByy6qi9BcrSVvSoRXt99t4Ve9Kogev/91yEukuHLm4HpCc5LSLmZjsJJwk3f5ru6U7LM0GKVd1iNdBArZkmIC/eoOjaM6yB94ySRGWlHyL6Cvyf81woqw0VOvoyxqwMbpjJx0qXqFV5peTRfAnGPyLfcBHW2QwZSYyQoOPTcMqPpFS8DpzCFfW+4WLeTHDBFwV/xrZb10Bs9mjXN0xNCYHyxkwoMS+o3AM3N00VQ+6QsS9TTpPSBratQXoUdiKlWJfLoykUYjIigZXJmYwrzJ8sfiDumqIEUgqFTDnHLhDCOd6p8bJYnmfGxvedKYsW9T623AXXZzHVd/6MqPq28vmF6WVJBcn2pKEnx/3/TJP02AfdkBDUyDIuLCkWI21iCJ9OmuEOccEZsgKEm2+PUTyLvockE87WrBqUI4t3Y7G0lr7eu2Q0TPm/0j3jbkhHTY16wp8DSdaqgSmEogoDzrfb/x57wVOXw7Vus8fn5NnNdLZgHMY/on10QizCqlnuI9viQnEHUxpnbxD4UUHRLpNvKghOwGKiBWAY8XCCDjeQWBdftghMHa9IWfUro+lJihRSF3Apg2E2m9eCzRo9J0GL9oIgJg41Lu8DDtNe7vcBm3tq6ZmBgD",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "News: U.S. and World News Headlines : NPR",
+          "url": "https://www.npr.org/sections/news/",
+          "encrypted_content": "EuAQCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDF6gXYXUADovrmjtZhoM9yMsrE1WuHhrVagHIjCKj6LV+Jw/7pn+lKusypr38HfLstOHNW5wRDm4wOAK9/eP3O5zvzZVGwjrMM5rMusq4w+NsiRNhA+fR7MuLyY7x/PB+LJbeuG55yIk/viKHqmg2DsqezV0dhMKLoVJmu40FaNkZMBnPYXghBNysRyrTQvFR54LxY0nHPBgWzKgE2L9OWzNFYlGvJoDIRURLT9bkxJx1csCZiY9irTcE8snoKSr6Fe2Ndm0XbljEpDyQCaJa+WevrnU4WqrP5tXPDHW1Synij34fxRze1md0dQRQlrGzW2B6UMP7qMnUYqqohQSS52aojWmH/raODvnlKWXB+TCWnwFb12y9IdJozMSTeGe2QQQIJ+ruk/mUFeTYu9jnZj2MekQ0nzrjk6jGARSBla/uRZOmR8OIyeyYIvFsTtQZiU7Q3+cvacXoAD2hUFtcJibLN36a7XRIbGGxjWEG9sd44/njpvw87+ESSrkCqVtOxEMt3+Hl2xlU74w+qoX9fU9+JL/q+Lf6kTBG37NqF1Pi7tJDiqBhPxhjZ/MnyZIvLwVdyPM3JA1hLLPd65FM7rDk+L3cM+w17joGYVJjRtaEtu7DMnh7CW6l7sy9HjQq5LfjWXCWN153YT2ZETMklq7e2f1f2k41cTVeXyN6dWKyCDJ7ybbsJCinyswRi/8XzooMyZu7VsCVurUsNQF3ZzG2EIJsaQjCdczwWX53Qbfc59jUAkD7q5aBPA2ViyzsY2CN/RQ3/LNrMbtdihrOIy4/GKMaUPRi7P/mjPbHiWpyaLV5Ug4B0ymM3oXFvNBTnsIa78V5uXAW10YafUOBpVb+FPwoJo4lWV9c/Mu8YZ0QCSzZVB8pFc2+W84JAJlVhb2gFSDJYpkTUYaY0YFCutV84bILqDkiFGlp8sIloUNzOyZJgVNbkgg0+vzSZu1Qp66ogAhZQhSbw40bf9pXttYxDeqzCIXjFUudzqtJ+ny4uXEegduQN2McUEmuUYsC6E3fQ+l8+6XtD7vik/ZMCMB7xlTjkOgtoR9czcyPCnOCYFemf0ZAHAfRO5L+J6TKavI2yGhNN52hV6dmfSKqPxs0LDTAr5MWvpCUMltnqMC6OEVzVQx7I46IpdTybB7Lm5sSDMcMQqn/+jeB99BXpTIMymXXcQZ73xkA8bKy+LiuUdHxWZT33qaXQ4SpXX92INfaISeM39QXi6nkHYoc/URy/fFz29qy8BuS1LOePs2uoCUja4j/uuLg9ZJAie3KMvo1P4EoRlGkbR1QGnNis1ZZLaNkwqa9QL4ATRXSNSpca5YSiMcN0IiyCH4p08HyNOHedlE1jzYgEoPRcMJFsFWHlvbOatxMh0Ylm3eokhH7EmXibLqm97Eq46dGxnxfxRSOzpf75XCG5QDL3pmRfJQwng+jPHVnj4rzXySpFPK5I3gS6r1TkCAhYh6DPTzVONimo/uK18a6whw2R9RJaMp6DGl8V1Cm1kwZbrv1lzOp32fokIXZRHBFINQc1m6UhE9acbaCV9f7ULylU+sp/C+X/q5aBvH3VWOHRwRcuftIiCKeapR/5H+lqy29RsuTJAM99rHmHdf7sujd7ewnGsA8ytLBPgou2dQ0APkJhLY54h7uuRZlUo+tXBAg58bZyV5KMTqCQYskJKR8tae1E9Bo5WIHh/FBQLurHzQcjkargdJ2WC6SJK5l53Fz2UXEXyluZkDOjmnzBacOMH3Xdbz5e7WKtPBqEwaFHCdIs21e2A2Z66iYPRrnlHqvB2YWYLh/A/ESsXQwOdaz0qh1MLHX8iEZFLfBZzODI90GoPVR+PCakzZh2TEFQUBSsR9QEBDKdcGO8jGp5agjDdIZ3D4C+fq7+/oNAhUV5IW/SO5vBbv2jivGeufFvMmC71GP2We+TnAt+9x//7PZUIBZnL3dpDAqF3Hv7WaELwj8lI4li+cLndfcb8g+bcsGbHmJZFhRP6FWHVvdZO5y8DyPq04c/5rVywOG8qYp8zv9W/ks6zPNWG9ORcK4UMAK33C2f03KuJSLsZtIFrcJ5H7jQjhwc+vxSbFmyVAgMjrz0FQdletHiUptsp5OzFSNejlC0G9O42lTtLCcDp1HylsUH4K8RB4uPe0XHwGJKwLCS/IqA68QkfoA1J8RHM+UutnaNr9dCSk55/7bhM3iT6JqskTettHvaIxJQsD5nITn9c+jSv17R3OUSqgUVpLFJM5+XwxlYQy5Lm9Xr7BDScBeiHoHK8ZMwJ/XvZhN7TSgqCyObCErxOpmPcpG3sfq71wUtKCoAYrk3xwKk4iHwNUmBic5lEZqH2KoSU00i6TEoAIBJKF5uE7ykL3jDxu2OB+rr9pSLVzUETkhjjTbpoLzcXbPnI5cGpH/U0L8rVJ+WxbH7vt0wyHxDXCjXHmC0wM5Aar87F71sKo02hnNtIkmHrAj7NPvsN7ywOI4nCKQgjlpeaT7L/5gqUDPLxDCySwwl6T5uRrZxDaCcEI27VIlCjUto3Q4G7gztT9U2FB5/mZogb30yUSmxdY1UuK3gi8P26FFYG8Sql/+U2F/OSCf4fqY8bbEMqE5R4vnQ5lXq8M9WtszKurFWu0hMMwrMBqwQKj14bpVBg4/BFk2kvpi0BRnvPLp6+eaBB2QUVn5Pipz0mQXmx4284wLBvvC1f0x28cklF7w23nt7u0ViLSS18/lWov3vwJvBV/s3L1XOyxMM7EDp2D5tYjNckTZexjX6C1ez2b46YQjYO2D+esR/pv1RTVKykwjSunjAhc4gXW0y8YAw==",
+          "page_age": "20 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Wednesday morning news: July 22, 2026 | WORLD",
+          "url": "https://wng.org/podcasts/wednesday-morning-news-july-22-2026-1784664142",
+          "encrypted_content": "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",
+          "page_age": "11 hours ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Trump threatens to bomb Iranian bridges, power plants, for every ship struck in Hormuz | The Times of Israel",
+          "url": "https://www.timesofisrael.com/liveblog-july-22-2026/",
+          "encrypted_content": "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",
+          "page_age": "23 minutes ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Portal:Current events/July 2026 - Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/Portal:Current_events/July_2026",
+          "encrypted_content": "EtoHCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDI83cBWZI8EwhEhylxoMY5tEn7KsqWll2m6nIjDiMTyJFrnOlfvv28JRDwnWJHvS77m5T9DV/IddGHMvD89W1fEoYHBbZXXblaXt6U8q3QZY645szria/6Ate6Vhm5uk7t44odPTb42fB9xDdJF9fXnIrq3wRqeiYAFw0T0fThr+0C6cYq6+Y62PwIKcck7QZyjRr9XnllybTQDjRGXSBI859Pg9mwcV07mQerm49r6jO8iBn+3fOl1mlevn1FV93HuP3qvbvId3H/ZOshBokh92/ygqTDq6B7fw3n2+rEhx2Sz1892L6StH/+uE27uJefHoC5CighZL2q5j62n5r0JsfZRP7cXDat1NhOXI9pAej4U6MePJKM5fiPzrLVub6rqp3KpETkv3V4fnPbqPXHhhTnQOj9k+gXKW8G03F8swGChDHS9+S5aFFODCKyI+ZSQH7iovm21NtisWAoaV0CV/1kfoRBLcBo0oW+F5M5dv6TyETAyTZ7pyZGG8CX2D0mSVLIeHEkPM/NrYMRqfS8dESUpYIT586qrYxMB5RrQRywnpkbUjNBfzS0nS98DRk7nDNFgb4q3TbxA5a0fer5gRW5o+kGQoCsKYoz2J8n8a8w7jAPF9gzoW7qwfT14k5pQOIXCUAnX4o4bTyyRUirVUdfU4L2SP0P/P+yAS0vNzY9BnU+8MtvbQccFYThWjt8jIFDy6WVO5TGxHwGkAUdnQBw/7NUJAFTPJ2NHgmMFriVWejR8fWSWdSWqNjBoYUM4sheSdbc9rob0TK2O/dEdRF1Zpx0SRpJSNq4ZVPfbGSaBnlienbRGsUBD9Ah4oLKXuEuxcY7WIWAKe1c2ozsPuX82qiv25sH3ZikWBxrNn6sHfnAi0AynRqmsWpoX9TOXC3rqf9foXyZBjfGw2N0KptS/p5Zih7NeTChYkfcjAKoy7C9hdr780mGUa5G81WX9vb7s3+ZJfMdgUiigHMXvidYu9KDYFaWDgm9p6RV6m7FT1j0CHdriJ+yeqN/JXnAgQLKJ9InIau+CdtSkkS7bh3z2uc8KF8qKoNEILc9DwXikjAhDx2JhO4bI1mqWiEe+e54uurE9Dl7ZijWJ3p/GATxgkwGIeflArOmWN2hQpec6EOBPSatMAqtm2eO+VJABMF1fX1LZF89DEhCy078/EeKraPHlqdAwzS1oHMh+ttyqOhRdHy5HgMLVyrkECYwrB5lemgBcXnj2lrELC0s1lISecpj+ALCeeAaMYAw==",
+          "page_age": null
+        }
+      ],
+      "caller": { "type": "direct" }
+    },
+    {
+      "type": "text",
+      "text": "Based on today's coverage, the dominant global headline is the escalating U.S.–Iran conflict. According to Just Security's news roundup, "
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "Here’s today’s news: IRAN WAR · The U.S. military carried out its 11th consecutive night of strikes on Iran, with the latest wave lasting about 75 min...",
+          "url": "https://www.justsecurity.org/148692/early-edition-july-22-2026/",
+          "title": "Early Edition: July 22, 2026",
+          "encrypted_index": "Eo8BCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDF+BH2PsKq1IaLKbhBoMpJUtZMP23tnVO+BjIjAWHe03h22mdRMXXzFz+sKGhpPIH1xTguDsZQy6NgEfAmR7PBPOQIqg+AU0uOoBPxAqExFDToU74GmifmLqjSwHZE1kB88YBA=="
+        }
+      ],
+      "type": "text",
+      "text": "the U.S. military carried out its 11th consecutive night of strikes on Iran, with the latest wave lasting about 75 minutes overnight, according to U.S. Central Command"
+    },
+    { "type": "text", "text": ". In response, " },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "Iran’s army said it targeted U.S. military facilities in Kuwait, Jordan, and Bahrain with drones early this morning. The army said it struck accommoda...",
+          "url": "https://www.justsecurity.org/148692/early-edition-july-22-2026/",
+          "title": "Early Edition: July 22, 2026",
+          "encrypted_index": "EpEBCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDNPNghR5qrbxVZuehhoMUnkahaGYFMzg3ROOIjCHUsaUSbh7hzxhUb4hVFASye7TqNFX5ktUsHNOytst7KWnBJ2LqZ44Duv3ZzErtNoqFTS4Fnc8WU5SYPbNCEmYIX05tHNxNBgE"
+        }
+      ],
+      "type": "text",
+      "text": "Iran's army said it targeted U.S. military facilities in Kuwait, Jordan, and Bahrain with drones early this morning, striking accommodation buildings and equipment storage at Al Azraq air base in Jordan and equipment warehouses and hangars at Sheikh Isa Air Base in Bahrain using Arash suicide drones"
+    },
+    { "type": "text", "text": ".\n\nAdding to the tension, " },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "President Trump yesterday threatened to accelerate the war in Iran by striking Pickaxe Mountain, a deep underground site that the United States and Is...",
+          "url": "https://www.justsecurity.org/148692/early-edition-july-22-2026/",
+          "title": "Early Edition: July 22, 2026",
+          "encrypted_index": "EpABCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDCp3Bq57BLQxNIgVwxoMXdp3WxYzdu2n/WqAIjAHyIrbIsWWCciMerPZwLj04v6Yf9kcGikYd7DZTC/T1mORrDTzCO/lszX5yBnPb9MqFOwAu4y4vepAGuaYyTR98zs6GS7vGAQ="
+        }
+      ],
+      "type": "text",
+      "text": "President Trump threatened to accelerate the war in Iran by striking Pickaxe Mountain, a deep underground site that the U.S. and Israel suspect could be used for nuclear activity"
+    },
+    { "type": "text", "text": ". The Times of Israel also reports Trump was " },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "(AP/Julia Demaree Nikhinson) Departing for Dover to participate in the dignified transfer of four American soldiers who were killed last week in the I...",
+          "url": "https://www.timesofisrael.com/liveblog-july-22-2026/",
+          "title": "Trump threatens to bomb Iranian bridges, power plants, for every ship struck in Hormuz | The Times of Israel",
+          "encrypted_index": "EpABCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDHkjVKzCiLZtA2+/DxoM9SL9ec9ONa3vTT5kIjD6pAHKkFOoqho6nSZVYuBGhlPrguX0+NgyGucHSy0G5uCwVDRQL1tgYBiZ06fH2cUqFFgmFBPuY2VGV2sGTmbEDyEzEuqyGAQ="
+        }
+      ],
+      "type": "text",
+      "text": "departing for Dover to participate in the dignified transfer of four American soldiers who were killed last week in the Iran conflict"
+    },
+    {
+      "type": "text",
+      "text": ".\n\nSource: [Just Security – Early Edition: July 22, 2026](https://www.justsecurity.org/148692/early-edition-july-22-2026/)"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 24308,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 625,
+    "output_tokens_details": { "thinking_tokens": 38 },
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "server_tool_use": { "web_search_requests": 2, "web_fetch_requests": 0 }
+  }
+}
