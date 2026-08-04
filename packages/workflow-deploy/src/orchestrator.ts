@@ -35,6 +35,7 @@ import type {
   ToolDefinition,
 } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 import { parseAgentAddress } from "@intx/types";
 import {
   STEP_ID_PATTERN,
@@ -161,6 +162,12 @@ export type DeploySingleStepFn = (params: {
    * body child resolves by ref. Empty/absent for a workflow with no section.
    */
   referencedDefinitions?: readonly ReferencedBodyDefinition[];
+  /**
+   * Decrypted credential material for the deployment's tools, delivered on the
+   * deploy frame so it is resident before any step runs. Absent when the
+   * definition binds no credentials.
+   */
+  credentials?: CredentialDelivery;
 }) => Promise<MultiStepDeployResult>;
 
 /**

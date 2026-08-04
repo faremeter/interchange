@@ -42,8 +42,14 @@ import {
   ErrorResponse,
   formatAgentAddress,
   paginatedSchema,
+  credentialAad,
 } from "@intx/types";
 import type { CredentialCipher, ProviderPreference } from "@intx/types";
+import type {
+  CredentialBindingDescriptor,
+  CredentialDelivery,
+  CredentialMaterialEntry,
+} from "@intx/types/sidecar";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   findRoutableById,
@@ -390,15 +396,20 @@ export function createInstanceRoutes({
       // Each credential binding names a tool-package handle bound to a concrete
       // provider. Resolve it to a tenant-owned credential (the `tenant` locator
       // filters `principalId IS NULL`), whose use is authorized by ownership --
-      // proven by this walk-up resolution, not re-checked -- and stamp a
-      // consumer-scoped `credential:{id}` / `use` grant on the instance
-      // principal, scoped to the tool package by the `{ tool }` condition.
-      // origin `system`: the authority is tenant ownership, not a delegated
-      // personal grant. The runtime gate that CHECKS the condition is C8, so
-      // this commit only stamps the grant; no production `workflow.json` carries
-      // a binding yet, so this path runs only under test fixtures today.
+      // proven by this walk-up resolution, not re-checked. Stamp a
+      // consumer-scoped `credential:{id}` / `use` grant (origin `system`) scoped
+      // to the tool package by the `{ tool }` condition, and decrypt the secret
+      // into the material delivered to that tool, keyed by credentialId so a
+      // credential backing several handles is decrypted once. The runtime gate
+      // that CHECKS the condition is C8; no production `workflow.json` carries a
+      // binding yet, so this path runs only under test fixtures today.
+      const credentialMaterials = new Map<string, CredentialMaterialEntry>();
+      const credentialDescriptors: CredentialBindingDescriptor[] = [];
       for (const binding of foldedBody.credentialBindings) {
         let credentialId: string;
+        let credentialSecret: string;
+        let providerKey: string;
+        let origin: string;
         try {
           const resolved = await resolveCredentialRequirement(
             db,
@@ -422,7 +433,26 @@ export function createInstanceRoutes({
               409,
             );
           }
+          // The credential is delivered to the tool as an origin-pinned handle,
+          // so its provider must declare an API origin. A provider without one
+          // (an OAuth-login-only provider) cannot back a tool credential; fail
+          // closed at bind time rather than deliver an un-pinnable secret.
+          const providerOrigin = resolved.provider.apiBaseUrl;
+          if (providerOrigin === null || providerOrigin === "") {
+            return c.json(
+              {
+                error: {
+                  code: "not_launchable",
+                  message: `Provider ${binding.provider} has no API base URL; cannot deliver an origin-pinned credential (package ${binding.package}, handle ${binding.handle})`,
+                },
+              },
+              409,
+            );
+          }
           credentialId = resolved.credential.id;
+          credentialSecret = resolved.credential.secret;
+          providerKey = resolved.provider.plugin;
+          origin = providerOrigin;
         } catch (e) {
           if (!(e instanceof AmbiguousCredentialError)) {
             throw e;
@@ -450,7 +480,33 @@ export function createInstanceRoutes({
             now,
           }),
         );
+        credentialDescriptors.push({
+          handle: binding.handle,
+          credentialId,
+          consumer: toolConsumer(binding.package),
+        });
+        if (!credentialMaterials.has(credentialId)) {
+          // Decrypt at the single point of use, mirroring buildSource. A
+          // decrypt failure propagates and aborts the launch (fail closed);
+          // there is no placeholder secret.
+          credentialMaterials.set(credentialId, {
+            credentialId,
+            providerKey,
+            origin,
+            secret: await credentialCipher.decrypt(
+              credentialSecret,
+              credentialAad(credentialId, "secret"),
+            ),
+          });
+        }
       }
+      const credentialDelivery: CredentialDelivery | undefined =
+        credentialDescriptors.length > 0
+          ? {
+              bindings: credentialDescriptors,
+              materials: [...credentialMaterials.values()],
+            }
+          : undefined;
 
       // An instance-kind `workflow_definition` launches as a `workflow_run`
       // rather than an `agent_instance`: the run IS the launched instance. The
@@ -597,6 +653,9 @@ export function createInstanceRoutes({
           deployContent: {
             systemPrompt: foldedBody.systemPrompt,
           },
+          ...(credentialDelivery !== undefined
+            ? { credentials: credentialDelivery }
+            : {}),
         });
       } catch (err) {
         eventCollectors.abandon(agentAddress);

@@ -104,13 +104,22 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
 
 // The launch calls deployInstanceAtHead AFTER the DB transaction commits; it
 // must resolve (a throw unwinds the run and yields 502, not the grant rows).
+// It captures the deploy params so a test can assert the credential delivery
+// the hub builds onto the deploy frame.
+let capturedDeployParams:
+  | Parameters<SessionService["deployInstanceAtHead"]>[0]
+  | undefined;
+
 function capturingSessionService(): SessionService {
   const notImpl = (name: string) => (): never => {
     throw new Error(`mock: sessionService.${name} not implemented`);
   };
   return {
     stageWorkflowStep: async () => undefined,
-    deployInstanceAtHead: async () => ({ publicKey: "pk-instance-mock" }),
+    deployInstanceAtHead: async (params) => {
+      capturedDeployParams = params;
+      return { publicKey: "pk-instance-mock" };
+    },
     deployWorkflowDefinition: notImpl("deployWorkflowDefinition"),
     deploySingleStepAtHead: notImpl("deploySingleStepAtHead"),
     sendUserMessage: notImpl("sendUserMessage"),
@@ -165,7 +174,6 @@ const CREATOR_BINDING: CredentialBinding = {
   handle: "gh",
   provider: BINDING_PROVIDER_NAME,
   locator: "tenant",
-  authority: "creator",
 };
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -182,6 +190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     beforeEach(async () => {
+      capturedDeployParams = undefined;
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT }]);
       // The launcher (session user) and its route-guard grant.
@@ -261,6 +270,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: BINDING_PROVIDER,
         tenantId: TENANT,
         name: BINDING_PROVIDER_NAME,
+        // The bound credential is delivered as an origin-pinned handle, so its
+        // provider must declare an API origin.
+        apiBaseUrl: "https://api.example.test",
       });
     });
 
@@ -329,6 +341,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // grant, not a delegated creator grant.
         origin: "system",
         conditions: { tool: `tool:${BINDING_PACKAGE}` },
+      });
+
+      // The hub also builds the credential delivery onto the deploy frame: the
+      // per-handle descriptor plus the decrypted material (secret + provider
+      // facts), keyed by credentialId. The test app runs the noop cipher, so
+      // the delivered secret is the stored value verbatim.
+      expect(capturedDeployParams?.credentials).toEqual({
+        bindings: [
+          {
+            handle: "gh",
+            credentialId: BINDING_CRED,
+            consumer: `tool:${BINDING_PACKAGE}`,
+          },
+        ],
+        materials: [
+          {
+            credentialId: BINDING_CRED,
+            providerKey: "test-plugin",
+            origin: "https://api.example.test",
+            secret: `${BINDING_CRED}-secret`,
+          },
+        ],
       });
     });
 
