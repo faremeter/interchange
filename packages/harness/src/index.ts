@@ -20,7 +20,10 @@ export type {
   HttpCredentialProviderOptions,
 } from "./credential-providers";
 
-export { createCredentialCapability } from "./credential-capability";
+export {
+  createCredentialCapability,
+  reconcileDeclaredCredentials,
+} from "./credential-capability";
 export type {
   CredentialCapabilityDeps,
   HostCredentialCapability,
