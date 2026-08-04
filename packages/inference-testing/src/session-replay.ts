@@ -155,12 +155,19 @@ export interface ReplayHarness {
   dispose(): void;
 }
 
-export interface CapturedExchange {
+// The request side is a discriminated union: a JSON request carries its
+// parsed body (matched by canonical-JSON equality), a raw request carries only
+// its byte length on the public shape (the bytes match by byte equality — the
+// Files-API upload step, not driven by the runInference replay). The response
+// side is orthogonal and identical across both.
+export type CapturedExchange = {
   index: number;
-  capturedRequest: unknown;
   responseHeaders: Record<string, string>;
   responseKind: "sse" | "json";
-}
+} & (
+  | { requestKind: "json"; capturedRequest: unknown }
+  | { requestKind: "raw"; requestByteLength: number }
+);
 
 export interface CapturedDispatch {
   index: number;
@@ -169,9 +176,34 @@ export interface CapturedDispatch {
   result: unknown;
 }
 
-interface InternalExchange extends CapturedExchange {
-  canonicalRequestText: string;
+type InternalExchange = {
+  index: number;
+  responseHeaders: Record<string, string>;
+  responseKind: "sse" | "json";
   responseBytes: Uint8Array;
+} & (
+  | {
+      requestKind: "json";
+      capturedRequest: unknown;
+      canonicalRequestText: string;
+    }
+  | { requestKind: "raw"; requestBytes: Uint8Array }
+);
+
+// Byte-equality is the match primitive for a raw request body (request.bin);
+// canonical-JSON equality does not apply to opaque bytes. The runInference
+// replay driver never invokes this — it rejects raw exchanges up front — so it
+// exists for a future Files-API-aware driver that replays the upload step.
+export function requestBytesMatch(a: Uint8Array, b: Uint8Array): boolean {
+  return Buffer.from(a).equals(Buffer.from(b));
+}
+
+// The captured request to surface in a mismatch diagnostic: the parsed JSON
+// body for a JSON exchange, or null for a raw one. Raw exchanges never reach
+// the runInference replay driver (rejected at construction), so the raw arm is
+// defensive.
+function reportedRequest(e: InternalExchange): unknown {
+  return e.requestKind === "json" ? e.capturedRequest : null;
 }
 
 interface ToolDispatchQueue {
@@ -298,37 +330,48 @@ async function loadExchanges(sessionDir: string): Promise<InternalExchange[]> {
   for (const { name, index } of parsed) {
     const dir = path.join(exchangesRoot, name);
 
-    // The recording side can write either `request.json` (JSON body)
-    // or `request.bin` (raw bytes) — they're mutually exclusive in a
-    // well-formed capture. Replay today only matches JSON bodies via
-    // canonical comparison; if `request.bin` is present, we cannot
-    // serve this session and the right move is to reject loudly at
-    // load time rather than fail later with an opaque ENOENT.
+    // A well-formed exchange carries exactly one request body: `request.json`
+    // (a JSON body, matched by canonical-JSON equality) or `request.bin` (raw
+    // bytes — e.g. a Files-API upload — matched by byte equality). Both
+    // present or neither present is a malformed capture. A raw request loads
+    // fine here; whether a given replay driver can *drive* it is a separate
+    // constraint the driver enforces (createReplayHarness rejects raw).
     const requestJsonPath = path.join(dir, "request.json");
     const requestBinPath = path.join(dir, "request.bin");
     const jsonRequestExists = await fileExists(requestJsonPath);
     const binRequestExists = await fileExists(requestBinPath);
-    if (binRequestExists && !jsonRequestExists) {
-      throw new Error(
-        `Session replay: exchange ${String(index)} in ${dir} has a raw-body ` +
-          `request (request.bin) but session replay only supports JSON request ` +
-          `bodies. Sessions with raw-body requests cannot be replayed yet.`,
-      );
-    }
     if (binRequestExists && jsonRequestExists) {
       throw new Error(
         `Session replay: exchange ${String(index)} in ${dir} has both ` +
           `request.json and request.bin; the capture is malformed.`,
       );
     }
-    if (!jsonRequestExists) {
+    if (!binRequestExists && !jsonRequestExists) {
       throw new Error(
         `Session replay: exchange ${String(index)} in ${dir} has no ` +
-          `request.json (and no request.bin); the capture is malformed.`,
+          `request.json and no request.bin; the capture is malformed.`,
       );
     }
-    const requestText = await fs.readFile(requestJsonPath, "utf-8");
-    const capturedRequest: unknown = JSON.parse(requestText);
+    let request:
+      | {
+          requestKind: "json";
+          capturedRequest: unknown;
+          canonicalRequestText: string;
+        }
+      | { requestKind: "raw"; requestBytes: Uint8Array };
+    if (jsonRequestExists) {
+      const requestText = await fs.readFile(requestJsonPath, "utf-8");
+      request = {
+        requestKind: "json",
+        capturedRequest: JSON.parse(requestText),
+        canonicalRequestText: canonicaliseJSONText(requestText),
+      };
+    } else {
+      request = {
+        requestKind: "raw",
+        requestBytes: new Uint8Array(await fs.readFile(requestBinPath)),
+      };
+    }
 
     const parsedHeaders = await readJSONObject(
       path.join(dir, "response-headers.json"),
@@ -367,8 +410,7 @@ async function loadExchanges(sessionDir: string): Promise<InternalExchange[]> {
 
     out.push({
       index,
-      capturedRequest,
-      canonicalRequestText: canonicaliseJSONText(requestText),
+      ...request,
       responseBytes,
       responseHeaders: headers,
       responseKind,
@@ -434,6 +476,22 @@ export async function createReplayHarness(
   if (exchanges.length === 0) {
     throw new Error(
       `Session replay: ${sessionDir} contains no exchanges; nothing to replay`,
+    );
+  }
+
+  // This harness drives replay through `runInference` (see runTurn). A raw
+  // request body is a Files-API upload step, which is not a `runInference`
+  // call, so this driver cannot faithfully replay it. Reject loudly here — at
+  // the layer that owns the constraint — rather than let runTurn register a
+  // JSON matcher that silently never binds. A Files-API-aware driver is the
+  // layer that would drive such a session.
+  const rawExchange = exchanges.find((e) => e.requestKind === "raw");
+  if (rawExchange !== undefined) {
+    throw new Error(
+      `Session replay: ${sessionDir} contains a raw-byte request (Files-API ` +
+        `upload) at exchange ${String(rawExchange.index)}, which the ` +
+        `runInference replay driver cannot drive; a Files-API-aware driver is ` +
+        `required.`,
     );
   }
 
@@ -519,7 +577,7 @@ export async function createReplayHarness(
       throw new SessionReplayMismatchError({
         kind: "exchanges_over_consumed",
         exchangeIndex,
-        captured: lastExchange.capturedRequest,
+        captured: reportedRequest(lastExchange),
         actual: null,
         diff:
           `runTurn called ${String(turnCount + 1)} times but the capture has only ` +
@@ -531,6 +589,15 @@ export async function createReplayHarness(
     if (exchange === undefined) {
       throw new Error(
         `Session replay: exchange ${String(exchangeIndex)} missing from loaded set (internal bug)`,
+      );
+    }
+    if (exchange.requestKind !== "json") {
+      // Unreachable: createReplayHarness rejects sessions carrying a raw
+      // exchange. Kept so a future change that relaxes that guard fails loudly
+      // here rather than silently registering a JSON matcher that never binds.
+      throw new Error(
+        `Session replay: exchange ${String(exchangeIndex)} is a raw-byte ` +
+          `request; the runInference replay driver only drives JSON exchanges.`,
       );
     }
     // Track which matched request count we had BEFORE the turn so we
@@ -717,7 +784,7 @@ export async function createReplayHarness(
       throw new SessionReplayMismatchError({
         kind: "exchanges_under_consumed",
         exchangeIndex: expectedIndex,
-        captured: expected.capturedRequest,
+        captured: reportedRequest(expected),
         actual: null,
         diff:
           `Replay ended after ${String(turnCount)} exchange(s), but the capture has ${String(exchanges.length)}. ` +
@@ -741,12 +808,23 @@ export async function createReplayHarness(
     }
   };
 
-  const capturedExchanges: CapturedExchange[] = exchanges.map((e) => ({
-    index: e.index,
-    capturedRequest: e.capturedRequest,
-    responseHeaders: e.responseHeaders,
-    responseKind: e.responseKind,
-  }));
+  const capturedExchanges: CapturedExchange[] = exchanges.map((e) =>
+    e.requestKind === "json"
+      ? {
+          index: e.index,
+          requestKind: "json",
+          capturedRequest: e.capturedRequest,
+          responseHeaders: e.responseHeaders,
+          responseKind: e.responseKind,
+        }
+      : {
+          index: e.index,
+          requestKind: "raw",
+          requestByteLength: e.requestBytes.length,
+          responseHeaders: e.responseHeaders,
+          responseKind: e.responseKind,
+        },
+  );
 
   return {
     manifest,
