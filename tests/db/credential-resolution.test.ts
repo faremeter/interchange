@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 
 import {
+  AmbiguousCredentialError,
   resolveCredentialById,
   resolveCredentialByName,
   resolveCredentialRequirement,
@@ -483,15 +484,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
           name: "cred-b",
           principalId: null,
         });
-        await expect(
-          resolveCredentialRequirement(
+        // The throw is a typed AmbiguousCredentialError, not a bare Error, so a
+        // caller can catch *this* condition without also swallowing the DB
+        // faults the resolver can raise first.
+        let caught: unknown;
+        try {
+          await resolveCredentialRequirement(
             h.db,
             "tnt_leaf",
             { providerName: "github", source: "tenant" },
             null,
             null,
-          ),
-        ).rejects.toThrow(/Ambiguous credential match/);
+          );
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeInstanceOf(AmbiguousCredentialError);
+        if (!(caught instanceof Error)) {
+          throw new Error("expected the ambiguity rejection to be an Error");
+        }
+        expect(caught.message).toMatch(/Ambiguous credential match/);
       });
 
       test("disambiguates by name when supplied", async () => {

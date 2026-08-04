@@ -16,6 +16,19 @@
 import type { ConditionEvaluator, ConditionRegistry } from "./types";
 
 /**
+ * Build the consumer identity for a tool package. This is the value stamped
+ * onto a `credential:{id}` / `use` grant's `{ tool }` condition at launch, and
+ * the identical string the runtime gate supplies as `ctx.consumer` when a tool
+ * in that package uses the credential. Launch and gate MUST derive it the same
+ * way, so both import this one builder rather than inlining the format. The
+ * granularity is package-level: every tool in a package shares one consumer
+ * identity.
+ */
+export function toolConsumer(packageName: string): string {
+  return `tool:${packageName}`;
+}
+
+/**
  * Condition evaluator for credential consumers.
  *
  * Register as `tool` in the condition registry:

@@ -15,7 +15,7 @@
 // by construction -- a folded definition has no live factories, and the
 // capability walk falls back to the (empty) factories to emit no tool grants.
 
-import type { GrantRequirement } from "@intx/types";
+import type { CredentialBinding, GrantRequirement } from "@intx/types";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { InferencePreference } from "@intx/agent";
 import {
@@ -47,6 +47,8 @@ export interface FoldedWorkflowInput {
   readonly toolPackagePins: readonly ToolPackagePin[];
   /** The agent's grant requirements, carried onto the workflow envelope. */
   readonly grantRequirements?: readonly GrantRequirement[];
+  /** The agent's credential bindings, carried onto the workflow envelope. */
+  readonly credentialBindings?: readonly CredentialBinding[];
 }
 
 /**
@@ -84,6 +86,9 @@ export function synthesizeFoldedWorkflow(
     trigger: { type: "mail", to: input.mailAddress },
     ...(input.grantRequirements !== undefined
       ? { grantRequirements: input.grantRequirements }
+      : {}),
+    ...(input.credentialBindings !== undefined
+      ? { credentialBindings: input.credentialBindings }
       : {}),
   });
 }

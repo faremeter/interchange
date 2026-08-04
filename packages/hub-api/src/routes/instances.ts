@@ -18,9 +18,13 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import { parseWorkflowDefinitionRow } from "@intx/db";
+import {
+  AmbiguousCredentialError,
+  parseWorkflowDefinitionRow,
+  resolveCredentialRequirement,
+} from "@intx/db";
 import type { DB } from "@intx/db";
-import { authorize } from "@intx/authz";
+import { authorize, toolConsumer } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
@@ -63,7 +67,10 @@ import {
   mapRunStatusToInstanceStatus,
 } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
-import { resolveGrantMaterialization } from "../grant-materialization";
+import {
+  resolveGrantMaterialization,
+  makeGrantRow,
+} from "../grant-materialization";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
@@ -376,6 +383,73 @@ export function createInstanceRoutes({
         return c.json({ error: { code, message } }, status);
       }
       const grantRows = materialization.grantRows;
+
+      // --- Credential binding resolution ---
+      //
+      // Each credential binding names a tool-package handle bound to a concrete
+      // provider. Resolve it to a tenant-owned credential (the `tenant` locator
+      // filters `principalId IS NULL`), whose use is authorized by ownership --
+      // proven by this walk-up resolution, not re-checked -- and stamp a
+      // consumer-scoped `credential:{id}` / `use` grant on the instance
+      // principal, scoped to the tool package by the `{ tool }` condition.
+      // origin `system`: the authority is tenant ownership, not a delegated
+      // personal grant. The runtime gate that CHECKS the condition is C8, so
+      // this commit only stamps the grant; no production `workflow.json` carries
+      // a binding yet, so this path runs only under test fixtures today.
+      for (const binding of foldedBody.credentialBindings) {
+        let credentialId: string;
+        try {
+          const resolved = await resolveCredentialRequirement(
+            db,
+            tenant.id,
+            {
+              providerName: binding.provider,
+              source: binding.locator,
+              ...(binding.name !== undefined ? { name: binding.name } : {}),
+            },
+            creatorPrincipalId,
+            principal.id,
+          );
+          if (resolved === null) {
+            return c.json(
+              {
+                error: {
+                  code: "not_launchable",
+                  message: `No credential resolves the binding for provider ${binding.provider} (package ${binding.package}, handle ${binding.handle})`,
+                },
+              },
+              409,
+            );
+          }
+          credentialId = resolved.id;
+        } catch (e) {
+          if (!(e instanceof AmbiguousCredentialError)) {
+            throw e;
+          }
+          return c.json(
+            {
+              error: {
+                code: "not_launchable",
+                message: `Ambiguous credential for the binding on provider ${binding.provider} (package ${binding.package}, handle ${binding.handle}): ${e.message}`,
+              },
+            },
+            409,
+          );
+        }
+        grantRows.push(
+          makeGrantRow({
+            tenantId: tenant.id,
+            principalId: instancePrincipalId,
+            resource: `credential:${credentialId}`,
+            action: "use",
+            effect: "allow",
+            conditions: { tool: toolConsumer(binding.package) },
+            origin: "system",
+            expiresAt: null,
+            now,
+          }),
+        );
+      }
 
       // An instance-kind `workflow_definition` launches as a `workflow_run`
       // rather than an `agent_instance`: the run IS the launched instance. The

@@ -4,7 +4,7 @@
 // single-step `workflow.json`. The inverse builder, `synthesizeFoldedWorkflow`,
 // is test-only and lives in `@intx/workflow-deploy/testing`.
 
-import type { GrantRequirement } from "@intx/types";
+import type { CredentialBinding, GrantRequirement } from "@intx/types";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
@@ -13,6 +13,12 @@ export interface FoldedBody {
   readonly systemPrompt: string;
   readonly toolPackagePins: readonly ToolPackagePin[];
   readonly grantRequirements: readonly GrantRequirement[];
+  /**
+   * The credential bindings the launch resolves into consumer-scoped
+   * `credential:{id}` / `use` grants. Empty when the definition declares
+   * none.
+   */
+  readonly credentialBindings: readonly CredentialBinding[];
   /**
    * The step agent's declared model, or null when it declares none. A
    * definition with no `modelRequirements` manifest resolves its inference
@@ -48,6 +54,7 @@ export function extractFoldedBody(definition: WorkflowDefinition): FoldedBody {
     systemPrompt: primitive.agent.systemPrompt,
     toolPackagePins: primitive.agent.toolPackagePins ?? [],
     grantRequirements: definition.grantRequirements ?? [],
+    credentialBindings: definition.credentialBindings ?? [],
     model: primitive.agent.inference.sources[0]?.model ?? null,
   };
 }
