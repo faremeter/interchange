@@ -2017,13 +2017,14 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     ]);
   });
 
-  test("thinking text followed by functionCall-with-signature in separate events pairs them positionally", async () => {
+  test("thinking text followed by functionCall-with-signature attaches the signature to the tool_call block", async () => {
     // Mirrors function-calling-with-thinking-streaming/turn-1: a
     // thinking text part in one event, a functionCall part with
-    // thoughtSignature in the next. The parser must emit the
-    // signature event BEFORE the tool_call.start/delta pair so the
-    // signature attaches to the thinking block's index and not to
-    // the freshly opened tool_call block.
+    // thoughtSignature in the next. A thoughtSignature is a per-part
+    // attribute authenticating the block whose part physically carries
+    // it, so the signature attaches to the freshly opened tool_call
+    // block and its event is emitted AFTER the tool_call.start/delta
+    // pair, against the tool_call block's own index.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2066,9 +2067,9 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.block.signature",
       "inference.tool_call.start",
       "inference.tool_call.delta",
+      "inference.block.signature",
       "inference.usage",
     ]);
 
@@ -2078,14 +2079,7 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     }
     expect(thinkingDelta.data.index).toBe(0);
 
-    const signature = events[1];
-    if (signature?.type !== "inference.block.signature") {
-      throw new Error("expected inference.block.signature");
-    }
-    expect(signature.data.index).toBe(0);
-    expect(signature.data.signature).toBe("OPAQUE_SIGNATURE");
-
-    const toolStart = events[2];
+    const toolStart = events[1];
     if (toolStart?.type !== "inference.tool_call.start") {
       throw new Error("expected inference.tool_call.start");
     }
@@ -2093,6 +2087,15 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     // index (1), not collide with the thinking block.
     expect(toolStart.data.index).toBe(1);
     expect(toolStart.data.callId).toBe("1");
+
+    const signature = events[3];
+    if (signature?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    // The signature rode on the functionCall part, so it authenticates
+    // the tool_call block at index 1, not the thinking block at 0.
+    expect(signature.data.index).toBe(1);
+    expect(signature.data.signature).toBe("OPAQUE_SIGNATURE");
 
     const usage = events[4];
     if (usage?.type !== "inference.usage") {
@@ -2110,27 +2113,72 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     });
   });
 
-  test("thoughtSignature with no preceding thinking block throws ProtocolMismatchError", () => {
-    const bad = JSON.stringify({
-      candidates: [
-        {
-          content: {
-            role: "model",
-            parts: [
-              {
-                functionCall: { name: "x", args: {} },
-                thoughtSignature: "SIG",
-              },
-            ],
+  test("functionCall-with-signature and no preceding thinking decodes with block.signature at the tool_call index", () => {
+    // A thoughtSignature authenticates the block whose part carries it.
+    // A functionCall part carrying a signature with no thinking block
+    // ahead of it is a valid, unanchored shape: the signature attaches
+    // to the tool_call block at that part's own index and nothing
+    // throws.
+    const events = adapter.parseResponse(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  functionCall: { name: "x", args: {} },
+                  thoughtSignature: "SIG",
+                },
+              ],
+            },
+            index: 0,
           },
-          index: 0,
-        },
-      ],
-    });
-    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
-    expect(() => adapter.parseResponse(bad)).toThrow(
-      /no preceding thinking block/,
+        ],
+      }),
     );
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.tool_call.start",
+      "inference.tool_call.delta",
+      "inference.block.signature",
+    ]);
+    const signature = events[2];
+    if (signature?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    expect(signature.data.index).toBe(0);
+    expect(signature.data.signature).toBe("SIG");
+  });
+
+  test("text-with-signature and no preceding thinking decodes with block.signature at the text index", () => {
+    // The text carrier is symmetric with the functionCall carrier: a
+    // plain text part carrying a thoughtSignature with no thinking
+    // block ahead of it signs its own text block at that part's index.
+    const events = adapter.parseResponse(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text: "answer", thoughtSignature: "TSIG" }],
+            },
+            index: 0,
+          },
+        ],
+      }),
+    );
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.text.delta",
+      "inference.block.signature",
+    ]);
+    const signature = events[1];
+    if (signature?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    expect(signature.data.index).toBe(0);
+    expect(signature.data.signature).toBe("TSIG");
   });
 
   test("interleaved text and functionCall in one candidate allocate separate block indices", async () => {
@@ -2260,14 +2308,15 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     );
   });
 
-  test("empty-text part bearing thoughtSignature claims the pending thinking anchor", async () => {
+  test("empty-text part bearing a thoughtSignature opens a text block and signs it", async () => {
     // Pins the empty-text carrier path: a `text: ""` part with a
-    // `thoughtSignature` lands the signature on the preceding
-    // thinking block instead of silently evaporating. The empty-
-    // payload-but-signature-present shape is spec-permitted and not
-    // covered by the corpus, but the parser must handle it because
-    // otherwise an authenticated thinking round-trip silently loses
-    // its attestation.
+    // `thoughtSignature` still opens (or extends) a text block so the
+    // signature has its own block to authenticate. A thoughtSignature
+    // signs the block whose part carries it, so the signature lands on
+    // that freshly opened text block, NOT on the preceding thinking
+    // block. The empty-payload-but-signature-present shape is
+    // spec-permitted and not covered by the corpus, but the parser must
+    // handle it because otherwise the attestation silently evaporates.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2293,24 +2342,26 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
       }),
     ]);
 
+    // thinking = block 0, the empty-text carrier = block 1.
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
+      "inference.text.delta",
       "inference.block.signature",
     ]);
-    const sig = events[1];
+    const sig = events[2];
     if (sig?.type !== "inference.block.signature") {
       throw new Error("expected inference.block.signature");
     }
     expect(sig.data.signature).toBe("EMPTY_CARRIER_SIG");
-    expect(sig.data.index).toBe(0);
+    expect(sig.data.index).toBe(1);
   });
 
-  test("signature-only part after a non-thinking currentBlock throws (no anchor to claim)", async () => {
-    // After a text block, `currentBlock` is text and no thinking
-    // anchor is pending. A signature-only part has nothing to
-    // attach to and must throw. Verifies the close-then-consume
-    // fix on the signature-only branch did NOT accidentally let a
-    // stray signature succeed when no thinking precedes it.
+  test("payload-free signature-only part throws (no block to authenticate)", async () => {
+    // A thoughtSignature signs the block whose part carries it. A part
+    // with no payload has no block to own the signature, so it is an
+    // unmodeled wire shape and throws regardless of what precedes it --
+    // here a preceding text block does not give a payload-free
+    // signature part anything to attach to.
     await expect(
       parseWire(adapter, [
         sseFrame({
@@ -2336,15 +2387,60 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
           ],
         }),
       ]),
-    ).rejects.toThrow(/no preceding thinking block/);
+    ).rejects.toThrow(/no block for the signature to authenticate/);
   });
 
-  test("signature-only part after thinking whose carrier already declined throws", async () => {
-    // thinking → unsigned-text carrier → signature-only.
-    // The text carrier had the anchor and declined to claim it
-    // (settleCarrierOpportunity discards the anchor). A subsequent
-    // signature-only part cannot retroactively claim the same
-    // thinking block's anchor -- the carrier opportunity is gone.
+  test("executableCode-with-signature and no preceding thinking decodes with block.signature at the request index", async () => {
+    // The executableCode carrier is symmetric with the other atomic
+    // carriers: a signature riding an executableCode part with no
+    // thinking block ahead of it authenticates the freshly opened
+    // code-execution-request block at that part's own index.
+    const events = await parseWire(adapter, [
+      sseFrame({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  executableCode: { language: "PYTHON", code: "print(1)" },
+                  thoughtSignature: "EXEC_SIG",
+                },
+                { codeExecutionResult: { outcome: "OUTCOME_OK", output: "1" } },
+              ],
+            },
+            finishReason: "STOP",
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      }),
+    ]);
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.code_execution.start",
+      "inference.block.signature",
+      "inference.code_execution.result",
+      "inference.usage",
+    ]);
+    const sig = events[1];
+    if (sig?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    expect(sig.data.signature).toBe("EXEC_SIG");
+    // The request block is index 0; its signature attaches there.
+    expect(sig.data.index).toBe(0);
+  });
+
+  test("codeExecutionResult part carrying a thoughtSignature throws (not signable)", async () => {
+    // A code_execution_result block carries no signature field. A
+    // thoughtSignature on a codeExecutionResult part is an unmodeled
+    // wire shape and must throw, even with a valid preceding
+    // executableCode part to pair against.
     await expect(
       parseWire(adapter, [
         sseFrame({
@@ -2353,85 +2449,29 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
               content: {
                 role: "model",
                 parts: [
-                  { text: "reasoning", thought: true },
-                  { text: "carrier" },
+                  {
+                    executableCode: { language: "PYTHON", code: "print(1)" },
+                  },
+                  {
+                    codeExecutionResult: { outcome: "OUTCOME_OK", output: "1" },
+                    thoughtSignature: "NOPE",
+                  },
                 ],
               },
               index: 0,
             },
           ],
         }),
-        sseFrame({
-          candidates: [
-            {
-              content: {
-                role: "model",
-                parts: [{ thoughtSignature: "LATE" }],
-              },
-              index: 0,
-            },
-          ],
-        }),
       ]),
-    ).rejects.toThrow(/no preceding thinking block/);
+    ).rejects.toThrow(/code_execution_result block is not signable/);
   });
 
-  test("signature-only part directly after thinking claims the pending anchor", async () => {
-    // The signature-only carrier shape is the third reachable
-    // payload-less variant (alongside empty-text-with-signature
-    // and the corpus-seen functionCall-with-signature). Same
-    // close-then-consume pattern: a still-open thinking block must
-    // be closed so its index lands in `pendingSignatureAnchor`
-    // before `consumeSignature` claims it. Without the close, the
-    // anchor would still be null and consumeSignature would throw
-    // "no preceding thinking block."
-    const events = await parseWire(adapter, [
-      sseFrame({
-        candidates: [
-          {
-            content: {
-              role: "model",
-              parts: [{ text: "reasoning", thought: true }],
-            },
-            index: 0,
-          },
-        ],
-      }),
-      sseFrame({
-        candidates: [
-          {
-            content: {
-              role: "model",
-              parts: [{ thoughtSignature: "SIG_ONLY" }],
-            },
-            index: 0,
-          },
-        ],
-      }),
-    ]);
-
-    expect(events.map((e) => e.type)).toEqual([
-      "inference.thinking.delta",
-      "inference.block.signature",
-    ]);
-    const sig = events[1];
-    if (sig?.type !== "inference.block.signature") {
-      throw new Error("expected inference.block.signature");
-    }
-    expect(sig.data.signature).toBe("SIG_ONLY");
-    expect(sig.data.index).toBe(0);
-  });
-
-  test("unsigned non-thinking carrier between two thinking blocks does not trip the anchor guard", async () => {
-    // After a thinking block closes, the FIRST non-thinking part is
-    // the only carrier opportunity for that block's signature. A
-    // carrier that passes without a signature ends the opportunity;
-    // the anchor must be discarded so that a LATER thinking block
-    // does not trip the "two thinking blocks closed" guard on a
-    // stale anchor the first carrier already declined. The shape
-    // (unsigned thinking → unsigned text → unsigned thinking →
-    // functionCall) is spec-permitted and the parser must accept
-    // it.
+  test("unsigned parts across kinds each open a fresh block index", async () => {
+    // Each part of a different kind closes the current block and opens a
+    // new one, so an unsigned thinking → text → thinking → functionCall
+    // sequence allocates four distinct block indices. No part carries a
+    // signature, so no `inference.block.signature` is emitted; the parser
+    // must accept the shape.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -2532,7 +2572,7 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
     });
   });
 
-  test("with-thinking-streaming fixture replay pairs signature to the thinking block", async () => {
+  test("with-thinking-streaming fixture replay attaches the signature to the tool_call block", async () => {
     const sseBytes = readFileSync(
       join(
         FIXTURE_ROOT,
@@ -2546,28 +2586,29 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.block.signature",
       "inference.tool_call.start",
       "inference.tool_call.delta",
+      "inference.block.signature",
       "inference.usage",
     ]);
 
-    const signature = events[1];
-    if (signature?.type !== "inference.block.signature") {
-      throw new Error("expected inference.block.signature");
-    }
-    // Signature attaches to the thinking block at index 0, NOT to
-    // the tool_call block at index 1. Decoupling thinking-block
-    // attachment from tool_call-block attachment is the point of
-    // emitting the signature event before the tool_call.start.
-    expect(signature.data.index).toBe(0);
-    expect(signature.data.signature.length).toBeGreaterThan(0);
-
-    const toolStart = events[2];
+    const toolStart = events[1];
     if (toolStart?.type !== "inference.tool_call.start") {
       throw new Error("expected inference.tool_call.start");
     }
     expect(toolStart.data.index).toBe(1);
+
+    const signature = events[3];
+    if (signature?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    // On the real Gemini wire the signature rides the follow-on
+    // functionCall part, so it authenticates the tool_call block at
+    // index 1, NOT the thinking block at index 0. Its event is emitted
+    // after the tool_call.start/delta pair, against the tool_call
+    // block's own index.
+    expect(signature.data.index).toBe(1);
+    expect(signature.data.signature.length).toBeGreaterThan(0);
 
     const usage = events[4];
     if (usage?.type !== "inference.usage") {
@@ -2606,14 +2647,17 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
     expect(parts).toEqual([{ text: "internal reasoning", thought: true }]);
   });
 
-  test("signed thinking + tool_call attaches the signature to the functionCall part, not the thinking part", () => {
+  test("signed tool_call rides its signature back onto the functionCall part", () => {
     // This is the round-trip shape captured in
     // function-calling-with-thinking-streaming/turn-2/request.json:
-    // signature is on the functionCall, thinking text is signature-
-    // less. A second turn echoing the model's prior thinking
-    // requires this exact placement; mis-placing the signature
-    // would cause Gemini to reject the request as a corrupted
-    // thinking attestation.
+    // the signature is on the functionCall part and the thinking text
+    // is signature-less. Reverse-parsing attributed that wire signature
+    // to the tool_call block, so the neutral input carries it on the
+    // tool_call block and each block rides its own signature back onto
+    // its own part. A second turn echoing the model's prior thinking
+    // requires this exact placement; mis-placing the signature would
+    // cause Gemini to reject the request as a corrupted thinking
+    // attestation.
     const req = adapter.buildRequest(
       [
         {
@@ -2622,13 +2666,13 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
             {
               type: "thinking",
               thinking: "Determining weather query.",
-              signature: "OPAQUE_SIGNATURE",
             },
             {
               type: "tool_call",
               id: "1",
               name: "getCurrentWeather",
               arguments: { location: "Boston, MA" },
+              signature: "OPAQUE_SIGNATURE",
             },
           ],
           timestamp: 0,
@@ -2681,51 +2725,117 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
     ]);
   });
 
-  test("turn ending on a signed thinking block with no follow-on part throws", () => {
-    expect(() =>
-      adapter.buildRequest(
-        [
-          {
-            role: "assistant",
-            content: [
-              {
-                type: "thinking",
-                thinking: "trailing",
-                signature: "STRAY",
-              },
-            ],
-            timestamp: 0,
-          },
-        ],
-        "gemini-2.5-flash",
-        {},
-      ),
-    ).toThrow(/signature awaiting a carrier part/);
+  test("signed text block rides its signature back onto the text part", () => {
+    // Gemini attaches a thoughtSignature to output parts including
+    // plain text; a TextBlock carrying that signature rides it back
+    // onto its own text part.
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "the answer", signature: "TSIG" }],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const contents = GeminiContents.assert(parseBody(req.body).contents);
+    expect(contents[0]?.parts).toEqual([
+      { text: "the answer", thoughtSignature: "TSIG" },
+    ]);
   });
 
-  test("two signed thinking blocks without an intervening non-thinking carrier throws", () => {
-    expect(() =>
-      adapter.buildRequest(
-        [
-          {
-            role: "assistant",
-            content: [
-              { type: "thinking", thinking: "first", signature: "SIG1" },
-              { type: "thinking", thinking: "second", signature: "SIG2" },
-              {
-                type: "tool_call",
-                id: "1",
-                name: "noop",
-                arguments: {},
-              },
-            ],
-            timestamp: 0,
-          },
-        ],
-        "gemini-2.5-flash",
-        {},
-      ),
-    ).toThrow(/second thinking block on assistant turn/);
+  test("signed image block rides its signature back onto the inlineData part", () => {
+    // Gemini rides a thoughtSignature on the inlineData part; an
+    // ImageBlock carrying that signature rides it back onto its own
+    // inlineData part.
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "image",
+              source: { kind: "base64", mimeType: "image/png", data: "AAA" },
+              signature: "ISIG",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const contents = GeminiContents.assert(parseBody(req.body).contents);
+    expect(contents[0]?.parts).toEqual([
+      {
+        inlineData: { mimeType: "image/png", data: "AAA" },
+        thoughtSignature: "ISIG",
+      },
+    ]);
+  });
+
+  test("signed thinking block with no follow-on part rides its signature on the thinking part", () => {
+    // A thinking block that itself carries a signature (the rare case
+    // where Gemini signed the thought part rather than a follow-on
+    // part) rides that signature back onto its own thinking part. It
+    // needs no carrier -- each block rides its own signature -- so a
+    // turn ending on a signed thinking block builds cleanly.
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "trailing",
+              signature: "STRAY",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const contents = GeminiContents.assert(parseBody(req.body).contents);
+    expect(contents[0]?.parts).toEqual([
+      { text: "trailing", thought: true, thoughtSignature: "STRAY" },
+    ]);
+  });
+
+  test("two signed thinking blocks each ride their own signature on their own part", () => {
+    // With no cross-part pairing, two consecutive signed thinking
+    // blocks are legal: each rides its own signature on its own
+    // thinking part. The trailing unsigned tool_call carries no
+    // thoughtSignature.
+    const req = adapter.buildRequest(
+      [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "first", signature: "SIG1" },
+            { type: "thinking", thinking: "second", signature: "SIG2" },
+            {
+              type: "tool_call",
+              id: "1",
+              name: "noop",
+              arguments: {},
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+      "gemini-2.5-flash",
+      {},
+    );
+    const contents = GeminiContents.assert(parseBody(req.body).contents);
+    expect(contents[0]?.parts).toEqual([
+      { text: "first", thought: true, thoughtSignature: "SIG1" },
+      { text: "second", thought: true, thoughtSignature: "SIG2" },
+      { functionCall: { name: "noop", args: {} } },
+    ]);
   });
 
   test("turn-2 round-trip fixture parity for function-calling-with-thinking-streaming", () => {
@@ -2778,13 +2888,13 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
             {
               type: "thinking",
               thinking: thinkingText,
-              signature: thoughtSignature,
             },
             {
               type: "tool_call",
               id: "1",
               name: "getCurrentWeather",
               arguments: { location: "Boston, MA" },
+              signature: thoughtSignature,
             },
           ],
           timestamp: 0,
@@ -2867,8 +2977,10 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
   test("function-calling-with-thinking-streaming fixture flows through runInference end-to-end", async () => {
     // Replays the captured SSE response through the full harness
     // pipeline and asserts the final turn carries a thinking block
-    // (with its signature) followed by a tool_call block. The
-    // ordering matters: a tool_call-before-thinking content array
+    // followed by a tool_call block that holds the signature. The
+    // captured wire signs the follow-on functionCall part, so the
+    // signature lands on the tool_call block, not the thinking block.
+    // The ordering matters: a tool_call-before-thinking content array
     // could not be echoed back to Gemini in a follow-up turn
     // because Gemini's wire convention is thinking-then-functionCall.
     const sseBytes = readFileSync(
@@ -2935,8 +3047,9 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
       throw new Error("expected first content block to be thinking");
     }
     expect(thinking.thinking.length).toBeGreaterThan(0);
-    expect(thinking.signature).toBeDefined();
-    expect(thinking.signature?.length).toBeGreaterThan(0);
+    // The wire signs the functionCall part, so the thinking block
+    // carries no signature.
+    expect(thinking.signature).toBeUndefined();
 
     const toolCall = blocks[1];
     if (toolCall?.type !== "tool_call") {
@@ -2944,6 +3057,10 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
     }
     expect(toolCall.name).toBe("getCurrentWeather");
     expect(toolCall.arguments).toEqual({ location: "Boston, MA" });
+    // The signature rode the functionCall part; it authenticates the
+    // tool_call block.
+    expect(toolCall.signature).toBeDefined();
+    expect(toolCall.signature?.length).toBeGreaterThan(0);
 
     expect(done.data.usage).toEqual({
       input: 85,
@@ -3049,14 +3166,13 @@ describe("Google GenAI adapter: parseResponse image output", () => {
     ]);
   });
 
-  test("thinking text then inlineData with thoughtSignature pairs the signature to the thinking block", async () => {
+  test("thinking text then inlineData with thoughtSignature attaches the signature to the image block", async () => {
     // The inlineData carrier path mirrors the functionCall carrier
-    // path: a thoughtSignature on the inlineData part settles
-    // against the preceding thinking block via the pending anchor,
-    // NOT against the newly-allocated image block. The signature
-    // event must precede the image_output event so the harness's
-    // per-index router lands the signature at the thinking block's
-    // index rather than at the image's.
+    // path: a thoughtSignature on the inlineData part authenticates the
+    // block that part physically carries -- the newly-allocated image
+    // block -- NOT the preceding thinking block. The signature event is
+    // emitted after the image_output event so the harness's per-index
+    // router lands the signature at the image block's index.
     const events = await parseWire(adapter, [
       sseFrame({
         candidates: [
@@ -3095,46 +3211,60 @@ describe("Google GenAI adapter: parseResponse image output", () => {
 
     expect(events.map((e) => e.type)).toEqual([
       "inference.thinking.delta",
-      "inference.block.signature",
       "inference.image_output",
+      "inference.block.signature",
       "inference.usage",
     ]);
 
-    const sig = events[1];
-    if (sig?.type !== "inference.block.signature") {
-      throw new Error("expected inference.block.signature");
-    }
-    expect(sig.data.signature).toBe("IMG_CARRIER_SIG");
-    expect(sig.data.index).toBe(0);
-
-    const image = events[2];
+    const image = events[1];
     if (image?.type !== "inference.image_output") {
       throw new Error("expected inference.image_output");
     }
     expect(image.data.index).toBe(1);
+
+    const sig = events[2];
+    if (sig?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    expect(sig.data.signature).toBe("IMG_CARRIER_SIG");
+    // The signature rode on the inlineData part, so it authenticates
+    // the image block at index 1, not the thinking block at 0.
+    expect(sig.data.index).toBe(1);
   });
 
-  test("inlineData with thoughtSignature but no preceding thinking throws", () => {
-    const bad = JSON.stringify({
-      candidates: [
-        {
-          content: {
-            role: "model",
-            parts: [
-              {
-                inlineData: { mimeType: "image/png", data: "AAA" },
-                thoughtSignature: "STRAY",
-              },
-            ],
+  test("inlineData-with-signature and no preceding thinking decodes with block.signature at the image index", () => {
+    // A thoughtSignature on an inlineData part with no thinking block
+    // ahead of it is a valid, unanchored shape: the signature attaches
+    // to the image block at that part's own index and nothing throws.
+    const events = adapter.parseResponse(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                {
+                  inlineData: { mimeType: "image/png", data: "AAA" },
+                  thoughtSignature: "STRAY",
+                },
+              ],
+            },
+            index: 0,
           },
-          index: 0,
-        },
-      ],
-    });
-    expect(() => adapter.parseResponse(bad)).toThrow(ProtocolMismatchError);
-    expect(() => adapter.parseResponse(bad)).toThrow(
-      /no preceding thinking block/,
+        ],
+      }),
     );
+
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.image_output",
+      "inference.block.signature",
+    ]);
+    const sig = events[1];
+    if (sig?.type !== "inference.block.signature") {
+      throw new Error("expected inference.block.signature");
+    }
+    expect(sig.data.index).toBe(0);
+    expect(sig.data.signature).toBe("STRAY");
   });
 
   test("inlineData with a non-image MIME throws ProtocolMismatchError", () => {
@@ -4537,10 +4667,10 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
     expect(blocksOfType(t, "text").map((b) => b.text)).toEqual(["answer"]);
   });
 
-  test("attaches a thoughtSignature that arrives on the following carrier part", async () => {
-    // The signature rides on the next non-thinking part (a functionCall), and
-    // the parser's pendingSignatureAnchor threads it back to the thinking
-    // block — exercised here within a single JSON parts array.
+  test("attaches a thoughtSignature riding a functionCall part to the tool_call block", async () => {
+    // The signature rides on the functionCall part, so it authenticates
+    // the tool_call block that part carries -- not the preceding
+    // thinking block. Exercised here within a single JSON parts array.
     const t = requireTurn(
       (
         await driveTurn(
@@ -4556,7 +4686,10 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
     );
     const thinking = blocksOfType(t, "thinking");
     expect(thinking).toHaveLength(1);
-    expect(thinking[0]?.signature).toBe("sig-carrier");
+    expect(thinking[0]?.signature).toBeUndefined();
+    const calls = blocksOfType(t, "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.signature).toBe("sig-carrier");
   });
 
   test("decodes an executableCode + codeExecutionResult pair", async () => {

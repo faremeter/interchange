@@ -242,13 +242,17 @@ async function* runSingleAttempt(
   // `completedToolCalls` and is resolved into the final block at
   // assembly time via the marker's `callId`.
   type BlockState =
-    | { kind: "text"; text: string }
+    | { kind: "text"; text: string; signature?: string }
     | { kind: "thinking"; text: string; signature?: string }
     | { kind: "redacted_thinking"; data: string }
     | { kind: "refusal"; reason: string }
-    | { kind: "tool_use"; callId: string }
-    | { kind: "image"; image: ImageBlock }
-    | { kind: "code_execution_request"; request: CodeExecutionRequestBlock }
+    | { kind: "tool_use"; callId: string; signature?: string }
+    | { kind: "image"; image: ImageBlock; signature?: string }
+    | {
+        kind: "code_execution_request";
+        request: CodeExecutionRequestBlock;
+        signature?: string;
+      }
     | { kind: "code_execution_result"; result: CodeExecutionResultBlock };
   const blockMap = new Map<number, BlockState>();
   // Citations streamed from the provider. Indexed citations attribute
@@ -578,6 +582,7 @@ async function* runSingleAttempt(
                 data: {
                   token: raw.data.token,
                   partial: snapshotPartial(partial),
+                  index: idx,
                 },
               };
               break;
@@ -642,6 +647,7 @@ async function* runSingleAttempt(
                 data: {
                   token: raw.data.token,
                   partial: snapshotPartial(partial),
+                  index: idx,
                 },
               };
               break;
@@ -652,13 +658,23 @@ async function* runSingleAttempt(
               const existing = blockMap.get(idx);
               if (existing === undefined) {
                 throw new ProtocolMismatchError(
-                  `harness: block.signature at index ${String(idx)} has no preceding thinking block at that index`,
+                  `harness: block.signature at index ${String(idx)} has no preceding block at that index`,
                   raw,
                 );
               }
-              if (existing.kind !== "thinking") {
+              // A signature authenticates the block whose part it rides on.
+              // The signable kinds are the ones whose ContentBlock carries a
+              // `signature` field; the others (redacted_thinking, refusal,
+              // code_execution_result) have no place to hold one.
+              if (
+                existing.kind !== "thinking" &&
+                existing.kind !== "text" &&
+                existing.kind !== "tool_use" &&
+                existing.kind !== "image" &&
+                existing.kind !== "code_execution_request"
+              ) {
                 throw new ProtocolMismatchError(
-                  `harness: block.signature at index ${String(idx)} targets an existing ${existing.kind} block, not a thinking block`,
+                  `harness: block.signature at index ${String(idx)} targets an existing ${existing.kind} block, which does not carry a signature`,
                   raw,
                 );
               }
@@ -666,7 +682,7 @@ async function* runSingleAttempt(
               yield {
                 type: "inference.block.signature",
                 seq: nextSeq(),
-                data: { signature: raw.data.signature },
+                data: { signature: raw.data.signature, index: idx },
               };
               break;
             }
@@ -774,7 +790,12 @@ async function* runSingleAttempt(
               yield {
                 type: "inference.tool_call.start",
                 seq: nextSeq(),
-                data: { callId, name, partial: snapshotPartial(partial) },
+                data: {
+                  callId,
+                  name,
+                  partial: snapshotPartial(partial),
+                  index: toolIdx,
+                },
               };
               break;
             }
@@ -1103,9 +1124,22 @@ async function* runSingleAttempt(
     };
     for (const [idx, entry] of blockMap.entries()) {
       if (entry.kind === "text") {
-        if (entry.text.length > 0) {
-          emit({ type: "text", text: entry.text }, idx);
+        // Emit even with empty text if a signature was captured, so a
+        // signature riding on an otherwise-empty text carrier still
+        // round-trips (mirrors the thinking-block rule below).
+        if (entry.text.length === 0 && entry.signature === undefined) {
+          continue;
         }
+        emit(
+          {
+            type: "text",
+            text: entry.text,
+            ...(entry.signature !== undefined
+              ? { signature: entry.signature }
+              : {}),
+          },
+          idx,
+        );
         continue;
       }
       if (entry.kind === "thinking") {
@@ -1161,7 +1195,18 @@ async function* runSingleAttempt(
             entry,
           );
         }
-        emit(finalized, idx);
+        if (finalized.type !== "tool_call") {
+          throw new ProtocolMismatchError(
+            `harness: tool_use marker at callId ${entry.callId} resolved to a ${finalized.type} block, not a tool_call`,
+            entry,
+          );
+        }
+        emit(
+          entry.signature !== undefined
+            ? { ...finalized, signature: entry.signature }
+            : finalized,
+          idx,
+        );
         continue;
       }
       if (entry.kind === "image") {
@@ -1171,7 +1216,12 @@ async function* runSingleAttempt(
         // atomic, not streamed), so the final-walk emits it
         // verbatim. Citation interleave applies the same way as
         // any other block kind.
-        emit(entry.image, idx);
+        emit(
+          entry.signature !== undefined
+            ? { ...entry.image, signature: entry.signature }
+            : entry.image,
+          idx,
+        );
         continue;
       }
       if (entry.kind === "code_execution_request") {
@@ -1181,7 +1231,12 @@ async function* runSingleAttempt(
         // current wire delivers all of it atomically on `start`;
         // streaming providers would extend `request.code` via the
         // delta handler before this walk runs.
-        emit(entry.request, idx);
+        emit(
+          entry.signature !== undefined
+            ? { ...entry.request, signature: entry.signature }
+            : entry.request,
+          idx,
+        );
         continue;
       }
       if (entry.kind === "code_execution_result") {
