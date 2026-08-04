@@ -18,6 +18,7 @@ import {
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 import { generateId } from "@intx/hub-common";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
@@ -123,6 +124,7 @@ export type SessionService = {
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
+    credentials?: CredentialDelivery;
   }): Promise<{ publicKey: string }>;
 
   /**
@@ -404,6 +406,7 @@ export async function sendMultiStepDeployFrame(args: {
    * and its inference sources off disk without a hub round-trip.
    */
   referencedDefinitions?: readonly ReferencedBodyDefinition[];
+  credentials?: CredentialDelivery;
 }): Promise<{ publicKey: string }> {
   const wireDefinition = toWireWorkflowDefinition(args.definition);
   return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
@@ -417,6 +420,9 @@ export async function sendMultiStepDeployFrame(args: {
             sources: body.sources,
           })),
         }
+      : {}),
+    ...(args.credentials !== undefined
+      ? { credentials: args.credentials }
       : {}),
   });
 }
@@ -504,6 +510,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       definition: WorkflowDefinition;
       sources: Record<string, InferenceSource[]>;
       referencedDefinitions?: readonly ReferencedBodyDefinition[];
+      credentials?: CredentialDelivery;
     };
     /**
      * Multi-step per-step stage. When true, Phase 1 binds a transient route
@@ -659,6 +666,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
             ...(workflowFrame.referencedDefinitions !== undefined
               ? { referencedDefinitions: workflowFrame.referencedDefinitions }
               : {}),
+            ...(workflowFrame.credentials !== undefined
+              ? { credentials: workflowFrame.credentials }
+              : {}),
           });
           deployAckPublicKey = ack.publicKey;
         } else if (stageOnly) {
@@ -761,6 +771,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         sources: deployParams.sources,
         ...(deployParams.referencedDefinitions !== undefined
           ? { referencedDefinitions: deployParams.referencedDefinitions }
+          : {}),
+        ...(deployParams.credentials !== undefined
+          ? { credentials: deployParams.credentials }
           : {}),
       },
       ...(deployParams.toolPackagePins !== undefined
@@ -881,6 +894,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
+    credentials?: CredentialDelivery;
   }): Promise<{ publicKey: string }> {
     const { agentAddress, agentId, instanceId, config, deployContent } = params;
 
@@ -927,6 +941,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
       ...(params.toolPackagePins !== undefined
         ? { toolPackagePins: params.toolPackagePins }
+        : {}),
+      ...(params.credentials !== undefined
+        ? { credentials: params.credentials }
         : {}),
     });
   }
