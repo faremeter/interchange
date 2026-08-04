@@ -11,7 +11,7 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("source enums", () => {
-  test("grantRequirementSources includes only creator and invoker", () => {
+  test("grantRequirementSources are creator and invoker", () => {
     expect([...grantRequirementSources]).toEqual(["creator", "invoker"]);
   });
 });
@@ -33,19 +33,19 @@ describe("GrantRequirement validator", () => {
   test("accepts creator and invoker sources", () => {
     for (const source of ["creator", "invoker"] as const) {
       const result = GrantRequirement({
-        resource: "wallet:*",
-        action: "spend",
+        resource: "credential:crd_stripe",
+        action: "use",
         source,
       });
       expect(result instanceof type.errors).toBe(false);
     }
   });
 
-  test("rejects tenant source", () => {
+  test("rejects an unknown source", () => {
     const result = GrantRequirement({
       resource: "tool:bash",
       action: "invoke",
-      source: "tenant",
+      source: "system",
     });
     expect(result instanceof type.errors).toBe(true);
   });

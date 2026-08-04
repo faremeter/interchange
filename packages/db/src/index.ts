@@ -33,6 +33,8 @@ export {
   resolveCredentialByName,
   resolveCredentialById,
   resolveCredentialRequirement,
+  resolveTenantOwnedCredentialById,
+  AmbiguousCredentialError,
 } from "./credential-resolution";
 export {
   resolveAssetByName,

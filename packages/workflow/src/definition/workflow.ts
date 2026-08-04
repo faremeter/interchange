@@ -9,7 +9,7 @@
 
 import { canonicalizeForHash } from "@intx/agent";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
-import type { GrantRequirement } from "@intx/types";
+import type { CredentialBinding, GrantRequirement } from "@intx/types";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -40,6 +40,15 @@ export interface WorkflowDefinition {
    * Mirrors an agent definition's `grantRequirements`.
    */
   grantRequirements?: readonly GrantRequirement[];
+  /**
+   * The credential bindings a launch resolves against tenant-owned
+   * credentials, each mapping a tool package's declared handle to a
+   * concrete provider and authorizing the delegation against the
+   * binding's authority. The launch reads these from the folded body and
+   * materializes a consumer-scoped `credential:{id}` / `use` grant per
+   * binding. Mirrors an agent definition's `credentialBindings`.
+   */
+  credentialBindings?: readonly CredentialBinding[];
 }
 
 export interface WorkflowConfig {
@@ -49,6 +58,7 @@ export interface WorkflowConfig {
   steps: Record<string, Primitive>;
   state?: { schema?: StateSchema };
   grantRequirements?: readonly GrantRequirement[];
+  credentialBindings?: readonly CredentialBinding[];
 }
 
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
@@ -58,6 +68,7 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   triggers?: readonly Trigger[];
   state?: { schema?: StateSchema };
   grantRequirements?: readonly GrantRequirement[];
+  credentialBindings?: readonly CredentialBinding[];
 }
 
 /**
@@ -153,6 +164,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     ...(config.state !== undefined ? { state: config.state } : {}),
     ...(config.grantRequirements !== undefined
       ? { grantRequirements: config.grantRequirements }
+      : {}),
+    ...(config.credentialBindings !== undefined
+      ? { credentialBindings: config.credentialBindings }
       : {}),
   };
   return definition;
@@ -541,6 +555,12 @@ function projectForHash(definition: WorkflowDefinition): unknown {
     ...(definition.state !== undefined ? { state: definition.state } : {}),
     ...(definition.grantRequirements !== undefined
       ? { grantRequirements: definition.grantRequirements }
+      : {}),
+    // Bindings change launch-time authorization, so two definitions differing
+    // only in their bindings must hash differently -- include them exactly as
+    // grantRequirements is included, or the deploy substrate would dedupe them.
+    ...(definition.credentialBindings !== undefined
+      ? { credentialBindings: definition.credentialBindings }
       : {}),
     steps: Object.fromEntries(
       Object.entries(definition.steps).map(([id, primitive]) => [

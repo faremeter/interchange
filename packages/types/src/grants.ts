@@ -107,7 +107,7 @@ export const GrantRequirement = type({
     "Effect to assign the materialized grant: `allow`, `deny`, or `ask`. Defaults to `allow` when omitted.",
   ),
   source: GrantSourceType.describe(
-    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the agent). The requirement is only satisfied if that party actually holds the requested capability.",
+    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the agent) -- satisfied only if that party actually holds the requested capability. Tenant-owned credential use is not a grant requirement: it is authorized by ownership at resolution and its consumer-scoping grant is stamped directly (see CREDENTIALS.md).",
   ),
   "conditions?": "Record<string, unknown> | null",
 });

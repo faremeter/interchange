@@ -7,6 +7,40 @@ import { provider } from "./schema/providers";
 import { getAncestorChain } from "./tenant-hierarchy";
 
 /**
+ * Thrown by `resolveCredentialRequirement` when more than one credential
+ * matches a requirement and no name disambiguates them. A distinct type so
+ * callers can catch *this* condition (a launch-blocking configuration error)
+ * without also swallowing the DB reads the resolver performs first -- an
+ * infrastructure failure must surface, not be mislabeled as ambiguity.
+ */
+export class AmbiguousCredentialError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AmbiguousCredentialError";
+  }
+}
+
+/**
+ * Resolve a credential USABLE by the launching tenant purely through ownership:
+ * it exists, is reachable in the tenant's ancestor chain, and is tenant-owned
+ * (`principalId IS NULL`). Returns the row -- the proof of authority -- or null.
+ *
+ * This is the one "usable by ownership" resolver: a tenant may use what it (or
+ * an ancestor) owns, and descendants inherit; a principal-owned credential is
+ * never usable this way, its delegation flowing from its owner instead. It
+ * wraps `resolveCredentialById` (the ancestor-chain check) with the tenant-owned
+ * gate, so callers do not re-implement the predicate.
+ */
+export async function resolveTenantOwnedCredentialById(
+  db: DB["db"],
+  tenantId: string,
+  credentialId: string,
+) {
+  const row = await resolveCredentialById(db, tenantId, credentialId);
+  return row !== null && row.principalId === null ? row : null;
+}
+
+/**
  * Resolves a provider by name, walking up the tenant hierarchy.
  * Returns the first match (child shadows parent).
  */
@@ -159,7 +193,7 @@ export async function resolveCredentialRequirement(
     const [sole] = matching;
     if (matching.length === 1 && sole) return sole;
     if (matching.length > 1) {
-      throw new Error(
+      throw new AmbiguousCredentialError(
         `Ambiguous credential match: ${matching.length} credentials match ` +
           `provider=${requirement.providerName} source=${requirement.source} ` +
           `in tenant ${tid}. Specify a name to disambiguate.`,

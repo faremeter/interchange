@@ -23,7 +23,7 @@
 // compare definitions) see no spurious differences.
 
 import type { BaseEnv } from "@intx/agent";
-import type { GrantRequirement } from "@intx/types";
+import type { CredentialBinding, GrantRequirement } from "@intx/types";
 
 import { step } from "./primitives";
 import type { Primitive } from "./primitives";
@@ -37,6 +37,7 @@ export interface SingularShorthand<EnvReq extends BaseEnv> {
   triggers?: readonly Trigger[];
   state?: { schema?: StateSchema };
   grantRequirements?: readonly GrantRequirement[];
+  credentialBindings?: readonly CredentialBinding[];
 }
 
 export interface PluralShape {
@@ -46,6 +47,7 @@ export interface PluralShape {
   steps: Record<string, Primitive>;
   state?: { schema?: StateSchema };
   grantRequirements?: readonly GrantRequirement[];
+  credentialBindings?: readonly CredentialBinding[];
 }
 
 export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
@@ -59,6 +61,9 @@ export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
     ...(config.state !== undefined ? { state: config.state } : {}),
     ...(config.grantRequirements !== undefined
       ? { grantRequirements: config.grantRequirements }
+      : {}),
+    ...(config.credentialBindings !== undefined
+      ? { credentialBindings: config.credentialBindings }
       : {}),
   };
 }
