@@ -389,6 +389,51 @@ describe("workflowDefinitionEnvelopeSchema", () => {
     }
     expect(validated.grantRequirements).toEqual(blob.grantRequirements);
   });
+
+  // Same property for credentialBindings: declaring it on the envelope makes a
+  // malformed binding fail at the deploy boundary. This is the path launch-time
+  // resolution reads bindings back from, so a bad locator/authority must not
+  // pass through unchecked. The rejection test fails if the
+  // `credentialBindings?` line is removed from the schema.
+  test("rejects a declared credentialBinding carrying an unknown authority", () => {
+    const validated = workflowDefinitionEnvelopeSchema({
+      id: "my-workflow",
+      triggers: [{ type: "manual" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      credentialBindings: [
+        {
+          package: "@acme/tools",
+          handle: "gh",
+          provider: "github",
+          locator: "stranger",
+        },
+      ],
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("accepts and preserves a well-formed credentialBinding", () => {
+    const blob = {
+      id: "my-workflow",
+      triggers: [{ type: "manual" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      credentialBindings: [
+        {
+          package: "@acme/tools",
+          handle: "gh",
+          provider: "github",
+          locator: "tenant" as const,
+        },
+      ],
+    };
+    const validated = workflowDefinitionEnvelopeSchema(blob);
+    if (validated instanceof type.errors) {
+      throw new Error(`unexpected validation error: ${validated.summary}`);
+    }
+    expect(validated.credentialBindings).toEqual(blob.credentialBindings);
+  });
 });
 
 describe("workflowKindHandler metadata", () => {
