@@ -9,9 +9,13 @@ const providerScopesDescription =
 const providerMetadataDescription =
   "Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.";
 
+const apiBaseUrlDescription =
+  "The API origin a credential from this provider authenticates to (for example https://api.github.com). A provider that backs an origin-pinned credential must set it; OAuth-login-only providers may omit it.";
+
 export const CreateProvider = type({
   name: "string",
   plugin: type("string").describe(pluginDescription),
+  "apiBaseUrl?": type("string").describe(apiBaseUrlDescription),
   "authorizationUrl?": "string",
   "tokenUrl?": "string",
   "userInfoUrl?": "string",
@@ -24,6 +28,7 @@ export const CreateProvider = type({
 export const UpdateProvider = type({
   "name?": "string",
   "plugin?": type("string").describe(pluginDescription),
+  "apiBaseUrl?": type("string | null").describe(apiBaseUrlDescription),
   "authorizationUrl?": "string | null",
   "tokenUrl?": "string | null",
   "userInfoUrl?": "string | null",
@@ -38,6 +43,7 @@ export const ProviderResponse = type({
   tenantId: "string",
   name: "string",
   plugin: type("string").describe(pluginDescription),
+  "apiBaseUrl?": type("string | null").describe(apiBaseUrlDescription),
   "authorizationUrl?": "string | null",
   "tokenUrl?": "string | null",
   "userInfoUrl?": "string | null",
