@@ -185,7 +185,7 @@ describe("createReplayHarness", () => {
 
     const replay = await createReplayHarness({ sessionDir: dir });
     try {
-      expect(replay.manifest.schemaVersion).toBe("1");
+      expect(replay.manifest.schemaVersion).toBe("2");
       expect(replay.source.provider).toBe("anthropic");
       expect(replay.capturedExchanges).toHaveLength(1);
 
@@ -296,6 +296,7 @@ describe("createReplayHarness", () => {
       JSON.stringify({
         schemaVersion: "999",
         source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
         capturedAt: "2026-05-25T12:00:00Z",
       }),
     );
@@ -309,8 +310,9 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        schemaVersion: "1",
+        schemaVersion: "2",
         source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
         capturedAt: "2026-05-25T12:00:00Z",
       }),
     );
@@ -324,8 +326,9 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        schemaVersion: "1",
+        schemaVersion: "2",
         source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
         capturedAt: "2026-05-25T12:00:00Z",
       }),
     );
@@ -356,8 +359,9 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        schemaVersion: "1",
+        schemaVersion: "2",
         source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
         capturedAt: "2026-05-25T12:00:00Z",
       }),
     );
@@ -386,8 +390,9 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        schemaVersion: "1",
+        schemaVersion: "2",
         source: { provider: "x", model: "y", baseURL: "z" },
+        origin: "live",
         capturedAt: "2026-05-25T12:00:00Z",
       }),
     );
