@@ -1028,8 +1028,8 @@ describe("optional index on delta event variants", () => {
         data: { token: "x", partial },
       },
       {
-        name: "inference.thinking.signature",
-        type: "inference.thinking.signature",
+        name: "inference.block.signature",
+        type: "inference.block.signature",
         data: { signature: "sig_abc" },
       },
       {

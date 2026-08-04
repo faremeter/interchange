@@ -1022,7 +1022,7 @@ describe("Anthropic adapter: parseResponse", () => {
     }
   });
 
-  test("parses signature_delta into inference.thinking.signature", async () => {
+  test("parses signature_delta into inference.block.signature", async () => {
     // Anthropic emits the thinking-block signature after the thinking
     // content stream. The signature must be propagated end-to-end —
     // without it, follow-up turns that echo the thinking block are
@@ -1036,8 +1036,8 @@ describe("Anthropic adapter: parseResponse", () => {
       }),
     ]);
     expect(events).toHaveLength(1);
-    expect(events[0]?.type).toBe("inference.thinking.signature");
-    if (events[0]?.type === "inference.thinking.signature") {
+    expect(events[0]?.type).toBe("inference.block.signature");
+    if (events[0]?.type === "inference.block.signature") {
       expect(events[0].data.signature).toBe("sig_abc123");
     }
   });

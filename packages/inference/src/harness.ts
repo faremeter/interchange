@@ -647,24 +647,24 @@ async function* runSingleAttempt(
               break;
             }
 
-            case "inference.thinking.signature": {
-              const idx = requireIndex(raw, "thinking.signature");
+            case "inference.block.signature": {
+              const idx = requireIndex(raw, "block.signature");
               const existing = blockMap.get(idx);
               if (existing === undefined) {
                 throw new ProtocolMismatchError(
-                  `harness: thinking.signature at index ${String(idx)} has no preceding thinking block at that index`,
+                  `harness: block.signature at index ${String(idx)} has no preceding thinking block at that index`,
                   raw,
                 );
               }
               if (existing.kind !== "thinking") {
                 throw new ProtocolMismatchError(
-                  `harness: thinking.signature at index ${String(idx)} targets an existing ${existing.kind} block, not a thinking block`,
+                  `harness: block.signature at index ${String(idx)} targets an existing ${existing.kind} block, not a thinking block`,
                   raw,
                 );
               }
               existing.signature = raw.data.signature;
               yield {
-                type: "inference.thinking.signature",
+                type: "inference.block.signature",
                 seq: nextSeq(),
                 data: { signature: raw.data.signature },
               };

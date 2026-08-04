@@ -652,7 +652,7 @@ function parseResponse(
         const signature = delta.signature ?? "";
         return [
           {
-            type: "inference.thinking.signature",
+            type: "inference.block.signature",
             seq,
             data: { signature, index },
           },
@@ -1000,7 +1000,7 @@ function parseJSONResponse(
         });
         if (block.signature !== undefined) {
           events.push({
-            type: "inference.thinking.signature",
+            type: "inference.block.signature",
             seq,
             data: { signature: block.signature, index },
           });

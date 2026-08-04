@@ -99,7 +99,7 @@ function thinkingSig(
   index?: number,
 ): InferenceEvent {
   return {
-    type: "inference.thinking.signature",
+    type: "inference.block.signature",
     seq,
     data: { signature, ...(index !== undefined && { index }) },
   };

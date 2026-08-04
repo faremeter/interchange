@@ -226,7 +226,7 @@ export function raw(rawSSE: string): Uint8Array {
  * optional signature_delta + stop). The adapter forwards each
  * `thinking_delta` as an `inference.thinking.delta`; when `signature`
  * is supplied, the trailing `signature_delta` becomes an
- * `inference.thinking.signature` and the harness attaches it to the
+ * `inference.block.signature` and the harness attaches it to the
  * final ThinkingBlock.
  *
  * `index` defaults to 0; supply a higher index when interleaving thinking

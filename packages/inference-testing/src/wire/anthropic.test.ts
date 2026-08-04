@@ -98,16 +98,16 @@ describe("anthropic wire DSL", () => {
     expect(content.data.token).toBe("Let me think...");
   });
 
-  test("thinkingBlock with signature emits inference.thinking.signature", async () => {
+  test("thinkingBlock with signature emits inference.block.signature", async () => {
     const events = await drive([
       anthropic.messageStart(),
       ...anthropic.thinkingBlock("Let me think...", 0, "sig_xyz"),
     ]);
     const sigEvents = events.filter(
-      (e) => e.type === "inference.thinking.signature",
+      (e) => e.type === "inference.block.signature",
     );
     expect(sigEvents).toHaveLength(1);
-    if (sigEvents[0]?.type === "inference.thinking.signature") {
+    if (sigEvents[0]?.type === "inference.block.signature") {
       expect(sigEvents[0].data.signature).toBe("sig_xyz");
     }
   });

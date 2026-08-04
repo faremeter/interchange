@@ -80,7 +80,7 @@ export function formatEventBrief(event: InferenceEvent): string {
     case "inference.thinking.delta":
     case "inference.refusal.delta":
       return `${head} { token: ${abbreviateString(event.data.token)} }`;
-    case "inference.thinking.signature":
+    case "inference.block.signature":
       return `${head} { signature: ${abbreviateString(event.data.signature)} }`;
     case "inference.thinking.redacted":
       return `${head} { redactedThinking: <${String(event.data.redactedThinking.data.length)} chars> }`;
@@ -146,7 +146,7 @@ function clusterKeyFor(event: InferenceEvent): string | null {
     case "inference.refusal.delta":
       return "refusal";
     case "inference.thinking.delta":
-    case "inference.thinking.signature":
+    case "inference.block.signature":
     case "inference.thinking.redacted":
       return "thinking";
     case "inference.tool_call.start":
@@ -163,7 +163,7 @@ function eventIndex(event: InferenceEvent): number | undefined {
     case "inference.text.delta":
     case "inference.refusal.delta":
     case "inference.thinking.delta":
-    case "inference.thinking.signature":
+    case "inference.block.signature":
     case "inference.thinking.redacted":
     case "inference.tool_call.start":
     case "inference.tool_call.delta":
@@ -548,7 +548,7 @@ const signaturePrecedence: Invariant = {
     // For each thinking signature, scan backwards for a thinking.delta
     // with the same index (or undefined index, single-block scenarios).
     events.forEach((event, sigIdx) => {
-      if (event.type !== "inference.thinking.signature") return;
+      if (event.type !== "inference.block.signature") return;
       const sigIndex = event.data.index;
       let foundDelta = false;
       for (let j = sigIdx - 1; j >= 0; j--) {
@@ -563,7 +563,7 @@ const signaturePrecedence: Invariant = {
       if (!foundDelta) {
         violations.push({
           invariant: "signature_precedence",
-          message: `inference.thinking.signature at index ${String(sigIdx)} (index=${String(sigIndex)}) has no preceding inference.thinking.delta with the same index`,
+          message: `inference.block.signature at index ${String(sigIdx)} (index=${String(sigIndex)}) has no preceding inference.thinking.delta with the same index`,
           events: [sigIdx],
         });
       }
