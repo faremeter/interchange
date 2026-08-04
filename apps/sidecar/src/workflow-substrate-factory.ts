@@ -37,6 +37,7 @@ import type {
   MessageTransport,
   PendingOperation,
 } from "@intx/types/runtime";
+import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
@@ -47,6 +48,7 @@ import {
 import { loadAdapterRegistry } from "@intx/inference/providers";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createHarnessRuntimeCapabilities } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
 import {
   createAgentRepoStore,
@@ -918,34 +920,45 @@ export function createSidecarStepBuildEnv(
       deps.mailboxAddress,
     );
 
-    // The step env carries `transport` + `address` beyond `BaseEnv` so
-    // the mail-tool bundle (`@intx/tools-mail`, `requires: ["transport",
-    // "address"]`) resolves its handles. The two keys are extra env
-    // surface the tool factory reads at handler-init; they widen the
-    // returned `StepEnvBase` structurally, which the buildEnv return
-    // type (`StepEnvBase`) accepts (a wider object is assignable to the
-    // narrower type).
-    const env: StepEnvBase & { transport: MessageTransport; address: string } =
-      {
-        // Feed the reactor the step's full ordered failover chain and pin
-        // its initial source to element 0. The reactor resolves the initial
-        // source by id and fails over forward through `sources`, so this
-        // restores cross-source failover inside the workflow-child.
-        sources,
-        defaultSource: activeSource.id,
-        storage,
-        workdir,
-        audit: storage,
-        directors: createDefaultDirectorRegistry(),
-        // Resolve inference adapters through the child's boot-built
-        // registry (built-ins + operator custom adapters), so a
-        // custom-provider step source resolves in the child the same way
-        // it does on the sidecar main path rather than hitting
-        // `createAgent`'s built-ins-only default.
-        deps: createDependencies(deps.adapters),
-        transport,
-        address: deps.mailboxAddress,
-      };
+    // The host owns capability assembly: it builds the RuntimeCapabilities
+    // bag here (currently `mail.transport`) and puts it on `env.capabilities`,
+    // so a bundle consumes the assembled bag rather than re-wrapping a raw
+    // env key of its own. `@intx/tools-mail`'s sidecar bundle (`requires:
+    // ["capabilities", "address"]`) resolves `mail.transport` from it.
+    const capabilities = createHarnessRuntimeCapabilities({ transport });
+
+    // The step env carries `transport`, `address`, and the assembled
+    // `capabilities` beyond `BaseEnv`. `capabilities` is what the mail bundle
+    // reads; `transport` remains a raw env surface for tool packages that
+    // read it directly. `address` is observability-only. These widen the
+    // returned `StepEnvBase` structurally, which the buildEnv return type
+    // (`StepEnvBase`) accepts (a wider object is assignable to the narrower
+    // type).
+    const env: StepEnvBase & {
+      transport: MessageTransport;
+      address: string;
+      capabilities: RuntimeCapabilities;
+    } = {
+      // Feed the reactor the step's full ordered failover chain and pin
+      // its initial source to element 0. The reactor resolves the initial
+      // source by id and fails over forward through `sources`, so this
+      // restores cross-source failover inside the workflow-child.
+      sources,
+      defaultSource: activeSource.id,
+      storage,
+      workdir,
+      audit: storage,
+      directors: createDefaultDirectorRegistry(),
+      // Resolve inference adapters through the child's boot-built
+      // registry (built-ins + operator custom adapters), so a
+      // custom-provider step source resolves in the child the same way
+      // it does on the sidecar main path rather than hitting
+      // `createAgent`'s built-ins-only default.
+      deps: createDependencies(deps.adapters),
+      transport,
+      address: deps.mailboxAddress,
+      capabilities,
+    };
     // Carry the materialized tool runtime to the tool-bearing
     // `agentFactory` via the env's symbol-keyed slot. The step-invoker
     // adapter spreads this env (`{ ...envBase, authorize }`) before

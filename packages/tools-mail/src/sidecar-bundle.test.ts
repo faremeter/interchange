@@ -3,10 +3,11 @@
 // deploy-time capability walk reads the static declaration WITHOUT
 // invoking the factory, so the two must not diverge.
 //
-// The factory is instantiated with a minimal real env: a mock transport
-// (the factory's `requires: ["transport", "address"]`) plus the BaseEnv
-// contract fields. Plugin/env-injected tools are intentionally out of
-// scope for the static declaration — the walk never sees them.
+// The factory is instantiated with a minimal real env: a host-assembled
+// capabilities bag carrying a mock `mail.transport` (the factory's
+// `requires: ["capabilities", "address"]`) plus the BaseEnv contract
+// fields. Plugin/env-injected tools are intentionally out of scope for
+// the static declaration — the walk never sees them.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -36,6 +37,7 @@ import type {
   ListInfo,
   Unsubscribe,
 } from "@intx/types/runtime";
+import { createRuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 import type { MailToolEnv } from "./sidecar-bundle";
 import { mail } from "./sidecar-bundle";
@@ -178,7 +180,9 @@ beforeAll(async () => {
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
-    transport: makeMockTransport(),
+    capabilities: createRuntimeCapabilities({
+      "mail.transport": makeMockTransport(),
+    }),
     address: "agent@local.interchange",
   };
 });

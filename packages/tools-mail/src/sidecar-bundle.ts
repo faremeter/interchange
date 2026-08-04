@@ -1,26 +1,26 @@
 // Sidecar-bundle entry for `@intx/tools-mail` — the convention-compliant
 // factory the tool-package loader invokes.
 //
-// The factory declares the env keys it touches (`transport`, `address`)
-// via `defineTool`'s `requires`. The host populates those slots in the
-// per-instance env; the factory wraps the existing `createMailTools`
-// implementation.
+// The bundle consumes the host-assembled runtime capabilities rather than
+// building its own. The host (the sidecar's step-env builder) owns the
+// `RuntimeCapabilities` and puts it on `env.capabilities`; this factory
+// resolves `mail.transport` from it through `createMailTools` instead of
+// re-wrapping a raw transport it was handed separately. The env keys it
+// touches (`capabilities`, `address`) are declared in `requires`.
 
 import { defineTool, type BaseEnv } from "@intx/agent";
-import type { MessageTransport } from "@intx/types/runtime";
-import { createRuntimeCapabilities } from "@intx/types/runtime-capabilities";
+import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 import { createMailTools } from "./index";
 import { TOOL_DEFINITIONS } from "./definitions";
 
 /**
  * Env contract for the mail tool bundle. Extends `BaseEnv` with the
- * harness-level fields the mail tools depend on at handler-init time.
- * Compatible by structure with `@intx/harness`'s `MailEnv` so a host
- * that already provides that env can pass it straight through.
+ * host-assembled `capabilities` -- from which the mail tools resolve
+ * `mail.transport` -- and the agent `address`.
  */
 export interface MailToolEnv extends BaseEnv {
-  transport: MessageTransport;
+  capabilities: RuntimeCapabilities;
   address: string;
 }
 
@@ -31,13 +31,10 @@ export interface MailToolEnv extends BaseEnv {
  */
 export const mail = defineTool<MailToolEnv>({
   id: "@intx/tools-mail/sidecar-bundle",
-  requires: ["transport", "address"],
+  requires: ["capabilities", "address"],
   definitions: TOOL_DEFINITIONS.map((def) => ({ name: def.name })),
   factory: (env) => {
-    const capabilities = createRuntimeCapabilities({
-      "mail.transport": env.transport,
-    });
-    const tools = createMailTools({ capabilities });
+    const tools = createMailTools({ capabilities: env.capabilities });
     return {
       definitions: tools.definitions,
       run: (call, signal) => tools.run(call, signal),
