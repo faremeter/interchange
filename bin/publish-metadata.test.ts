@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+  checkBuiltSideEffects,
   checkWorkspaceDescriptions,
   checkWorkspaceMetadata,
   expectedFiles,
@@ -205,6 +206,89 @@ test("a malformed sideEffects is flagged", async () => {
     const { violations } = await checkWorkspaceMetadata(makeWorkspace([pkg]));
     expect(violations.some((v) => v.includes("sideEffects"))).toBe(true);
   }
+});
+
+test("checkBuiltSideEffects passes when every glob matches an emitted file", async () => {
+  const root = makeWorkspace([canonical("@x/log", ["./dist/index.js"])]);
+  seedPackageFiles(root, 0, ["dist/index.js"]);
+  const { violations, packageCount } = await checkBuiltSideEffects(root);
+  expect(violations).toEqual([]);
+  expect(packageCount).toBe(1);
+});
+
+test("checkBuiltSideEffects flags a glob matching no emitted file", async () => {
+  // The manifest declares the intended path, but the build emitted a typo'd
+  // name — so the declared glob resolves to nothing in the built tree, the
+  // exact case the lint-time `files`-coverage escape cannot catch.
+  const root = makeWorkspace([canonical("@x/log", ["./dist/register.js"])]);
+  seedPackageFiles(root, 0, ["dist/registr.js"]);
+  const { violations } = await checkBuiltSideEffects(root);
+  expect(violations).toEqual([
+    '@x/log: "sideEffects" entry ./dist/register.js matches no file in the built package directory',
+  ]);
+});
+
+test("checkBuiltSideEffects flags only the unresolved glob in a mixed array", async () => {
+  const root = makeWorkspace([
+    canonical("@x/log", ["./dist/index.js", "./dist/hono.js"]),
+  ]);
+  seedPackageFiles(root, 0, ["dist/index.js"]);
+  const { violations } = await checkBuiltSideEffects(root);
+  expect(violations).toEqual([
+    '@x/log: "sideEffects" entry ./dist/hono.js matches no file in the built package directory',
+  ]);
+});
+
+test("checkBuiltSideEffects accepts a log-shaped src-and-dist array once built", async () => {
+  const root = makeWorkspace([
+    canonical("@x/logish", [
+      "./src/index.ts",
+      "./src/hono.ts",
+      "./src/default-sink.ts",
+      "./dist/index.js",
+      "./dist/hono.js",
+      "./dist/default-sink.js",
+    ]),
+  ]);
+  // Source and freshly-emitted dist both present, as in the package dir after
+  // `buildDist`; the `./src/*.ts` entries must not be treated as unresolved.
+  seedPackageFiles(root, 0, [
+    "src/index.ts",
+    "src/hono.ts",
+    "src/default-sink.ts",
+    "dist/index.js",
+    "dist/hono.js",
+    "dist/default-sink.js",
+  ]);
+  expect((await checkBuiltSideEffects(root)).violations).toEqual([]);
+});
+
+test("checkBuiltSideEffects skips a package declaring sideEffects false", async () => {
+  const root = makeWorkspace([canonical("@x/a")]);
+  expect((await checkBuiltSideEffects(root)).violations).toEqual([]);
+});
+
+test("checkBuiltSideEffects throws on a malformed sideEffects", async () => {
+  const root = makeWorkspace([
+    {
+      name: "@x/a",
+      files: expectedFiles("@x/a"),
+      sideEffects: true,
+      publishConfig: { access: "public" },
+    },
+  ]);
+  // Well-formedness is the lint gate's job; reaching this check with a
+  // malformed value means that gate did not run, so it must surface loudly.
+  await expect(checkBuiltSideEffects(root)).rejects.toThrow(/malformed/);
+});
+
+test("checkBuiltSideEffects throws on an absent sideEffects", async () => {
+  const pkg = canonical("@x/a");
+  delete pkg["sideEffects"];
+  const root = makeWorkspace([pkg]);
+  // An absent declaration is the literal "checkWorkspaceMetadata did not run
+  // first" precondition the throw defends, so it must surface, not be skipped.
+  await expect(checkBuiltSideEffects(root)).rejects.toThrow(/malformed/);
 });
 
 test("a private package is not checked", async () => {
