@@ -30,8 +30,9 @@ const SESSIONS_ROOT = path.resolve(
   "..",
   "..",
   "packages",
-  "inference-testing",
-  "sessions",
+  "inference-discovery-anthropic",
+  "example-sessions",
+  "anthropic",
 );
 
 let activeReplay: ReplayHarness | null = null;
@@ -99,7 +100,7 @@ function validateInvariants(events: InferenceEvent[]): void {
 
 describe("session replay integration", () => {
   test("anthropic-tool-roundtrip replays end-to-end", async () => {
-    const sessionDir = path.join(SESSIONS_ROOT, "anthropic-tool-roundtrip");
+    const sessionDir = path.join(SESSIONS_ROOT, "tool-roundtrip");
     const replay = await createReplayHarness({ sessionDir });
     activeReplay = replay;
 
@@ -157,10 +158,7 @@ describe("session replay integration", () => {
   });
 
   test("anthropic-multi-tool-multi-turn replays end-to-end with cross-turn context", async () => {
-    const sessionDir = path.join(
-      SESSIONS_ROOT,
-      "anthropic-multi-tool-multi-turn",
-    );
+    const sessionDir = path.join(SESSIONS_ROOT, "multi-tool-multi-turn");
     const replay = await createReplayHarness({ sessionDir });
     activeReplay = replay;
 

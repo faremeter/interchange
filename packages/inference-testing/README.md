@@ -329,7 +329,7 @@ exchange's body diverge and break replay.
 ### Capture format
 
 ```
-packages/inference-testing/sessions/<name>/
+packages/inference-discovery-<adapter>/example-sessions/<brand>/<name>/
 ├── session.json
 ├── exchanges/
 │   ├── 0/
@@ -356,6 +356,13 @@ captures (they're written by the same `writeCapture` function).
 Dispatch entries are a single JSON file each because both `args` and
 `result` are small JSON values.
 
+Committed sessions live next to the adapter that produced them, not in
+this package: synthetic captures recorded through the fetch seam go
+under a discovery package's `example-sessions/<brand>/`, and live
+captures recorded against real endpoints go under its
+`live-sessions/<brand>/`. Both trees sit outside the `sessions/<brand>/`
+tree that the wire-corpus regenerator owns and overwrites.
+
 ### Recording
 
 ```ts
@@ -365,7 +372,8 @@ import { requireEnv } from "@intx/inference-discovery";
 const apiKey = requireEnv("ANTHROPIC_API_KEY");
 
 const harness = createRecordingHarness({
-  outputDir: "packages/inference-testing/sessions/my-scenario",
+  outputDir:
+    "packages/inference-discovery-anthropic/example-sessions/anthropic/my-scenario",
   source: {
     provider: "anthropic",
     model: "claude-sonnet-x",
@@ -414,10 +422,11 @@ The paired `fetch: FetchLike` + `bypassCIGuardForTests: true` test
 seam is reserved for this package's own unit tests; production
 recording scripts should never pass either flag.
 
-`packages/inference-testing/bin/record-example-sessions.ts` is a small
-script that uses the test seam to regenerate the committed example
-sessions without provider credentials. Run it with
-`bun --conditions=intx-src packages/inference-testing/bin/record-example-sessions.ts`.
+`bin/record-example-sessions.ts` is a small script that uses the test
+seam to regenerate the committed synthetic example sessions (under
+`packages/inference-discovery-anthropic/example-sessions/anthropic/`)
+without provider credentials. Run it with
+`bun --conditions=intx-src bin/record-example-sessions.ts`.
 
 ### Replay
 
@@ -425,7 +434,8 @@ sessions without provider credentials. Run it with
 import { createReplayHarness, INVARIANTS } from "@intx/inference-testing";
 
 const replay = await createReplayHarness({
-  sessionDir: "packages/inference-testing/sessions/my-scenario",
+  sessionDir:
+    "packages/inference-discovery-anthropic/example-sessions/anthropic/my-scenario",
 });
 try {
   // Production runInference is single-turn; the caller drives the
