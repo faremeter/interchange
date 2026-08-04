@@ -1,0 +1,48 @@
+{
+  "id": "chatcmpl-d3b290b28162447fb6fea0136a5c52ea",
+  "object": "chat.completion",
+  "created": 1779304977,
+  "model": "accounts/fireworks/models/kimi-k2p6",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "The user is asking for the weather in Boston, MA and explicitly wants me to use the provided tool. I need to call the getCurrentWeather function with the location parameter set to \"Boston, MA\".",
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "functions.getCurrentWeather:0",
+            "type": "function",
+            "function": {
+              "name": "getCurrentWeather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            },
+            "name": null
+          }
+        ]
+      },
+      "finish_reason": "tool_calls",
+      "token_ids": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 82,
+    "total_tokens": 144,
+    "completion_tokens": 62,
+    "prompt_tokens_details": {
+      "cached_tokens": 15
+    }
+  },
+  "prompt_token_ids": [
+    163594, 20960, 35556, 677, 163601, 2, 30391, 382, 798, 8271, 198, 6370,
+    8271, 440, 408, 3375, 276, 2525, 10666, 6218, 395, 261, 4075, 5243, 341,
+    2217, 922, 7957, 65512, 327, 9600, 25, 440, 220, 726, 646, 5243, 316, 12048,
+    2469, 11, 350, 2399, 13, 542, 138659, 11, 14854, 27585, 220, 5802, 25, 2204,
+    198, 9483, 1318, 1178, 303, 896, 163586, 163587, 2482, 163601, 5376, 387,
+    276, 10666, 306, 15466, 11, 14854, 30, 7811, 276, 5029, 4453, 13, 163586,
+    163588, 69702, 163601, 163606
+  ],
+  "cost": "0"
+}

@@ -1,0 +1,31 @@
+{
+  "model": "gpt-5.5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Extract structured fields from this sentence: Alice is 30 years old and her email is alice@example.com. Reply with only the JSON object — no markdown fences, no prose."
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "user_info",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "age": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": ["name", "age", "email"]
+      }
+    }
+  },
+  "stream": true
+}

@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-RITQ2qfG1TUIEhfaZNreFCZV",
+  "object": "chat.completion",
+  "created": 1785269856,
+  "model": "glm-5.2",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "name": null,
+        "reasoning_content": "The user wants to know the weather in Boston, MA. I'll use the get_weather tool.",
+        "tool_calls": [
+          {
+            "id": "call_bff5",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 189,
+    "completion_tokens": 34,
+    "total_tokens": 223,
+    "prompt_tokens_details": null
+  },
+  "cost": "0"
+}

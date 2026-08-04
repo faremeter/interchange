@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl-6a61196d1b9c3d00cc86028c",
+  "object": "chat.completion",
+  "created": 1784748398,
+  "model": "kimi-k3",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "The capital of France is Paris.",
+        "reasoning_content": "The user is asking me to reply with a single sentence: \"the capital of France is Paris.\"\n\nThis is a simple, harmless request. The statement is factually correct - Paris is indeed the capital of France. The user seems to be testing whether I can follow a simple formatting instruction, or perhaps testing instruction-following in general.\n\nI should just reply with exactly that sentence. The user specified \"a single sentence\" so I should keep it to one sentence. I could reply with exactly what they asked, perhaps capitalizing the first letter properly.\n\nFormat considerations: This should be very brief - just one sentence as requested. No need for markdown, headers, or elaboration. The user gave an explicit, simple instruction and the appropriate response is to follow it precisely."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 98,
+    "completion_tokens": 177,
+    "total_tokens": 275,
+    "completion_tokens_details": { "reasoning_tokens": 155 }
+  },
+  "cost": "0"
+}

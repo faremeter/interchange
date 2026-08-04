@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-RR68eOCirPzTa1VHKzESVX0K",
+  "object": "chat.completion",
+  "created": 1785269867,
+  "model": "glm-5.2",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"name\": \"Alice\",\n  \"age\": 30,\n  \"email\": \"alice@example.com\"\n}",
+        "name": null,
+        "reasoning_content": "1.  **Analyze the Request:**\n    *   Input sentence: \"Alice is 30 years old and her email is alice@example.com.\"\n    *   Task: Extract structured fields (Name, Age, Email).\n    *   Constraints: Reply with *only* the JSON object. No markdown fences (` ```json `), no prose.\n\n2.  **Extract fields:**\n    *   Name: Alice\n    *   Age: 30\n    *   Email: alice@example.com\n\n3.  **Format as JSON:**\n    ```json\n    {\n      \"name\": \"Alice\",\n      \"age\": 30,\n      \"email\": \"alice@example.com\"\n    }\n    ```\n\n4.  **Apply constraints:**\n    *   Remove markdown fences.\n    *   Remove all text except the raw JSON.\n\n5.  **Final Output:**\n    {\n      \"name\": \"Alice\",\n      \"age\": 30,\n      \"email\": \"alice@example.com\"\n    }",
+        "tool_calls": []
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 47,
+    "completion_tokens": 234,
+    "total_tokens": 281,
+    "prompt_tokens_details": null
+  },
+  "cost": "0"
+}

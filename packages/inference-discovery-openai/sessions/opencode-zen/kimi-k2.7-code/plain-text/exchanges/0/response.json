@@ -1,0 +1,24 @@
+{
+  "id": "e1419b41-3515-4c6e-acdd-a05c087242a5-chatcmpl-aa8d135",
+  "object": "chat.completion",
+  "created": 1784748904,
+  "model": "kimi-k2.7-code",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "The capital of France is Paris.",
+        "reasoning_content": "We need answer with single sentence: \"The capital of France is Paris.\" The user requested exactly that. We should just output that sentence."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 21,
+    "completion_tokens": 37,
+    "total_tokens": 58,
+    "prompt_tokens_details": { "cached_tokens": 3 }
+  },
+  "cost": "0"
+}

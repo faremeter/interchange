@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-ca55bf7cb6f442ef86dcbbbf227f7d7e",
+  "object": "chat.completion",
+  "created": 1779747301,
+  "model": "accounts/fireworks/models/kimi-k2p6",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}"
+      },
+      "finish_reason": "stop",
+      "token_ids": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 45,
+    "total_tokens": 62,
+    "completion_tokens": 17,
+    "prompt_tokens_details": { "cached_tokens": 4 }
+  },
+  "prompt_token_ids": [
+    163587, 2482, 163601, 28651, 36068, 7902, 658, 566, 23819, 25, 44835, 387,
+    220, 1341, 2285, 3410, 316, 1815, 5332, 387, 103583, 31, 17480, 1304, 13,
+    84156, 472, 1609, 276, 11419, 2831, 4275, 1495, 66661, 85309, 11, 1495,
+    86882, 13, 163586, 163588, 69702, 163601, 163606, 163607
+  ],
+  "cost": "0.00010759"
+}

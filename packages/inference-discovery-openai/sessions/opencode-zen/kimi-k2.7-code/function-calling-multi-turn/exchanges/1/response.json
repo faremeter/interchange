@@ -1,0 +1,24 @@
+{
+  "id": "cea6400e-5869-4cf5-9fa9-d7b9b54d3481-chatcmpl-b14ec40",
+  "object": "chat.completion",
+  "created": 1784748908,
+  "model": "kimi-k2.7-code",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "The weather in Boston, MA is currently **68°F** with **clear** conditions.",
+        "reasoning_content": "The weather in Boston, MA is 68°F and clear. I should present this information clearly."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 170,
+    "completion_tokens": 40,
+    "total_tokens": 210,
+    "prompt_tokens_details": { "cached_tokens": 79 }
+  },
+  "cost": "0"
+}

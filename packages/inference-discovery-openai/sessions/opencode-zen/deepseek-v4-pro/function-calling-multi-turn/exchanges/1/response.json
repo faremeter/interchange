@@ -1,0 +1,33 @@
+{
+  "id": "4066f66a-b423-482a-903e-3db5043e39ff",
+  "object": "chat.completion",
+  "created": 1779305022,
+  "model": "deepseek-v4-pro",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The current weather in **Boston, MA** is **62°F** and partly cloudy, with a wind speed of **8 mph**.",
+        "reasoning_content": "The tool returned the current weather for Boston, MA: 62°F, partly cloudy, with wind 8 mph. I'll present this to the user in a clear format."
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 495,
+    "completion_tokens": 66,
+    "total_tokens": 561,
+    "prompt_tokens_details": {
+      "cached_tokens": 384
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 37
+    },
+    "prompt_cache_hit_tokens": 384,
+    "prompt_cache_miss_tokens": 111
+  },
+  "system_fingerprint": "fp_9954b31ca7_prod0820_fp8_kvcache_20260402",
+  "cost": "0"
+}

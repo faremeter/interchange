@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "gpt-5.4-mini",
+    "baseURL": "https://opencode.ai/zen/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-05-25T21:53:33.947Z",
+  "capability": "structured-output"
+}

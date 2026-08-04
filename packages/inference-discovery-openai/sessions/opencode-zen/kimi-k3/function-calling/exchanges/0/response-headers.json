@@ -1,0 +1,11 @@
+{
+  "cache-control": "private, no-store, no-cache, max-age=0",
+  "cf-placement": "remote-ORD",
+  "cf-ray": "a1f4d6c85e0357b6-MCI",
+  "connection": "keep-alive",
+  "content-encoding": "br",
+  "content-type": "application/json",
+  "date": "Wed, 22 Jul 2026 19:26:51 GMT",
+  "server": "cloudflare",
+  "transfer-encoding": "chunked"
+}

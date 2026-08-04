@@ -1,0 +1,9 @@
+{
+  "model": "kimi-k2.7-code",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ]
+}
