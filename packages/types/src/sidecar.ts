@@ -400,6 +400,42 @@ const WorkflowProjectionWithSources = type({
   return true;
 });
 
+/**
+ * The decrypted credential material and per-handle binding descriptors
+ * delivered to a running agent so its tools can use provider-backed
+ * credentials. Secrets are decrypted hub-side and ride this payload on the
+ * live channel ONLY -- the deploy frame at launch, a `credentials.update`
+ * frame on rotation, and the child's in-memory cell. They are NEVER written to
+ * disk (they do not ride the git-committed grants file) and NEVER copied into
+ * any snapshot, event, or state -- redaction is by construction, mirroring how
+ * an `InferenceSource`'s `apiKey` stays off every egress type.
+ *
+ * `materials` is keyed by `credentialId` (a credential can back several handles,
+ * so its secret is stored once); `bindings` maps each declared tool handle to
+ * the credential that backs it and the consumer identity allowed to use it.
+ */
+export const CredentialMaterialEntry = type({
+  credentialId: "string",
+  providerKey: "string",
+  origin: "string",
+  secret: "string",
+});
+export type CredentialMaterialEntry = typeof CredentialMaterialEntry.infer;
+
+export const CredentialBindingDescriptor = type({
+  handle: "string",
+  credentialId: "string",
+  consumer: "string",
+});
+export type CredentialBindingDescriptor =
+  typeof CredentialBindingDescriptor.infer;
+
+export const CredentialDelivery = type({
+  bindings: CredentialBindingDescriptor.array(),
+  materials: CredentialMaterialEntry.array(),
+});
+export type CredentialDelivery = typeof CredentialDelivery.infer;
+
 export const AgentDeployWorkflow = type({
   definition: WorkflowProjectionDefinition,
   sources: { "[string]": InferenceSource.array().atLeastLength(1) },
@@ -412,6 +448,12 @@ export const AgentDeployWorkflow = type({
   // on disk (`sources.json`) so a body child -- in-process, its env lost across
   // a restart -- resolves inference durably without a hub round-trip.
   "referencedDefinitions?": WorkflowProjectionWithSources.array(),
+  // Initial credential material for the deployment's tools, decrypted hub-side
+  // and delivered on the deploy frame so it is resident before any step runs
+  // (closing the race where a tool resolves a credential before a push lands).
+  // Run-global: a credential's secret is stored once, keyed by credentialId.
+  // Optional -- a deploy whose definition binds no credentials omits it.
+  "credentials?": CredentialDelivery,
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
@@ -508,6 +550,20 @@ export const SourcesUpdateFrame = type({
   defaultSource: "string",
 });
 export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
+
+/**
+ * Push refreshed credential material to a running deployment (a rotation, or a
+ * revocation delivered by omitting the revoked credential's material so the
+ * child evicts it). Mirrors `SourcesUpdateFrame`: the sidecar routes it to the
+ * deployment's supervisor, which forwards it to the child's in-memory cell.
+ */
+export const CredentialsUpdateFrame = type({
+  type: "'credentials.update'",
+  requestId: "string",
+  agentAddress: "string",
+  delivery: CredentialDelivery,
+});
+export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 
 // ---------------------------------------------------------------------------
 // Pack transport (bidirectional)
@@ -795,6 +851,7 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(ChallengeFailedFrame)
   .or(PongFrame)
   .or(SourcesUpdateFrame)
+  .or(CredentialsUpdateFrame)
   .or(PackPushFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)

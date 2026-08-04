@@ -3,6 +3,7 @@ import { type } from "arktype";
 import { APPROVAL_SNAPSHOT_MAX_BYTES } from "./runtime";
 import {
   AgentDeployFrame,
+  CredentialsUpdateFrame,
   DeployApplyErrorCategory,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
@@ -175,6 +176,58 @@ describe("SourcesUpdateFrame", () => {
     // rejects an empty `sources` rather than accepting a rotation the
     // agent could not swap to any live source.
     const result = SourcesUpdateFrame({ ...base, sources: [] });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("CredentialsUpdateFrame", () => {
+  const material = {
+    credentialId: "cred_a",
+    providerKey: "http",
+    origin: "https://api.example.test",
+    secret: "sk-real",
+  };
+  const binding = {
+    handle: "gh",
+    credentialId: "cred_a",
+    consumer: "tool:@intx/tools-example",
+  };
+  const base = {
+    type: "credentials.update" as const,
+    requestId: "req_1",
+    agentAddress: "agt_1@example.test",
+  };
+
+  test("accepts a well-formed delivery", () => {
+    const result = CredentialsUpdateFrame({
+      ...base,
+      delivery: { bindings: [binding], materials: [material] },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an empty delivery (a revocation that evicts every credential)", () => {
+    const result = CredentialsUpdateFrame({
+      ...base,
+      delivery: { bindings: [], materials: [] },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a material entry missing its secret", () => {
+    const result = CredentialsUpdateFrame({
+      ...base,
+      delivery: {
+        bindings: [binding],
+        materials: [
+          {
+            credentialId: "cred_a",
+            providerKey: "http",
+            origin: "https://api.example.test",
+          },
+        ],
+      },
+    });
     expect(result instanceof type.errors).toBe(true);
   });
 });

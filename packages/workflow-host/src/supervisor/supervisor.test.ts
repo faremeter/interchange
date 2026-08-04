@@ -154,6 +154,19 @@ function parseSourcesUpdatedFrames(
   return out;
 }
 
+function parseCredentialsUpdatedFrames(lines: readonly string[]) {
+  return lines.flatMap((line) => {
+    if (!line.includes("credentials-updated")) return [];
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) return [];
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) return [];
+    if (payload.type !== "credentials-updated") return [];
+    return [payload.data.delivery];
+  });
+}
+
 const CancelRequestedBlob = type({
   type: "string",
   seq: "number",
@@ -2543,6 +2556,136 @@ describe("createWorkflowSupervisor", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]?.sources).toEqual(sources);
     expect(frames[0]?.defaultSource).toBe("primary");
+
+    await supervisor.shutdown();
+  });
+
+  test("deliverCredentials() rejects when the supervisor is idle (no spawn has run)", async () => {
+    // Same phase-guard contract as deliverSources: a credential push landing
+    // against a supervisor that is not starting/running throws so the caller
+    // surfaces the race rather than writing into a dead child's pipe.
+    const baseDir = await makeTempDir("supervisor-deliver-credentials-idle-");
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: () => {
+        throw new Error(
+          "spawner must not be invoked on the idle credentials path",
+        );
+      },
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus: createMockMailBus(),
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    await expect(
+      supervisor.deliverCredentials({
+        delivery: { bindings: [], materials: [] },
+      }),
+    ).rejects.toThrow(/deliverCredentials called in phase idle/);
+  });
+
+  test("deliverCredentials() sends a credentials-updated frame when running", async () => {
+    const baseDir = await makeTempDir(
+      "supervisor-deliver-credentials-running-",
+    );
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      const handle: SubprocessHandle = {
+        pid: 4321,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
+      signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
+      mailBus: createMockMailBus(),
+    });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+    };
+    const supervisor = createWorkflowSupervisor(bindings);
+
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: true,
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 4321,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+
+    const delivery = {
+      bindings: [
+        {
+          handle: "gh",
+          credentialId: "cred_a",
+          consumer: "tool:@intx/tools-example",
+        },
+      ],
+      materials: [
+        {
+          credentialId: "cred_a",
+          providerKey: "http",
+          origin: "https://api.example.test",
+          secret: "sk-real",
+        },
+      ],
+    };
+    await supervisor.deliverCredentials({ delivery });
+
+    const frames = parseCredentialsUpdatedFrames(supervisorToChild.flushed());
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toEqual(delivery);
 
     await supervisor.shutdown();
   });
