@@ -1,5 +1,5 @@
 {
-  "sessionSchemaVersion": "1",
+  "schemaVersion": "1",
   "source": {
     "provider": "anthropic",
     "model": "claude-test",

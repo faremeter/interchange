@@ -346,7 +346,7 @@ packages/inference-testing/sessions/<name>/
 ```
 
 The `session.json` at the root carries only session-level facts that
-describe the session as a whole — `sessionSchemaVersion`, `source`
+describe the session as a whole — `schemaVersion`, `source`
 (provider/model/baseURL), `capturedAt`. There is no catalog of the
 contents underneath; ordering and naming come from the filesystem
 layout itself, so the metadata cannot go stale.

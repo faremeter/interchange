@@ -9,7 +9,7 @@ import {
   createRecordingHarness,
   SessionRecordingBudgetExceededError,
 } from "./session-recording";
-import { loadSessionManifest } from "./session-manifest";
+import { loadCaptureManifest } from "@intx/inference-discovery/catalog";
 import * as wire from "./wire";
 
 const ANTHROPIC_SOURCE: InferenceSource = {
@@ -185,8 +185,8 @@ describe("createRecordingHarness end-to-end", () => {
 
     expect(events.some((e) => e.type === "inference.done")).toBe(true);
 
-    const manifest = await loadSessionManifest(dir);
-    expect(manifest.sessionSchemaVersion).toBe("1");
+    const manifest = await loadCaptureManifest(dir);
+    expect(manifest.schemaVersion).toBe("1");
     expect(manifest.source.provider).toBe("anthropic");
     expect(manifest.capturedAt).toBe("2026-05-25T12:00:00.000Z");
 
@@ -623,6 +623,6 @@ describe("createRecordingHarness end-to-end", () => {
     await harness.finalize();
 
     const parsed = await readJSONRecord(path.join(dir, "session.json"));
-    expect(expectStringField(parsed, "sessionSchemaVersion")).toBe("1");
+    expect(expectStringField(parsed, "schemaVersion")).toBe("1");
   });
 });

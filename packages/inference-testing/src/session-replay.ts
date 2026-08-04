@@ -25,7 +25,10 @@ import type {
 
 import { UnmatchedFetchError } from "./errors";
 import { setupHarness } from "./harness";
-import { loadSessionManifest, type SessionManifest } from "./session-manifest";
+import {
+  loadCaptureManifest,
+  type CaptureManifest,
+} from "@intx/inference-discovery/catalog";
 import { isDelayedEnvelope } from "./tool-handler";
 
 /**
@@ -124,7 +127,7 @@ export interface RunTurnOpts {
 
 export interface ReplayHarness {
   /** The captured session's loaded manifest. */
-  readonly manifest: SessionManifest;
+  readonly manifest: CaptureManifest;
   /** The `InferenceSource` reconstructed from the manifest. */
   readonly source: InferenceSource;
   /**
@@ -424,7 +427,7 @@ export async function createReplayHarness(
   opts: CreateReplayHarnessOpts,
 ): Promise<ReplayHarness> {
   const { sessionDir } = opts;
-  const manifest = await loadSessionManifest(sessionDir);
+  const manifest = await loadCaptureManifest(sessionDir);
   const exchanges = await loadExchanges(sessionDir);
   const dispatches = await loadDispatches(sessionDir);
 

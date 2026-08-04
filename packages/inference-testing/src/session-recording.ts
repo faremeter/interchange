@@ -26,7 +26,10 @@ import { detectResponseKind } from "@intx/types/content-type";
 import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { InferenceEvent } from "@intx/types/runtime";
 
-import { writeSessionManifest, type SessionManifest } from "./session-manifest";
+import {
+  writeCaptureManifest,
+  type CaptureManifest,
+} from "@intx/inference-discovery/catalog";
 import { isDelayedEnvelope, type ToolHandler } from "./tool-handler";
 
 /**
@@ -45,7 +48,7 @@ export interface CreateRecordingHarnessOpts {
    * the top-level `session.json`. The replay harness consumes this to
    * construct the `InferenceSource` passed to `runInference`.
    */
-  source: SessionManifest["source"];
+  source: CaptureManifest["source"];
   /**
    * Hard ceiling on how many fetch calls the harness will wrap before
    * throwing `SessionRecordingBudgetExceededError`. Guards against
@@ -553,8 +556,8 @@ export function createRecordingHarness(
     // error, and we'd rather hand an interrupted recording back to
     // the user as a partially-loadable artifact than a black hole.
     const capturedAt = (now ?? (() => new Date()))().toISOString();
-    await writeSessionManifest(outputDir, {
-      sessionSchemaVersion: "1",
+    await writeCaptureManifest(outputDir, {
+      schemaVersion: "1",
       source,
       capturedAt,
     });
