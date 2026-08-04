@@ -422,7 +422,7 @@ export function createInstanceRoutes({
               409,
             );
           }
-          credentialId = resolved.id;
+          credentialId = resolved.credential.id;
         } catch (e) {
           if (!(e instanceof AmbiguousCredentialError)) {
             throw e;
