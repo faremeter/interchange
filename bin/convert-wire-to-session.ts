@@ -533,9 +533,18 @@ function parseCLI(argv: string[]): CLIArgs {
   return { wireDir, sessionDir, baseURL, origin };
 }
 
-async function main(argv: string[]): Promise<number> {
-  const args = parseCLI(argv);
-  const manifestPath = path.join(args.wireDir, "manifest.json");
+// Convert one wire capability directory, reading provider/model/capability and
+// timestamps from its own `manifest.json`. The caller supplies only the fields
+// the wire manifest does not carry — the output location, the base URL, and the
+// origin — so a caller can convert a capability programmatically without
+// reassembling the manifest-read and catalog-to-adapter mapping itself.
+export async function convertWireCapability(opts: {
+  wireDir: string;
+  sessionDir: string;
+  baseURL: string;
+  origin: "live" | "synthetic";
+}): Promise<void> {
+  const manifestPath = path.join(opts.wireDir, "manifest.json");
   const parsed: unknown = JSON.parse(await fs.readFile(manifestPath, "utf-8"));
   const manifest = FixtureManifest(parsed);
   if (manifest instanceof type.errors) {
@@ -550,19 +559,29 @@ async function main(argv: string[]): Promise<number> {
     );
   }
   await convertWireToSession({
-    wireDir: args.wireDir,
-    sessionDir: args.sessionDir,
+    wireDir: opts.wireDir,
+    sessionDir: opts.sessionDir,
     source: {
       provider: adapterProvider,
       model: manifest.model,
-      baseURL: args.baseURL,
+      baseURL: opts.baseURL,
     },
-    origin: args.origin,
+    origin: opts.origin,
     capturedAt: manifest.capturedAt,
     capability: manifest.capability,
     ...(manifest.observedModelVersion !== undefined
       ? { observedModelVersion: manifest.observedModelVersion }
       : {}),
+  });
+}
+
+async function main(argv: string[]): Promise<number> {
+  const args = parseCLI(argv);
+  await convertWireCapability({
+    wireDir: args.wireDir,
+    sessionDir: args.sessionDir,
+    baseURL: args.baseURL,
+    origin: args.origin,
   });
   console.log(`convert-wire-to-session: wrote ${args.sessionDir}`);
   return 0;

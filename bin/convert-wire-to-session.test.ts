@@ -13,7 +13,10 @@ import {
 } from "@intx/inference-testing";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
-import { convertWireToSession } from "./convert-wire-to-session";
+import {
+  convertWireCapability,
+  convertWireToSession,
+} from "./convert-wire-to-session";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -431,6 +434,42 @@ describe("convertWireToSession dispatch reconstruction", () => {
 
     expect(await listDir(path.join(sessionDir, "dispatches"))).toEqual([]);
     expect(await listDir(path.join(sessionDir, "exchanges"))).toEqual(["0"]);
+  });
+});
+
+describe("convertWireCapability", () => {
+  test("reads the wire manifest and maps the catalog provider to its adapter", async () => {
+    const wireDir = await makeTmpDir();
+    const sessionDir = await makeTmpDir();
+    await fs.writeFile(
+      path.join(wireDir, "manifest.json"),
+      JSON.stringify({
+        provider: "opencode-zen",
+        model: "mimo-v2.5",
+        capability: "function-calling",
+        capturedAt: "2026-07-22T16:52:24.465Z",
+        observedModelVersion: "mimo-v2.5-0722",
+        schemaVersion: "1",
+      }),
+    );
+    await writeLeaf(wireDir, {
+      requestBody: { messages: [{ role: "user", content: "hi" }] },
+    });
+
+    await convertWireCapability({
+      wireDir,
+      sessionDir,
+      baseURL: "https://opencode.ai/zen/v1",
+      origin: "live",
+    });
+
+    const manifest = await loadCaptureManifest(sessionDir);
+    expect(manifest.source.provider).toBe("openai-compatible");
+    expect(manifest.source.model).toBe("mimo-v2.5");
+    expect(manifest.source.baseURL).toBe("https://opencode.ai/zen/v1");
+    expect(manifest.capability).toBe("function-calling");
+    expect(manifest.observedModelVersion).toBe("mimo-v2.5-0722");
+    expect(manifest.origin).toBe("live");
   });
 });
 
