@@ -5,19 +5,19 @@ import path from "node:path";
 import { type } from "arktype";
 
 import {
-  SessionManifest,
-  loadSessionManifest,
-  writeSessionManifest,
-} from "./session-manifest";
+  CaptureManifest,
+  loadCaptureManifest,
+  writeCaptureManifest,
+} from "./capture-manifest";
 
 async function makeTmpDir(): Promise<string> {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "session-manifest-test-"));
+  return await fs.mkdtemp(path.join(os.tmpdir(), "capture-manifest-test-"));
 }
 
-describe("SessionManifest", () => {
+describe("CaptureManifest", () => {
   test("validates a well-formed manifest", () => {
-    const result = SessionManifest({
-      sessionSchemaVersion: "1",
+    const result = CaptureManifest({
+      schemaVersion: "1",
       source: {
         provider: "anthropic",
         model: "claude-test",
@@ -29,8 +29,8 @@ describe("SessionManifest", () => {
   });
 
   test("rejects a manifest with an unknown schema version", () => {
-    const result = SessionManifest({
-      sessionSchemaVersion: "2",
+    const result = CaptureManifest({
+      schemaVersion: "2",
       source: {
         provider: "anthropic",
         model: "claude-test",
@@ -42,16 +42,16 @@ describe("SessionManifest", () => {
   });
 
   test("rejects a manifest missing the source field", () => {
-    const result = SessionManifest({
-      sessionSchemaVersion: "1",
+    const result = CaptureManifest({
+      schemaVersion: "1",
       capturedAt: "2026-05-25T12:00:00Z",
     });
     expect(result instanceof type.errors).toBe(true);
   });
 
   test("rejects a manifest with a non-string baseURL", () => {
-    const result = SessionManifest({
-      sessionSchemaVersion: "1",
+    const result = CaptureManifest({
+      schemaVersion: "1",
       source: { provider: "anthropic", model: "claude-test", baseURL: 42 },
       capturedAt: "2026-05-25T12:00:00Z",
     });
@@ -59,12 +59,12 @@ describe("SessionManifest", () => {
   });
 });
 
-describe("writeSessionManifest / loadSessionManifest round-trip", () => {
+describe("writeCaptureManifest / loadCaptureManifest round-trip", () => {
   test("writes and reads back an identical manifest", async () => {
     const dir = await makeTmpDir();
     try {
-      const manifest: SessionManifest = {
-        sessionSchemaVersion: "1",
+      const manifest: CaptureManifest = {
+        schemaVersion: "1",
         source: {
           provider: "anthropic",
           model: "claude-test",
@@ -72,79 +72,79 @@ describe("writeSessionManifest / loadSessionManifest round-trip", () => {
         },
         capturedAt: "2026-05-25T12:00:00Z",
       };
-      await writeSessionManifest(dir, manifest);
-      const loaded = await loadSessionManifest(dir);
+      await writeCaptureManifest(dir, manifest);
+      const loaded = await loadCaptureManifest(dir);
       expect(loaded).toEqual(manifest);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("creates the session directory if it does not exist", async () => {
+  test("creates the capture directory if it does not exist", async () => {
     const parent = await makeTmpDir();
     try {
-      const dir = path.join(parent, "nested", "session");
-      await writeSessionManifest(dir, {
-        sessionSchemaVersion: "1",
+      const dir = path.join(parent, "nested", "capture");
+      await writeCaptureManifest(dir, {
+        schemaVersion: "1",
         source: { provider: "p", model: "m", baseURL: "https://example" },
         capturedAt: "2026-05-25T12:00:00Z",
       });
-      const loaded = await loadSessionManifest(dir);
+      const loaded = await loadCaptureManifest(dir);
       expect(loaded.source.provider).toBe("p");
     } finally {
       await fs.rm(parent, { recursive: true, force: true });
     }
   });
 
-  test("loadSessionManifest rejects an unknown schema version", async () => {
+  test("loadCaptureManifest rejects an unknown schema version", async () => {
     const dir = await makeTmpDir();
     try {
       await fs.writeFile(
         path.join(dir, "session.json"),
         JSON.stringify({
-          sessionSchemaVersion: "2",
+          schemaVersion: "2",
           source: { provider: "p", model: "m", baseURL: "https://example" },
           capturedAt: "2026-05-25T12:00:00Z",
         }),
       );
-      await expect(loadSessionManifest(dir)).rejects.toThrow(
-        /Invalid session manifest/,
+      await expect(loadCaptureManifest(dir)).rejects.toThrow(
+        /Invalid capture manifest/,
       );
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("loadSessionManifest rejects malformed JSON", async () => {
+  test("loadCaptureManifest rejects malformed JSON", async () => {
     const dir = await makeTmpDir();
     try {
       await fs.writeFile(path.join(dir, "session.json"), "{not json");
-      await expect(loadSessionManifest(dir)).rejects.toThrow();
+      await expect(loadCaptureManifest(dir)).rejects.toThrow();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("loadSessionManifest rejects when session.json does not exist", async () => {
+  test("loadCaptureManifest rejects when session.json does not exist", async () => {
     const dir = await makeTmpDir();
     try {
-      await expect(loadSessionManifest(dir)).rejects.toThrow();
+      await expect(loadCaptureManifest(dir)).rejects.toThrow();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("writeSessionManifest refuses to write an invalid manifest", async () => {
+  test("writeCaptureManifest refuses to write an invalid manifest", async () => {
     const dir = await makeTmpDir();
     try {
       await expect(
-        writeSessionManifest(dir, {
+        writeCaptureManifest(dir, {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- exercising rejection of bad input
-          sessionSchemaVersion: "99" as "1",
+          schemaVersion: "99" as "1",
           source: { provider: "p", model: "m", baseURL: "https://example" },
           capturedAt: "2026-05-25T12:00:00Z",
         }),
-      ).rejects.toThrow(/Refusing to write invalid session manifest/);
+      ).rejects.toThrow(/Refusing to write invalid capture manifest/);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

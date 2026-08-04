@@ -185,7 +185,7 @@ describe("createReplayHarness", () => {
 
     const replay = await createReplayHarness({ sessionDir: dir });
     try {
-      expect(replay.manifest.sessionSchemaVersion).toBe("1");
+      expect(replay.manifest.schemaVersion).toBe("1");
       expect(replay.source.provider).toBe("anthropic");
       expect(replay.capturedExchanges).toHaveLength(1);
 
@@ -294,13 +294,13 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        sessionSchemaVersion: "999",
+        schemaVersion: "999",
         source: { provider: "x", model: "y", baseURL: "z" },
         capturedAt: "2026-05-25T12:00:00Z",
       }),
     );
     await expect(createReplayHarness({ sessionDir: dir })).rejects.toThrow(
-      /Invalid session manifest/,
+      /Invalid capture manifest/,
     );
   });
 
@@ -309,7 +309,7 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        sessionSchemaVersion: "1",
+        schemaVersion: "1",
         source: { provider: "x", model: "y", baseURL: "z" },
         capturedAt: "2026-05-25T12:00:00Z",
       }),
@@ -324,7 +324,7 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        sessionSchemaVersion: "1",
+        schemaVersion: "1",
         source: { provider: "x", model: "y", baseURL: "z" },
         capturedAt: "2026-05-25T12:00:00Z",
       }),
@@ -356,7 +356,7 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        sessionSchemaVersion: "1",
+        schemaVersion: "1",
         source: { provider: "x", model: "y", baseURL: "z" },
         capturedAt: "2026-05-25T12:00:00Z",
       }),
@@ -386,7 +386,7 @@ describe("createReplayHarness", () => {
     await fs.writeFile(
       path.join(dir, "session.json"),
       JSON.stringify({
-        sessionSchemaVersion: "1",
+        schemaVersion: "1",
         source: { provider: "x", model: "y", baseURL: "z" },
         capturedAt: "2026-05-25T12:00:00Z",
       }),

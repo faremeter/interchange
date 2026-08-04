@@ -79,12 +79,6 @@ export type {
 } from "./compat-replay";
 
 export {
-  SessionManifest,
-  loadSessionManifest,
-  writeSessionManifest,
-} from "./session-manifest";
-
-export {
   createRecordingHarness,
   SessionRecordingBudgetExceededError,
 } from "./session-recording";

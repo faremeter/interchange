@@ -14,3 +14,8 @@ export {
 } from "./support-matrix";
 export { catalogCapabilitiesFor } from "./catalog-capabilities";
 export { FixtureManifest } from "./manifest";
+export {
+  CaptureManifest,
+  loadCaptureManifest,
+  writeCaptureManifest,
+} from "./capture-manifest";
