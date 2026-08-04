@@ -8,6 +8,7 @@ import {
   parseModelOfferingRow,
   parseModelProviderRow,
   parsePrincipalRow,
+  parseWorkflowDefinitionRow,
   parseWorkflowRunRow,
 } from "./parse-row";
 import type {
@@ -15,6 +16,7 @@ import type {
   modelOffering,
   modelProvider,
   principal,
+  workflowDefinition,
   workflowRun,
 } from "./schema";
 
@@ -294,6 +296,98 @@ describe("parseWorkflowRunRow", () => {
     expect(() =>
       parseWorkflowRunRow(
         makeWorkflowRunRow({ modelPreferences: [{ model: "opus" }] }),
+      ),
+    ).toThrow();
+  });
+});
+
+describe("parseWorkflowDefinitionRow", () => {
+  type DefRow = typeof workflowDefinition.$inferSelect;
+
+  function makeDefRow(overrides: Partial<DefRow> = {}): DefRow {
+    const now = new Date();
+    return {
+      id: "wfd_test",
+      tenantId: "tnt_test",
+      creatorPrincipalId: null,
+      assetId: null,
+      name: "Test Definition",
+      description: null,
+      grantRequirements: null,
+      modelRequirements: null,
+      credentialBindings: null,
+      currentVersion: "1",
+      status: "deployed",
+      createdAt: now,
+      updatedAt: now,
+      ...overrides,
+    };
+  }
+
+  test("passes null grant/model/credential manifests through as null", () => {
+    const parsed = parseWorkflowDefinitionRow(makeDefRow());
+    expect(parsed.grantRequirements).toBeNull();
+    expect(parsed.modelRequirements).toBeNull();
+    expect(parsed.credentialBindings).toBeNull();
+  });
+
+  test("validates a well-formed grantRequirements", () => {
+    const grantRequirements = [
+      { resource: "tool:bash", action: "invoke", source: "creator" as const },
+    ];
+    const parsed = parseWorkflowDefinitionRow(
+      makeDefRow({ grantRequirements }),
+    );
+    expect(parsed.grantRequirements).toEqual(grantRequirements);
+  });
+
+  test("validates a well-formed modelRequirements", () => {
+    const modelRequirements = [{ model: "opus" }];
+    const parsed = parseWorkflowDefinitionRow(
+      makeDefRow({ modelRequirements }),
+    );
+    expect(parsed.modelRequirements).toEqual(modelRequirements);
+  });
+
+  test("validates a well-formed credentialBindings", () => {
+    const credentialBindings = [
+      {
+        package: "@acme/tools",
+        handle: "gh",
+        provider: "github",
+        locator: "tenant" as const,
+      },
+    ];
+    const parsed = parseWorkflowDefinitionRow(
+      makeDefRow({ credentialBindings }),
+    );
+    expect(parsed.credentialBindings).toEqual(credentialBindings);
+  });
+
+  // The credentialBindings branch tolerates `undefined` (a partial row-shaped
+  // stub predating the column) and treats it like `null`. Pin that so a
+  // "simplification" collapsing the branch cannot silently start asserting
+  // `undefined` as an array.
+  test("treats an undefined credentialBindings as null", () => {
+    const parsed = parseWorkflowDefinitionRow(
+      makeDefRow({ credentialBindings: undefined }),
+    );
+    expect(parsed.credentialBindings).toBeNull();
+  });
+
+  test("rejects a credentialBindings entry with an unknown locator", () => {
+    expect(() =>
+      parseWorkflowDefinitionRow(
+        makeDefRow({
+          credentialBindings: [
+            {
+              package: "@acme/tools",
+              handle: "gh",
+              provider: "github",
+              locator: "stranger",
+            },
+          ],
+        }),
       ),
     ).toThrow();
   });
