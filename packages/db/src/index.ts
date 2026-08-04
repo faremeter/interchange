@@ -6,6 +6,10 @@ export {
 } from "./pg-error";
 export type { DBConfig } from "./config";
 export { runMigrations, dropSchema } from "./migrate";
+export {
+  rekeyCredentialSecrets,
+  type RekeyReport,
+} from "./rekey-credential-secrets";
 export { createGrantStore } from "./grant-store";
 export {
   createApprovalStore,

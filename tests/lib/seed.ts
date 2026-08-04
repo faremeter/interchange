@@ -156,6 +156,7 @@ export type SeedCredential = {
   name: string;
   type?: "api_key" | "oauth_token" | "certificate" | "other";
   secret?: string;
+  refreshSecret?: string | null;
   status?: "active" | "expired" | "revoked" | "error";
   principalId?: string | null;
   scopes?: string[] | null;
@@ -170,6 +171,7 @@ export async function seedCredential(db: Db, c: SeedCredential): Promise<void> {
     name: c.name,
     type: c.type ?? "api_key",
     secret: c.secret ?? `${c.id}-secret`,
+    refreshSecret: c.refreshSecret ?? null,
     status: c.status ?? "active",
     principalId: c.principalId ?? null,
     scopes: c.scopes ?? null,

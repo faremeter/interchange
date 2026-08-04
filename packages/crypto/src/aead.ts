@@ -144,3 +144,16 @@ export async function aeadDecrypt(
 
 /** The AES-256 key length AEAD requires, in bytes. Exported for key validation. */
 export const AEAD_KEY_BYTES = KEY_BYTES;
+
+/**
+ * True when `value` is an encrypted ciphertext -- any `enc:<scheme>:` value,
+ * not just this module's `enc:aead:` -- as opposed to a plaintext secret. The
+ * re-key pass uses it to skip values already encrypted by ANY cipher scheme, so
+ * it never double-encrypts a blob a different plugin wrote. A plaintext value
+ * that happened to start with `enc:` would be skipped here and then fail the
+ * strict decrypt loudly at read time, so a false positive is fail-safe rather
+ * than a silent leak.
+ */
+export function isCiphertext(value: string): boolean {
+  return value.startsWith("enc:");
+}
