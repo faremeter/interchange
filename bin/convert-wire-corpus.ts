@@ -17,6 +17,7 @@ import * as path from "node:path";
 
 import {
   SUPPORT_MATRIX,
+  baseURLForCatalogProvider,
   getFixtureDir,
   isFixtureBearing,
 } from "@intx/inference-discovery/catalog";
@@ -25,22 +26,8 @@ import { convertWireCapability } from "./convert-wire-to-session";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 
-// Canonical base URLs, mirrored here because their defining modules do not
-// export them for reuse: ANTHROPIC_BASE / GEMINI_BASE live in the discovery
-// packages' endpoint.ts, the first-party OpenAI base in the openai deployment,
-// and the OpenCode Zen relay bases in bin/lib/catalog-seed-data.ts. The value is
-// cosmetic for replay — the stub fetch ignores the URL — and the wire never
-// recorded which endpoint served each capture, so every opencode-zen cell takes
-// the primary zen/v1 relay base.
-const BASE_URLS: Record<string, string> = {
-  anthropic: "https://api.anthropic.com",
-  "google-genai": "https://generativelanguage.googleapis.com/v1beta",
-  openai: "https://api.openai.com/v1",
-  "opencode-zen": "https://opencode.ai/zen/v1",
-};
-
 function resolveBaseURL(provider: string): string {
-  const baseURL = BASE_URLS[provider];
+  const baseURL = baseURLForCatalogProvider(provider);
   if (baseURL === undefined) {
     throw new Error(
       `convert-wire-corpus: no base URL configured for provider ${JSON.stringify(provider)}`,

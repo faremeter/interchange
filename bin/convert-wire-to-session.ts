@@ -33,6 +33,7 @@ import { type } from "arktype";
 
 import {
   FixtureManifest,
+  adapterForCatalogProvider,
   writeCaptureManifest,
   type CaptureManifest,
   type Capability,
@@ -243,16 +244,6 @@ export async function convertWireToSession(
 // CLI
 // ---------------------------------------------------------------------------
 
-// Catalog provider name (as it appears in a wire manifest) → the adapter
-// registry key the session format records. The `openai` and `opencode-zen`
-// catalog providers both speak the OpenAI protocol through one adapter.
-const CATALOG_TO_ADAPTER: Record<string, string> = {
-  anthropic: "anthropic",
-  openai: "openai-compatible",
-  "opencode-zen": "openai-compatible",
-  "google-genai": "google-genai",
-};
-
 type CLIArgs = {
   wireDir: string;
   sessionDir: string;
@@ -313,7 +304,7 @@ export async function convertWireCapability(opts: {
       `convert-wire-to-session: ${manifestPath} is not a valid wire manifest: ${manifest.summary}`,
     );
   }
-  const adapterProvider = CATALOG_TO_ADAPTER[manifest.provider];
+  const adapterProvider = adapterForCatalogProvider(manifest.provider);
   if (adapterProvider === undefined) {
     throw new Error(
       `convert-wire-to-session: no adapter mapping for catalog provider ${JSON.stringify(manifest.provider)}`,

@@ -14,6 +14,10 @@ export {
   isFixtureBearing,
 } from "./support-matrix";
 export { catalogCapabilitiesFor } from "./catalog-capabilities";
+export {
+  adapterForCatalogProvider,
+  baseURLForCatalogProvider,
+} from "./provider-adapter";
 export { FixtureManifest } from "./manifest";
 export {
   CaptureManifest,
