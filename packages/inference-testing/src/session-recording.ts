@@ -286,9 +286,12 @@ async function bufferResponseBody(
   // still make it to disk verbatim.
   const text = new TextDecoder().decode(bytes);
   try {
-    const parsed: unknown = JSON.parse(text);
+    // Parse only to classify the body: a JSON response is written to
+    // response.json, a parse failure falls through to the SSE-shaped raw
+    // capture below. The decoded value itself is not retained.
+    JSON.parse(text);
     return {
-      captured: { kind: "json", bytes, parsed },
+      captured: { kind: "json", bytes },
       reconstructed: bytes,
     };
   } catch {

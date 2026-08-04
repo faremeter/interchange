@@ -157,11 +157,7 @@ async function buildWireTree(
       redactRequestHeaders: [],
       response:
         exchange.responseKind === "json"
-          ? {
-              kind: "json",
-              bytes: responseBytes,
-              parsed: JSON.parse(exchange.responseText),
-            }
+          ? { kind: "json", bytes: responseBytes }
           : { kind: "sse", bytes: responseBytes },
       responseHeaders,
       redactResponseHeaders: [],

@@ -160,7 +160,7 @@ async function captureStep(args: {
   } else {
     const text = new TextDecoder().decode(bytes);
     const parsed: unknown = JSON.parse(text);
-    captured = { kind: "json", bytes, parsed };
+    captured = { kind: "json", bytes };
     parsedForGenerator = parsed;
     bytesForGenerator = null;
   }

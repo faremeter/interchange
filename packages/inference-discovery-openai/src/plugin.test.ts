@@ -10,7 +10,6 @@ import {
 } from "@intx/inference-discovery/catalog";
 import type { CaptureStep, CapturedResponse } from "@intx/inference-discovery";
 import { createOpencodeZenPlugin } from "./index";
-import { extractReasoningTrace } from "./deployments/opencode-zen";
 import { createOpenaiIterator } from "./protocol/iterator";
 import { buildRequestBody } from "./protocol/body";
 
@@ -478,81 +477,10 @@ describe("fixture oracle: every captured (model, capability) matches structure",
   }
 });
 
-describe("extractReasoningTrace", () => {
-  test("returns trace for Moonshot-style reasoning_details", () => {
-    const parsed = {
-      choices: [
-        {
-          message: {
-            reasoning_details: [{ text: "step one" }],
-          },
-        },
-      ],
-    };
-    const trace = extractReasoningTrace(parsed);
-    expect(trace).not.toBeNull();
-    if (trace === null) throw new Error("expected trace");
-    expect(trace.fieldPath).toBe("choices.0.message.reasoning_details");
-  });
-
-  test("returns trace for Moonshot-style reasoning field", () => {
-    const parsed = {
-      choices: [
-        {
-          message: {
-            reasoning: "thought process",
-          },
-        },
-      ],
-    };
-    const trace = extractReasoningTrace(parsed);
-    expect(trace).not.toBeNull();
-    if (trace === null) throw new Error("expected trace");
-    expect(trace.fieldPath).toBe("choices.0.message.reasoning");
-  });
-
-  test("returns trace for Fireworks-style reasoning_content", () => {
-    const parsed = {
-      choices: [
-        {
-          message: {
-            reasoning_content: "chain of thought",
-          },
-        },
-      ],
-    };
-    const trace = extractReasoningTrace(parsed);
-    expect(trace).not.toBeNull();
-    if (trace === null) throw new Error("expected trace");
-    expect(trace.fieldPath).toBe("choices.0.message.reasoning_content");
-  });
-
-  test("returns null when no reasoning fields present", () => {
-    const parsed = {
-      choices: [{ message: { content: "regular text" } }],
-    };
-    expect(extractReasoningTrace(parsed)).toBeNull();
-  });
-
-  test("returns null for empty reasoning fields", () => {
-    const parsed = {
-      choices: [{ message: { reasoning: "" } }],
-    };
-    expect(extractReasoningTrace(parsed)).toBeNull();
-  });
-
-  test("returns null for malformed input", () => {
-    expect(extractReasoningTrace(null)).toBeNull();
-    expect(extractReasoningTrace("string")).toBeNull();
-    expect(extractReasoningTrace({})).toBeNull();
-  });
-});
-
 describe("plugin via stub fetch", () => {
   test("plug-in returned by factory is callable and well-formed", () => {
     const plugin = makePlugin();
     expect(typeof plugin.buildAuthHeaders).toBe("function");
     expect(typeof plugin.iterateCaptureSteps).toBe("function");
-    expect(typeof plugin.extractReasoningTrace).toBe("function");
   });
 });
