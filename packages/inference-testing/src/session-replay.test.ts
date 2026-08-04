@@ -8,6 +8,7 @@ import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 import { createRecordingHarness } from "./session-recording";
 import {
   createReplayHarness,
+  replayResponsesForParsing,
   requestBytesMatch,
   SessionReplayMismatchError,
 } from "./session-replay";
@@ -740,5 +741,186 @@ describe("createReplayHarness", () => {
     } finally {
       replay.dispose();
     }
+  });
+});
+
+describe("replayResponsesForParsing (anything-goes)", () => {
+  async function writeParserSession(
+    dir: string,
+    exchanges: {
+      requestBin?: Uint8Array;
+      responseBytes: Uint8Array;
+      contentType: string;
+    }[],
+  ): Promise<void> {
+    await fs.writeFile(
+      path.join(dir, "session.json"),
+      JSON.stringify({
+        schemaVersion: "2",
+        source: {
+          provider: "anthropic",
+          model: "claude-test",
+          baseURL: "https://api.anthropic.com",
+        },
+        origin: "live",
+        capturedAt: "2026-05-25T12:00:00Z",
+      }),
+    );
+    for (let i = 0; i < exchanges.length; i++) {
+      const ex = exchanges[i];
+      if (ex === undefined) continue;
+      const exDir = path.join(dir, "exchanges", String(i));
+      await fs.mkdir(exDir, { recursive: true });
+      if (ex.requestBin !== undefined) {
+        await fs.writeFile(path.join(exDir, "request.bin"), ex.requestBin);
+      } else {
+        await fs.writeFile(path.join(exDir, "request.json"), "{}");
+      }
+      await fs.writeFile(path.join(exDir, "request-headers.json"), "{}");
+      const respName = ex.contentType.includes("event-stream")
+        ? "response.sse"
+        : "response.json";
+      await fs.writeFile(path.join(exDir, respName), ex.responseBytes);
+      await fs.writeFile(
+        path.join(exDir, "response-headers.json"),
+        JSON.stringify({ "content-type": ex.contentType }),
+      );
+    }
+  }
+
+  test("drives a JSON exchange terminating on a tool_call without an auto-dispatch throw", async () => {
+    const dir = await makeTmpDir();
+    const toolCallBody = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "get_weather",
+          input: { location: "SF" },
+        },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+    await writeParserSession(dir, [
+      {
+        responseBytes: new TextEncoder().encode(toolCallBody),
+        contentType: "application/json",
+      },
+    ]);
+
+    const results = await replayResponsesForParsing(dir);
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    if (r === undefined || r.kind !== "replayed") {
+      throw new Error("expected a replayed result");
+    }
+    const types = r.events.map((e) => e.type);
+    expect(types).toContain("inference.tool_call.start");
+    expect(types).toContain("inference.tool_call.end");
+    expect(types).toContain("inference.done");
+    expect(types).not.toContain("inference.error");
+  });
+
+  test("drives an SSE plain-text exchange, parsing text deltas", async () => {
+    const dir = await makeTmpDir();
+    const sseBytes = mergeChunks(
+      wire.completeResponse("anthropic", { text: "Hello" }),
+    );
+    await writeParserSession(dir, [
+      { responseBytes: sseBytes, contentType: "text/event-stream" },
+    ]);
+
+    const results = await replayResponsesForParsing(dir);
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    if (r === undefined || r.kind !== "replayed") {
+      throw new Error("expected a replayed result");
+    }
+    expect(
+      r.events.filter((e) => e.type === "inference.text.delta").length,
+    ).toBeGreaterThan(0);
+    expect(r.events.some((e) => e.type === "inference.done")).toBe(true);
+  });
+
+  test("drives every exchange in a multi-exchange session", async () => {
+    const dir = await makeTmpDir();
+    await writeParserSession(dir, [
+      {
+        responseBytes: mergeChunks(
+          wire.completeResponse("anthropic", { text: "One" }),
+        ),
+        contentType: "text/event-stream",
+      },
+      {
+        responseBytes: mergeChunks(
+          wire.completeResponse("anthropic", { text: "Two" }),
+        ),
+        contentType: "text/event-stream",
+      },
+    ]);
+
+    const results = await replayResponsesForParsing(dir);
+    expect(results.map((r) => r.kind)).toEqual(["replayed", "replayed"]);
+  });
+
+  test("skips a raw upload exchange but replays the generate exchange", async () => {
+    const dir = await makeTmpDir();
+    const generateBody = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [{ type: "text", text: "done" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+    await writeParserSession(dir, [
+      {
+        requestBin: new Uint8Array([1, 2, 3]),
+        responseBytes: new TextEncoder().encode('{"file":"x"}'),
+        contentType: "application/json",
+      },
+      {
+        responseBytes: new TextEncoder().encode(generateBody),
+        contentType: "application/json",
+      },
+    ]);
+
+    const results = await replayResponsesForParsing(dir);
+    expect(results).toHaveLength(2);
+    const upload = results[0];
+    const generate = results[1];
+    if (upload === undefined || upload.kind !== "skipped") {
+      throw new Error("expected the upload exchange to be skipped");
+    }
+    expect(upload.reason).toBe("raw_request");
+    expect(generate?.kind).toBe("replayed");
+  });
+
+  test("surfaces a parse failure as one inference.error without re-fetching", async () => {
+    const dir = await makeTmpDir();
+    await writeParserSession(dir, [
+      {
+        responseBytes: new TextEncoder().encode("this is not json at all"),
+        contentType: "application/json",
+      },
+    ]);
+
+    // A malformed body must not trip the fetchCallCount === 1 guard: the
+    // abort-only retry policy surfaces the parse failure as a single
+    // inference.error rather than a retry that re-opens the fetch.
+    const results = await replayResponsesForParsing(dir);
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    if (r === undefined || r.kind !== "replayed") {
+      throw new Error("expected a replayed result");
+    }
+    expect(r.events.filter((e) => e.type === "inference.error")).toHaveLength(
+      1,
+    );
+    expect(r.events.some((e) => e.type === "inference.done")).toBe(false);
   });
 });
