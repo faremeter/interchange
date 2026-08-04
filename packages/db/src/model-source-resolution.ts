@@ -1,13 +1,14 @@
 import { and, eq } from "drizzle-orm";
 
-import { evaluateGrants } from "@intx/authz";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   InvokerModelPreferences,
   ModelRequirements,
+  credentialAad,
+  type CredentialCipher,
   type ModelRequirement,
   type ProviderPreference,
 } from "@intx/types";
-import type { GrantRule } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import {
@@ -16,7 +17,6 @@ import {
 } from "./catalog-resolution";
 import type { DB } from "./client";
 import { resolveCredentialById } from "./credential-resolution";
-import { createGrantStore } from "./grant-store";
 import { parseModelOfferingRow } from "./parse-row";
 import { workflowDefinition } from "./schema/workflow-definitions";
 
@@ -101,7 +101,7 @@ async function buildSource(
   db: DB["db"],
   tenantId: string,
   resolved: ResolvedOffering,
-  creatorGrants: GrantRule[],
+  credentialCipher: CredentialCipher,
 ): Promise<
   { ok: true; source: InferenceSource } | { ok: false; skip: SourceSkip }
 > {
@@ -138,28 +138,16 @@ async function buildSource(
     };
   }
 
-  // The tenant chain proves the credential is reachable; it does not prove the
-  // agent's creator is authorized to spend it. Gate the secret on the creator
-  // holding a `credential:{id}` / `use` grant. Fail closed: anything other than
-  // an `allow` effect (including `ask`, `deny`, and no matching grant at all)
-  // withholds the secret so it never enters a launchable source.
-  //
-  // Gating on the creator's `use` grant is a deliberate interim tightening over
-  // the tenant-source default: catalog credentials are tenant-owned, and the
-  // broader source-based credential-authority model (tenant/creator/invoker)
-  // would authorize a tenant-source credential via tenant/role policy rather
-  // than a per-principal grant. That model is where this check should ultimately
-  // live; until it subsumes catalog credentials, this stays as-is by design.
-  //
-  // No condition registry is passed: credential-use grants are minted and
-  // backfilled unconditionally (conditions: null), so conditional grants are
-  // intentionally not evaluated on this path.
-  const authorization = await evaluateGrants(
-    creatorGrants,
-    `credential:${credential.id}`,
-    "use",
-  );
-  if (authorization.effect !== "allow") {
+  // Authority to use a credential through a catalog provider is ownership
+  // within the tenant hierarchy -- the same rule the tool-binding path resolves
+  // (`source: "tenant"`). `resolveCredentialById` above already proved the
+  // credential is reachable in this tenant's ancestor chain, so a tenant-owned
+  // credential (`principalId IS NULL`) is authorized here by ownership alone,
+  // with no personal grant and no role grant consulted. This runs live on every
+  // launch and rotation, so a catalog edit that adds an eligible credential is
+  // picked up without re-materializing any grant. A principal-owned credential
+  // is not usable through a shared catalog provider; fail closed.
+  if (credential.principalId !== null) {
     return {
       ok: false,
       skip: { reason: "credential_unauthorized", provider: provider.name },
@@ -181,7 +169,13 @@ async function buildSource(
       id: offering.id,
       provider: provider.plugin,
       baseURL: provider.baseURL,
-      apiKey: credential.secret,
+      // Decrypt the stored secret at the one point it is used. Strict: a
+      // non-ciphertext value (a row not yet re-keyed, or a write that failed to
+      // encrypt) throws rather than delivering a bad key -- fail closed.
+      apiKey: await credentialCipher.decrypt(
+        credential.secret,
+        credentialAad(credential.id, "secret"),
+      ),
       model: model.canonicalName,
       capabilities: parsed.capabilities,
       ...(parsed.quirks !== null ? { quirks: parsed.quirks } : {}),
@@ -201,21 +195,29 @@ async function buildSource(
  * produce one are skipped. A required model that yields no source makes the
  * agent unlaunchable.
  *
- * `creatorGrants` are the agent creator's collected grants. A credential-backed
- * source is only emitted when the creator holds `credential:{id}` / `use` for
- * the referenced credential; otherwise the offering is skipped
- * (`credential_unauthorized`) and its secret is withheld.
+ * A credential-backed source is emitted only when the launching tenant owns
+ * the referenced credential within its hierarchy (ownership is the authority);
+ * otherwise the offering is skipped (`credential_unauthorized`) and its secret
+ * is withheld.
  */
 export async function resolveModelSources(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
-  creatorGrants: GrantRule[],
-  opts?: { invokerPreferences?: Record<string, ProviderPreference> },
+  opts?: {
+    invokerPreferences?: Record<string, ProviderPreference>;
+    // Decrypts credential secrets at the point of use. Defaults to the noop
+    // cipher (passthrough) so callers reading plaintext-stored secrets -- tests
+    // and any not-yet-encrypted path -- resolve unchanged; production passes a
+    // real cipher.
+    credentialCipher?: CredentialCipher;
+  },
 ): Promise<CatalogSourceResolution> {
   if (requirements.length === 0) {
     return { ok: false, reason: "no_requirements" };
   }
+  const credentialCipher =
+    opts?.credentialCipher ?? createNoopCredentialCipher();
 
   const visible = await listVisibleOfferings(db, tenantId);
   const sources: InferenceSource[] = [];
@@ -241,7 +243,12 @@ export async function resolveModelSources(
     const skips: SourceSkip[] = [];
     const modelSources: InferenceSource[] = [];
     for (const candidate of candidates) {
-      const built = await buildSource(db, tenantId, candidate, creatorGrants);
+      const built = await buildSource(
+        db,
+        tenantId,
+        candidate,
+        credentialCipher,
+      );
       if (built.ok) {
         modelSources.push(built.source);
       } else {
@@ -284,14 +291,8 @@ export async function resolveInferencePreferences(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
-  creatorGrants: GrantRule[],
 ): Promise<{ provider: string; model: string }[]> {
-  const resolution = await resolveModelSources(
-    db,
-    tenantId,
-    requirements,
-    creatorGrants,
-  );
+  const resolution = await resolveModelSources(db, tenantId, requirements);
   if (!resolution.ok) {
     throw new Error(
       `cannot resolve inference preferences for the folded definition: ${resolution.reason}`,
@@ -344,6 +345,7 @@ export async function resolveInstanceModelSources(
   db: DB["db"],
   tenantId: string,
   instance: { definitionId: string; modelPreferences: unknown },
+  credentialCipher?: CredentialCipher,
 ): Promise<CatalogSourceResolution> {
   // Resolve from the run's own definition by primary key. This is the SAME row
   // the launch resolves its requirements from, so a rotation or catalog edit
@@ -358,10 +360,11 @@ export async function resolveInstanceModelSources(
       eq(workflowDefinition.tenantId, tenantId),
     ),
   });
-  if (
-    definitionRow === undefined ||
-    definitionRow.creatorPrincipalId === null
-  ) {
+  // A credential-backed source is authorized by tenant ownership of the
+  // credential (walked in `buildSource`), not by the definition's creator, so a
+  // definition with no creator can still launch a tenant-owned inference
+  // source. Only a missing definition (or one in another tenant) fails closed.
+  if (definitionRow === undefined) {
     return { ok: false, reason: "no_requirements" };
   }
 
@@ -379,20 +382,8 @@ export async function resolveInstanceModelSources(
     invokerPreferences[preference.model] = preference.providers;
   }
 
-  // The authorizing party for a credential-backed source is the definition's
-  // creator. Re-resolution (rotation, reconnect) must re-check the creator's
-  // `credential:{id}` / `use` grant, so collect the creator's grants here
-  // rather than threading them through the push callers. Collect across the
-  // tenant ancestor chain: credential resolution already reaches inherited
-  // credentials up the chain, and the authorizing `use` grant is stamped with
-  // the credential's own (ancestor) tenant, so a single-tenant collection would
-  // fail closed on a legitimately inherited credential.
-  const creatorGrants = await createGrantStore(db).collectGrantsInChain(
-    definitionRow.creatorPrincipalId,
-    tenantId,
-  );
-
-  return resolveModelSources(db, tenantId, requirements, creatorGrants, {
+  return resolveModelSources(db, tenantId, requirements, {
     invokerPreferences,
+    ...(credentialCipher !== undefined ? { credentialCipher } : {}),
   });
 }

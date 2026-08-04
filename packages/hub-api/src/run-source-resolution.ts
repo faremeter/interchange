@@ -7,8 +7,11 @@
 // and (later) the unified multi-step path cannot drift.
 
 import { resolveModelSources, type DB } from "@intx/db";
-import type { GrantStore } from "@intx/types/authz";
-import type { ModelRequirement, ProviderPreference } from "@intx/types";
+import type {
+  CredentialCipher,
+  ModelRequirement,
+  ProviderPreference,
+} from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
 
 export type DefinitionSourceResolution =
@@ -21,20 +24,21 @@ export type DefinitionSourceResolution =
  * (the run pins the whole chain). Requirements come from the definition's
  * `modelRequirements` manifest when set, else are derived from the single
  * step's declared model (`fallbackModel`) for a definition that carries no
- * manifest. A source carries a credential secret only where the definition's
- * creator holds `credential:{id}` / `use`, fail-closed. Collection reaches up
- * the tenant ancestor chain so an inherited credential's use-grant -- stamped
- * with the credential's own tenant -- is not withheld by single-tenant
- * collection. On failure the message is caller-facing (a 409 not_launchable).
+ * manifest. A source carries a credential secret only where the launching
+ * tenant owns the referenced credential within its hierarchy (ownership is the
+ * authority), fail-closed. On failure the message is caller-facing (a 409
+ * not_launchable).
  */
 export async function resolveDefinitionSources(args: {
   db: DB["db"];
-  grantStore: GrantStore;
   tenantId: string;
-  creatorPrincipalId: string;
   modelRequirements: ModelRequirement[] | null;
   fallbackModel: string | null;
   invokerPreferences: Record<string, ProviderPreference>;
+  // Decrypts credential secrets at the point of use. Optional: omitted callers
+  // (tests reading plaintext-stored secrets) fall back to the noop cipher inside
+  // resolveModelSources; the launch route passes the real cipher.
+  credentialCipher?: CredentialCipher;
 }): Promise<DefinitionSourceResolution> {
   const requirements: ModelRequirement[] =
     args.modelRequirements !== null
@@ -43,17 +47,16 @@ export async function resolveDefinitionSources(args: {
         ? [{ model: args.fallbackModel }]
         : [];
 
-  const creatorGrants = await args.grantStore.collectGrantsInChain(
-    args.creatorPrincipalId,
-    args.tenantId,
-  );
-
   const resolution = await resolveModelSources(
     args.db,
     args.tenantId,
     requirements,
-    creatorGrants,
-    { invokerPreferences: args.invokerPreferences },
+    {
+      invokerPreferences: args.invokerPreferences,
+      ...(args.credentialCipher !== undefined
+        ? { credentialCipher: args.credentialCipher }
+        : {}),
+    },
   );
   if (!resolution.ok) {
     const message =

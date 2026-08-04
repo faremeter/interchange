@@ -10,6 +10,7 @@ import { getLogger } from "@intx/log";
 import { workflowRun } from "@intx/db/schema";
 import { resolveInstanceModelSources, getDescendantTenants } from "@intx/db";
 import type { DB } from "@intx/db";
+import type { CredentialCipher } from "@intx/types";
 
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
@@ -34,11 +35,13 @@ export async function pushInstanceSourceUpdate(
     tenantId: string;
     modelPreferences: unknown;
   },
+  credentialCipher?: CredentialCipher,
 ): Promise<void> {
   const resolution = await resolveInstanceModelSources(
     db,
     instance.tenantId,
     instance,
+    credentialCipher,
   );
   if (!resolution.ok) return;
   const [head] = resolution.sources;
@@ -64,6 +67,7 @@ async function pushSourceUpdatesToTenants(
   db: DB["db"],
   sidecarRouter: SidecarRouter,
   tenantIds: string[],
+  credentialCipher?: CredentialCipher,
 ): Promise<void> {
   if (tenantIds.length === 0) return;
 
@@ -99,12 +103,17 @@ async function pushSourceUpdatesToTenants(
             `running run ${instance.id} matched the non-null-address filter but has a null address`,
           );
         }
-        return pushInstanceSourceUpdate(db, sidecarRouter, {
-          address: instance.address,
-          definitionId: instance.definitionId,
-          tenantId: instance.tenantId,
-          modelPreferences: instance.modelPreferences,
-        });
+        return pushInstanceSourceUpdate(
+          db,
+          sidecarRouter,
+          {
+            address: instance.address,
+            definitionId: instance.definitionId,
+            tenantId: instance.tenantId,
+            modelPreferences: instance.modelPreferences,
+          },
+          credentialCipher,
+        );
       }),
     );
 
@@ -128,8 +137,14 @@ export async function pushSourceUpdates(
   db: DB["db"],
   sidecarRouter: SidecarRouter,
   tenantId: string,
+  credentialCipher?: CredentialCipher,
 ): Promise<void> {
-  await pushSourceUpdatesToTenants(db, sidecarRouter, [tenantId]);
+  await pushSourceUpdatesToTenants(
+    db,
+    sidecarRouter,
+    [tenantId],
+    credentialCipher,
+  );
 }
 
 /**
@@ -142,6 +157,7 @@ export async function pushSourceUpdatesSubtree(
   db: DB["db"],
   sidecarRouter: SidecarRouter,
   tenantId: string,
+  credentialCipher?: CredentialCipher,
 ): Promise<void> {
   let tenants: string[];
   try {
@@ -150,5 +166,10 @@ export async function pushSourceUpdatesSubtree(
     log.warn`Failed to enumerate descendants for source push: ${String(err)}`;
     return;
   }
-  await pushSourceUpdatesToTenants(db, sidecarRouter, tenants);
+  await pushSourceUpdatesToTenants(
+    db,
+    sidecarRouter,
+    tenants,
+    credentialCipher,
+  );
 }
