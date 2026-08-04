@@ -575,30 +575,38 @@ describe("index_density invariant", () => {
     ).toEqual([]);
   });
 
-  test("flags mixed-mode (some events with index, some without)", () => {
+  test("flags mixed-mode (some openers with index, some without)", () => {
     const violations = inv.check([
       textDelta(0, "first", 0),
       textDelta(1, "second"), // no index
     ]);
-    expect(violations.some((v) => v.message.includes("mixes"))).toBe(true);
+    expect(violations.some((v) => v.message.includes("without index"))).toBe(
+      true,
+    );
   });
 
-  test("flags non-dense indices (gap)", () => {
-    const violations = inv.check([
-      textDelta(0, "first", 0),
-      textDelta(1, "third", 2), // skips 1
-    ]);
-    expect(violations.some((v) => v.message.includes("not dense"))).toBe(true);
-  });
-
-  test("separately clusters by tool callId", () => {
-    // Each tool call is its own cluster, so each carrying index 0 is fine.
+  test("does not flag a gap in indices (density-from-0 is not checked)", () => {
+    // A provider-assigned index space may legitimately skip indices for
+    // block kinds an adapter does not decode, so a gap is not a violation
+    // as long as the openers are consistently indexed.
     expect(
       inv.check([
-        toolStart(0, "call_a", "f", 0),
-        toolEnd(1, "call_a", "f", {}, 0),
-        toolStart(2, "call_b", "g", 0),
-        toolEnd(3, "call_b", "g", {}, 0),
+        textDelta(0, "first", 0),
+        textDelta(1, "third", 2), // skips 1 — allowed
+      ]),
+    ).toEqual([]);
+  });
+
+  test("density is a whole-turn property across block kinds", () => {
+    // A text block at global index 1 after a thinking block at index 0 is
+    // correct even though the text indices alone are {1}. Density pools all
+    // block openers, not per-kind clusters.
+    expect(
+      inv.check([
+        thinkingDelta(0, "reason", 0),
+        textDelta(1, "answer", 1),
+        toolStart(2, "call_a", "f", 2),
+        toolEnd(3, "call_a", "f", {}, 2),
       ]),
     ).toEqual([]);
   });
@@ -623,15 +631,17 @@ describe("signature_precedence invariant", () => {
     ).toEqual([]);
   });
 
-  test("flags a signature with no preceding delta at the same index", () => {
+  test("flags a signature with no preceding block-opening event at the same index", () => {
     const violations = inv.check([
       thinkingDelta(0, "thought-for-block-0", 0),
-      // signature is for block 1, but no delta at index 1 precedes it
+      // signature is for block 1, but nothing opened a block at index 1
       thinkingSig(1, "sig_for_block_1", 1),
     ]);
     expect(
       violations.some((v) =>
-        v.message.includes("no preceding inference.thinking.delta"),
+        v.message.includes(
+          "no preceding block-opening event at the same index",
+        ),
       ),
     ).toBe(true);
   });

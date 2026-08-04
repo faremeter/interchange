@@ -736,7 +736,15 @@ export type LastCycleSource = typeof LastCycleSource.infer;
  *
  * (INFERENCE.md § Message Format › Content Types)
  */
-const TextBlock = type({ type: "'text'", text: "string" });
+const TextBlock = type({
+  type: "'text'",
+  text: "string",
+  // Opaque provider signature authenticating this block, echoed back
+  // verbatim on follow-up turns. Gemini attaches a `thoughtSignature` to
+  // output parts (including plain text); absent for providers that do not
+  // sign this block kind.
+  "signature?": "string",
+});
 
 /**
  * How a media payload is carried by a content block. One of three
@@ -777,6 +785,10 @@ export type MediaSource = typeof MediaSource.infer;
 export const ImageBlock = type({
   type: "'image'",
   source: MediaSource,
+  // Opaque provider signature authenticating this block, echoed back
+  // verbatim on follow-up turns. Gemini rides a `thoughtSignature` on the
+  // inlineData part; absent otherwise.
+  "signature?": "string",
 });
 export type ImageBlock = typeof ImageBlock.infer;
 
@@ -855,6 +867,10 @@ const ToolCallBlock = type({
   id: "string",
   name: "string",
   arguments: "Record<string, unknown>",
+  // Opaque provider signature authenticating this block, echoed back
+  // verbatim on follow-up turns. Gemini rides a `thoughtSignature` on the
+  // functionCall part; absent otherwise.
+  "signature?": "string",
 });
 /**
  * Location of a citation's cited span within its source document.
@@ -981,6 +997,10 @@ export const CodeExecutionRequestBlock = type({
   // adapters MUST NOT default this — callers narrow on its
   // presence rather than fall through to a guessed language.
   "language?": "string",
+  // Opaque provider signature authenticating this block, echoed back
+  // verbatim on follow-up turns. Gemini rides a `thoughtSignature` on the
+  // executableCode part; absent otherwise.
+  "signature?": "string",
 });
 export type CodeExecutionRequestBlock = typeof CodeExecutionRequestBlock.infer;
 

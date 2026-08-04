@@ -387,26 +387,24 @@ describe("runInference — per-index protocol violations", () => {
     expect(err.message).toMatch(/text\.delta at index 0 collides/);
   });
 
-  test("signature targeting a non-thinking block at that index throws a kind-specific protocol_mismatch", async () => {
+  test("signature targeting a non-signable block at that index throws a kind-specific protocol_mismatch", async () => {
     // The signature error path has two distinct branches with
     // different operator triage signals: "no block at this index"
     // (the empty-slot case) vs. "wrong kind at this index" (the
     // collision case). The second branch fires when a signature_delta
-    // arrives at an index already populated by a non-thinking block —
-    // e.g., a text block was opened at that index and now a signature
-    // tries to attach. The error message must name the colliding
-    // kind so an operator knows whether the bug is upstream (text
-    // landed at the wrong index) or downstream (signature routed to
-    // the wrong index).
+    // arrives at an index already populated by a block kind that
+    // carries no signature — e.g., a redacted_thinking block was
+    // opened at that index and now a signature tries to attach. (Text,
+    // tool_use, image, and code_execution_request blocks all carry a
+    // signature, so the non-signable kinds are the ones that collide.)
+    // The error message must name the colliding kind so an operator
+    // knows whether the bug is upstream (the block landed at the wrong
+    // index) or downstream (the signature routed to the wrong index).
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
       }),
-      wire.anthropic.contentBlockDelta({
-        index: 2,
-        kind: "text_delta",
-        text: "some text",
-      }),
+      ...wire.anthropic.redactedThinkingBlock("cmVkYWN0ZWQ=", 2),
       wire.anthropic.contentBlockDelta({
         index: 2,
         kind: "signature_delta",
@@ -418,15 +416,14 @@ describe("runInference — per-index protocol violations", () => {
     const err = errorOf(events);
     expect(err.category).toBe("protocol_mismatch");
     expect(err.message).toMatch(
-      /block\.signature at index 2 targets an existing text block, not a thinking block/,
+      /block\.signature at index 2 targets an existing redacted_thinking block, which does not carry a signature/,
     );
   });
 
-  test("signature without preceding thinking at that index throws protocol_mismatch", async () => {
-    // A signature_delta arriving at an index where no thinking block
-    // has been opened is a wire violation — Anthropic always emits
-    // signature_delta after at least one thinking_delta for the same
-    // block.
+  test("signature with no block opened at that index throws protocol_mismatch", async () => {
+    // A signature_delta arriving at an index where no block has been
+    // opened is a wire violation — the signature has nothing to
+    // authenticate.
     const chunks: Uint8Array[] = [
       wire.anthropic.messageStart({
         usage: { inputTokens: 5, outputTokens: 0 },
@@ -442,7 +439,7 @@ describe("runInference — per-index protocol violations", () => {
     const err = errorOf(events);
     expect(err.category).toBe("protocol_mismatch");
     expect(err.message).toMatch(
-      /block\.signature at index 7 has no preceding thinking block/,
+      /block\.signature at index 7 has no preceding block at that index/,
     );
   });
 });

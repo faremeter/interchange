@@ -175,9 +175,9 @@ function buildRequest(
 // Round-trip wire shapes. `thought` and `thoughtSignature` are
 // Gemini-specific metadata that ride alongside the payload-bearing
 // fields; both are optional on every part. The translation produces
-// a `text` part with `thought: true` for `ThinkingBlock`s, and
-// stashes signatures onto the follow-on non-thinking part per the
-// pairing logic in `toGeminiContent`.
+// a `text` part with `thought: true` for `ThinkingBlock`s, and rides
+// each block's `signature` back as a `thoughtSignature` on that
+// block's own part.
 interface GeminiTextPart {
   text: string;
   thought?: boolean;
@@ -256,63 +256,15 @@ function toGeminiContent(
     }
   }
 
-  // Positional signature pairing: a `ThinkingBlock` with a signature
-  // contributes both a `{text, thought: true}` part (no signature on
-  // it) and a stashed signature that attaches to the NEXT
-  // non-thinking part in the turn. The wire convention from the
-  // captured fixtures places `thoughtSignature` on the follow-on
-  // part (typically `functionCall`), not on the thinking text. Two
-  // pending signatures in a row, or a turn ending with a signature
-  // still pending, are encoded as errors: the corpus contains no
-  // fixture for those shapes and a silent drop would corrupt the
-  // signed-thinking round-trip Gemini requires.
-  const parts: GeminiPart[] = [];
-  let pendingSignature: string | null = null;
-  for (const block of msg.content) {
-    const part = toGeminiPart(block, callIdToFunctionName);
-    const isThinkingPart =
-      "text" in part && (part as GeminiTextPart).thought === true;
-    if (isThinkingPart) {
-      if (pendingSignature !== null) {
-        throw new Error(
-          `Google GenAI adapter: encountered a second thinking block on ` +
-            `assistant turn while a prior thinking-block signature is ` +
-            `still awaiting a carrier part; the wire convention pairs ` +
-            `each signed thinking block 1:1 with the next non-thinking ` +
-            `part.`,
-        );
-      }
-      // Stash the signature off the thinking block (if any) for the
-      // next non-thinking part to claim. `toGeminiPart` already
-      // produced a thinking part WITHOUT the signature on it, per
-      // the wire shape.
-      if (block.type === "thinking" && block.signature !== undefined) {
-        pendingSignature = block.signature;
-      }
-      parts.push(part);
-      continue;
-    }
-
-    if (pendingSignature !== null) {
-      // Attach the stashed signature to this non-thinking part. The
-      // mutation matches Gemini's wire shape exactly: the part keeps
-      // its existing payload and grows a `thoughtSignature` field.
-      (part as GeminiPart & { thoughtSignature?: string }).thoughtSignature =
-        pendingSignature;
-      pendingSignature = null;
-    }
-    parts.push(part);
-  }
-
-  if (pendingSignature !== null) {
-    throw new Error(
-      `Google GenAI adapter: assistant turn ends with a thinking-block ` +
-        `signature awaiting a carrier part. Gemini's wire convention ` +
-        `requires the signature to ride on a follow-on non-thinking part ` +
-        `(typically a functionCall); a signed thinking block with no ` +
-        `follow-on part has no defined wire shape.`,
-    );
-  }
+  // Each block carries its own signature; `toGeminiPart` rides it back
+  // onto that block's own part as a `thoughtSignature`. The captured
+  // wire places the signature on whichever part the model signed (for a
+  // signed thinking turn, that is the follow-on functionCall part, which
+  // reverse-parsing attributed to the tool_call block), so a per-block
+  // round-trip reproduces the wire without any cross-part pairing.
+  const parts = msg.content.map((block) =>
+    toGeminiPart(block, callIdToFunctionName),
+  );
 
   return { role, parts };
 }
@@ -323,9 +275,22 @@ function toGeminiPart(
 ): GeminiPart {
   switch (block.type) {
     case "text":
-      return { text: block.text };
+      return {
+        text: block.text,
+        ...(block.signature !== undefined
+          ? { thoughtSignature: block.signature }
+          : {}),
+      };
 
-    case "image":
+    case "image": {
+      // Only ImageBlock among the media kinds carries a signature; the
+      // others have no signature field to ride back.
+      const part = toGeminiMediaPart(block.source);
+      return block.signature !== undefined
+        ? { ...part, thoughtSignature: block.signature }
+        : part;
+    }
+
     case "document":
     case "audio":
     case "video":
@@ -337,21 +302,27 @@ function toGeminiPart(
           name: encodeToolName(block.name, GOOGLE_TOOL_NAME_LIMIT),
           args: block.arguments,
         },
+        ...(block.signature !== undefined
+          ? { thoughtSignature: block.signature }
+          : {}),
       };
 
     case "tool_result":
       return toGeminiFunctionResponse(block, callIdToFunctionName);
 
     case "thinking":
-      // Thinking text is translated WITHOUT the signature on this
-      // part. `toGeminiContent`'s positional pairing logic stashes
-      // the signature off the block and attaches it to the next
-      // non-thinking part in the same turn (which is where Gemini's
-      // wire format expects to see `thoughtSignature`). If the
-      // signature were attached here, both this part and the
-      // following part would carry it, producing a malformed
-      // request.
-      return { text: block.thinking, thought: true };
+      // A thinking block rides its own signature on its part, the same
+      // as any other block. Gemini most often signs the follow-on
+      // functionCall part instead, which reverse-parsing attributes to
+      // the tool_call block, so a signed thinking part here is the rare
+      // case where Gemini signed the thought itself.
+      return {
+        text: block.thinking,
+        thought: true,
+        ...(block.signature !== undefined
+          ? { thoughtSignature: block.signature }
+          : {}),
+      };
 
     case "redacted_thinking":
       // Gemini does not emit redacted-thinking blocks; a caller
@@ -811,21 +782,13 @@ const GeminiSSEEvent = type({
 //     Function-call blocks are atomic (a single part = a complete
 //     tool call) and never become the `currentBlock`.
 //
-//   - `pendingSignatureAnchor` is set when a thinking block closes
-//     and cleared when the next non-thinking part that carries
-//     `thoughtSignature` attaches its signature to that index. A
-//     standalone signature-only part (no payload) also consumes the
-//     anchor. The lifecycle is deliberately narrow: keeping a
-//     long-lived "most recent thinking block" pointer would let a
-//     signature on, say, the third functionCall attach to the first
-//     thinking block when two unrelated functionCalls happened in
-//     between. The wire convention is "the signature belongs to the
-//     immediately preceding thinking," and the state encodes exactly
-//     that.
+// A `thoughtSignature` is a per-part attribute: it authenticates the
+// block whose part carries it, so the parser emits an
+// `inference.block.signature` against that block's own index and keeps
+// no cross-part signature state.
 interface GeminiParserState {
   nextBlockIndex: number;
   currentBlock: { kind: "text" | "thinking"; index: number } | null;
-  pendingSignatureAnchor: number | null;
   // Unmatched-request stack of depth 1: when the parser emits an
   // `inference.code_execution.start` for an `executableCode` part,
   // the synthetic request id lands here and is consumed by the
@@ -843,56 +806,48 @@ function createParserState(): GeminiParserState {
   return {
     nextBlockIndex: 0,
     currentBlock: null,
-    pendingSignatureAnchor: null,
     pendingExecutionRequestId: null,
   };
 }
 
+// A `thoughtSignature` authenticates the block whose part carries it.
+// Emit an `inference.block.signature` against that block's own index;
+// providers that do not sign this part leave `signature` undefined and
+// this emits nothing.
+function emitBlockSignature(
+  signature: string | undefined,
+  index: number,
+  seq: number,
+  out: InferenceEvent[],
+): void {
+  if (signature === undefined) return;
+  out.push({
+    type: "inference.block.signature",
+    seq,
+    data: { signature, index },
+  });
+}
+
 // Open or extend a text/thinking block, returning the block index.
 // A part of the same kind as the current block extends it; a part of
-// a different kind closes the current block and allocates a new
-// index. Closing a thinking block stashes its index in
-// `pendingSignatureAnchor` so a subsequent non-thinking part's
-// `thoughtSignature` can attach to it.
+// a different kind closes the current block and allocates a new index.
 function openOrExtendBlock(
   state: GeminiParserState,
   kind: "text" | "thinking",
-  rawForError: unknown,
 ): number {
   if (state.currentBlock !== null && state.currentBlock.kind === kind) {
     return state.currentBlock.index;
   }
-  closeCurrentBlock(state, rawForError);
+  closeCurrentBlock(state);
   const index = state.nextBlockIndex++;
   state.currentBlock = { kind, index };
   return index;
 }
 
-// Close the current text/thinking block. A thinking block being
-// closed sets `pendingSignatureAnchor` so the next non-thinking part
-// can claim it for its `thoughtSignature`. If two thinking blocks
-// close in a row without an intervening signature consumer, surface
-// it loudly -- the corpus has no fixture exercising that shape and
-// silently overwriting the anchor would route a signature to the
-// wrong block.
-function closeCurrentBlock(
-  state: GeminiParserState,
-  rawForError: unknown,
-): void {
-  if (state.currentBlock?.kind === "thinking") {
-    if (state.pendingSignatureAnchor !== null) {
-      throw new ProtocolMismatchError(
-        `google-genai parseResponse: second thinking block closed with a ` +
-          `prior signature anchor still pending (anchor block index ` +
-          `${String(state.pendingSignatureAnchor)}); the wire convention ` +
-          `pairs each thinking block 1:1 with the next non-thinking ` +
-          `carrier and the corpus contains no fixture for the unpaired ` +
-          `case.`,
-        rawForError,
-      );
-    }
-    state.pendingSignatureAnchor = state.currentBlock.index;
-  }
+// Close the current text/thinking block so the next part of any kind
+// starts a fresh block. A signature rides on its own part and attaches
+// to that part's block, so closing carries no signature state.
+function closeCurrentBlock(state: GeminiParserState): void {
   state.currentBlock = null;
 }
 
@@ -903,9 +858,10 @@ function closeCurrentBlock(
 // semantics would otherwise admit a part with more than one set,
 // or with `thought: true` on a non-text part. Both are wire
 // violations and surface as `ProtocolMismatchError` here. A part
-// with zero payload fields is only legal when a `thoughtSignature`
-// is present (signature-carrier-only part, not seen in the current
-// corpus but spec-permitted).
+// with zero payload fields passes this structural check only when a
+// `thoughtSignature` is present; `emitPart` then rejects that
+// signature-only part separately, since a signature with no payload
+// has no block to authenticate.
 function assertSinglePayload(
   part: typeof GeminiPart.infer,
   raw: unknown,
@@ -959,7 +915,7 @@ function emitPart(
 
   // text part with `thought: true` -- belongs to a thinking block.
   if (part.text !== undefined && part.thought === true) {
-    const index = openOrExtendBlock(state, "thinking", raw);
+    const index = openOrExtendBlock(state, "thinking");
     // Anchor the block in the harness's per-index map. An empty
     // text part with only a `thoughtSignature` would otherwise route
     // the signature to an index the harness has never seen. The
@@ -974,44 +930,22 @@ function emitPart(
         index,
       },
     });
-    // A thinking part may itself carry a signature (signature on the
-    // thinking part rather than on a follow-on functionCall). Attach
-    // it directly to this thinking block's index; it consumes any
-    // pending anchor too because the signature on `this` thinking
-    // part takes precedence.
-    if (part.thoughtSignature !== undefined) {
-      out.push({
-        type: "inference.block.signature",
-        seq,
-        data: { signature: part.thoughtSignature, index },
-      });
-      state.pendingSignatureAnchor = null;
-    }
+    // A thinking part may carry its own signature; attach it to this
+    // thinking block's index.
+    emitBlockSignature(part.thoughtSignature, index, seq, out);
     return;
   }
 
-  // text part without `thought` -- belongs to a text block.
+  // text part without `thought` -- belongs to a text block. An empty
+  // text part with no signature is a true no-op: it neither opens nor
+  // closes a block, so a follow-on same-kind part extends what was
+  // open. An empty text part that carries a signature still opens (or
+  // extends) a text block so the signature has its own block to sign.
   if (part.text !== undefined) {
-    if (part.text === "") {
-      // Empty text parts emit no delta. A signature-bearing
-      // empty-text part is still the carrier opportunity for any
-      // open thinking block: close the current block first so the
-      // thinking-block index lands in `pendingSignatureAnchor`,
-      // then consume the signature against it. Without that claim
-      // path, the signature would silently evaporate (the payload
-      // has nowhere else to surface) -- the empty payload is the
-      // ONLY signal Gemini sends for an authenticated empty-text
-      // carrier. An empty-text part without a signature is a true
-      // no-op -- it neither closes the current block nor consumes
-      // the carrier opportunity, so a follow-on same-kind part
-      // extends what was open.
-      if (part.thoughtSignature !== undefined) {
-        closeCurrentBlock(state, raw);
-        consumeSignature(state, part.thoughtSignature, seq, out, raw);
-      }
+    if (part.text === "" && part.thoughtSignature === undefined) {
       return;
     }
-    const index = openOrExtendBlock(state, "text", raw);
+    const index = openOrExtendBlock(state, "text");
     out.push({
       type: "inference.text.delta",
       seq,
@@ -1021,15 +955,7 @@ function emitPart(
         index,
       },
     });
-    // Settle the carrier opportunity. A `thoughtSignature` on the
-    // part consumes the pending anchor (the signature
-    // authenticates the preceding thinking, not the text block);
-    // a signature-less part still ends the carrier opportunity by
-    // discarding the anchor. The wire convention is that the FIRST
-    // non-thinking part after a thinking block is the only carrier
-    // chance -- a later thinking block cannot retroactively claim
-    // a stale anchor.
-    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
+    emitBlockSignature(part.thoughtSignature, index, seq, out);
     return;
   }
 
@@ -1037,7 +963,7 @@ function emitPart(
   // does not become the `currentBlock` (a follow-on text or thinking
   // part starts a new block of that kind).
   if (part.functionCall !== undefined) {
-    closeCurrentBlock(state, raw);
+    closeCurrentBlock(state);
     const fc = part.functionCall;
     const index = state.nextBlockIndex++;
     // Synthetic callId: Gemini's `functionCall` has no wire-level id
@@ -1046,18 +972,6 @@ function emitPart(
     // adapter's fallback when its wire id is absent. Block indices
     // are unique within a request by construction.
     const callId = String(index);
-
-    // Settle the carrier opportunity BEFORE the tool_call.start/delta
-    // pair. The signature event carries the thinking block's explicit
-    // index in its data, so the harness routes it correctly regardless
-    // of arrival order; the ordering here is for positional consumers
-    // of the event stream (snapshot tests, debuggers, anything reading
-    // the sequence by position rather than by index). The same settle
-    // call also discards a stale anchor when no signature is present,
-    // so a later thinking block does not trip the "two thinking
-    // blocks closed" guard on an anchor the current carrier already
-    // declined to claim.
-    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
 
     out.push({
       type: "inference.tool_call.start",
@@ -1086,16 +1000,17 @@ function emitPart(
         index,
       },
     });
+    // A `thoughtSignature` on the functionCall part authenticates the
+    // tool_call block; emit it after the block is open at this index.
+    emitBlockSignature(part.thoughtSignature, index, seq, out);
     return;
   }
 
   // inlineData part -- atomic image-output block. The image arrives
   // complete in a single SSE event (no streaming chunks of base64),
   // so a new block index is allocated and the ImageBlock is emitted
-  // in one `inference.image_output` event. The signature carrier
-  // semantics mirror the functionCall path: any pending thinking
-  // signature is settled BEFORE the image_output event so it
-  // attaches to the preceding thinking block, not the image block.
+  // in one `inference.image_output` event. A `thoughtSignature` on the
+  // part authenticates the image block and is emitted against its index.
   if (part.inlineData !== undefined) {
     // The parser wraps inlineData as an `ImageBlock`, so a non-
     // image MIME (e.g. audio/wav, application/pdf) would silently
@@ -1110,9 +1025,8 @@ function emitPart(
         raw,
       );
     }
-    closeCurrentBlock(state, raw);
+    closeCurrentBlock(state);
     const index = state.nextBlockIndex++;
-    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
     out.push({
       type: "inference.image_output",
       seq,
@@ -1128,6 +1042,7 @@ function emitPart(
         index,
       },
     });
+    emitBlockSignature(part.thoughtSignature, index, seq, out);
     return;
   }
 
@@ -1161,9 +1076,8 @@ function emitPart(
         raw,
       );
     }
-    closeCurrentBlock(state, raw);
+    closeCurrentBlock(state);
     const index = state.nextBlockIndex++;
-    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
 
     const requestId = `gemini-exec-${String(index)}`;
     state.pendingExecutionRequestId = requestId;
@@ -1185,6 +1099,9 @@ function emitPart(
       seq,
       data: { request, index },
     });
+    // A `thoughtSignature` on the executableCode part authenticates the
+    // code-execution-request block; emit it against its index.
+    emitBlockSignature(part.thoughtSignature, index, seq, out);
     return;
   }
 
@@ -1213,10 +1130,19 @@ function emitPart(
     // part without partial side effects.
     const cer = part.codeExecutionResult;
     const status = outcomeToStatus(cer.outcome, raw);
+    // A code_execution_result block carries no signature field, and the
+    // corpus never signs a result part; a signature here is an
+    // unmodeled wire shape. Reject before mutating state.
+    if (part.thoughtSignature !== undefined) {
+      throw new ProtocolMismatchError(
+        `google-genai parseResponse: codeExecutionResult part carries a ` +
+          `thoughtSignature; the code_execution_result block is not signable.`,
+        raw,
+      );
+    }
 
-    closeCurrentBlock(state, raw);
+    closeCurrentBlock(state);
     const index = state.nextBlockIndex++;
-    settleCarrierOpportunity(state, part.thoughtSignature, seq, out, raw);
     state.pendingExecutionRequestId = null;
 
     const result: CodeExecutionResultBlock = {
@@ -1238,15 +1164,15 @@ function emitPart(
     return;
   }
 
-  // Signature-only part (no payload, signature set). A still-open
-  // thinking block is closed first so its index lands in
-  // `pendingSignatureAnchor` before `consumeSignature` claims it --
-  // same shape as the empty-text-with-signature branch above. No
-  // new block is opened.
+  // Signature-only part (no payload, signature set). A signature
+  // authenticates a block; a part with no payload has no block to own
+  // it, so this is an unmodeled wire shape the corpus never exercises.
   if (part.thoughtSignature !== undefined) {
-    closeCurrentBlock(state, raw);
-    consumeSignature(state, part.thoughtSignature, seq, out, raw);
-    return;
+    throw new ProtocolMismatchError(
+      `google-genai parseResponse: part carries a thoughtSignature but no ` +
+        `payload; there is no block for the signature to authenticate.`,
+      raw,
+    );
   }
 
   // `assertSinglePayload` above rules out the no-payload-no-signature
@@ -1387,59 +1313,6 @@ function outcomeToStatus(
         raw,
       );
   }
-}
-
-// Settle the carrier-opportunity lifecycle for a non-thinking part
-// that has just been processed. If the part carries a signature, it
-// is consumed against the pending anchor (which must exist, or the
-// request is in a corrupt state). If it does not, the anchor is
-// discarded: the FIRST non-thinking part after a thinking block is
-// the only chance to claim that thinking block's signature, and a
-// part that passes without claiming ends the opportunity. A later
-// thinking block cannot retroactively re-open the claim, and the
-// discard prevents a stale anchor from tripping the
-// `closeCurrentBlock` guard when another thinking block closes.
-function settleCarrierOpportunity(
-  state: GeminiParserState,
-  signature: string | undefined,
-  seq: number,
-  out: InferenceEvent[],
-  raw: unknown,
-): void {
-  if (signature !== undefined) {
-    consumeSignature(state, signature, seq, out, raw);
-    return;
-  }
-  state.pendingSignatureAnchor = null;
-}
-
-// Emit `inference.block.signature` against the pending anchor and
-// clear it. A signature with no pending anchor is a state-corruption
-// case: Gemini placed a thoughtSignature on a part with no preceding
-// thinking block in this request. Surface as a protocol mismatch.
-function consumeSignature(
-  state: GeminiParserState,
-  signature: string,
-  seq: number,
-  out: InferenceEvent[],
-  raw: unknown,
-): void {
-  if (state.pendingSignatureAnchor === null) {
-    throw new ProtocolMismatchError(
-      `google-genai parseResponse: thoughtSignature present but no ` +
-        `preceding thinking block exists in this request to anchor it.`,
-      raw,
-    );
-  }
-  out.push({
-    type: "inference.block.signature",
-    seq,
-    data: {
-      signature,
-      index: state.pendingSignatureAnchor,
-    },
-  });
-  state.pendingSignatureAnchor = null;
 }
 
 function parseResponse(
@@ -1661,9 +1534,9 @@ export function createGoogleGenAIAdapter(
     );
   }
 
-  // Per-request state lives in the closure: block-index allocation
-  // and signature-anchor pairing both need to span SSE events.
-  // `buildRequest` does not touch state; only `parseResponse` does.
+  // Per-request state lives in the closure: block-index allocation and
+  // the code-execution request/result pairing both need to span SSE
+  // events. `buildRequest` does not touch state; only `parseResponse` does.
   const state = createParserState();
   return {
     buildRequest,
