@@ -10,6 +10,17 @@ export { createHarnessRuntimeCapabilities } from "./runtime-capabilities";
 export type { HarnessRuntimeCapabilitiesOptions } from "./runtime-capabilities";
 
 export {
+  createCredentialProviderRegistry,
+  createHttpCredentialProvider,
+  builtinCredentialProviders,
+} from "./credential-providers";
+export type {
+  CredentialProviderRegistry,
+  FetchLike,
+  HttpCredentialProviderOptions,
+} from "./credential-providers";
+
+export {
   createConnectorRouter,
   NoActiveConnectorThreadError,
 } from "./connector-router";
