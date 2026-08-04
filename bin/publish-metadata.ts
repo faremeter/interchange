@@ -105,6 +105,11 @@ function eq(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** True when `glob` matches at least one real file under `dir`. */
+function globMatches(dir: string, glob: string): boolean {
+  return !new Bun.Glob(glob).scanSync(dir).next().done;
+}
+
 // Validate a package's declared `sideEffects` globs against what it ships.
 // A glob is satisfied when it matches a file on disk or its root segment is
 // a directory the package ships via `files`; the latter accepts a `./dist/*`
@@ -117,7 +122,9 @@ function eq(a: unknown, b: unknown): boolean {
 // Because `dist` is unbuilt here, this guard cannot confirm the emitted
 // filenames themselves: a glob whose root ships (like `./dist/foo.js`)
 // passes even if `foo.js` is never emitted. Confirming an emitted filename
-// needs a built or packed tree, which a lint-time guard does not have.
+// needs a built tree, which a lint-time guard does not have;
+// `checkBuiltSideEffects` performs that confirmation against the tree
+// `buildDist` leaves behind.
 function resolveSideEffectGlobs(
   dir: string,
   files: unknown,
@@ -131,7 +138,7 @@ function resolveSideEffectGlobs(
   const unshipped: string[] = [];
   let anyShipped = false;
   for (const glob of globs) {
-    const matches = !new Bun.Glob(glob).scanSync(dir).next().done;
+    const matches = globMatches(dir, glob);
     const relative = glob.replace(/^\.\//, "");
     const slash = relative.indexOf("/");
     const rootSegment = slash === -1 ? relative : relative.slice(0, slash);
@@ -186,6 +193,44 @@ export async function checkWorkspaceMetadata(
             `${name}: "sideEffects" declares only unshipped modules; at least one entry must be under a shipped path (e.g. ./dist/...)`,
           );
         }
+      }
+    }
+  }
+  return { violations, packageCount: list.length };
+}
+
+// Confirm each package's declared `sideEffects` globs against a tree where
+// `dist` has been emitted (after `buildDist`). Unlike the lint-time check in
+// `checkWorkspaceMetadata`, there is no `files`-coverage escape: with `dist`
+// built, every non-`false` glob must match at least one real file, so a typo
+// in an emitted path (`./dist/registr.js` for `./dist/register.js`) is caught
+// rather than shipped as a dead declaration a consumer's bundler silently
+// tree-shakes.
+//
+// Presence and well-formedness of `sideEffects` are `checkWorkspaceMetadata`'s
+// constraint, enforced before any dist emit; this check owns only the emitted
+// filename. A malformed or absent declaration reaching here means that gate
+// did not run and pass first, so it throws rather than silently skipping a
+// package it cannot check.
+export async function checkBuiltSideEffects(
+  repoRoot: string,
+): Promise<MetadataReport> {
+  const violations: string[] = [];
+  const list = readWorkspacePackages(repoRoot);
+  for (const { name, dir, manifestPath } of list) {
+    const raw = await readRaw(manifestPath);
+    const validated = sideEffectsSchema(raw["sideEffects"]);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `publish-metadata: ${name} has an absent or malformed "sideEffects"; checkWorkspaceMetadata must run and pass before checkBuiltSideEffects`,
+      );
+    }
+    if (validated === false) continue;
+    for (const glob of validated) {
+      if (!globMatches(dir, glob)) {
+        violations.push(
+          `${name}: "sideEffects" entry ${glob} matches no file in the built package directory`,
+        );
       }
     }
   }
