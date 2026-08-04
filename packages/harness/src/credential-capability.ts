@@ -20,6 +20,7 @@ import type {
   CredentialMaterialSource,
   MediatedCredential,
 } from "@intx/types";
+import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 
 import type { CredentialProviderRegistry } from "./credential-providers";
 
@@ -39,6 +40,30 @@ export interface ResolvedCredentialBinding {
   origin: string;
   /** Reads the current secret material (rotation indirection). */
   readCurrentMaterial: CredentialMaterialSource;
+}
+
+/**
+ * Reconcile a tool package's declared credential handles (its C5 `interchange.
+ * credentials`) against the handles a binding actually resolved for it. A
+ * declared handle with no binding is a launch-blocking misconfiguration -- the
+ * tool needs a credential the definition never bound -- so this fails the launch
+ * loudly rather than letting the gap surface as a resolve-time throw at the
+ * tool's first use. It is the throw-on-missing of `resolve`, pulled earlier to
+ * launch where the whole set is known.
+ */
+export function reconcileDeclaredCredentials(
+  consumer: string,
+  declared: readonly ToolCredentialDeclaration[],
+  boundHandles: ReadonlySet<string>,
+): void {
+  const missing = declared
+    .map((declaration) => declaration.handle)
+    .filter((handle) => !boundHandles.has(handle));
+  if (missing.length > 0) {
+    throw new Error(
+      `consumer ${consumer} declares credential handle(s) that no binding resolves: ${missing.join(", ")}`,
+    );
+  }
 }
 
 export interface CredentialCapabilityDeps {

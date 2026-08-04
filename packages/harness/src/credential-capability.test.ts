@@ -5,6 +5,7 @@ import type { CredentialProvider, CredentialShapeContext } from "@intx/types";
 import { createCredentialProviderRegistry } from "./credential-providers";
 import {
   createCredentialCapability,
+  reconcileDeclaredCredentials,
   type ResolvedCredentialBinding,
 } from "./credential-capability";
 
@@ -268,5 +269,43 @@ describe("createCredentialCapability (Gate 2)", () => {
     await expect(cap.dispose()).rejects.toThrow(/failed to dispose/);
     // The healthy handle was still released despite the bad one throwing.
     expect(goodDisposed).toBe(1);
+  });
+});
+
+describe("reconcileDeclaredCredentials", () => {
+  test("passes when every declared handle has a binding", () => {
+    expect(() =>
+      reconcileDeclaredCredentials(
+        CONSUMER,
+        [{ handle: "gh" }, { handle: "stripe" }],
+        new Set(["gh", "stripe"]),
+      ),
+    ).not.toThrow();
+  });
+
+  test("passes with no declarations (a tool that declares nothing)", () => {
+    expect(() =>
+      reconcileDeclaredCredentials(CONSUMER, [], new Set()),
+    ).not.toThrow();
+  });
+
+  test("ignores extra bindings the tool did not declare", () => {
+    expect(() =>
+      reconcileDeclaredCredentials(
+        CONSUMER,
+        [{ handle: "gh" }],
+        new Set(["gh", "unused"]),
+      ),
+    ).not.toThrow();
+  });
+
+  test("fails the launch, naming each declared handle with no binding", () => {
+    expect(() =>
+      reconcileDeclaredCredentials(
+        CONSUMER,
+        [{ handle: "gh" }, { handle: "stripe" }],
+        new Set(["gh"]),
+      ),
+    ).toThrow(/no binding resolves: stripe/);
   });
 });
