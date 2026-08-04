@@ -65,7 +65,10 @@ import {
   topoSortLeafFirst,
 } from "./lib/publish-targets";
 import { makeRun } from "./lib/run";
-import { checkWorkspaceMetadata } from "./publish-metadata";
+import {
+  checkBuiltSideEffects,
+  checkWorkspaceMetadata,
+} from "./publish-metadata";
 
 // ---- effectful orchestration ----
 
@@ -285,6 +288,17 @@ async function main(repoRoot: string, execute: boolean): Promise<void> {
   try {
     // Emit compiled dist for every target.
     await buildDist(repoRoot);
+
+    // With dist emitted, confirm every declared sideEffects glob resolves to a
+    // real file — catching an emitted-path typo the lint-time metadata guard
+    // cannot see before the build. Fails here, before packing, while dist is
+    // fresh; the finally still tears it down.
+    const builtSideEffects = await checkBuiltSideEffects(repoRoot);
+    if (builtSideEffects.violations.length > 0) {
+      throw new Error(
+        `publish: sideEffects globs unresolved in built tree:\n${builtSideEffects.violations.join("\n")}`,
+      );
+    }
 
     // Stage the LICENSE the files allowlist expects (not committed per-package).
     for (const t of ordered) {
