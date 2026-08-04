@@ -141,10 +141,7 @@ surfaces thinking blocks containing the model's reasoning before the
 final answer.
 
 **Observed** (`wire/anthropic/claude-sonnet-5/reasoning-content/`):
-shape matches docs; thinking precedes text as elsewhere. The plug-in's
-`extractReasoningTrace` hook emits a `reasoning-trace.json` sidecar
-with the field path and a sample of the thinking content for these
-captures.
+shape matches docs; thinking precedes text as elsewhere.
 
 ### grounding and -streaming
 

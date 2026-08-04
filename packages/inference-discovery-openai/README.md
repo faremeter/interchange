@@ -48,18 +48,6 @@ The matrix entries for this deployment live in `SUPPORT_MATRIX`.
 `deepseek-v4-pro` vision-input is `http-error` and produces no
 fixture; other non-vision models simply omit vision rows.
 
-### Reasoning trace extraction
-
-OpenCode Zen routes `kimi-k2.6` between two upstream backends that
-emit reasoning content under different field paths. The deployment
-ships a reasoning extractor that probes the known paths and records
-which one held the non-empty value. For non-streaming reasoning
-captures the runner writes the result to `reasoning-trace.json`
-next to the response so a later routing change is detectable from
-the fixtures alone; streaming reasoning captures do not get the
-sidecar (the runner does not parse SSE bodies), and the routing
-signal lives in the captured event stream itself.
-
 ### Environment
 
 | Variable            | Purpose                                                      |

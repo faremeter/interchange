@@ -61,10 +61,6 @@ files into the step's subdirectory: `request.json` and
 headers with the plug-in's redaction lists applied. After the
 generator exhausts it writes `manifest.json` at the run root.
 
-Plug-ins that capture reasoning capabilities can opt into a
-`reasoning-trace.json` sidecar; the runner calls the plug-in's
-extractor and writes the result alongside the response.
-
 ## Catalog
 
 `SUPPORT_MATRIX` is the canonical list of what the rig captures.

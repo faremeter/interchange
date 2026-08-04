@@ -84,7 +84,6 @@ export interface ProviderPlugin {
   // Plug-in-wide credentials only. Capability-specific headers (beta
   // flags, upload-protocol markers) belong on the step's `headers` map.
   buildAuthHeaders(): Record<string, string>;
-  extractReasoningTrace?(parsed: unknown): unknown | null;
   iterateCaptureSteps(
     opts: IterateCaptureStepsOpts,
   ): Generator<CaptureStep, void, CapturedResponse>;

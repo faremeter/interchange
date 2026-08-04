@@ -18,7 +18,6 @@ import {
   buildRequestBody,
   isSupportedCapability,
 } from "./request-body";
-import { extractReasoningTrace } from "./reasoning";
 import { createAnthropicPlugin, iterateCaptureSteps } from "./index";
 import type {
   AnthropicContentBlock,
@@ -672,58 +671,6 @@ describe("iterateCaptureSteps", () => {
     const [only] = steps;
     if (only === undefined) throw new Error("missing step");
     expect(only.headers?.["anthropic-beta"]).toBeUndefined();
-  });
-});
-
-describe("extractReasoningTrace", () => {
-  test("returns the first thinking block with field path and signature", () => {
-    const trace = extractReasoningTrace({
-      content: [
-        {
-          type: "thinking",
-          thinking: "Let me reason through this step by step.",
-          signature: "sig-abc",
-        },
-        { type: "text", text: "Result." },
-      ],
-    });
-    expect(trace).toEqual({
-      blockType: "thinking",
-      fieldPath: "content[0].thinking",
-      sample: "Let me reason through this step by step.",
-      signature: "sig-abc",
-    });
-  });
-
-  test("returns the first redacted_thinking block with field path", () => {
-    const trace = extractReasoningTrace({
-      content: [
-        {
-          type: "redacted_thinking",
-          data: "encrypted-bytes-here",
-          signature: "sig-z",
-        },
-      ],
-    });
-    expect(trace).toEqual({
-      blockType: "redacted_thinking",
-      fieldPath: "content[0].data",
-      sample: "encrypted-bytes-here",
-      signature: "sig-z",
-    });
-  });
-
-  test("returns null when no thinking-class block is present", () => {
-    expect(
-      extractReasoningTrace({
-        content: [{ type: "text", text: "no thinking" }],
-      }),
-    ).toBeNull();
-  });
-
-  test("returns null for a non-object input", () => {
-    expect(extractReasoningTrace("not an object")).toBeNull();
-    expect(extractReasoningTrace(null)).toBeNull();
   });
 });
 

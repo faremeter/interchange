@@ -25,7 +25,6 @@ import {
   buildRedactedThinkingTurn2Body,
   buildRequestBody,
 } from "./request-body";
-import { extractReasoningTrace } from "./reasoning";
 import { extractContentBlocksFromSSE } from "./sse";
 
 const PROVIDER_NAME = "anthropic";
@@ -303,7 +302,6 @@ export function createAnthropicPlugin(
     redactRequestHeaders: REDACT_REQUEST_HEADERS,
     redactResponseHeaders: REDACT_RESPONSE_HEADERS,
     buildAuthHeaders: () => buildAuthHeaders(apiKey),
-    extractReasoningTrace,
     iterateCaptureSteps,
   };
 }

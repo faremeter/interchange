@@ -40,7 +40,6 @@ describe("writeCapture", () => {
       response: {
         kind: "json",
         bytes: originalResponseBytes,
-        parsed: { text: "hello", seq: 1 },
       },
       responseHeaders: { "Content-Type": "application/json" },
       redactResponseHeaders: [],
@@ -82,7 +81,6 @@ describe("writeCapture", () => {
       response: {
         kind: "json",
         bytes: new TextEncoder().encode('{"fileId":"abc"}'),
-        parsed: { fileId: "abc" },
       },
       responseHeaders: { "Content-Type": "application/json" },
       redactResponseHeaders: [],
@@ -131,7 +129,6 @@ describe("writeCapture", () => {
       response: {
         kind: "json",
         bytes: new TextEncoder().encode("{}"),
-        parsed: {},
       },
       responseHeaders: { "Set-Cookie": "abc=1" },
       redactResponseHeaders: ["set-cookie"],
@@ -157,7 +154,6 @@ describe("writeCapture", () => {
       response: {
         kind: "json",
         bytes: new TextEncoder().encode("{}"),
-        parsed: {},
       },
       responseHeaders: {},
       redactResponseHeaders: [],

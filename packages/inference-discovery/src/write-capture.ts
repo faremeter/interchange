@@ -6,14 +6,10 @@ import path from "node:path";
  * response.sse) is written from `bytes` verbatim so the recording
  * is byte-identical to what the server sent — pretty-printing
  * a parsed JSON body would lose original key order, trailing
- * whitespace, and any content-length / signature semantics. The
- * optional `parsed` field is kept for the discovery rig's
- * extractReasoningTrace path, which needs the JSON-decoded value
- * to pull provider-specific metadata; writeCapture itself never
- * reads it.
+ * whitespace, and any content-length / signature semantics.
  */
 export type ResponseBody =
-  | { kind: "json"; bytes: Uint8Array; parsed: unknown }
+  | { kind: "json"; bytes: Uint8Array }
   | { kind: "sse"; bytes: Uint8Array };
 
 export type RequestBody =
