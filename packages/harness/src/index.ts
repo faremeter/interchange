@@ -20,6 +20,13 @@ export type {
   HttpCredentialProviderOptions,
 } from "./credential-providers";
 
+export { createCredentialCapability } from "./credential-capability";
+export type {
+  CredentialCapabilityDeps,
+  HostCredentialCapability,
+  ResolvedCredentialBinding,
+} from "./credential-capability";
+
 export {
   createConnectorRouter,
   NoActiveConnectorThreadError,
