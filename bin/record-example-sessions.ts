@@ -1,16 +1,15 @@
-// Regenerate the committed example session captures under
-// `packages/inference-testing/sessions/`.
+// Regenerate the committed synthetic example session captures under
+// `packages/inference-discovery-anthropic/example-sessions/anthropic/`.
 //
 // The script uses the test seam (`fetch` override paired with
 // `bypassCIGuardForTests`) and synthetic provider wire bytes built with
-// the package's `wire` helpers, so no real provider credentials are
-// needed. The resulting sessions are deterministic and committed as
-// fixtures for the integration test under
-// `tests/inference-testing/session-replay.test.ts`.
+// the `wire` helpers, so no real provider credentials are needed. The
+// resulting sessions are deterministic and committed as fixtures for the
+// integration test under `tests/inference-testing/session-replay.test.ts`.
 //
 // To regenerate after a manifest-schema or capture-format change:
 //
-//     bun --conditions=intx-src packages/inference-testing/bin/record-example-sessions.ts
+//     bun --conditions=intx-src bin/record-example-sessions.ts
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -18,9 +17,11 @@ import { fileURLToPath } from "node:url";
 
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
-import { createRecordingHarness } from "../src/session-recording";
-import { userTurn } from "../src/turns";
-import * as wire from "../src/wire";
+import {
+  createRecordingHarness,
+  userTurn,
+  wire,
+} from "@intx/inference-testing";
 
 const ZERO_USAGE = {
   input: 0,
@@ -42,7 +43,14 @@ const ANTHROPIC_SOURCE: InferenceSource = {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const SESSIONS_ROOT = path.resolve(__dirname, "..", "sessions");
+const SESSIONS_ROOT = path.resolve(
+  __dirname,
+  "..",
+  "packages",
+  "inference-discovery-anthropic",
+  "example-sessions",
+  "anthropic",
+);
 
 function sseResponse(chunks: Uint8Array[]): Response {
   let total = 0;
@@ -71,7 +79,7 @@ function expectDone(
 }
 
 async function recordToolRoundtrip(): Promise<void> {
-  const dir = path.join(SESSIONS_ROOT, "anthropic-tool-roundtrip");
+  const dir = path.join(SESSIONS_ROOT, "tool-roundtrip");
   await fs.rm(dir, { recursive: true, force: true });
 
   let exchangeIndex = 0;
@@ -165,7 +173,7 @@ async function recordToolRoundtrip(): Promise<void> {
 }
 
 async function recordMultiToolMultiTurn(): Promise<void> {
-  const dir = path.join(SESSIONS_ROOT, "anthropic-multi-tool-multi-turn");
+  const dir = path.join(SESSIONS_ROOT, "multi-tool-multi-turn");
   await fs.rm(dir, { recursive: true, force: true });
 
   // Plan:
