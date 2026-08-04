@@ -1,0 +1,54 @@
+{
+  "id": "gen-1779306688-ePsL12BrN5OlXcUaSKy2",
+  "object": "chat.completion",
+  "created": 1779306688,
+  "model": "moonshotai/kimi-k2.6-20260420",
+  "provider": "Moonshot AI",
+  "system_fingerprint": "fpv0_8cab9aba",
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "The image presents a side-by-side comparison of two lunar data maps, with the left sphere labeled \"Albedo\" displaying the Moon's surface reflectivity in striped grayscale detail and the right sphere labeled \"Water Signature\" showing a mostly dark sphere with a blue arrow indicating a concentrated detection of water near the lunar pole.",
+        "refusal": null,
+        "reasoning": "The user wants me to describe the picture in one sentence. Let me look at the image carefully.\n\nThe image shows two side-by-side spherical representations (likely the Moon) against a black background. The left one is labeled \"Albedo\" and shows a grayscale sphere with vertical striping/orbital tracks. The right one is labeled \"Water Signature\" and shows a mostly dark sphere with similar vertical striping but with a distinct blue arrow pointing to a highlighted area near the top/pole, indicating the detection of water.\n\nSo it's a comparative visualization showing the Moon's albedo (reflectivity) on the left and a water signature detection on the right, likely from some orbital mapping mission.\n\nI need to describe this in one sentence. Let me craft something concise and accurate.\n\n\"The image displays two side-by-side maps of the Moon, with the left sphere labeled 'Albedo' showing surface reflectivity in grayscale stripes and the right sphere labeled 'Water Signature' highlighting a concentrated detection of water near the lunar pole with a blue arrow.\"\n\nWait, is it definitely the Moon? It looks like the Moon based on the surface features. The albedo map shows lunar-like craters and maria. And water signatures on the Moon have been famously detected, especially at the poles. So yes, it's almost certainly the Moon.\n\nLet me make sure it's exactly one sentence. Yes.\n\nAlternative: \"This image compares two lunar data visualizations side-by-side: a left 'Albedo' sphere showing the Moon's surface reflectivity in striped grayscale detail, and a right 'Water Signature' sphere mostly in darkness with a blue arrow indicating concentrated water detection near the pole.\"\n\nThat's also one sentence. I think either works. Let me go with something clear and direct.\n\nActually, looking closer, the right image is mostly dark except for the stripes and the specific highlighted region. The blue arrow points to a bright spot near the north pole.\n\nSo: \"The image presents a side-by-side comparison of two lunar data maps, with the left labeled 'Albedo' displaying the Moon's striped grayscale reflectivity and the right labeled 'Water Signature' showing a mostly dark sphere with a blue arrow pointing to a water detection near the lunar pole.\"\n\nI think that's accurate and one sentence. I'll provide that.",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "The user wants me to describe the picture in one sentence. Let me look at the image carefully.\n\nThe image shows two side-by-side spherical representations (likely the Moon) against a black background. The left one is labeled \"Albedo\" and shows a grayscale sphere with vertical striping/orbital tracks. The right one is labeled \"Water Signature\" and shows a mostly dark sphere with similar vertical striping but with a distinct blue arrow pointing to a highlighted area near the top/pole, indicating the detection of water.\n\nSo it's a comparative visualization showing the Moon's albedo (reflectivity) on the left and a water signature detection on the right, likely from some orbital mapping mission.\n\nI need to describe this in one sentence. Let me craft something concise and accurate.\n\n\"The image displays two side-by-side maps of the Moon, with the left sphere labeled 'Albedo' showing surface reflectivity in grayscale stripes and the right sphere labeled 'Water Signature' highlighting a concentrated detection of water near the lunar pole with a blue arrow.\"\n\nWait, is it definitely the Moon? It looks like the Moon based on the surface features. The albedo map shows lunar-like craters and maria. And water signatures on the Moon have been famously detected, especially at the poles. So yes, it's almost certainly the Moon.\n\nLet me make sure it's exactly one sentence. Yes.\n\nAlternative: \"This image compares two lunar data visualizations side-by-side: a left 'Albedo' sphere showing the Moon's surface reflectivity in striped grayscale detail, and a right 'Water Signature' sphere mostly in darkness with a blue arrow indicating concentrated water detection near the pole.\"\n\nThat's also one sentence. I think either works. Let me go with something clear and direct.\n\nActually, looking closer, the right image is mostly dark except for the stripes and the specific highlighted region. The blue arrow points to a bright spot near the north pole.\n\nSo: \"The image presents a side-by-side comparison of two lunar data maps, with the left labeled 'Albedo' displaying the Moon's striped grayscale reflectivity and the right labeled 'Water Signature' showing a mostly dark sphere with a blue arrow pointing to a water detection near the lunar pole.\"\n\nI think that's accurate and one sentence. I'll provide that.",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 265,
+    "completion_tokens": 524,
+    "total_tokens": 789,
+    "cost": 0,
+    "is_byok": true,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.00234775,
+      "upstream_inference_prompt_cost": 0.00025175,
+      "upstream_inference_completions_cost": 0.002096
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 595,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  },
+  "cost": "0"
+}

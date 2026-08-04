@@ -1,0 +1,35 @@
+{
+  "id": "26be4f9b-2b96-4d59-be80-2d52b03e08db-chatcmpl-7964e3a",
+  "object": "chat.completion",
+  "created": 1784748907,
+  "model": "kimi-k2.7-code",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "The user wants to know the weather in Boston, MA and asked to use the provided tool. I need to call the get_weather function with location \"Boston, MA\".",
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "get_weather_0",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 80,
+    "completion_tokens": 56,
+    "total_tokens": 136,
+    "prompt_tokens_details": { "cached_tokens": 79 }
+  },
+  "cost": "0"
+}

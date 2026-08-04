@@ -1,0 +1,24 @@
+{
+  "id": "c8ca7179-e1fc-41aa-83f0-76e14eff20c9-chatcmpl-9d9a9bb",
+  "object": "chat.completion",
+  "created": 1784748912,
+  "model": "kimi-k2.7-code",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Two side-by-side lunar maps show the Moon’s albedo on the left and a faint water signature near the north pole, indicated by a blue arrow, on the right.",
+        "reasoning_content": "The user wants a one-sentence description of the image. The image shows two side-by-side spherical maps of the Moon: the left labeled \"Albedo\" with bright/dark surface features, and the right labeled \"Water Signature\" mostly dark with a faint signature and a blue arrow pointing to a highlighted area near the north pole. I should describe this concisely in one short sentence."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 269,
+    "completion_tokens": 115,
+    "total_tokens": 384,
+    "prompt_tokens_details": { "cached_tokens": 3 }
+  },
+  "cost": "0"
+}

@@ -1,0 +1,55 @@
+{
+  "id": "gen-1785269823-uPJuubVvC8M0BUEx1DBz",
+  "object": "chat.completion",
+  "created": 1785269823,
+  "model": "mimo-v2.5",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": "The user wants to know the current weather in Boston, MA. I have a tool called `get_weather` that can look up the current weather for a city. I will use that tool with the location \"Boston, MA\".",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "The user wants to know the current weather in Boston, MA. I have a tool called `get_weather` that can look up the current weather for a city. I will use that tool with the location \"Boston, MA\".",
+            "format": "unknown",
+            "index": 0
+          }
+        ],
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "call_c832d8a56c8844f695b334d0",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 516,
+    "completion_tokens": 71,
+    "total_tokens": 587,
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 512,
+      "video_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "completion_tokens_details": {
+      "audio_tokens": 0,
+      "reasoning_tokens": 46,
+      "image_tokens": 0
+    }
+  },
+  "cost": "0"
+}

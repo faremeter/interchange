@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "deepseek-v4-pro",
+    "baseURL": "https://opencode.ai/zen/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-05-22T00:00:00Z",
+  "capability": "function-calling-multi-turn"
+}

@@ -1,0 +1,110 @@
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"1","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":".  **An","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"alyze the Request:","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"**\n    *  ","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" Input","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" condition","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":": Reply","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" with a single sentence","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":".\n    *  ","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" Input","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" text","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"/content","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":": \"the capital","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" of France is Paris","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":".\"\n    *  ","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" Expected","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" output: A","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" single sentence stating","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" that the capital of","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" France is Paris.\n\n","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"2.  **","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"Formulate the Output","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":":**\n    *","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"   Draft","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" 1: The","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" capital of France is","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" Paris. (Simple","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":", exactly","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" matches the prompt's","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" intent","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":", is","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" a single sentence).\n","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"    *   Check","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" constraints: Is","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" it a","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" single sentence? Yes","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":". Does","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" it convey the required","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" meaning","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"? Yes.\n\n","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"3.  **","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"Final Polish","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":":","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"**\n    *","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":"   \"The capital","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":" of France is Paris","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"","reasoning_content":".\"","tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":"The capital","reasoning_content":null,"tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":" of France is Paris","reasoning_content":null,"tool_calls":null}}],"usage":null}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"delta":{"role":"assistant","content":".","reasoning_content":null,"tool_calls":null}}],"usage":{"prompt_tokens":25,"completion_tokens":145,"total_tokens":170,"prompt_tokens_details":null}}
+
+data: {"choices":[],"x-opencode-type":"inference-cost","cost":"0.00067300","normalizedUsage":{"inputTokens":25,"outputTokens":145,"reasoningTokens":0,"cacheReadTokens":0,"cacheWrite5mTokens":0,"cacheWrite1hTokens":0}}
+
+data: {"id":"chatcmpl-R8uJwmInelhb7rwJn2Rmk18l","object":"chat.completion.chunk","created":1785269854,"model":"glm-5.2","choices":[],"usage":{"prompt_tokens":25,"completion_tokens":145,"total_tokens":170,"prompt_tokens_details":null}}
+
+data: [DONE]
+
+data: {"choices":[],"cost":"0"}
+

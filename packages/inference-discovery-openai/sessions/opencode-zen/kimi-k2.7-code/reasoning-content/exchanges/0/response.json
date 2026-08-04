@@ -1,0 +1,24 @@
+{
+  "id": "842fad7e-3b6f-41ce-a157-ebf5aa17dd01-chatcmpl-72cc781",
+  "object": "chat.completion",
+  "created": 1784748909,
+  "model": "kimi-k2.7-code",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Let the ball cost \\(x\\) dollars.  \nSince the bat costs $1.00 more than the ball, the bat costs \\(x + 1.00\\) dollars.\n\nTogether they cost $1.10, so:\n\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\n\\[\n2x + 1.00 = 1.10\n\\]\n\n\\[\n2x = 0.10\n\\]\n\n\\[\nx = 0.05\n\\]\n\nSo the ball costs **$0.05**, and the bat costs **$1.05**. That gives a total of $1.10 and a difference of exactly $1.00.",
+        "reasoning_content": "We need answer classic puzzle. Need show reasoning before final answer. Ball costs 5 cents, bat $1.05, total $1.10, difference $1.00. Many intuitive answer 10 cents is wrong. Let's produce reasoning.\n\nWe need to ensure we follow instruction: Show reasoning before final answer. So final answer after reasoning. Let's write equations: Let ball cost x dollars. Bat costs x+1. Total: x + (x+1) = 1.10 => 2x+1=1.10 => 2x=0.10 => x=0.05. So ball is $0.05. Check bat $1.05, difference $1.00. Final answer."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 47,
+    "completion_tokens": 296,
+    "total_tokens": 343,
+    "prompt_tokens_details": { "cached_tokens": 0 }
+  },
+  "cost": "0"
+}

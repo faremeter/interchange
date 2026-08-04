@@ -1,0 +1,10 @@
+{
+  "cache-control": "private, no-store, no-cache, max-age=0",
+  "cf-placement": "remote-ORD",
+  "cf-ray": "a226919b994e166b-MCI",
+  "connection": "keep-alive",
+  "content-type": "text/event-stream",
+  "date": "Tue, 28 Jul 2026 20:17:42 GMT",
+  "server": "cloudflare",
+  "transfer-encoding": "chunked"
+}

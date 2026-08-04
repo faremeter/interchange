@@ -1,0 +1,45 @@
+{
+  "id": "chatcmpl-E4VGSyZR4TjJF0nryR0V1CDtvl787",
+  "object": "chat.completion",
+  "created": 1784742200,
+  "model": "gpt-5.5-2026-04-23",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_lY1UHzoGMHScCdq3WM2wTEb6",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\":\"Boston, MA\"}"
+            }
+          }
+        ],
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 155,
+    "completion_tokens": 19,
+    "total_tokens": 174,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

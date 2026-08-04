@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "glm-5.2",
+    "baseURL": "https://opencode.ai/zen/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-07-28T20:17:36.372Z",
+  "capability": "function-calling"
+}

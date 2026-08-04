@@ -1,0 +1,9 @@
+{
+  "model": "qwen3.7-plus",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ]
+}

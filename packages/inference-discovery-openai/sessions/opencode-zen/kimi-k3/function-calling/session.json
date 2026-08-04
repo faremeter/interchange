@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "kimi-k3",
+    "baseURL": "https://opencode.ai/zen/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-07-22T19:26:51.234Z",
+  "capability": "function-calling"
+}

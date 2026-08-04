@@ -1,0 +1,50 @@
+{
+  "model": "kimi-k2.6",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "The user is asking for the weather in Boston, MA and specifically asks to use the provided tool. I have access to the getCurrentWeather function which takes a location parameter. I should call this function with \"Boston, MA\" as the location.",
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "functions.getCurrentWeather:0",
+          "type": "function",
+          "function": {
+            "name": "getCurrentWeather",
+            "arguments": "{\"location\": \"Boston, MA\"}"
+          },
+          "name": null
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "functions.getCurrentWeather:0",
+      "content": "{\"weather\":\"62F partly cloudy\",\"windMph\":8}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "getCurrentWeather",
+        "description": "Get the current weather conditions for a given city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "The city and optional state, e.g. 'Boston, MA'."
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ]
+}

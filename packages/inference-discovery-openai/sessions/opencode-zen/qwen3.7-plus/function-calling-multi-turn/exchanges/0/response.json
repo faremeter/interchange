@@ -1,0 +1,36 @@
+{
+  "model": "qwen3.7-plus",
+  "id": "chatcmpl-a2622dd7-cb4f-4fd7-8a1e-b82c905be061",
+  "choices": [
+    {
+      "message": {
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "call_fe4f1c85256a45d1b72c8f81",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"Boston, MA\"}"
+            }
+          }
+        ],
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "Thinking Process:\n\n1.  **Identify the core request:** The user wants to know the current weather in Boston, MA.\n2.  **Identify the available tool:** `get_weather` with parameter `location` (string).\n3.  **Map request to tool:**\n    *   Tool: `get_weather`\n    *   Parameter: `location` = \"Boston, MA\"\n4.  **Execute the tool call.**"
+      },
+      "index": 0,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "created": 1785269724,
+  "object": "chat.completion",
+  "usage": {
+    "total_tokens": 429,
+    "completion_tokens": 127,
+    "prompt_tokens": 302,
+    "completion_tokens_details": { "reasoning_tokens": 95, "text_tokens": 127 },
+    "prompt_tokens_details": { "cached_tokens": 0, "text_tokens": 302 }
+  },
+  "cost": "0"
+}

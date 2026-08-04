@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "gpt-5.6-sol",
+    "baseURL": "https://api.openai.com/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-07-28T20:08:33.221Z",
+  "capability": "structured-output-refusal-streaming"
+}

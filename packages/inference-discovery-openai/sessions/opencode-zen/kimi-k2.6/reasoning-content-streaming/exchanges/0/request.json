@@ -1,0 +1,10 @@
+{
+  "model": "kimi-k2.6",
+  "messages": [
+    {
+      "role": "user",
+      "content": "A farmer has 17 sheep. All but 9 die. How many are left? Reason carefully before answering."
+    }
+  ],
+  "stream": true
+}

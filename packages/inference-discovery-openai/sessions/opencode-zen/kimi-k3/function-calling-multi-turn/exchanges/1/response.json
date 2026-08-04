@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl-6a6119711462ded0dd4c7128",
+  "object": "chat.completion",
+  "created": 1784748418,
+  "model": "kimi-k3",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "The current weather in Boston, MA is 68°F and clear.",
+        "reasoning_content": "Need answer based on tool: Boston MA current weather 68F clear. Mention from tool. No extra."
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 330,
+    "completion_tokens": 52,
+    "total_tokens": 382,
+    "completion_tokens_details": { "reasoning_tokens": 23 }
+  },
+  "cost": "0"
+}

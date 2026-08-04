@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "gpt-5.5",
+    "baseURL": "https://api.openai.com/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-07-22T17:43:22.330Z",
+  "capability": "function-calling-multi-turn"
+}
