@@ -1,0 +1,43 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What is the current weather in Boston, MA? Use the getCurrentWeather tool."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "getCurrentWeather",
+          "description": "Get the current weather conditions for a given city. Use this whenever the user asks about weather.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "The city and optional state, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "ANY",
+      "allowedFunctionNames": ["getCurrentWeather"]
+    }
+  },
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 0
+    }
+  }
+}

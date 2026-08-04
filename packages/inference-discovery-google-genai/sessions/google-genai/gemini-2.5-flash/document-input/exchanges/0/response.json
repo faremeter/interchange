@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The Adventures of Tom Sawyer follows a mischievous boy's imaginative escapades, including playing pirates, as he grapples with conscience and courage after witnessing a murder involving Injun Joe."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 268,
+    "candidatesTokenCount": 36,
+    "totalTokenCount": 1372,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 10
+      },
+      {
+        "modality": "DOCUMENT",
+        "tokenCount": 258
+      }
+    ],
+    "thoughtsTokenCount": 1068,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "NuMNaoSxNdS__uMPy_XA0Qw"
+}

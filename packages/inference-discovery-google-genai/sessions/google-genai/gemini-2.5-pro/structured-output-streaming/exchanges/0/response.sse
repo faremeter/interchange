@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "{\n  \"name"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 39,"candidatesTokenCount": 5,"totalTokenCount": 267,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 39}],"thoughtsTokenCount": 223,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "2BRhavzyD8brz7IP8LPckA4"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "\": \"Alice\",\n  \"age\": 30,\n  \"email\": \"alice@example.com"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 39,"candidatesTokenCount": 29,"totalTokenCount": 291,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 39}],"thoughtsTokenCount": 223,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "2BRhavzyD8brz7IP8LPckA4"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "\"\n}"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 39,"candidatesTokenCount": 32,"totalTokenCount": 294,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 39}],"thoughtsTokenCount": 223,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "2BRhavzyD8brz7IP8LPckA4"}
+

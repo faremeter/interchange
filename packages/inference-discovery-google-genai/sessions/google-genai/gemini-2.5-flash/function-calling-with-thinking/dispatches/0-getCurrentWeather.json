@@ -1,0 +1,11 @@
+{
+  "args": {
+    "location": "Boston, MA"
+  },
+  "result": {
+    "location": "Boston, MA",
+    "temperatureF": 62,
+    "conditions": "partly cloudy",
+    "windMph": 8
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Who won the 2025 Nobel Prize in Physics, and what was the cited contribution? Cite your sources."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "googleSearch": {}
+    }
+  ]
+}

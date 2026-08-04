@@ -1,0 +1,67 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What is the weather in Boston, MA? Use the provided tool."
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "8nq6vsr8"
+          },
+          "thoughtSignature": "EjQKMgERTTIPTpCPk3mAocbReFCzk4+koYMlOKX4jiT9IrLWVj6JpSnj7Oam64quE5ayOfhs"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {
+              "location": "Boston, MA",
+              "temperatureF": 68,
+              "conditions": "clear"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 0
+    }
+  }
+}

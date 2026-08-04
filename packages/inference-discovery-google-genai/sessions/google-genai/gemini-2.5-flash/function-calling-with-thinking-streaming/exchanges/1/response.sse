@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "The current weather in"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 250,"candidatesTokenCount": 4,"totalTokenCount": 254,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 250}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "LvQNatGvM5jRjMcPh7LB4A8"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " Boston, MA is partly cloudy with a temperature of 62 degrees Fahrenheit and"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 250,"candidatesTokenCount": 20,"totalTokenCount": 270,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 250}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "LvQNatGvM5jRjMcPh7LB4A8"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " winds at 8 mph."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 250,"candidatesTokenCount": 26,"totalTokenCount": 276,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 250}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "LvQNatGvM5jRjMcPh7LB4A8"}
+

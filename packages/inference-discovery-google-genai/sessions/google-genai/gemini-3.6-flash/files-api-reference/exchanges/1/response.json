@@ -1,0 +1,36 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "This document provides a table of contents outlining brief chapter summaries for Chapters I through XVII of Mark Twain's *The Adventures of Tom Sawyer*.",
+            "thoughtSignature": "EtILCs8LARFNMg8oSZYVKstytrCELy/LGjHaMaoytBC5J+wXtocOQ06/o5acORNBLABFI7HIXMInrCRD+tT7uOaFVp9iI/+2oCfyd/l/1k34aTPSdof6VR1kk6anjsexON6nFnpae+sL64KBOy/d9qHztqAVzTG/TVCrC2jFNG19kjEisi0S+KkLYHIfTqL1+uGnFqg4cQ6IMY21OUqdnqp7p0iQkd/zC1upqszqqe6UxsSxBQ4Jk3Nxly9QIqE5eUPDQymTAdfoq04LLQAzaktD7E4LSoxxPgsoQ7MfHKFCNYuMK827DFElXi018yhy+u9QDzz5XsBohHmNKSkhmxX/dc3JVMPZvMkwQVeiwwNW7JG2wC57UNsFqYAEqqFKHrcN0ylS3QI/XYiGnpdsETbNSDGb0ojQSdr7abCZW1yr3UK2QSIwK51dpNpJyUWoFE6xNgwcafDWU/+O9QvEfHZugcehm5zWKw0yUxT1Kx3XDgNztMUqv+Uy1M2t3BHjtjvGum16dvqmuqzirPlfoZyV5Wh+WMe1rrSxkRlmX22OWRw9vMVRQz45IZbi8cq5nEbOXjvQwWfZTw8t0JiNYyI9HD8+TuncE3lLn+cosumTtwYbl4McBFjgVFEv0MP/9qdFb5jNQqwh+vot6QUl6Pj3LcpyPrytjSTMhZmR7b93ACVYuZqyMwB/ebdt1D9/tuc8Ke/RsPwiKbz6JB3NKlId0xr4pYT9LPbtXhOf+o+LuJxa4SWVsIDsbexjFtJeFNNbsR64pMP7GR5beHFl10p5m9Jxx4p3WGDSGF2Eo1LE6TAYTgn+NuPd+ywZYRuu/6qrBKYIzgZVCzoHRzn3Sp4Erkx8w3EzWeYJaxjmzjBXIhmQilBpQzjax42IBxZB56XN1VVFa70e9RtQ3GqbLIEL2N9wlt6tYdXemvb2QhufLxeVHzStjn5spekrSnEK6I3r0oGNXz39fpvqgfj5d4BvC74WK/x6OQXwkTJtvisirCQqJnydCF3jK/GfMztwL+xPHAAQ5YVrpOZ5Red9Gb5oxLLbJxJ+R3fUeQ5WaXSUvhUKqi+E7gpNK9LWX/4tP/gJNPT7PXNdi1PtVGnTVQInXZ0APJo1MxtjeU/zOwSAkwr0QuYcs3hg0NvxNWcS4e6T6/lt9mmMoQ8USMlFVjnYZ5mLBiaI/6PO1QZVoJZJ+buq51K4eJYdlnHiOZsXxQzgvmpUKcQ963llvC7F4hTaRJNUsMNI4/w6Z2ro0IXhGFs3/up8Ep56EvncfHJOMG5/z2wLv6aZKiizii4yg4AOTomCF9k4ntxyITeN4jfH7SjM++1nIbyWL+l2xCuFso3PcOf523wxHlB3btxsOlIEOgK3+Tj2yb2/0IVJWUGPBBOocadSC1ARShKHe6XgAEXDVd0YVSUQc+vOzRoDtB3qBet5JeGzS7Khc3xXY2iYGz5e10ZJkQ6S2w2SpB4yece9zWM54hiROIFLx22+wbAKB7ZGFUXtIRlETaQIcD4CVmiD72KLv5CU8RY7jo04Fmhx1cD8i2QugsFjy3Y46i3mLTCg2RP/Y9N26WzpmtQQSgUt8tEXHwFu66zuZyGSeuQk2X07w+JTKsX/CicCTzdVznWbHZ7gNZwYjqluoALCRzgqND7ZiL8OGO6kQh0dAGTU+Y0fFEQdgptLWYT8NLnxlIwB18a6f8frlEdfTkfql5Lm0Vg9WLqVdr5cQ3SIyerja2786yvgH0rQf7kynTZXCY/ssKifIHkhNKxnZmfsg6zeLVodPEtZIpBFTtnauZ/bsw1pvLFswvfWZ+9BCUxLyPs52sQlDxMzDh1mUahWLNk00YfBi+LiLgowivOWbrEzMVAq54Lpq4WYBb9KmFw90GuT2FN0AlKkt6H6ADChFi2DqEsENArnPNG3G0wuz5zDMRrlFQbjtnnsFwIlTxrpbhocKVQ80YFih9K54yEY614gac64H+6lZmUOqUboCFd6rVI="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 530,
+    "candidatesTokenCount": 28,
+    "totalTokenCount": 899,
+    "promptTokensDetails": [
+      {
+        "modality": "IMAGE",
+        "tokenCount": 520
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 10
+      }
+    ],
+    "thoughtsTokenCount": 341,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.6-flash",
+  "responseId": "Nwppat3HGoeHz7IPy5-9iA0"
+}

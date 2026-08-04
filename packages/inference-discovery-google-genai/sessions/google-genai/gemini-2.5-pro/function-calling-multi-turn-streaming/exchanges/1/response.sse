@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "It"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 311,"candidatesTokenCount": 1,"totalTokenCount": 312,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 311}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "ShRharHjH5mdz7IP1IHr-Ag"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " is 68 degrees and clear in Boston, MA. \n"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 311,"candidatesTokenCount": 13,"totalTokenCount": 324,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 311}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "ShRharHjH5mdz7IP1IHr-Ag"}
+

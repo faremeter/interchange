@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 369,"totalTokenCount": 369,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 369}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "UxRhauWhHofBz7IPt7W7gAo"}
+

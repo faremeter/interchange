@@ -1,0 +1,66 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What is the current weather in Boston, MA? Use the getCurrentWeather tool."
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "getCurrentWeather",
+            "args": {
+              "location": "Boston, MA"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "getCurrentWeather",
+            "response": {
+              "location": "Boston, MA",
+              "temperatureF": 62,
+              "conditions": "partly cloudy",
+              "windMph": 8
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "getCurrentWeather",
+          "description": "Get the current weather conditions for a given city. Use this whenever the user asks about weather.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "The city and optional state, e.g. 'Boston, MA'."
+              }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 0
+    }
+  }
+}

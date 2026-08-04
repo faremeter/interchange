@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "This image compares the Moon's surface albedo (left) with a map showing the corresponding signature of water ("}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 268,"candidatesTokenCount": 23,"totalTokenCount": 1371,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 10},{"modality": "IMAGE","tokenCount": 258}],"thoughtsTokenCount": 1080,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "XBRhavLoA9KJz7IPoOPLiQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "right)."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 268,"candidatesTokenCount": 25,"totalTokenCount": 1373,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 10},{"modality": "IMAGE","tokenCount": 258}],"thoughtsTokenCount": 1080,"serviceTier": "standard"},"modelVersion": "gemini-2.5-pro","responseId": "XBRhavLoA9KJz7IPoOPLiQs"}
+
