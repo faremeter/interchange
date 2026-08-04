@@ -261,6 +261,9 @@ export async function runCapture(opts: RunCaptureOpts): Promise<void> {
   const manifest: CaptureManifest = {
     schemaVersion: "2",
     source: { provider: adapterProvider, model, baseURL },
+    // Hardcoded, not derived from opts.fetch: the rig's only production seam is
+    // the real network, so every capture it commits is live. opts.fetch is a
+    // test-only byte-injection seam and carries no synthetic-provenance meaning.
     origin: "live",
     capturedAt: now().toISOString(),
     capability,
