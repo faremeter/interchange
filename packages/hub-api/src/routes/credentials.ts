@@ -438,7 +438,12 @@ export function createCredentialRoutes({
       // If the secret was updated, push new inference sources to running
       // instances.
       if (body.secret !== undefined) {
-        void pushSourceUpdates(db, sidecarRouter, updated.tenantId);
+        void pushSourceUpdates(
+          db,
+          sidecarRouter,
+          updated.tenantId,
+          credentialCipher,
+        );
       }
 
       return c.json(formatCredential(updated));

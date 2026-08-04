@@ -7,7 +7,6 @@ import {
   test,
 } from "bun:test";
 
-import { createGrantStore } from "@intx/db";
 import { resolveDefinitionSources } from "@intx/hub-api";
 import type { ModelRequirement } from "@intx/types";
 import {
@@ -17,7 +16,6 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedCredential,
-  seedGrant,
   seedModel,
   seedModelOffering,
   seedModelProvider,
@@ -30,7 +28,8 @@ import {
 // credential-bearing source chain a run launches against. It resolves the
 // requirements from the `modelRequirements` manifest when set, else derives
 // them from a single step's declared model, and stamps a credential secret only
-// where the definition's creator is authorized -- fail-closed.
+// where the launching tenant owns the credential within its hierarchy --
+// fail-closed.
 
 const SECRET = "sk-secret";
 
@@ -51,10 +50,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
     });
 
-    // A single credential-backed offering for model "opus", plus a creator
-    // principal whose `credential:cred_a` / `use` grant `authorized` controls.
-    async function seedCatalog(opts: { authorized: boolean }): Promise<void> {
+    // A single credential-backed offering for model "opus". The credential is
+    // tenant-owned by default (usable by ownership); a case can make it
+    // principal-owned to exercise the ownership boundary.
+    async function seedCatalog(
+      opts: { credentialPrincipalId?: string } = {},
+    ): Promise<void> {
       await seedTenants(h.db, [{ id: "tnt_root" }]);
+      if (opts.credentialPrincipalId !== undefined) {
+        await seedPrincipal(h.db, {
+          id: opts.credentialPrincipalId,
+          tenantId: "tnt_root",
+        });
+      }
       await seedProvider(h.db, {
         id: "prv_x",
         tenantId: "tnt_root",
@@ -66,6 +74,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         providerId: "prv_x",
         name: "cred-a",
         secret: SECRET,
+        ...(opts.credentialPrincipalId !== undefined
+          ? { principalId: opts.credentialPrincipalId }
+          : {}),
       });
       await seedModel(h.db, {
         id: "mdl_opus",
@@ -84,16 +95,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         modelId: "mdl_opus",
         providerId: "mpv_anthropic",
       });
-      await seedPrincipal(h.db, { id: "prn_creator", tenantId: "tnt_root" });
-      if (opts.authorized) {
-        await seedGrant(h.db, {
-          id: "grt_use",
-          tenantId: "tnt_root",
-          principalId: "prn_creator",
-          resource: "credential:cred_a",
-          action: "use",
-        });
-      }
     }
 
     function resolve(args: {
@@ -102,9 +103,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }) {
       return resolveDefinitionSources({
         db: h.db,
-        grantStore: createGrantStore(h.db),
         tenantId: "tnt_root",
-        creatorPrincipalId: "prn_creator",
         modelRequirements: args.modelRequirements,
         fallbackModel: args.fallbackModel,
         invokerPreferences: {},
@@ -112,7 +111,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     test("resolves the chain from the modelRequirements manifest", async () => {
-      await seedCatalog({ authorized: true });
+      await seedCatalog();
       const res = await resolve({
         modelRequirements: [{ model: "opus" }],
         fallbackModel: null,
@@ -126,7 +125,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("derives the chain from the fallback model when no manifest is set", async () => {
-      await seedCatalog({ authorized: true });
+      await seedCatalog();
       const res = await resolve({
         modelRequirements: null,
         fallbackModel: "opus",
@@ -140,7 +139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("fails when neither a manifest nor a fallback model is present", async () => {
-      await seedCatalog({ authorized: true });
+      await seedCatalog();
       const res = await resolve({
         modelRequirements: null,
         fallbackModel: null,
@@ -150,8 +149,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(res.message).toContain("no model requirements");
     });
 
-    test("withholds the secret when the creator lacks credential/use", async () => {
-      await seedCatalog({ authorized: false });
+    test("withholds a principal-owned credential (not usable via the catalog)", async () => {
+      await seedCatalog({ credentialPrincipalId: "prn_owner" });
       const res = await resolve({
         modelRequirements: [{ model: "opus" }],
         fallbackModel: null,

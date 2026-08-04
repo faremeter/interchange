@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { modelProvider } from "@intx/db/schema";
-import { resolveCredentialById } from "@intx/db";
+import { resolveTenantOwnedCredentialById } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateModelProvider,
@@ -16,6 +16,7 @@ import {
   pushSourceUpdatesSubtree,
   type SidecarRouter,
 } from "@intx/hub-sessions";
+import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
@@ -49,12 +50,14 @@ export type CreateModelProviderRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
+  credentialCipher: CredentialCipher;
 };
 
 export function createModelProviderRoutes({
   db,
   sidecarRouter,
   requireGrant,
+  credentialCipher,
 }: CreateModelProviderRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -177,10 +180,15 @@ export function createModelProviderRoutes({
       // The credential must resolve within the tenant's ancestor chain, the
       // same scope the launch-time resolver uses; otherwise the provider
       // would store a reference that silently never resolves a source.
-      // Wallet-backed providers are not launchable in this release, so their
-      // reference is not yet ownership-checked here (tracked separately).
+      // A catalog provider delivers its credential's secret to any agent
+      // launched in the owning subtree, so the reference must be tenant-owned
+      // and reachable in this tenant's hierarchy -- the same ownership rule the
+      // launch enforces. Reject a principal-owned or out-of-chain reference here
+      // rather than let it write and then silently fail closed at launch.
+      // (Wallet-backed providers are not launchable this release, so their
+      // reference is not yet ownership-checked here -- tracked separately.)
       if (credentialId !== null) {
-        const cred = await resolveCredentialById(
+        const cred = await resolveTenantOwnedCredentialById(
           db,
           tenantCtx.id,
           credentialId,
@@ -190,7 +198,8 @@ export function createModelProviderRoutes({
             {
               error: {
                 code: "not_found",
-                message: "Credential not found in this tenant",
+                message:
+                  "Credential not found in this tenant, or not a tenant-owned credential (a catalog provider requires a tenant-owned credential)",
               },
             },
             404,
@@ -357,7 +366,12 @@ export function createModelProviderRoutes({
         );
       }
 
-      void pushSourceUpdatesSubtree(db, sidecarRouter, tenantCtx.id);
+      void pushSourceUpdatesSubtree(
+        db,
+        sidecarRouter,
+        tenantCtx.id,
+        credentialCipher,
+      );
       return c.json(formatModelProvider(updated));
     },
   );
@@ -398,7 +412,12 @@ export function createModelProviderRoutes({
           404,
         );
       }
-      void pushSourceUpdatesSubtree(db, sidecarRouter, tenantCtx.id);
+      void pushSourceUpdatesSubtree(
+        db,
+        sidecarRouter,
+        tenantCtx.id,
+        credentialCipher,
+      );
       return c.body(null, 204);
     },
   );

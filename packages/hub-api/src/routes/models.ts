@@ -17,6 +17,7 @@ import {
   pushSourceUpdatesSubtree,
   type SidecarRouter,
 } from "@intx/hub-sessions";
+import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
@@ -49,12 +50,14 @@ export type CreateModelCatalogRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
+  credentialCipher: CredentialCipher;
 };
 
 export function createModelCatalogRoutes({
   db,
   sidecarRouter,
   requireGrant,
+  credentialCipher,
 }: CreateModelCatalogRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -161,7 +164,12 @@ export function createModelCatalogRoutes({
           .returning(),
       );
 
-      void pushSourceUpdatesSubtree(db, sidecarRouter, tenantCtx.id);
+      void pushSourceUpdatesSubtree(
+        db,
+        sidecarRouter,
+        tenantCtx.id,
+        credentialCipher,
+      );
       return c.json(formatModel(row), 201);
     },
   );
@@ -250,7 +258,12 @@ export function createModelCatalogRoutes({
         );
       }
 
-      void pushSourceUpdatesSubtree(db, sidecarRouter, tenantCtx.id);
+      void pushSourceUpdatesSubtree(
+        db,
+        sidecarRouter,
+        tenantCtx.id,
+        credentialCipher,
+      );
       return c.json(formatModel(updated));
     },
   );
@@ -286,7 +299,12 @@ export function createModelCatalogRoutes({
           404,
         );
       }
-      void pushSourceUpdatesSubtree(db, sidecarRouter, tenantCtx.id);
+      void pushSourceUpdatesSubtree(
+        db,
+        sidecarRouter,
+        tenantCtx.id,
+        credentialCipher,
+      );
       return c.body(null, 204);
     },
   );

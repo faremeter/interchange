@@ -43,7 +43,7 @@ import {
   formatAgentAddress,
   paginatedSchema,
 } from "@intx/types";
-import type { ProviderPreference } from "@intx/types";
+import type { CredentialCipher, ProviderPreference } from "@intx/types";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   findRoutableById,
@@ -163,6 +163,7 @@ export type CreateInstanceRoutesDeps = {
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
   assetService: AssetService | null;
+  credentialCipher: CredentialCipher;
 };
 
 export function createInstanceRoutes({
@@ -174,6 +175,7 @@ export function createInstanceRoutes({
   conditionRegistry,
   requireGrant,
   assetService,
+  credentialCipher,
 }: CreateInstanceRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -320,12 +322,11 @@ export function createInstanceRoutes({
 
       const resolution = await resolveDefinitionSources({
         db,
-        grantStore,
         tenantId: tenant.id,
-        creatorPrincipalId,
         modelRequirements: definition.modelRequirements,
         fallbackModel: foldedBody.model,
         invokerPreferences,
+        credentialCipher,
       });
       if (!resolution.ok) {
         return c.json(
