@@ -496,7 +496,7 @@ describe("buildFilesApiGenerateBody", () => {
 });
 
 describe("iterateCaptureSteps", () => {
-  test("single-step capability yields one JSON step with no subdir", () => {
+  test("single-step capability yields one JSON step", () => {
     const steps = collectSteps({
       model: HAIKU,
       capability: "plain-text",
@@ -506,7 +506,6 @@ describe("iterateCaptureSteps", () => {
     const [only] = steps;
     if (only === undefined) throw new Error("missing step");
     expect(only.kind).toBe("json");
-    expect(only.subdir).toBeNull();
     expect(only.url).toBe("https://api.anthropic.com/v1/messages");
   });
 
@@ -532,8 +531,6 @@ describe("iterateCaptureSteps", () => {
       responses: [turn1Response],
     });
     expect(steps.length).toBe(2);
-    expect(steps[0]?.subdir).toBe("turn-1");
-    expect(steps[1]?.subdir).toBe("turn-2");
     for (const step of steps) {
       expect(step.kind).toBe("json");
       expect(step.url).toBe("https://api.anthropic.com/v1/messages");
@@ -558,8 +555,6 @@ describe("iterateCaptureSteps", () => {
       responses: [turn1Response],
     });
     expect(steps.length).toBe(2);
-    expect(steps[0]?.subdir).toBe("turn-1");
-    expect(steps[1]?.subdir).toBe("turn-2");
   });
 
   test("files-api yields a raw upload step then a JSON generate step", () => {
@@ -580,7 +575,6 @@ describe("iterateCaptureSteps", () => {
       throw new Error("missing steps");
     }
     expect(upload.kind).toBe("raw");
-    expect(upload.subdir).toBe("upload");
     expect(upload.url).toBe("https://api.anthropic.com/v1/files");
     if (upload.kind !== "raw") throw new Error("unreachable");
     expect(upload.contentType).toMatch(/^multipart\/form-data; boundary=/);
@@ -588,7 +582,6 @@ describe("iterateCaptureSteps", () => {
     expect(upload.body.byteLength).toBeGreaterThan(0);
 
     expect(generate.kind).toBe("json");
-    expect(generate.subdir).toBe("generate");
     expect(generate.url).toBe("https://api.anthropic.com/v1/messages");
   });
 

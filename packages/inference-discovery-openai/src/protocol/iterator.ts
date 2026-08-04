@@ -30,7 +30,6 @@ export function createOpenaiIterator(
       const turn1 = buildMultiTurnTurn1Body({ model, intent });
       const turn1Response = yield {
         kind: "json",
-        subdir: "turn-1",
         url,
         body: turn1,
       };
@@ -42,7 +41,6 @@ export function createOpenaiIterator(
       });
       yield {
         kind: "json",
-        subdir: "turn-2",
         url,
         body: turn2,
       };
@@ -51,7 +49,6 @@ export function createOpenaiIterator(
 
     yield {
       kind: "json",
-      subdir: null,
       url,
       body: buildRequestBody({ model, capability, intent }),
     };

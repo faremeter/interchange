@@ -39,10 +39,6 @@ export interface IterateCaptureStepsOpts {
 }
 
 interface CaptureStepBase {
-  // Subdirectory under the capture root for this step's artifacts.
-  // null places the step's files directly under the capture root; a string
-  // segregates them (e.g. "turn-1", "turn-2", "upload", "generate").
-  subdir: string | null;
   url: string;
   // Defaults to "POST" when omitted.
   method?: "POST" | "PUT" | "PATCH";

@@ -84,19 +84,15 @@ function scenarioPlugin(scenario: Scenario): ProviderPlugin {
     buildAuthHeaders: () => ({}),
     *iterateCaptureSteps(): Generator<CaptureStep, void, CapturedResponse> {
       for (const exchange of scenario.exchanges) {
-        const subdir =
-          exchange.wireSubPath === "" ? null : exchange.wireSubPath;
         if (exchange.request.kind === "json") {
           yield {
             kind: "json",
-            subdir,
             url: exchange.url,
             body: exchange.request.body,
           };
         } else {
           yield {
             kind: "raw",
-            subdir,
             url: exchange.url,
             contentType: exchange.request.contentType,
             body: exchange.request.bytes,
