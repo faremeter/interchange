@@ -70,7 +70,7 @@ import {
   deriveWorkflowRunId,
   signalName,
 } from "@intx/types";
-import { RepoId } from "@intx/types/sidecar";
+import { RepoId, type CredentialDelivery } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
   InferenceSource,
@@ -238,6 +238,14 @@ export interface WorkflowSupervisor {
    */
   deliverSources(opts: DeliverSourcesOpts): Promise<void>;
   /**
+   * Push refreshed credential material to the child's in-memory cell. Mirrors
+   * `deliverSources`: the supervisor is the single producer of
+   * `credentials-updated` control frames, phase-guarded to starting/running so
+   * a frame is never written into a recycling child's closing pipe. A revoked
+   * credential is delivered by omitting its material so the child evicts it.
+   */
+  deliverCredentials(opts: DeliverCredentialsOpts): Promise<void>;
+  /**
    * Re-register every correlation the child is currently parked on by
    * querying it for its parked correlations and re-emitting each through
    * `onSuspensionRegister`. Recovers a `park.notify` register the hub may have
@@ -341,6 +349,15 @@ export type DeliverSourcesOpts = {
   sources: InferenceSource[];
   /** The default source id; the wire boundary requires it to equal `sources[0].id`. */
   defaultSource: string;
+};
+
+export type DeliverCredentialsOpts = {
+  /**
+   * The refreshed credential material and per-handle descriptors. A revoked
+   * credential is delivered by omitting its material entry, so the child's
+   * wholesale swap evicts it.
+   */
+  delivery: CredentialDelivery;
 };
 
 export type RecycleOpts = {
@@ -3117,6 +3134,25 @@ export function createWorkflowSupervisor(
     });
   }
 
+  async function deliverCredentials(
+    opts: DeliverCredentialsOpts,
+  ): Promise<void> {
+    // The supervisor is the single producer of `credentials-updated` control
+    // frames. Phase-guarded exactly like `deliverSources`: outside
+    // starting/running the control sender points at a dying child, so a frame
+    // would buffer behind the SIGTERM or write into a closed pipe. Rejecting
+    // surfaces the race so the caller can retry once the recycle completes.
+    if (state.phase !== "running" && state.phase !== "starting") {
+      throw new Error(
+        `supervisor: deliverCredentials called in phase ${state.phase}; expected starting/running`,
+      );
+    }
+    await state.controlSender.send({
+      type: "credentials-updated",
+      data: { delivery: opts.delivery },
+    });
+  }
+
   function getCredentialsSnapshot(): CredentialsSnapshot | null {
     if (state.phase === "starting" || state.phase === "running") {
       return state.credentialsSnapshot;
@@ -3132,6 +3168,7 @@ export function createWorkflowSupervisor(
     recycle,
     deliverSignal,
     deliverSources,
+    deliverCredentials,
     reEmitParkedCorrelations,
     getCredentialsSnapshot,
   };

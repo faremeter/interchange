@@ -43,6 +43,7 @@ import {
   InferenceSource,
   InterchangeType,
 } from "@intx/types/runtime";
+import { CredentialDelivery } from "@intx/types/sidecar";
 
 import {
   decodeEnvelope,
@@ -226,6 +227,18 @@ export const ControlPayload = type(
   .or({
     type: "'sources-updated'",
     data: SourcesUpdatedData,
+  })
+  .or({
+    // Refreshed credential material for the deployment's tools. The child
+    // replaces its in-memory material cell wholesale on receive; a revoked
+    // credential arrives by omission (its material entry is absent) so the
+    // swap evicts it. Carried inline like the grants and sources snapshots --
+    // single-producer supervisor, single-consumer child. The secret rides
+    // this frame and the in-memory cell only; it is never persisted.
+    type: "'credentials-updated'",
+    data: {
+      delivery: CredentialDelivery,
+    },
   })
   .or({
     type: "'ready'",

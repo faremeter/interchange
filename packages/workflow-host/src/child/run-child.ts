@@ -90,6 +90,7 @@ import {
 } from "../drain-controller";
 
 import type { InferenceSource } from "@intx/types/runtime";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
@@ -139,6 +140,17 @@ const WORKFLOW_JSON_PATH = "workflow.json";
  */
 export type CredentialsSnapshotRef = {
   current: CredentialsSnapshot | null;
+};
+
+/**
+ * The deployment's decrypted credential material and per-handle descriptors,
+ * held through a mutable reference and swapped wholesale on a rotation push (a
+ * revoked credential arrives by omission, so the swap evicts it). The secret
+ * lives ONLY here -- read at tool-invoke time through the gated capability --
+ * and is never copied into a snapshot, event, or state.
+ */
+export type CredentialMaterialRef = {
+  current: CredentialDelivery | null;
 };
 
 /**
@@ -381,6 +393,14 @@ export interface RunWorkflowChildBindings {
    */
   initialSources?: Record<string, InferenceSource[]>;
   /**
+   * Bootstrap credential material for the deployment's tools, decrypted
+   * hub-side and delivered on the deploy frame so it is resident before any
+   * step runs. Seeds the mutable `credentialMaterialRef` the gated capability
+   * reads. Absent when the deployment binds no credentials; a later
+   * `credentials-updated` control frame refreshes it on rotation.
+   */
+  initialCredentialMaterial?: CredentialDelivery;
+  /**
    * Optional override for the child's Ed25519 keypair factory. The
    * child mints a fresh keypair at startup, holds the private half
    * in its own address space, signs every upstream control frame
@@ -504,6 +524,9 @@ export async function runWorkflowChild(
   };
   const sourcesRef: SourcesSnapshotRef = {
     current: opts.bindings.initialSources ?? {},
+  };
+  const credentialMaterialRef: CredentialMaterialRef = {
+    current: opts.bindings.initialCredentialMaterial ?? null,
   };
   const directors = opts.bindings.directors ?? createDefaultDirectorRegistry();
   const clock = opts.bindings.clock ?? defaultClock;
@@ -693,6 +716,7 @@ export async function runWorkflowChild(
           runsInFlight,
           warmCache,
           sourcesRef,
+          credentialMaterialRef,
           ...(opts.substrateWriteBridge !== undefined
             ? { substrateWriteBridge: opts.substrateWriteBridge }
             : {}),
@@ -767,6 +791,7 @@ async function handleControlPayload(
     runsInFlight: Map<string, WorkflowRun>;
     warmCache: WarmAgentCache | undefined;
     sourcesRef: SourcesSnapshotRef;
+    credentialMaterialRef: CredentialMaterialRef;
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
   },
@@ -888,6 +913,15 @@ async function handleControlPayload(
         }
       }
       ctx.credentialsRef.current = snapshot;
+      return false;
+    }
+    case "credentials-updated": {
+      // Replace the in-memory credential material wholesale. A revoked
+      // credential arrives by omission -- its material entry is absent from
+      // the delivery -- so the swap evicts it. Atomic whole-object assignment,
+      // so a concurrent reader never observes a torn cell. The secret stays on
+      // this ref only; nothing here copies it into a snapshot, event, or state.
+      ctx.credentialMaterialRef.current = payload.data.delivery;
       return false;
     }
     case "signal.deliver": {
