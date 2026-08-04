@@ -1,8 +1,18 @@
 import path from "node:path";
-import fs from "node:fs/promises";
 import { detectResponseKind } from "@intx/types/content-type";
-import type { Capability, CapabilityIntent } from "./catalog";
-import { buildManifest } from "./manifest";
+import {
+  adapterForCatalogProvider,
+  baseURLForCatalogProvider,
+  writeCaptureManifest,
+  type Capability,
+  type CapabilityIntent,
+  type CaptureManifest,
+} from "./catalog";
+import {
+  extractDispatches,
+  writeDispatches,
+  type ReconstructedDispatch,
+} from "./dispatch-reconstruction";
 import type { CaptureStep, CapturedResponse, ProviderPlugin } from "./plugin";
 import {
   writeCapture,
@@ -30,16 +40,8 @@ export interface RunCaptureOpts {
   fetch?: FetchLike;
 }
 
-const REASONING_TRACE_CAPABILITY_PREFIXES = [
-  "reasoning-content",
-  "redacted-thinking",
-] as const;
-
-function shouldEmitReasoningTrace(capability: Capability): boolean {
-  for (const prefix of REASONING_TRACE_CAPABILITY_PREFIXES) {
-    if (capability.startsWith(prefix)) return true;
-  }
-  return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function headersToObject(headers: Headers): Record<string, string> {
@@ -56,6 +58,8 @@ const defaultFetch: FetchLike = (input, init) =>
     headers: init.headers,
     body: init.body,
   });
+
+const defaultNow = (): Date => new Date();
 
 function mergeHeaders(
   defaults: Record<string, string>,
@@ -116,15 +120,11 @@ function buildRequestForStep(
 
 async function captureStep(args: {
   step: CaptureStep;
-  outDir: string;
+  exchangeDir: string;
   plugin: ProviderPlugin;
-  capability: Capability;
   doFetch: FetchLike;
 }): Promise<CapturedResponse> {
-  const { step, outDir, plugin, capability, doFetch } = args;
-
-  const stepDir =
-    step.subdir === null ? outDir : path.join(outDir, step.subdir);
+  const { step, exchangeDir, plugin, doFetch } = args;
 
   const authHeaders = plugin.buildAuthHeaders();
   const {
@@ -146,11 +146,11 @@ async function captureStep(args: {
   let captured: ResponseBody;
   let parsedForGenerator: unknown | null;
   let bytesForGenerator: Uint8Array | null;
-  // Read the body as raw bytes regardless of kind so the capture
-  // can write them verbatim. For JSON responses we also parse for
-  // the generator's reasoning-trace extraction path, but the bytes
-  // we write to disk are the original network bytes (not a
-  // re-serialised pretty-print of the parsed value).
+  // Read the body as raw bytes regardless of kind so the capture writes them
+  // verbatim. For a JSON response we also parse the body: a multi-turn
+  // iterator consumes the parsed turn's response (via CapturedResponse.parsed)
+  // to build the next turn's request. The bytes written to disk are the
+  // original network bytes, not a re-serialised parsed value.
   const buf = await response.arrayBuffer();
   const bytes = new Uint8Array(buf);
   if (kind === "sse") {
@@ -174,21 +174,7 @@ async function captureStep(args: {
     redactResponseHeaders: plugin.redactResponseHeaders,
   };
 
-  await writeCapture(stepDir, captureInput);
-
-  if (
-    plugin.extractReasoningTrace !== undefined &&
-    shouldEmitReasoningTrace(capability) &&
-    parsedForGenerator !== null
-  ) {
-    const trace = plugin.extractReasoningTrace(parsedForGenerator);
-    if (trace !== null) {
-      await fs.writeFile(
-        path.join(stepDir, "reasoning-trace.json"),
-        `${JSON.stringify(trace, null, 2)}\n`,
-      );
-    }
-  }
+  await writeCapture(exchangeDir, captureInput);
 
   return {
     status: response.status,
@@ -201,42 +187,83 @@ async function captureStep(args: {
 export async function runCapture(opts: RunCaptureOpts): Promise<void> {
   const { plugin, model, capability, intent, outDir } = opts;
   const doFetch = opts.fetch ?? defaultFetch;
+  const now = opts.now ?? defaultNow;
+
+  const adapterProvider = adapterForCatalogProvider(plugin.name);
+  if (adapterProvider === undefined) {
+    throw new Error(
+      `runCapture: no adapter mapping for provider ${JSON.stringify(plugin.name)}`,
+    );
+  }
+  const baseURL = baseURLForCatalogProvider(plugin.name);
+  if (baseURL === undefined) {
+    throw new Error(
+      `runCapture: no base URL configured for provider ${JSON.stringify(plugin.name)}`,
+    );
+  }
 
   const iterator = plugin.iterateCaptureSteps({ model, capability, intent });
 
-  let stepsExecuted = 0;
+  // Exchanges are numbered by execution order. A capability is single-turn,
+  // multi-turn, or files-api, and its iterator yields steps in transcript
+  // order, so this counter reproduces the same exchange indices the
+  // wire-to-session converter derives from leaf ordering. The final JSON
+  // request holds the whole transcript, so its body is where tool dispatches
+  // are reconstructed from.
+  let exchangeIndex = 0;
+  let firstStepURL: string | undefined;
+  let finalRequestBody: unknown;
   let iterResult = iterator.next();
   while (!iterResult.done) {
+    const step = iterResult.value;
+    if (firstStepURL === undefined) firstStepURL = step.url;
+    if (step.kind === "json") finalRequestBody = step.body;
     const captured = await captureStep({
-      step: iterResult.value,
-      outDir,
+      step,
+      exchangeDir: path.join(outDir, "exchanges", String(exchangeIndex)),
       plugin,
-      capability,
       doFetch,
     });
-    stepsExecuted += 1;
+    exchangeIndex += 1;
     iterResult = iterator.next(captured);
   }
 
-  if (stepsExecuted === 0) {
+  if (exchangeIndex === 0 || firstStepURL === undefined) {
     throw new Error(
       `plug-in ${plugin.name} produced no capture steps for ${model}/${capability}`,
     );
   }
 
-  const manifestOpts: Parameters<typeof buildManifest>[0] = {
-    provider: plugin.name,
-    model,
+  // The recorded base URL must be the endpoint the rig actually dialed. The
+  // per-brand map supplies the canonical form (with any path prefix); assert
+  // its origin matches the dialed URL so a stale map or a moved endpoint fails
+  // loudly rather than recording a base URL that was never hit.
+  const dialedOrigin = new URL(firstStepURL).origin;
+  const recordedOrigin = new URL(baseURL).origin;
+  if (dialedOrigin !== recordedOrigin) {
+    throw new Error(
+      `runCapture: provider ${JSON.stringify(plugin.name)} dialed ${dialedOrigin} ` +
+        `but its recorded base URL origin is ${recordedOrigin}`,
+    );
+  }
+
+  let dispatches: ReconstructedDispatch[] = [];
+  if (finalRequestBody !== undefined) {
+    if (!isRecord(finalRequestBody)) {
+      throw new Error(
+        `runCapture: the final request body for ${plugin.name} ${model}/${capability} is not a request object`,
+      );
+    }
+    dispatches = extractDispatches(adapterProvider, finalRequestBody);
+  }
+  await writeDispatches(outDir, dispatches);
+
+  const manifest: CaptureManifest = {
+    schemaVersion: "2",
+    source: { provider: adapterProvider, model, baseURL },
+    origin: "live",
+    capturedAt: now().toISOString(),
     capability,
   };
-  if (opts.now !== undefined) {
-    manifestOpts.now = opts.now;
-  }
-  const manifest = buildManifest(manifestOpts);
-
-  await fs.mkdir(outDir, { recursive: true });
-  await fs.writeFile(
-    path.join(outDir, "manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-  );
+  await writeCaptureManifest(outDir, manifest);
 }

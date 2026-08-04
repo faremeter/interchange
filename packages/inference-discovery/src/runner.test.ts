@@ -8,6 +8,13 @@ import { runCapture, type FetchLike } from "./runner";
 
 const INTENT: CapabilityIntent = { prompt: "hi" };
 
+// The rig resolves a provider's adapter name and base URL from the catalog and
+// asserts the dialed origin matches, so a unit plug-in uses a real catalog
+// brand and dials that brand's endpoint. `anthropic` maps to the `anthropic`
+// adapter and `https://api.anthropic.com`.
+const BRAND = "anthropic";
+const BASE = "https://api.anthropic.com";
+
 function* singleStepIterator(opts: {
   model: string;
   capability: string;
@@ -16,14 +23,16 @@ function* singleStepIterator(opts: {
   yield {
     kind: "json",
     subdir: null,
-    url: `https://example.test/${opts.model}/${opts.capability}`,
-    body: { prompt: opts.intent.prompt },
+    url: `${BASE}/v1/messages`,
+    // A request body carries a messages array; the rig reconstructs tool
+    // dispatches from the final request, and the extractor requires it.
+    body: { model: opts.model, messages: [], prompt: opts.intent.prompt },
   };
 }
 
 function makePlugin(overrides: Partial<ProviderPlugin> = {}): ProviderPlugin {
   return {
-    name: "test-provider",
+    name: BRAND,
     models: ["test-model"],
     redactRequestHeaders: ["x-api-key"],
     redactResponseHeaders: [],
@@ -41,6 +50,10 @@ function bodyToString(body: string | Uint8Array): string {
   return typeof body === "string" ? body : new TextDecoder().decode(body);
 }
 
+async function readJSON(file: string): Promise<unknown> {
+  return JSON.parse(await fs.readFile(file, "utf8"));
+}
+
 describe("runCapture", () => {
   let dir: string;
 
@@ -52,7 +65,7 @@ describe("runCapture", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  test("captures a JSON response into the expected files", async () => {
+  test("captures a JSON response into an exchange and writes session.json", async () => {
     let observedURL = "";
     let observedHeaders: Record<string, string> = {};
     let observedBody: string | Uint8Array = "";
@@ -77,40 +90,49 @@ describe("runCapture", () => {
       fetch: stubFetch,
     });
 
-    expect(observedURL).toBe("https://example.test/test-model/plain-text");
+    expect(observedURL).toBe(`${BASE}/v1/messages`);
     expect(observedHeaders["Content-Type"]).toBe("application/json");
     expect(observedHeaders["X-Api-Key"]).toBe("secret-key");
-    expect(JSON.parse(bodyToString(observedBody))).toEqual({ prompt: "hi" });
+    expect(JSON.parse(bodyToString(observedBody))).toEqual({
+      model: "test-model",
+      messages: [],
+      prompt: "hi",
+    });
 
-    const entries = (await fs.readdir(dir)).sort();
-    expect(entries).toEqual([
-      "manifest.json",
+    const rootEntries = (await fs.readdir(dir)).sort();
+    expect(rootEntries).toEqual(["exchanges", "session.json"]);
+
+    const exchangeEntries = (
+      await fs.readdir(path.join(dir, "exchanges", "0"))
+    ).sort();
+    expect(exchangeEntries).toEqual([
       "request-headers.json",
       "request.json",
       "response-headers.json",
       "response.json",
     ]);
 
-    const responseBody = JSON.parse(
-      await fs.readFile(path.join(dir, "response.json"), "utf8"),
-    );
-    expect(responseBody).toEqual({ reply: "hello" });
+    expect(
+      await readJSON(path.join(dir, "exchanges", "0", "response.json")),
+    ).toEqual({ reply: "hello" });
 
-    const reqHeaders = JSON.parse(
-      await fs.readFile(path.join(dir, "request-headers.json"), "utf8"),
-    );
-    expect(reqHeaders["X-Api-Key"]).toBe("<REDACTED>");
-    expect(reqHeaders["Content-Type"]).toBe("application/json");
+    expect(
+      await readJSON(path.join(dir, "exchanges", "0", "request-headers.json")),
+    ).toMatchObject({
+      "X-Api-Key": "<REDACTED>",
+      "Content-Type": "application/json",
+    });
 
-    const manifest = JSON.parse(
-      await fs.readFile(path.join(dir, "manifest.json"), "utf8"),
-    );
-    expect(manifest).toEqual({
-      provider: "test-provider",
-      model: "test-model",
-      capability: "plain-text",
+    expect(await readJSON(path.join(dir, "session.json"))).toEqual({
+      schemaVersion: "2",
+      source: {
+        provider: "anthropic",
+        model: "test-model",
+        baseURL: "https://api.anthropic.com",
+      },
+      origin: "live",
       capturedAt: "2026-05-22T00:00:00.000Z",
-      schemaVersion: "1",
+      capability: "plain-text",
     });
   });
 
@@ -132,11 +154,14 @@ describe("runCapture", () => {
       fetch: stubFetch,
     });
 
-    const entries = (await fs.readdir(dir)).sort();
-    expect(entries).toContain("response.sse");
-    expect(entries).not.toContain("response.json");
+    const exchangeEntries = await fs.readdir(path.join(dir, "exchanges", "0"));
+    expect(exchangeEntries).toContain("response.sse");
+    expect(exchangeEntries).not.toContain("response.json");
 
-    const written = await fs.readFile(path.join(dir, "response.sse"), "utf8");
+    const written = await fs.readFile(
+      path.join(dir, "exchanges", "0", "response.sse"),
+      "utf8",
+    );
     expect(written).toBe(sseBody);
   });
 
@@ -159,120 +184,7 @@ describe("runCapture", () => {
     ).rejects.toThrow(/text\/plain/);
   });
 
-  test("invokes extractReasoningTrace for reasoning-content captures and writes the trace", async () => {
-    let invoked = false;
-    let payload: unknown = null;
-    const plugin = makePlugin({
-      extractReasoningTrace: (parsed) => {
-        invoked = true;
-        payload = parsed;
-        return { fieldPath: "x", text: "thoughts" };
-      },
-    });
-    const stubFetch: FetchLike = async () =>
-      new Response(JSON.stringify({ reasoning: "step", final: "answer" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-
-    await runCapture({
-      plugin,
-      model: "test-model",
-      capability: "reasoning-content",
-      intent: INTENT,
-      outDir: dir,
-      fetch: stubFetch,
-    });
-
-    expect(invoked).toBe(true);
-    expect(payload).toEqual({ reasoning: "step", final: "answer" });
-
-    const trace = JSON.parse(
-      await fs.readFile(path.join(dir, "reasoning-trace.json"), "utf8"),
-    );
-    expect(trace).toEqual({ fieldPath: "x", text: "thoughts" });
-  });
-
-  test("invokes extractReasoningTrace for redacted-thinking captures and writes the trace", async () => {
-    let invoked = false;
-    const plugin = makePlugin({
-      extractReasoningTrace: () => {
-        invoked = true;
-        return { fieldPath: "content[0].data", text: "<redacted>" };
-      },
-    });
-    const stubFetch: FetchLike = async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-
-    await runCapture({
-      plugin,
-      model: "test-model",
-      capability: "redacted-thinking",
-      intent: INTENT,
-      outDir: dir,
-      fetch: stubFetch,
-    });
-
-    expect(invoked).toBe(true);
-    const trace = JSON.parse(
-      await fs.readFile(path.join(dir, "reasoning-trace.json"), "utf8"),
-    );
-    expect(trace).toEqual({ fieldPath: "content[0].data", text: "<redacted>" });
-  });
-
-  test("does not write reasoning-trace.json when extractReasoningTrace returns null", async () => {
-    const plugin = makePlugin({
-      extractReasoningTrace: () => null,
-    });
-    const stubFetch: FetchLike = async () =>
-      new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-
-    await runCapture({
-      plugin,
-      model: "test-model",
-      capability: "reasoning-content",
-      intent: INTENT,
-      outDir: dir,
-      fetch: stubFetch,
-    });
-
-    const entries = await fs.readdir(dir);
-    expect(entries).not.toContain("reasoning-trace.json");
-  });
-
-  test("does not invoke extractReasoningTrace for non-reasoning captures", async () => {
-    let invoked = false;
-    const plugin = makePlugin({
-      extractReasoningTrace: () => {
-        invoked = true;
-        return null;
-      },
-    });
-    const stubFetch: FetchLike = async () =>
-      new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-
-    await runCapture({
-      plugin,
-      model: "test-model",
-      capability: "plain-text",
-      intent: INTENT,
-      outDir: dir,
-      fetch: stubFetch,
-    });
-
-    expect(invoked).toBe(false);
-  });
-
-  test("walks all steps of a multi-step generator and writes them into subdirs", async () => {
+  test("walks all steps of a multi-step generator into numbered exchanges", async () => {
     let fetchCalls = 0;
     const observedURLs: string[] = [];
     const observedBodies: unknown[] = [];
@@ -285,14 +197,14 @@ describe("runCapture", () => {
       const first = yield {
         kind: "json",
         subdir: "turn-1",
-        url: `https://example.test/${opts.model}/${opts.capability}/turn-1`,
-        body: { prompt: opts.intent.prompt },
+        url: `${BASE}/v1/messages`,
+        body: { model: opts.model, messages: [], prompt: opts.intent.prompt },
       };
       yield {
         kind: "json",
         subdir: "turn-2",
-        url: `https://example.test/${opts.model}/${opts.capability}/turn-2`,
-        body: { prior: first.parsed, prompt: "follow-up" },
+        url: `${BASE}/v1/messages`,
+        body: { model: opts.model, messages: [], prior: first.parsed },
       };
     }
 
@@ -314,41 +226,37 @@ describe("runCapture", () => {
       capability: "function-calling-multi-turn",
       intent: INTENT,
       outDir: dir,
+      now: () => new Date("2026-05-22T00:00:00Z"),
       fetch: stubFetch,
     });
 
     expect(fetchCalls).toBe(2);
     expect(observedURLs).toEqual([
-      "https://example.test/test-model/function-calling-multi-turn/turn-1",
-      "https://example.test/test-model/function-calling-multi-turn/turn-2",
+      `${BASE}/v1/messages`,
+      `${BASE}/v1/messages`,
     ]);
     expect(observedBodies[1]).toEqual({
+      model: "test-model",
+      messages: [],
       prior: { step: 1 },
-      prompt: "follow-up",
     });
 
-    const turn1Entries = (await fs.readdir(path.join(dir, "turn-1"))).sort();
-    expect(turn1Entries).toEqual([
+    const exchange0 = (
+      await fs.readdir(path.join(dir, "exchanges", "0"))
+    ).sort();
+    expect(exchange0).toEqual([
       "request-headers.json",
       "request.json",
       "response-headers.json",
       "response.json",
     ]);
-    const turn2Body = JSON.parse(
-      await fs.readFile(path.join(dir, "turn-2", "response.json"), "utf8"),
-    );
-    expect(turn2Body).toEqual({ step: 2 });
+    expect(
+      await readJSON(path.join(dir, "exchanges", "1", "response.json")),
+    ).toEqual({ step: 2 });
 
-    const rootEntries = (await fs.readdir(dir)).sort();
-    expect(rootEntries).toContain("manifest.json");
-    const manifest = JSON.parse(
-      await fs.readFile(path.join(dir, "manifest.json"), "utf8"),
-    );
-    expect(manifest).toMatchObject({
-      provider: "test-provider",
-      model: "test-model",
+    expect(await readJSON(path.join(dir, "session.json"))).toMatchObject({
+      schemaVersion: "2",
       capability: "function-calling-multi-turn",
-      schemaVersion: "1",
     });
   });
 
@@ -361,7 +269,7 @@ describe("runCapture", () => {
       yield {
         kind: "raw",
         subdir: "upload",
-        url: "https://example.test/upload",
+        url: `${BASE}/v1/files`,
         method: "POST",
         contentType: "application/pdf",
         headers: { "X-Upload-Protocol": "raw" },
@@ -385,6 +293,7 @@ describe("runCapture", () => {
       capability: "files-api-reference",
       intent: INTENT,
       outDir: dir,
+      now: () => new Date("2026-05-22T00:00:00Z"),
       fetch: stubFetch,
     });
 
@@ -397,7 +306,9 @@ describe("runCapture", () => {
     expect(observedBody).toBeInstanceOf(Uint8Array);
     expect(Array.from(observedBody)).toEqual(Array.from(payload));
 
-    const uploadEntries = (await fs.readdir(path.join(dir, "upload"))).sort();
+    const uploadEntries = (
+      await fs.readdir(path.join(dir, "exchanges", "0"))
+    ).sort();
     expect(uploadEntries).toEqual([
       "request-headers.json",
       "request.bin",
@@ -405,7 +316,7 @@ describe("runCapture", () => {
       "response.json",
     ]);
     const writtenBytes = await fs.readFile(
-      path.join(dir, "upload", "request.bin"),
+      path.join(dir, "exchanges", "0", "request.bin"),
     );
     expect(Array.from(writtenBytes)).toEqual(Array.from(payload));
   });
@@ -419,9 +330,9 @@ describe("runCapture", () => {
       yield {
         kind: "json",
         subdir: null,
-        url: "https://example.test/collide",
+        url: `${BASE}/v1/messages`,
         headers: { "x-api-key": "step-override" },
-        body: {},
+        body: { messages: [] },
       };
     }
     const plugin = makePlugin({ iterateCaptureSteps: collidingIterator });
@@ -454,9 +365,9 @@ describe("runCapture", () => {
       yield {
         kind: "json",
         subdir: null,
-        url: "https://example.test/override",
+        url: `${BASE}/v1/messages`,
         headers: { "Content-Type": "application/x-overridden+json" },
-        body: { x: 1 },
+        body: { messages: [] },
       };
     }
     const plugin = makePlugin({ iterateCaptureSteps: overrideIterator });
@@ -504,5 +415,57 @@ describe("runCapture", () => {
         fetch: stubFetch,
       }),
     ).rejects.toThrow(/no capture steps/);
+  });
+
+  test("throws when the provider has no catalog adapter mapping", async () => {
+    const plugin = makePlugin({ name: "not-a-catalog-brand" });
+    const stubFetch: FetchLike = async () =>
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    await expect(
+      runCapture({
+        plugin,
+        model: "test-model",
+        capability: "plain-text",
+        intent: INTENT,
+        outDir: dir,
+        fetch: stubFetch,
+      }),
+    ).rejects.toThrow(/no adapter mapping/);
+  });
+
+  test("throws when the dialed origin differs from the recorded base URL", async () => {
+    function* offBrandIterator(): Generator<
+      CaptureStep,
+      void,
+      CapturedResponse
+    > {
+      yield {
+        kind: "json",
+        subdir: null,
+        url: "https://evil.test/v1/messages",
+        body: { messages: [] },
+      };
+    }
+    const plugin = makePlugin({ iterateCaptureSteps: offBrandIterator });
+    const stubFetch: FetchLike = async () =>
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    await expect(
+      runCapture({
+        plugin,
+        model: "test-model",
+        capability: "plain-text",
+        intent: INTENT,
+        outDir: dir,
+        fetch: stubFetch,
+      }),
+    ).rejects.toThrow(/dialed https:\/\/evil\.test/);
   });
 });
