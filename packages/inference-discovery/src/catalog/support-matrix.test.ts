@@ -6,6 +6,7 @@ import {
   STRUCTURED_OUTPUT_CAPABILITIES,
   assertNotesDiscipline,
   getFixtureDir,
+  getSessionDir,
 } from "./support-matrix";
 
 describe("SUPPORT_MATRIX validation", () => {
@@ -166,5 +167,48 @@ describe("getFixtureDir", () => {
       outcome: "captured",
     };
     expect(() => getFixtureDir(entry)).toThrow(/no fixture root/);
+  });
+});
+
+describe("getSessionDir", () => {
+  test("composes the anthropic package sessions path for a captured entry", () => {
+    const entry = SUPPORT_MATRIX.find(
+      (e) => e.provider === "anthropic" && e.outcome === "captured",
+    );
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    expect(getSessionDir(entry)).toBe(
+      `packages/inference-discovery-anthropic/sessions/anthropic/${entry.model}/${entry.capability}`,
+    );
+  });
+
+  test("composes the openai package sessions path for a captured opencode-zen entry", () => {
+    const entry = SUPPORT_MATRIX.find(
+      (e) => e.provider === "opencode-zen" && e.outcome === "captured",
+    );
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    expect(getSessionDir(entry)).toBe(
+      `packages/inference-discovery-openai/sessions/opencode-zen/${entry.model}/${entry.capability}`,
+    );
+  });
+
+  test("returns null for an entry without a fixture", () => {
+    const noFixture = SUPPORT_MATRIX.find(
+      (e) => e.outcome !== "captured" && e.outcome !== "misled",
+    );
+    expect(noFixture).toBeDefined();
+    if (noFixture === undefined) return;
+    expect(getSessionDir(noFixture)).toBeNull();
+  });
+
+  test("throws for a fixture-bearing entry whose provider has no root", () => {
+    const entry: SupportEntry = {
+      provider: "made-up-provider",
+      model: "some-model",
+      capability: "plain-text",
+      outcome: "captured",
+    };
+    expect(() => getSessionDir(entry)).toThrow(/no fixture root/);
   });
 });

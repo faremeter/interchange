@@ -5,8 +5,8 @@ import { type } from "arktype";
 import {
   CAPABILITIES,
   SUPPORT_MATRIX,
-  FixtureManifest,
-  getFixtureDir,
+  CaptureManifest,
+  getSessionDir,
 } from "@intx/inference-discovery/catalog";
 
 const repoRoot = join(import.meta.dir, "..", "..", "..");
@@ -31,41 +31,44 @@ describe("inference discovery catalog contract", () => {
     expect(new Set(CAPABILITIES).size).toBe(CAPABILITIES.length);
   });
 
-  test("every fixture-bearing entry resolves on disk and its manifest validates", () => {
+  test("every fixture-bearing entry resolves a session whose manifest is authoritative", () => {
     const fixtureBearing = SUPPORT_MATRIX.filter(
       (e) => e.outcome === "captured" || e.outcome === "misled",
     );
     expect(fixtureBearing.length).toBeGreaterThan(0);
 
     for (const entry of fixtureBearing) {
-      const rel = getFixtureDir(entry);
+      const rel = getSessionDir(entry);
       expect(rel).not.toBeNull();
       if (rel === null) continue;
 
       const abs = join(repoRoot, rel);
       expect(statSync(abs).isDirectory()).toBe(true);
+      expect(existsSync(join(abs, "session.json"))).toBe(true);
       expect(hasCapturedRequest(abs)).toBe(true);
-      expect(existsSync(join(abs, "manifest.json"))).toBe(true);
 
       const raw: unknown = JSON.parse(
-        readFileSync(join(abs, "manifest.json"), "utf8"),
+        readFileSync(join(abs, "session.json"), "utf8"),
       );
-      const parsed = FixtureManifest(raw);
+      const parsed = CaptureManifest(raw);
       expect(parsed instanceof type.errors).toBe(false);
-      expect(parsed).toMatchObject({
-        provider: entry.provider,
-        model: entry.model,
-        capability: entry.capability,
-      });
+      if (parsed instanceof type.errors) continue;
+
+      // The session manifest is authoritative for the capability and model
+      // the directory holds; cross-check it against the matrix cell. The
+      // brand provider is not in the manifest (source.provider is the
+      // adapter name), so it stays cross-checked by the resolved path.
+      expect(parsed.capability).toBe(entry.capability);
+      expect(parsed.source.model).toBe(entry.model);
     }
   });
 
-  test("getFixtureDir returns null for entries without fixtures", () => {
+  test("getSessionDir returns null for entries without fixtures", () => {
     const noFixture = SUPPORT_MATRIX.filter(
       (e) => e.outcome !== "captured" && e.outcome !== "misled",
     );
     for (const entry of noFixture) {
-      expect(getFixtureDir(entry)).toBeNull();
+      expect(getSessionDir(entry)).toBeNull();
     }
   });
 
