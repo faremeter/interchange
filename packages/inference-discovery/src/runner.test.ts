@@ -22,7 +22,6 @@ function* singleStepIterator(opts: {
 }): Generator<CaptureStep, void, CapturedResponse> {
   yield {
     kind: "json",
-    subdir: null,
     url: `${BASE}/v1/messages`,
     // A request body carries a messages array; the rig reconstructs tool
     // dispatches from the final request, and the extractor requires it.
@@ -196,13 +195,11 @@ describe("runCapture", () => {
     }): Generator<CaptureStep, void, CapturedResponse> {
       const first = yield {
         kind: "json",
-        subdir: "turn-1",
         url: `${BASE}/v1/messages`,
         body: { model: opts.model, messages: [], prompt: opts.intent.prompt },
       };
       yield {
         kind: "json",
-        subdir: "turn-2",
         url: `${BASE}/v1/messages`,
         body: { model: opts.model, messages: [], prior: first.parsed },
       };
@@ -268,7 +265,6 @@ describe("runCapture", () => {
     function* rawIterator(): Generator<CaptureStep, void, CapturedResponse> {
       yield {
         kind: "raw",
-        subdir: "upload",
         url: `${BASE}/v1/files`,
         method: "POST",
         contentType: "application/pdf",
@@ -329,7 +325,6 @@ describe("runCapture", () => {
     > {
       yield {
         kind: "json",
-        subdir: null,
         url: `${BASE}/v1/messages`,
         headers: { "x-api-key": "step-override" },
         body: { messages: [] },
@@ -364,7 +359,6 @@ describe("runCapture", () => {
     > {
       yield {
         kind: "json",
-        subdir: null,
         url: `${BASE}/v1/messages`,
         headers: { "Content-Type": "application/x-overridden+json" },
         body: { messages: [] },
@@ -445,7 +439,6 @@ describe("runCapture", () => {
     > {
       yield {
         kind: "json",
-        subdir: null,
         url: "https://evil.test/v1/messages",
         body: { messages: [] },
       };

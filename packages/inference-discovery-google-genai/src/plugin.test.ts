@@ -641,9 +641,6 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
         if (step1 === undefined || step2 === undefined) {
           throw new Error("expected exactly two steps for multi-turn");
         }
-        expect(step1.subdir).toBe("turn-1");
-        expect(step2.subdir).toBe("turn-2");
-
         const expectedURL = buildEndpointURL({
           model: entry.model,
           capability: entry.capability,
@@ -679,8 +676,6 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
         if (uploadStep === undefined || generateStep === undefined) {
           throw new Error("expected exactly two steps for files-api");
         }
-        expect(uploadStep.subdir).toBe("upload");
-        expect(generateStep.subdir).toBe("generate");
         expect(uploadStep.url).toBe(
           "https://generativelanguage.googleapis.com/upload/v1beta/files",
         );
@@ -727,7 +722,6 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
       if (only === undefined) {
         throw new Error("expected exactly one step for single-step capability");
       }
-      expect(only.subdir).toBeNull();
       expect(only.url).toBe(
         buildEndpointURL({
           model: entry.model,

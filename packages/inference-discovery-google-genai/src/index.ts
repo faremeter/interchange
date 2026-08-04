@@ -263,7 +263,6 @@ export function* iterateCaptureSteps(
     const upload = buildUploadDescriptor(intent);
     const uploadResponse = yield {
       kind: "raw",
-      subdir: "upload",
       url: upload.url,
       method: "POST",
       contentType: upload.mimeType,
@@ -282,7 +281,6 @@ export function* iterateCaptureSteps(
     });
     yield {
       kind: "json",
-      subdir: "generate",
       url: buildEndpointURL({ model, capability }),
       body: generateBody,
     };
@@ -294,7 +292,6 @@ export function* iterateCaptureSteps(
     const url = buildEndpointURL({ model, capability });
     const turn1Response = yield {
       kind: "json",
-      subdir: "turn-1",
       url,
       body: turn1Body,
     };
@@ -309,7 +306,6 @@ export function* iterateCaptureSteps(
     });
     yield {
       kind: "json",
-      subdir: "turn-2",
       url,
       body: turn2Body,
     };
@@ -318,7 +314,6 @@ export function* iterateCaptureSteps(
 
   yield {
     kind: "json",
-    subdir: null,
     url: buildEndpointURL({ model, capability }),
     body: buildRequestBody({ model, capability, intent }),
   };

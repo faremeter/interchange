@@ -216,8 +216,6 @@ function assertStructuralMatch(opts: {
     if (step1 === undefined || step2 === undefined) {
       throw new Error("expected two steps for multi-turn");
     }
-    expect(step1.subdir).toBe("turn-1");
-    expect(step2.subdir).toBe("turn-2");
     expect(step1.url).toBe(chatUrl);
     expect(step2.url).toBe(chatUrl);
 
@@ -260,7 +258,6 @@ function assertStructuralMatch(opts: {
   expect(steps.length).toBe(1);
   const [only] = steps;
   if (only === undefined) throw new Error("expected one step");
-  expect(only.subdir).toBeNull();
   expect(only.url).toBe(chatUrl);
 
   const capturedSchema = extractSchema(pruneEphemeral(captured));
