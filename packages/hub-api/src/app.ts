@@ -4,6 +4,9 @@ import { openAPIRouteHandler } from "hono-openapi";
 
 import { honoLogger, type HonoContext } from "@intx/log/hono";
 import { timeWindowEvaluator } from "@intx/authz";
+import { createNoopCredentialCipher } from "@intx/crypto";
+import { getLogger } from "@intx/log";
+import type { CredentialCipher } from "@intx/types";
 import {
   type DB,
   type ApprovalStore,
@@ -65,6 +68,25 @@ import {
 } from "./routes/agent-state-git";
 import { createGitTokenAuth } from "./middleware/git-token-auth";
 
+const log = getLogger(["hub", "app"]);
+
+/**
+ * Resolve the credential cipher, falling back to the noop cipher when none is
+ * provided. The fallback is expected in tests and local development; it warns so
+ * a production deployment that forgot to configure a cipher is not silently
+ * storing secrets unencrypted. The composition root (`apps/hub`) always supplies
+ * a real env-key cipher, gated by a required `CREDENTIAL_ENCRYPTION_KEY` at boot.
+ */
+function resolveCredentialCipher(
+  provided: CredentialCipher | undefined,
+): CredentialCipher {
+  if (provided) return provided;
+  log.warn(
+    "No credentialCipher configured; credential secrets will NOT be encrypted at rest. Expected in tests/local dev but MUST NOT happen in production.",
+  );
+  return createNoopCredentialCipher();
+}
+
 export type CreateHubContextMiddlewareDeps = {
   getSession: GetSession;
 };
@@ -85,6 +107,13 @@ export type MountHubRoutesDeps = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   eventCollectors: EventCollectorRegistry;
+  /**
+   * Encrypts credential secrets at rest on the credential/oauth write paths.
+   * Optional: when omitted, a noop cipher is used and a warning is logged.
+   * Production supplies a real cipher; tests that do not exercise credential
+   * secrets can omit it.
+   */
+  credentialCipher?: CredentialCipher;
   grantStore?: GrantStore;
   conditionRegistry?: ConditionRegistry;
   approvalStore?: ApprovalStore;
@@ -121,6 +150,7 @@ export function mountHubRoutes(
   app: Hono<AppEnv>,
   opts: MountHubRoutesDeps,
 ): void {
+  const credentialCipher = resolveCredentialCipher(opts.credentialCipher);
   const {
     db,
     sidecarRouter,
@@ -304,11 +334,16 @@ export function mountHubRoutes(
   );
   app.route(
     "/api/tenants/:tenantId/oauth-clients",
-    createOAuthClientRoutes({ db, requireGrant }),
+    createOAuthClientRoutes({ db, requireGrant, credentialCipher }),
   );
   app.route(
     "/api/tenants/:tenantId/credentials",
-    createCredentialRoutes({ db, sidecarRouter, requireGrant }),
+    createCredentialRoutes({
+      db,
+      sidecarRouter,
+      requireGrant,
+      credentialCipher,
+    }),
   );
   app.route(
     "/api/tenants/:tenantId/offerings",
@@ -404,6 +439,13 @@ export type CreateAppOpts = {
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
   eventCollectors: EventCollectorRegistry;
+  /**
+   * Encrypts credential secrets at rest on the credential/oauth write paths.
+   * Optional: when omitted, a noop cipher is used and a warning is logged.
+   * Production supplies a real cipher; tests that do not exercise credential
+   * secrets can omit it.
+   */
+  credentialCipher?: CredentialCipher;
   grantStore?: GrantStore;
   approvalStore?: ApprovalStore;
   signalCorrelationStore?: SignalCorrelationStore;
@@ -425,6 +467,7 @@ export function createApp({
   sidecarRouter,
   sessionService,
   eventCollectors,
+  credentialCipher,
   grantStore,
   approvalStore,
   signalCorrelationStore,
@@ -451,6 +494,7 @@ export function createApp({
     sidecarRouter,
     sessionService,
     eventCollectors,
+    ...(credentialCipher ? { credentialCipher } : {}),
     assetService,
     repoStore,
     maxTarballBytes,

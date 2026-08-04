@@ -1,4 +1,6 @@
 import { createDB, createGrantStore } from "@intx/db";
+import { createEnvKeyCredentialCipher } from "@intx/crypto";
+import { hexDecode } from "@intx/types";
 import {
   createApp,
   createAuth,
@@ -45,6 +47,21 @@ const hubDataDir = process.env["HUB_DATA_DIR"];
 if (!hubDataDir) {
   throw new Error("HUB_DATA_DIR environment variable is required");
 }
+
+// Credential secrets are encrypted at rest under this operator-provided key.
+// Required at boot: a missing or wrong-length key fails loudly here rather than
+// letting the hub run and store secrets it cannot protect. 32 bytes, hex --
+// e.g. `openssl rand -hex 32`, the same shape as BETTER_AUTH_SECRET.
+const credentialEncryptionKeyHex = process.env["CREDENTIAL_ENCRYPTION_KEY"];
+if (
+  credentialEncryptionKeyHex === undefined ||
+  credentialEncryptionKeyHex.trim() === ""
+) {
+  throw new Error("CREDENTIAL_ENCRYPTION_KEY environment variable is required");
+}
+const credentialCipher = createEnvKeyCredentialCipher(
+  hexDecode(credentialEncryptionKeyHex),
+);
 
 // 10 MiB is the production cap for tool-package tarballs uploaded via
 // the package-registry PUT endpoint. The npm registry's own per-tarball
@@ -216,6 +233,7 @@ const app = createApp({
   sidecarRouter,
   sessionService,
   eventCollectors,
+  credentialCipher,
   assetService,
   repoStore: agentRepoStore.repoStore,
   maxTarballBytes: hubMaxTarballBytes,

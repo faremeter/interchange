@@ -30,3 +30,22 @@ export function createEnvKeyCredentialCipher(
     decrypt: (blob, aad) => aeadDecrypt(held, blob, aad),
   };
 }
+
+/**
+ * A noop `CredentialCipher`: it follows the interface but uses no key and does
+ * not encrypt or decrypt -- encrypt returns its input and decrypt returns the
+ * stored value unchanged. It is used when no real cipher is configured, in tests
+ * and local development. It MUST NOT be the active cipher in production: secrets
+ * would be stored unencrypted. The composition root (`apps/hub`) always supplies
+ * a real env-key cipher, gated by a required `CREDENTIAL_ENCRYPTION_KEY` at boot,
+ * and the hub logs a warning if it ever falls back to this one.
+ *
+ * Because decrypt returns the value unchanged, a value produced by a real cipher
+ * is not readable through this one -- never mix the two on the same data.
+ */
+export function createNoopCredentialCipher(): CredentialCipher {
+  return {
+    encrypt: (plaintext) => Promise.resolve(plaintext),
+    decrypt: (blob) => Promise.resolve(blob),
+  };
+}

@@ -89,18 +89,21 @@ jobs:
           cp .env.hub.example .env.hub
           secret=$(openssl rand -hex 32)
           sed -i "s/^BETTER_AUTH_SECRET=.*/BETTER_AUTH_SECRET=${secret}/" .env.hub
+          cred_key=$(openssl rand -hex 32)
+          sed -i "s/^CREDENTIAL_ENCRYPTION_KEY=.*/CREDENTIAL_ENCRYPTION_KEY=${cred_key}/" .env.hub
 
       # The DB/hub-api test harness skips only when the env files are absent, so a
       # missing file would silently drop the entire DB layer while CI stays green.
-      # Fail loudly instead: the files must exist, BETTER_AUTH_SECRET must be
-      # non-empty (else the hub tests hard-fail on requireKey), and Postgres must
-      # be reachable.
+      # Fail loudly instead: the files must exist, BETTER_AUTH_SECRET and
+      # CREDENTIAL_ENCRYPTION_KEY must be non-empty (else the spawned hub
+      # hard-fails at boot), and Postgres must be reachable.
       - name: Assert DB test env is wired
         run: |
           test -f .env
           test -f .env.migrate
           test -f .env.hub
           grep -q '^BETTER_AUTH_SECRET=.\+' .env.hub
+          grep -q '^CREDENTIAL_ENCRYPTION_KEY=.\+' .env.hub
           pg_isready -h localhost -p 5432
 
       # Pre-create the two roles db-reset assumes exist (deriving each password

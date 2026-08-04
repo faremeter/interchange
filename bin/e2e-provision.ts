@@ -52,6 +52,11 @@ async function up(): Promise<void> {
           "BETTER_AUTH_SECRET",
           ".env.hub",
         ),
+        CREDENTIAL_ENCRYPTION_KEY: requireKey(
+          hubEnv,
+          "CREDENTIAL_ENCRYPTION_KEY",
+          ".env.hub",
+        ),
       },
     };
 

@@ -1,7 +1,10 @@
 import { describe, test, expect } from "bun:test";
 import { credentialAad } from "@intx/types";
 
-import { createEnvKeyCredentialCipher } from "./credential-cipher";
+import {
+  createEnvKeyCredentialCipher,
+  createNoopCredentialCipher,
+} from "./credential-cipher";
 
 const KEY = new Uint8Array(32).fill(7);
 
@@ -33,6 +36,16 @@ describe("createEnvKeyCredentialCipher", () => {
     await expect(
       cipher.decrypt(blob, credentialAad("cred_a", "refreshSecret")),
     ).rejects.toThrow();
+  });
+
+  test("the noop cipher passes secrets through unencrypted", async () => {
+    const cipher = createNoopCredentialCipher();
+    const aad = credentialAad("cred_x", "secret");
+    const stored = await cipher.encrypt("sk-plain", aad);
+    // The noop cipher stores the value verbatim -- NOT an enc:aead ciphertext.
+    expect(stored).toBe("sk-plain");
+    expect(stored).not.toStartWith("enc:aead:");
+    expect(await cipher.decrypt(stored, aad)).toBe("sk-plain");
   });
 
   test("defensively copies the key so a later buffer mutation does not change it", async () => {

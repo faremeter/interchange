@@ -120,6 +120,7 @@ import { waitForHTTP } from "@intx/test-harness/http";
 type HarnessEnv = {
   db: DBConfig;
   betterAuthSecret: string;
+  credentialEncryptionKey: string;
 };
 
 /**
@@ -156,6 +157,11 @@ async function loadHubEnv(): Promise<HarnessEnv> {
     betterAuthSecret: requireKey(
       sharedAndHub,
       "BETTER_AUTH_SECRET",
+      ".env.hub",
+    ),
+    credentialEncryptionKey: requireKey(
+      sharedAndHub,
+      "CREDENTIAL_ENCRYPTION_KEY",
       ".env.hub",
     ),
   };
@@ -484,6 +490,7 @@ export async function startHub(
     PORT: String(port),
     HUB_DATA_DIR: hubDataDir,
     BETTER_AUTH_SECRET: hubEnv.betterAuthSecret,
+    CREDENTIAL_ENCRYPTION_KEY: hubEnv.credentialEncryptionKey,
     BETTER_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
   };
   // --conditions=intx-src resolves @intx/* to source; the spawned hub

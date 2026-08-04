@@ -29,10 +29,16 @@
     "./seed": {
       "types": "./seed.ts",
       "default": "./seed.ts"
+    },
+    "./crypto": {
+      "types": "./crypto.ts",
+      "default": "./crypto.ts"
     }
   },
   "dependencies": {
+    "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
+    "@intx/types": "workspace:*",
     "drizzle-orm": "catalog:",
     "postgres": "catalog:"
   }

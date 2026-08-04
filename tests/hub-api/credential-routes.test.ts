@@ -16,13 +16,15 @@ import {
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
-import { grant as grantTable } from "@intx/db/schema";
+import { credential, grant as grantTable } from "@intx/db/schema";
 import type { GrantRule } from "@intx/types/authz";
+import { credentialAad } from "@intx/types";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
+import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   seedPrincipal,
   seedProvider,
@@ -168,10 +170,15 @@ async function setup() {
     getSession: createMockGetSession(ACTOR_USER_ID),
     authHandler: () => new Response("", { status: 404 }),
     db: h.db,
-    grantStore: createInMemoryGrantStore([createGrant("create")]),
+    grantStore: createInMemoryGrantStore([
+      createGrant("create"),
+      createGrant("manage"),
+    ]),
     sidecarRouter: createMockSidecarRouter(),
     sessionService: createMockSessionService(),
     eventCollectors: createMockEventCollectors(),
+    // A real cipher, so the write-path encryption is exercised end to end.
+    credentialCipher: createTestCredentialCipher(),
     assetService: null,
     repoStore: null,
     maxTarballBytes: 10_000_000,
@@ -261,6 +268,105 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ),
         );
       expect(allUseGrants).toHaveLength(0);
+    });
+
+    test("stores the secret and refreshSecret encrypted at rest", async () => {
+      const app = await setup();
+      const res = await app.request(`/api/tenants/${TENANT_ID}/credentials`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providerId: PROVIDER_ID,
+          name: "enc-key",
+          type: "api_key",
+          secret: "sk-should-be-encrypted",
+          refreshSecret: "rk-should-be-encrypted",
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body: unknown = await res.json();
+      if (!isObject(body)) throw new Error("expected object body");
+      const credentialId = body["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+      // The response never carries the secret back out.
+      expect(body["secret"]).toBeUndefined();
+
+      // The raw columns hold enc:aead ciphertext, not the plaintext -- the proof
+      // that the write path never stores a secret in the clear.
+      const [row] = await h.db
+        .select()
+        .from(credential)
+        .where(eq(credential.id, credentialId));
+      if (row === undefined) throw new Error("credential row not found");
+      if (row.refreshSecret === null) {
+        throw new Error("expected an encrypted refreshSecret");
+      }
+      expect(row.secret).toStartWith("enc:aead:");
+      expect(row.secret).not.toBe("sk-should-be-encrypted");
+      expect(row.refreshSecret).toStartWith("enc:aead:");
+      expect(row.refreshSecret).not.toBe("rk-should-be-encrypted");
+
+      // And each decrypts back through the same cipher, bound to (id, column).
+      const cipher = createTestCredentialCipher();
+      expect(
+        await cipher.decrypt(row.secret, credentialAad(credentialId, "secret")),
+      ).toBe("sk-should-be-encrypted");
+      expect(
+        await cipher.decrypt(
+          row.refreshSecret,
+          credentialAad(credentialId, "refreshSecret"),
+        ),
+      ).toBe("rk-should-be-encrypted");
+    });
+
+    test("re-encrypts a rotated secret at rest on update", async () => {
+      const app = await setup();
+      const createRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: PROVIDER_ID,
+            name: "rotate-me",
+            type: "api_key",
+            secret: "sk-original",
+          }),
+        },
+      );
+      expect(createRes.status).toBe(201);
+      const created: unknown = await createRes.json();
+      if (!isObject(created)) throw new Error("expected object body");
+      const credentialId = created["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+
+      const patchRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ secret: "sk-rotated" }),
+        },
+      );
+      expect(patchRes.status).toBe(200);
+
+      // The rotated secret is stored as ciphertext of the NEW value, not the
+      // plaintext -- the update path encrypts just like the insert path.
+      const [row] = await h.db
+        .select()
+        .from(credential)
+        .where(eq(credential.id, credentialId));
+      if (row === undefined) throw new Error("credential row not found");
+      expect(row.secret).toStartWith("enc:aead:");
+      expect(row.secret).not.toBe("sk-rotated");
+      const cipher = createTestCredentialCipher();
+      expect(
+        await cipher.decrypt(row.secret, credentialAad(credentialId, "secret")),
+      ).toBe("sk-rotated");
     });
   },
 );

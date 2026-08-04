@@ -15,7 +15,9 @@ import {
   CredentialResponse,
   ErrorResponse,
   paginatedSchema,
+  credentialAad,
 } from "@intx/types";
+import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
@@ -55,12 +57,14 @@ export type CreateCredentialRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
+  credentialCipher: CredentialCipher;
 };
 
 export function createCredentialRoutes({
   db,
   sidecarRouter,
   requireGrant,
+  credentialCipher,
 }: CreateCredentialRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -204,6 +208,20 @@ export function createCredentialRoutes({
       const credentialId = generateId("credential");
       const ownerPrincipalId = body.principalId ?? null;
 
+      // Encrypt the secrets at rest, bound to this row and column so a
+      // ciphertext cannot be transplanted. refreshSecret stays null when absent.
+      const encryptedSecret = await credentialCipher.encrypt(
+        body.secret,
+        credentialAad(credentialId, "secret"),
+      );
+      const encryptedRefreshSecret =
+        body.refreshSecret === null || body.refreshSecret === undefined
+          ? null
+          : await credentialCipher.encrypt(
+              body.refreshSecret,
+              credentialAad(credentialId, "refreshSecret"),
+            );
+
       const row = await db.transaction(async (tx) => {
         const inserted = first(
           await tx
@@ -217,8 +235,8 @@ export function createCredentialRoutes({
               name: body.name,
               type: body.type,
               description: body.description ?? null,
-              secret: body.secret,
-              refreshSecret: body.refreshSecret ?? null,
+              secret: encryptedSecret,
+              refreshSecret: encryptedRefreshSecret,
               scopes: body.scopes ?? null,
               expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
               metadata: body.metadata ?? null,
@@ -378,9 +396,21 @@ export function createCredentialRoutes({
       if (body.name !== undefined) updates["name"] = body.name;
       if (body.description !== undefined)
         updates["description"] = body.description;
-      if (body.secret !== undefined) updates["secret"] = body.secret;
+      // Re-encrypt a rotated secret under the same row/column binding. A null
+      // refreshSecret clears it; a present value is encrypted.
+      if (body.secret !== undefined)
+        updates["secret"] = await credentialCipher.encrypt(
+          body.secret,
+          credentialAad(credentialId, "secret"),
+        );
       if (body.refreshSecret !== undefined)
-        updates["refreshSecret"] = body.refreshSecret;
+        updates["refreshSecret"] =
+          body.refreshSecret === null
+            ? null
+            : await credentialCipher.encrypt(
+                body.refreshSecret,
+                credentialAad(credentialId, "refreshSecret"),
+              );
       if (body.scopes !== undefined) updates["scopes"] = body.scopes;
       if (body.expiresAt !== undefined)
         updates["expiresAt"] = body.expiresAt ? new Date(body.expiresAt) : null;

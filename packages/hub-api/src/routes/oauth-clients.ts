@@ -11,7 +11,9 @@ import {
   OAuthClientResponse,
   ErrorResponse,
   paginatedSchema,
+  credentialAad,
 } from "@intx/types";
+import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
@@ -44,11 +46,13 @@ function formatOAuthClient(row: typeof oauthClient.$inferSelect) {
 export type CreateOAuthClientRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
+  credentialCipher: CredentialCipher;
 };
 
 export function createOAuthClientRoutes({
   db,
   requireGrant,
+  credentialCipher,
 }: CreateOAuthClientRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -177,16 +181,21 @@ export function createOAuthClientRoutes({
       }
 
       const now = new Date();
+      const oauthClientId = generateId("oauthClient");
+      const encryptedClientSecret = await credentialCipher.encrypt(
+        body.clientSecret,
+        credentialAad(oauthClientId, "clientSecret"),
+      );
       const row = first(
         await db
           .insert(oauthClient)
           .values({
-            id: generateId("oauthClient"),
+            id: oauthClientId,
             tenantId: tenantCtx.id,
             providerId: body.providerId,
             name: body.name,
             clientId: body.clientId,
-            clientSecret: body.clientSecret,
+            clientSecret: encryptedClientSecret,
             redirectUris: body.redirectUris ?? null,
             defaultScopes: body.defaultScopes ?? null,
             metadata: body.metadata ?? null,
@@ -275,7 +284,10 @@ export function createOAuthClientRoutes({
       if (body.name !== undefined) updates["name"] = body.name;
       if (body.clientId !== undefined) updates["clientId"] = body.clientId;
       if (body.clientSecret !== undefined)
-        updates["clientSecret"] = body.clientSecret;
+        updates["clientSecret"] = await credentialCipher.encrypt(
+          body.clientSecret,
+          credentialAad(oauthClientId, "clientSecret"),
+        );
       if (body.redirectUris !== undefined)
         updates["redirectUris"] = body.redirectUris;
       if (body.defaultScopes !== undefined)
