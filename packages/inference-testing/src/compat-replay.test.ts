@@ -97,7 +97,7 @@ describe("runCompatReplay — single-turn streaming SSE", () => {
 describe("runCompatReplay — skip behavior", () => {
   test("skips with no_adapter_registered when the catalog provider has no mapped adapter", async () => {
     // The skip path fires whenever `runCompatReplay` is invoked for
-    // a catalog provider that has no entry in `CATALOG_TO_ADAPTER`.
+    // a catalog provider that `adapterForCatalogProvider` does not map.
     // Every provider in today's catalog has an entry, so this test
     // uses a synthetic provider name that is guaranteed absent from
     // the mapping; the helper short-circuits before reading the
@@ -164,10 +164,10 @@ describe("runCompatReplayCorpus — full SUPPORT_MATRIX iteration", () => {
   // what the typed Invariant list was built for.
   //
   // Expected skip reasons:
-  //   - no_adapter_registered: catalog providers absent from
-  //     `CATALOG_TO_ADAPTER`. Every provider in today's catalog has
-  //     an entry, so this reason fires only when the catalog
-  //     gains a new provider before its adapter lands.
+  //   - no_adapter_registered: catalog providers `adapterForCatalogProvider`
+  //     does not map. Every provider in today's catalog has an entry,
+  //     so this reason fires only when the catalog gains a new provider
+  //     before its adapter lands.
   //   - non_streaming_capture: response.json-only captures (no SSE).
   //   - raw_bytes_upload: files-api `upload/` subdirs carrying request.bin.
   //   - non_captured_outcome: misled/refused/http-error/unsupported rows.

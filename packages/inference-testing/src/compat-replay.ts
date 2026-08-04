@@ -25,6 +25,7 @@ import { runInference, type Dependencies } from "@intx/inference";
 import { createDefaultDependencies } from "@intx/inference/providers";
 import {
   SUPPORT_MATRIX,
+  adapterForCatalogProvider,
   getFixtureDir,
   type SupportEntry,
 } from "@intx/inference-discovery/catalog";
@@ -35,17 +36,6 @@ import {
   type Invariant,
   type InvariantViolation,
 } from "./invariants";
-
-// Catalog provider name → registered adapter name. The catalog ("provider"
-// in SUPPORT_MATRIX) and the adapter registry ("provider" in
-// InferenceSource) use overlapping vocabularies for different concepts.
-// This map is the one place that translates from the former to the latter.
-const CATALOG_TO_ADAPTER: Record<string, string> = {
-  "opencode-zen": "openai-compatible",
-  openai: "openai-compatible",
-  anthropic: "anthropic",
-  "google-genai": "google-genai",
-};
 
 export type CompatReplaySkipReason =
   | "no_adapter_registered"
@@ -118,7 +108,7 @@ export async function runCompatReplay(
   opts: CompatReplayOpts,
 ): Promise<CompatReplayResult> {
   // 1. Adapter lookup.
-  const adapterName = CATALOG_TO_ADAPTER[opts.provider];
+  const adapterName = adapterForCatalogProvider(opts.provider);
   if (adapterName === undefined) {
     return { kind: "skipped", reason: "no_adapter_registered" };
   }
@@ -346,10 +336,10 @@ async function findCapturedRequestDirs(
  * violations) or a structured skip reason. Non-captured outcomes
  * (`misled`, `refused`, etc.) are skipped with `non_captured_outcome`;
  * providers without a registered adapter skip with
- * `no_adapter_registered`. Every provider in today's catalog has
- * an entry in `CATALOG_TO_ADAPTER`, so this reason fires only
- * when the catalog gains a new provider before its adapter
- * lands; raw-bytes upload leaves
+ * `no_adapter_registered`. Every provider in today's catalog
+ * resolves through `adapterForCatalogProvider`, so this reason
+ * fires only when the catalog gains a new provider before its
+ * adapter lands; raw-bytes upload leaves
  * (files-api `upload/`) skip with `raw_bytes_upload`; non-streaming
  * captures (response.json only) skip with `non_streaming_capture`.
  */
