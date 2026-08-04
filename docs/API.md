@@ -1346,10 +1346,11 @@ Source: packages/types/src/catalog.ts
 **thinkingTokenPrice**: Cost per thinking token as a decimal string in this row's `currency`, or null if this provider does not charge for it.
 
 ### CreateProvider
-`{ name: string, plugin: string, authorizationUrl?: string, metadata?: { [string]: unknown }, scopes?: string[], tokenUrl?: string, userInfoUrl?: string }`
+`{ name: string, plugin: string, apiBaseUrl?: string, authorizationUrl?: string, metadata?: { [string]: unknown }, scopes?: string[], tokenUrl?: string, userInfoUrl?: string }`
 Source: packages/types/src/providers.ts
 
 **plugin**: Identifier of the integration this provider drives (for example the inference backend). Used to dispatch to the matching plugin and as the prefix when forming fully-qualified model ids (`plugin:model`).
+**apiBaseUrl**: The API origin a credential from this provider authenticates to (for example https://api.github.com). A provider that backs an origin-pinned credential must set it; OAuth-login-only providers may omit it.
 **metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
 **scopes**: OAuth scopes associated with this provider integration.
 
@@ -1504,10 +1505,11 @@ Source: packages/types/src/principals.ts
 **status**: Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.
 
 ### ProviderResponse
-`{ createdAt: string, id: string, name: string, plugin: string, tenantId: string, updatedAt: string, authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`
+`{ createdAt: string, id: string, name: string, plugin: string, tenantId: string, updatedAt: string, apiBaseUrl?: string | null, authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`
 Source: packages/types/src/providers.ts
 
 **plugin**: Identifier of the integration this provider drives (for example the inference backend). Used to dispatch to the matching plugin and as the prefix when forming fully-qualified model ids (`plugin:model`).
+**apiBaseUrl**: The API origin a credential from this provider authenticates to (for example https://api.github.com). A provider that backs an origin-pinned credential must set it; OAuth-login-only providers may omit it.
 **metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
 **scopes**: OAuth scopes associated with this provider integration.
 
@@ -1587,9 +1589,10 @@ Source: packages/types/src/principals.ts
 **status**: New account state for the principal. Only `active`, `suspended`, and `deactivated` are settable; `invited` is reached only through the invitation flow.
 
 ### UpdateProvider
-`{ authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, name?: string, plugin?: string, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`
+`{ apiBaseUrl?: string | null, authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, name?: string, plugin?: string, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`
 Source: packages/types/src/providers.ts
 
+**apiBaseUrl**: The API origin a credential from this provider authenticates to (for example https://api.github.com). A provider that backs an origin-pinned credential must set it; OAuth-login-only providers may omit it.
 **metadata**: Free-form provider-specific configuration not covered by the typed fields. Not interpreted by the hub.
 **plugin**: Identifier of the integration this provider drives (for example the inference backend). Used to dispatch to the matching plugin and as the prefix when forming fully-qualified model ids (`plugin:model`).
 **scopes**: OAuth scopes associated with this provider integration.

@@ -1,0 +1,1 @@
+ALTER TABLE "provider" ADD COLUMN "api_base_url" text;

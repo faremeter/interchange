@@ -33,6 +33,7 @@ function formatProvider(row: typeof provider.$inferSelect) {
     tenantId: parsed.tenantId,
     name: parsed.name,
     plugin: parsed.plugin,
+    apiBaseUrl: parsed.apiBaseUrl ?? null,
     authorizationUrl: parsed.authorizationUrl ?? null,
     tokenUrl: parsed.tokenUrl ?? null,
     userInfoUrl: parsed.userInfoUrl ?? null,
@@ -187,6 +188,7 @@ export function createProviderRoutes({
             tenantId: tenantCtx.id,
             name: body.name,
             plugin: body.plugin,
+            apiBaseUrl: body.apiBaseUrl ?? null,
             authorizationUrl: body.authorizationUrl ?? null,
             tokenUrl: body.tokenUrl ?? null,
             userInfoUrl: body.userInfoUrl ?? null,
@@ -281,6 +283,8 @@ export function createProviderRoutes({
       const updates: Record<string, unknown> = { updatedAt: new Date() };
       if (body.name !== undefined) updates["name"] = body.name;
       if (body.plugin !== undefined) updates["plugin"] = body.plugin;
+      if (body.apiBaseUrl !== undefined)
+        updates["apiBaseUrl"] = body.apiBaseUrl;
       if (body.authorizationUrl !== undefined)
         updates["authorizationUrl"] = body.authorizationUrl;
       if (body.tokenUrl !== undefined) updates["tokenUrl"] = body.tokenUrl;

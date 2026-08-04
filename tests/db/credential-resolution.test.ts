@@ -310,6 +310,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "prv_1",
           tenantId: "tnt_leaf",
           name: "github",
+          apiBaseUrl: "https://api.github.com",
         });
         await seedPrincipal(h.db, { id: "prn_user", tenantId: "tnt_leaf" });
         await seedCredential(h.db, {
@@ -334,8 +335,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           null,
         );
         expect(got?.credential.id).toBe("cred_tenant");
-        // The resolved provider is surfaced alongside the credential.
+        // The resolved provider is surfaced alongside the credential, including
+        // the API origin an origin-pinned credential authenticates to.
         expect(got?.provider.id).toBe("prv_1");
+        expect(got?.provider.apiBaseUrl).toBe("https://api.github.com");
       });
 
       test("source creator matches the creator's credential", async () => {

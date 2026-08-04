@@ -115,6 +115,7 @@ export type SeedProvider = {
   tenantId: string;
   name: string;
   plugin?: string;
+  apiBaseUrl?: string;
 };
 
 export async function seedProvider(db: Db, p: SeedProvider): Promise<void> {
@@ -123,6 +124,7 @@ export async function seedProvider(db: Db, p: SeedProvider): Promise<void> {
     tenantId: p.tenantId,
     name: p.name,
     plugin: p.plugin ?? "test-plugin",
+    apiBaseUrl: p.apiBaseUrl ?? null,
   });
 }
 
