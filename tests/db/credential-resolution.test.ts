@@ -333,7 +333,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           null,
           null,
         );
-        expect(got?.id).toBe("cred_tenant");
+        expect(got?.credential.id).toBe("cred_tenant");
+        // The resolved provider is surfaced alongside the credential.
+        expect(got?.provider.id).toBe("prv_1");
       });
 
       test("source creator matches the creator's credential", async () => {
@@ -359,7 +361,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "prn_creator",
           "prn_invoker",
         );
-        expect(got?.id).toBe("cred_creator");
+        expect(got?.credential.id).toBe("cred_creator");
       });
 
       test("source invoker matches the invoker's credential", async () => {
@@ -385,7 +387,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "prn_creator",
           "prn_invoker",
         );
-        expect(got?.id).toBe("cred_invoker");
+        expect(got?.credential.id).toBe("cred_invoker");
       });
 
       test("matches when the credential covers every required scope", async () => {
@@ -410,7 +412,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           null,
           null,
         );
-        expect(got?.id).toBe("cred_1");
+        expect(got?.credential.id).toBe("cred_1");
       });
 
       test("returns null when the credential lacks a required scope", async () => {
@@ -534,7 +536,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           null,
           null,
         );
-        expect(got?.id).toBe("cred_b");
+        expect(got?.credential.id).toBe("cred_b");
       });
 
       test("inherits a matching credential from an ancestor tenant", async () => {
@@ -561,7 +563,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           null,
           null,
         );
-        expect(got?.id).toBe("cred_root");
+        expect(got?.credential.id).toBe("cred_root");
       });
     });
   },

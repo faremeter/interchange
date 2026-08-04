@@ -191,7 +191,13 @@ export async function resolveCredentialRequirement(
     });
 
     const [sole] = matching;
-    if (matching.length === 1 && sole) return sole;
+    // Return the resolved provider alongside the credential. The provider was
+    // already fetched above to constrain the credential query, so surfacing it
+    // spares the caller a second lookup for the provider facts (plugin, base
+    // URL) a resolved credential is always paired with.
+    if (matching.length === 1 && sole) {
+      return { credential: sole, provider: resolvedProvider };
+    }
     if (matching.length > 1) {
       throw new AmbiguousCredentialError(
         `Ambiguous credential match: ${matching.length} credentials match ` +
