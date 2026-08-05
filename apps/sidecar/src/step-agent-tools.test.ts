@@ -38,10 +38,15 @@ import {
 } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { evaluateGrants } from "@intx/authz";
+import type { HostCredentialCapability } from "@intx/harness";
 import { createIsogitStore } from "@intx/storage-isogit";
 import { noopAuditStore } from "@intx/agent/testing";
 import type { GrantRule } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";
+import {
+  createRuntimeCapabilities,
+  type RuntimeCapabilities,
+} from "@intx/types/runtime-capabilities";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 
 import {
@@ -155,7 +160,13 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     });
 
     const materialization: StepToolMaterialization = {
-      factories: [noopTool],
+      factories: [
+        {
+          packageName: "@intx/test-tool",
+          declaredCredentials: [],
+          factory: noopTool,
+        },
+      ],
       pluginFactories: [lspLikePlugin],
     };
 
@@ -327,13 +338,98 @@ describe("rewrapStepToolFactory", () => {
     // This test only inspects the re-wrapped factory's static metadata;
     // it never invokes the factory, so the disposer-capture callback
     // must not fire.
-    const rewrapped = rewrapStepToolFactory(source, () => {
-      throw new Error("onDispose must not be called: factory is not invoked");
-    });
+    const rewrapped = rewrapStepToolFactory(
+      source,
+      () => {
+        throw new Error("onDispose must not be called: factory is not invoked");
+      },
+      undefined,
+    );
 
     expect(rewrapped.definitions).toEqual(source.definitions);
     expect(rewrapped.id).toBe(source.id);
     expect(rewrapped.requires).toEqual(source.requires);
+  });
+
+  test("layers the given credentials capability onto the bundle's env", async () => {
+    let seenEnv: BaseEnv | undefined;
+    const source = defineTool({
+      id: "@intx/test-tool/sidecar-bundle",
+      requires: ["capabilities"],
+      definitions: [],
+      factory: (factoryEnv): ToolBundle => {
+        seenEnv = factoryEnv;
+        return {
+          definitions: [],
+          run: (call) => Promise.resolve({ callId: call.id, content: "" }),
+        };
+      },
+    });
+    const capability: HostCredentialCapability = {
+      resolve: () => Promise.reject(new Error("resolve unused in this test")),
+      dispose: () => Promise.resolve(),
+    };
+
+    const rewrapped = rewrapStepToolFactory(
+      source,
+      () => {
+        /* the bundle returns no disposer, so this never fires */
+      },
+      capability,
+    );
+
+    const env = await buildStepEnv();
+    // The base bag buildEnv would set; an empty one suffices to prove the
+    // credentials key is layered on top of it for this bundle.
+    Reflect.set(env, "capabilities", createRuntimeCapabilities({}));
+    rewrapped(env);
+
+    if (seenEnv === undefined) {
+      throw new Error("the bundle factory was not invoked");
+    }
+    // The bundle sees a layered bag resolving THIS package's capability -- the
+    // seam that must never hand a bundle another package's capability.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the slot is the RuntimeCapabilities resolver this test set
+    const bag = Reflect.get(seenEnv, "capabilities") as RuntimeCapabilities;
+    expect(bag.resolve("credentials")).toBe(capability);
+  });
+
+  test("passes the base env through unchanged when no capability is layered", async () => {
+    let seenEnv: BaseEnv | undefined;
+    const source = defineTool({
+      id: "@intx/test-tool/sidecar-bundle",
+      requires: ["capabilities"],
+      definitions: [],
+      factory: (factoryEnv): ToolBundle => {
+        seenEnv = factoryEnv;
+        return {
+          definitions: [],
+          run: (call) => Promise.resolve({ callId: call.id, content: "" }),
+        };
+      },
+    });
+
+    const rewrapped = rewrapStepToolFactory(
+      source,
+      () => {
+        /* no disposer captured in this test */
+      },
+      undefined,
+    );
+
+    const env = await buildStepEnv();
+    Reflect.set(env, "capabilities", createRuntimeCapabilities({}));
+    rewrapped(env);
+
+    if (seenEnv === undefined) {
+      throw new Error("the bundle factory was not invoked");
+    }
+    // No capability -> the exact base env is passed through, no credentials key
+    // layered on, so a resolve fails closed as not-provided.
+    expect(seenEnv).toBe(env);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the slot is the RuntimeCapabilities resolver this test set
+    const bag = Reflect.get(seenEnv, "capabilities") as RuntimeCapabilities;
+    expect(() => bag.resolve("credentials")).toThrow();
   });
 });
 

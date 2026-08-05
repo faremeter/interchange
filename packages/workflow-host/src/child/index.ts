@@ -4,6 +4,7 @@ export {
   runWorkflowChild,
   type ChildStepInvoker,
   type CredentialsSnapshotRef,
+  type CredentialWiring,
   type DrainController,
   type GrantEvaluator,
   type RunWorkflowChildBindings,

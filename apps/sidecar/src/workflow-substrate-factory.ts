@@ -48,7 +48,12 @@ import {
 import { loadAdapterRegistry } from "@intx/inference/providers";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
-import { createHarnessRuntimeCapabilities } from "@intx/harness";
+import {
+  builtinCredentialProviders,
+  createCredentialProviderRegistry,
+  createHarnessRuntimeCapabilities,
+  type CredentialProviderRegistry,
+} from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
 import {
   createAgentRepoStore,
@@ -103,6 +108,7 @@ import {
 } from "@intx/workflow";
 
 import {
+  attachStepCredentialWiring,
   attachStepTools,
   createToolBearingAgentFactory,
   deriveToolMarkFloorGrants,
@@ -110,6 +116,7 @@ import {
   type StepToolCacheConfig,
   type StepToolMaterialization,
 } from "./step-agent-tools";
+import type { CredentialMaterialCell } from "./step-credential-capabilities";
 import { readRunGrants, runGrantsPath } from "./run-grants";
 import {
   createDurableConversationRegistry,
@@ -739,15 +746,36 @@ export interface SidecarStepBuildEnvDeps {
  * being papered over with a stub: the single-step path now always runs
  * a real agent against real storage.
  */
+/**
+ * The per-run credential inputs a tool-bearing build resolves the step's
+ * `credentials` wiring from. The live material cell and the grants resolver
+ * ride in from the run child (per-run state); the provider registry is
+ * sidecar-static and combined in at the invoke-step boundary. Absent for a
+ * toolless build (an onTrigger body), which assembles no credentials.
+ */
+interface SidecarStepCredentialContext {
+  readonly materialCell: CredentialMaterialCell;
+  /**
+   * The step's grants, resolved live by base step id. Typed `unknown[]` at
+   * this boundary (the run child owns no grant grammar); the sidecar casts to
+   * `GrantRule[]` here where the grammar is known, exactly as
+   * `evaluateGrantsAdapter` does.
+   */
+  readonly resolveStepGrants: (stepId: string) => readonly unknown[];
+  readonly providers: CredentialProviderRegistry;
+}
+
 export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
 ): (
   req: StepInvokeRequest,
   sourcesRef: SourcesSnapshotRef,
+  credentialContext?: SidecarStepCredentialContext,
 ) => Promise<StepEnvBase> {
   return async (
     req: StepInvokeRequest,
     sourcesRef: SourcesSnapshotRef,
+    credentialContext?: SidecarStepCredentialContext,
   ): Promise<StepEnvBase> => {
     // Resolve against the live table each build so a source rotation that
     // wrote `sourcesRef.current` before this build is reflected in the
@@ -900,7 +928,9 @@ export function createSidecarStepBuildEnv(
     if (deps.toolless !== true) {
       deps.recordToolMarkFloor(
         baseStepId(stepId),
-        deriveToolMarkFloorGrants(materialization.factories),
+        deriveToolMarkFloorGrants(
+          materialization.factories.map((f) => f.factory),
+        ),
       );
     }
 
@@ -965,6 +995,24 @@ export function createSidecarStepBuildEnv(
     // handing it to `agentFactory`; object spread preserves own
     // symbol-keyed properties, so the slot survives the spread.
     attachStepTools(env, materialization);
+    // Attach the credential wiring for a tool-bearing build so the
+    // `agentFactory` can assemble each bundle's consumer-scoped `credentials`
+    // capability. Grants are wired as a THUNK, resolved (and cast to the
+    // sidecar's `GrantRule` grammar, the same cast `evaluateGrantsAdapter`
+    // makes) only when a package actually needs a capability -- a step with no
+    // credential-consuming package never reads them, so a self-discovery
+    // resume that precedes the grants barrier does not fault on a missing
+    // snapshot. Omitted for a toolless build, which carries no
+    // `credentialContext` and assembles no credentials.
+    if (credentialContext !== undefined) {
+      attachStepCredentialWiring(env, {
+        materialCell: credentialContext.materialCell,
+        resolveGrants: () =>
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[] at the run-child boundary; the sidecar owns the GrantRule grammar
+          credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
+        providers: credentialContext.providers,
+      });
+    }
     return env;
   };
 }
@@ -1917,6 +1965,14 @@ export function createSidecarSubstrateFactory(
     // below.
     const stepAgentFactory = createToolBearingAgentFactory();
 
+    // The credential provider registry that shapes a delivered credential into
+    // a mediated handle. Built once here from the sidecar-static built-ins (the
+    // origin-pinned http provider) and shared by every per-step build; the
+    // per-run material and grants ride in separately at each invoke.
+    const credentialProviders = createCredentialProviderRegistry(
+      builtinCredentialProviders(),
+    );
+
     // childWorkflow step invoker (the STUB). A `childWorkflow` / `map` fan-out
     // spawns a separate WorkflowDefinition whose stepIds are disjoint from the
     // parent's, and deploy stages neither its per-step assets nor its tool
@@ -2038,10 +2094,21 @@ export function createSidecarSubstrateFactory(
       authorize,
       warmCache,
       sourcesRef,
+      credentialWiring,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
-        buildEnv: (buildReq) => buildStepEnv(buildReq, sourcesRef),
+        // Combine the per-run credential wiring (the live material cell and
+        // the step-grants resolver, ridden in from the run child) with the
+        // sidecar-static provider registry, so `buildStepEnv` attaches a
+        // complete credential context and the agentFactory can assemble each
+        // bundle's consumer-scoped `credentials` capability.
+        buildEnv: (buildReq) =>
+          buildStepEnv(buildReq, sourcesRef, {
+            materialCell: credentialWiring.materialRef,
+            resolveStepGrants: credentialWiring.resolveStepGrants,
+            providers: credentialProviders,
+          }),
         agentFactory: stepAgentFactory,
         onEvent,
         sourcesRef,
