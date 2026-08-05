@@ -50,6 +50,9 @@ interface FixtureSpec {
   entryModuleSource?: string; // emitted at the interchange.tools path
   interchangeDirectorsRelPath?: string | null; // null means omit the field
   directorsModuleSource?: string; // emitted at the interchange.directors path
+  // Inline `interchange.credentials` value, written verbatim into
+  // package.json. `unknown` so malformed-shape cases can be exercised.
+  interchangeCredentials?: unknown;
   extraFiles?: Record<string, string>;
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -75,7 +78,7 @@ async function packFixture(
     name: spec.name,
     version: spec.version,
   };
-  const interchangeField: Record<string, string> = {};
+  const interchangeField: Record<string, unknown> = {};
   if (spec.interchangeToolsRelPath !== null) {
     interchangeField.tools = spec.interchangeToolsRelPath ?? "./tools.js";
   }
@@ -84,6 +87,9 @@ async function packFixture(
     spec.interchangeDirectorsRelPath !== undefined
   ) {
     interchangeField.directors = spec.interchangeDirectorsRelPath;
+  }
+  if (spec.interchangeCredentials !== undefined) {
+    interchangeField.credentials = spec.interchangeCredentials;
   }
   if (Object.keys(interchangeField).length > 0) {
     pkgJson.interchange = interchangeField;
@@ -228,6 +234,100 @@ describe("createToolLoader", () => {
     expect(loaded[0]?.name).toBe("tools-leaf");
     expect(loaded[0]?.factories).toHaveLength(1);
     expect(loaded[0]?.factories[0]?.id).toBe("@vendor/leaf/main");
+    // A package that declares no credentials surfaces an empty array,
+    // not a missing field -- the reconcile downstream reads it verbatim.
+    expect(loaded[0]?.credentials).toEqual([]);
+  });
+
+  test("surfaces interchange.credentials declarations on the loaded package", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-creds",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      interchangeCredentials: [
+        { handle: "openai", scopes: ["chat"] },
+        { handle: "stripe" },
+      ],
+    });
+
+    const fakeFactory = makeFakeFactory("@vendor/creds/main", ["env.thing"]);
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async () => ({ main: fakeFactory }),
+    });
+
+    const loaded = await loader.loadManifest({
+      manifest: {
+        schemaVersion: "1",
+        topLevel: [{ name: "tools-creds", version: "1.0.0" }],
+        entries: [
+          {
+            name: "tools-creds",
+            version: "1.0.0",
+            integrity: fixture.integrity,
+            source: { kind: "registry", registry: "npmjs" },
+          },
+        ],
+      },
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+    });
+
+    expect(loaded[0]?.credentials).toEqual([
+      { handle: "openai", scopes: ["chat"] },
+      { handle: "stripe" },
+    ]);
+  });
+
+  test("rejects interchange.credentials with a duplicate handle", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-dupcred",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      interchangeCredentials: [{ handle: "openai" }, { handle: "openai" }],
+    });
+
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async () => ({
+        main: makeFakeFactory("@vendor/dupcred/main", ["env.thing"]),
+      }),
+    });
+
+    await expect(
+      loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "tools-dupcred", version: "1.0.0" }],
+          entries: [
+            {
+              name: "tools-dupcred",
+              version: "1.0.0",
+              integrity: fixture.integrity,
+              source: { kind: "registry", registry: "npmjs" },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+      }),
+    ).rejects.toThrow(/duplicate credential handles/);
   });
 
   test("rejects a non-positive registryFetchTimeoutMs", () => {
