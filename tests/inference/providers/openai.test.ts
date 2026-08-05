@@ -879,6 +879,29 @@ describe("OpenAI adapter: parseResponse", () => {
     }
   });
 
+  test("usage riding a choice-bearing chunk carries cacheRead and thinking", async () => {
+    // Some OpenAI-compatible relays attach the final usage object to the
+    // last content-bearing chunk (one that still carries a choice) instead
+    // of a separate choices-empty chunk. That usage must still surface
+    // cacheRead/thinking from the detail sub-objects rather than be zeroed.
+    const events = await parseWire(adapter, [
+      wire.openai.raw(
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],' +
+          '"usage":{"prompt_tokens":50,"completion_tokens":20,' +
+          '"prompt_tokens_details":{"cached_tokens":30},' +
+          '"completion_tokens_details":{"reasoning_tokens":8}}}\n\n',
+      ),
+    ]);
+    const usage = events.find((e) => e.type === "inference.usage");
+    expect(usage?.type).toBe("inference.usage");
+    if (usage?.type === "inference.usage") {
+      expect(usage.data.usage.input).toBe(50);
+      expect(usage.data.usage.output).toBe(20);
+      expect(usage.data.usage.cacheRead).toBe(30);
+      expect(usage.data.usage.thinking).toBe(8);
+    }
+  });
+
   test("parses Fireworks-shaped tool-call deltas with null name/id on follow-up fragments", async () => {
     // Fireworks (and other OpenAI-compatible deployments routing through
     // opencode-zen) emits `id: null` and `function.name: null` on every

@@ -566,12 +566,10 @@ function getOrAssignToolCallIndex(
 }
 
 // Maps OpenAI's wire usage object onto the internal TokenUsage, reading the
-// cached-token and reasoning-token detail sub-objects. Shared by the
-// streaming usage-only-chunk branch and the non-streaming parseJSONResponse,
-// whose usage objects carry the same field names. (The other usage branch in
-// the streaming parser — usage riding on a choice-bearing chunk — maps a
-// deliberately lossier subset and is left inline there; see the note at its
-// site.)
+// cached-token and reasoning-token detail sub-objects. Shared by both
+// streaming usage branches (usage on a choices-empty chunk and usage riding a
+// choice-bearing chunk) and the non-streaming parseJSONResponse, whose usage
+// objects carry the same field names.
 function toInferenceUsage(usage: typeof OpenAIChunkUsage.infer): TokenUsage {
   return {
     input: usage.prompt_tokens ?? 0,
@@ -794,27 +792,12 @@ function parseResponse(
   void choice.finish_reason;
 
   // Usage at end of stream (stream_options: { include_usage: true }).
-  //
-  // NOTE: this maps a lossier subset than `toInferenceUsage` — cacheRead and
-  // thinking are hardcoded to 0 rather than read from the detail sub-objects.
-  // It is left inline (not switched to the shared helper) because changing it
-  // alters streaming usage behavior, which is out of scope here; with OpenAI's
-  // `include_usage`, real usage arrives on a final choices-empty chunk that
-  // hits the full-mapping branch above, so this branch's asymmetry does not
-  // affect the corpus. The asymmetry is suspect and tracked separately.
   const usageInChunk = chunk.usage;
   if (usageInChunk != null) {
-    const tokenUsage: TokenUsage = {
-      input: usageInChunk.prompt_tokens ?? 0,
-      output: usageInChunk.completion_tokens ?? 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      thinking: 0,
-    };
     events.push({
       type: "inference.usage",
       seq,
-      data: { usage: tokenUsage, source },
+      data: { usage: toInferenceUsage(usageInChunk), source },
     });
   }
 
