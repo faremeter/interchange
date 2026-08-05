@@ -15,6 +15,8 @@
 
 import type { Capability } from "@intx/types";
 
+import { OPENAI_FIRSTPARTY_QUIRKS } from "./openai-quirks";
+
 export type CatalogPlugin =
   | "anthropic"
   | "openai"
@@ -99,10 +101,10 @@ export const catalogModels: CatalogModelSpec[] = [
 // model, and the two OpenCode Zen providers both offer `kimi-k2.7-code`.
 // Distinct priorities give source resolution a deterministic order across the
 // deployments of a shared model. The anthropic and google-genai adapters carry
-// no accommodations, and gpt-5.5 emits no reasoning_content on api.openai.com
-// (its discovery source marks reasoning-content unsupported), so the Anthropic,
-// Gemini, and OpenAI Direct offerings all ship an empty quirks bag; only the
-// kimi-serving openai-compatible deployments need OPENAI_REASONING_QUIRKS.
+// no accommodations, so those offerings ship an empty quirks bag. OpenAI Direct
+// serves gpt-5.x, which rejects `max_tokens`, so it carries
+// OPENAI_FIRSTPARTY_QUIRKS; the kimi-serving openai-compatible deployments carry
+// OPENAI_REASONING_QUIRKS.
 export const catalogProviders: CatalogProviderSpec[] = [
   {
     name: "Anthropic Direct",
@@ -152,7 +154,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
         priority: 0,
         discoverySource: { provider: "openai", model: "gpt-5.5" },
         curatedCapabilities: [],
-        quirks: {},
+        quirks: OPENAI_FIRSTPARTY_QUIRKS,
         price: { input: "0.0000025", output: "0.00001" },
       },
       {
@@ -160,7 +162,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
         priority: 5,
         discoverySource: { provider: "openai", model: "gpt-5.6-sol" },
         curatedCapabilities: [],
-        quirks: {},
+        quirks: OPENAI_FIRSTPARTY_QUIRKS,
         price: { input: "0.000003", output: "0.000012" },
       },
     ],

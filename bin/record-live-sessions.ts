@@ -36,6 +36,8 @@ import {
   type RecordingFetchLike,
 } from "@intx/inference-testing";
 
+import { OPENAI_FIRSTPARTY_QUIRKS } from "./lib/openai-quirks";
+
 const WEATHER_TOOL: ToolDefinition = {
   name: "weather",
   description: "Get the current weather for a city.",
@@ -116,6 +118,8 @@ export interface RecordLiveSessionOpts {
   apiKey: string;
   baseURL: string;
   outputDir: string;
+  /** Adapter quirks bag for the source (e.g. first-party OpenAI token field). */
+  quirks?: Record<string, unknown>;
   /** Test seam: a stub fetch (paired with the synthetic origin) for unit tests. */
   fetch?: RecordingFetchLike;
   /** Test seam: freeze the capturedAt timestamp. */
@@ -164,6 +168,7 @@ export async function recordLiveSession(
     baseURL: opts.baseURL,
     apiKey: opts.apiKey,
     model: opts.model,
+    ...(opts.quirks !== undefined ? { quirks: opts.quirks } : {}),
   };
 
   let seq = 0;
@@ -223,6 +228,9 @@ type AdapterSpec = {
   pkg: string;
   apiKeyEnv: string;
   defaultModel: string;
+  // Adapter quirks the source carries. Only first-party OpenAI needs one
+  // (gpt-5.x rejects max_tokens); the rest run on adapter defaults.
+  quirks: Record<string, unknown>;
   /** When set, the base URL is read from this env var (opencode-zen relay). */
   baseURLEnv?: string;
   /** When set, the model defaults to this env var if present. */
@@ -235,24 +243,28 @@ const ADAPTERS: readonly AdapterSpec[] = [
     pkg: "inference-discovery-anthropic",
     apiKeyEnv: "ANTHROPIC_API_KEY",
     defaultModel: "claude-haiku-4-5-20251001",
+    quirks: {},
   },
   {
     brand: "openai",
     pkg: "inference-discovery-openai",
     apiKeyEnv: "OPENAI_API_KEY",
     defaultModel: "gpt-5.5",
+    quirks: OPENAI_FIRSTPARTY_QUIRKS,
   },
   {
     brand: "google-genai",
     pkg: "inference-discovery-google-genai",
     apiKeyEnv: "GOOGLE_API_KEY",
     defaultModel: "gemini-2.5-flash",
+    quirks: {},
   },
   {
     brand: "opencode-zen",
     pkg: "inference-discovery-openai",
     apiKeyEnv: "OPENCODE_API_KEY",
     defaultModel: "",
+    quirks: {},
     baseURLEnv: "OPENCODE_BASE_URL",
     modelEnv: "OPENCODE_MODEL",
   },
@@ -362,6 +374,7 @@ async function main(argv: string[]): Promise<number> {
         apiKey: requireApiKey(spec, env),
         baseURL: resolveBaseURL(spec, env),
         outputDir,
+        quirks: spec.quirks,
       });
       console.error(`[record-live] done  ${spec.brand} -> ${outputDir}`);
     } catch (cause) {
