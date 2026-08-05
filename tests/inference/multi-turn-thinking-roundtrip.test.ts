@@ -47,7 +47,7 @@ const TEST_SOURCE: LastCycleSource = {
 const WORKSPACE_ROOT = path.resolve(__dirname, "../..");
 const CORPUS_ROOT = path.join(
   WORKSPACE_ROOT,
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/function-calling-with-thinking-streaming",
+  "packages/inference-discovery-anthropic/sessions/anthropic/claude-haiku-4-5-20251001/function-calling-with-thinking-streaming",
 );
 
 const SOURCE: InferenceSource = {
@@ -102,14 +102,14 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     //    building — we won't actually rebuild turn-1's request here,
     //    just consume its response).
     const turn1Sse = await fs.readFile(
-      path.join(CORPUS_ROOT, "turn-1/response.sse"),
+      path.join(CORPUS_ROOT, "exchanges/0/response.sse"),
     );
     const turn1ReqRaw = await fs.readFile(
-      path.join(CORPUS_ROOT, "turn-1/request.json"),
+      path.join(CORPUS_ROOT, "exchanges/0/request.json"),
       "utf-8",
     );
     const turn2ReqRaw = await fs.readFile(
-      path.join(CORPUS_ROOT, "turn-2/request.json"),
+      path.join(CORPUS_ROOT, "exchanges/1/request.json"),
       "utf-8",
     );
     const turn1ReqUnknown: unknown = JSON.parse(turn1ReqRaw);

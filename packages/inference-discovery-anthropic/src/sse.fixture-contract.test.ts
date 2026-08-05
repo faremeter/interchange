@@ -21,8 +21,10 @@ import { extractContentBlocksFromSSE } from "./sse";
 // block type.
 
 // The test file is at packages/inference-discovery-anthropic/src/; the
-// fixtures it reads live under this package's wire/anthropic/ tree, so the
-// repo root is three directories up from this file's parent.
+// fixtures it reads live under this package's sessions/anthropic/ tree, so
+// the repo root is three directories up from this file's parent. Each
+// streaming capture is single-exchange, so the response bytes are at
+// exchanges/0/response.sse.
 const REPO_ROOT = resolve(
   fileURLToPath(new URL(".", import.meta.url)),
   "..",
@@ -31,10 +33,10 @@ const REPO_ROOT = resolve(
 );
 
 const FIXTURES = [
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/grounding-streaming/response.sse",
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-5/grounding-streaming/response.sse",
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-haiku-4-5-20251001/code-execution-streaming/response.sse",
-  "packages/inference-discovery-anthropic/wire/anthropic/claude-sonnet-5/code-execution-streaming/response.sse",
+  "packages/inference-discovery-anthropic/sessions/anthropic/claude-haiku-4-5-20251001/grounding-streaming/exchanges/0/response.sse",
+  "packages/inference-discovery-anthropic/sessions/anthropic/claude-sonnet-5/grounding-streaming/exchanges/0/response.sse",
+  "packages/inference-discovery-anthropic/sessions/anthropic/claude-haiku-4-5-20251001/code-execution-streaming/exchanges/0/response.sse",
+  "packages/inference-discovery-anthropic/sessions/anthropic/claude-sonnet-5/code-execution-streaming/exchanges/0/response.sse",
 ];
 
 describe("extractContentBlocksFromSSE — server-side tool fixture contract", () => {
