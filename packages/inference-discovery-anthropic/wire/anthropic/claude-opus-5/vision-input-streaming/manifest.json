@@ -1,7 +1,0 @@
-{
-  "provider": "anthropic",
-  "model": "claude-opus-5",
-  "capability": "vision-input-streaming",
-  "capturedAt": "2026-07-28T19:37:40.112Z",
-  "schemaVersion": "1"
-}

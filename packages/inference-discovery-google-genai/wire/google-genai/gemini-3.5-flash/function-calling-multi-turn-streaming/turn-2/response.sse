@@ -1,6 +1,0 @@
-data: {"candidates": [{"content": {"parts": [{"text": "The current"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 126,"candidatesTokenCount": 2,"totalTokenCount": 128,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 126}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "TAppapSQJ-bVz7IPq-uHoAI"}
-
-data: {"candidates": [{"content": {"parts": [{"text": " weather in Boston, MA is clear with a temperature of 68°F."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 126,"candidatesTokenCount": 19,"totalTokenCount": 145,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 126}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "TAppapSQJ-bVz7IPq-uHoAI"}
-
-data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EjQKMgERTTIPEM41XHRyFiduRZQFbmXJvZSszWXaXm0JfRIPTfOEAab/jomUjguWpS33xqU8"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 126,"candidatesTokenCount": 19,"totalTokenCount": 145,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 126}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "TAppapSQJ-bVz7IPq-uHoAI"}
-

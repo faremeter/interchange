@@ -1,7 +1,0 @@
-{
-  "provider": "anthropic",
-  "model": "claude-opus-5",
-  "capability": "document-input-streaming",
-  "capturedAt": "2026-07-28T19:37:49.515Z",
-  "schemaVersion": "1"
-}

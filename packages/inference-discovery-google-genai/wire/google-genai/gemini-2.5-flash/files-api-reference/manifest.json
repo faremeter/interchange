@@ -1,7 +1,0 @@
-{
-  "provider": "google-genai",
-  "model": "gemini-2.5-flash",
-  "capability": "files-api-reference",
-  "capturedAt": "2026-05-23T20:23:10.908Z",
-  "schemaVersion": "1"
-}

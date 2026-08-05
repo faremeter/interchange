@@ -1,4 +1,0 @@
-{
-  "fieldPath": "choices.0.message.reasoning_content",
-  "sample": "Let me work through this classic cognitive reflection problem step by step.\n\nThe problem states:\n- A bat and a ball together cost $1.10\n- The bat costs $1.00 more than the ball\n\nLet me set up the equations. Let the ball's cost be X.\nThen the bat's cost is X + $1.00.\n\nTogether they cost $1.10:\nX + (X + $1.00) = $1.10\n2X + $1.00 = $1.10\n2X = $0.10\nX = $0.05\n\nSo the ball costs $0.05 (5 cents).\n\nLet me verify: If the ball costs $0.05, then the bat costs $0.05 + $1.00 = $1.05.\nTogether: $0.05 + $1.05 = $1.10. ✓\nThe bat ($1.05) is indeed $1.00 more than the ball ($0.05). ✓\n\nThe common intuitive (but wrong) answer is $0.10, but that would make the bat $1.10, and together they'd be $1.20, not $1.10."
-}
