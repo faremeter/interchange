@@ -167,6 +167,16 @@ export type MockToolCall = {
 export type StartMockInferenceOpts = {
   toolCall?: MockToolCall;
   /**
+   * When true, `toolCall` is emitted on the FIRST turn of EVERY run (any
+   * request whose history carries no tool_result yet) rather than only once
+   * across the mock's lifetime. A run that drives the same tool then completes
+   * with a text turn once its result lands. Lets a single env exercise the
+   * tool across several runs (e.g. re-running a credential tool before and
+   * after a rotation) without the default one-shot latch swallowing the
+   * later runs.
+   */
+  toolCallEachRun?: boolean;
+  /**
    * When true, the assistant reply echoes the last user message's text
    * as `echo:<text>` instead of the tool-names text turn. This lets a
    * test assert the agent's `agent.send` actually received the inbound
@@ -359,8 +369,13 @@ export function startMockInference(
       const toolNames = (body.tools ?? []).map((t) => t.name);
       const wantsToolCall =
         opts.toolCall !== undefined &&
-        !toolCallEmitted &&
-        toolNames.includes(opts.toolCall.toolName);
+        toolNames.includes(opts.toolCall.toolName) &&
+        // Default: emit once across the mock's lifetime. `toolCallEachRun`:
+        // emit on any request whose history has no tool_result yet, so each
+        // fresh run drives the tool and then completes once its result lands.
+        (opts.toolCallEachRun === true
+          ? firstToolResultText(body) === null
+          : !toolCallEmitted);
 
       let events: string[];
       const approval = opts.approvalToolCall;
@@ -552,6 +567,91 @@ export const mail = Object.assign(factory, {
   return new Uint8Array(bytes);
 }
 
+/**
+ * Inputs for seeding the synthetic credential-consuming tool package. The
+ * caller (the tests/workflow-deploy e2e, which owns the fixture) resolves
+ * `entryPath` from its own project so this hub-agent-project helper never
+ * imports the fixture across a project boundary.
+ */
+export type SyntheticCredentialToolOpts = {
+  /** Absolute path to the fixture module compiled into the bundle entry. */
+  entryPath: string;
+  /** Package name stamped into `package.json` (the tool consumer identity). */
+  packageName: string;
+  /** Package version stamped into `package.json`. */
+  version: string;
+  /** The credential handle declared under `interchange.credentials`. */
+  handle: string;
+};
+
+// Synthetic credential-consuming tool tarball
+//
+// Unlike `buildSyntheticToolsMailTarball` (which inlines its bundle as a
+// string), this compiles a REAL, type-checked fixture module
+// (`tests/workflow-deploy/fixtures/credential-tool-bundle.ts`) into the
+// package's `sidecar-bundle.js` with
+// Bun.build, so the e2e drives the production loader against a genuine ESM
+// bundle. The caller passes the fixture's absolute path (resolved from the
+// tests/workflow-deploy project, which owns the fixture) rather than importing
+// it, so this hub-agent-project helper carries no cross-project type edge.
+//
+// The written `package.json` declares BOTH `interchange.tools` (the bundle
+// entry) and `interchange.credentials` (the handle the tool resolves), so the
+// launch-time declared-vs-bound reconcile sees the handle the delivery binds.
+export async function buildSyntheticCredentialToolTarball(
+  registerTempDir: (dir: string) => void,
+  opts: SyntheticCredentialToolOpts,
+): Promise<Uint8Array> {
+  const stagingDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "cred-tool-fixture-"),
+  );
+  registerTempDir(stagingDir);
+  const packageDir = path.join(stagingDir, "package");
+  await fs.promises.mkdir(packageDir, { recursive: true });
+
+  await fs.promises.writeFile(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: opts.packageName,
+      version: opts.version,
+      type: "module",
+      interchange: {
+        tools: "./sidecar-bundle.js",
+        credentials: [{ handle: opts.handle }],
+      },
+    }),
+  );
+
+  // Resolve `@intx/*` workspace deps to their TypeScript source via the
+  // `intx-src` export condition (mirroring bin/build-builtins.ts), so the
+  // packed bundle is a genuine module the production loader imports.
+  const result = await Bun.build({
+    entrypoints: [opts.entryPath],
+    outdir: packageDir,
+    naming: "sidecar-bundle.js",
+    target: "node",
+    format: "esm",
+    conditions: ["intx-src"],
+    minify: false,
+    sourcemap: "none",
+  });
+  if (!result.success) {
+    const messages = result.logs
+      .map((log) => (log instanceof Error ? log.message : String(log)))
+      .join("\n");
+    throw new Error(
+      `buildSyntheticCredentialToolTarball: Bun.build failed for ${opts.entryPath}:\n${messages || "(no diagnostics)"}`,
+    );
+  }
+
+  const tarballPath = path.join(stagingDir, "out.tgz");
+  await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
+    "package",
+  ]);
+  const bytes = await fs.promises.readFile(tarballPath);
+  return new Uint8Array(bytes);
+}
+
 export type HubEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: SidecarRouter;
@@ -617,6 +717,13 @@ export async function startHub(
     approvalMarkedMailTool?: boolean;
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
+    /**
+     * When set, seed a second tool package alongside tools-mail: a real
+     * credential-consuming bundle compiled from a fixture module, so the
+     * credential-delivery e2e drives the production loader + capability path
+     * against a genuine tool that resolves a mediated credential.
+     */
+    credentialTool?: SyntheticCredentialToolOpts;
   } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
@@ -806,10 +913,44 @@ export async function startHub(
     deployAcks.set(agentAddress, publicKey);
   });
 
-  const tarballBytes = await buildSyntheticToolsMailTarball(registerTempDir, {
-    ...(opts.transportBackedMailTool === true ? { transportBacked: true } : {}),
-    ...(opts.approvalMarkedMailTool === true ? { approvalMarked: true } : {}),
-  });
+  // Seed one tarball per tool package into the single package-registry asset.
+  // tools-mail is always present; the credential-consuming package joins it
+  // only when the caller opts in. The registry walker reads each tarball's
+  // own `package.json` to resolve a pin, so the filename is arbitrary as long
+  // as it is both listed and readable through the AssetService below.
+  const tarballs: { filename: string; bytes: Uint8Array }[] = [
+    {
+      filename: TARBALL_FILENAME,
+      bytes: await buildSyntheticToolsMailTarball(registerTempDir, {
+        ...(opts.transportBackedMailTool === true
+          ? { transportBacked: true }
+          : {}),
+        ...(opts.approvalMarkedMailTool === true
+          ? { approvalMarked: true }
+          : {}),
+      }),
+    },
+  ];
+  if (opts.credentialTool !== undefined) {
+    const credentialTool = opts.credentialTool;
+    const filename = `${credentialTool.packageName
+      .replace(/^@intx\//, "")
+      .replace(/\//g, "-")}-${credentialTool.version}.tgz`;
+    tarballs.push({
+      filename,
+      bytes: await buildSyntheticCredentialToolTarball(
+        registerTempDir,
+        credentialTool,
+      ),
+    });
+  }
+  const tarballByBlobPath = new Map(
+    tarballs.map((t) => [`tarballs/${t.filename}`, t.bytes]),
+  );
+  const seededFiles: Record<string, Uint8Array> = {};
+  for (const t of tarballs) {
+    seededFiles[`tarballs/${t.filename}`] = t.bytes;
+  }
   await agentRepoStore.repoStore.initRepo({
     kind: "package-registry",
     id: ASSET_ID,
@@ -819,10 +960,8 @@ export async function startHub(
     { kind: "package-registry", id: ASSET_ID },
     DEFAULT_ASSET_REF,
     {
-      files: {
-        [`tarballs/${TARBALL_FILENAME}`]: tarballBytes,
-      },
-      message: "Seed tools-mail tarball",
+      files: seededFiles,
+      message: "Seed tool-package tarballs",
     },
   );
 
@@ -854,10 +993,11 @@ export async function startHub(
       if (assetId !== ASSET_ID) {
         throw new Error(`deploy-flow: unexpected readAssetBlob ${assetId}`);
       }
-      if (p !== `tarballs/${TARBALL_FILENAME}`) {
+      const bytes = tarballByBlobPath.get(p);
+      if (bytes === undefined) {
         throw new Error(`deploy-flow: unexpected blob path ${p}`);
       }
-      return tarballBytes;
+      return bytes;
     },
     listAssetBlobs: async ({ assetId, dir: d }) => {
       if (assetId !== ASSET_ID) {
@@ -866,7 +1006,7 @@ export async function startHub(
       if (d !== "tarballs") {
         throw new Error(`deploy-flow: unexpected list dir ${d}`);
       }
-      return [TARBALL_FILENAME];
+      return tarballs.map((t) => t.filename);
     },
   };
   const fakeDb = {
@@ -1092,6 +1232,12 @@ export type StartDeployFlowEnvOpts = {
    */
   inferenceToolCall?: MockToolCall;
   /**
+   * When true, `inferenceToolCall` drives the tool on every run rather than
+   * once across the env's lifetime. See `StartMockInferenceOpts.
+   * toolCallEachRun`; used to re-run a credential tool across a rotation.
+   */
+  inferenceToolCallEachRun?: boolean;
+  /**
    * Persistent tool-call behavior for the approval capstone: the mock
    * re-issues the named tool until the history carries its result, then
    * replies with `${resultPrefix}<result>`. See
@@ -1127,6 +1273,12 @@ export type StartDeployFlowEnvOpts = {
    * end-to-end.
    */
   approvalMarkedMailTool?: boolean;
+  /**
+   * When set, seed a second tool package -- a real credential-consuming
+   * bundle compiled from a fixture module -- alongside tools-mail, so a test
+   * can pin it and drive the credential-delivery + capability rail end-to-end.
+   */
+  credentialTool?: SyntheticCredentialToolOpts;
   /**
    * Co-write hook for the `signal.correlation.register` frame a suspending
    * agent step emits. When set, the mock hub's sidecar router wires it as
@@ -1203,10 +1355,16 @@ export async function startDeployFlowEnv(
             opts.materializeMailTriggeredRunGrants,
         }
       : {}),
+    ...(opts.credentialTool !== undefined
+      ? { credentialTool: opts.credentialTool }
+      : {}),
   });
   const inference = startMockInference({
     ...(opts.inferenceToolCall !== undefined
       ? { toolCall: opts.inferenceToolCall }
+      : {}),
+    ...(opts.inferenceToolCallEachRun === true
+      ? { toolCallEachRun: true }
       : {}),
     ...(opts.inferenceApprovalToolCall !== undefined
       ? { approvalToolCall: opts.inferenceApprovalToolCall }
