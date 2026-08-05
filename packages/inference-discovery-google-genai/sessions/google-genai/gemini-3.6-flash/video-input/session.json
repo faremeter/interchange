@@ -3,7 +3,7 @@
   "source": {
     "provider": "google-genai",
     "model": "gemini-3.6-flash",
-    "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+    "baseURL": "https://generativelanguage.googleapis.com"
   },
   "origin": "live",
   "capturedAt": "2026-07-28T19:59:17.666Z",
