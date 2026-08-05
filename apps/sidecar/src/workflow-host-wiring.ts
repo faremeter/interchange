@@ -60,6 +60,7 @@ import {
 import {
   AgentDeployWorkflow,
   type AgentDeployFrame,
+  type CredentialDelivery,
 } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -498,6 +499,12 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   workflowRunRef: string;
   /** Deployment id baked into principal claims and address derivation. */
   deploymentId: string;
+  /**
+   * Decrypted credential material for the deployment's tools (from the deploy
+   * frame). Delivered to the child on the pre-trigger barrier. Absent when the
+   * deployment binds no credentials.
+   */
+  credentialDelivery?: CredentialDelivery;
   /**
    * Step count of the deployed `WorkflowDefinition` (`stepOrder.length`).
    * Threaded into the child's spawn-time env so its deploy-tree read
@@ -1369,6 +1376,13 @@ export function createSidecarDeployRouter(deps: {
    */
   async function spawnWorkflowDeployment(
     spec: WorkflowDeploySpec,
+    // Decrypted credential material from the deploy frame, delivered to the
+    // child on the pre-trigger barrier. Threaded as a separate arg rather than
+    // on `spec` so it never reaches the on-disk deployment record (the sidecar
+    // holds no cipher; a persisted credential would be plaintext at rest). The
+    // boot-restore path passes none -- a restored in-flight deployment gets its
+    // material from the hub's reconnect re-push, not off disk.
+    credentialDelivery?: CredentialDelivery,
   ): Promise<DeployRouterResult> {
     // Fail loud if this address already has a live supervisor. Both single-
     // and multi-step now register on the transport, so both carry the
@@ -1456,6 +1470,7 @@ export function createSidecarDeployRouter(deps: {
         stepCount: spec.definition.stepOrder.length,
         stepOrder: spec.definition.stepOrder,
         deploymentMailAddress: spec.agentAddress,
+        ...(credentialDelivery !== undefined ? { credentialDelivery } : {}),
         deriveStepAddress: stepStrategy.deriveStepAddress,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
         isRunPoisoned: (runId) => poisonedRunIds.has(runId),
@@ -1967,7 +1982,7 @@ export function createSidecarDeployRouter(deps: {
       });
 
       // Hand off to the shared spawn core.
-      return await spawnWorkflowDeployment(spec);
+      return await spawnWorkflowDeployment(spec, projection.credentials);
     } catch (cause) {
       // Soft failure (this process survived, the deploy threw): drop the
       // record and release the slug so the failed deploy is neither restored
@@ -2301,6 +2316,9 @@ export function createSidecarWorkflowSupervisor(
     readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,
     onRunStart,
+    ...(opts.credentialDelivery !== undefined
+      ? { credentialDelivery: opts.credentialDelivery }
+      : {}),
     ...(opts.onSuspensionRegister !== undefined
       ? { onSuspensionRegister: opts.onSuspensionRegister }
       : {}),
