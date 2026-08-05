@@ -10,6 +10,7 @@ import {
 } from "./catalog";
 import {
   extractDispatches,
+  isRecord,
   writeDispatches,
   type ReconstructedDispatch,
 } from "./dispatch-reconstruction";
@@ -38,10 +39,6 @@ export interface RunCaptureOpts {
   outDir: string;
   now?: () => Date;
   fetch?: FetchLike;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function headersToObject(headers: Headers): Record<string, string> {

@@ -13,6 +13,7 @@ import { wire, type RecordingFetchLike } from "@intx/inference-testing";
 import { loadCaptureManifest } from "@intx/inference-discovery/catalog";
 
 import { recordLiveSession } from "./record-live-sessions";
+import { sseResponse } from "./lib/recorder-helpers";
 
 const ZERO_USAGE = {
   input: 0,
@@ -21,21 +22,6 @@ const ZERO_USAGE = {
   cacheWrite: 0,
   thinking: 0,
 };
-
-function sseResponse(chunks: Uint8Array[]): Response {
-  let total = 0;
-  for (const c of chunks) total += c.byteLength;
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    merged.set(c, offset);
-    offset += c.byteLength;
-  }
-  return new Response(merged, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
 
 async function readJSON(file: string): Promise<unknown> {
   return JSON.parse(await fs.readFile(file, "utf8"));
