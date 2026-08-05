@@ -1,7 +1,0 @@
-{
-  "provider": "openai",
-  "model": "gpt-5.6-sol",
-  "capability": "plain-text",
-  "capturedAt": "2026-07-28T20:08:12.339Z",
-  "schemaVersion": "1"
-}

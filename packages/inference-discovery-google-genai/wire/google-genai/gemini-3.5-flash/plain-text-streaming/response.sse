@@ -1,6 +1,0 @@
-data: {"candidates": [{"content": {"parts": [{"text": "The capital"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 14,"candidatesTokenCount": 2,"totalTokenCount": 16,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 14}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "SApparSwLbyBz7IPv6jykQE"}
-
-data: {"candidates": [{"content": {"parts": [{"text": " of France is Paris."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 14,"candidatesTokenCount": 7,"totalTokenCount": 21,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 14}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "SApparSwLbyBz7IPv6jykQE"}
-
-data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EjQKMgERTTIPzs+AhynXyHX/9M9wr5NuVGjelmr73jwvrWOZNCibHwPoEJSf+RoVg5ymPDCv"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 14,"candidatesTokenCount": 7,"totalTokenCount": 21,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 14}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "SApparSwLbyBz7IPv6jykQE"}
-

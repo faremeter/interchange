@@ -1,7 +1,0 @@
-{
-  "provider": "anthropic",
-  "model": "claude-sonnet-5",
-  "capability": "redacted-thinking-streaming",
-  "capturedAt": "2026-07-28T16:57:01.952Z",
-  "schemaVersion": "1"
-}

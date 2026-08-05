@@ -1,7 +1,0 @@
-{
-  "provider": "anthropic",
-  "model": "claude-fable-5",
-  "capability": "function-calling-multi-turn-streaming",
-  "capturedAt": "2026-07-28T19:40:16.479Z",
-  "schemaVersion": "1"
-}

@@ -1,4 +1,0 @@
-data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "get_weather","args": {"location": "Boston, MA"},"id": "e2yo6pn3"},"thoughtSignature": "EjQKMgERTTIPqTxxGPRPS4oCo9JjqLd4HHuc1A6bHVMUXZYavUAy6AqAJHPWDnoBSIospC0G"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 80,"candidatesTokenCount": 18,"totalTokenCount": 98,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 80}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "Swppat-7GNGIz7IPstXP2QI"}
-
-data: {"candidates": [{"content": {"parts": [{"text": ""}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 80,"candidatesTokenCount": 18,"totalTokenCount": 98,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 80}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "Swppat-7GNGIz7IPstXP2QI"}
-
