@@ -945,6 +945,7 @@ describe("createWorkflowSupervisor", () => {
   async function spawnWithRunStart(opts: {
     baseDir: string;
     onRunStart?: WorkflowSupervisorBindings["onRunStart"];
+    credentialDelivery?: WorkflowSupervisorBindings["credentialDelivery"];
     drainTimeoutAccumulatorFactory?: DrainTimeoutAccumulatorFactory;
     onWrite?: (args: {
       principal: { kind: string };
@@ -1006,6 +1007,9 @@ describe("createWorkflowSupervisor", () => {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
       ...(opts.onRunStart !== undefined ? { onRunStart: opts.onRunStart } : {}),
+      ...(opts.credentialDelivery !== undefined
+        ? { credentialDelivery: opts.credentialDelivery }
+        : {}),
       ...(opts.drainTimeoutAccumulatorFactory !== undefined
         ? {
             drainTimeoutAccumulatorFactory: opts.drainTimeoutAccumulatorFactory,
@@ -1129,6 +1133,78 @@ describe("createWorkflowSupervisor", () => {
       type: "terminal.event",
       data: { runId: firedRunId, seq: 0, kind: "RunCompleted", at: "test" },
     });
+    await wired.supervisor.shutdown();
+  });
+
+  test("the barrier pushes credentials-updated before trigger.fire when the deployment has credentials", async () => {
+    const baseDir = await makeTempDir("supervisor-barrier-creds-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
+      assembleCredentialsSnapshot({
+        repoStore: createStubRepoStore({ baseDir }),
+        principal: { kind: "supervisor" },
+        stepOrder: ["step-1"],
+        deploymentId: "deployment-x",
+        deriveStepAddress: ({ deploymentId, stepId }) =>
+          `${deploymentId}-${stepId}@example.com`,
+      });
+    const delivery = {
+      bindings: [
+        { handle: "gh", credentialId: "cred_a", consumer: "tool:@acme/tools" },
+      ],
+      materials: [
+        {
+          credentialId: "cred_a",
+          providerKey: "http",
+          origin: "https://api.example.test",
+          secret: "sk-real",
+        },
+      ],
+    };
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart,
+      credentialDelivery: delivery,
+    });
+
+    wired.mailBus.deliver(
+      "deployment-x@example.com",
+      new TextEncoder().encode("barrier-creds-m1"),
+    );
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (
+        parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length >= 1
+      ) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    // The material lands on the child's control stream STRICTLY before the
+    // trigger, so a tool that resolves a credential on the first step already
+    // has it in its cell.
+    const frameTypes = parseControlFrameTypes(
+      wired.supervisorToChild.flushed(),
+    );
+    const credsIdx = frameTypes.indexOf("credentials-updated");
+    const triggerIdx = frameTypes.indexOf("trigger.fire");
+    expect(credsIdx).toBeGreaterThanOrEqual(0);
+    expect(triggerIdx).toBeGreaterThanOrEqual(0);
+    expect(credsIdx).toBeLessThan(triggerIdx);
+
+    // And the delivered material is the deployment's, verbatim.
+    const deliveries = parseCredentialsUpdatedFrames(
+      wired.supervisorToChild.flushed(),
+    );
+    expect(deliveries).toContainEqual(delivery);
+
     await wired.supervisor.shutdown();
   });
 

@@ -1996,6 +1996,17 @@ export function createWorkflowSupervisor(
           },
         },
       });
+      // Deliver the deployment's credential material on the same pre-trigger
+      // barrier, so a tool that resolves a credential on the first step already
+      // has it in the child's cell. The material is the decrypted delivery the
+      // hub put on the deploy frame; a later rotation flows through
+      // `deliverCredentials` instead. Absent when the deployment binds none.
+      if (bindings.credentialDelivery !== undefined) {
+        await sender.send({
+          type: "credentials-updated",
+          data: { delivery: bindings.credentialDelivery },
+        });
+      }
       return false;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
