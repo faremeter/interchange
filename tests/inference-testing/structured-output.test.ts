@@ -1,11 +1,11 @@
 // End-to-end replay of the committed structured-output captures.
 //
-// Each test loads a live wire fixture, drives it through the
-// production SSE-parsing adapter via runCompatReplay, then takes
-// the accumulated text content from the finalized assistant turn
+// Each streaming test loads a captured session, replays its response
+// through the production adapter via replayResponsesForParsing, then
+// takes the accumulated text content from the finalized assistant turn
 // and asserts it parses as JSON conforming to the catalog intent's
-// schema. The compat-replay corpus suite already validates that
-// every captured fixture replays cleanly against the shape
+// schema. The session-corpus parser-regression suite already validates
+// that every captured fixture replays cleanly against the shape
 // invariants; these tests are the extra step that turns the bytes
 // into a typed value and pins the round-trip — the model produced
 // schema-conformant JSON, the wire bytes survived capture and
@@ -24,7 +24,7 @@ import { type } from "arktype";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runCompatReplay } from "@intx/inference-testing";
+import { replayResponsesForParsing } from "@intx/inference-testing";
 import {
   createOpenAIAdapter,
   createGoogleGenAIAdapter,
@@ -32,7 +32,7 @@ import {
 import {
   INTENTS,
   SUPPORT_MATRIX,
-  getFixtureDir,
+  getSessionDir,
 } from "@intx/inference-discovery/catalog";
 import type {
   ConversationTurn,
@@ -57,10 +57,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WORKSPACE_ROOT = path.resolve(__dirname, "..", "..");
 
-// Resolve a fixture directory through the catalog's canonical resolver so
-// this test follows the corpus wherever getFixtureDir points, rather than
-// reconstructing a wire root of its own.
-function fixtureDirFor(
+// Resolve a session directory through the catalog's canonical resolver so
+// this test follows the corpus wherever getSessionDir points, rather than
+// reconstructing a root of its own.
+function sessionDirFor(
   provider: string,
   model: string,
   capability: string,
@@ -76,13 +76,18 @@ function fixtureDirFor(
       `no support-matrix entry for ${provider}/${model}/${capability}`,
     );
   }
-  const relDir = getFixtureDir(entry);
+  const relDir = getSessionDir(entry);
   if (relDir === null) {
     throw new Error(
       `entry ${provider}/${model}/${capability} is not fixture-bearing`,
     );
   }
   return path.resolve(WORKSPACE_ROOT, relDir);
+}
+
+// A single-exchange capture's request/response bytes live under exchanges/0.
+function exchange0(sessionDir: string, file: string): string {
+  return path.join(sessionDir, "exchanges", "0", file);
 }
 
 // The catalog intent in
@@ -113,23 +118,21 @@ async function replayFixture(opts: {
   model: string;
   capability: string;
 }): Promise<readonly InferenceEvent[]> {
-  const fixtureDir = fixtureDirFor(opts.provider, opts.model, opts.capability);
-  const result = await runCompatReplay({
-    fixtureDir,
-    provider: opts.provider,
-    model: opts.model,
-  });
-  if (result.kind !== "replayed") {
+  const sessionDir = sessionDirFor(opts.provider, opts.model, opts.capability);
+  const results = await replayResponsesForParsing({ sessionDir });
+  const replayed = results.filter((r) => r.kind === "replayed");
+  if (replayed.length === 0) {
     throw new Error(
-      `expected compat-replay to complete; got skipped: ${result.reason}`,
+      `expected a replayed exchange for ${opts.provider}/${opts.model}/${opts.capability}`,
     );
   }
-  if (result.violations.length > 0) {
+  const violations = replayed.flatMap((r) => r.violations);
+  if (violations.length > 0) {
     throw new Error(
-      `compat-replay violations on ${opts.provider}/${opts.model}/${opts.capability}:\n${JSON.stringify(result.violations, null, 2)}`,
+      `parser violations on ${opts.provider}/${opts.model}/${opts.capability}:\n${JSON.stringify(violations, null, 2)}`,
     );
   }
-  return result.events;
+  return replayed.flatMap((r) => r.events);
 }
 
 function assertSchemaConformant(events: readonly InferenceEvent[]): void {
@@ -147,13 +150,11 @@ function assertSchemaConformant(events: readonly InferenceEvent[]): void {
 }
 
 // Non-streaming captures live as response.json (the raw provider
-// response body), not response.sse. runCompatReplay is SSE-only —
-// the harness consumes the streaming wire format end-to-end. For
-// the non-streaming variant the test extracts the response payload
-// directly from disk and pulls the assistant content via a
-// provider-specific path. The runtime adapter does not parse
-// non-streaming responses today (that's its own concern), so the
-// extraction lives here.
+// response body), not response.sse. For the non-streaming variant this
+// test reads the response payload directly from disk and pulls the
+// assistant content via a provider-specific path — a simpler check than
+// replaying, and independent of the adapter's non-streaming decode,
+// which the parser-regression suite exercises separately.
 
 const OpenAIChatCompletion = type({
   choices: type({
@@ -178,8 +179,8 @@ function readOpenAINonStreamingContent(opts: {
   model: string;
   capability: string;
 }): string {
-  const responsePath = path.join(
-    fixtureDirFor(opts.provider, opts.model, opts.capability),
+  const responsePath = exchange0(
+    sessionDirFor(opts.provider, opts.model, opts.capability),
     "response.json",
   );
   const raw = JSON.parse(readFileSync(responsePath, "utf8"));
@@ -198,8 +199,8 @@ function readGeminiNonStreamingContent(opts: {
   model: string;
   capability: string;
 }): string {
-  const responsePath = path.join(
-    fixtureDirFor(opts.provider, opts.model, opts.capability),
+  const responsePath = exchange0(
+    sessionDirFor(opts.provider, opts.model, opts.capability),
     "response.json",
   );
   const raw = JSON.parse(readFileSync(responsePath, "utf8"));
@@ -346,8 +347,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     );
     const adapterBody = CapturedOpenAIBody.assert(JSON.parse(adapterReq.body));
     const capturedRaw = readFileSync(
-      path.join(
-        fixtureDirFor("opencode-zen", "gpt-5.4-mini", "structured-output"),
+      exchange0(
+        sessionDirFor("opencode-zen", "gpt-5.4-mini", "structured-output"),
         "request.json",
       ),
       "utf8",
@@ -365,8 +366,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     );
     const adapterBody = CapturedGeminiBody.assert(JSON.parse(adapterReq.body));
     const capturedRaw = readFileSync(
-      path.join(
-        fixtureDirFor("google-genai", "gemini-2.5-flash", "structured-output"),
+      exchange0(
+        sessionDirFor("google-genai", "gemini-2.5-flash", "structured-output"),
         "request.json",
       ),
       "utf8",
@@ -394,8 +395,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     );
     const adapterBody = CapturedOpenAIBody.assert(JSON.parse(adapterReq.body));
     const capturedRaw = readFileSync(
-      path.join(
-        fixtureDirFor("openai", "gpt-5.6-sol", "structured-output"),
+      exchange0(
+        sessionDirFor("openai", "gpt-5.6-sol", "structured-output"),
         "request.json",
       ),
       "utf8",
@@ -413,8 +414,8 @@ describe("translation drift guard — adapter vs discovery plug-in", () => {
     );
     const adapterBody = CapturedGeminiBody.assert(JSON.parse(adapterReq.body));
     const capturedRaw = readFileSync(
-      path.join(
-        fixtureDirFor("google-genai", "gemini-3.6-flash", "structured-output"),
+      exchange0(
+        sessionDirFor("google-genai", "gemini-3.6-flash", "structured-output"),
         "request.json",
       ),
       "utf8",

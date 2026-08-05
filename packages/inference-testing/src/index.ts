@@ -71,13 +71,6 @@ export type {
   ReplayContext,
 } from "./invariants";
 
-export { runCompatReplay } from "./compat-replay";
-export type {
-  CompatReplayOpts,
-  CompatReplayResult,
-  CompatReplaySkipReason,
-} from "./compat-replay";
-
 export {
   createRecordingHarness,
   SessionRecordingBudgetExceededError,

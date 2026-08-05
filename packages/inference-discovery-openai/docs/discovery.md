@@ -47,7 +47,7 @@ The per-(model, capability) behaviors documented below are the
 _narrative_ layer. The _canonical_ representation is the typed
 `SUPPORT_MATRIX` exported from `@intx/inference-discovery/catalog`
 (`packages/inference-discovery/src/catalog/support-matrix.ts`).
-Tooling — the discovery rig, INTR-79's compat-replay layer, and any
+Tooling — the discovery rig, the session parser-regression, and any
 future readers — must consume the matrix programmatically, not parse
 this prose. When this document and the matrix disagree, the matrix
 wins.

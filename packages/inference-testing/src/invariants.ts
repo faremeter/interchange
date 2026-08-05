@@ -1,7 +1,7 @@
 // Invariant checks over a computed `InferenceEvent[]` produced by replaying
 // a captured fixture through `runInference`. Each invariant is a property
 // that must hold for any well-formed call, regardless of provider; the
-// compat-replay layer applies the full list uniformly.
+// session parser regression applies the full list uniformly.
 //
 // Invariants are ordered foundational-first: schema validity comes before
 // everything else, since the higher-level checks build on the assumption
@@ -39,7 +39,7 @@ export type InvariantViolation = {
  * A property check over a computed `InferenceEvent[]`. Returns an array
  * of violations (empty when the property holds). Implementations should
  * surface every violation they find, not stop at the first, so a single
- * compat-replay pass reveals everything wrong with a fixture rather than
+ * parser-regression pass reveals everything wrong with a fixture rather than
  * forcing fix-and-rerun cycles.
  */
 export type Invariant = {
@@ -562,7 +562,7 @@ const signaturePrecedence: Invariant = {
 };
 
 /**
- * The canonical list applied by the compat-replay layer. Ordered
+ * The canonical list applied by the session parser regression. Ordered
  * foundational-first: schema_validity catches structural problems before
  * the higher-level checks build on potentially-garbage events.
  */

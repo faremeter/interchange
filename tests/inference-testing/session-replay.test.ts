@@ -8,7 +8,7 @@
 // hold: the conversation length grows as the capture grew, dispatch
 // results land in the correct subsequent exchange request bodies, the
 // terminal event sequence for each turn validates against the shape
-// invariants declared by the existing compat-replay layer.
+// shape invariants applied by the session parser regression.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";

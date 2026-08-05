@@ -12,9 +12,9 @@
 //     resolve to the same adapter but hit different endpoints, so this map is
 //     keyed by brand and is distinct from the adapter map above.
 //
-// Both are looked up by brand. Callers own their miss policy — the converter
-// throws on an unknown brand, the compat replayer skips it — so these
-// accessors return `undefined` rather than deciding for them. The adapter
+// Both are looked up by brand. Callers own their miss policy — every consumer
+// today throws on an unknown brand — so these accessors return `undefined`
+// rather than deciding for them. The adapter
 // name is returned as a bare `string`: the adapter-registry key space lives in
 // the inference adapter package, and the catalog does not take a type
 // dependency on it just to name one field.
