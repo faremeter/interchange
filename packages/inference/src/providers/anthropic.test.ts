@@ -268,8 +268,8 @@ describe("Anthropic parser — required-index schema enforcement", () => {
 //
 // Adversarial unit cases (missing data, whitespace-preserving blobs)
 // stay synthetic: the corpus does not cover those failure modes. Corpus
-// smoke lives in compat-replay (streaming leaves once outcome is
-// `captured`).
+// smoke lives in the session parser regression, which replays every
+// fixture-bearing capture through the adapter.
 const CAPTURED_REDACTED_DATA =
   "EuMFCpQBCBAYAipAk6yhHbnY8TlQ7bUY2Ji/24unHQHqjdggHcUEqfwJ30Aw" +
   "0/MEN7OxckAJk+w8kg0Gb7Wa4bUBHooVkOAYSFI7TTIaY2xhdWRlLXNvbm5l" +

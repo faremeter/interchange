@@ -200,7 +200,7 @@ The adapter retrofits land:
 - **OpenAI** — image input via the `image_url` shape (base64 data URL + public url passed verbatim); file-reference rejection with explicit messaging because Chat Completions only accepts data URLs and public URLs; document input via the Chat Completions `file` content type (base64 → data-URI `file_data` with a mime-derived `document.pdf` filename; file-reference → `file_id`; url rejected — no URL form on `file`); `DocumentBlock` `title`/`context` are not on this wire; per-index `tool_calls[]` propagation namespaced into the same counter as text/thinking so a tool_call streamed before text doesn't collide with the later text block.
 - **Google GenAI** — `inference.safety_rating` from `promptFeedback.blockReason` on prompt-blocked responses (no candidates); usage is emitted on that terminal path from `usageMetadata`. `SafetyRatingBlock` is rewritten to text via `formatSafetyRatingText` when marshaling follow-up request history (output-only; no input wire shape). Candidate-level `safetyRatings` arrays and `finishReason: "SAFETY"` are not yet observed in the discovery corpus.
 
-The wire shapes for both adapters are exercised end-to-end via the compat-replay infrastructure (`packages/inference-testing/src/compat-replay.ts`), which walks the discovery `SUPPORT_MATRIX` and replays every captured fixture through the current adapter with the full Invariant list applied.
+The wire shapes for both adapters are exercised end-to-end via the session parser-regression (`packages/inference-testing/src/session-parser-regression.test.ts`), which walks the discovery `SUPPORT_MATRIX` and replays every captured session response through the current adapter with the full Invariant list applied.
 
 ### Cross-Provider Message Transformation
 

@@ -19,8 +19,8 @@ the wire wins. This document is the narrative companion to those bytes.
 
 The per-(model, capability) behaviors documented below are the
 _narrative_ layer. The _canonical_ representation is the typed
-`SUPPORT_MATRIX`. Tooling — the discovery rig, INTR-79's compat-replay
-layer, and any future readers — must consume the matrix
+`SUPPORT_MATRIX`. Tooling — the discovery rig, the session
+parser-regression, and any future readers — must consume the matrix
 programmatically, not parse this prose. When this document and the
 matrix disagree, the matrix wins.
 

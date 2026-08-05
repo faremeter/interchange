@@ -2,7 +2,7 @@
 // for every captured exchange, register tool handlers that serve
 // captured dispatch results verbatim, and drive production
 // `runInference` through it. Replay surfaces orchestration-layer
-// regressions that the single-exchange compat-replay layer cannot
+// regressions that a single-exchange parser regression cannot
 // see — multi-turn body construction, conversation history
 // threading, dispatch wiring, terminal sequencing across turns.
 //

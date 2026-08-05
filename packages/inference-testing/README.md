@@ -303,9 +303,10 @@ orchestration layer above the adapter — multi-turn body construction,
 conversation history threading, tool dispatch wiring, terminal
 sequencing across turns.
 
-Where the existing `runCompatReplay` holds **one** exchange constant
-to surface adapter regressions, session replay holds an **entire
-conversation** constant: every exchange plus every tool dispatch.
+Where the session parser-regression holds **one** exchange's response
+constant to surface adapter decode regressions, session replay holds
+an **entire conversation** constant: every exchange plus every tool
+dispatch.
 If the production reactor changes how it serialises a `tool_result`
 block, or how it threads previous turns into a new request body,
 the corresponding exchange's body diverges from capture and
