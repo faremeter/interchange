@@ -1,5 +1,14 @@
 import { eq, and, isNull } from "drizzle-orm";
 
+import { toolConsumer } from "@intx/authz";
+import { credentialAad } from "@intx/types";
+import type { CredentialBinding, CredentialCipher } from "@intx/types";
+import type {
+  CredentialBindingDescriptor,
+  CredentialDelivery,
+  CredentialMaterialEntry,
+} from "@intx/types/sidecar";
+
 import type { DB } from "./client";
 import { credential } from "./schema/credentials";
 import { oauthClient } from "./schema/oauth-clients";
@@ -29,7 +38,8 @@ export class AmbiguousCredentialError extends Error {
  * an ancestor) owns, and descendants inherit; a principal-owned credential is
  * never usable this way, its delegation flowing from its owner instead. It
  * wraps `resolveCredentialById` (the ancestor-chain check) with the tenant-owned
- * gate, so callers do not re-implement the predicate.
+ * gate, so callers do not re-implement the predicate. `buildSource` expands it
+ * inline only to distinguish an unresolved reference from a principal-owned one.
  */
 export async function resolveTenantOwnedCredentialById(
   db: DB["db"],
@@ -208,4 +218,178 @@ export async function resolveCredentialRequirement(
   }
 
   return null;
+}
+
+/**
+ * A launch-blocking CONFIGURATION failure for one binding: a binding no
+ * credential resolves, a provider with no API origin (can't pin an http
+ * handle), or an ambiguous match. Distinct from an infrastructure failure (a DB
+ * read fault), which `buildCredentialDelivery` THROWS rather than returning --
+ * so a caller never mistakes a transient fault for revocation.
+ */
+export type CredentialDeliveryFailure = {
+  code: "unresolved" | "no_origin" | "ambiguous";
+  binding: { provider: string; package: string; handle: string };
+  message: string;
+};
+
+/**
+ * A `credential:{id}` / `use` grant the launch stamps onto the instance
+ * principal for a resolved binding, scoped to the consuming tool package by the
+ * `{ tool }` condition. Ownership is already proven by resolution, so this is a
+ * consumer-scoping artifact the runtime per-consumer gate reads -- not a
+ * delegation the launch re-authorizes; the caller stamps it with
+ * `origin: 'system'` directly.
+ */
+export type BindingCredentialGrant = {
+  resource: string;
+  conditions: { tool: string };
+};
+
+/**
+ * Outcome of `buildCredentialDelivery`. `ok: true` carries the material +
+ * descriptors delivered to the tools and the `credential:{id}` / `use` grants
+ * the launch stamps; `delivery` is `undefined` when there are no bindings.
+ * `ok: false` carries the first launch-blocking configuration failure for the
+ * caller to map to a fail-closed response.
+ */
+export type BuildCredentialDeliveryResult =
+  | {
+      ok: true;
+      delivery: CredentialDelivery | undefined;
+      bindingGrants: BindingCredentialGrant[];
+    }
+  | { ok: false; reason: CredentialDeliveryFailure };
+
+/**
+ * Resolve a definition's credential bindings into the material + per-handle
+ * descriptors delivered to its tools, plus the `credential:{id}` / `use` grant
+ * requirements the launch materializes. Each credential's secret is decrypted
+ * once, keyed by credentialId (a credential backing several handles is
+ * decrypted once).
+ *
+ * The launch path (`instances.ts`) is the only caller today, using both
+ * `delivery` and `bindingGrants`. The shape is built to also serve a planned
+ * reconnect re-push that would re-deliver `delivery` alone (the grants survive
+ * on the workflow-run substrate, so only the material needs re-sending) --
+ * which is why it returns a discriminated result rather than an HTTP response
+ * and is safe to call off the request path: a configuration failure is
+ * `ok: false`, and a transient DB read fault THROWS so the caller surfaces it
+ * (and a future reconnect caller can retry) rather than silently dropping a
+ * still-valid credential.
+ */
+export async function buildCredentialDelivery(args: {
+  db: DB["db"];
+  tenantId: string;
+  bindings: readonly CredentialBinding[];
+  creatorPrincipalId: string | null;
+  invokerPrincipalId: string | null;
+  credentialCipher: CredentialCipher;
+}): Promise<BuildCredentialDeliveryResult> {
+  const materials = new Map<string, CredentialMaterialEntry>();
+  const descriptors: CredentialBindingDescriptor[] = [];
+  const bindingGrants: BindingCredentialGrant[] = [];
+
+  for (const binding of args.bindings) {
+    const context = {
+      provider: binding.provider,
+      package: binding.package,
+      handle: binding.handle,
+    };
+
+    let resolved: Awaited<ReturnType<typeof resolveCredentialRequirement>>;
+    try {
+      resolved = await resolveCredentialRequirement(
+        args.db,
+        args.tenantId,
+        {
+          providerName: binding.provider,
+          source: binding.locator,
+          ...(binding.name !== undefined ? { name: binding.name } : {}),
+        },
+        args.creatorPrincipalId,
+        args.invokerPrincipalId,
+      );
+    } catch (e) {
+      // AmbiguousCredentialError is a launch-blocking config failure; any other
+      // throw is a DB read fault the resolver performs first -- surface it, do
+      // not mislabel it as revocation.
+      if (!(e instanceof AmbiguousCredentialError)) throw e;
+      return {
+        ok: false,
+        reason: {
+          code: "ambiguous",
+          binding: context,
+          message: `Ambiguous credential for the binding on provider ${binding.provider} (package ${binding.package}, handle ${binding.handle}): ${e.message}`,
+        },
+      };
+    }
+
+    if (resolved === null) {
+      return {
+        ok: false,
+        reason: {
+          code: "unresolved",
+          binding: context,
+          message: `No credential resolves the binding for provider ${binding.provider} (package ${binding.package}, handle ${binding.handle})`,
+        },
+      };
+    }
+
+    // The credential is delivered as an origin-pinned http handle, so its
+    // provider must declare an API origin. A provider without one (OAuth-login
+    // only) cannot back a tool credential; fail closed rather than deliver an
+    // un-pinnable secret.
+    const providerOrigin = resolved.provider.apiBaseUrl;
+    if (providerOrigin === null || providerOrigin === "") {
+      return {
+        ok: false,
+        reason: {
+          code: "no_origin",
+          binding: context,
+          message: `Provider ${binding.provider} has no API base URL; cannot deliver an origin-pinned credential (package ${binding.package}, handle ${binding.handle})`,
+        },
+      };
+    }
+
+    const credentialId = resolved.credential.id;
+    // A binding resolves only a tenant-owned credential (the `tenant` locator
+    // filters `principalId IS NULL` in resolveCredentialRequirement), so its use
+    // is authorized by ownership -- already proven by this walk-up resolution,
+    // not re-checked downstream. The launch materializes a `credential:{id}` /
+    // `use` grant scoped to this tool package by the `{ tool }` condition; that
+    // grant is what the runtime per-consumer gate reads. No personal grant is
+    // consulted.
+    bindingGrants.push({
+      resource: `credential:${credentialId}`,
+      conditions: { tool: toolConsumer(binding.package) },
+    });
+    descriptors.push({
+      handle: binding.handle,
+      credentialId,
+      consumer: toolConsumer(binding.package),
+    });
+    if (!materials.has(credentialId)) {
+      // Decrypt at the single point of use. A decrypt failure propagates and
+      // fails the caller closed; there is no placeholder secret.
+      materials.set(credentialId, {
+        credentialId,
+        providerKey: resolved.provider.plugin,
+        origin: providerOrigin,
+        secret: await args.credentialCipher.decrypt(
+          resolved.credential.secret,
+          credentialAad(credentialId, "secret"),
+        ),
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    delivery:
+      descriptors.length > 0
+        ? { bindings: descriptors, materials: [...materials.values()] }
+        : undefined,
+    bindingGrants,
+  };
 }
