@@ -41,6 +41,11 @@ export const OpenAIQuirks = type({
   // Constrained to the fields the chunk schema declares so the type cannot
   // promise a field the parser would drop before reading.
   "reasoningFieldNames?": "('reasoning_content' | 'reasoning')[]",
+  // Which field carries the output-token cap. First-party OpenAI gpt-5.x
+  // rejects `max_tokens` and requires `max_completion_tokens`; relays served
+  // through the same adapter (e.g. OpenCode Zen) still take `max_tokens`.
+  // Defaults to `max_tokens` so every existing deployment is unchanged.
+  "maxTokensField?": "'max_tokens' | 'max_completion_tokens'",
   // Reject unknown keys so a mistyped quirk name fails loudly at construction
   // rather than being silently ignored and running with default behavior.
   "+": "reject",
@@ -59,6 +64,7 @@ const DEFAULT_REASONING_FIELDS: readonly ReasoningField[] = [
 type ResolvedOpenAIQuirks = {
   forceAssistantReasoningContent: boolean;
   reasoningFieldNames: readonly ReasoningField[];
+  maxTokensField: "max_tokens" | "max_completion_tokens";
 };
 
 // ---------------------------------------------------------------------------
@@ -77,7 +83,7 @@ function buildRequest(
 
   const body: Record<string, unknown> = {
     model,
-    max_tokens: options.maxTokens ?? 4096,
+    [quirks.maxTokensField]: options.maxTokens ?? 4096,
     messages: convertedMessages,
     stream: true,
   };
@@ -1085,6 +1091,7 @@ export function createOpenAIAdapter(
       parsedQuirks.forceAssistantReasoningContent ?? false,
     reasoningFieldNames:
       parsedQuirks.reasoningFieldNames ?? DEFAULT_REASONING_FIELDS,
+    maxTokensField: parsedQuirks.maxTokensField ?? "max_tokens",
   };
 
   // Per-request indexer state. Adapter instances are created per
