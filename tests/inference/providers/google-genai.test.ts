@@ -9,9 +9,11 @@
 //     accumulated `PartialMessage` and final `inference.done` turn
 //     line up with the parser's emissions
 //
-// The fixtures live in `packages/inference-discovery-google-genai/wire/google-genai`
-// and were captured against live Gemini endpoints; any drift between
-// adapter output and fixture is a real protocol mismatch.
+// The fixtures live in the session corpus under
+// `packages/inference-discovery-google-genai/sessions/google-genai`, one
+// `exchanges/<i>/` directory per captured HTTP exchange, and were captured
+// against live Gemini endpoints; any drift between adapter output and
+// fixture is a real protocol mismatch.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -55,7 +57,7 @@ const FIXTURE_ROOT = join(
   "..",
   "packages",
   "inference-discovery-google-genai",
-  "wire",
+  "sessions",
   "google-genai",
 );
 
@@ -183,6 +185,8 @@ describe("Google GenAI adapter: body shape", () => {
     const fixture = readFixtureJSON(
       "gemini-2.5-flash",
       "plain-text",
+      "exchanges",
+      "0",
       "request.json",
     );
     expect(body).toEqual(fixture);
@@ -785,6 +789,8 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     const { fixture, mimeType, data } = loadInlineDataFixture(
       "gemini-2.5-flash",
       "vision-input-streaming",
+      "exchanges",
+      "0",
       "request.json",
     );
     const req = adapter.buildRequest(
@@ -814,6 +820,8 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     const { fixture, mimeType, data } = loadInlineDataFixture(
       "gemini-2.5-flash",
       "audio-input-streaming",
+      "exchanges",
+      "0",
       "request.json",
     );
     const req = adapter.buildRequest(
@@ -843,6 +851,8 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     const { fixture, mimeType, data } = loadInlineDataFixture(
       "gemini-2.5-flash",
       "video-input-streaming",
+      "exchanges",
+      "0",
       "request.json",
     );
     const req = adapter.buildRequest(
@@ -872,6 +882,8 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     const { fixture, mimeType, data } = loadInlineDataFixture(
       "gemini-2.5-flash",
       "document-input-streaming",
+      "exchanges",
+      "0",
       "request.json",
     );
     const req = adapter.buildRequest(
@@ -903,7 +915,8 @@ describe("Google GenAI adapter: multimodal input fixture parity", () => {
     const fixture = readFixtureJSON(
       "gemini-2.5-flash",
       "files-api-reference-streaming",
-      "generate",
+      "exchanges",
+      "1",
       "request.json",
     );
     const { mimeType, fileUri } = FixtureFileDataPart.assert(
@@ -1043,7 +1056,8 @@ describe("Google GenAI adapter: conversation-turn mapping", () => {
     const fixture = readFixtureJSON(
       "gemini-2.5-flash",
       "function-calling-multi-turn-streaming",
-      "turn-2",
+      "exchanges",
+      "1",
       "request.json",
     );
     expect(body).toEqual(fixture);
@@ -1587,6 +1601,8 @@ describe("Google GenAI adapter: parseResponse plain text", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "plain-text-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -1634,6 +1650,8 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "safety-classification-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -1706,6 +1724,8 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "safety-classification-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -1848,6 +1868,8 @@ describe("Google GenAI adapter: harness round trip", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "plain-text-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -2539,7 +2561,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "function-calling-multi-turn-streaming",
-        "turn-1",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -2578,7 +2601,8 @@ describe("Google GenAI adapter: parseResponse function-calling", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "function-calling-with-thinking-streaming",
-        "turn-1",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -2848,7 +2872,8 @@ describe("Google GenAI adapter: buildRequest thinking round trip", () => {
     const FIXTURE = readFixtureJSON(
       "gemini-2.5-flash",
       "function-calling-with-thinking-streaming",
-      "turn-2",
+      "exchanges",
+      "1",
       "request.json",
     );
     const fixtureParts = GeminiContents.assert(FIXTURE.contents)[1]?.parts;
@@ -2988,7 +3013,8 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "function-calling-with-thinking-streaming",
-        "turn-1",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -3321,6 +3347,8 @@ describe("Google GenAI adapter: parseResponse image output", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash-image",
         "image-output-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -3388,6 +3416,8 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash-image",
         "image-output-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -3683,6 +3713,8 @@ describe("Google GenAI adapter: parseResponse grounding", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "grounding-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -3741,6 +3773,8 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "grounding-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -4109,6 +4143,8 @@ describe("Google GenAI adapter: parseResponse code execution", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "code-execution-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
@@ -4178,6 +4214,8 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         FIXTURE_ROOT,
         "gemini-2.5-flash",
         "code-execution-streaming",
+        "exchanges",
+        "0",
         "response.sse",
       ),
     );
