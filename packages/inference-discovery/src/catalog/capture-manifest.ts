@@ -19,6 +19,11 @@ export const CaptureManifest = type({
     provider: "string",
     model: "string",
     baseURL: "string",
+    // The adapter quirks the source was captured with, when non-default. A
+    // replay reconstructs its InferenceSource from this manifest, so a quirk
+    // that shaped the request (e.g. first-party OpenAI's max_completion_tokens
+    // field) must be recorded here or the reconstructed request would diverge.
+    "quirks?": "Record<string, unknown>",
   }),
   // Distinguishes a capture recorded against a real provider endpoint
   // ("live") from one produced through the synthetic wire DSL ("synthetic").

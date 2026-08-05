@@ -21,6 +21,7 @@ import type {
   ConversationTurn,
   InferenceEvent,
   InferenceSource,
+  ToolDefinition,
 } from "@intx/types/runtime";
 
 import { runInference, type Dependencies } from "@intx/inference";
@@ -131,6 +132,13 @@ export interface RunTurnOpts {
    * the full replay.
    */
   nextSeq?: () => number;
+  /**
+   * Tool definitions to declare on this turn's request, mirroring what the
+   * recording sent. A capture whose request declared tools reconstructs into a
+   * matching body only if the same tools are declared here; omit for captures
+   * that carried none.
+   */
+  tools?: ToolDefinition[];
 }
 
 export interface ReplayHarness {
@@ -509,6 +517,9 @@ export async function createReplayHarness(
     baseURL: manifest.source.baseURL,
     apiKey: opts.apiKey ?? "session-replay-stub",
     model: manifest.source.model,
+    ...(manifest.source.quirks !== undefined
+      ? { quirks: manifest.source.quirks }
+      : {}),
   };
 
   const inner = setupHarness();
@@ -664,7 +675,10 @@ export async function createReplayHarness(
         // result. Pin an abort-only policy so the inert scheduler
         // does not deadlock the wrapper on the retry-delay setTimeout
         // when an unmatched-fetch error surfaces through the harness.
-        inferenceOptions: { retryPolicy: () => ({ kind: "abort" }) },
+        inferenceOptions: {
+          retryPolicy: () => ({ kind: "abort" }),
+          ...(runOpts.tools !== undefined ? { tools: runOpts.tools } : {}),
+        },
       })) {
         events.push(ev);
       }
@@ -898,6 +912,9 @@ export async function replayResponsesForParsing(
     baseURL: manifest.source.baseURL,
     apiKey: "session-replay-stub",
     model: manifest.source.model,
+    ...(manifest.source.quirks !== undefined
+      ? { quirks: manifest.source.quirks }
+      : {}),
   };
 
   // Build the adapter registry + scheduler once; only `fetch` (which closes
