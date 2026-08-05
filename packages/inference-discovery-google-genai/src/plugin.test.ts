@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   INTENTS,
   SUPPORT_MATRIX,
-  getFixtureDir,
+  getSessionDir,
   type Capability,
   type ToolDecl,
 } from "@intx/inference-discovery/catalog";
@@ -29,37 +29,60 @@ const FILES_API_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "files-api-reference-streaming",
 ]);
 
-function readFixtureJSON(fixtureDir: string, ...parts: string[]): unknown {
-  const raw = readFileSync(join(REPO_ROOT, fixtureDir, ...parts), "utf8");
+function exchangePath(
+  sessionDir: string,
+  exchangeIndex: number,
+  file: string,
+): string {
+  return join(REPO_ROOT, sessionDir, "exchanges", String(exchangeIndex), file);
+}
+
+function readExchangeJSON(
+  sessionDir: string,
+  exchangeIndex: number,
+  file: string,
+): unknown {
+  const raw = readFileSync(
+    exchangePath(sessionDir, exchangeIndex, file),
+    "utf8",
+  );
   return JSON.parse(raw);
 }
 
-function readFixtureBytes(fixtureDir: string, ...parts: string[]): Uint8Array {
-  const buf = readFileSync(join(REPO_ROOT, fixtureDir, ...parts));
+function readExchangeBytes(
+  sessionDir: string,
+  exchangeIndex: number,
+  file: string,
+): Uint8Array {
+  const buf = readFileSync(exchangePath(sessionDir, exchangeIndex, file));
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
 
-function fixtureFileExists(fixtureDir: string, ...parts: string[]): boolean {
+function exchangeFileExists(
+  sessionDir: string,
+  exchangeIndex: number,
+  file: string,
+): boolean {
   try {
-    readFileSync(join(REPO_ROOT, fixtureDir, ...parts));
+    readFileSync(exchangePath(sessionDir, exchangeIndex, file));
     return true;
   } catch {
     return false;
   }
 }
 
-function loadTurn1Response(fixtureDir: string): unknown {
-  if (fixtureFileExists(fixtureDir, "turn-1", "response.json")) {
-    return readFixtureJSON(fixtureDir, "turn-1", "response.json");
+function loadTurn1Response(sessionDir: string): unknown {
+  if (exchangeFileExists(sessionDir, 0, "response.json")) {
+    return readExchangeJSON(sessionDir, 0, "response.json");
   }
-  const turn2Body = readFixtureJSON(fixtureDir, "turn-2", "request.json");
+  const turn2Body = readExchangeJSON(sessionDir, 1, "request.json");
   if (!isPlainObject(turn2Body)) {
-    throw new Error(`turn-2 request body is not an object in ${fixtureDir}`);
+    throw new Error(`turn-2 request body is not an object in ${sessionDir}`);
   }
   const contents = turn2Body.contents;
   if (!Array.isArray(contents) || contents.length < 2) {
     throw new Error(
-      `turn-2 request body has no model-role assistant content in ${fixtureDir}`,
+      `turn-2 request body has no model-role assistant content in ${sessionDir}`,
     );
   }
   const assistantContent = contents[1];
@@ -613,10 +636,10 @@ describe("buildRequestBody — wire-shape spot checks", () => {
 describe("fixture-oracle: iterateCaptureSteps structurally matches every captured step's wire", () => {
   for (const entry of googleGenaiCapturedEntries()) {
     test(`${entry.model} / ${entry.capability}`, () => {
-      const fixtureDir = getFixtureDir(entry);
-      if (fixtureDir === null) {
+      const sessionDir = getSessionDir(entry);
+      if (sessionDir === null) {
         throw new Error(
-          `entry ${entry.model}/${entry.capability} has no captured fixture directory`,
+          `entry ${entry.model}/${entry.capability} has no session directory`,
         );
       }
 
@@ -624,7 +647,7 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
       const isFilesApi = FILES_API_CAPABILITIES.has(entry.capability);
 
       if (isMultiTurn) {
-        const turn1ParsedResponse = loadTurn1Response(fixtureDir);
+        const turn1ParsedResponse = loadTurn1Response(sessionDir);
         const turn1Response: CapturedResponse = {
           status: 200,
           headers: {},
@@ -648,8 +671,8 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
         expect(step1.url).toBe(expectedURL);
         expect(step2.url).toBe(expectedURL);
 
-        const captured1 = readFixtureJSON(fixtureDir, "turn-1", "request.json");
-        const captured2 = readFixtureJSON(fixtureDir, "turn-2", "request.json");
+        const captured1 = readExchangeJSON(sessionDir, 0, "request.json");
+        const captured2 = readExchangeJSON(sessionDir, 1, "request.json");
         expect(normalizeForStructuralComparison(step1.body)).toEqual(
           normalizeForStructuralComparison(captured1),
         );
@@ -663,7 +686,7 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
         const uploadResponse: CapturedResponse = {
           status: 200,
           headers: {},
-          parsed: readFixtureJSON(fixtureDir, "upload", "response.json"),
+          parsed: readExchangeJSON(sessionDir, 0, "response.json"),
           bytes: null,
         };
         const steps = collectSteps({
@@ -689,9 +712,9 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
         if (uploadStep.kind !== "raw") {
           throw new Error("expected files-api upload step to be raw-bytes");
         }
-        const capturedUploadBytes = readFixtureBytes(
-          fixtureDir,
-          "upload",
+        const capturedUploadBytes = readExchangeBytes(
+          sessionDir,
+          0,
           "request.bin",
         );
         expect(uploadStep.contentType).toBe("application/pdf");
@@ -701,9 +724,9 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
         if (generateStep.kind !== "json") {
           throw new Error("expected files-api generate step to be JSON");
         }
-        const capturedGenerate = readFixtureJSON(
-          fixtureDir,
-          "generate",
+        const capturedGenerate = readExchangeJSON(
+          sessionDir,
+          1,
           "request.json",
         );
         expect(normalizeForStructuralComparison(generateStep.body)).toEqual(
@@ -728,7 +751,7 @@ describe("fixture-oracle: iterateCaptureSteps structurally matches every capture
           capability: entry.capability,
         }),
       );
-      const captured = readFixtureJSON(fixtureDir, "request.json");
+      const captured = readExchangeJSON(sessionDir, 0, "request.json");
       expect(normalizeForStructuralComparison(only.body)).toEqual(
         normalizeForStructuralComparison(captured),
       );

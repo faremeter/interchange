@@ -33,7 +33,7 @@ const FIXTURE_ROOT = join(
   "..",
   "packages",
   "inference-discovery-google-genai",
-  "wire",
+  "sessions",
   "google-genai",
 );
 
@@ -41,7 +41,8 @@ const UPLOAD_RESPONSE_FIXTURE = join(
   FIXTURE_ROOT,
   "gemini-2.5-flash",
   "files-api-reference-streaming",
-  "upload",
+  "exchanges",
+  "0",
   "response.json",
 );
 
@@ -49,7 +50,8 @@ const UPLOAD_REQUEST_BIN = join(
   FIXTURE_ROOT,
   "gemini-2.5-flash",
   "files-api-reference-streaming",
-  "upload",
+  "exchanges",
+  "0",
   "request.bin",
 );
 

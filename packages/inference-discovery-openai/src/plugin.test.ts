@@ -4,7 +4,7 @@ import path from "node:path";
 import {
   INTENTS,
   SUPPORT_MATRIX,
-  getFixtureDir,
+  getSessionDir,
   type Capability,
   type SupportEntry,
 } from "@intx/inference-discovery/catalog";
@@ -30,14 +30,24 @@ function makePlugin() {
   });
 }
 
-function loadFixtureJSON(entry: SupportEntry, ...parts: string[]): unknown {
-  const relDir = getFixtureDir(entry);
+function loadExchangeJSON(
+  entry: SupportEntry,
+  exchangeIndex: number,
+  file: string,
+): unknown {
+  const relDir = getSessionDir(entry);
   if (relDir === null) {
     throw new Error(
-      `entry has no fixture dir: ${entry.provider}/${entry.model}/${entry.capability}`,
+      `entry has no session dir: ${entry.provider}/${entry.model}/${entry.capability}`,
     );
   }
-  const filePath = path.join(REPO_ROOT, relDir, ...parts);
+  const filePath = path.join(
+    REPO_ROOT,
+    relDir,
+    "exchanges",
+    String(exchangeIndex),
+    file,
+  );
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
@@ -202,7 +212,7 @@ function assertStructuralMatch(opts: {
     const turn1Response: CapturedResponse = {
       status: 200,
       headers: {},
-      parsed: loadFixtureJSON(entry, "turn-1", "response.json"),
+      parsed: loadExchangeJSON(entry, 0, "response.json"),
       bytes: null,
     };
     const steps = collectSteps({
@@ -219,8 +229,8 @@ function assertStructuralMatch(opts: {
     expect(step1.url).toBe(chatUrl);
     expect(step2.url).toBe(chatUrl);
 
-    const captured1 = loadFixtureJSON(entry, "turn-1", "request.json");
-    const captured2 = loadFixtureJSON(entry, "turn-2", "request.json");
+    const captured1 = loadExchangeJSON(entry, 0, "request.json");
+    const captured2 = loadExchangeJSON(entry, 1, "request.json");
 
     const cap1Schema = extractSchema(pruneEphemeral(captured1));
     const built1Schema = extractSchema(pruneEphemeral(step1.body));
@@ -248,7 +258,7 @@ function assertStructuralMatch(opts: {
     return;
   }
 
-  const captured = loadFixtureJSON(entry, "request.json");
+  const captured = loadExchangeJSON(entry, 0, "request.json");
   const steps = collectSteps({
     model: entry.model,
     capability: entry.capability,
