@@ -1,0 +1,52 @@
+{
+  "model": "kimi-k2.5",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the current weather in San Francisco? Use the weather tool to check, then tell me in one sentence."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "reasoning_content": "The user wants to know the current weather in San Francisco. They've explicitly asked me to use the weather tool to check, and then tell them in one sentence.\n\nLet me call the weather tool with the location \"San Francisco\".",
+      "tool_calls": [
+        {
+          "id": "weather_0",
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "arguments": "{\"location\":\"San Francisco\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "weather_0",
+      "content": "{\"location\":\"San Francisco\",\"temperatureF\":68,\"conditions\":\"fog\"}"
+    }
+  ],
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "weather",
+        "description": "Get the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City name, e.g. 'San Francisco'"
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

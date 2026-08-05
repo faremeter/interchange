@@ -24,7 +24,6 @@ import type {
   InferenceEvent,
   InferenceOptions,
   InferenceSource,
-  ToolDefinition,
 } from "@intx/types/runtime";
 import {
   adapterForCatalogProvider,
@@ -33,31 +32,14 @@ import {
 import {
   createRecordingHarness,
   userTurn,
+  LIVE_TOOL_DEFINITIONS,
+  LIVE_TOOL_PROMPT,
   type RecordingFetchLike,
 } from "@intx/inference-testing";
 
 import { OPENAI_FIRSTPARTY_QUIRKS } from "./lib/openai-quirks";
 
-const WEATHER_TOOL: ToolDefinition = {
-  name: "weather",
-  description: "Get the current weather for a city.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      location: {
-        type: "string",
-        description: "City name, e.g. 'San Francisco'",
-      },
-    },
-    required: ["location"],
-  },
-};
-
-const INFERENCE_OPTIONS: InferenceOptions = { tools: [WEATHER_TOOL] };
-
-const PROMPT =
-  "What is the current weather in San Francisco? " +
-  "Use the weather tool to check, then tell me in one sentence.";
+const INFERENCE_OPTIONS: InferenceOptions = { tools: LIVE_TOOL_DEFINITIONS };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -148,13 +130,23 @@ export async function recordLiveSession(
       provider: adapterProvider,
       model: opts.model,
       baseURL: opts.baseURL,
+      ...(opts.quirks !== undefined && Object.keys(opts.quirks).length > 0
+        ? { quirks: opts.quirks }
+        : {}),
     },
     // Two turns, plus headroom for a provider-side retry, still bounded so a
     // runaway loop can't silently rack up charges.
     maxExchanges: 4,
     // Every provider's auth header, so a live capture never commits a key.
     redactRequestHeaders: ["x-api-key", "authorization", "x-goog-api-key"],
-    redactResponseHeaders: ["set-cookie"],
+    // set-cookie plus the provider account/org/project identifiers, so a
+    // committed capture cannot be traced back to a specific account.
+    redactResponseHeaders: [
+      "set-cookie",
+      "anthropic-organization-id",
+      "openai-organization",
+      "openai-project",
+    ],
     ...(opts.fetch !== undefined
       ? { fetch: opts.fetch, bypassCIGuardForTests: true }
       : {}),
@@ -174,7 +166,7 @@ export async function recordLiveSession(
   let seq = 0;
   const turn1Events: InferenceEvent[] = [];
   for await (const ev of harness.runInference({
-    turns: [userTurn(PROMPT)],
+    turns: [userTurn(LIVE_TOOL_PROMPT)],
     source,
     inferenceOptions: INFERENCE_OPTIONS,
     nextSeq: () => ++seq,
@@ -204,7 +196,7 @@ export async function recordLiveSession(
   };
 
   for await (const _ev of harness.runInference({
-    turns: [userTurn(PROMPT), turn1Done.data.turn, toolResultTurn],
+    turns: [userTurn(LIVE_TOOL_PROMPT), turn1Done.data.turn, toolResultTurn],
     source,
     inferenceOptions: INFERENCE_OPTIONS,
     nextSeq: () => ++seq,

@@ -104,3 +104,8 @@ export type {
 } from "./session-replay";
 
 export { userTurn } from "./turns";
+export {
+  LIVE_WEATHER_TOOL,
+  LIVE_TOOL_DEFINITIONS,
+  LIVE_TOOL_PROMPT,
+} from "./live-tool-scenario";

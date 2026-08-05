@@ -16,11 +16,14 @@ import { fileURLToPath } from "node:url";
 
 import {
   INVARIANTS,
+  LIVE_TOOL_DEFINITIONS,
+  LIVE_TOOL_PROMPT,
   createReplayHarness,
   userTurn,
   type CapturedDispatch,
   type ReplayHarness,
 } from "@intx/inference-testing";
+import { loadCaptureManifest } from "@intx/inference-discovery/catalog";
 import type { ConversationTurn, InferenceEvent } from "@intx/types/runtime";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -260,4 +263,104 @@ describe("session replay integration", () => {
     // would have surfaced from `runTurn`.
     expect(conversation.length).toBeGreaterThan(1);
   });
+});
+
+// The committed live sessions (origin "live") were recorded against real
+// provider endpoints by bin/record-live-sessions.ts, one multi-turn tool
+// conversation per adapter. Their exact bytes are non-reproducible — the model
+// chose the wording and the tool argument — so these assert the shape the
+// recorder guarantees (two turns, at least one reconstructed dispatch, a real
+// tool call) rather than literal counts or text. Replay itself is still
+// deterministic: the harness drives production runInference over the committed
+// bytes and its body-aware matchers enforce per-turn fidelity, so a round-trip
+// regression in any real adapter surfaces here as a SessionReplayMismatchError.
+const PACKAGES_ROOT = path.resolve(__dirname, "..", "..", "packages");
+
+const LIVE_SESSIONS: readonly { name: string; pkg: string; brand: string }[] = [
+  {
+    name: "anthropic",
+    pkg: "inference-discovery-anthropic",
+    brand: "anthropic",
+  },
+  { name: "openai", pkg: "inference-discovery-openai", brand: "openai" },
+  {
+    name: "opencode-zen",
+    pkg: "inference-discovery-openai",
+    brand: "opencode-zen",
+  },
+  {
+    name: "google-genai",
+    pkg: "inference-discovery-google-genai",
+    brand: "google-genai",
+  },
+];
+
+describe("live session replay integration", () => {
+  for (const { name, pkg, brand } of LIVE_SESSIONS) {
+    test(`${name} live tool session replays end-to-end`, async () => {
+      const sessionDir = path.join(
+        PACKAGES_ROOT,
+        pkg,
+        "live-sessions",
+        brand,
+        "tool-multi-turn",
+      );
+
+      const manifest = await loadCaptureManifest(sessionDir);
+      expect(manifest.origin).toBe("live");
+
+      const replay = await createReplayHarness({ sessionDir });
+      activeReplay = replay;
+
+      // The recorder always drives two turns — the tool call, then the answer
+      // that consumes its result — and reconstructs at least one dispatch.
+      expect(replay.capturedExchanges).toHaveLength(2);
+      expect(replay.capturedDispatches.length).toBeGreaterThanOrEqual(1);
+
+      let conversation: ConversationTurn[] = [userTurn(LIVE_TOOL_PROMPT)];
+      let remainingDispatches: CapturedDispatch[] = [
+        ...replay.capturedDispatches,
+      ];
+      const perTurnEvents: InferenceEvent[][] = [];
+      let sawToolCall = false;
+
+      for (let i = 0; i < replay.capturedExchanges.length; i++) {
+        const events = await replay.runTurn({
+          turns: conversation,
+          tools: LIVE_TOOL_DEFINITIONS,
+        });
+        perTurnEvents.push(events);
+        validateInvariants(events);
+        const done = events.find((e) => e.type === "inference.done");
+        if (done === undefined || done.type !== "inference.done") {
+          throw new Error(`${name} turn ${String(i)}: expected inference.done`);
+        }
+        const callIds = extractToolCallIds(done.data.turn);
+        if (callIds.length === 0) continue;
+        sawToolCall = true;
+        const { used, rest } = dispatchesUsedByTurn(
+          remainingDispatches,
+          callIds.length,
+        );
+        remainingDispatches = rest;
+        conversation = [
+          ...conversation,
+          done.data.turn,
+          {
+            role: "user",
+            content: toolResultBlocks(
+              callIds,
+              used.map((d) => d.result),
+            ),
+            timestamp: 0,
+          },
+        ];
+      }
+
+      expect(sawToolCall).toBe(true);
+      replay.assertFullyConsumed();
+      expect(perTurnEvents).toHaveLength(replay.capturedExchanges.length);
+      expect(remainingDispatches).toHaveLength(0);
+    });
+  }
 });
