@@ -99,6 +99,7 @@ describe("applyAtomic success", () => {
         plugins: [],
         factories: [fakeFactory("@foo/a")],
         directors: [],
+        credentials: [],
       },
     ]);
     const result = await applyAtomic({
@@ -248,6 +249,7 @@ describe("applyAtomic failure: tool.name.duplicate", () => {
         plugins: [],
         factories: [fakeFactory("@dup/x")],
         directors: [],
+        credentials: [],
       },
       {
         name: "b",
@@ -255,6 +257,7 @@ describe("applyAtomic failure: tool.name.duplicate", () => {
         plugins: [],
         factories: [fakeFactory("@dup/x")],
         directors: [],
+        credentials: [],
       },
     ]);
     const result = await applyAtomic({
@@ -284,6 +287,7 @@ describe("applyAtomic failure: tool.name.duplicate", () => {
         plugins: [fakePlugin("dup/plug")],
         factories: [],
         directors: [],
+        credentials: [],
       },
       {
         name: "b",
@@ -291,6 +295,7 @@ describe("applyAtomic failure: tool.name.duplicate", () => {
         plugins: [fakePlugin("dup/plug")],
         factories: [],
         directors: [],
+        credentials: [],
       },
     ]);
     const result = await applyAtomic({

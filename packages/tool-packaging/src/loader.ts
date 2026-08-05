@@ -42,6 +42,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import semver from "semver";
 import npmRegistryFetch from "npm-registry-fetch";
+import { type } from "arktype";
 
 import type {
   AnnotatedDirectorFactory,
@@ -50,6 +51,8 @@ import type {
   BaseEnv,
 } from "@intx/agent";
 import { isAnnotatedPluginFactory } from "@intx/agent";
+import type { ToolCredentialDeclaration } from "@intx/types/package-json";
+import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
 import type { ToolCall, ToolResult } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
@@ -103,6 +106,17 @@ export interface LoadedToolPackage {
    * valid.
    */
   readonly directors: readonly LoadedDirectorFactory[];
+  /**
+   * The provider-backed credentials the package's tools statically
+   * declare via `interchange.credentials`. A declaration is advisory: it
+   * names a handle the agent definition binds to a concrete credential and
+   * the launch-time grant gate authorizes; it consents to nothing on its
+   * own. Surfaced here -- parsed from the SAME `package.json` the code
+   * loaded from -- so the declared set is the authoritative one (the loaded
+   * package's own) rather than a hub manifest that could drift. Empty when
+   * the package omits the field; a tools-only package stays valid.
+   */
+  readonly credentials: readonly ToolCredentialDeclaration[];
 }
 
 export interface HostPlatform {
@@ -446,12 +460,19 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       }
     }
 
+    // Inline credential declarations: read + validate from the same
+    // package.json above. Runs after the tools/directors walks so a
+    // malformed `interchange.credentials` surfaces the same
+    // package.entry.invalid class as a bad tool/director entry.
+    const credentials = readInterchangeCredentials(pkgJson, entry);
+
     return {
       name: entry.name,
       version: entry.version,
       factories,
       plugins,
       directors,
+      credentials,
     };
   }
 
@@ -1469,6 +1490,38 @@ function readInterchangeEntry(
   }
   if (typeof value !== "string") return null;
   return value;
+}
+
+/**
+ * Read a package's inline `interchange.credentials` declarations from its
+ * parsed `package.json`. Unlike `tools`/`directors` (module-path fields
+ * `readInterchangeEntry` resolves and imports), `credentials` is inline
+ * data, so it is validated here against `ToolCredentialDeclarationArray` --
+ * the same arktype the upload boundary enforces. A duplicate handle or a
+ * malformed entry is therefore rejected at load with parity to the push
+ * gate rather than collapsing silently downstream. Absence is a no-op: a
+ * tools-only package that declares no credentials returns an empty array
+ * and stays valid.
+ */
+function readInterchangeCredentials(
+  pkgJson: unknown,
+  entry: ToolPackageManifestEntry,
+): readonly ToolCredentialDeclaration[] {
+  if (pkgJson === null || typeof pkgJson !== "object") return [];
+  if (!("interchange" in pkgJson)) return [];
+  const interchange = (pkgJson as { interchange: unknown }).interchange;
+  if (interchange === null || typeof interchange !== "object") return [];
+  if (!("credentials" in interchange)) return [];
+  const raw = (interchange as { credentials: unknown }).credentials;
+  const validated = ToolCredentialDeclarationArray(raw);
+  if (validated instanceof type.errors) {
+    throw new ToolLoaderError({
+      category: "package.entry.invalid",
+      message: `${entry.name}@${entry.version} interchange.credentials failed validation: ${validated.summary}`,
+      package: { name: entry.name, version: entry.version },
+    });
+  }
+  return validated;
 }
 
 /**
