@@ -39,6 +39,12 @@ export {
   resolveCredentialRequirement,
   resolveTenantOwnedCredentialById,
   AmbiguousCredentialError,
+  buildCredentialDelivery,
+} from "./credential-resolution";
+export type {
+  BuildCredentialDeliveryResult,
+  BindingCredentialGrant,
+  CredentialDeliveryFailure,
 } from "./credential-resolution";
 export {
   resolveAssetByName,
