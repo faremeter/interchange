@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "gpt-5.5",
+    "baseURL": "https://api.openai.com/v1",
+    "quirks": {
+      "maxTokensField": "max_completion_tokens"
+    }
+  },
+  "origin": "live",
+  "capturedAt": "2026-08-05T15:02:06.332Z"
+}

@@ -1,0 +1,32 @@
+{
+  "model": "gpt-5.5",
+  "max_completion_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the current weather in San Francisco? Use the weather tool to check, then tell me in one sentence."
+    }
+  ],
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "weather",
+        "description": "Get the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City name, e.g. 'San Francisco'"
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What is the current weather in San Francisco? Use the weather tool to check, then tell me in one sentence."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01E4EGDuZV9HfWmSQDM2hgX5",
+          "name": "weather",
+          "input": {
+            "location": "San Francisco"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01E4EGDuZV9HfWmSQDM2hgX5",
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"location\":\"San Francisco\",\"temperatureF\":68,\"conditions\":\"fog\"}"
+            }
+          ],
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "stream": true,
+  "tools": [
+    {
+      "name": "weather",
+      "description": "Get the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City name, e.g. 'San Francisco'"
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ]
+}

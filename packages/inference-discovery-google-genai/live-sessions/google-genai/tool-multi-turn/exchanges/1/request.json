@@ -1,0 +1,63 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What is the current weather in San Francisco? Use the weather tool to check, then tell me in one sentence."
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "weather",
+            "args": {
+              "location": "San Francisco"
+            }
+          },
+          "thoughtSignature": "CiQBEU0yD0csRxgM1gw02BSEodnLBXLBXtgvD83ngaCAXluadvkKcAERTTIPnZ7Y60HfR9LwBJxlbrbBK8cbBzwyCE5D3YiAd8cootqxYxhN1XmzYvHijx4qHFvvemOVLWXgzHUx3qmMq4kXWIH58I7nxwfeEM8ZdXCYtMmFFxEa9z3dNqglGtYeh0UVVhBZ/Jz+JmWWy7cK1gEBEU0yD+d9jI5JWB1k3qBGL+ILdw9qnCSFJzBOhDQcqYHth9yxUBc3qM5byznWsl4dIcRLr3UWbTdiLoHCFJX/NfpXfyOwySKxtjj+VtBxWrXrSYUtWQ+5ea0LkLrecqE391KaiReZkuhgje215wWMa4FrTNuciGRRxY4atEYoXOEbt0/eGxTx4I3CL2TFC+Rw9wpPpPQE6EuDopxKgN20wwO4eLd0NZ7Jpi6v9ZIr/nkKaDco6fgoy+5ai8HO2O+o1SN/45QLSB5+AW+oDSUpqwRttCZ8"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "weather",
+            "response": {
+              "location": "San Francisco",
+              "temperatureF": 68,
+              "conditions": "fog"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "weather",
+          "description": "Get the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City name, e.g. 'San Francisco'"
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "args": {
+    "location": "San Francisco"
+  },
+  "result": {
+    "location": "San Francisco",
+    "temperatureF": 68,
+    "conditions": "fog"
+  }
+}

@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "The current weather in"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 174,"candidatesTokenCount": 4,"totalTokenCount": 178,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 174}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "b1BzaoP2GJGKqtsPyLLj6A8"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " San Francisco is foggy with a temperature of 68 degrees Fahrenheit."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 174,"candidatesTokenCount": 18,"totalTokenCount": 192,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 174}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "b1BzaoP2GJGKqtsPyLLj6A8"}
+
