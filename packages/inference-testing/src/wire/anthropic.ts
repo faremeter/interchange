@@ -373,7 +373,7 @@ export function serverToolUseBlock(
 /**
  * Inner result shape for `codeExecutionToolResultBlock`. Mirrors
  * Anthropic's `code_execution_result` payload as captured in
- * `wire/anthropic/.../code-execution/response.json`.
+ * `sessions/anthropic/.../code-execution/exchanges/0/response.json`.
  */
 export type AnthropicCodeExecutionResult = {
   stdout?: string;

@@ -366,8 +366,8 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
         `OpenAI adapter does not yet handle ${block.type} content blocks.`,
       );
     case "document": {
-      // Grounded on packages/inference-discovery-openai/wire/openai/
-      // gpt-5.5/document-input: Chat Completions takes
+      // Grounded on packages/inference-discovery-openai/sessions/openai/
+      // gpt-5.5/document-input/exchanges/0: Chat Completions takes
       // { type: "file", file: { filename, file_data } } with file_data
       // as a data URI. MediaSource has no filename field, so base64
       // inputs synthesize a deterministic name from mimeType.

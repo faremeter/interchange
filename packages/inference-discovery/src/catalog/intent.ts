@@ -201,7 +201,7 @@ const REDACTED_THINKING: CapabilityIntent = {
 //
 // Capture path: a discovery run of this capability against a provider
 // records request, response body, and headers in the provider's discovery
-// package, under wire/<provider>/<model>/safety-classification/, where they
+// package, under sessions/<provider>/<model>/safety-classification/, where they
 // can be inspected without re-hitting the live endpoint.
 //
 // Prompt ownership: this string is independent of the OpenAI

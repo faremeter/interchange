@@ -2441,10 +2441,10 @@ export type InferenceOptions = {
    * Modalities the caller wants the model to emit. Adapters translate
    * to the provider-native shape (Gemini's
    * `generationConfig.responseModalities` accepts `"TEXT"` / `"IMAGE"`
-   * uppercase; see `packages/inference-discovery-google-genai/wire/
-   * google-genai/gemini-2.5-flash-image/image-output/request.json` for
-   * the captured
-   * shape). Providers that do not expose a modality switch ignore the
+   * uppercase; see `packages/inference-discovery-google-genai/sessions/
+   * google-genai/gemini-2.5-flash-image/image-output/exchanges/0/request.json`
+   * for the captured shape). Providers that do not expose a modality
+   * switch ignore the
    * field. When omitted the provider's default modalities apply.
    */
   responseModalities?: ("text" | "image" | "audio")[];

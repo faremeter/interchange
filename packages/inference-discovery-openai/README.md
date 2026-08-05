@@ -59,7 +59,7 @@ fixture; other non-vision models simply omit vision rows.
 
 The `openai` deployment probes first-party `api.openai.com` directly,
 under provider name `openai` (distinct from `opencode-zen`, though both
-write fixtures into this package's `wire/` tree). The base URL is fixed
+write sessions into this package's `sessions/` tree). The base URL is fixed
 to `https://api.openai.com/v1`; the deployment reads only `OPENAI_API_KEY`.
 
 ```ts

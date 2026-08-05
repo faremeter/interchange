@@ -1,6 +1,6 @@
-// Reconstruct tool dispatches from a captured request transcript. Neither the
-// wire captures nor the probe rig record tool dispatches directly; the tool
-// calls and their fed-back results are embedded in the final request body of a
+// Reconstruct tool dispatches from a captured request transcript. The probe
+// rig does not record tool dispatches directly; the tool calls and their
+// fed-back results are embedded in the final request body of a
 // multi-turn conversation. Walking that body recovers each (call, result) pair
 // once, in call order, which is the session format's `dispatches/` record.
 //

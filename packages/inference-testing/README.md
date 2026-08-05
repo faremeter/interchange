@@ -362,7 +362,7 @@ this package: synthetic captures recorded through the fetch seam go
 under a discovery package's `example-sessions/<brand>/`, and live
 captures recorded against real endpoints go under its
 `live-sessions/<brand>/`. Both trees sit outside the `sessions/<brand>/`
-tree that the wire-corpus regenerator owns and overwrites.
+tree that the discovery probe rig owns and overwrites.
 
 ### Recording
 

@@ -5,9 +5,9 @@ provider plug-in contract, drives capture runs, and owns the
 capability catalog and support matrix that say which
 (provider, model, capability) tuples the rig knows how to record.
 
-The output of a discovery run is a fixture bundle on disk in the
+The output of a discovery run is a session bundle on disk in the
 provider's discovery package, under
-`wire/<provider>/<model>/<capability>/`, which `@intx/inference-testing`
+`sessions/<provider>/<model>/<capability>/`, which `@intx/inference-testing`
 then replays in tests. This package does not perform the replay; it
 produces the bytes that the replay layer consumes.
 
@@ -28,13 +28,14 @@ The package exports two entry points:
   the probe-only capabilities this rig records), the `INTENTS` table,
   the `SUPPORT_MATRIX` listing every (provider, model, capability)
   tuple the rig knows about, `catalogCapabilitiesFor` (which seeds the
-  tenant catalog from the matrix), and the `FixtureManifest` schema.
+  tenant catalog from the matrix), and `getSessionDir` (which resolves
+  a cell's session directory).
 
 ## Driving one capture
 
 ```ts
 import { runCapture } from "@intx/inference-discovery";
-import { INTENTS, getFixtureDir } from "@intx/inference-discovery/catalog";
+import { INTENTS, getSessionDir } from "@intx/inference-discovery/catalog";
 import { createSomeProviderPlugin } from "@intx/inference-discovery-some-provider";
 
 const plugin = createSomeProviderPlugin({ apiKey });
@@ -44,7 +45,7 @@ await runCapture({
   model: "some-model",
   capability: "plain-text",
   intent: INTENTS["plain-text"],
-  outDir: getFixtureDir({
+  outDir: getSessionDir({
     provider: plugin.name,
     model: "some-model",
     capability: "plain-text",

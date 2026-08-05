@@ -1,10 +1,9 @@
 // Parser regression over the full session corpus. For every fixture-bearing
 // (adapter × capability) cell, replay each captured response through production
 // runInference and assert the resulting event stream satisfies INVARIANTS. This
-// is the successor to the wire-corpus regression walk: it drives the one
-// unified loader (`replayResponsesForParsing`) over the session tree, serves
-// captured response headers verbatim, and — unlike the old wire walk — exercises
-// JSON-bodied and non-streaming captures too rather than skipping them.
+// drives the one unified loader (`replayResponsesForParsing`) over the session
+// tree, serves captured response headers verbatim, and exercises JSON-bodied
+// and non-streaming captures alongside streaming ones.
 //
 // This is anything-goes body matching: the captured response is the fixed
 // input and only the decode is under test, so a failure means a code-side

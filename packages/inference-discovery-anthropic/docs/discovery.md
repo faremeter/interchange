@@ -8,7 +8,7 @@ plug-in. For each captured capability we contrast Anthropic's published
 shape against the bytes the API actually emitted and call out every
 place the two diverged.
 
-The capture corpus lives at `packages/inference-discovery-anthropic/wire/anthropic/`.
+The capture corpus lives at `packages/inference-discovery-anthropic/sessions/anthropic/`.
 The model-to-capability matrix is authoritatively defined in the
 `SUPPORT_MATRIX` export of `@intx/inference-discovery/catalog`
 (`packages/inference-discovery/src/catalog/support-matrix.ts`). The
@@ -57,7 +57,7 @@ in `SUPPORT_MATRIX` with self-contained notes explaining why.
 **Documented:** `POST /v1/messages` with `{model, max_tokens, messages: [{role: "user", content: <string>}]}`.
 Streaming sets `stream: true` and emits a named SSE event stream.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/plain-text/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/plain-text/exchanges/0/`):
 the assistant message envelope carries `usage` with cache-related
 sub-fields (`cache_creation_input_tokens`, `cache_read_input_tokens`,
 `cache_creation.ephemeral_5m_input_tokens`, `…ephemeral_1h_input_tokens`)
@@ -73,7 +73,7 @@ Assistant response includes a `tool_use` content block; multi-turn echoes
 the assistant content verbatim and appends a `tool_result` user message
 keyed by `tool_use_id`.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/function-calling-multi-turn/turn-1/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/function-calling-multi-turn/exchanges/0/`):
 the assistant `tool_use` content block carries a `caller: {type: "direct"}`
 sub-object that is not in the public reference. Turn-2 echoes it back
 along with the rest of the content array; Anthropic accepts it.
@@ -86,8 +86,8 @@ includes a `thinking` content block with a `signature` field; the
 client must round-trip the signature in turn-2 or Anthropic rejects the
 follow-up.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/function-calling-with-thinking/turn-1/`,
-streaming variant at `…function-calling-with-thinking-streaming/turn-1/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/function-calling-with-thinking/exchanges/0/`,
+streaming variant at `…function-calling-with-thinking-streaming/exchanges/0/`):
 the thinking block consistently arrives first in `content[]`, followed
 by a free-text block and then the `tool_use` block. The streaming
 variant delivers the thinking text incrementally via `thinking_delta`
@@ -103,7 +103,7 @@ in the fixture.
 `{type: "image", source: {type: "base64", media_type, data}}` plus a
 text block.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/vision-input/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/vision-input/exchanges/0/`):
 exact shape per docs; the response collapses to a single text block.
 No image-specific metadata in the response envelope.
 
@@ -112,7 +112,7 @@ No image-specific metadata in the response envelope.
 **Documented:** User message content array contains
 `{type: "document", source: {type: "base64", media_type: "application/pdf", data}}`.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/document-input/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/document-input/exchanges/0/`):
 exact shape per docs. The response is a single text summary of the PDF
 contents — no inline citations in the captured single-turn case. (When
 documents arrive via the Files API path with citations enabled, the
@@ -126,7 +126,7 @@ plus `anthropic-beta: code-execution-2025-05-22`. The assistant response
 includes a `server_tool_use` block describing the code and a
 `code_execution_tool_result` block with the execution output.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/code-execution/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/code-execution/exchanges/0/`):
 the response top level carries a `container: {id, expires_at}` object
 that pins the sandboxed execution container; the `usage` block gains a
 `server_tool_use` counter alongside the regular token counts. The
@@ -140,7 +140,7 @@ function-calling-with-thinking, no tools. The assistant response
 surfaces thinking blocks containing the model's reasoning before the
 final answer.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/reasoning-content/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/reasoning-content/exchanges/0/`):
 shape matches docs; thinking precedes text as elsewhere.
 
 ### grounding and -streaming
@@ -157,7 +157,7 @@ Gemini's Google Search grounding, which surfaces a top-level
 structurally a tool-invocation pattern. Same semantic role (model-
 augmented retrieval with citation provenance), different wire shape.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/grounding/`):
+**Observed** (`sessions/anthropic/claude-sonnet-5/grounding/exchanges/0/`):
 captures cleanly. The decision recorded here: keep it under the
 `grounding` capability with this divergence note rather than introduce
 a parallel `web-search(-streaming)` capability. The semantic match
@@ -175,8 +175,8 @@ a re-capture.
 `{type: "file", id, ...}`. The generate request references the
 uploaded file via `{type: "document", source: {type: "file", file_id}}`.
 
-**Observed** (`wire/anthropic/claude-sonnet-5/files-api-reference/upload/`,
-`…/generate/`): upload response shape is
+**Observed** (`sessions/anthropic/claude-sonnet-5/files-api-reference/exchanges/0/`,
+`…/exchanges/1/`): upload response shape is
 `{type: "file", id, size_bytes, created_at, filename, mime_type, downloadable}`
 where `downloadable: false` for uploaded source PDFs. File IDs use the
 `file_011C…` prefix. The generate step's referenced file_id is accepted
@@ -269,7 +269,7 @@ the one observed on regular `tool_use` blocks.
 When `web_search` runs, text blocks in the assistant response that
 reference the search carry an inline `citations: []` array attached to
 the same text block (not as a separate content block). The shape
-pinned in `wire/anthropic/.../grounding/response.json` is
+pinned in `sessions/anthropic/.../grounding/exchanges/0/response.json` is
 authoritative.
 
 ### Envelope fields not in the public reference
