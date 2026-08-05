@@ -38,6 +38,7 @@ import {
 } from "@intx/inference-testing";
 
 import { OPENAI_FIRSTPARTY_QUIRKS } from "./lib/openai-quirks";
+import { expectDone } from "./lib/recorder-helpers";
 
 const INFERENCE_OPTIONS: InferenceOptions = { tools: LIVE_TOOL_DEFINITIONS };
 
@@ -75,22 +76,6 @@ function extractToolCalls(turn: ConversationTurn): ToolCall[] {
     }
   }
   return calls;
-}
-
-function expectDone(
-  events: InferenceEvent[],
-  label: string,
-): InferenceEvent & { type: "inference.done" } {
-  const done = events.find((e) => e.type === "inference.done");
-  if (done === undefined || done.type !== "inference.done") {
-    const error = events.find((e) => e.type === "inference.error");
-    const detail =
-      error !== undefined && error.type === "inference.error"
-        ? `: ${JSON.stringify(error.data)}`
-        : "";
-    throw new Error(`${label}: expected inference.done event${detail}`);
-  }
-  return done;
 }
 
 export interface RecordLiveSessionOpts {

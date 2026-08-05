@@ -23,6 +23,8 @@ import {
   wire,
 } from "@intx/inference-testing";
 
+import { sseResponse, expectDone } from "./lib/recorder-helpers";
+
 const ZERO_USAGE = {
   input: 0,
   output: 0,
@@ -51,32 +53,6 @@ const SESSIONS_ROOT = path.resolve(
   "example-sessions",
   "anthropic",
 );
-
-function sseResponse(chunks: Uint8Array[]): Response {
-  let total = 0;
-  for (const c of chunks) total += c.byteLength;
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    merged.set(c, offset);
-    offset += c.byteLength;
-  }
-  return new Response(merged, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
-
-function expectDone(
-  events: InferenceEvent[],
-  label: string,
-): InferenceEvent & { type: "inference.done" } {
-  const done = events.find((e) => e.type === "inference.done");
-  if (done === undefined || done.type !== "inference.done") {
-    throw new Error(`${label}: expected inference.done event`);
-  }
-  return done;
-}
 
 async function recordToolRoundtrip(): Promise<void> {
   const dir = path.join(SESSIONS_ROOT, "tool-roundtrip");
