@@ -446,13 +446,14 @@ export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;
 
 // Each provider's captured corpus lives inside the discovery package that
 // probes it. This map is the single owner of "which package holds which
-// provider's fixtures"; getFixtureDir composes the per-provider root with the
-// same {provider}/{model}/{capability} layout every package's wire/ dir uses.
-const FIXTURE_ROOTS: Record<string, string> = {
-  anthropic: "packages/inference-discovery-anthropic/wire",
-  "google-genai": "packages/inference-discovery-google-genai/wire",
-  "opencode-zen": "packages/inference-discovery-openai/wire",
-  openai: "packages/inference-discovery-openai/wire",
+// provider's sessions"; getSessionDir composes the per-provider root with the
+// same {provider}/{model}/{capability} layout every package's sessions/ dir
+// uses.
+const SESSION_ROOTS: Record<string, string> = {
+  anthropic: "packages/inference-discovery-anthropic/sessions",
+  "google-genai": "packages/inference-discovery-google-genai/sessions",
+  "opencode-zen": "packages/inference-discovery-openai/sessions",
+  openai: "packages/inference-discovery-openai/sessions",
 };
 
 const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
@@ -467,48 +468,29 @@ const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([
 // notes — so the two sets are intentionally distinct; do not unify them.
 const NOTES_FREE_OUTCOMES = new Set<SupportEntry["outcome"]>(["captured"]);
 
-// captured and misled rows both point to a captured wire flow on disk that the
+// captured and misled rows both point to a captured session on disk that the
 // smoke tests replay, so both are empirical proof the capability works; refused,
 // http-error, and unsupported rows carry no fixture. This is the single owner of
-// "which outcomes are fixture-bearing" — getFixtureDir and the catalog capability
+// "which outcomes are fixture-bearing" — getSessionDir and the catalog capability
 // expansion both read it rather than re-deciding the outcome set.
 export function isFixtureBearing(entry: SupportEntry): boolean {
   return FIXTURE_BEARING_OUTCOMES.has(entry.outcome);
 }
 
-export function getFixtureDir(entry: SupportEntry): string | null {
-  if (!isFixtureBearing(entry)) return null;
-  const root = FIXTURE_ROOTS[entry.provider];
-  if (root === undefined) {
-    throw new Error(
-      `no fixture root registered for provider '${entry.provider}' ` +
-        `(${entry.model}/${entry.capability}); add it to FIXTURE_ROOTS`,
-    );
-  }
-  return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;
-}
-
-// The session corpus lives in the same per-provider package as the wire
-// corpus, under a sibling `sessions/` tree with the identical
-// {provider}/{model}/{capability} layout. `session.json` inside each leaf is
-// authoritative for the capability, model, and origin the directory holds;
-// the brand provider is NOT in the manifest (its `source.provider` is the
-// adapter-registry name, and both `openai` and `opencode-zen` map to
-// `openai-compatible`), so the brand is composed here from the matrix entry.
+// The session corpus lives inside each provider's discovery package under a
+// `sessions/` tree with the {provider}/{model}/{capability} layout.
+// `session.json` inside each leaf is authoritative for the capability, model,
+// and origin the directory holds; the brand provider is NOT in the manifest
+// (its `source.provider` is the adapter-registry name, and both `openai` and
+// `opencode-zen` map to `openai-compatible`), so the brand is composed here
+// from the matrix entry.
 export function getSessionDir(entry: SupportEntry): string | null {
   if (!isFixtureBearing(entry)) return null;
-  const wireRoot = FIXTURE_ROOTS[entry.provider];
-  if (wireRoot === undefined) {
+  const root = SESSION_ROOTS[entry.provider];
+  if (root === undefined) {
     throw new Error(
-      `no fixture root registered for provider '${entry.provider}' ` +
-        `(${entry.model}/${entry.capability}); add it to FIXTURE_ROOTS`,
-    );
-  }
-  const root = wireRoot.replace(/\/wire$/, "/sessions");
-  if (root === wireRoot) {
-    throw new Error(
-      `fixture root for provider '${entry.provider}' does not end in /wire ` +
-        `(${wireRoot}); cannot derive its sessions root`,
+      `no session root registered for provider '${entry.provider}' ` +
+        `(${entry.model}/${entry.capability}); add it to SESSION_ROOTS`,
     );
   }
   return `${root}/${entry.provider}/${entry.model}/${entry.capability}`;

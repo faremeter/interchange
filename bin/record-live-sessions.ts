@@ -4,8 +4,8 @@
 // Record one committed LIVE multi-turn tool session per adapter against real
 // provider endpoints. Credentials come from the environment at recording time
 // and each session lands under its discovery package's `live-sessions/<brand>/`
-// tree — deliberately outside the `sessions/<provider>/` tree the wire-corpus
-// regenerator overwrites.
+// tree — deliberately outside the `sessions/<provider>/` tree the discovery
+// probe rig overwrites.
 //
 // Unlike record-example-sessions.ts (synthetic, deterministic, credential-free)
 // this drives the REAL model: it declares a tool, prompts a question that needs

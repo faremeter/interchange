@@ -206,10 +206,9 @@ export async function runCapture(opts: RunCaptureOpts): Promise<void> {
 
   // Exchanges are numbered by execution order. A capability is single-turn,
   // multi-turn, or files-api, and its iterator yields steps in transcript
-  // order, so this counter reproduces the same exchange indices the
-  // wire-to-session converter derives from leaf ordering. The final JSON
-  // request holds the whole transcript, so its body is where tool dispatches
-  // are reconstructed from.
+  // order, so this counter assigns each exchange its index directly from that
+  // order. The final JSON request holds the whole transcript, so its body is
+  // where tool dispatches are reconstructed from.
   let exchangeIndex = 0;
   let firstStepURL: string | undefined;
   let finalRequestBody: unknown;

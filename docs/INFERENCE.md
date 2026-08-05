@@ -293,7 +293,7 @@ structured refusal.
 channel is synthetic: wire-DSL `chunk({ refusal })` streams drive the
 OpenAI adapter and `tests/inference/refusal-harness.test.ts` end-to-end.
 A live discovery probe under
-`packages/inference-discovery-openai/wire/openai/gpt-5.5/structured-output-refusal-streaming/`
+`packages/inference-discovery-openai/sessions/openai/gpt-5.5/structured-output-refusal-streaming/exchanges/0/`
 is retained as a support-matrix `misled` row: against gpt-5.5, a strict
 `json_schema` request plus a policy-sensitive prompt never produced a
 non-null `delta.refusal`. The model instead streamed schema-conformant
