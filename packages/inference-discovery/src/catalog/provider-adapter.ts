@@ -34,7 +34,11 @@ const CATALOG_TO_ADAPTER: Record<string, string> = {
 // cell takes the primary zen/v1 relay base.
 const CATALOG_TO_BASE_URL: Record<string, string> = {
   anthropic: "https://api.anthropic.com",
-  "google-genai": "https://generativelanguage.googleapis.com/v1beta",
+  // Origin only: the google-genai adapter's request path already carries the
+  // `/v1beta` version segment, and `resolveURL` concatenates base + path, so a
+  // base that also carried `/v1beta` would double it. This matches the runtime
+  // source the production seed data configures.
+  "google-genai": "https://generativelanguage.googleapis.com",
   openai: "https://api.openai.com/v1",
   "opencode-zen": "https://opencode.ai/zen/v1",
 };
