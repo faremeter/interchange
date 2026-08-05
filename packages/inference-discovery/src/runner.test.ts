@@ -317,6 +317,76 @@ describe("runCapture", () => {
     expect(Array.from(writtenBytes)).toEqual(Array.from(payload));
   });
 
+  test("orders a raw upload before a JSON generate across exchanges", async () => {
+    // The files-api capture is the one shape where exchange ordering is
+    // load-bearing: the raw upload must land at exchange 0 and the JSON
+    // generate at exchange 1, because the generate request references the
+    // uploaded file. The rig numbers exchanges by generator-yield order;
+    // this pins that a raw-then-json yield sequence produces request.bin
+    // at 0 and request.json at 1, with the upload response threaded into
+    // the generate body.
+    const upload = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+
+    function* uploadThenGenerate(opts: {
+      model: string;
+      capability: string;
+      intent: CapabilityIntent;
+    }): Generator<CaptureStep, void, CapturedResponse> {
+      const uploaded = yield {
+        kind: "raw",
+        url: `${BASE}/v1/files`,
+        method: "POST",
+        contentType: "application/pdf",
+        body: upload,
+      };
+      yield {
+        kind: "json",
+        url: `${BASE}/v1/messages`,
+        body: { model: opts.model, messages: [], fileRef: uploaded.parsed },
+      };
+    }
+
+    const plugin = makePlugin({ iterateCaptureSteps: uploadThenGenerate });
+    let call = 0;
+    const stubFetch: FetchLike = async () => {
+      call += 1;
+      return new Response(
+        JSON.stringify(call === 1 ? { fileId: "f-1" } : { ok: true }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    await runCapture({
+      plugin,
+      model: "test-model",
+      capability: "files-api-reference",
+      intent: INTENT,
+      outDir: dir,
+      now: () => new Date("2026-05-22T00:00:00Z"),
+      fetch: stubFetch,
+    });
+
+    const exchange0 = (
+      await fs.readdir(path.join(dir, "exchanges", "0"))
+    ).sort();
+    expect(exchange0).toContain("request.bin");
+    expect(exchange0).not.toContain("request.json");
+
+    const exchange1 = (
+      await fs.readdir(path.join(dir, "exchanges", "1"))
+    ).sort();
+    expect(exchange1).toContain("request.json");
+    expect(exchange1).not.toContain("request.bin");
+
+    const writtenUpload = await fs.readFile(
+      path.join(dir, "exchanges", "0", "request.bin"),
+    );
+    expect(Array.from(writtenUpload)).toEqual(Array.from(upload));
+    expect(
+      await readJSON(path.join(dir, "exchanges", "1", "request.json")),
+    ).toMatchObject({ fileRef: { fileId: "f-1" } });
+  });
+
   test("rejects step.headers that collide with plug-in auth headers", async () => {
     function* collidingIterator(): Generator<
       CaptureStep,
