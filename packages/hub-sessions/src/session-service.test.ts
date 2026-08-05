@@ -86,6 +86,9 @@ function createMockRouter(): SidecarRouter & {
     sendSourcesUpdate: track(
       "sendSourcesUpdate",
     ) as SidecarRouter["sendSourcesUpdate"],
+    sendCredentialsUpdate: track(
+      "sendCredentialsUpdate",
+    ) as SidecarRouter["sendCredentialsUpdate"],
     sendPack: ((
       agentAddress: string,
       pack: Uint8Array,

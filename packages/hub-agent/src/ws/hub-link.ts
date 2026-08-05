@@ -30,6 +30,7 @@ import {
   type SignalCorrelationRegisterAckFrame,
   type DrainDeliverFrame,
   type SourcesUpdateFrame,
+  type CredentialsUpdateFrame,
   type SyncRequestFrame,
 } from "@intx/types/sidecar";
 import type { SignalKind } from "@intx/types";
@@ -79,14 +80,14 @@ const MalformedRequestEnvelope = type({
 /**
  * Inbound request/ack frames the sidecar dispatches that the hub
  * correlates by `requestId`, whose failure reply is a `session.error`.
- * Only `sources.update` qualifies -- it is the sole frame answered with a
- * `session.error`. Frames answered through the other correlation keys live
- * in `AGENT_ERROR_REQUEST_TYPES` and `PACK_REJECT_REQUEST_TYPES`; a
- * request-shaped frame in none of the three sets has no requester to
- * answer and is dropped.
+ * `sources.update` and `credentials.update` qualify -- both are answered with a
+ * `session.error`. Frames answered through the other correlation keys live in
+ * `AGENT_ERROR_REQUEST_TYPES` and `PACK_REJECT_REQUEST_TYPES`; a request-shaped
+ * frame in none of the three sets has no requester to answer and is dropped.
  */
 const SESSION_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
   "sources.update",
+  "credentials.update",
 ]);
 
 /**
@@ -382,6 +383,27 @@ export interface SourcesInboundRouter {
   tryRoute(frame: SourcesUpdateFrame): Promise<boolean>;
 }
 
+/**
+ * Per-deployment-address credential-delivery registry the link consults on
+ * every inbound `credentials.update` frame. Like `sources.update`, this is a
+ * REQUEST/ACK frame, so the link answers `session.ack` / `session.error`
+ * rather than logging and dropping -- a missing answer hangs the hub's request.
+ *
+ * The shape lives on hub-agent so the link does not import the sidecar host's
+ * wiring module, and so tests can substitute a stub.
+ */
+export interface CredentialsInboundRouter {
+  /**
+   * Attempt to dispatch `frame` to the supervisor registered against
+   * `frame.agentAddress`. Resolves `true` when a handler accepted the
+   * delivery, `false` when no handler is registered. Rejects when the handler
+   * is registered but the delivery is invalid or the supervisor's
+   * `deliverCredentials` throws; the link turns a rejection into a
+   * `session.error` carrying the reason.
+   */
+  tryRoute(frame: CredentialsUpdateFrame): Promise<boolean>;
+}
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -452,6 +474,16 @@ export type HubLinkConfig = {
    * request/ack frame with no reply hangs the hub's request.
    */
   sourcesInboundRouter?: SourcesInboundRouter;
+  /**
+   * Optional inbound credential-delivery dispatcher. When present, the link
+   * routes every inbound `credentials.update` frame through this router and
+   * answers the request/ack frame: `session.ack` when the router accepted the
+   * delivery, `session.error` when no deployment is registered, when the
+   * delivery is invalid, or when delivery throws. Absent means the link answers
+   * `session.error` for every delivery -- required because a request/ack frame
+   * with no reply hangs the hub's request.
+   */
+  credentialsInboundRouter?: CredentialsInboundRouter;
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts a live supervisor for. Called on every (re)connect to
@@ -555,6 +587,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     drainInboundRouter,
     grantsInboundRouter,
     sourcesInboundRouter,
+    credentialsInboundRouter,
     getWorkflowAddresses = () => [],
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -1086,6 +1119,45 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleCredentialsUpdate(
+    frame: CredentialsUpdateFrame,
+  ): Promise<void> {
+    // `credentials.update` is request/ack, exactly like `sources.update`: every
+    // path answers `session.ack` or `session.error`. A missing router still
+    // answers, or the hub hangs.
+    if (credentialsInboundRouter === undefined) {
+      send({
+        type: "session.error",
+        requestId: frame.requestId,
+        error: "no credentialsInboundRouter is wired",
+      });
+      return;
+    }
+    try {
+      const routed = await credentialsInboundRouter.tryRoute(frame);
+      if (routed) {
+        send({ type: "session.ack", requestId: frame.requestId });
+      } else {
+        send({
+          type: "session.error",
+          requestId: frame.requestId,
+          error: `no deployment registered for ${frame.agentAddress}`,
+        });
+      }
+    } catch (err) {
+      // A registered address whose delivery was rejected: an invalid delivery
+      // (the router validates before dispatch) or the supervisor's
+      // `deliverCredentials` throwing (e.g. a recycling phase). The reason
+      // rides back verbatim so the hub sees why the delivery failed.
+      const msg = err instanceof Error ? err.message : String(err);
+      send({
+        type: "session.error",
+        requestId: frame.requestId,
+        error: msg,
+      });
+    }
+  }
+
   async function pushWorkflowRunPack(opts: {
     agentAddress: string;
     repoId: RepoId;
@@ -1287,6 +1359,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "sources.update":
         await handleSourcesUpdate(frame);
+        break;
+      case "credentials.update":
+        await handleCredentialsUpdate(frame);
         break;
       case "repo.pack.ack":
         handlePackAck(frame);

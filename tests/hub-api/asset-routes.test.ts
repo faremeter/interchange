@@ -144,6 +144,7 @@ function createMockSidecarRouter(): SidecarRouter {
     sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
+    sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
     sendPack: () => notImpl("sendPack"),
     sendProvisionStep: () => notImpl("sendProvisionStep"),
     bindStepRoute: () => notImpl("bindStepRoute"),

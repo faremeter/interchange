@@ -18,6 +18,7 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { SourcesUpdatedData } from "@intx/workflow-host";
 import type { InferenceSource } from "@intx/types/runtime";
+import { CredentialDelivery } from "@intx/types/sidecar";
 import type {
   RepoId,
   RepoStore,
@@ -458,6 +459,70 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
         sources: frame.sources,
         defaultSource: frame.defaultSource,
       });
+      return true;
+    },
+  };
+}
+
+/**
+ * Per-deployment credential-delivery handler the deploy router installs
+ * against the `MultistepCredentialsRouter` after a supervisor's `spawn`
+ * succeeds. The handler hands the delivery to the supervisor's
+ * `deliverCredentials`, which sends a `credentials-updated` control IPC frame
+ * to the workflow-process child, where the material cell is swapped in place.
+ *
+ * Unlike sources rotation, this registers for ANY deployment (single- or
+ * multi-step): the material cell is per-child and read by every step's tool
+ * capabilities, so there is no single-warm-agent restriction. There is no
+ * durable persist -- credential material never touches disk (it is re-resolved
+ * by the hub on reconnect).
+ */
+export type MultistepCredentialsHandler = (args: {
+  delivery: CredentialDelivery;
+}) => Promise<void>;
+
+/**
+ * Per-deployment-address credential-delivery handler registry. Mirrors
+ * `MultistepSourcesRouter`: `credentials.update` is a REQUEST/ACK frame, so a
+ * registered address that throws surfaces as a `session.error` and an
+ * unregistered address returns `false` (unrouted). Lives at the sidecar host
+ * layer for the same boundary reason -- the workflow-host package stays
+ * agnostic to the transport surface its supervisor rides on.
+ */
+export type MultistepCredentialsRouter = {
+  register(address: string, handler: MultistepCredentialsHandler): void;
+  unregister(address: string): void;
+  tryRoute(frame: {
+    type: "credentials.update";
+    agentAddress: string;
+    delivery: CredentialDelivery;
+  }): Promise<boolean>;
+};
+
+export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
+  const handlers = new Map<string, MultistepCredentialsHandler>();
+  return {
+    register(address, handler) {
+      handlers.set(address, handler);
+    },
+    unregister(address) {
+      handlers.delete(address);
+    },
+    async tryRoute(frame) {
+      const handler = handlers.get(frame.agentAddress);
+      // Registration check first: an unregistered (torn-down) address is
+      // unrouted -- reported as `false`, its payload never inspected.
+      if (handler === undefined) return false;
+      // Validate the delivery BEFORE dispatch: a malformed delivery would
+      // reach the child's control-channel receiver and crash it on
+      // `CredentialsUpdateFrame`'s narrow. Rejecting here throws, and the
+      // hub-link turns the throw into a truthful `session.error` instead of
+      // acking and detonating the child.
+      const validated = CredentialDelivery(frame.delivery);
+      if (validated instanceof type.errors) {
+        throw new Error(validated.summary);
+      }
+      await handler({ delivery: frame.delivery });
       return true;
     },
   };
