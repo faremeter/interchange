@@ -25,6 +25,7 @@ import {
   type RepoId,
   type RunGrantsFrame,
   type SignalCorrelationRegisterFrame,
+  type CredentialDelivery,
 } from "@intx/types/sidecar";
 import type {
   ConnectorThreadState,
@@ -161,6 +162,10 @@ export type SidecarRouter = {
     agentAddress: string,
     sources: InferenceSource[],
     defaultSource: string,
+  ): Promise<void>;
+  sendCredentialsUpdate(
+    agentAddress: string,
+    delivery: CredentialDelivery,
   ): Promise<void>;
   sendPack(
     agentAddress: string,
@@ -2560,6 +2565,18 @@ export function createSidecarRouter(
     }));
   }
 
+  async function sendCredentialsUpdate(
+    agentAddress: string,
+    delivery: CredentialDelivery,
+  ): Promise<void> {
+    await sendRequest(agentAddress, (requestId) => ({
+      type: "credentials.update",
+      requestId,
+      agentAddress,
+      delivery,
+    }));
+  }
+
   function sendSyncRequest(agentAddress: string): void {
     const ws = addressIndex.get(agentAddress);
     if (ws === undefined) {
@@ -2636,6 +2653,7 @@ export function createSidecarRouter(
     sendAgentDeploy,
     sendAgentUndeploy,
     sendSourcesUpdate,
+    sendCredentialsUpdate,
     sendPack,
     bindStepRoute,
     unbindStepRoute,

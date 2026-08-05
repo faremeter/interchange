@@ -41,6 +41,7 @@ import {
   createMultistepMailRouter,
   createMultistepSignalRouter,
   createMultistepSourcesRouter,
+  createMultistepCredentialsRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -269,6 +270,11 @@ const multistepGrantsRouter = createMultistepGrantsRouter();
 // multi-step deployment registers none, so a rotation resolved against
 // its address is unrouted.
 const multistepSourcesRouter = createMultistepSourcesRouter();
+// Per-deployment credential-delivery handler registry. A deployment registers
+// its handler after `spawn` (any deployment with a supervisor, not only warm
+// single-step ones); a `credentials.update` for an unregistered address is
+// unrouted.
+const multistepCredentialsRouter = createMultistepCredentialsRouter();
 
 const transport = createInMemoryTransport();
 
@@ -381,6 +387,7 @@ const orchestrator = createSidecarOrchestrator({
   drainInboundRouter: multistepDrainRouter,
   grantsInboundRouter: multistepGrantsRouter,
   sourcesInboundRouter: multistepSourcesRouter,
+  credentialsInboundRouter: multistepCredentialsRouter,
   // The hub link calls this on every (re)connect to announce the workflow
   // deployments this sidecar hosts so the hub re-registers their routes.
   // `createDeployRouter` runs synchronously during construction (below), so
@@ -471,6 +478,7 @@ const orchestrator = createSidecarOrchestrator({
       multistepDrainRouter,
       multistepGrantsRouter,
       multistepSourcesRouter,
+      multistepCredentialsRouter,
       multistepSubstrateEnv,
       publishWorkflowInferenceEvent,
       publishWorkflowSuspension,

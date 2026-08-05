@@ -309,6 +309,9 @@ function createMockSidecarRouter(
     sendSourcesUpdate(_addr, _sources, _defaultSource) {
       return notImpl("sendSourcesUpdate");
     },
+    sendCredentialsUpdate(_addr, _delivery) {
+      return notImpl("sendCredentialsUpdate");
+    },
     sendPack(_addr, _pack, _ref, _sha) {
       return notImpl("sendPack");
     },

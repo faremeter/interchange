@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import type { InferenceSource } from "@intx/types/runtime";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -9,6 +10,7 @@ import {
   createMultistepMailRouter,
   createMultistepSignalRouter,
   createMultistepSourcesRouter,
+  createMultistepCredentialsRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
@@ -636,6 +638,99 @@ describe("createMultistepMailRouter", () => {
     await router.tryRoute("dep@integration.interchange", new Uint8Array([7]));
     expect(first).toHaveLength(0);
     expect(second).toHaveLength(1);
+  });
+});
+
+describe("createMultistepCredentialsRouter", () => {
+  const delivery = {
+    bindings: [
+      {
+        handle: "example-api",
+        credentialId: "cred_1",
+        consumer: "tool:@intx/tools-example",
+      },
+    ],
+    materials: [
+      {
+        credentialId: "cred_1",
+        providerKey: "http",
+        origin: "https://api.example.com",
+        secret: "sk-secret",
+      },
+    ],
+  };
+  const frame = {
+    type: "credentials.update" as const,
+    agentAddress: "dep@integration.interchange",
+    delivery,
+  };
+
+  test("tryRoute returns false when no handler is registered", async () => {
+    const router = createMultistepCredentialsRouter();
+    expect(await router.tryRoute(frame)).toBe(false);
+  });
+
+  test("a registered handler receives the delivery and tryRoute returns true", async () => {
+    const router = createMultistepCredentialsRouter();
+    const received: { delivery: typeof delivery }[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push(args);
+    });
+    expect(await router.tryRoute(frame)).toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.delivery).toEqual(delivery);
+  });
+
+  test("registration is per-address; an unrelated address falls through", async () => {
+    const router = createMultistepCredentialsRouter();
+    router.register("dep-a@integration.interchange", async () => undefined);
+    expect(
+      await router.tryRoute({
+        ...frame,
+        agentAddress: "dep-b@integration.interchange",
+      }),
+    ).toBe(false);
+  });
+
+  test("unregister removes the handler", async () => {
+    const router = createMultistepCredentialsRouter();
+    router.register("dep@integration.interchange", async () => undefined);
+    router.unregister("dep@integration.interchange");
+    expect(await router.tryRoute(frame)).toBe(false);
+  });
+
+  test("rejects a malformed delivery for a registered address without dispatching", async () => {
+    const router = createMultistepCredentialsRouter();
+    let called = false;
+    router.register("dep@integration.interchange", async () => {
+      called = true;
+    });
+    // A malformed delivery would crash the child's control-channel receiver on
+    // its `CredentialsUpdateFrame` narrow, so the router rejects before
+    // dispatch and the hub-link turns the throw into a truthful session.error.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately malformed delivery to exercise the pre-dispatch validation
+    const malformed = {
+      bindings: [{ handle: "x" }],
+      materials: [],
+    } as unknown as CredentialDelivery;
+    await expect(
+      router.tryRoute({
+        type: "credentials.update",
+        agentAddress: "dep@integration.interchange",
+        delivery: malformed,
+      }),
+    ).rejects.toThrow();
+    expect(called).toBe(false);
+  });
+
+  test("propagates the handler's rejection (deliverCredentials throwing) verbatim", async () => {
+    const router = createMultistepCredentialsRouter();
+    router.register("dep@integration.interchange", async () => {
+      throw new Error("deliverCredentials failed in a recycling phase");
+    });
+    await expect(router.tryRoute(frame)).rejects.toThrow(
+      /deliverCredentials failed/,
+    );
   });
 });
 
