@@ -93,3 +93,43 @@ export function createRuntimeCapabilities(
     },
   };
 }
+
+/**
+ * Compose a resolver that answers the keys in `overrides` from the override
+ * map and delegates every other key to `base`.
+ *
+ * The host uses this to add a per-bundle capability -- the consumer-scoped
+ * `credentials` handle, one instance per tool package -- onto a shared
+ * per-step base bag without re-plumbing the base's keys (`mail.transport`
+ * and any future shared key stay owned by the step bag). Each tool package's
+ * bundle receives the same base layered with ITS OWN credentials capability,
+ * so a package cannot resolve a handle scoped to a different package.
+ *
+ * `overrides` is snapshotted at construction, mirroring
+ * `createRuntimeCapabilities`, so later mutation of the input is not
+ * observable through `resolve`. An overridden key wired to `undefined`
+ * throws with the same guard as the base resolver rather than silently
+ * shadowing `base` with a hole -- a host that layers an undefined value
+ * has a wiring bug and must hear about it.
+ */
+export function layerRuntimeCapabilities(
+  base: RuntimeCapabilities,
+  overrides: Partial<RuntimeCapabilityMap>,
+): RuntimeCapabilities {
+  const snapshot: Partial<RuntimeCapabilityMap> = { ...overrides };
+
+  return {
+    resolve<K extends RuntimeCapabilityKey>(key: K): RuntimeCapabilityMap[K] {
+      if (Object.hasOwn(snapshot, key)) {
+        const value = snapshot[key];
+        if (value === undefined) {
+          throw new Error(
+            `Runtime capability "${String(key)}" was layered as undefined; no current capability resolves to undefined`,
+          );
+        }
+        return value;
+      }
+      return base.resolve(key);
+    },
+  };
+}

@@ -29,6 +29,7 @@ import {
   createToolLoader,
 } from "@intx/tool-packaging";
 import { hasCode } from "@intx/types";
+import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolPackageManifest } from "@intx/types/tool-packages";
 
 // Boundary validator for the SIDECAR_TOOL_REGISTRIES env var. The
@@ -165,8 +166,25 @@ function assertKnownHostArch(arch: NodeJS.Architecture): void {
 // than as a real id.
 const NO_PRIOR_DEPLOY_ID = "none";
 
+/**
+ * A loaded tool factory paired with the identity of the package it came
+ * from. `collectFactories` flattens every package's factories into one list
+ * but preserves this association per factory, because the per-bundle
+ * credential assembly downstream needs two things the bare factory (which
+ * carries only its bundle id) cannot supply: the package name, to derive the
+ * consumer identity (`toolConsumer(packageName)`) that Gate 2 checks, and the
+ * package's declared credential handles, to reconcile against the delivered
+ * bindings. `declaredCredentials` is the package-level set, repeated on each
+ * of that package's factories.
+ */
+export interface StepToolFactory {
+  readonly packageName: string;
+  readonly declaredCredentials: readonly ToolCredentialDeclaration[];
+  readonly factory: LoadedToolFactory;
+}
+
 interface MaterializedToolPackages {
-  readonly factories: readonly LoadedToolFactory[];
+  readonly factories: readonly StepToolFactory[];
   readonly pluginFactories: readonly AnnotatedPluginFactory[];
 }
 
@@ -656,10 +674,16 @@ async function fsyncWriteFile(
 
 function collectFactories(
   loaded: readonly LoadedToolPackage[],
-): readonly LoadedToolFactory[] {
-  const out: LoadedToolFactory[] = [];
+): readonly StepToolFactory[] {
+  const out: StepToolFactory[] = [];
   for (const pkg of loaded) {
-    for (const f of pkg.factories) out.push(f);
+    for (const f of pkg.factories) {
+      out.push({
+        packageName: pkg.name,
+        declaredCredentials: pkg.credentials,
+        factory: f,
+      });
+    }
   }
   return out;
 }

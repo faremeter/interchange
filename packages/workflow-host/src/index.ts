@@ -146,6 +146,7 @@ export {
   type CreateChildSubstrateWriteBridgeOpts,
   type CreateProxyWorkflowRunRepoStoreOpts,
   type CredentialsSnapshotRef,
+  type CredentialWiring,
   type DiscoverRunsOpts,
   type DiscoveredRun,
   type DrainController,
