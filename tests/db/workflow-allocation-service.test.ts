@@ -17,6 +17,7 @@ import { workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import {
   createWorkflowAllocationService,
+  SessionLaunchError,
   type DeployPreparedWorkflowDefinitionParams,
   type SidecarProvisioner,
 } from "@intx/hub-sessions";
@@ -205,7 +206,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       if (allocated === null) throw new Error("allocation was not accepted");
 
-      workflowActive = true;
       await service.deployReadyAllocation(allocated);
 
       expect(deployCalls).toHaveLength(1);
@@ -226,9 +226,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ],
       });
 
+      workflowActive = true;
       await expect(
         service.deployReadyAllocation(allocated),
       ).resolves.toBeNull();
+      expect(deployCalls).toHaveLength(1);
+
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: null })
+        .where(eq(workflowRun.id, prepared.deploymentId));
+      const error = await service
+        .deployReadyAllocation(allocated)
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(SessionLaunchError);
+      if (!(error instanceof SessionLaunchError)) {
+        throw new Error("unreachable");
+      }
+      expect(error.leakedAgent).toBe(true);
       expect(deployCalls).toHaveLength(1);
     });
   },

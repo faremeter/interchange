@@ -374,6 +374,20 @@ describe("createHubSessionOrchestrator", () => {
       expect(harness.updates[0]?.table).toBe("workflow_run");
     });
 
+    test("defers an allocated deployment key until initialization completes", async () => {
+      await harness.events.emitAndAwait("agent.deploy.ack", {
+        agentAddress: "ins_dep_abc@workflow.interchange",
+        publicKey: "deadbeef",
+        allocated: {
+          allocationId: "alloc-1",
+          anchorRunId: "dep_abc",
+          generation: 3,
+        },
+      });
+
+      expect(harness.updates).toEqual([]);
+    });
+
     test("throws when a plain address resolves to no endpoint", async () => {
       harness = setup({});
       await expect(

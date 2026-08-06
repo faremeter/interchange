@@ -95,7 +95,12 @@ export function createHubSessionOrchestrator(
   );
 
   unsubscribers.push(
-    events.on("agent.deploy.ack", async ({ agentAddress, publicKey }) => {
+    events.on("agent.deploy.ack", async (event) => {
+      const { agentAddress, publicKey, allocated } = event;
+      // Exclusive initialization publishes its key only after every deploy
+      // and asset pack succeeds under the allocation generation fence.
+      if (allocated !== undefined) return;
+
       // Workflow-derived addresses (the deployment-level
       // `ins_<deploymentId>@<domain>` and the per-step
       // `ins_<deploymentId>-<stepId>@<domain>`) have no agent_instance row;

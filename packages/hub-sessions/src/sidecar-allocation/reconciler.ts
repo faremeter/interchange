@@ -9,6 +9,7 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "../ws/sidecar-handler";
+import { SessionLaunchError } from "../session-service";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
@@ -253,6 +254,15 @@ export function createSidecarAllocationReconciler({
           onReady(allocation),
         );
       } catch (error) {
+        if (error instanceof SessionLaunchError && error.leakedAgent) {
+          await replaceAfterFailure(
+            allocation,
+            leaseId,
+            "sidecar_initialization_uncertain",
+            error.message,
+          );
+          return;
+        }
         await allocationStore.scheduleRetry({
           allocationId: allocation.id,
           expectedStatus: "allocated",
