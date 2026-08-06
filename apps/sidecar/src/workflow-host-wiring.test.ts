@@ -7,6 +7,7 @@ import { type } from "arktype";
 
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -22,7 +23,6 @@ import type { AgentDeployFrame } from "@intx/types/sidecar";
 
 import {
   assembleRunCredentialsSnapshot,
-  computeWireDefinitionHash,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
   deriveDeploymentId,
@@ -601,24 +601,6 @@ describe("validateWorkflowProjection", () => {
         sources: { "step-1": [{}], "step-2": [{}] },
       }),
     ).not.toThrow();
-  });
-});
-
-describe("computeWireDefinitionHash", () => {
-  test("is stable across key-ordering differences", async () => {
-    const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: { kind: "step" } } };
-    const b = { steps: { s1: { kind: "step" } }, stepOrder: ["s1"], id: "w-1" };
-    expect(await computeWireDefinitionHash(a)).toBe(
-      await computeWireDefinitionHash(b),
-    );
-  });
-
-  test("differs across different definitions", async () => {
-    const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: {} } };
-    const b = { id: "w-2", stepOrder: ["s1"], steps: { s1: {} } };
-    expect(await computeWireDefinitionHash(a)).not.toBe(
-      await computeWireDefinitionHash(b),
-    );
   });
 });
 
