@@ -325,6 +325,8 @@ The allocation reconciler uses database leases and retry timestamps rather than 
 
 Once a replacement is ready, the Hub rebuilds the deployment from its launch spec and the current workflow-run Git refs. The deployment id, mail address, definition, and workflow-run repository remain unchanged. This is what lets the workflow supervisor reconstruct committed event history and continue a run rather than starting a new run id.
 
+An allocated supervisor's deploy acknowledgement does not publish its public key immediately. The Hub publishes the key only after every deploy and asset pack succeeds, while holding the current allocation generation lock. The key is therefore the durable initialization-complete marker: an active allocated supervisor without a key is uncertain and must be fenced and released or replaced, never redeployed in place.
+
 Hub-originated triggers have a separate durable replay path in `workflow_run_dispatch`:
 
 - Mail stores the immutable MIME bytes and the stable run's canonical step grants in the same transaction that reserves the run principal/grants. The exact generation receives `run.grants` then `mail.inbound` on one FIFO WebSocket. Later trigger occurrences reuse that snapshot; a grants-only reservation with no `RunStarted` event is still eligible for its first delivery.

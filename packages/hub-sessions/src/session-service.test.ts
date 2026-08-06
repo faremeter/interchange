@@ -1574,7 +1574,31 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- replace the throwing substrate with the narrow restore/workflow-writer fixture
     (repoStore as unknown as { repoStore: RepoStore }).repoStore = substrate;
 
-    const fakeDb = {
+    const allocationState = {
+      id: "alloc-restore",
+      anchorRunId: "dep_restore_order",
+      status: "allocated",
+      generation: 3,
+      ensureAcceptedGeneration: 3,
+    };
+    const fakeTx = {
+      select() {
+        return {
+          from() {
+            return {
+              where() {
+                return {
+                  limit() {
+                    return {
+                      for: async () => [allocationState],
+                    };
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
       update(table: unknown) {
         if (table !== workflowRunTable) {
           throw new Error("unexpected prepared-deploy update table");
@@ -1593,6 +1617,11 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
           },
         };
       },
+    };
+    const fakeDb = {
+      ...fakeTx,
+      transaction: async <T>(callback: (tx: typeof fakeTx) => Promise<T>) =>
+        callback(fakeTx),
     };
 
     const { defineAgent } = await import("@intx/agent");
@@ -1647,7 +1676,7 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
       >,
     });
 
-    return { allocationRouter, params, repoStore, service };
+    return { allocationRouter, allocationState, params, repoStore, service };
   }
 
   test("acknowledges restored history before sending the frame that spawns the supervisor", async () => {
@@ -1681,6 +1710,46 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
       "sendWorkflowRunPackToAllocation",
     ]);
     expect(repoStore.calls).toEqual([]);
+  });
+
+  test("marks an allocated pack failure as a leaked supervisor", async () => {
+    const { allocationRouter, params, service } =
+      await createPreparedDeployFixture();
+    allocationRouter.sendPackToAllocation = async (...args) => {
+      allocationRouter.calls.push({ method: "sendPackToAllocation", args });
+      throw new Error("deploy pack failed");
+    };
+
+    const error = await service
+      .deployPreparedWorkflowDefinition(params)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SessionLaunchError);
+    if (!(error instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(error.phase).toBe("pack");
+    expect(error.leakedAgent).toBe(true);
+  });
+
+  test("rejects a stale generation before publishing its supervisor key", async () => {
+    const { allocationRouter, allocationState, params, service } =
+      await createPreparedDeployFixture();
+    const sendDeploy = allocationRouter.sendAgentDeployToAllocation;
+    allocationRouter.sendAgentDeployToAllocation = async (...args) => {
+      const result = await sendDeploy(...args);
+      allocationState.generation = 4;
+      allocationState.ensureAcceptedGeneration = 4;
+      return result;
+    };
+
+    const error = await service
+      .deployPreparedWorkflowDefinition(params)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SessionLaunchError);
+    if (!(error instanceof SessionLaunchError)) throw new Error("unreachable");
+    expect(error.phase).toBe("start");
+    expect(error.leakedAgent).toBe(true);
+    expect(error.message).toContain("lost allocation ownership");
   });
 });
 

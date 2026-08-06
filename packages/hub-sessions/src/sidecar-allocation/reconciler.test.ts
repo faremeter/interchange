@@ -3,6 +3,7 @@ import { sha256 } from "@intx/crypto";
 import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
 import { hexEncode } from "@intx/types";
 
+import { SessionLaunchError } from "../session-service";
 import type { SidecarProvisioner } from "./contracts";
 import {
   createSidecarAllocationReconciler,
@@ -630,6 +631,105 @@ describe("createSidecarAllocationReconciler", () => {
       },
       now: NOW,
     });
+  });
+
+  test("releases a generation whose initialization leaked a supervisor", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    const releasing = allocation({
+      status: "releasing",
+      generation: 2,
+      sidecarId: "sc-current",
+    });
+    let claimed = false;
+    let released:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      beginUnrecoverableRelease: async (args) => {
+        released = args;
+        return releasing;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SessionLaunchError(
+            "provision",
+            new Error("deploy pack failed"),
+            true,
+          );
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(released).toMatchObject({
+      allocationId: "alloc-1",
+      expectedGeneration: 1,
+      expectedLeaseId: "lease-1",
+      failureCode: "sidecar_initialization_uncertain",
+      failureMessage: "Automatic recovery is disabled: deploy pack failed",
+    });
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
+  });
+
+  test("does not fence a newer generation after losing the release race", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      beginUnrecoverableRelease: async () => null,
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SessionLaunchError(
+            "provision",
+            new Error("deploy pack failed"),
+            true,
+          );
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(fences).toEqual([["alloc-1", 1]]);
   });
 
   test("marks a connected generation ready after initialization succeeds", async () => {

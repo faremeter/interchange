@@ -30,9 +30,10 @@ import {
   resolveEffectiveSidecarPlacement,
   type SidecarPluginRegistry,
 } from "./sidecar-allocation";
-import type {
-  DeployWorkflowDefinitionResult,
-  PreparedWorkflowDeployer,
+import {
+  SessionLaunchError,
+  type DeployWorkflowDefinitionResult,
+  type PreparedWorkflowDeployer,
 } from "./session-service";
 import type { SidecarAllocationRouter } from "./ws/sidecar-handler";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
@@ -316,11 +317,15 @@ export function createWorkflowAllocationService({
     if (anchor === undefined) {
       throw new Error(`Allocation ${allocation.id} has no workflow anchor run`);
     }
-    if (
-      anchor.publicKey !== null &&
-      (await allocationRouter.isAllocatedWorkflowActive(allocationTarget))
-    ) {
-      return null;
+    if (await allocationRouter.isAllocatedWorkflowActive(allocationTarget)) {
+      if (anchor.publicKey !== null) return null;
+      throw new SessionLaunchError(
+        "provision",
+        new Error(
+          `Allocation ${allocation.id} has an active workflow without a completed initialization key`,
+        ),
+        true,
+      );
     }
     const spec = await launchSpecStore.get(allocation.anchorRunId);
     if (spec === null) {

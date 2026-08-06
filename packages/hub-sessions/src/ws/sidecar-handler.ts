@@ -2903,9 +2903,19 @@ export function createSidecarRouter(
 
     if (events.listenerCount("agent.deploy.ack") > 0) {
       try {
+        const identity = connections.get(ws)?.identity;
         await events.emitAndAwait("agent.deploy.ack", {
           agentAddress: frame.agentAddress,
           publicKey: frame.publicKey,
+          ...(identity?.kind === "allocated"
+            ? {
+                allocated: {
+                  allocationId: identity.allocationId,
+                  anchorRunId: identity.anchorRunId,
+                  generation: identity.generation,
+                },
+              }
+            : {}),
         });
       } catch (err) {
         rejectDeployPending(

@@ -15,6 +15,7 @@ import {
 import { listAssetsForTenant, type DB } from "@intx/db";
 import {
   grant as grantTable,
+  sidecarAllocation as sidecarAllocationTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
@@ -801,7 +802,11 @@ export function createSessionService(
         if (!stageOnly && params.allocationTarget === undefined) {
           await attemptCleanup(agentAddress, "pack", err);
         }
-        throw new SessionLaunchError("pack", err, false);
+        throw new SessionLaunchError(
+          "pack",
+          err,
+          !stageOnly && params.allocationTarget !== undefined,
+        );
       }
 
       // Phase 2b: Asset-pack fan-out. For each attached asset, build a
@@ -838,7 +843,11 @@ export function createSessionService(
             if (!stageOnly && params.allocationTarget === undefined) {
               await attemptCleanup(agentAddress, "pack", err);
             }
-            throw new SessionLaunchError("pack", err, false);
+            throw new SessionLaunchError(
+              "pack",
+              err,
+              !stageOnly && params.allocationTarget !== undefined,
+            );
           }
         }
       }
@@ -1223,21 +1232,53 @@ export function createSessionService(
       }),
     });
     const result = await executeWorkflowDefinitionDeploy(params);
-    const [updated] = await db
-      .update(workflowRunTable)
-      .set({ publicKey: result.publicKey })
-      .where(
-        and(
-          eq(workflowRunTable.id, params.deploymentId),
-          eq(workflowRunTable.deploymentId, params.deploymentId),
-          eq(workflowRunTable.tenantId, params.tenantId),
-        ),
-      )
-      .returning({ id: workflowRunTable.id });
-    if (updated === undefined) {
-      throw new Error(
-        `Prepared anchor run ${params.deploymentId} is missing after allocated deploy`,
-      );
+    try {
+      const updated = await db.transaction(async (tx) => {
+        const [allocation] = await tx
+          .select({
+            id: sidecarAllocationTable.id,
+            anchorRunId: sidecarAllocationTable.anchorRunId,
+            status: sidecarAllocationTable.status,
+            generation: sidecarAllocationTable.generation,
+            ensureAcceptedGeneration:
+              sidecarAllocationTable.ensureAcceptedGeneration,
+          })
+          .from(sidecarAllocationTable)
+          .where(
+            eq(sidecarAllocationTable.id, params.allocationTarget.allocationId),
+          )
+          .limit(1)
+          .for("update");
+        if (
+          allocation === undefined ||
+          allocation.anchorRunId !== params.deploymentId ||
+          allocation.status !== "allocated" ||
+          allocation.generation !== params.allocationTarget.generation ||
+          allocation.ensureAcceptedGeneration !==
+            params.allocationTarget.generation
+        ) {
+          return null;
+        }
+        const [anchor] = await tx
+          .update(workflowRunTable)
+          .set({ publicKey: result.publicKey })
+          .where(
+            and(
+              eq(workflowRunTable.id, params.deploymentId),
+              eq(workflowRunTable.deploymentId, params.deploymentId),
+              eq(workflowRunTable.tenantId, params.tenantId),
+            ),
+          )
+          .returning({ id: workflowRunTable.id });
+        return anchor ?? null;
+      });
+      if (updated === null) {
+        throw new Error(
+          `Prepared anchor run ${params.deploymentId} lost allocation ownership before initialization completed`,
+        );
+      }
+    } catch (error) {
+      throw new SessionLaunchError("start", error, true);
     }
     return result;
   }

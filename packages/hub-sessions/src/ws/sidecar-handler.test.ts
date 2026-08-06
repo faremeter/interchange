@@ -5660,6 +5660,10 @@ describe("SidecarRouter", () => {
         requestTimeoutMs: 500,
       });
       allocatedRouter.fenceAllocation("alloc-1", 1);
+      let deployAck: unknown;
+      allocatedRouter.events.on("agent.deploy.ack", (event) => {
+        deployAck = event;
+      });
 
       const ws = createMockWs();
       allocatedRouter.handleOpen(ws);
@@ -5700,6 +5704,14 @@ describe("SidecarRouter", () => {
         }),
       );
       await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
+      expect(deployAck).toMatchObject({
+        agentAddress: "workflow@exclusive",
+        allocated: {
+          allocationId: "alloc-1",
+          anchorRunId: "run-anchor",
+          generation: 1,
+        },
+      });
     });
 
     test("disconnect rejects an allocation-targeted deploy", async () => {
