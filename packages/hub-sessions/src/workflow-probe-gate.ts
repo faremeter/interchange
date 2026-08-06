@@ -29,6 +29,8 @@ import { and, eq } from "drizzle-orm";
 import type { DBExecutor } from "@intx/db";
 import { workflowDefinitionVersion } from "@intx/db/schema";
 import type { PackumentFetcher, RegistryConfig } from "@intx/tool-packaging";
+import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
@@ -76,6 +78,12 @@ export type ProbeGateResult =
       readonly definitionId: string;
       readonly approvedWireHash: string;
       readonly approvedGrants: ReadonlySet<string>;
+      /**
+       * The inert wire projection the freeze hashed. Rides the ok-arm so the
+       * deploy hand-off carries the exact content the frozen hash addresses,
+       * never a re-projection of a registry that may have moved since approval.
+       */
+      readonly projection: WorkflowProjectionDefinition;
     }
   | {
       readonly ok: false;
@@ -185,6 +193,7 @@ export async function gateAndFreezeProbeResult(
     definitionId,
     approvedWireHash: recomputedWireHash,
     approvedGrants: new Set(approvedGrants),
+    projection: probeResult.projection,
   };
 }
 
@@ -210,16 +219,35 @@ export type InstallAndApproveArgs = {
 };
 
 /**
+ * The frozen hand-off `installAndApproveWorkflowDefinition` produces. It carries
+ * the gate outcome plus the two values the source-ref deploy frame needs and
+ * must NOT recompute at deploy: the inert `projection` the freeze hashed and the
+ * frozen dependency `closure` the pin resolved to. Re-resolving either at deploy
+ * would reintroduce the non-determinism the freeze eliminates -- a registry that
+ * moved between approve and deploy would pin different bytes and project
+ * differently, failing the child re-verify -- so both ride from approve verbatim.
+ */
+export type InstallAndApproveResult = {
+  readonly approval: ProbeGateResult;
+  readonly projection: WorkflowProjectionDefinition;
+  readonly closure: ToolPackageManifest;
+};
+
+/**
  * The install/approve orchestration entrypoint the end-to-end flow drives:
  * resolve the frozen closure, probe the sidecar, then gate and freeze the
  * result. This is production glue, not test-only wiring.
  *
  * The operator-approval decision is an input (`approvals`): the caller supplies
  * the set the operator approved, and the gate holds the advisory set to it.
+ *
+ * Returns the gate outcome alongside the inert projection and the frozen
+ * closure so the deploy hand-off consumes them verbatim rather than re-probing
+ * or re-resolving.
  */
 export async function installAndApproveWorkflowDefinition(
   args: InstallAndApproveArgs,
-): Promise<ProbeGateResult> {
+): Promise<InstallAndApproveResult> {
   const closure = await resolveWorkflowClosure({
     source: args.source,
     pin: args.pin,
@@ -241,12 +269,14 @@ export async function installAndApproveWorkflowDefinition(
     entry: args.entry,
   });
 
-  return gateAndFreezeProbeResult({
+  const approval = await gateAndFreezeProbeResult({
     assetId: args.assetId,
     probeResult,
     approvals: args.approvals,
     persist: createDbFrozenApprovalWriter(args.db),
   });
+
+  return { approval, projection: probeResult.projection, closure };
 }
 
 /**
