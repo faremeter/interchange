@@ -14,7 +14,9 @@ import {
   ToolLoaderError,
   buildRegistryFetchOpts,
   createToolLoader,
+  materializeClosure,
   readResponseWithLimit,
+  storeEntryDir,
 } from "./loader";
 import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
@@ -3210,6 +3212,138 @@ export const main = Object.assign(
         /dynamic import of dir-import-fail@1\.0\.0 interchange\.directors failed/,
       );
     }
+  });
+});
+
+describe("materializeClosure", () => {
+  test("lays out a resolvable store dir without importing any author code", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+
+    // The top-level entry's module has an import-time side effect: if it
+    // were ever imported, it would write a sentinel file. materializeClosure
+    // is the eval-free primitive — it must lay out the store without
+    // running this module, so the sentinel must not exist afterward.
+    const sentinelPath = path.join(scratchRoot, "author-code-ran.marker");
+
+    const depPkg = await packFixture({
+      name: "@closure-scope/transitive-dep",
+      version: "1.0.0",
+      interchangeToolsRelPath: null,
+      main: "./index.js",
+      type: "module",
+      extraFiles: {
+        "index.js": `export const greeting = "hello from transitive";`,
+      },
+    });
+
+    const topEntry = `
+import { writeFileSync } from "node:fs";
+import { greeting } from "@closure-scope/transitive-dep";
+writeFileSync(${JSON.stringify(sentinelPath)}, "author code executed");
+export const factory = Object.assign(
+  () => ({
+    definitions: [{ name: "echo", description: "", inputSchema: {} }],
+    run: async (call) => ({ callId: call.id, content: greeting }),
+  }),
+  { id: "closure/top", requires: [], definitions: [{ name: "echo" }] },
+);
+`;
+    const topPkg = await packFixture({
+      name: "@closure-scope/top",
+      version: "1.0.0",
+      interchangeToolsRelPath: "./index.js",
+      entryModuleSource: topEntry,
+      type: "module",
+      dependencies: { "@closure-scope/transitive-dep": "^1.0.0" },
+    });
+
+    await cache.put(topPkg.integrity, topPkg.bytes);
+    await cache.put(depPkg.integrity, depPkg.bytes);
+
+    const fetchTarball: TarballFetcher = async (entry) => {
+      if (entry.name === "@closure-scope/top") return topPkg.bytes;
+      if (entry.name === "@closure-scope/transitive-dep") return depPkg.bytes;
+      throw new Error(`unexpected fetch: ${entry.name}`);
+    };
+
+    const manifest: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [{ name: "@closure-scope/top", version: "1.0.0" }],
+      entries: [
+        {
+          name: "@closure-scope/top",
+          version: "1.0.0",
+          integrity: topPkg.integrity,
+          source: { kind: "registry", registry: "test" },
+        },
+        {
+          name: "@closure-scope/transitive-dep",
+          version: "1.0.0",
+          integrity: depPkg.integrity,
+          source: { kind: "registry", registry: "test" },
+        },
+      ],
+    };
+
+    const { storeDir } = await materializeClosure({
+      manifest,
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+      host: { os: process.platform, cpu: process.arch },
+      cache,
+      registries: new Map([["test", { url: "https://example.test" }]]),
+      fetchTarball,
+    });
+
+    // The returned storeDir is `<instanceScratchDir>/store`.
+    expect(storeDir).toBe(path.join(instanceDir, "store"));
+
+    // The top-level package dir exists with its package.json, and the
+    // dependency resolves through the layout's node_modules symlink to
+    // the dep's own store entry.
+    const topDir = storeEntryDir(storeDir, "@closure-scope/top", "1.0.0");
+    const topPkgJson = JSON.parse(
+      await fs.readFile(path.join(topDir, "package.json"), "utf8"),
+    );
+    expect(topPkgJson).toMatchObject({
+      name: "@closure-scope/top",
+      version: "1.0.0",
+    });
+
+    const depLink = path.join(
+      topDir,
+      "node_modules",
+      "@closure-scope",
+      "transitive-dep",
+    );
+    const depReal = await fs.realpath(depLink);
+    const depStoreDir = storeEntryDir(
+      storeDir,
+      "@closure-scope/transitive-dep",
+      "1.0.0",
+    );
+    expect(depReal).toBe(await fs.realpath(depStoreDir));
+    const depPkgJson = JSON.parse(
+      await fs.readFile(path.join(depReal, "package.json"), "utf8"),
+    );
+    expect(depPkgJson).toMatchObject({
+      name: "@closure-scope/transitive-dep",
+      version: "1.0.0",
+    });
+
+    // No author code ran: the entry module's import-time side effect
+    // never fired because materializeClosure never imported it.
+    let sentinelExists = true;
+    try {
+      await fs.stat(sentinelPath);
+    } catch {
+      sentinelExists = false;
+    }
+    expect(sentinelExists).toBe(false);
   });
 });
 
