@@ -347,6 +347,7 @@ describe("parseWorkflowDefinitionRow", () => {
       tenantId: "tnt_test",
       creatorPrincipalId: null,
       assetId: null,
+      wireHash: null,
       name: "Test Definition",
       description: null,
       grantRequirements: null,

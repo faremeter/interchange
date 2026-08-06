@@ -36,10 +36,12 @@ import {
   ensureWorkflowDefinitionForAsset,
 } from "@intx/hub-sessions";
 import { catalogModels, catalogProviders } from "@intx/inference-catalog";
+import { computeLiveDefinitionHash } from "@intx/workflow-deploy";
 
 import { resolveDbConfig } from "./lib/db-config";
 
 import {
+  buildWorkflowFixture,
   buildWorkflowJson,
   WORKFLOW_FIXTURE_ASSET_NAME,
   WORKFLOW_FIXTURE_SIGNAL_NAME,
@@ -1179,9 +1181,18 @@ async function ensureSeededWorkflowDefinitions(): Promise<void> {
       .select({ id: asset.id })
       .from(asset)
       .where(eq(asset.kind, "workflow"));
+    // Identity is selector-keyed on the wire-projection hash. The seed plants
+    // exactly the `approval-flow` fixture as its workflow asset, so its wire
+    // hash keys the projected definition -- computed from the same live
+    // definition the deploy path hashes, so a subsequent deploy resolves to
+    // this seeded row rather than minting a second one.
+    const wireHash = await computeLiveDefinitionHash(buildWorkflowFixture());
     for (const workflowAsset of assets) {
       await db.transaction((tx) =>
-        ensureWorkflowDefinitionForAsset(tx, workflowAsset.id),
+        ensureWorkflowDefinitionForAsset(tx, {
+          assetId: workflowAsset.id,
+          wireHash,
+        }),
       );
     }
   } finally {

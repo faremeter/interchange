@@ -23,7 +23,11 @@ import {
   hashDefinition,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
-import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
+import {
+  computeLiveDefinitionHash,
+  deriveRunAddress,
+  deriveRunAgentId,
+} from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
 import {
@@ -230,10 +234,10 @@ export function createWorkflowAllocationService({
       domain: args.deploymentDomain,
     });
     await db.transaction(async (tx) => {
-      const { definitionId } = await ensureWorkflowDefinitionForAsset(
-        tx,
-        args.definitionAssetId,
-      );
+      const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
+        assetId: args.definitionAssetId,
+        wireHash: await computeLiveDefinitionHash(args.definition),
+      });
       await tx.insert(workflowRun).values({
         id: args.anchorRunId,
         tenantId: args.tenantId,
