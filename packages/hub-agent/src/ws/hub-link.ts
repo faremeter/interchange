@@ -34,6 +34,8 @@ import {
   type SourcesUpdateFrame,
   type CredentialsUpdateFrame,
   type SyncRequestFrame,
+  type WorkflowProbeRequestFrame,
+  type WorkflowProbeResultFrame,
 } from "@intx/types/sidecar";
 import type { SignalKind } from "@intx/types";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
@@ -420,6 +422,45 @@ export type WorkflowRunPackApplier = (args: {
   commitSha: string;
 }) => Promise<void>;
 
+/**
+ * The inert answer a probe execution produces, lifted off the
+ * `workflow.probe.result` frame: the workflow's needs-surface projection, the
+ * inert grant set derived from it, and the projection's content hash.
+ */
+export type WorkflowProbeResult = Pick<
+  WorkflowProbeResultFrame,
+  "projection" | "grants" | "wireHash"
+>;
+
+/**
+ * Seam the link routes every inbound `workflow.probe.request` through.
+ * Production wiring supplies an executor that materializes the frame's frozen
+ * dependency closure, evaluates the `interchange.workflow` entry module to a
+ * live `WorkflowDefinition` in a one-shot child, projects it to its inert
+ * needs surface, and returns that projection plus the derived grant set and
+ * content hash. `probe` throws when any step fails; the link turns a throw
+ * into a `workflow.probe.error` reply so the hub's probe never hangs.
+ *
+ * The shape lives on hub-agent so the link does not import the sidecar host's
+ * probe wiring, and so tests can substitute a stub.
+ */
+export interface WorkflowProbeExecutor {
+  probe(frame: WorkflowProbeRequestFrame): Promise<WorkflowProbeResult>;
+}
+
+/**
+ * Placeholder probe executor wired when no real one is supplied. It rejects so
+ * the link answers `workflow.probe.error` -- never a silent drop -- until the
+ * sidecar host wires an executor that runs the child evaluation.
+ */
+const defaultWorkflowProbeExecutor: WorkflowProbeExecutor = {
+  probe() {
+    return Promise.reject(
+      new Error("workflow probe execution is not implemented on this sidecar"),
+    );
+  },
+};
+
 export type HubLinkConfig = {
   hubURL: string;
   sidecarId: string;
@@ -506,6 +547,17 @@ export type HubLinkConfig = {
    * without an applier fails closed with `repo.pack.reject`.
    */
   applyWorkflowRunPack?: WorkflowRunPackApplier;
+  /**
+   * Optional workflow-probe executor. When present, the link routes every
+   * inbound `workflow.probe.request` frame through it and answers the
+   * request/response frame: `workflow.probe.result` when the executor returns
+   * an inert projection + grant set + hash, `workflow.probe.error` when it
+   * throws. Absent, the link wires a placeholder executor that always throws,
+   * so a probe still gets answered with an error (never dropped) until the
+   * sidecar host supplies a real executor -- required because a
+   * request/response frame with no reply hangs the hub's probe.
+   */
+  workflowProbeExecutor?: WorkflowProbeExecutor;
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts a live supervisor for. Called on every (re)connect to
@@ -611,6 +663,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sourcesInboundRouter,
     credentialsInboundRouter,
     applyWorkflowRunPack,
+    workflowProbeExecutor = defaultWorkflowProbeExecutor,
     getWorkflowAddresses = () => [],
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -1249,6 +1302,34 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleWorkflowProbeRequest(
+    frame: WorkflowProbeRequestFrame,
+  ): Promise<void> {
+    // `workflow.probe.request` is request/response (the hub awaits a reply
+    // within its probe timeout), so every path answers `workflow.probe.result`
+    // or `workflow.probe.error` -- never a log-and-drop. The executor runs the
+    // child evaluation; a throw (including the placeholder executor's
+    // not-implemented throw) rides back as an error reply so the hub's probe
+    // fails fast instead of hanging.
+    try {
+      const result = await workflowProbeExecutor.probe(frame);
+      send({
+        type: "workflow.probe.result",
+        requestId: frame.requestId,
+        projection: result.projection,
+        grants: result.grants,
+        wireHash: result.wireHash,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      send({
+        type: "workflow.probe.error",
+        requestId: frame.requestId,
+        error: msg,
+      });
+    }
+  }
+
   async function pushWorkflowRunPack(opts: {
     agentAddress: string;
     repoId: RepoId;
@@ -1456,6 +1537,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "credentials.update":
         await handleCredentialsUpdate(frame);
+        break;
+      case "workflow.probe.request":
+        await handleWorkflowProbeRequest(frame);
         break;
       case "repo.pack.ack":
         handlePackAck(frame);
