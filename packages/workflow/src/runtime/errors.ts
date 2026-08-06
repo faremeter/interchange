@@ -4,7 +4,7 @@
  * Thrown when `runtimeRun` is asked to resume from a durable log it
  * cannot honour with its in-process re-arming surface. The log may be a
  * supplied `resumeFromEvents` seed or one this call adopts from the
- * durable store (a supervisor re-fire that carries no seed).
+ * durable store (a seedless recovery call).
  *
  * The v1 runtime body supports resume when every remaining non-terminal
  * entry in the reconstructed `state.steps` is either aligned on a step

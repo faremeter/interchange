@@ -6,8 +6,7 @@
 // multi-step branch (which spawns the workflow-process subprocess)
 // against the real hub + real sidecar subprocess + an echo inference
 // fixture, fires a mail with a KNOWN body, and asserts the step's
-// committed reply echoes that body. A SECOND mail with a different body
-// produces a SECOND run whose reply echoes the second body.
+// committed reply echoes that body.
 //
 // The mock inference server runs in echo mode: it reflects the last
 // user message's text back as `echo:<text>`. The agent delivers the
@@ -42,7 +41,6 @@ import {
   SESSION_ID,
   SIDECAR_ID,
   fireMailTrigger,
-  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitForFirstRunId,
@@ -56,7 +54,6 @@ const DEPLOYMENT_ID = "single-step-message-input-1";
 const STEP_ID = "step1";
 
 const FIRST_BODY = "First inbound body alpha-7391.";
-const SECOND_BODY = "Second inbound body bravo-5520.";
 
 let env: DeployFlowEnv;
 
@@ -265,59 +262,6 @@ describe("single-step message-input round-trip", () => {
     expect(firstReply).toContain(FIRST_BODY);
     expect(firstReply).not.toBe("echo:");
     expect(firstReply).not.toBe("echo:null");
-
-    // Second message: a DIFFERENT body produces a SECOND run whose
-    // agent.send got the second body.
-    const second = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<single-step-message-input-2@integration.interchange>",
-      content: SECOND_BODY,
-    });
-    expect(second.messageId).not.toBe(first.messageId);
-
-    // Under the stable-runId model both messages share the same runId.
-    // Wait for the second message to land in consumed/ before reading
-    // the current run events.
-    const secondRunId = firstRunId;
-    const secondMessageId =
-      "<single-step-message-input-2@integration.interchange>";
-    const consumedDeadline = Date.now() + 20_000;
-    while (Date.now() < consumedDeadline) {
-      const consumed = await readClaimCheckDir(
-        env,
-        workflowRunRepoId,
-        deploymentMailAddress,
-        "consumed",
-      );
-      if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-
-    const secondTerminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      secondRunId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    expect(secondTerminal.type).toBe("RunCompleted");
-
-    const secondEvents = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      secondRunId,
-    );
-    const secondStartedBody = secondEvents.find(
-      (e) => e.type === "RunStarted",
-    )?.body;
-    if (secondStartedBody === undefined) {
-      throw new Error("missing second RunStarted");
-    }
-    expect(secondStartedBody["consumedMessageId"]).toBe(second.messageId);
-
-    const secondReply = readStepReply(stepCompletedBody(secondEvents));
-    expect(secondReply.startsWith("echo:")).toBe(true);
-    expect(secondReply).toContain(SECOND_BODY);
-    expect(secondReply).not.toContain(FIRST_BODY);
-    expect(secondReply).not.toBe(firstReply);
   });
 });
 

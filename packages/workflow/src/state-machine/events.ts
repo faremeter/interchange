@@ -62,11 +62,11 @@ export interface RunStarted extends EventBase {
    *
    * The state machine enforces dedup against the run-scoped
    * `consumedMessageIds` set (a re-issued `RunStarted` for an
-   * already consumed message-id is rejected). The wider per-address
-   * FIFO serialization invariant (two `mail` triggers at the same
-   * address produce two `RunStarted`s in FIFO order, the second
-   * queues until the first completes) lives in the queue substrate;
-   * the runtime body has no role in enforcing it.
+   * already consumed message-id is rejected). The wider per-address FIFO
+   * invariant lives in the queue substrate: the first mail produces this
+   * RunStarted, live follow-up mail can become SignalReceived, and mail that
+   * reaches a terminal stable run is rejected without another RunStarted.
+   * The runtime body has no role in ordering the queue.
    */
   consumedMessageId?: string;
 }

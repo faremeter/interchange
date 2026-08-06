@@ -97,8 +97,8 @@ export interface RuntimeRunOptions {
    * When omitted, the runtime reduces canonical state from the durable
    * log for `runId`: an empty log starts fresh and emits `RunStarted`;
    * a non-terminal log is adopted and driven to terminal -- the same
-   * recovery the seed path performs, for a supervisor re-fire that
-   * carries no seed; an already-terminal log is returned as-is without
+   * recovery the seed path performs, for a seedless recovery call; an
+   * already-terminal log is returned as-is without
    * re-driving.
    */
   resumeFromEvents?: readonly WorkflowEvent[];
@@ -111,8 +111,8 @@ export interface RuntimeRunOptions {
  *
  * Resume contract: recovery runs against canonical state, whether it
  * arrived as an `options.resumeFromEvents` seed or was reduced from a
- * durable log this call adopts (a supervisor re-fire that carries no
- * seed). A supplied seed log must satisfy two constraints:
+ * durable log this call adopts (a seedless recovery call). A supplied seed log
+ * must satisfy two constraints:
  *
  *   1. The env's `BlobSubstrate` either holds the blob: refs the seed
  *      log references, or is durable enough that the refs are
@@ -334,7 +334,7 @@ async function executeRunBody(
   // hit the raw "unknown blob ref" failure first. Keyed on
   // `initialEvents` because it is the seed contract: it fires for a
   // seeded resume whether the seeded log is terminal or not, and is a
-  // no-op for a fresh re-fire that supplied no seed.
+  // no-op for a seedless recovery call.
   const seedBlobRefs = initialEvents.filter(
     (e): e is typeof e & { kind: "StepCompleted" } =>
       e.kind === "StepCompleted" && e.output.ref.startsWith("blob:"),
@@ -348,9 +348,8 @@ async function executeRunBody(
   // Establish canonical state from the durable log itself, not from the
   // seed array. The seed may have arrived two ways -- as a
   // `resumeFromEvents` array this process just wrote, or as a log a
-  // prior (crashed) process left on disk that this process is re-firing
-  // fresh (the supervisor re-fires a parked inbound message with the
-  // deployment's mail address as the runId and NO `resumeFromEvents`).
+  // prior (crashed) process left on disk that this process adopts without an
+  // explicit `resumeFromEvents` seed.
   // Reducing the durable
   // log answers the only question that matters for recovery -- "does the
   // canonical log carry residual work?" -- identically for both, so
@@ -359,7 +358,7 @@ async function executeRunBody(
   // on how the events reached this process.
   let state = await reloadState(env, runId);
 
-  // Terminal short-circuit. A re-fire whose canonical log is already
+  // Terminal short-circuit. A recovery call whose canonical log is already
   // terminal (`completed`/`failed`/`cancelled`) must NOT emit a fresh
   // `RunStarted` -- that throws `TransitionError("terminal-phase")`,
   // uncaught, and rejects the run. Return the existing terminal result
@@ -395,9 +394,9 @@ async function executeRunBody(
   //
   // The pass runs whenever canonical state is `running`, whether the
   // residual arrived via a `resumeFromEvents` seed OR was adopted from a
-  // durable log this process is re-firing fresh. Keying on
+  // durable log this process is adopting without a seed. Keying on
   // `state.phase === "running"` (not on whether a seed was supplied) is
-  // what settles a crashed step under the fresh re-fire recovery; the
+  // what settles a crashed step under seedless recovery; the
   // RunStarted emit below is skipped in that case because the canonical
   // phase is already `running`.
   const crashedInFlight: { stepId: string; attempt: number }[] = [];
@@ -573,7 +572,7 @@ async function executeRunBody(
       state = await commit(env, runId, event);
     } catch (cause) {
       // This block is reached only when canonical state was `pending`
-      // (an empty or RunStarted-less log), so the fresh re-fire recovery
+      // (an empty or RunStarted-less log), so seedless recovery
       // -- whose canonical log already carries `RunStarted` -- never
       // lands here: reload-at-entry sees its `running`/terminal phase and
       // skips this emit entirely. The one race that still lands a
@@ -598,7 +597,7 @@ async function executeRunBody(
   // downstream steps can resolve `{ from: "steps.<id>.output" }`
   // selectors against work that completed before this process took over
   // -- whether that work arrived as a `resumeFromEvents` seed or was
-  // adopted from a durable log this process is re-firing fresh (the
+  // adopted from a durable log this process recovered without a seed (the
   // adopt-by-skip frontier). Without hydration, the runtime starts with
   // an empty stepOutputs and any selector referencing a
   // previously-completed step's output throws, landing as a spurious
@@ -801,8 +800,8 @@ async function executeRunBody(
 
 /**
  * Reconstruct the terminal `RunResult` for a run whose canonical log is
- * already terminal, without re-driving it. Used by the fresh-re-fire
- * terminal short-circuit: a re-fire against an already-terminal durable
+ * already terminal, without re-driving it. Used by the seedless-recovery
+ * terminal short-circuit: a recovery call against an already-terminal durable
  * log must return the existing result rather than emit a fresh
  * `RunStarted` (which would throw `terminal-phase`).
  *

@@ -306,63 +306,39 @@ describe("multi-step per-step re-route survival across reconnect", () => {
       deploymentMailAddress,
     );
 
-    // ---- first run: full inter-step chain to completion ----
-    const firstRunId = await runInterStepChainToCompletion(env, {
-      deploymentId: DEPLOYMENT_ID,
-      deploymentMailAddress,
-      messageId: "<multistep-reroute-1@integration.interchange>",
-    });
+    // Drive the deployment's one stable run to its inter-step park, reconnect
+    // there, and then complete that SAME run. Re-firing after completion is no
+    // longer a valid way to prove route restoration.
+    await runInterStepChainToCompletion(
+      env,
+      {
+        deploymentId: DEPLOYMENT_ID,
+        deploymentMailAddress,
+        messageId: "<multistep-reroute-1@integration.interchange>",
+      },
+      async () => {
+        expect(env.hub.router.getRoutableAddresses()).toContain(
+          deploymentMailAddress,
+        );
+        await settleThenDrop(env, deploymentMailAddress);
+        await waitFor(
+          () =>
+            !env.hub.router
+              .getRoutableAddresses()
+              .includes(deploymentMailAddress),
+          { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
+        );
 
-    // ---- settle the pack pipeline, then drop the hub link ----
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
+        const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
+          timeoutMs: 20_000,
+        });
+        expect(reconnectMs).toBeGreaterThan(1_000);
+        expect(reconnectMs).toBeLessThan(20_000);
+        expect(env.hub.router.getRoutableAddresses()).toContain(
+          deploymentMailAddress,
+        );
+      },
     );
-    await settleThenDrop(env, deploymentMailAddress);
-
-    // The deployment address leaves routing as the server-side close lands;
-    // this guards against a false "already routable" pass where the drop
-    // never actually severed the link.
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
-    );
-
-    // ---- wait for the reconnect ownership challenge to re-route the
-    // workflow-derived deployment address ----
-    const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-      timeoutMs: 20_000,
-    });
-    // A generous lower bound guards against a false "already routable" pass
-    // that never actually dropped; the upper bound catches a hung link.
-    expect(reconnectMs).toBeGreaterThan(1_000);
-    expect(reconnectMs).toBeLessThan(20_000);
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-
-    // The per-step staging bindings are transient: they are never persisted
-    // into the reconnect set, so no per-step address appears in the hub's
-    // routable set to assert against. The only hub route that survives the
-    // reconnect is the deployment address the steps collapse under (asserted
-    // routable again just above); the per-step runtimes route through that
-    // single re-challenged address. The second inter-step run below, reaching
-    // completion with a distinct runId, is the load-bearing proof that
-    // inter-step routing came back with it -- re-deriving the step addresses
-    // locally here would only restate what `deriveStepAddress` already
-    // guarantees before the reconnect and pin nothing about it.
-
-    // ---- second run after reconnect: full inter-step chain again ----
-    // Only reachable because the sidecar re-established the link, the hub
-    // re-challenged the workflow-derived deployment address, and inter-step
-    // mail/signal routing came back with it.
-    const secondRunId = await runInterStepChainToCompletion(env, {
-      deploymentId: DEPLOYMENT_ID,
-      deploymentMailAddress,
-      messageId: "<multistep-reroute-2@integration.interchange>",
-    });
-    // Under the stable-runId model both messages share the same runId.
-    expect(secondRunId).toBe(firstRunId);
   }, 180_000);
 });
 
@@ -373,7 +349,8 @@ describe("multi-step per-step re-route survival across reconnect", () => {
  * the run to complete. Asserts the ordered event chain
  * (RunStarted -> step1 Started/Completed -> SignalAwaited -> SignalReceived ->
  * step2 Started/Completed -> RunCompleted), which is the inter-step
- * mail/signal routing under test. Returns the runId the supervisor minted.
+ * mail/signal routing under test. The optional callback runs at the durable
+ * SignalAwaited park. Returns the deployment's stable runId.
  */
 async function runInterStepChainToCompletion(
   env: DeployFlowEnv,
@@ -382,6 +359,7 @@ async function runInterStepChainToCompletion(
     deploymentMailAddress: string;
     messageId: string;
   },
+  afterPark?: () => Promise<void>,
 ): Promise<string> {
   const { deploymentId, deploymentMailAddress, messageId } = args;
 
@@ -391,13 +369,9 @@ async function runInterStepChainToCompletion(
     { messageId },
   );
 
-  // Under the stable-runId model every run of this deployment shares the
-  // runId (the deployment address). `clearRunEventsIfAny` clears the prior
-  // run's events before the new trigger.fire, and that clear commit is
-  // pushed ahead of the new run's events, so waiting for a RunStarted whose
-  // `consumedMessageId` is THIS trigger's messageId pins every read below to
-  // the current run's incarnation rather than a prior run's not-yet-cleared
-  // events.
+  // The deployment address is the one stable top-level runId. RunStarted is
+  // immutable, so its consumedMessageId permanently identifies the mail that
+  // first fired this deployment.
   const runId = deploymentMailAddress;
   await waitFor(
     async () => {
@@ -449,6 +423,11 @@ async function runInterStepChainToCompletion(
   const runStartedBody = eventsBeforeSignal[runStartedIdx]?.body;
   if (runStartedBody === undefined) throw new Error("unreachable");
   expect(runStartedBody["consumedMessageId"]).toBe(firedMessageId);
+
+  // Tests that need to interrupt a live run (for example, to exercise a
+  // reconnect) do so at the durable inter-step park, never by completing and
+  // trying to fire the terminal deployment again.
+  await afterPark?.();
 
   // Inject the `go` signal through the production signal-channel path.
   const injected = await injectSignal(env, deploymentId, runId, "go", {

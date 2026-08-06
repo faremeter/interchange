@@ -141,7 +141,7 @@ boundary than the current rung_ (§3f).
  │   write proxy          v │                                 │
  │   ┌──────────────────────────────────────────────────┐    │
  │   │  CHILD rung 0 (workflow-process)                  │    │
- │   │  - runtimeRun per trigger.fired                   │    │
+ │   │  - runtimeRun for the deployment's stable run     │    │
  │   │  - REAL step-invoker: createAgent + tools +       │    │
  │   │      inference + event firehose                   │    │
  │   │  - tool materialization (in-process)              │    │
@@ -238,9 +238,9 @@ conversation state":
 
 - The **supervisor** owns durable mail ingestion: `mailBus.registerAddress` +
   `subscribeMailForAddress` -> inbox claim-check substrate -> FIFO dispatch
-  loop -> `trigger.fired` (one run per message -- the `triggers: 1` case; a
-  step with a larger `triggers` budget folds many triggers into one run, see
-  §3h), in
+  loop -> first `trigger.fire`, then correlated `signal.deliver` while that
+  stable top-level run is live (a terminal run is never cleared or fired
+  again), in
   `packages/workflow-host/src/supervisor/supervisor.ts`.
 - The **harness** owns its own ingestion: it subscribes a `MessageTransport`
   directly, runs a connector reactor, drains INBOX continuously, and holds
@@ -360,30 +360,30 @@ isogit store last committed. Under the unified host the single agent gains the
 multi-step durability model:
 
 - **What a "run" means for a long-lived agent.** In the `triggers: 1` (batch)
-  case each inbound message is one `runtimeRun` of the one-step workflow — one
+  case the deployment's first inbound message drives its one `runtimeRun` — one
   `RunStarted` -> `StepStarted` -> `StepCompleted` -> `RunCompleted` bracket,
   committed to the workflow-run repo under `runs/<runId>/...`. For an
   `"unbounded"` (interactive) step the runtime re-arms rather than completing
   (§3h), so **one** run spans every turn: a single `RunStarted` ->
   `StepStarted`, then a park/deliver cycle per turn, and no terminal until the
-  run is torn down. The batch bracket is exactly the one the current
+  run is torn down. A terminal batch deployment is not fired again. The batch bracket is exactly the one the current
   `driveTrivialRunChain` projector hand-rolls
   (`apps/sidecar/src/workflow-host-wiring.ts`), except now the runtime emits it
   natively because a real `runtimeRun` is driving the step. That projector is
   deleted (§4).
-- **Conversation state across runs.** The agent's connector/conversation state
-  is committed to the workflow-run substrate at run boundaries (and at
-  connector-state-change points, mirroring the harness's existing
-  `onConnectorStateChanged` hook). A new run reads the prior conversation
-  state from the substrate before delivering the next message, so multi-turn
-  continuity survives across runs and across child respawns.
+- **Conversation state across trigger occurrences.** The agent's
+  connector/conversation state is committed to the workflow-run substrate at
+  turn boundaries (and at connector-state-change points, mirroring the
+  harness's existing `onConnectorStateChanged` hook). The live stable run reads
+  that state before delivering the next message, so multi-turn continuity
+  survives child respawns without creating another top-level run.
 - **Kill+respawn mid-conversation.** If the child dies mid-turn, the in-flight
   run's log lacks a terminal event; `discoverInFlightRuns`
   (`packages/workflow-host/src/child/run-child.ts`) finds it on respawn and
   resumes via `runtimeRun(..., { resumeFromEvents })`. The warm-agent cache is
   rebuilt lazily; the resumed run replays from its event log. The agent's
   conversation state is restored from the substrate. This is strictly more
-  durable than the in-process runtime, which had no per-message run log at all.
+  durable than the in-process runtime, which had no durable run log at all.
 
 **Commit granularity is per turn (§3h).** The warm step-invoker's per-send hook
 fires after each `agent.send`, so the conversation is mirrored **per turn**
@@ -956,14 +956,16 @@ as the multi-step path already does:
 
 ### 3h. Trigger budget: how long a step lives
 
-A step declares how many triggers it services before completing, and the
-runtime re-arms it between triggers. This is the single knob that spans the
-batch and interactive workloads: "one run per message" is one point on it.
+A step declares how many trigger occurrences it services before completing,
+and the runtime re-arms it between occurrences. This is the single knob that
+spans batch and interactive workloads inside a deployment's one stable
+top-level run.
 
 **Decision: a step carries `triggers: number | "unbounded"` (default 1).**
 
 - `1` (the default) -- a **batch** step: one trigger, one turn, then it
-  completes. At the deployment level, one run per trigger (the §3a/§3c bracket).
+  completes. If the top-level run becomes terminal, another execution requires
+  a new deployment; the terminal history is not reset.
 - `"unbounded"` -- an **interactive agent**: the step never completes on its
   own; it absorbs every trigger as another turn until the run is torn down
   (undeploy/drain). One run spans the whole conversation.

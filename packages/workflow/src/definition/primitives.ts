@@ -83,7 +83,8 @@ export interface StepPrimitive extends PrimitiveBase {
    *
    * - A positive integer `N`: the step services N triggers, then completes.
    *   `1` (the default when absent) is the ordinary batch step -- one trigger,
-   *   one turn, done -- and, at the deployment level, one run per trigger.
+   *   one turn, done. A terminal top-level run is not fired again; another
+   *   batch execution requires a new deployment.
    * - `"unbounded"`: the step never completes on its own; it absorbs every
    *   trigger as another turn (a long-lived interactive agent) until the run
    *   is torn down.

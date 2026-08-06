@@ -63,6 +63,21 @@ function parseTriggerFireRunIds(lines: readonly string[]): string[] {
   return ids;
 }
 
+function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
+  const ids: string[] = [];
+  for (const line of lines) {
+    if (!line.includes("signal.deliver")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "signal.deliver") continue;
+    ids.push(payload.data.runId);
+  }
+  return ids;
+}
+
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
@@ -364,6 +379,7 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
     messageId: string;
     receivedAt: number;
     mailAuditRef: { store: string; path: string };
+    rawMessage?: string;
   };
   const state = new Map<
     string,
@@ -392,6 +408,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
         mailAuditRef: args.mailAuditRef,
+        ...(args.rawMessage !== undefined
+          ? { rawMessage: args.rawMessage }
+          : {}),
       };
       s.inbox.set(k, envelope);
       return {
@@ -403,6 +422,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           receivedAt: args.receivedAt,
           address: args.address,
           mailAuditRef: args.mailAuditRef,
+          ...(args.rawMessage !== undefined
+            ? { rawMessage: args.rawMessage }
+            : {}),
         },
       };
     },
@@ -428,6 +450,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           receivedAt: envelope.receivedAt,
           address,
           mailAuditRef: envelope.mailAuditRef,
+          ...(envelope.rawMessage !== undefined
+            ? { rawMessage: envelope.rawMessage }
+            : {}),
         },
       };
     },
@@ -1129,14 +1154,10 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     const attempt = await recyclePromise;
     expect(attempt.origin).toBe("operator");
 
-    // After ready, the new child's dispatch loop drains the inbox
-    // claim-check queue in FIFO order. The loop processes runs
-    // serially -- one `trigger.fire` per iteration, waiting for the
-    // run's terminal event before advancing. The supervisor's
-    // per-cohort broadcaster settles each dispatch on a `terminal.event`
-    // upstream frame from the child; the test drives that frame
-    // through the child's IPC sender so the second message lands on
-    // the same loop iteration after the first one closes out.
+    // After ready, the new child's dispatch loop drains the inbox claim-check
+    // queue in FIFO order. The first message fires the deployment's stable
+    // top-level run. Once that run parks, the second message resumes it as a
+    // signal; it must not fire a second top-level run.
     const flushedTriggerRunIds = (): string[] =>
       parseTriggerFireRunIds(secondChild.supervisorToChild.flushed());
     const firstDeadline = Date.now() + 1_000;
@@ -1148,6 +1169,24 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     const firstRunId = firstRunIds[0];
     if (firstRunId === undefined) throw new Error("missing first runId");
     await secondChildSender.send({
+      type: "park.notify",
+      data: {
+        runId: firstRunId,
+        correlationId: "corr-recycle-gap-input-1",
+        parkKind: "input",
+      },
+    });
+
+    const flushedSignalRunIds = (): string[] =>
+      parseSignalDeliverRunIds(secondChild.supervisorToChild.flushed());
+    const signalDeadline = Date.now() + 1_000;
+    while (flushedSignalRunIds().length < 1 && Date.now() < signalDeadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(flushedTriggerRunIds()).toEqual([firstRunId]);
+    expect(flushedSignalRunIds()).toEqual([firstRunId]);
+
+    await secondChildSender.send({
       type: "terminal.event",
       data: {
         runId: firstRunId,
@@ -1156,24 +1195,6 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
         at: "test",
       },
     });
-    const secondDeadline = Date.now() + 1_000;
-    while (flushedTriggerRunIds().length < 2 && Date.now() < secondDeadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    const allRunIds = flushedTriggerRunIds();
-    expect(allRunIds.length).toBeGreaterThanOrEqual(2);
-    const secondRunId = allRunIds.find((id) => id !== firstRunId);
-    if (secondRunId !== undefined) {
-      await secondChildSender.send({
-        type: "terminal.event",
-        data: {
-          runId: secondRunId,
-          seq: 0,
-          kind: "RunCompleted",
-          at: "test",
-        },
-      });
-    }
 
     await supervisor.shutdown();
   });

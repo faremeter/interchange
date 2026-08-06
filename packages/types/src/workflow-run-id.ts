@@ -1,7 +1,7 @@
-// Canonical runId derivation for a workflow deployment's runs.
+// Canonical runId derivation for a workflow deployment's top-level run.
 //
-// Every run of a workflow deployment shares ONE stable runId: the
-// deployment's mail address (`ins_<deploymentId>@<domain>`). The
+// A workflow deployment has ONE addressable top-level run, whose stable runId
+// is the deployment's mail address (`ins_<deploymentId>@<domain>`). The
 // supervisor's dispatch loop keys its per-run state, its grants barrier,
 // and its terminal wait on this id. Every producer of a run's grants --
 // the hub-api trigger route and the sidecar's mail-deliver path -- must
@@ -13,11 +13,12 @@
 // their derivations cannot diverge. It exists to end the divergence that
 // let the mail's Message-ID (a per-message identifier) masquerade as the
 // runId: the runId is a property of the deployment, not of the individual
-// message that triggers a run.
+// trigger occurrence. Internal section/body runs still receive their own
+// synthetic run ids and are not externally addressable.
 
 /**
- * The stable runId for every run of a workflow deployment: its mail
- * address. Callers hold the deployment mail address in different forms --
+ * The stable runId for a workflow deployment's one addressable top-level run:
+ * its mail address. Callers hold the deployment mail address in different forms --
  * a routing recipient, a supervisor binding, a route-derived address --
  * and route it through this one function so the runId contract is stated
  * in exactly one place.

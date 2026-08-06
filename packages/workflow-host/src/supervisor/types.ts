@@ -641,9 +641,8 @@ export type DispatchSubstrateLeg =
  * (design §10b). All are cheap filesystem reads against the workflow-run
  * repo's on-disk working tree, taken only when the observer is wired.
  *
- *   - `runsFanOut`     — entry count under `runs/` (one subdir per message;
- *                        never pruned). The candidate-(i) "collapse runs"
- *                        win is sized by this.
+ *   - `runsFanOut`     — entry count under `runs/` (the stable top-level run
+ *                        plus any internal body-child runs).
  *   - `consumedFanOut` — entry count under
  *                        `addresses/<addr>/consumed/` (one dedup entry per
  *                        message; never pruned). The candidate-(iv) "prune
@@ -665,10 +664,9 @@ export type DispatchStructuralCounters = {
  * One observation emitted by `WorkflowSupervisorBindings.onDispatchTiming`.
  *
  * Both variants key on `messageId`, the per-message identifier (the mail's
- * Message-ID). The run id cannot serve as the key: every run of a deployment
- * shares one stable run id (the deployment mail address), so it does not
- * distinguish one dispatched message from the next, which is exactly what the
- * per-message OLS fits below group on.
+ * Message-ID). The top-level run id cannot serve as the key: one deployment
+ * keeps that stable id across all of its live trigger occurrences, so it does
+ * not distinguish one dispatched message from the next.
  *
  * The `"roundtrip"` variant is the 4.7 latency-gate bracket: pair the
  * `"dispatch-start"` and `"reply-produced"` marks for the same `messageId` to

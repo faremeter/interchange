@@ -13,7 +13,7 @@
 // resources; entries are dropped via `dropChain` when a run settles
 // so long-lived processes do not accumulate dead promise chains.
 //
-// Segment buffering. The run body emits the per-message run-event
+// Segment buffering. The run body emits the per-execution run-event
 // bracket (RunStarted, StepStarted, StepCompleted, terminal) as a
 // sequence of back-to-back commits with nothing durably needed
 // between them for a synchronous segment. `commitBuffered` keeps the

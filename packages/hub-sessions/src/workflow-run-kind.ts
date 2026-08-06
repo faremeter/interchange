@@ -170,6 +170,7 @@ import { glob, repoActionToGrantVerb } from "@intx/hub-common";
 import {
   UserPrincipal,
   type AuthorizeFn,
+  type CommittedReads,
   type KindHandler,
   type NewlyTerminalRun,
   type PriorDeltaReads,
@@ -425,6 +426,10 @@ const ConsumedEnvelope = type({
   mailAuditRef: {
     store: "string > 0",
     path: "string > 0",
+  },
+  "rejection?": {
+    code: "string > 0",
+    message: "string > 0",
   },
   "+": "ignore",
 });
@@ -3056,6 +3061,16 @@ export type MarkConsumedArgs = {
   runId: string;
   consumedAt: number;
   /**
+   * Present when the supervisor deliberately refused the message instead of
+   * delivering it to the run. The consumed entry remains the durable dedup
+   * record, while Hub projection uses this detail to fail (rather than settle)
+   * an exclusive-dispatch row.
+   */
+  rejection?: {
+    code: string;
+    message: string;
+  };
+  /**
    * Retention horizon for the consumed dedup index, in milliseconds.
    * The commit advances the per-address watermark to
    * `consumedAt - retentionHorizonMs` (never backward, never past the
@@ -3144,6 +3159,7 @@ export async function markConsumed(
         runId: args.runId,
         consumedAt: args.consumedAt,
         mailAuditRef: processingEnvelope.mailAuditRef,
+        ...(args.rejection !== undefined ? { rejection: args.rejection } : {}),
       };
       consumedEnvelope = envelope;
 
@@ -3298,6 +3314,144 @@ export async function readOwnedMessageIds(
     if (consumedMessageId !== undefined) owned.add(consumedMessageId);
   }
   return owned;
+}
+
+export type WorkflowRunLifecycle = "absent" | "live" | "terminal";
+
+/** Read one run's lifecycle from a committed workflow-run tree. */
+export async function readCommittedWorkflowRunLifecycle(
+  reads: CommittedReads | null,
+  runId: string,
+): Promise<WorkflowRunLifecycle> {
+  if (reads === null) return "absent";
+  const runPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+  const runChildren = await reads.listDir(runPath);
+  if (
+    runChildren.some(
+      (entry) =>
+        entry.type === "blob" && entry.name === WORKFLOW_RUN_EVENTS_FILE,
+    )
+  ) {
+    return "terminal";
+  }
+
+  const eventsPath = `${runPath}/${WORKFLOW_RUN_EVENTS_DIR}`;
+  const eventEntries = (await reads.listDir(eventsPath)).filter(
+    (entry) => entry.type === "blob" && parseEventSeq(entry.name) !== null,
+  );
+  const latest = eventEntries.reduce<(typeof eventEntries)[number] | undefined>(
+    (candidate, entry) => {
+      if (candidate === undefined) return entry;
+      const candidateSeq = parseEventSeq(candidate.name);
+      const entrySeq = parseEventSeq(entry.name);
+      return entrySeq !== null &&
+        candidateSeq !== null &&
+        entrySeq > candidateSeq
+        ? entry
+        : candidate;
+    },
+    undefined,
+  );
+  if (latest !== undefined) {
+    const eventPath = `${eventsPath}/${latest.name}`;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        new TextDecoder().decode(await reads.readBlobByOid(latest.oid)),
+      );
+    } catch (cause) {
+      throw new Error(`workflow_run_event_unreadable: ${eventPath}`, { cause });
+    }
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      typeof parsed.type === "string" &&
+      TERMINAL_EVENT_TYPES.has(parsed.type)
+    ) {
+      return "terminal";
+    }
+  }
+  return eventEntries.length === 0 ? "absent" : "live";
+}
+
+/**
+ * Read the durable lifecycle of one run from the workflow-run working tree.
+ * `grants.json` alone is still an absent run: grants are staged before the
+ * first trigger, while the first event is the durable proof that the run was
+ * fired. A sealed event log is terminal by the kind handler's compaction
+ * invariant.
+ *
+ * The supervisor uses this when in-memory cohort membership is empty. That
+ * happens both for a genuinely new deployment and briefly during recovery,
+ * so treating both states as "fire" would start a second driver for a live
+ * log or reuse a terminal run.
+ */
+export async function readWorkflowRunLifecycle(
+  store: RepoStore,
+  repoId: RepoId,
+  runId: string,
+): Promise<WorkflowRunLifecycle> {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const runDir = path.join(
+    store.getRepoDir(repoId),
+    WORKFLOW_RUN_RUNS_PREFIX,
+    runId,
+  );
+
+  try {
+    await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
+    return "terminal";
+  } catch (cause) {
+    if (
+      !(cause instanceof Error) ||
+      !("code" in cause) ||
+      cause.code !== "ENOENT"
+    ) {
+      throw cause;
+    }
+  }
+
+  const eventsDir = path.join(runDir, WORKFLOW_RUN_EVENTS_DIR);
+  let files: string[];
+  try {
+    files = await fs.readdir(eventsDir);
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
+      return "absent";
+    }
+    throw cause;
+  }
+
+  const eventFiles = files.filter((file) => parseEventSeq(file) !== null);
+  const latest = eventFiles.reduce<string | undefined>((candidate, file) => {
+    if (candidate === undefined) return file;
+    const candidateSeq = parseEventSeq(candidate);
+    const fileSeq = parseEventSeq(file);
+    return fileSeq !== null && candidateSeq !== null && fileSeq > candidateSeq
+      ? file
+      : candidate;
+  }, undefined);
+  if (latest !== undefined) {
+    const eventPath = path.join(eventsDir, latest);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await fs.readFile(eventPath, "utf8"));
+    } catch (cause) {
+      throw new Error(`workflow_run_event_unreadable: ${eventPath}`, { cause });
+    }
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      typeof parsed.type === "string" &&
+      TERMINAL_EVENT_TYPES.has(parsed.type)
+    ) {
+      return "terminal";
+    }
+  }
+  return eventFiles.length === 0 ? "absent" : "live";
 }
 
 export type ReplayProcessingToInboxOpts = {
