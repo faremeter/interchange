@@ -26,6 +26,21 @@ export {
 } from "./capability-approval";
 export { extractFoldedBody, type FoldedBody } from "./fold-synthesis";
 export {
+  projectLiveToInert,
+  computeLiveDefinitionHash,
+  type InertAgent,
+  type InertLoop,
+  type InertMap,
+  type InertModelSource,
+  type InertOnTrigger,
+  type InertOnTriggerBody,
+  type InertStep,
+  type InertStepStep,
+  type InertToolDeclaration,
+  type InertToolFactory,
+  type InertWorkflowDefinition,
+} from "./live-inert-projector";
+export {
   assertChainHeadIsDefault,
   isSourceApproved,
   buildSingleStepAgentDefinition,

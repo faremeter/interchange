@@ -22,6 +22,9 @@
     "@intx/types": "workspace:*",
     "@intx/workflow": "workspace:*"
   },
+  "devDependencies": {
+    "arktype": "catalog:"
+  },
   "files": [
     "dist",
     "README.md",
