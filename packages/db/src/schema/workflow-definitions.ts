@@ -87,6 +87,10 @@ export const workflowDefinitionVersion = pgTable(
     })
       .notNull()
       .default("active"),
+    // Hash of the wire bytes approved for this version, recorded at approval
+    // and read back during re-verify to detect drift. Null before approval is
+    // a legitimate state, so the column takes no NOT NULL constraint.
+    approvedWireHash: text("approved_wire_hash"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
