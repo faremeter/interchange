@@ -1,0 +1,23 @@
+#!/usr/bin/env -S bun --conditions=intx-src
+// One-shot workflow-probe child. The sidecar host spawns this by path
+// (`Bun.spawn([binaryPath])`); `--conditions` is not inherited, so it is
+// set on the shebang to resolve @intx/* to TypeScript source in the dev
+// loop. A bundled deployment does not run this file.
+//
+// The child reads the materialized package dir and IPC anchors from its
+// fresh env, evaluates the workflow entry behind the airlock, and ships
+// one HMAC-signed result frame on stdout. An evaluation failure is shipped
+// as an `ok: false` frame (handled inside the runner), so a throw reaching
+// here is a pre-evaluation defect (bad env, unwritable stdout) that exits
+// non-zero -- the host then reaps and answers `workflow.probe.error`.
+import { runWorkflowProbeChildFromProcessEnv } from "../src/workflow-probe-handler";
+
+try {
+  await runWorkflowProbeChildFromProcessEnv();
+  process.exit(0);
+} catch (err) {
+  process.stderr.write(
+    `workflow probe child failed: ${err instanceof Error ? err.message : String(err)}\n`,
+  );
+  process.exit(1);
+}

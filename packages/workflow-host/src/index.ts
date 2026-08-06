@@ -1,4 +1,8 @@
 export {
+  loadWorkflowDefinitionFromClosure,
+  type LoadWorkflowDefinitionFromClosureArgs,
+} from "./workflow-definition-loader";
+export {
   createWorkflowRunRepoStore,
   type WorkflowRunRepoStoreOpts,
 } from "./adapters/repo-store";
