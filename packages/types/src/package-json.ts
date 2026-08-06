@@ -48,11 +48,12 @@ export type ToolCredentialDeclarationArray =
   typeof ToolCredentialDeclarationArray.infer;
 
 /**
- * Required fields plus the `interchange` extension used to identify tool
- * packages: `tools` names the sidecar-bundle entry, and `credentials`
+ * Required fields plus the `interchange` extensions used to identify
+ * interchange packages: `tools` names the sidecar-bundle entry, `credentials`
  * statically declares the provider-backed credentials the package's tools may
- * need. `onUndeclaredKey("ignore")` lets the arbitrary upstream npm fields pass
- * through without listing them.
+ * need, and `workflow` names the module whose evaluation produces a workflow
+ * package's `WorkflowDefinition`. `onUndeclaredKey("ignore")` lets the
+ * arbitrary upstream npm fields pass through without listing them.
  */
 export const PackageJSON = type({
   name: "string",
@@ -60,6 +61,7 @@ export const PackageJSON = type({
   "interchange?": type({
     "tools?": "string",
     "credentials?": ToolCredentialDeclarationArray,
+    "workflow?": "string",
   }).onUndeclaredKey("ignore"),
 }).onUndeclaredKey("ignore");
 export type PackageJSON = typeof PackageJSON.infer;
