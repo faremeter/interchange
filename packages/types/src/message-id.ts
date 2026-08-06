@@ -7,10 +7,10 @@
 // as a fresh message. This module is the single source of truth those
 // call sites import.
 //
-// A workflow run's id is NOT this value -- every run of a deployment
-// shares the deployment's mail address as its stable runId (see
-// `deriveWorkflowRunId`). The two ids are distinct: this one is
-// per-message, the runId is per-deployment.
+// A workflow run's id is NOT this value -- a deployment's one addressable
+// top-level run uses the deployment mail address as its stable runId (see
+// `deriveWorkflowRunId`). The two ids are distinct: this one is per-message,
+// while the top-level runId is per-deployment.
 //
 // The identifier is the `Message-ID` header value when the message
 // carries one, and a sha256 of the raw bytes otherwise -- so a message

@@ -5,9 +5,10 @@
 // trigger at run construction time and observes incoming events.
 
 /**
- * Mail trigger. Each inbound mail at `to` fires a new run; the runtime
- * serializes runs per address so two mails to the same address run
- * sequentially.
+ * Mail trigger. The first inbound mail at `to` fires the deployment's stable
+ * top-level run. While that run is live, later mail may resume an `onTrigger`
+ * section through its current input correlation. Once the top-level run is
+ * terminal, the deployment cannot be fired again.
  */
 export interface MailTrigger {
   type: "mail";

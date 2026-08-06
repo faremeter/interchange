@@ -234,6 +234,7 @@ type MemoryEntry = {
   messageId: string;
   receivedAt: number;
   mailAuditRef: { store: string; path: string };
+  rawMessage?: string;
 };
 
 type MemoryAddressState = {
@@ -290,6 +291,9 @@ function createGatedInboxPrimitives(): {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
         mailAuditRef: args.mailAuditRef,
+        ...(args.rawMessage !== undefined
+          ? { rawMessage: args.rawMessage }
+          : {}),
       };
       s.inbox.set(k, envelope);
       return {
@@ -301,6 +305,9 @@ function createGatedInboxPrimitives(): {
           receivedAt: args.receivedAt,
           address: args.address,
           mailAuditRef: args.mailAuditRef,
+          ...(args.rawMessage !== undefined
+            ? { rawMessage: args.rawMessage }
+            : {}),
         },
       };
     },
@@ -326,6 +333,9 @@ function createGatedInboxPrimitives(): {
           receivedAt: envelope.receivedAt,
           address,
           mailAuditRef: envelope.mailAuditRef,
+          ...(envelope.rawMessage !== undefined
+            ? { rawMessage: envelope.rawMessage }
+            : {}),
         },
       };
     },
@@ -712,30 +722,63 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     harness.gatedInbox.release();
     await harness.gatedInbox.replaySettled();
 
-    // Wait for the first `trigger.fire`. With the stable runId
-    // (deploymentMailAddress) both the orphan and the fresh mail share
-    // the same runId on the wire; the FIFO ordering assertion below
-    // is what still proves the replay contract.
+    // Wait for the first `trigger.fire`. Its messageId identifies which
+    // claim-check entry won the FIFO race even though both entries share the
+    // deployment's stable runId.
     const firstTriggerDeadline = Date.now() + 2_000;
-    let firstTriggerRunId: string | null = null;
-    while (firstTriggerRunId === null && Date.now() < firstTriggerDeadline) {
-      const triggers = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "trigger.fire",
-      );
-      if (triggers.length > 0) {
-        const first = triggers[0];
-        if (first !== undefined) firstTriggerRunId = first.data.runId;
-      }
-      if (firstTriggerRunId === null) {
-        await new Promise((r) => setTimeout(r, 1));
-      }
+    while (
+      readPayloadsOfType(harness.supervisorToChild.flushed(), "trigger.fire")
+        .length < 1 &&
+      Date.now() < firstTriggerDeadline
+    ) {
+      await new Promise((r) => setTimeout(r, 1));
     }
-    expect(firstTriggerRunId).toBe(harness.deploymentMailAddress);
+    const triggers = readPayloadsOfType(
+      harness.supervisorToChild.flushed(),
+      "trigger.fire",
+    );
+    expect(triggers).toHaveLength(1);
+    const firstTrigger = triggers[0];
+    if (firstTrigger === undefined) throw new Error("first trigger missing");
+    expect(firstTrigger.data.runId).toBe(harness.deploymentMailAddress);
+    expect(firstTrigger.data.messageId).toBe(ORPHAN_ID);
 
-    // Drive the run's terminal event back through the child sender so
-    // the dispatch loop's wait loop resolves and the next iteration
-    // (for the fresh mail) can run.
+    // Keep the stable run live and park it on its next input. This releases the
+    // orphan's dispatch wait while preserving the one-run-per-deployment
+    // invariant: the fresh mail must resume this run as a signal, not fire a
+    // second top-level run.
+    await harness.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: harness.deploymentMailAddress,
+        correlationId: "corr-fifo-input-1",
+        parkKind: "input",
+      },
+    });
+
+    const signalDeadline = Date.now() + 2_000;
+    while (
+      readPayloadsOfType(harness.supervisorToChild.flushed(), "signal.deliver")
+        .length < 1 &&
+      Date.now() < signalDeadline
+    ) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const signals = readPayloadsOfType(
+      harness.supervisorToChild.flushed(),
+      "signal.deliver",
+    );
+    expect(signals).toHaveLength(1);
+    const freshSignal = signals[0];
+    if (freshSignal === undefined) throw new Error("fresh signal missing");
+    expect(freshSignal.data.runId).toBe(harness.deploymentMailAddress);
+    expect(freshSignal.data.signalId).toBe(freshId);
+    expect(
+      readPayloadsOfType(harness.supervisorToChild.flushed(), "trigger.fire"),
+    ).toHaveLength(1);
+
+    // Complete the resumed run so the fresh mail's durable-consume wait
+    // releases, then verify both entries left the queue in FIFO order.
     await harness.childSender.send({
       type: "terminal.event",
       data: {
@@ -745,35 +788,17 @@ describe("supervisor spawn-time replay FIFO contract", () => {
         at: "test",
       },
     });
-
-    const secondTriggerDeadline = Date.now() + 2_000;
-    let secondTriggerRunId: string | null = null;
-    while (secondTriggerRunId === null && Date.now() < secondTriggerDeadline) {
-      const triggers = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "trigger.fire",
-      );
-      if (triggers.length >= 2) {
-        const second = triggers[1];
-        if (second !== undefined) secondTriggerRunId = second.data.runId;
-      }
-      if (secondTriggerRunId === null) {
-        await new Promise((r) => setTimeout(r, 1));
-      }
+    const consumedDeadline = Date.now() + 2_000;
+    while (
+      harness.gatedInbox.snapshot(harness.deploymentMailAddress).consumed
+        .length < 2 &&
+      Date.now() < consumedDeadline
+    ) {
+      await new Promise((r) => setTimeout(r, 1));
     }
-    expect(secondTriggerRunId).toBe(harness.deploymentMailAddress);
-
-    // Drive the run's terminal event again so the loop unwinds cleanly,
-    // then tear the supervisor down.
-    await harness.childSender.send({
-      type: "terminal.event",
-      data: {
-        runId: harness.deploymentMailAddress,
-        kind: "RunCompleted",
-        seq: 0,
-        at: "test",
-      },
-    });
+    expect(
+      harness.gatedInbox.snapshot(harness.deploymentMailAddress).consumed,
+    ).toEqual([ORPHAN_ID, freshId]);
     await harness.supervisor.shutdown();
   });
 

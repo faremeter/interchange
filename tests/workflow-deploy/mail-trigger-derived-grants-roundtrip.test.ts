@@ -69,6 +69,8 @@ import {
   createRepoStore,
   workflowAuthorize,
   workflowKindHandler,
+  workflowRunAuthorize,
+  workflowRunKindHandler,
   type AuthorizeFn,
   type EventCollectorRegistry,
   type RepoId,
@@ -206,9 +208,8 @@ function createMockEventCollectors(): EventCollectorRegistry {
   };
 }
 
-// A real RepoStore carrying the workflow kind handler, so a workflow asset
-// can be created and its `workflow.json` written and read back. The `/mail`
-// route's `hydrateDefinition` reads the definition through this store.
+// A real RepoStore carrying both kinds the `/mail` route reads: the workflow
+// asset's `workflow.json` and the deployment's workflow-run lifecycle.
 async function createWorkflowRepoStore(): Promise<RepoStore> {
   const dataDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "mail-trigger-derived-"),
@@ -220,12 +221,18 @@ async function createWorkflowRepoStore(): Promise<RepoStore> {
     if (repoId.kind === "workflow") {
       return workflowAuthorize(principal, repoId, ref, act);
     }
+    if (repoId.kind === "workflow-run") {
+      return workflowRunAuthorize(principal, repoId, ref, act);
+    }
     return { allowed: false, reason: `no authorize for ${repoId.kind}` };
   };
   return createRepoStore({
     dataDir,
     signingKey,
-    handlers: { workflow: workflowKindHandler },
+    handlers: {
+      workflow: workflowKindHandler,
+      "workflow-run": workflowRunKindHandler,
+    },
     authorize,
     signingCallback: () => signer,
   });

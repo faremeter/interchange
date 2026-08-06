@@ -2,11 +2,8 @@
 //
 // Companion to `fifo-mail.test.ts`'s 3-mail correctness case. The
 // 3-mail case pins that the supervisor's dispatch loop drains the
-// inbox in arrival order; this file pins that the invariant survives
-// under sustained pressure -- a regression that raced the dispatch
-// loop's "wait for terminal before dequeue" gate (e.g. by racing
-// `markConsumed` against the next `dispatchOne`) would slip through
-// the 3-mail case but surface here.
+// inbox in arrival order; this file pins that the first mail alone fires the
+// stable run and every post-terminal mail is rejected under sustained pressure.
 //
 // Held out of `make test`'s default run because it is a
 // sustained-pressure test: it fires a large batch of mails in quick
@@ -130,17 +127,14 @@ describe("FIFO mail-trigger serialization under load", () => {
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
-  test(`${String(LOAD_MAIL_COUNT)} mails dispatch in arrival order under load`, async () => {
+  test(`${String(LOAD_MAIL_COUNT)} mails preserve terminal rejection order under load`, async () => {
     // Coverage-gap follow-up to the 3-mail case in
     // fifo-mail.test.ts. A single-step workflow still routes through
     // the supervisor's FIFO inbox dispatch loop, so the load test
-    // uses one to keep per-mail commit pressure tractable in CI:
-    // every mail run still
-    // exercises inbox -> processing -> trigger.fire -> wait for
-    // terminal -> markConsumed, but trims one StepStarted +
-    // StepCompleted commit pair off the per-run pack-push
-    // pipeline. The FIFO invariant under test does not depend on
-    // step count.
+    // uses one to keep commit pressure tractable in CI. The first mail
+    // exercises inbox -> processing -> trigger.fire -> wait for terminal ->
+    // markConsumed; the rest exercise FIFO dequeue and durable terminal
+    // rejection. The invariant under test does not depend on step count.
     const loadAgent = defineAgent({
       id: "agent-fifo-load-step",
       systemPrompt: "You are the FIFO-load step agent.",
@@ -289,9 +283,9 @@ describe("FIFO mail-trigger serialization under load", () => {
     );
 
     // Fire all mails in quick succession. The supervisor's dispatch
-    // loop must drain them in strict FIFO order; the canonical event
-    // chain materialises per-run, and the consumed/ subtree carries
-    // one envelope per mail in receivedAt-non-decreasing order.
+    // loop must drain them in strict FIFO order. The canonical event chain
+    // materializes once, and consumed/ carries one envelope per mail in
+    // receivedAt-non-decreasing order.
     const firedMessageIds: string[] = [];
     for (const messageId of LOAD_MESSAGE_IDS) {
       const { messageId: routed } = await fireMailTrigger(
@@ -304,11 +298,9 @@ describe("FIFO mail-trigger serialization under load", () => {
     expect(firedMessageIds).toEqual([...LOAD_MESSAGE_IDS]);
 
     // Wait for `consumed/` to carry every messageId. The dispatch
-    // loop only writes `markConsumed` after the run's terminal
-    // event lands, so the consumed-presence wait is the strongest
-    // observable terminal-side signal -- it implies every run
-    // reached terminal AND the supervisor's per-run cleanup
-    // succeeded.
+    // first writes `markConsumed` after the run's terminal event lands, then
+    // records the queued rejections. Observing every consumed entry proves the
+    // terminal and rejection paths both completed.
     const consumedEntries = await waitForConsumedEntries(
       env,
       workflowRunRepoId,
@@ -317,6 +309,16 @@ describe("FIFO mail-trigger serialization under load", () => {
       { timeoutMs: 240_000, diagnostics: env.sidecarDiagnostics },
     );
     expect(consumedEntries.length).toBe(LOAD_MAIL_COUNT);
+    expect(
+      consumedEntries.find((entry) => entry.messageId === LOAD_MESSAGE_IDS[0])
+        ?.rejection,
+    ).toBeUndefined();
+    for (const messageId of LOAD_MESSAGE_IDS.slice(1)) {
+      expect(
+        consumedEntries.find((entry) => entry.messageId === messageId)
+          ?.rejection?.code,
+      ).toBe("workflow_run_terminal");
+    }
 
     // FIFO invariant: the consumed/ envelopes' `receivedAt`
     // timestamps must be non-decreasing when consulted in the
@@ -359,12 +361,9 @@ describe("FIFO mail-trigger serialization under load", () => {
     );
     expect(processingEntries).toEqual([]);
 
-    // Under the stable-runId model all 50 messages share the same
-    // runId (the deployment address).  `clearRunEventsIfAny` clears
-    // prior terminal events before each new trigger.fire, so only the
-    // last run's events survive in the repo.  We therefore wait for the
-    // single run to reach terminal rather than looking for per-message
-    // run histories.
+    // Under the stable-runId model all 50 messages target the deployment
+    // address, but only the first fires it. The immutable event history remains
+    // that one run; every later message is represented by its rejection receipt.
     const runId = deploymentMailAddress;
     const terminal = await waitForWorkflowRunComplete(
       env,
@@ -397,5 +396,8 @@ describe("FIFO mail-trigger serialization under load", () => {
         `fifo-mail-load: run ${runId} chain malformed: ${types.join(" -> ")}`,
       );
     }
+    expect(events[runStartedIdx]?.body["consumedMessageId"]).toBe(
+      LOAD_MESSAGE_IDS[0],
+    );
   }, 300_000);
 });

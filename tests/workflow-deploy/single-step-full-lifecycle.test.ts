@@ -28,11 +28,9 @@
 //      across the real OS process boundary. (The fixture's
 //      transport-backed `mail_send` bundle replaces the filesystem-only
 //      variant for this test.)
-//   4. SECOND MAIL reuses the WARM agent (4.4): a second mail produces a
-//      second run handled by the SAME warm agent instance -- one durable
-//      conversation store, grown across both messages (no per-message
-//      rebuild). Continuity is observable in the durable conversation
-//      snapshot the substrate carries.
+//   4. DURABLE CONVERSATION SNAPSHOT (4.4): the completed turn is mirrored
+//      from the warm agent's conversation store into the workflow-run
+//      substrate at the run boundary.
 //   5. KILL + RESPAWN (4.5): the conversation RESUMES from the substrate.
 //      A FRESH process (a `createDurableConversationRegistry` built
 //      in-process against the subprocess's on-disk substrate, with a fresh
@@ -100,7 +98,6 @@ import {
   SESSION_ID,
   SIDECAR_ID,
   fireMailTrigger,
-  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
@@ -120,7 +117,6 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
 
 const FIRST_BODY = "First inbound body lifecycle-alpha-7731.";
-const SECOND_BODY = "Second inbound body lifecycle-bravo-9914.";
 
 // The tool the model is told to call. The granted resource is
 // `tool:<TOOL_NAME>` with action `invoke`; the agent's authorize gate
@@ -184,7 +180,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
-  test("deploy -> mail -> signed tool reply -> warm 2nd mail -> respawn resume -> events", async () => {
+  test("deploy -> mail -> signed tool reply -> durable snapshot -> respawn restore -> events", async () => {
     // ---- STAGE 1: DEPLOY (4.1: identity + grants) ----
 
     // Precondition: the deployment address is the launched-agent identity
@@ -413,90 +409,22 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     const firstReceipt = readReceiptSentinel(firstSentinelPath);
     expect(firstReceipt.messageId.length).toBeGreaterThan(0);
 
-    // ---- STAGE 4: SECOND MAIL reuses the WARM agent (4.4) ----
+    // ---- STAGE 4: DURABLE CONVERSATION SNAPSHOT (4.4) ----
 
-    const second = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<full-lifecycle-2@integration.interchange>",
-      content: SECOND_BODY,
-      grants: [GRANTED_RULE],
-    });
-    expect(second.messageId).not.toBe(first.messageId);
-
-    // Under the stable-runId model the second message shares the
-    // same runId as the first.  We wait for the second message to
-    // land in consumed/ (which means the second run reached
-    // terminal and markCompleted ran) and then read the current
-    // events for that runId.
-    const secondRunId = firstRunId;
-    const secondMessageId = "<full-lifecycle-2@integration.interchange>";
-    const consumedDeadline = Date.now() + 20_000;
-    while (Date.now() < consumedDeadline) {
-      const consumed = await readClaimCheckDir(
-        env,
-        workflowRunRepoId,
-        deploymentMailAddress,
-        "consumed",
-      );
-      if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-
-    const secondTerminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      secondRunId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    if (secondTerminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(
-        env,
-        DEPLOYMENT_ID,
-        secondRunId,
-      );
-      const failed = events.find(
-        (e) => e.type === "StepFailed" || e.type === "RunFailed",
-      );
-      throw new Error(
-        `stage 4: expected RunCompleted, got ${secondTerminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-
-    const secondEvents = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      secondRunId,
-    );
-    const secondStartedBody = secondEvents.find(
-      (e) => e.type === "RunStarted",
-    )?.body;
-    if (secondStartedBody === undefined) {
-      throw new Error("missing second RunStarted");
-    }
-    expect(secondStartedBody["consumedMessageId"]).toBe(second.messageId);
-
-    // 4.4 warm reuse: the durable conversation store is a SINGLE per-agent
-    // store keyed by stepId (NOT per run/attempt). Both messages grew the
-    // same conversation, so after two runs the substrate snapshot carries
-    // BOTH user turns. A non-warm path would have torn the agent down
-    // between messages and the per-run isogit store would not accumulate.
+    // The run-boundary hook mirrors the warm agent's conversation into the
+    // workflow-run substrate. The stable per-agent store is keyed by stepId,
+    // not by the terminal run or its attempt.
     const agentStateDir = substrateAgentStateDir(
       env,
       workflowRunRepoId.id,
       STEP_ID,
     );
     await waitFor(
-      async () => (await readSnapshotUserTexts(agentStateDir)).length >= 2,
+      async () => (await readSnapshotUserTexts(agentStateDir)).length >= 1,
       { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
-    const afterWarm = await readSnapshotUserTexts(agentStateDir);
-    // Both inbound bodies appear in the durable transcript, in order: the
-    // single warm agent handled both messages and accumulated the turns.
-    expect(afterWarm.some((t) => t.includes(FIRST_BODY))).toBe(true);
-    expect(afterWarm.some((t) => t.includes(SECOND_BODY))).toBe(true);
-    const firstIdx = afterWarm.findIndex((t) => t.includes(FIRST_BODY));
-    const secondIdx = afterWarm.findIndex((t) => t.includes(SECOND_BODY));
-    expect(firstIdx).toBeGreaterThanOrEqual(0);
-    expect(secondIdx).toBeGreaterThan(firstIdx);
+    const afterBoundary = await readSnapshotUserTexts(agentStateDir);
+    expect(afterBoundary.some((t) => t.includes(FIRST_BODY))).toBe(true);
 
     // The warm agent's conversation `.git` lives at the stable per-agent
     // durable store root, NOT under any per-run `attempt-*` dir -- the
@@ -560,11 +488,10 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
       .flatMap((t) => t.content.map((c) => (c.type === "text" ? c.text : "")));
 
     // THE durability dividend: the post-respawn agent's conversation
-    // reflects the PRE-respawn turns (both inbound bodies). The fresh local
+    // reflects the PRE-respawn turn. The fresh local
     // store started EMPTY, so the only possible source is the substrate
     // restore. A broken restore would have loaded zero turns.
     expect(restoredUserTexts.some((t) => t.includes(FIRST_BODY))).toBe(true);
-    expect(restoredUserTexts.some((t) => t.includes(SECOND_BODY))).toBe(true);
 
     // The restore wrote the prior conversation into the previously-empty
     // fresh local store, confirming the restore path (not a surviving local

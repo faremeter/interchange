@@ -22,6 +22,8 @@ export {
   markConsumed,
   parseEventSeq,
   readOwnedMessageIds,
+  readCommittedWorkflowRunLifecycle,
+  readWorkflowRunLifecycle,
   readProcessingEntry,
   replayProcessingToInbox,
   requireEventSeq,
@@ -40,6 +42,7 @@ export type {
   EnqueueInboxResult,
   MarkConsumedArgs,
   MarkConsumedResult,
+  WorkflowRunLifecycle,
   ReplayProcessingToInboxOpts,
   ReplayProcessingToInboxResult,
 } from "./workflow-run-kind";

@@ -2,7 +2,7 @@
 //
 // The 3-mail correctness test (`fifo-mail.test.ts`) and the under-load
 // regression test (`fifo-mail-load.test.ts`) both observe the same
-// supervisor surface: per-runId event chains via the workflow-run repo
+// supervisor surface: the stable run's event chain via the workflow-run repo
 // and per-message consumed-envelope entries via the workflow-run
 // claim-check ref. The walking and decoding logic is identical across
 // both; this module is its single home.
@@ -111,14 +111,24 @@ export async function readConsumedEntries(
   env: DeployFlowEnv,
   workflowRunRepoId: RepoId,
   address: string,
-): Promise<{ messageId: string; receivedAt: number }[]> {
+): Promise<
+  {
+    messageId: string;
+    receivedAt: number;
+    rejection?: { code: string; message: string };
+  }[]
+> {
   const entries = await readClaimCheckDir(
     env,
     workflowRunRepoId,
     address,
     "consumed",
   );
-  const out: { messageId: string; receivedAt: number }[] = [];
+  const out: {
+    messageId: string;
+    receivedAt: number;
+    rejection?: { code: string; message: string };
+  }[] = [];
   for (const entry of entries) {
     const m = /^(.+)\.json$/.exec(entry.filename);
     if (m === null || m[1] === undefined) continue;
@@ -134,7 +144,28 @@ export async function readConsumedEntries(
         `readConsumedEntries: ${entry.filename} envelope is missing a numeric receivedAt`,
       );
     }
-    out.push({ messageId, receivedAt });
+    const rejection = parsed["rejection"];
+    if (rejection !== undefined) {
+      if (
+        typeof rejection !== "object" ||
+        rejection === null ||
+        !("code" in rejection) ||
+        typeof rejection.code !== "string" ||
+        !("message" in rejection) ||
+        typeof rejection.message !== "string"
+      ) {
+        throw new Error(
+          `readConsumedEntries: ${entry.filename} envelope has an invalid rejection`,
+        );
+      }
+      out.push({
+        messageId,
+        receivedAt,
+        rejection: { code: rejection.code, message: rejection.message },
+      });
+    } else {
+      out.push({ messageId, receivedAt });
+    }
   }
   return out;
 }
@@ -143,14 +174,12 @@ export async function readConsumedEntries(
  * Poll `consumed/` for the deployment's mail address on the
  * workflow-run claim-check ref until every supplied messageId is
  * present, then return the consumed entries. The supervisor's
- * dispatch loop writes `markConsumed` AFTER the run's terminal
- * event lands -- a hub-side observation of `RunCompleted` for the
- * final run of a burst is therefore strictly earlier than that
- * run's `markConsumed` pack push. The pack-push wrap on the
- * sidecar awaits hub ack on every write, so the writes happen in
- * order, but the last write of the burst still has to traverse
- * the dispatch loop's terminal-watcher -> markConsumed ->
- * pack-push pipeline before the test can observe it.
+ * first dispatch writes `markConsumed` AFTER the stable run's terminal
+ * event lands. Later queued messages are then consumed with terminal rejection
+ * receipts. The pack-push wrapper awaits Hub acknowledgement on every write,
+ * so the writes happen in order, but the last receipt still has to traverse
+ * the dispatch loop's markConsumed -> pack-push pipeline before the test can
+ * observe it.
  */
 export async function waitForConsumedEntries(
   env: DeployFlowEnv,
@@ -158,7 +187,13 @@ export async function waitForConsumedEntries(
   address: string,
   messageIds: readonly string[],
   opts: { timeoutMs?: number; diagnostics?: () => string } = {},
-): Promise<{ messageId: string; receivedAt: number }[]> {
+): Promise<
+  {
+    messageId: string;
+    receivedAt: number;
+    rejection?: { code: string; message: string };
+  }[]
+> {
   const { timeoutMs = 30_000, diagnostics } = opts;
   const start = Date.now();
   for (;;) {

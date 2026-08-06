@@ -13,7 +13,9 @@ import {
   dequeueToProcessing,
   markConsumed,
   parseEventSeq,
+  readCommittedWorkflowRunLifecycle,
   readOwnedMessageIds,
+  readWorkflowRunLifecycle,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,
@@ -2313,6 +2315,70 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const owned = await readOwnedMessageIds(store, repoId);
     expect(owned.has("live")).toBe(true);
     expect(owned.has("done")).toBe(false);
+  });
+
+  test("readWorkflowRunLifecycle distinguishes grants-only, live, and terminal logs", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-lifecycle-");
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/staged/grants.json`]: JSON.stringify({
+          stepGrants: [],
+        }),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live-message"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/0.json`]:
+          runStartedBody("done-message"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/1.json`]: runCompletedBody(1),
+      },
+      message: "seed lifecycle states",
+    });
+
+    await expect(
+      readWorkflowRunLifecycle(store, repoId, "missing"),
+    ).resolves.toBe("absent");
+    await expect(
+      readWorkflowRunLifecycle(store, repoId, "staged"),
+    ).resolves.toBe("absent");
+    await expect(readWorkflowRunLifecycle(store, repoId, "live")).resolves.toBe(
+      "live",
+    );
+    await expect(readWorkflowRunLifecycle(store, repoId, "done")).resolves.toBe(
+      "terminal",
+    );
+  });
+
+  test("readCommittedWorkflowRunLifecycle reads the Git ref without a checkout", async () => {
+    const reads = {
+      async listDir(dirPath: string) {
+        if (dirPath === "runs/stable") {
+          return [{ name: "events", oid: "events", type: "tree" as const }];
+        }
+        if (dirPath === "runs/stable/events") {
+          return [
+            { name: "0.json", oid: "started", type: "blob" as const },
+            { name: "1.json", oid: "terminal", type: "blob" as const },
+          ];
+        }
+        return [];
+      },
+      async readBlobByOid(oid: string) {
+        return new TextEncoder().encode(
+          JSON.stringify(
+            oid === "terminal"
+              ? { type: "RunCompleted", seq: 1 }
+              : { type: "RunStarted", seq: 0 },
+          ),
+        );
+      },
+    };
+
+    await expect(
+      readCommittedWorkflowRunLifecycle(reads, "stable"),
+    ).resolves.toBe("terminal");
+    await expect(
+      readCommittedWorkflowRunLifecycle(reads, "missing"),
+    ).resolves.toBe("absent");
   });
 
   test("a CancelRequested-without-finalizer run is still owned (its message stays suppressed)", async () => {

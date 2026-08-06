@@ -50,9 +50,9 @@ export type CompactRunEventsOpts = {
  *
  * Idempotent and terminal-only: a run already sealed (no `events/` subtree)
  * or one whose latest event is not terminal is left untouched, so the call
- * is safe to repeat. The live caller fires it once per run, right after the
- * run terminates; a bounded recovery sweep that would re-fire it to seal a
- * run whose fold a crash interrupted is not yet implemented.
+ * is safe to repeat. The live caller invokes it once per run, right after the
+ * run terminates; a bounded recovery sweep that would retry the fold for a run
+ * whose compaction a crash interrupted is not yet implemented.
  *
  * The combined file is the verbatim byte concatenation of the per-event
  * blobs in seq order (`encodeCombinedEventLog`), the exact shape the

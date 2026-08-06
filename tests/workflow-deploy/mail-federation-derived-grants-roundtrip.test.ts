@@ -72,6 +72,8 @@ import {
   createRepoStore,
   workflowAuthorize,
   workflowKindHandler,
+  workflowRunAuthorize,
+  workflowRunKindHandler,
   type AuthorizeFn,
   type EventCollectorRegistry,
   type RepoStore,
@@ -237,12 +239,18 @@ async function createWorkflowRepoStore(): Promise<RepoStore> {
     if (repoId.kind === "workflow") {
       return workflowAuthorize(principal, repoId, ref, act);
     }
+    if (repoId.kind === "workflow-run") {
+      return workflowRunAuthorize(principal, repoId, ref, act);
+    }
     return { allowed: false, reason: `no authorize for ${repoId.kind}` };
   };
   return createRepoStore({
     dataDir,
     signingKey,
-    handlers: { workflow: workflowKindHandler },
+    handlers: {
+      workflow: workflowKindHandler,
+      "workflow-run": workflowRunKindHandler,
+    },
     authorize,
     signingCallback: () => signer,
   });

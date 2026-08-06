@@ -19,10 +19,10 @@ import { workflowDefinition } from "./workflow-definitions";
 // deployment" a database referent, so approvals and signal correlations anchor
 // to a run row rather than a bare run id string.
 //
-// The id is opaque and heterogeneous: externally-triggered runs use the
-// trigger mail's messageId, while internal (workflow-spawned) runs use a
-// freshly minted run id. Both are just run identifiers, so no format is
-// enforced on the column.
+// The id is opaque and heterogeneous: a deployment's addressable top-level
+// run uses its stable mail address, while internal body-child runs use freshly
+// minted synthetic ids. Both are run identifiers, so no format is enforced on
+// the column.
 export const workflowRun = pgTable(
   "workflow_run",
   {

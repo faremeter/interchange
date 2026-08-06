@@ -2,22 +2,21 @@
 //
 // Deploys a multi-step workflow against the workflow-deploy
 // orchestrator's multi-step branch, fires three distinct mails at the
-// deployment's trigger address in quick succession, waits for every
-// run to terminate, and asserts the per-mail dispatch landed in
-// arrival order with the workflow-run claim-check substrate in the
-// expected steady state.
+// deployment's trigger address in quick succession, and verifies that the
+// first fires the deployment's one stable run while the queued post-terminal
+// mails are rejected in FIFO order.
 //
 // The supervisor's mail flow path enqueues every inbound mail into the
 // workflow-run repo's `addresses/<segment>/inbox/` FIFO via
 // `enqueueInbox`, and a per-deployment serial dispatch loop drains the
 // inbox in arrival order (filename-prefix sort on `receivedAt`),
-// forwarding each entry to the workflow-process child as a
+// forwarding the first entry to the workflow-process child as a
 // `trigger.fire`. The loop waits for the run's terminal event before
-// dequeueing the next entry; on terminal it calls `markConsumed` to
-// move the processing entry into `consumed/<messageId>.json`. With
-// three mails fired before the first run has reached terminal, the
-// last two are forced to queue, which is the FIFO ordering this test
-// pins.
+// dequeueing the next entry; once terminal, it permanently rejects later
+// entries and records that result while moving each processing entry into
+// `consumed/<messageId>.json`. With three mails fired before the first run has
+// reached terminal, the last two are forced to queue, which pins both FIFO
+// ordering and the no-refire invariant.
 //
 // The deployment is intentionally multi-step (a two-step workflow
 // rather than a trivial single-step one): the FIFO invariant lives
@@ -116,7 +115,7 @@ describe("FIFO mail-trigger serialization", () => {
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
-  test("three mails dispatch in arrival order and land in consumed/", async () => {
+  test("three mails preserve FIFO while only the first fires the stable run", async () => {
     const agent1 = defineAgent({
       id: "agent-fifo-step1",
       systemPrompt: "You are the first FIFO step agent.",
@@ -287,14 +286,9 @@ describe("FIFO mail-trigger serialization", () => {
     }
     expect(firedMessageIds).toEqual([...MESSAGE_IDS]);
 
-    // Under the stable-runId model the runId is the deployment
-    // address, so every message to this deployment shares one
-    // run directory.  `clearRunEventsIfAny` clears prior terminal
-    // events before each new trigger.fire, so only the last run's
-    // events survive in the repo.  We therefore wait for all
-    // messages to land in consumed/ and for the single run to
-    // reach terminal, rather than looking for per-message run
-    // histories.
+    // The stable runId is the deployment address. Its event history is never
+    // cleared: the first mail owns RunStarted and later queued mails become
+    // terminal rejections in the claim-check index.
     const runId = deploymentMailAddress;
 
     const consumedEntries = await waitForConsumedEntries(
@@ -308,8 +302,18 @@ describe("FIFO mail-trigger serialization", () => {
     for (const messageId of MESSAGE_IDS) {
       expect(consumedMessageIds).toContain(messageId);
     }
+    expect(
+      consumedEntries.find((entry) => entry.messageId === MESSAGE_IDS[0])
+        ?.rejection,
+    ).toBeUndefined();
+    for (const messageId of MESSAGE_IDS.slice(1)) {
+      expect(
+        consumedEntries.find((entry) => entry.messageId === messageId)
+          ?.rejection?.code,
+      ).toBe("workflow_run_terminal");
+    }
 
-    // Wait for the final run to reach terminal.
+    // Wait for the one run to reach terminal.
     const terminal = await waitForWorkflowRunComplete(
       env,
       DEPLOYMENT_ID,
@@ -366,13 +370,11 @@ describe("FIFO mail-trigger serialization", () => {
     );
     expect(processingEntries).toEqual([]);
 
-    // Canonical event chain assertion for the current (last) run:
+    // Canonical event chain assertion for the one stable run:
     // the multi-step workflow above is `step1 -> step2`, so the
     // expected chain is `RunStarted -> StepStarted{step1} ->
     // StepCompleted{step1} -> StepStarted{step2} ->
-    // StepCompleted{step2} -> RunCompleted`.  Only the last run's
-    // events survive because `clearRunEventsIfAny` clears prior
-    // terminal state before each new trigger.fire.
+    // StepCompleted{step2} -> RunCompleted`. No later mail may replace it.
     const currentEvents = await readWorkflowRunEvents(
       env,
       DEPLOYMENT_ID,
@@ -409,10 +411,9 @@ describe("FIFO mail-trigger serialization", () => {
     expect(step2CompletedIdx).toBeGreaterThan(step2StartedIdx);
     expect(runCompletedIdx).toBeGreaterThan(step2CompletedIdx);
 
-    // The surviving RunStarted belongs to the last message because
-    // prior runs' events were cleared.
+    // The immutable RunStarted belongs to the first message.
     const runStartedBody = currentEvents[runStartedIdx]?.body;
     if (runStartedBody === undefined) throw new Error("unreachable");
-    expect(runStartedBody["consumedMessageId"]).toBe(MESSAGE_IDS[2]);
+    expect(runStartedBody["consumedMessageId"]).toBe(MESSAGE_IDS[0]);
   }, 60_000);
 });

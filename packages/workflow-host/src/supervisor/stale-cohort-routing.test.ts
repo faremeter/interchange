@@ -12,7 +12,7 @@
 //
 // The realistic scenario:
 //   - A run is in-flight on cohort A under the stable runId (the
-//     deployment mail address, shared by every run of the deployment).
+//     deployment mail address, the stable id of its one top-level run).
 //   - Cohort A crashes mid-run before markConsumed → recycle.
 //   - The processing/ entry is replayed back to inbox/.
 //   - Cohort B dispatches the fresh mail under that same stable runId

@@ -25,7 +25,8 @@
 //      each one whose log lacks a terminal event.
 //   4. Emit `ready` on the control channel.
 //   5. Loop on control-channel frames:
-//        - `trigger.fired` -> open a new run via `runtimeRun`.
+//        - `trigger.fired` -> first-fire the deployment's top-level run via
+//          `runtimeRun` (the supervisor only sends this for an absent log).
 //        - `grants-updated` -> replace the credentialsSnapshot.
 //        - `drain` -> forward to the drain controller (no-op here).
 //        - `shutdown` -> stop accepting new triggers and exit the
@@ -847,7 +848,7 @@ async function handleControlPayload(
     case "trigger.fire": {
       // One driver per runId. If this child is already driving this
       // runId -- self-discovery resumed it, or an earlier trigger opened
-      // it -- the supervisor's re-fire (which carries the deployment's
+      // it -- a duplicate/stale trigger frame (which carries the deployment's
       // mail address as the runId and no resumeFromEvents) must NOT spawn
       // a second `runtimeRun`. A
       // second concurrent driver would race the live one to settle the
@@ -855,9 +856,8 @@ async function handleControlPayload(
       // and even a driver that avoided the throw would double-emit the
       // terminal. The live driver's completion continuation owns the
       // single terminal emission; the supervisor's terminal-event-driven
-      // `markConsumed` consumes the message off that one terminal, so no
-      // work is dropped by declining here. Record the runId (the
-      // supervisor did fire a trigger and it was accepted) and signal
+      // `markConsumed` consumes the original message off that one terminal,
+      // so no work is dropped by declining here. Record the runId and signal
       // "handled, not shutdown" the same way the normal trigger case
       // returns, without awaiting the live handle's `complete` inline
       // (that would block the control loop).
