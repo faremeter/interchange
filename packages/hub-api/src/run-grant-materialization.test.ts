@@ -139,6 +139,67 @@ function mockAssetService(json: string): AssetService {
   } as unknown as AssetService;
 }
 
+// A mutable, read-counting asset service. `setJson` swaps the blob returned
+// under the same asset id, modeling a mutated asset; `reads` records how many
+// times the materializer actually read the blob (the only path to a capability
+// walk), so a stable count across triggers proves no per-run re-read or re-walk.
+type CountingAssetService = AssetService & {
+  reads: number;
+  setJson: (json: string) => void;
+};
+
+function countingAssetService(initialJson: string): CountingAssetService {
+  function notImpl(name: string): never {
+    throw new Error(`mock: assetService.${name} not implemented`);
+  }
+  let json = initialJson;
+  const svc = {
+    reads: 0,
+    setJson(next: string) {
+      json = next;
+    },
+    createAsset: () => notImpl("createAsset"),
+    populateAsset: () => notImpl("populateAsset"),
+    readAssetBlob: async () => {
+      svc.reads += 1;
+      return new TextEncoder().encode(json);
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only readAssetBlob is exercised by the materializer
+  return svc as unknown as CountingAssetService;
+}
+
+// The same workflow rewritten under a stable asset id: its agent now declares a
+// DIFFERENT tool, so a live re-walk would surface `tool:write_file` and drop
+// `tool:read_file`. A run bound to the frozen approved walk must ignore this.
+function mutatedWorkflowJson(): string {
+  return JSON.stringify({
+    id: "wf_mail",
+    triggers: [{ type: "mail", to: WORKFLOW_ADDRESS }],
+    stepOrder: ["work"],
+    steps: {
+      work: {
+        kind: "step",
+        id: "work",
+        agent: {
+          id: "worker",
+          systemPrompt: "do work",
+          toolFactories: [{ id: "fac", definitions: [{ name: "write_file" }] }],
+          capabilities: [],
+          inference: { sources: [{ provider: "anthropic", model: "m" }] },
+        },
+        after: [],
+      },
+    },
+    grantRequirements: [
+      { resource: "secret:vault", action: "use", source: "creator" },
+      { resource: "secret:other", action: "use", source: "invoker" },
+    ],
+  });
+}
+
+const RUN_ID = "<mail-run-frozen@tenant.example>";
+
 const deploymentRow = {
   id: "dep-1",
   tenantId: TENANT_ID,
@@ -309,5 +370,80 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     // Only the walk's tool grant survives; the invoker requirement is omitted
     // and the creator requirement is absent, so the run launches with the tool.
     expect(resources).toEqual(["tool:read_file/invoke"]);
+  });
+});
+
+describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
+  test("does not re-read or re-walk the definition per run", async () => {
+    const assets = countingAssetService(workflowJson());
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({ deploymentRow, assetRow }),
+      assetService: assets,
+      grantStore: createInMemoryGrantStore([creatorGrant()]),
+    });
+
+    const first = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: RUN_ID,
+    });
+    if (first.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${first.outcome}`);
+    }
+    // The first trigger reads and walks the approved definition exactly once.
+    expect(assets.reads).toBe(1);
+
+    // A second trigger of the SAME deployment consumes the closure-cached
+    // frozen basis: the asset blob is never read again, and the capability
+    // walk -- which can only run over a freshly read definition -- therefore
+    // does not run again either.
+    const second = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: RUN_ID,
+    });
+    if (second.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${second.outcome}`);
+    }
+    expect(assets.reads).toBe(1);
+  });
+
+  test("a mutated asset blob under a stable id cannot change run grants", async () => {
+    const assets = countingAssetService(workflowJson());
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({ deploymentRow, assetRow }),
+      assetService: assets,
+      grantStore: createInMemoryGrantStore([creatorGrant()]),
+    });
+
+    const first = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: RUN_ID,
+    });
+    if (first.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${first.outcome}`);
+    }
+    const firstResources = first.stepGrants
+      .map((g) => `${g.resource}/${g.action}`)
+      .sort();
+    expect(firstResources).toContain("tool:read_file/invoke");
+
+    // Rewrite the asset blob under the SAME asset id to a definition whose
+    // live re-walk would surface a different tool grant and drop the original.
+    assets.setJson(mutatedWorkflowJson());
+
+    const second = await materialize({
+      agentAddress: WORKFLOW_ADDRESS,
+      runId: RUN_ID,
+    });
+    if (second.outcome !== "materialized") {
+      throw new Error(`expected materialized, got ${second.outcome}`);
+    }
+    const secondResources = second.stepGrants
+      .map((g) => `${g.resource}/${g.action}`)
+      .sort();
+    // The run's grants are the deploy-approved set, unchanged by the mutation:
+    // the smuggled-in tool never appears, and the original is still present.
+    expect(secondResources).toEqual(firstResources);
+    expect(secondResources).toContain("tool:read_file/invoke");
+    expect(secondResources).not.toContain("tool:write_file/invoke");
   });
 });
