@@ -145,6 +145,30 @@ describe("gateAndFreezeProbeResult", () => {
     expect(frozen.approvedGrants).not.toContain("tool:unused-extra");
   });
 
+  test("surfaces the inert projection on the ok-arm so the deploy hand-off carries the hashed content", async () => {
+    const probeResult = await makeProbeResult({
+      grants: ["tool:fetch", "effect:log"],
+    });
+    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const { persist } = recordingPersist("def-projection");
+
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      probeResult,
+      approvals,
+      persist,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    // The freeze hashed exactly this projection; the ok-arm carries it verbatim
+    // so the deploy frame binds to the hashed content rather than a re-probe.
+    expect(result.projection).toBe(probeResult.projection);
+    expect(await computeWireDefinitionHash(result.projection)).toBe(
+      result.approvedWireHash,
+    );
+  });
+
   test("rejects and freezes nothing when an advisory grant is unapproved", async () => {
     const probeResult = await makeProbeResult({
       grants: ["tool:fetch", "effect:log", "tool:escalate"],

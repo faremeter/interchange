@@ -80,7 +80,10 @@ import type {
 } from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
-import { materializeDeployGrantsFromFrozen } from "./workflow-probe-gate";
+import {
+  materializeDeployGrantsFromFrozen,
+  type InstallAndApproveResult,
+} from "./workflow-probe-gate";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -603,6 +606,56 @@ export async function sendMultiStepDeployFrame(
     args.config,
     workflow,
   );
+}
+
+/**
+ * Arguments for `deployCodeSourcedWorkflow`. The `approved` bundle is the
+ * `installAndApproveWorkflowDefinition` output verbatim -- the frozen hash,
+ * inert projection, and closure travel together inside it so no caller can pair
+ * a hash with a mismatched projection or closure. The remaining fields are the
+ * operator/asset config the approve step never sees: the per-step inference
+ * `sources`, the deploy `config`, the target `agentAddress`, and the `source`
+ * ref that names where the definition's bytes are published.
+ */
+export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
+  approved: InstallAndApproveResult;
+  source: WorkflowDefinitionSource;
+};
+
+/**
+ * The single public composition entrypoint for a code-sourced (npm) deploy. It
+ * consumes the approve output and builds the source-ref deploy frame internally,
+ * so the security-load-bearing hand-off -- frozen wire hash, inert projection,
+ * frozen closure, frozen approved grants -- is assembled in one place from one
+ * cohesive object rather than reassembled by each caller. The frozen approval's
+ * hash and projection ride the frame verbatim: nothing here recomputes the hash
+ * or re-resolves the closure, so the child re-verify over the inert projection
+ * matches the gate's freeze.
+ *
+ * A gate outcome that did not approve cannot deploy: an unapproved `approval`
+ * fails closed here rather than shipping an unfrozen definition.
+ */
+export async function deployCodeSourcedWorkflow(
+  args: DeployCodeSourcedWorkflowArgs,
+): Promise<{ publicKey: string }> {
+  const { approval, projection, closure } = args.approved;
+  if (!approval.ok) {
+    throw new Error(
+      `deployCodeSourcedWorkflow: refusing to deploy an unapproved workflow (gate reason: ${approval.reason})`,
+    );
+  }
+  return sendMultiStepDeployFrame({
+    lineage: "source-ref",
+    sidecarRouter: args.sidecarRouter,
+    agentAddress: args.agentAddress,
+    config: args.config,
+    sources: args.sources,
+    projection,
+    approvedWireHash: approval.approvedWireHash,
+    source: args.source,
+    closure,
+    frozenApprovedGrants: approval.approvedGrants,
+  });
 }
 
 /**
