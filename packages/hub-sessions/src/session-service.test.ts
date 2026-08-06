@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
+import { type } from "arktype";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,8 @@ import type {
 } from "@intx/types/runtime";
 import { base64Decode, hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { projectLiveToInert } from "@intx/workflow-deploy";
+import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { extractAttachments } from "@intx/mime";
 import {
@@ -1823,6 +1826,7 @@ describe("sendMultiStepDeployFrame", () => {
     };
 
     const result = await sendMultiStepDeployFrame({
+      lineage: "live",
       sidecarRouter: mockRouter,
       agentAddress: "ins_dep_abc@workflow.interchange",
       config,
@@ -1851,7 +1855,7 @@ describe("sendMultiStepDeployFrame", () => {
     );
   });
 
-  test("carries the source-ref + frozen closure and materializes deploy grants from the frozen approved set", async () => {
+  test("source-ref arm carries the gate-frozen hash and inert projection verbatim and materializes deploy grants from the frozen approved set", async () => {
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
     mockRouter.sendAgentDeploy = ((
@@ -1914,12 +1918,30 @@ describe("sendMultiStepDeployFrame", () => {
     const frozenApprovedGrants = new Set(["tool:read", "tool:write"]);
     const deployGrantCandidates = ["tool:read", "tool:write", "tool:delete"];
 
+    // The gate/freeze layer projects the live definition to its inert
+    // needs-surface and hashes THAT; the sidecar probe serializes the inert
+    // projection to the wire and the hub validates it back to a closed
+    // `WorkflowProjectionDefinition`. Mirror that round-trip so the source-ref
+    // arm receives exactly the probe-result shape it gets in production, and
+    // compute the gate-frozen hash the same way the gate does.
+    const inertProjection = projectLiveToInert(definition);
+    const frozenWireHash = await computeWireDefinitionHash(inertProjection);
+    const roundTripped: unknown = JSON.parse(JSON.stringify(inertProjection));
+    const projection = WorkflowProjectionDefinition(roundTripped);
+    if (projection instanceof type.errors) {
+      throw new Error(
+        `inert projection failed WorkflowProjectionDefinition validation: ${projection.summary}`,
+      );
+    }
+
     await sendMultiStepDeployFrame({
+      lineage: "source-ref",
       sidecarRouter: mockRouter,
       agentAddress: "ins_dep_src@workflow.interchange",
       config,
-      definition,
       sources,
+      projection,
+      approvedWireHash: frozenWireHash,
       source,
       closure,
       frozenApprovedGrants,
@@ -1928,6 +1950,12 @@ describe("sendMultiStepDeployFrame", () => {
 
     const sent = sentWorkflows[0];
     if (sent === undefined) throw new Error("missing workflow projection");
+    // The gate-frozen hash rides the frame VERBATIM -- the source-ref arm never
+    // recomputes it, so the child's re-verify over the inert projection matches.
+    expect(sent.approvedWireHash).toBe(frozenWireHash);
+    // The inert projection itself is carried on the frame's `definition`
+    // unchanged -- no live wire lineage leaks onto the frame.
+    expect(sent.definition).toEqual(projection);
     expect(sent.source).toEqual(source);
     expect(sent.closure).toEqual(closure);
     // Deploy grants are the frozen subset: the unapproved `tool:delete` is
@@ -1936,6 +1964,84 @@ describe("sendMultiStepDeployFrame", () => {
       "tool:read",
       "tool:write",
     ]);
+  });
+
+  test("a live definition and its inert projection hash differently so binding to the inert projection is load-bearing", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { sendMultiStepDeployFrame } = await import("./session-service");
+    const { defineWorkflow, step } = await import("@intx/workflow/definition");
+    const { defineAgent } = await import("@intx/agent");
+    const stubAgent = defineAgent({
+      id: "stub",
+      systemPrompt: "you stub",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_divergent",
+      trigger: { type: "manual" },
+      steps: { only: step({ agent: stubAgent, after: [] }) },
+    });
+    const sources = {
+      only: [
+        {
+          id: "src-only",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          apiKey: "secret-only",
+          model: "mock-model",
+        },
+      ],
+    };
+    const config: HarnessConfig = {
+      sessionId: "ses-divergent",
+      agentId: "ins_dep_div",
+      tenantId: "tenant-1",
+      principalId: "prin-div",
+      agentAddress: "ins_dep_div@workflow.interchange",
+      systemPrompt: "deployment-level",
+      tools: [],
+      grants: [],
+      sources: Object.values(sources).flat(),
+      defaultSource: "src-only",
+    };
+
+    // The live-authored arm stamps the hash of the LIVE wire lineage.
+    await sendMultiStepDeployFrame({
+      lineage: "live",
+      sidecarRouter: mockRouter,
+      agentAddress: "ins_dep_div@workflow.interchange",
+      config,
+      definition,
+      sources,
+    });
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    const liveWireHash = sent.approvedWireHash;
+    if (liveWireHash === undefined) {
+      throw new Error("live-authored arm did not stamp a wire hash");
+    }
+
+    // The gate freezes over the INERT projection. The live wire lineage and the
+    // inert projection diverge (the live agent carries `inference`, the inert
+    // projection carries `modelSources`), so a source-ref deploy MUST bind to
+    // the inert hash -- binding to the live recompute would fail the child
+    // re-verify closed.
+    const inertHash = await computeWireDefinitionHash(
+      projectLiveToInert(definition),
+    );
+    expect(liveWireHash).not.toBe(inertHash);
   });
 });
 
