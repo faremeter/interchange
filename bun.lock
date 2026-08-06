@@ -593,6 +593,9 @@
         "@intx/types": "workspace:*",
         "@intx/workflow": "workspace:*",
       },
+      "devDependencies": {
+        "arktype": "catalog:",
+      },
     },
     "packages/workflow-host": {
       "name": "@intx/workflow-host",
