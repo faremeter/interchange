@@ -60,11 +60,18 @@ import {
 } from "@intx/types/runtime";
 import {
   AgentDeployWorkflow,
+  WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type CredentialDelivery,
 } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN } from "@intx/workflow";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+import {
+  deriveWorkflowRunRepoId,
+  projectLiveToInert,
+} from "@intx/workflow-deploy";
+
+import { applyFrozenWorkflowClosure } from "./workflow-closure-apply";
+import { readRegistries } from "./tool-materialization";
 
 import type {
   MultistepDrainRouter,
@@ -100,6 +107,34 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
  */
 export function deriveDeploymentId(agentAddress: string): string {
   return deriveWorkflowRunRepoId(agentAddress);
+}
+
+/**
+ * Read a substrate-config byte cap (`SIDECAR_CACHE_MAX_BYTES` /
+ * `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`) from the multi-step substrate env and
+ * parse it to a positive finite number. The boot edge resolves these once and
+ * threads them through the substrate env; a source-ref deploy needs them to
+ * size the tarball cache and per-fetch cap when it materializes the frozen
+ * workflow closure. A missing or non-numeric value is a boot-edge wiring bug,
+ * so it fails loud rather than defaulting.
+ */
+function requireSubstrateByteCap(
+  env: Record<string, string>,
+  key: string,
+): number {
+  const raw = env[key];
+  if (raw === undefined) {
+    throw new Error(
+      `sidecar deploy router: ${key} must be present in the multi-step substrate env to materialize a frozen workflow closure`,
+    );
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `sidecar deploy router: ${key} must be a positive finite number, got ${JSON.stringify(raw)}`,
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -1978,11 +2013,57 @@ export function createSidecarDeployRouter(deps: {
       // deletes it below, so only a crash-interrupted deploy leaves one.
       await persistWorkflowRunRecord(dataDir, runId, record);
 
+      // Source-ref apply: when the frame carries a remote `source` plus the
+      // hub's frozen dependency `closure`, materialize EXACTLY that closure and
+      // evaluate the PINNED CODE to the workflow definition, rather than
+      // trusting the inline projection the frame also carries. The closure is
+      // applied byte-for-byte (concrete versions + integrity SRIs); the sidecar
+      // never re-resolves the pin at apply time. The re-evaluated projection is
+      // what `workflow.json` is written from, so the deployed child runs the
+      // pinned code. The child's load-boundary re-verify recomputes the wire
+      // hash on `workflow.json` and fails closed if it diverges from the
+      // hub-approved hash, so a closure that no longer projects to the approved
+      // content cannot deploy. A frame without a source-ref (the live-authored
+      // deploy path and the existing integration harnesses) keeps materializing
+      // the inline projection unchanged.
+      let effectiveDefinition: WorkflowProjectionDefinition =
+        projection.definition;
+      if (projection.source !== undefined && projection.closure !== undefined) {
+        const applied = await applyFrozenWorkflowClosure({
+          source: projection.source,
+          closure: projection.closure,
+          instanceDir: pathJoin(
+            dataDir,
+            "workflow-definition-closures",
+            runId,
+          ),
+          cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
+          cacheMaxBytes: requireSubstrateByteCap(
+            multistepSubstrateEnv,
+            "SIDECAR_CACHE_MAX_BYTES",
+          ),
+          registryMaxTarballBytes: requireSubstrateByteCap(
+            multistepSubstrateEnv,
+            "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
+          ),
+          registries: readRegistries(),
+        });
+        const validated = WorkflowProjectionDefinition(
+          projectLiveToInert(applied.definition),
+        );
+        if (validated instanceof type.errors) {
+          throw new Error(
+            `sidecar deploy router: workflow definition loaded from the frozen closure failed projection validation: ${validated.summary}`,
+          );
+        }
+        effectiveDefinition = validated;
+      }
+
       // Materialize the deploy-only durable state the spawned child and the
       // supervisor read from disk: the workflow definition (`workflow.json`)
       // and each step's grants. The restore path finds both already on disk
       // and skips this; both land before the shared spawn core runs.
-      await materializeWorkflowJson(dataDir, projection.definition);
+      await materializeWorkflowJson(dataDir, effectiveDefinition);
 
       // Materialize each extracted onTrigger section body as its own
       // `assets/workflow/<bodyRef>/workflow.json` (the body id IS the ref) plus

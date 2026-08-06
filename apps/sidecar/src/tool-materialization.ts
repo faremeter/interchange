@@ -46,7 +46,7 @@ const RegistryConfigEnvEntry = type({
 });
 const RegistryConfigEnvArray = RegistryConfigEnvEntry.array();
 
-function readRegistries(): ReadonlyMap<string, RegistryConfig> {
+export function readRegistries(): ReadonlyMap<string, RegistryConfig> {
   const raw = process.env["SIDECAR_TOOL_REGISTRIES"];
   if (raw === undefined) {
     return new Map([["npmjs", { url: "https://registry.npmjs.org" }]]);
