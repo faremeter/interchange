@@ -526,6 +526,13 @@
       "when": 1786097407336,
       "tag": "0075_approved_wire_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1786097858720,
+      "tag": "0076_workflow_definition_content_hash",
+      "breakpoints": true
     }
   ]
 }

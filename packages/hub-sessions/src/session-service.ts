@@ -48,6 +48,7 @@ import {
 } from "@intx/workflow/definition";
 import {
   assertChainHeadIsDefault,
+  computeLiveDefinitionHash,
   createWorkflowDeployOrchestrator,
   deriveDeploymentAddress,
   walkCapabilities,
@@ -1158,6 +1159,9 @@ export function createSessionService(
         "deployWorkflowDefinition requires a db handle to record the deployment's anchor run",
       );
     }
+    // The wire-projection hash keys the definition's selector-keyed identity:
+    // one asset backs many definitions, distinguished by this content handle.
+    const wireHash = await computeLiveDefinitionHash(definition);
     const now = new Date();
     await db.transaction(async (tx) => {
       // Project the workflow asset into a first-class definition (create-if-
@@ -1165,10 +1169,10 @@ export function createSessionService(
       // is otherwise born only in the one-time backfill; creating it here makes
       // every deploy yield a definition, so the run's `definitionId` is
       // populated at birth rather than only for the rows the backfill reached.
-      const { definitionId } = await ensureWorkflowDefinitionForAsset(
-        tx,
-        definitionAssetId,
-      );
+      const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
+        assetId: definitionAssetId,
+        wireHash,
+      });
 
       // The deployment's anchor run: the one workflow_run that carries the
       // deployment's routing identity, 1:1 with the deployment (id and address

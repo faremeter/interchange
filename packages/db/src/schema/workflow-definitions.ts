@@ -19,8 +19,14 @@ import { tenant } from "./tenants";
 // not stored on this row -- it lives in the `workflow`-kind asset the row
 // points at, and the run reads it back from there. `asset_id` is nullable at
 // the schema level, but a runnable definition points at a materialized asset.
-// The unique index over `asset_id` bounds it to at most one definition per
-// asset, because Postgres treats NULLs as distinct.
+//
+// Identity is selector-keyed on the wire-projection hash, not one definition
+// per asset: a single asset (e.g. a monorepo package) backs many definitions
+// distinguished by the content hash of their wire projection. `wire_hash` is
+// that content handle; the unique index over `(asset_id, wire_hash)` keys
+// identity so definitions sharing an asset but carrying different wire hashes
+// resolve independently. `wire_hash` is nullable so definitions predating this
+// key carry none; Postgres treats those NULLs as distinct.
 export const workflowDefinition = pgTable(
   "workflow_definition",
   {
@@ -40,6 +46,10 @@ export const workflowDefinition = pgTable(
     assetId: text("asset_id").references(() => asset.id, {
       onDelete: "restrict",
     }),
+    // Content hash of this definition's wire projection: the selector that
+    // keys identity within an asset. Nullable so definitions predating the
+    // selector-keyed key carry none.
+    wireHash: text("wire_hash"),
     name: text("name").notNull(),
     description: text("description"),
     // Grant requirements manifest, resolved at launch into materialized grants.
@@ -70,7 +80,10 @@ export const workflowDefinition = pgTable(
   },
   (t) => [
     index("workflow_definition_tenant_idx").on(t.tenantId, t.createdAt),
-    uniqueIndex("workflow_definition_asset_idx").on(t.assetId),
+    uniqueIndex("workflow_definition_asset_wire_hash_idx").on(
+      t.assetId,
+      t.wireHash,
+    ),
   ],
 );
 
