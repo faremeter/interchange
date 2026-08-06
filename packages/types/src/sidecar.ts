@@ -17,6 +17,8 @@ import {
   InferenceSource,
 } from "./runtime";
 import { SignalKind } from "./signals";
+import { ToolPackageManifest } from "./tool-packages";
+import { WorkflowDefinitionSource } from "./workflow-sources";
 
 // ---------------------------------------------------------------------------
 // Sidecar → Hub
@@ -982,6 +984,76 @@ export const SyncRequestFrame = type({
 export type SyncRequestFrame = typeof SyncRequestFrame.infer;
 
 // ---------------------------------------------------------------------------
+// Workflow probe (bidirectional)
+// ---------------------------------------------------------------------------
+//
+// A probe asks a connected sidecar to inspect a code-sourced workflow WITHOUT
+// deploying it: materialize the frozen dependency closure, evaluate the entry
+// module to a live `WorkflowDefinition`, project it to its inert needs
+// surface, and return that projection plus the derived grant set and content
+// hash. The request/result/error trio is correlated by `requestId`, entirely
+// independent of the address maps -- a token-authed sidecar can serve a probe
+// in its pre-deploy state, with no agent deployed and no routable address.
+
+/**
+ * Hub asks a connected sidecar to probe a code-sourced workflow. Correlated by
+ * `requestId`; the sidecar answers with `workflow.probe.result` on success or
+ * `workflow.probe.error` on failure, both carrying the same `requestId`.
+ *
+ * The frame carries everything the sidecar's probe child needs to run the
+ * probe with no further hub round-trip:
+ *   - `source` names where the definition's bytes come from (the registry that
+ *     publishes the definition package).
+ *   - `closure` is the frozen dependency closure the hub already resolved --
+ *     concrete versions and integrity SRIs -- so the child materializes the
+ *     exact tree the hub pinned.
+ *   - `entry` is the `interchange.workflow` module path within the package
+ *     whose evaluation produces the `WorkflowDefinition`.
+ */
+export const WorkflowProbeRequestFrame = type({
+  type: "'workflow.probe.request'",
+  requestId: "string",
+  source: WorkflowDefinitionSource,
+  closure: ToolPackageManifest,
+  entry: "string",
+});
+export type WorkflowProbeRequestFrame = typeof WorkflowProbeRequestFrame.infer;
+
+/**
+ * A connected sidecar's answer to a `workflow.probe.request`: the inert
+ * needs-surface projection of the probed workflow, the inert grant set derived
+ * from it, and the content hash of the projection. Correlated to the request
+ * by `requestId`.
+ *
+ * `projection` is the same closed `WorkflowProjectionDefinition` a deploy frame
+ * carries. `grants` is the deployment-wide inert grant surface -- the set of
+ * capability-grant strings the workflow requires -- for pre-deploy operator
+ * inspection. `wireHash` is the hex SHA-256 of the projection's canonical JSON
+ * (`computeWireDefinitionHash` in `@intx/types/wire-definition-hash`), the
+ * deployment's content-addressed handle.
+ */
+export const WorkflowProbeResultFrame = type({
+  type: "'workflow.probe.result'",
+  requestId: "string",
+  projection: WorkflowProjectionDefinition,
+  grants: "string[]",
+  wireHash: "string",
+});
+export type WorkflowProbeResultFrame = typeof WorkflowProbeResultFrame.infer;
+
+/**
+ * A connected sidecar reports that a `workflow.probe.request` failed --
+ * materialization, evaluation, projection, or hashing threw. Correlated to the
+ * request by `requestId`; `error` describes the failure.
+ */
+export const WorkflowProbeErrorFrame = type({
+  type: "'workflow.probe.error'",
+  requestId: "string",
+  error: "string",
+});
+export type WorkflowProbeErrorFrame = typeof WorkflowProbeErrorFrame.infer;
+
+// ---------------------------------------------------------------------------
 // Discriminated frame unions
 // ---------------------------------------------------------------------------
 
@@ -1002,7 +1074,9 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)
   .or(PackRejectFrame)
-  .or(MailInboundAckFrame);
+  .or(MailInboundAckFrame)
+  .or(WorkflowProbeResultFrame)
+  .or(WorkflowProbeErrorFrame);
 export type SidecarFrame = typeof SidecarFrame.infer;
 
 /** All frame types the hub sends to the sidecar. */
@@ -1021,7 +1095,8 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(SignalDeliverFrame)
   .or(RunGrantsFrame)
   .or(SignalCorrelationRegisterAckFrame)
-  .or(DrainDeliverFrame);
+  .or(DrainDeliverFrame)
+  .or(WorkflowProbeRequestFrame);
 export type HubFrame = typeof HubFrame.infer;
 
 /** Any frame on the wire, regardless of direction. */

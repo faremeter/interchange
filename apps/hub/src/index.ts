@@ -121,6 +121,21 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   return value;
 }
 
+// Like `readPositiveIntEnv` but with no fallback: returns `undefined` when the
+// var is unset so the caller can omit the field and let the consumer apply its
+// own default, instead of duplicating that default here.
+function readOptionalPositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `${name} must be a positive integer; got ${JSON.stringify(raw)}`,
+    );
+  }
+  return value;
+}
+
 const agentRepoStore = createAgentRepoStore({
   dataDir: hubDataDir,
   signingKey: hubSigningKey,
@@ -180,11 +195,17 @@ const lookups = {
 };
 
 const sidecarCredentials = createSidecarCredentialResolver({ db });
+// HUB_PROBE_TIMEOUT_MS widens the router's per-probe timeout for operators
+// whose registries or definition evaluations run slow; unset, the router
+// applies its own DEFAULT_PROBE_TIMEOUT_MS.
+const probeTimeoutMs = readOptionalPositiveIntEnv("HUB_PROBE_TIMEOUT_MS");
+
 const sidecarRouter = createSidecarRouter({
   hubPublicKey: hexEncode(hubSigningKey.publicKey),
   authenticateSidecar: async ({ token }) => sidecarCredentials.resolve(token),
   validateSidecarIdentity: sidecarCredentials.isCurrent,
   lookups,
+  ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
 });
 
 const eventCollectors = createEventCollectorRegistry({
