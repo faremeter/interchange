@@ -78,6 +78,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
+import { stopServerBounded } from "@intx/test-harness/bun-server";
 
 export const AGENT_ADDRESS = "ins_test-agent@integration.interchange";
 export const AGENT_ID = "ins_test-agent";
@@ -1300,31 +1301,6 @@ export type StartDeployFlowEnvOpts = {
    */
   materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
 };
-
-/**
- * Stop a `Bun.serve` server, bounding the wait so teardown cannot hang.
- *
- * A server-initiated WebSocket close (`ws.close()` from the hub upgrade
- * callback, which the reconnect helpers use to drop the hub link) does
- * NOT fire the server-side `onClose`, so Bun keeps counting the dropped
- * connection as live. `server.stop(true)` and `server.stop(false)` both
- * then wait forever for that phantom connection to drain -- a reproducible
- * Bun/Hono behavior, not a product concern (the sidecar has already been
- * killed and every tracked handle closed by the time this runs). This is
- * a deliberate teardown bound, not an error swallow: the server's only
- * remaining job is releasing its port, which the exiting test process
- * reclaims regardless. Tests that never drop the hub link resolve the
- * `stop(true)` promptly and never hit the bound.
- */
-async function stopServerBounded(
-  server: ReturnType<typeof Bun.serve>,
-): Promise<void> {
-  const STOP_TIMEOUT_MS = 1_000;
-  await Promise.race([
-    server.stop(true),
-    new Promise<void>((resolve) => setTimeout(resolve, STOP_TIMEOUT_MS)),
-  ]);
-}
 
 // Compose the full deploy-flow env: hub server, mock inference, sidecar
 // subprocess. Owns every tempdir these subsystems open and tears them

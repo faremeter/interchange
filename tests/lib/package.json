@@ -26,6 +26,10 @@
       "types": "./http.ts",
       "default": "./http.ts"
     },
+    "./bun-server": {
+      "types": "./bun-server.ts",
+      "default": "./bun-server.ts"
+    },
     "./seed": {
       "types": "./seed.ts",
       "default": "./seed.ts"
