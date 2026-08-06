@@ -954,6 +954,40 @@ function defaultTarballUrl(
 }
 
 /**
+ * True when `body` is a web `ReadableStream`-shaped value the reader loop
+ * can pull through `getReader()`. Test seams that build a real `Response`
+ * hit this path; the production `npm-registry-fetch` body does not.
+ */
+function hasWebReadableBody(
+  body: unknown,
+): body is { getReader: () => ReadableStreamDefaultReader<Uint8Array> } {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "getReader" in body &&
+    typeof body.getReader === "function"
+  );
+}
+
+/**
+ * True when `body` is a Node-style byte stream: async-iterable, with an
+ * optional `destroy` the abort path uses to tear down a stalled read.
+ * This is the shape `npm-registry-fetch`'s Minipass response body has —
+ * chunks are validated as `Uint8Array` per-iteration, so the element type
+ * is left `unknown` here rather than asserted.
+ */
+function isByteStreamAsyncIterable(
+  body: unknown,
+): body is AsyncIterable<unknown> & { destroy?: (err?: Error) => void } {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    Symbol.asyncIterator in body &&
+    typeof body[Symbol.asyncIterator] === "function"
+  );
+}
+
+/**
  * Read an HTTP-registry tarball response into a Uint8Array while enforcing
  * `maxBytes`. Two guards:
  *
@@ -966,9 +1000,18 @@ function defaultTarballUrl(
  *      the read when the running total crosses the cap. This catches
  *      the missing-or-lying header case.
  *
+ * The body is read whether it is a web `ReadableStream` (the `getReader`
+ * shape a real `Response` exposes, exercised by the test seams) or a
+ * Node/Minipass async-iterable of `Buffer` chunks (what
+ * `npm-registry-fetch` actually returns in production). Both branches
+ * enforce the same running `maxBytes` cap while streaming, so the byte
+ * guard is never bypassed by buffering the whole body up front
+ * (`arrayBuffer()`).
+ *
  * An optional `signal` adds a time guard: when it aborts (the caller's
- * fetch deadline), the in-flight read is cancelled and the call rejects,
- * so a registry that streams the body slowly or stalls mid-stream cannot
+ * fetch deadline), the in-flight read is cancelled — the web reader via
+ * `cancel()`, the Node stream via `destroy()` — and the call rejects, so
+ * a registry that streams the body slowly or stalls mid-stream cannot
  * outlast the deadline while staying under the byte cap.
  *
  * All rejections surface as `registry.fetch.failed` so the apply layer
@@ -1005,58 +1048,115 @@ export async function readResponseWithLimit(
     }
   }
 
-  const body = res.body;
-  if (body === null) {
+  const timeoutError = (): ToolLoaderError =>
+    new ToolLoaderError({
+      category: "registry.fetch.failed",
+      message: `tarball read for ${ctx.name}@${ctx.version} exceeded the registry fetch timeout`,
+      package: { name: ctx.name, version: ctx.version },
+    });
+  const capOverflowError = (): ToolLoaderError =>
+    new ToolLoaderError({
+      category: "registry.fetch.failed",
+      message: `tarball for ${ctx.name}@${ctx.version} streamed past the ${String(maxBytes)}-byte cap`,
+      package: { name: ctx.name, version: ctx.version },
+    });
+
+  // `res.body`'s declared web-`ReadableStream` type is a lie on the
+  // production path: `npm-registry-fetch` returns a Minipass (Node)
+  // stream that has no `getReader`, only async iteration. Treat the body
+  // as an unvalidated boundary value and dispatch on its actual runtime
+  // shape rather than trusting the declared type.
+  const body: unknown = res.body;
+  if (body === null || body === undefined) {
     // No body and the upstream returned 2xx: treat as a zero-byte
     // tarball. The cache and tar-extract layers will reject the
     // resulting bytes as non-tar content, but the fetch itself didn't
     // fail — keep this path simple rather than over-rejecting.
     return new Uint8Array(0);
   }
-  const reader = body.getReader();
+
   const chunks: Uint8Array[] = [];
   let total = 0;
-  // Cancelling the reader settles any pending read() as done, so the
-  // post-read check below surfaces the timeout even when the underlying
-  // body stream does not itself observe the abort signal.
-  let timedOut = false;
-  const onAbort = () => {
-    timedOut = true;
-    void reader.cancel();
-  };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  if (signal?.aborted === true) onAbort();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (timedOut) {
-        throw new ToolLoaderError({
-          category: "registry.fetch.failed",
-          message: `tarball read for ${ctx.name}@${ctx.version} exceeded the registry fetch timeout`,
-          package: { name: ctx.name, version: ctx.version },
-        });
+
+  if (hasWebReadableBody(body)) {
+    const reader = body.getReader();
+    // Cancelling the reader settles any pending read() as done, so the
+    // post-read check below surfaces the timeout even when the underlying
+    // body stream does not itself observe the abort signal.
+    let timedOut = false;
+    const onAbort = () => {
+      timedOut = true;
+      void reader.cancel();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted === true) onAbort();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (timedOut) throw timeoutError();
+        if (done) break;
+        if (value === undefined) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          // Stop reading; we already have enough evidence the upstream
+          // is over the cap. The reader.cancel() call requests
+          // cancellation upstream; the runtime decides whether to drop
+          // the in-flight TCP frames or just unsubscribe our reader.
+          await reader.cancel();
+          throw capOverflowError();
+        }
+        chunks.push(value);
       }
-      if (done) break;
-      if (value === undefined) continue;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        // Stop reading; we already have enough evidence the upstream
-        // is over the cap. The reader.cancel() call requests
-        // cancellation upstream; the runtime decides whether to drop
-        // the in-flight TCP frames or just unsubscribe our reader.
-        await reader.cancel();
-        throw new ToolLoaderError({
-          category: "registry.fetch.failed",
-          message: `tarball for ${ctx.name}@${ctx.version} streamed past the ${String(maxBytes)}-byte cap`,
-          package: { name: ctx.name, version: ctx.version },
-        });
-      }
-      chunks.push(value);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      reader.releaseLock();
     }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    reader.releaseLock();
+  } else if (isByteStreamAsyncIterable(body)) {
+    // A `for await` parked awaiting the next chunk cannot observe the
+    // abort flag until a chunk (or the stream's end) arrives, so unlike
+    // the web reader's cancel() the flag alone cannot unblock a stalled
+    // read. destroy() forces the iteration to settle — it rejects with a
+    // stream-teardown error, which the catch below rewrites to the
+    // deadline error when the teardown was ours.
+    let timedOut = false;
+    const onAbort = () => {
+      timedOut = true;
+      if (typeof body.destroy === "function") body.destroy();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted === true) onAbort();
+    try {
+      for await (const chunk of body) {
+        if (timedOut) throw timeoutError();
+        if (!(chunk instanceof Uint8Array)) {
+          throw new ToolLoaderError({
+            category: "registry.fetch.failed",
+            message: `registry "${ctx.registry}" streamed a non-binary chunk fetching ${ctx.name}@${ctx.version}`,
+            package: { name: ctx.name, version: ctx.version },
+          });
+        }
+        total += chunk.byteLength;
+        if (total > maxBytes) throw capOverflowError();
+        chunks.push(chunk);
+      }
+      // An abort that lands after the final chunk destroys the stream
+      // without rejecting the iteration; surface the timeout here so that
+      // race does not slip through as a successful read.
+      if (timedOut) throw timeoutError();
+    } catch (err) {
+      if (timedOut && !(err instanceof ToolLoaderError)) throw timeoutError();
+      throw err;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  } else {
+    throw new ToolLoaderError({
+      category: "registry.fetch.failed",
+      message: `registry "${ctx.registry}" returned a response body of an unreadable shape for ${ctx.name}@${ctx.version}`,
+      package: { name: ctx.name, version: ctx.version },
+    });
   }
+
   const out = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {

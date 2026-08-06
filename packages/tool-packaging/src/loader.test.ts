@@ -2,8 +2,10 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import * as tar from "tar";
 import ssri from "ssri";
+import npmRegistryFetch from "npm-registry-fetch";
 
 import { applyAtomic } from "./atomic-apply";
 import { createTarballCache } from "./cache";
@@ -2781,6 +2783,103 @@ describe("readResponseWithLimit", () => {
       },
     });
     const res = new Response(stream);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20);
+    let caught: unknown;
+    try {
+      await readResponseWithLimit(res, 1024, stubCtx, controller.signal);
+    } catch (err) {
+      caught = err;
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("registry.fetch.failed");
+      expect(caught.message).toMatch(/exceeded the registry fetch timeout/);
+    }
+  });
+
+  // The cases above feed a web `ReadableStream` (getReader). The default
+  // fetcher pairs readResponseWithLimit with npm-registry-fetch, whose
+  // `Response.body` is a Minipass/Node stream — async-iterable, Buffer
+  // chunks, no getReader. These cases pin that Node-stream body path:
+  // correct reads, the byte cap, and the abort deadline must all hold on
+  // the shape the real fetch returns.
+  function nodeBodyResponse(
+    body: Readable,
+    headers: Record<string, string> = {},
+  ): Response {
+    // npm-registry-fetch's result is typed `Response` but its `.body` is
+    // a Node stream, not a web ReadableStream. readResponseWithLimit only
+    // reads `.headers.get` and `.body`, so a structural stand-in with a
+    // Node body faithfully models that runtime shape.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately modeling npm-registry-fetch's Response-typed, Node-bodied result; the function under test only touches headers.get and body.
+    return { headers: new Headers(headers), body } as unknown as Response;
+  }
+
+  test("reads a real npm-registry-fetch (Minipass) response body end to end", async () => {
+    // The regression the seam-fed cases could not catch: the default
+    // fetcher's real npm-registry-fetch body is a Minipass with no
+    // getReader. Drive an actual fetch against a local tarball server so
+    // the exact production body shape flows through readResponseWithLimit.
+    const payload = new Uint8Array(2048);
+    for (let i = 0; i < payload.length; i += 1) payload[i] = i % 251;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => new Response(payload),
+    });
+    try {
+      const url = `http://localhost:${server.port}/pkg/-/pkg-1.0.0.tgz`;
+      const res = await npmRegistryFetch(url, {});
+      const buf = await readResponseWithLimit(res, 10 * 1024 * 1024, stubCtx);
+      expect(buf.byteLength).toBe(payload.byteLength);
+      expect(Buffer.from(buf).equals(Buffer.from(payload))).toBeTruthy();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("concatenates a multi-chunk Node-stream body under the cap", async () => {
+    const parts = [
+      Buffer.from([1, 2, 3]),
+      Buffer.from([4, 5]),
+      Buffer.from([6, 7, 8, 9]),
+    ];
+    const res = nodeBodyResponse(Readable.from(parts));
+    const buf = await readResponseWithLimit(res, 1024, stubCtx);
+    expect(Array.from(buf)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  test("enforces the byte cap on a Node-stream body with no Content-Length", async () => {
+    const cap = 1024;
+    // Four 512-byte chunks, no Content-Length, so the streaming tally is
+    // the guard that must fire on the Node body path.
+    const chunks = Array.from({ length: 4 }, () => Buffer.alloc(512));
+    const res = nodeBodyResponse(Readable.from(chunks));
+    let caught: unknown;
+    try {
+      await readResponseWithLimit(res, cap, stubCtx);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("registry.fetch.failed");
+      expect(caught.message).toMatch(/streamed past/);
+    }
+  });
+
+  test("honors the fetch deadline on a stalled Node-stream body", async () => {
+    // A Node stream that never pushes and never ends: the for-await parks
+    // until the deadline signal destroys it. Without the destroy-driven
+    // abort this would block forever under the byte cap.
+    const body = new Readable({
+      read() {
+        // never push, never end — a stalled body the deadline must break
+      },
+    });
+    const res = nodeBodyResponse(body);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20);
     let caught: unknown;
