@@ -552,6 +552,13 @@ export type WorkflowProjectionDefinition =
 const WorkflowProjectionWithSources = type({
   definition: WorkflowProjectionDefinition,
   sources: { "[string]": InferenceSource.array().atLeastLength(1) },
+  // Hub-approved wire hash of this body's projection -- the freeze anchor for
+  // the referenced body, mirroring the top-level `approvedWireHash`. Carried so
+  // a body child can re-verify its own recompute of the body projection against
+  // the hub authority rather than trusting the bytes it materialized. Optional:
+  // a frame built before the source-ref hand-off omits it, and every existing
+  // referencedDefinitions producer still validates without it.
+  "approvedWireHash?": "string > 0",
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
@@ -617,6 +624,34 @@ export const AgentDeployWorkflow = type({
   // Run-global: a credential's secret is stored once, keyed by credentialId.
   // Optional -- a deploy whose definition binds no credentials omits it.
   "credentials?": CredentialDelivery,
+  // The hub-approved wire hash of `definition`'s projection -- the freeze
+  // anchor the hub gate wrote onto the definition version row
+  // (`computeWireDefinitionHash` in `@intx/types/wire-definition-hash`). It is
+  // the deployment's content-addressed handle and the value the sidecar feeds
+  // the child as `DEFINITION_HASH`: the child re-verifies its own recompute
+  // against THIS hub authority rather than trusting a sidecar-computed hash.
+  // Optional on the wire so a frame built before the source-ref hand-off (the
+  // raw-frame integration paths) still validates; the production hub deploy
+  // builder always stamps it, so a production deploy never leaves the child's
+  // `DEFINITION_HASH` to a sidecar recompute.
+  "approvedWireHash?": "string > 0",
+  // Where the definition's bytes come from -- the source-ref that names the npm
+  // registry publishing the definition package. Rides the frame so the sidecar
+  // can re-materialize and re-evaluate the definition from source at apply time
+  // instead of trusting an inline projection. Optional: only a code-sourced
+  // (npm) deploy carries it; a live-authored deploy has no remote source.
+  "source?": WorkflowDefinitionSource,
+  // The frozen dependency closure the hub resolved for the definition's pin --
+  // concrete versions and integrity SRIs -- so the sidecar materializes the
+  // exact tree the hub pinned when it re-evaluates the definition from `source`.
+  // Optional for the same reason as `source`.
+  "closure?": ToolPackageManifest,
+  // The deploy-grant set materialized as a SUBSET of the hub's frozen approved
+  // grant set (`materializeDeployGrantsFromFrozen`), carried as the grant-shape
+  // strings the freeze pinned, so deploy grants trace to the frozen approved set
+  // rather than a fresh capability walk. Optional: only a deploy whose hub
+  // builder was handed the frozen approved set carries it.
+  "approvedDeployGrants?": "string[]",
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
