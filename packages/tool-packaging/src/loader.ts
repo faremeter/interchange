@@ -230,6 +230,47 @@ export interface ToolLoader {
   loadManifest(args: LoadManifestArgs): Promise<LoadedToolPackage[]>;
 }
 
+/**
+ * Arguments for `materializeClosure`, the eval-free materialization
+ * primitive `loadManifest` wraps. Everything phases 1-2 need is passed
+ * explicitly so the function stands alone without a `ToolLoader`
+ * instance: the closure's `cache`, `registries`, `host`, and resolved
+ * `fetchTarball` are threaded in directly. There is no import seam here
+ * because `materializeClosure` never imports author code — that first
+ * `import()` belongs to `loadManifest`'s phase-3 loop.
+ */
+export interface MaterializeClosureArgs {
+  readonly manifest: ToolPackageManifest;
+  readonly instanceScratchDir: string;
+  readonly assetRoot: string;
+  readonly assetMounts: ReadonlyMap<string, string>;
+  readonly host: HostPlatform;
+  readonly cache: TarballCache;
+  /**
+   * Registry identifier → registry config, the same map
+   * `createToolLoader` keys its registries under. Used both to gate
+   * `kind: "registry"` entries against the sidecar config and as the
+   * `registries` context handed to `fetchTarball`.
+   */
+  readonly registries: ReadonlyMap<string, RegistryConfig>;
+  /**
+   * Resolved tarball fetcher. `createToolLoader` builds the default
+   * (npm-registry-fetch + filesystem) fetcher or honors a test seam and
+   * threads the result here; `materializeClosure` does not construct one
+   * of its own.
+   */
+  readonly fetchTarball: TarballFetcher;
+}
+
+/**
+ * Result of `materializeClosure`: the per-instance store directory the
+ * closure was laid out under (`<instanceScratchDir>/store`). A caller
+ * computes a specific package's directory with `storeEntryDir`.
+ */
+export interface MaterializeClosureResult {
+  readonly storeDir: string;
+}
+
 export class ToolLoaderError extends Error {
   readonly category: DeployApplyErrorCategory;
   readonly package:
@@ -270,104 +311,6 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
   const fetchTarball = config.fetchTarball ?? makeDefaultTarballFetcher();
   const importModule =
     config.importModule ?? ((u: string) => import(u) as Promise<unknown>);
-
-  async function materialize(
-    entry: ToolPackageManifestEntry,
-    assetRoot: string,
-    assetMounts: ReadonlyMap<string, string>,
-  ): Promise<{ dir: string; release: () => void }> {
-    // Resolve registry-sourced entries against the sidecar config
-    // before doing any I/O. If the manifest references an unknown
-    // registry name the apply fails loudly here, regardless of whether
-    // the bytes are already cached, so the failure surfaces even on
-    // cache hits that would otherwise hide the misconfiguration.
-    if (entry.source.kind === "registry") {
-      if (!registriesByName.has(entry.source.registry)) {
-        throw new ToolLoaderError({
-          category: "registry.unknown",
-          message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
-          package: { name: entry.name, version: entry.version },
-        });
-      }
-    } else if (entry.source.kind === "asset") {
-      // Reject up front (parallel to the registry.unknown gate) so a
-      // cache hit cannot hide a missing mount from the manifest fan-out.
-      if (!assetMounts.has(entry.source.assetId)) {
-        throw new ToolLoaderError({
-          category: "asset.mount.missing",
-          message: `manifest entry references assetId "${entry.source.assetId}" which is not in the deploy pack's asset-mounts map`,
-          package: { name: entry.name, version: entry.version },
-        });
-      }
-    }
-
-    // Probe cache presence with `has` rather than `get`: the bytes are
-    // only needed when they have to be fetched-then-stored, and
-    // `extractTarball` below re-reads them from disk on the way to the
-    // per-integrity unpack directory. `has` checks file existence
-    // without reading or atime-touching the bytes, so a cache-hit
-    // apply avoids the wasted read of a tarball that immediately gets
-    // discarded.
-    if (!(await config.cache.has(entry.integrity))) {
-      const bytes = await fetchTarball(entry, {
-        registries: config.registries,
-        assetRoot,
-        assetMounts,
-      });
-      try {
-        await config.cache.put(entry.integrity, bytes);
-      } catch (err) {
-        if (err instanceof TarballIntegrityMismatchError) {
-          throw new ToolLoaderError({
-            category: "integrity.mismatch",
-            message: `bytes for ${entry.name}@${entry.version} did not match pinned integrity`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        throw err;
-      }
-    }
-
-    try {
-      return await config.cache.extractTarball(entry.integrity);
-    } catch (err) {
-      // Eviction is reserved for the integrity-mismatch path: the bytes
-      // on disk no longer match the pinned hash, so the entry is poison
-      // and must be re-fetched. Other failures — tar parse errors, FS
-      // transients (EIO, ENOSPC) — leave the cached bytes intact. The
-      // cache's `evict` defers physical reclaim of the extraction tree
-      // until every outstanding `release` from a concurrent
-      // `extractTarball` has fired, so a parallel agent's in-flight
-      // `hardlinkTree` walk against the same extraction will not
-      // ENOENT mid-readdir.
-      if (err instanceof TarballIntegrityMismatchError) {
-        await config.cache.evict(entry.integrity);
-      }
-      throw new ToolLoaderError({
-        category: "tarball.extract.failed",
-        message: `tar extraction failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
-        package: { name: entry.name, version: entry.version },
-      });
-    }
-  }
-
-  function passesPlatformFilter(entry: ToolPackageManifestEntry): boolean {
-    if (
-      entry.os !== undefined &&
-      !platformListMatches(entry.os, config.host.os)
-    ) {
-      logger.debug`platform.mismatch.skipped: ${entry.name}@${entry.version} requires os ${entry.os.join(",")} (host is ${config.host.os})`;
-      return false;
-    }
-    if (
-      entry.cpu !== undefined &&
-      !platformListMatches(entry.cpu, config.host.cpu)
-    ) {
-      logger.debug`platform.mismatch.skipped: ${entry.name}@${entry.version} requires cpu ${entry.cpu.join(",")} (host is ${config.host.cpu})`;
-      return false;
-    }
-    return true;
-  }
 
   async function loadTopLevel(
     entry: ToolPackageManifestEntry,
@@ -588,93 +531,59 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
 
   return {
     async loadManifest(args) {
-      const filtered = args.manifest.entries.filter(passesPlatformFilter);
-      const storeDir = path.join(args.instanceScratchDir, "store");
+      // Phases 1-2 (fetch + SRI-verify + extract into the cache, then
+      // resolve the closure ranges and lay out the per-instance store)
+      // are the eval-free materialization primitive. They import no
+      // author code; that first `import()` happens only in phase 3
+      // below. `materializeClosure` owns the platform-filter logging as
+      // it selects the entries it lays out, so this method re-selects
+      // the surviving entries with the pure `entryMatchesHost` predicate
+      // to avoid re-emitting those debug logs.
+      const { storeDir } = await materializeClosure({
+        manifest: args.manifest,
+        instanceScratchDir: args.instanceScratchDir,
+        assetRoot: args.assetRoot,
+        assetMounts: args.assetMounts,
+        host: config.host,
+        cache: config.cache,
+        registries: config.registries,
+        fetchTarball,
+      });
+
+      const filtered = args.manifest.entries.filter((entry) =>
+        entryMatchesHost(entry, config.host),
+      );
       const topLevelKeys = new Set(
         args.manifest.topLevel.map((p) => `${p.name}@${p.version}`),
       );
 
-      // 1. Materialize every filtered entry into the cache and capture
-      //    its extraction directory. This validates the manifest is
-      //    registry-chain-consistent (each entry resolves end-to-end
-      //    against its declared source) and primes the cache so the
-      //    layout step can hardlink without re-fetching.
-      //
-      //    Each materialize() returns an `{ dir, release }` pair: the
-      //    cache treats the returned `dir` as held until `release` is
-      //    called, so a concurrent eviction of the same integrity
-      //    defers its physical reclaim of the extraction tree until
-      //    after the buildStoreLayout pass below has finished walking
-      //    every dir to hardlink files out. Releases are aggregated and
-      //    drained in a `finally` so an error mid-layout still hands
-      //    the cache its references back.
-      const extractionByEntry = new Map<string, string>();
-      const entriesByNameVersion = new Map<string, ToolPackageManifestEntry>();
-      const releases: (() => void)[] = [];
-      try {
-        for (const entry of filtered) {
-          const handle = await materialize(
-            entry,
-            args.assetRoot,
-            args.assetMounts,
-          );
-          const key = `${entry.name}@${entry.version}`;
-          extractionByEntry.set(key, handle.dir);
-          entriesByNameVersion.set(key, entry);
-          releases.push(handle.release);
-        }
-
-        // 2. Build the per-instance store layout. Each filtered entry
-        //    gets a real directory at `<store>/<name>/<version>/`
-        //    populated by hardlinks from its cache extraction; the
-        //    direct-dependency walk then symlinks `node_modules/<dep>`
-        //    into each layout dir so Node's standard ancestor walk
-        //    resolves bare-specifier imports from inside the package's
-        //    body against the closure's pinned versions.
-        const rangeResolution = await resolveRangesByFirstArrival({
-          topLevel: args.manifest.topLevel,
-          filtered,
-          extractionByEntry,
-          entriesByNameVersion,
-        });
-        await buildStoreLayout({
-          filtered,
-          storeDir,
-          extractionByEntry,
-          rangeResolution,
-        });
-
-        // 3. Then load only the top-level packages; transitive entries
-        //    exist for `node_modules/` satisfaction but do not contribute
-        //    factories of their own.
-        const loaded: LoadedToolPackage[] = [];
-        const coveredTopLevelKeys = new Set<string>();
-        for (const entry of filtered) {
-          const key = `${entry.name}@${entry.version}`;
-          if (!topLevelKeys.has(key)) continue;
-          const pkgDir = storeEntryDir(storeDir, entry.name, entry.version);
-          loaded.push(await loadTopLevel(entry, pkgDir));
-          coveredTopLevelKeys.add(key);
-        }
-        // Top-level pins the platform filter dropped contribute zero
-        // factories, which is a legitimate operator choice (e.g. an
-        // optionalDependencies-shaped opt-in for a single-platform
-        // helper). Surface it as a warn so an apply that produces no
-        // tools at all because every pin was platform-filtered out is
-        // diagnosable from the logs without re-reading the manifest.
-        const droppedTopLevelKeys: string[] = [];
-        for (const key of topLevelKeys) {
-          if (!coveredTopLevelKeys.has(key)) droppedTopLevelKeys.push(key);
-        }
-        if (droppedTopLevelKeys.length > 0) {
-          logger.warn`tool-package apply dropped top-level pins via platform filter on host os=${config.host.os} cpu=${config.host.cpu}: ${droppedTopLevelKeys.join(", ")}`;
-        }
-        return loaded;
-      } finally {
-        for (const release of releases) {
-          release();
-        }
+      // 3. Load only the top-level packages; transitive entries exist
+      //    for `node_modules/` satisfaction but do not contribute
+      //    factories of their own. This is the first point at which
+      //    author code is imported.
+      const loaded: LoadedToolPackage[] = [];
+      const coveredTopLevelKeys = new Set<string>();
+      for (const entry of filtered) {
+        const key = `${entry.name}@${entry.version}`;
+        if (!topLevelKeys.has(key)) continue;
+        const pkgDir = storeEntryDir(storeDir, entry.name, entry.version);
+        loaded.push(await loadTopLevel(entry, pkgDir));
+        coveredTopLevelKeys.add(key);
       }
+      // Top-level pins the platform filter dropped contribute zero
+      // factories, which is a legitimate operator choice (e.g. an
+      // optionalDependencies-shaped opt-in for a single-platform
+      // helper). Surface it as a warn so an apply that produces no
+      // tools at all because every pin was platform-filtered out is
+      // diagnosable from the logs without re-reading the manifest.
+      const droppedTopLevelKeys: string[] = [];
+      for (const key of topLevelKeys) {
+        if (!coveredTopLevelKeys.has(key)) droppedTopLevelKeys.push(key);
+      }
+      if (droppedTopLevelKeys.length > 0) {
+        logger.warn`tool-package apply dropped top-level pins via platform filter on host os=${config.host.os} cpu=${config.host.cpu}: ${droppedTopLevelKeys.join(", ")}`;
+      }
+      return loaded;
     },
   };
 
@@ -803,6 +712,213 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       }
     };
   }
+}
+
+/**
+ * Lay out a resolved manifest closure into the per-instance store
+ * WITHOUT importing any author code. This is phases 1-2 of the loader:
+ *
+ *   1. Fetch + SRI-verify + extract each platform-matching entry into
+ *      the content-addressable cache.
+ *   2. Resolve the closure's dependency ranges by first arrival, then
+ *      hardlink each entry into `<instanceScratchDir>/store/<name>/<version>/`
+ *      and symlink each direct dep into that entry's `node_modules/` so
+ *      Node's ancestor walk resolves bare-specifier imports.
+ *
+ * Returns the `storeDir` the closure was laid out under. The first real
+ * `import()` of author code is NOT here — it belongs to `loadManifest`'s
+ * phase-3 loop — so a caller (e.g. an install-time probe) can stage the
+ * frozen closure into a package directory the loader consumes without
+ * executing author code on its host.
+ *
+ * Only entries whose `os`/`cpu` match `host` are materialized; the rest
+ * are skipped with a `platform.mismatch.skipped` debug log. Errors
+ * surface as `ToolLoaderError` with a `category` matching the
+ * corresponding `DeployApplyErrorCategory`.
+ */
+export async function materializeClosure(
+  args: MaterializeClosureArgs,
+): Promise<MaterializeClosureResult> {
+  const filtered = args.manifest.entries.filter((entry) =>
+    passesPlatformFilter(entry, args.host),
+  );
+  const storeDir = path.join(args.instanceScratchDir, "store");
+
+  async function materialize(
+    entry: ToolPackageManifestEntry,
+  ): Promise<{ dir: string; release: () => void }> {
+    // Resolve registry-sourced entries against the sidecar config
+    // before doing any I/O. If the manifest references an unknown
+    // registry name the apply fails loudly here, regardless of whether
+    // the bytes are already cached, so the failure surfaces even on
+    // cache hits that would otherwise hide the misconfiguration.
+    if (entry.source.kind === "registry") {
+      if (!args.registries.has(entry.source.registry)) {
+        throw new ToolLoaderError({
+          category: "registry.unknown",
+          message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+    } else if (entry.source.kind === "asset") {
+      // Reject up front (parallel to the registry.unknown gate) so a
+      // cache hit cannot hide a missing mount from the manifest fan-out.
+      if (!args.assetMounts.has(entry.source.assetId)) {
+        throw new ToolLoaderError({
+          category: "asset.mount.missing",
+          message: `manifest entry references assetId "${entry.source.assetId}" which is not in the deploy pack's asset-mounts map`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+    }
+
+    // Probe cache presence with `has` rather than `get`: the bytes are
+    // only needed when they have to be fetched-then-stored, and
+    // `extractTarball` below re-reads them from disk on the way to the
+    // per-integrity unpack directory. `has` checks file existence
+    // without reading or atime-touching the bytes, so a cache-hit
+    // apply avoids the wasted read of a tarball that immediately gets
+    // discarded.
+    if (!(await args.cache.has(entry.integrity))) {
+      const bytes = await args.fetchTarball(entry, {
+        registries: args.registries,
+        assetRoot: args.assetRoot,
+        assetMounts: args.assetMounts,
+      });
+      try {
+        await args.cache.put(entry.integrity, bytes);
+      } catch (err) {
+        if (err instanceof TarballIntegrityMismatchError) {
+          throw new ToolLoaderError({
+            category: "integrity.mismatch",
+            message: `bytes for ${entry.name}@${entry.version} did not match pinned integrity`,
+            package: { name: entry.name, version: entry.version },
+          });
+        }
+        throw err;
+      }
+    }
+
+    try {
+      return await args.cache.extractTarball(entry.integrity);
+    } catch (err) {
+      // Eviction is reserved for the integrity-mismatch path: the bytes
+      // on disk no longer match the pinned hash, so the entry is poison
+      // and must be re-fetched. Other failures — tar parse errors, FS
+      // transients (EIO, ENOSPC) — leave the cached bytes intact. The
+      // cache's `evict` defers physical reclaim of the extraction tree
+      // until every outstanding `release` from a concurrent
+      // `extractTarball` has fired, so a parallel agent's in-flight
+      // `hardlinkTree` walk against the same extraction will not
+      // ENOENT mid-readdir.
+      if (err instanceof TarballIntegrityMismatchError) {
+        await args.cache.evict(entry.integrity);
+      }
+      throw new ToolLoaderError({
+        category: "tarball.extract.failed",
+        message: `tar extraction failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
+        package: { name: entry.name, version: entry.version },
+      });
+    }
+  }
+
+  // 1. Materialize every filtered entry into the cache and capture its
+  //    extraction directory. This validates the manifest is
+  //    registry-chain-consistent (each entry resolves end-to-end
+  //    against its declared source) and primes the cache so the layout
+  //    step can hardlink without re-fetching.
+  //
+  //    Each materialize() returns an `{ dir, release }` pair: the cache
+  //    treats the returned `dir` as held until `release` is called, so a
+  //    concurrent eviction of the same integrity defers its physical
+  //    reclaim of the extraction tree until after the buildStoreLayout
+  //    pass below has finished walking every dir to hardlink files out.
+  //    Releases are aggregated and drained in a `finally` so an error
+  //    mid-layout still hands the cache its references back. They are
+  //    drained once the layout is built: the phase-3 import loop reads
+  //    from the hardlinked store, not from these extraction trees, so
+  //    the extraction handles are a phase-1-2 concern only.
+  const extractionByEntry = new Map<string, string>();
+  const entriesByNameVersion = new Map<string, ToolPackageManifestEntry>();
+  const releases: (() => void)[] = [];
+  try {
+    for (const entry of filtered) {
+      const handle = await materialize(entry);
+      const key = `${entry.name}@${entry.version}`;
+      extractionByEntry.set(key, handle.dir);
+      entriesByNameVersion.set(key, entry);
+      releases.push(handle.release);
+    }
+
+    // 2. Build the per-instance store layout. Each filtered entry gets a
+    //    real directory at `<store>/<name>/<version>/` populated by
+    //    hardlinks from its cache extraction; the direct-dependency walk
+    //    then symlinks `node_modules/<dep>` into each layout dir so
+    //    Node's standard ancestor walk resolves bare-specifier imports
+    //    from inside the package's body against the closure's pinned
+    //    versions.
+    const rangeResolution = await resolveRangesByFirstArrival({
+      topLevel: args.manifest.topLevel,
+      filtered,
+      extractionByEntry,
+      entriesByNameVersion,
+    });
+    await buildStoreLayout({
+      filtered,
+      storeDir,
+      extractionByEntry,
+      rangeResolution,
+    });
+  } finally {
+    for (const release of releases) {
+      release();
+    }
+  }
+
+  return { storeDir };
+}
+
+/**
+ * True when `entry` may run on `host`: its `os`/`cpu` platform lists (if
+ * present) accept the host per npm's allow/block-list semantics. Pure —
+ * the single source of truth for the host-match decision, shared by the
+ * logging filter `passesPlatformFilter` and `loadManifest`'s phase-3
+ * re-selection (which must not re-emit the mismatch debug logs
+ * `materializeClosure` already wrote).
+ */
+function entryMatchesHost(
+  entry: ToolPackageManifestEntry,
+  host: HostPlatform,
+): boolean {
+  if (entry.os !== undefined && !platformListMatches(entry.os, host.os)) {
+    return false;
+  }
+  if (entry.cpu !== undefined && !platformListMatches(entry.cpu, host.cpu)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * `entryMatchesHost` with the `platform.mismatch.skipped` debug log a
+ * rejected entry emits. `materializeClosure` filters with this so the
+ * skip is diagnosable; the re-derived `platformListMatches` call on the
+ * reject path only runs to pick the os-vs-cpu wording for the message.
+ */
+function passesPlatformFilter(
+  entry: ToolPackageManifestEntry,
+  host: HostPlatform,
+): boolean {
+  if (entryMatchesHost(entry, host)) return true;
+  if (entry.os !== undefined && !platformListMatches(entry.os, host.os)) {
+    logger.debug`platform.mismatch.skipped: ${entry.name}@${entry.version} requires os ${entry.os.join(",")} (host is ${host.os})`;
+  } else if (
+    entry.cpu !== undefined &&
+    !platformListMatches(entry.cpu, host.cpu)
+  ) {
+    logger.debug`platform.mismatch.skipped: ${entry.name}@${entry.version} requires cpu ${entry.cpu.join(",")} (host is ${host.cpu})`;
+  }
+  return false;
 }
 
 export function buildRegistryFetchOpts(
@@ -950,7 +1066,7 @@ export async function readResponseWithLimit(
   return out;
 }
 
-function storeEntryDir(
+export function storeEntryDir(
   storeDir: string,
   name: string,
   version: string,

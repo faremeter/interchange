@@ -56,10 +56,14 @@ export {
   type LoadedToolFactory,
   type LoadedToolPackage,
   type LoaderConfig,
+  type MaterializeClosureArgs,
+  type MaterializeClosureResult,
   type TarballFetcher,
   type ToolLoader,
   ToolLoaderError,
   createToolLoader,
+  materializeClosure,
+  storeEntryDir,
 } from "./loader";
 
 export {
