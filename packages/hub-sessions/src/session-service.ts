@@ -42,6 +42,8 @@ import {
   ToolPackageManifest,
   type ToolPackagePin,
 } from "@intx/types/tool-packages";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   defineWorkflow,
   type WorkflowDefinition,
@@ -77,6 +79,7 @@ import type {
 } from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
+import { materializeDeployGrantsFromFrozen } from "./workflow-probe-gate";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -451,18 +454,71 @@ export async function sendMultiStepDeployFrame(args: {
    */
   referencedDefinitions?: readonly ReferencedBodyDefinition[];
   credentials?: CredentialDelivery;
+  /**
+   * Where the definition's bytes come from -- the source-ref that names the
+   * npm registry publishing the definition package. Carried on the frame so
+   * the sidecar can re-materialize the definition from source. Present for a
+   * code-sourced (npm) deploy; absent for a live-authored one.
+   */
+  source?: WorkflowDefinitionSource;
+  /**
+   * The frozen dependency closure the hub resolved for the definition's pin.
+   * Carried alongside `source` so the sidecar materializes the exact tree the
+   * hub pinned. Present for a code-sourced deploy; absent otherwise.
+   */
+  closure?: ToolPackageManifest;
+  /**
+   * The hub's frozen approved grant set (grant-shape strings) established by
+   * the workflow gate/freeze. When supplied, deploy grants are materialized as
+   * a SUBSET of it -- never a fresh walk -- and carried on the frame as
+   * `approvedDeployGrants`. `deployGrantCandidates` is the candidate grant-shape
+   * set gated against it (defaults to the frozen set itself, i.e. the full
+   * approved set).
+   */
+  frozenApprovedGrants?: ReadonlySet<string>;
+  deployGrantCandidates?: Iterable<string>;
 }): Promise<{ publicKey: string }> {
   const wireDefinition = toWireWorkflowDefinition(args.definition);
+  // The hub is the authority for the deployment's content hash: recompute the
+  // wire hash here so the frame carries the hub-approved value the sidecar
+  // feeds the child as `DEFINITION_HASH`. The freeze stored exactly this hash,
+  // so recomputing it at the hub reproduces the frozen approval's anchor; the
+  // sidecar never recomputes.
+  const approvedWireHash = await computeWireDefinitionHash(wireDefinition);
+  // Materialize deploy grants as a subset of the frozen approved set when the
+  // caller supplies it, so deploy grants trace to the freeze rather than a
+  // fresh capability walk. Absent (the not-yet-wired install/approve origin):
+  // the frame carries no `approvedDeployGrants`, matching the legacy path.
+  const approvedDeployGrants =
+    args.frozenApprovedGrants !== undefined
+      ? materializeDeployGrantsFromFrozen(
+          args.frozenApprovedGrants,
+          args.deployGrantCandidates ?? args.frozenApprovedGrants,
+        )
+      : undefined;
   const workflow = {
     definition: wireDefinition,
     sources: args.sources,
+    approvedWireHash,
+    ...(args.source !== undefined ? { source: args.source } : {}),
+    ...(args.closure !== undefined ? { closure: args.closure } : {}),
+    ...(approvedDeployGrants !== undefined ? { approvedDeployGrants } : {}),
     ...(args.referencedDefinitions !== undefined &&
     args.referencedDefinitions.length > 0
       ? {
-          referencedDefinitions: args.referencedDefinitions.map((body) => ({
-            definition: toWireWorkflowDefinition(body.definition),
-            sources: body.sources,
-          })),
+          referencedDefinitions: await Promise.all(
+            args.referencedDefinitions.map(async (body) => {
+              const bodyWire = toWireWorkflowDefinition(body.definition);
+              return {
+                definition: bodyWire,
+                sources: body.sources,
+                // Per-body freeze anchor: the hub recomputes each referenced
+                // body's wire hash so a body child re-verifies its recompute
+                // against the hub authority.
+                approvedWireHash: await computeWireDefinitionHash(bodyWire),
+              };
+            }),
+          ),
         }
       : {}),
     ...(args.credentials !== undefined

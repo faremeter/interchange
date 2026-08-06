@@ -489,6 +489,13 @@ type MultistepDeployArgs = {
    * tests (whose derived per-step repos do not parse the frame address).
    */
   agentAddress?: string;
+  /**
+   * Hub-approved wire hash to stamp on the deploy frame's workflow. When set,
+   * the sidecar sources the child's `DEFINITION_HASH` from it rather than
+   * recomputing the wire hash; omitted, the frame carries no approved hash and
+   * the router recomputes (the legacy raw-frame path).
+   */
+  approvedWireHash?: string;
 };
 
 function makeInferenceSource(id: string): InferenceSourceFixture {
@@ -517,6 +524,9 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     workflow: {
       definition: args.definition,
       sources: args.sources,
+      ...(args.approvedWireHash !== undefined
+        ? { approvedWireHash: args.approvedWireHash }
+        : {}),
     },
   };
 }
@@ -863,6 +873,79 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Use unused supervisorToChild to silence the linter.
     void supervisorToChild;
     void supervisorIpcKeyPair;
+  });
+
+  test("sources the child's DEFINITION_HASH from the frame's hub-approved wire hash, not a sidecar recompute", async () => {
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      return {
+        pid: 9001,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
+
+    const multiDataDir = await createTempBaseDir("sidecar-approved-hash-");
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: multiDataDir },
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-approved-hash",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    // A sentinel that is deliberately NOT the wire hash of `definition`, so an
+    // assertion that the child received it proves the value came from the
+    // frame (the hub authority) and was not recomputed at the sidecar.
+    const HUB_APPROVED_HASH = "hub-approved-sentinel-hash";
+    const recomputed = await computeWireDefinitionHash(definition);
+    expect(HUB_APPROVED_HASH).not.toBe(recomputed);
+
+    const frame = makeMultistepFrame({
+      definition,
+      sources,
+      approvedWireHash: HUB_APPROVED_HASH,
+    });
+    const deployPromise = router.deploy(frame);
+
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const env = observedEnv;
+    // The child's DEFINITION_HASH is the frame's hub-approved hash, verbatim.
+    expect(env.DEFINITION_HASH).toBe(HUB_APPROVED_HASH);
+
+    // Drive the child to exit so the deploy's spawn pumps unwind, then let the
+    // deploy settle (it rejects once the child dies mid-handshake, which is
+    // fine -- the env assertion above is the subject under test).
+    const channelId = env.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    childToSupervisor.close();
+    eventChildToSupervisor.close();
+    resolveExit?.(0);
+    await deployPromise.catch(() => undefined);
+    void supervisorToChild;
   });
 
   test("a second same-address deploy is rejected mid-spawn and never deletes the live deployment record", async () => {

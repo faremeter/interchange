@@ -1291,6 +1291,22 @@ export function createSidecarDeployRouter(deps: {
     agentAddress: string;
     definition: NonNullable<AgentDeployFrame["workflow"]>["definition"];
     sources: NonNullable<AgentDeployFrame["workflow"]>["sources"];
+    /**
+     * The hub-approved wire hash the deploy frame carried
+     * (`AgentDeployWorkflow.approvedWireHash`). The child's `DEFINITION_HASH`
+     * is sourced from this hub authority, NOT a sidecar recompute. Undefined
+     * only for a frame from the pre-source-ref raw-frame path (no approved
+     * hash on the wire); the shared spawn core recomputes the wire hash from
+     * the inert projection for that legacy case alone.
+     */
+    approvedWireHash: string | undefined;
+    /**
+     * Hub-approved wire hash per referenced onTrigger body id, threaded to the
+     * child (via the substrate env) so a body child re-verifies its recompute
+     * against the hub authority. Empty when the deploy carried no referenced
+     * bodies with approved hashes.
+     */
+    referencedDefinitionHashes: Record<string, string>;
     /** Correlates the child's inference events to the deploy's session. */
     sessionId: string | undefined;
     /**
@@ -1322,6 +1338,13 @@ export function createSidecarDeployRouter(deps: {
       ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
       ...(spec.hubPublicKey !== undefined
         ? { hubPublicKey: spec.hubPublicKey }
+        : {}),
+      // Persist the hub-approved wire hash so a boot-time restore re-spawns the
+      // child with the SAME `DEFINITION_HASH` the original deploy carried,
+      // rather than recomputing it off the on-disk projection. Absent only for
+      // a legacy frame that carried no approved hash.
+      ...(spec.approvedWireHash !== undefined
+        ? { approvedWireHash: spec.approvedWireHash }
         : {}),
     };
   }
@@ -1391,7 +1414,16 @@ export function createSidecarDeployRouter(deps: {
     let hubKeyRecorded = false;
     let deploymentRegistered = false;
     try {
-      const definitionHash = await computeWireDefinitionHash(spec.definition);
+      // The child's `DEFINITION_HASH` is the HUB-APPROVED wire hash the deploy
+      // frame carried (`spec.approvedWireHash`) -- the hub is the authority, so
+      // the child re-verifies its own recompute against it. A frame from the
+      // pre-source-ref raw-frame path carries no approved hash; only for that
+      // legacy case does the sidecar recompute the wire hash from the inert
+      // projection it received. The production hub deploy builder always stamps
+      // `approvedWireHash`, so a production deploy never recomputes here.
+      const definitionHash =
+        spec.approvedWireHash ??
+        (await computeWireDefinitionHash(spec.definition));
 
       // Per-deployment substrate-config keys the workflow-substrate-factory
       // validator requires. The boot edge's `multistepSubstrateEnv` carries
@@ -1403,6 +1435,18 @@ export function createSidecarDeployRouter(deps: {
         WORKFLOW_DEFINITION_REF: "refs/heads/main",
         WORKFLOW_RUN_REPO_ID: deploymentId,
         WORKFLOW_RUN_REF: "refs/heads/main",
+        // Thread the hub-approved per-body wire hashes to the child so a body
+        // child re-verifies its recompute against the hub authority. Carried on
+        // the frozen substrate env (not the dynamic fragment) because the map
+        // is fixed for the deployment's lifetime. Omitted when empty so a
+        // deployment with no referenced bodies ships no key.
+        ...(Object.keys(spec.referencedDefinitionHashes).length > 0
+          ? {
+              REFERENCED_DEFINITION_HASHES: JSON.stringify(
+                spec.referencedDefinitionHashes,
+              ),
+            }
+          : {}),
       };
       // Live-rotatable per-step inference sources. Seeded from the deploy
       // spec, then revised in place by the single-step sources-rotation
@@ -1896,10 +1940,23 @@ export function createSidecarDeployRouter(deps: {
     // lets a boot-time restore rebuild the SAME spec (definition re-read from
     // workflow.json by id, grants from the step repos, and the record's
     // frame/in-memory-only inputs: sources, session id, single-step hub key).
+    // Per-body approved wire hashes, keyed by body id, from the frame's
+    // referenced onTrigger bodies. A body without an approved hash (a legacy
+    // frame) contributes no entry rather than a null one.
+    const referencedDefinitionHashes: Record<string, string> = {};
+    for (const referenced of projection.referencedDefinitions ?? []) {
+      if (referenced.approvedWireHash !== undefined) {
+        referencedDefinitionHashes[referenced.definition.id] =
+          referenced.approvedWireHash;
+      }
+    }
+
     const spec: WorkflowDeploySpec = {
       agentAddress: frame.agentAddress,
       definition: projection.definition,
       sources: projection.sources,
+      approvedWireHash: projection.approvedWireHash,
+      referencedDefinitionHashes,
       sessionId: frame.config.sessionId,
       hubPublicKey:
         projection.definition.stepOrder.length === 1
@@ -2140,6 +2197,16 @@ export function createSidecarDeployRouter(deps: {
             agentAddress: record.agentAddress,
             definition: projection.definition,
             sources: projection.sources,
+            // The hub-approved wire hash the original deploy persisted, so the
+            // restore re-spawn carries the same `DEFINITION_HASH` rather than a
+            // recompute. Absent for a record written before the field existed;
+            // the spawn core recomputes off the on-disk projection for that
+            // case alone.
+            approvedWireHash: record.approvedWireHash,
+            // The referenced-body definitions are already materialized on disk
+            // from the original deploy; their per-body approved hashes are not
+            // re-threaded at restore.
+            referencedDefinitionHashes: {},
             sessionId: record.sessionId,
             hubPublicKey: record.hubPublicKey,
           };

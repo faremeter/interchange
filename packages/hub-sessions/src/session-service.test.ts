@@ -9,6 +9,8 @@ import type {
   MessageAttachment,
 } from "@intx/types/runtime";
 import { base64Decode, hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { extractAttachments } from "@intx/mime";
 import {
   asset as assetTable,
@@ -1841,6 +1843,99 @@ describe("sendMultiStepDeployFrame", () => {
       "plan",
     ]);
     expect(sent.sources).toEqual(sources);
+    // The hub stamps the approved wire hash on every frame it builds: it is the
+    // hash of the wire projection the frame carries, so the sidecar can feed it
+    // to the child as DEFINITION_HASH without recomputing.
+    expect(sent.approvedWireHash).toBe(
+      await computeWireDefinitionHash(sent.definition),
+    );
+  });
+
+  test("carries the source-ref + frozen closure and materializes deploy grants from the frozen approved set", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { sendMultiStepDeployFrame } = await import("./session-service");
+    const { defineWorkflow, step } = await import("@intx/workflow/definition");
+    const { defineAgent } = await import("@intx/agent");
+    const stubAgent = defineAgent({
+      id: "stub",
+      systemPrompt: "you stub",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_sourced",
+      trigger: { type: "manual" },
+      steps: { only: step({ agent: stubAgent, after: [] }) },
+    });
+    const sources = {
+      only: [
+        {
+          id: "src-only",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          apiKey: "secret-only",
+          model: "mock-model",
+        },
+      ],
+    };
+    const config: HarnessConfig = {
+      sessionId: "ses-sourced",
+      agentId: "ins_dep_src",
+      tenantId: "tenant-1",
+      principalId: "prin-src",
+      agentAddress: "ins_dep_src@workflow.interchange",
+      systemPrompt: "deployment-level",
+      tools: [],
+      grants: [],
+      sources: Object.values(sources).flat(),
+      defaultSource: "src-only",
+    };
+
+    const source = { kind: "registry", registry: "npm" } as const;
+    const closure: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [],
+      entries: [],
+    };
+    // The operator-approved (frozen) grant set. A candidate carrying an extra
+    // grant the freeze never approved must be dropped, so the shipped set is a
+    // strict subset of the frozen set.
+    const frozenApprovedGrants = new Set(["tool:read", "tool:write"]);
+    const deployGrantCandidates = ["tool:read", "tool:write", "tool:delete"];
+
+    await sendMultiStepDeployFrame({
+      sidecarRouter: mockRouter,
+      agentAddress: "ins_dep_src@workflow.interchange",
+      config,
+      definition,
+      sources,
+      source,
+      closure,
+      frozenApprovedGrants,
+      deployGrantCandidates,
+    });
+
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    expect(sent.source).toEqual(source);
+    expect(sent.closure).toEqual(closure);
+    // Deploy grants are the frozen subset: the unapproved `tool:delete` is
+    // refused, so only the frozen-approved grants ride the frame.
+    expect(sent.approvedDeployGrants?.slice().sort()).toEqual([
+      "tool:read",
+      "tool:write",
+    ]);
   });
 });
 

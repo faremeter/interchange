@@ -9,8 +9,11 @@
 // `sources` (each step's ordered inference-source failover chain, threaded to
 // the child via the spawn env and durable nowhere else), `sessionId`
 // (inference-event
-// correlation), and `hubPublicKey` (the head's deploy-pack / inbound
-// verification key, recorded only in memory today). The definition itself
+// correlation), `hubPublicKey` (the head's deploy-pack / inbound
+// verification key, recorded only in memory today), and `approvedWireHash`
+// (the hub-approved wire hash the deploy frame carried, so a restore re-spawn
+// feeds the child the same `DEFINITION_HASH` without recomputing it). The
+// definition itself
 // lives in `assets/workflow/<definitionId>/workflow.json`, referenced by
 // `definitionId`, and each step's grants live in its agent-state repo, so
 // neither is duplicated here.
@@ -56,6 +59,11 @@ export const WorkflowDeploymentRecord = type({
   },
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
+  // The hub-approved wire hash the deploy frame carried, persisted so a
+  // boot-time restore re-spawns the child with the same `DEFINITION_HASH` the
+  // original deploy fed it rather than recomputing it off the on-disk
+  // projection. Optional: a record written before this field existed omits it.
+  "approvedWireHash?": "string > 0",
 });
 export type WorkflowDeploymentRecord = typeof WorkflowDeploymentRecord.infer;
 
