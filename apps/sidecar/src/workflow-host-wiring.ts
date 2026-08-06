@@ -49,6 +49,7 @@ import {
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
 import { hexEncode, type SignalKind } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -731,54 +732,6 @@ export function validateWorkflowProjection(projection: {
       );
     }
   }
-}
-
-/**
- * Project a value into a canonical JSON string with deterministically
- * sorted object keys. Used at the router boundary to mint a stable
- * content hash of the wire-projected workflow definition; the
- * orchestrator's hand-off task computes the same hash from the same
- * canonical form, so a downstream verifier comparing the two values
- * sees byte equality.
- *
- * The shape mirrors the canonicalizer the runlocal repo-store uses
- * for equality checks (`packages/workflow/src/runlocal/repo-store.ts`).
- */
-function canonicalJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJsonStringify).join(",")}]`;
-  }
-  const entries = Object.entries(value).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
-  return `{${entries
-    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJsonStringify(v)}`)
-    .join(",")}}`;
-}
-
-/**
- * Compute the deploy router's content hash for the wire-projected
- * workflow definition. SHA-256 of the canonical JSON of the
- * `WorkflowDefinition` projection, hex-encoded. The supervisor and the
- * workflow-process child read the value out of the spawn-time env
- * verbatim; it is the deployment's content-addressed handle.
- *
- * The router computes this locally so the multi-step branch does not
- * round-trip the hub for a hash the orchestrator's hand-off task will
- * also derive deterministically from the same canonical form.
- */
-export async function computeWireDefinitionHash(
-  definition: unknown,
-): Promise<string> {
-  const canonical = canonicalJsonStringify(definition);
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(canonical),
-  );
-  return hexEncode(new Uint8Array(digest));
 }
 
 /**
