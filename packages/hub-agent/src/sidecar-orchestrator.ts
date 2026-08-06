@@ -34,6 +34,7 @@ import {
   type SourcesInboundRouter,
   type CredentialsInboundRouter,
   type WorkflowRunPackApplier,
+  type WorkflowProbeExecutor,
   type ReconnectScheduler,
 } from "./ws/hub-link";
 
@@ -161,6 +162,14 @@ export type SidecarOrchestratorConfig = {
    */
   credentialsInboundRouter?: CredentialsInboundRouter;
   /**
+   * Optional workflow-probe executor. The orchestrator forwards it
+   * unchanged to `createHubLink`, where it answers every inbound
+   * `workflow.probe.request`. Production wires the sidecar host's
+   * airlocked executor here; omitted, the link falls back to its rejecting
+   * placeholder so a probe is answered with an error rather than dropped.
+   */
+  workflowProbeExecutor?: WorkflowProbeExecutor;
+  /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts. Forwarded to the hub link, which announces them on
    * every (re)connect so the hub re-registers them for routing without a
@@ -220,6 +229,7 @@ export function createSidecarOrchestrator(
     sourcesInboundRouter,
     credentialsInboundRouter,
     applyWorkflowRunPack,
+    workflowProbeExecutor,
     getWorkflowAddresses,
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -312,6 +322,7 @@ export function createSidecarOrchestrator(
     ...(credentialsInboundRouter !== undefined
       ? { credentialsInboundRouter }
       : {}),
+    ...(workflowProbeExecutor !== undefined ? { workflowProbeExecutor } : {}),
     ...(getWorkflowAddresses !== undefined ? { getWorkflowAddresses } : {}),
     ...(onWorkflowAddressesRoutable !== undefined
       ? { onWorkflowAddressesRoutable }

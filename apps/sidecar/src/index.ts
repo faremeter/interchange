@@ -46,6 +46,9 @@ import {
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
+import { readRegistries } from "./sidecar-materialization-config";
+import { createWorkflowClosureMaterializer } from "./workflow-closure-materialization";
+import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 
 await setup();
@@ -374,6 +377,25 @@ if (hostTmpdir !== undefined) {
 // than a second copy of the check.
 const buildHarness = createDefaultHarnessBuilder({ adapters });
 
+// Airlocked workflow-probe executor, assembled at the boot edge and
+// injected through the orchestrator so the live sidecar answers
+// `workflow.probe.request` with a real inert projection instead of the
+// hub-link's rejecting placeholder. The host-side `MaterializeWorkflowClosure`
+// lays out a probe frame's frozen closure under a per-probe scratch dir
+// (rooted here so it shares the sidecar data dir's lifecycle); the executor
+// spawns the one-shot child that evaluates the workflow entry against it.
+// The cache/registry caps are the same boot-edge-resolved values the tool
+// loader uses.
+const workflowProbeExecutor = createWorkflowProbeExecutor({
+  materialize: createWorkflowClosureMaterializer({
+    cacheRoot,
+    cacheMaxBytes,
+    registryMaxTarballBytes,
+    registries: readRegistries(),
+    scratchRoot: path.join(dataDir, "workflow-probe", "closures"),
+  }),
+});
+
 // Set by the `createDeployRouter` callback below (invoked synchronously
 // during construction) so the boot edge can drive the router's restore pass
 // before `orchestrator.start()` connects to the hub.
@@ -397,6 +419,7 @@ const orchestrator = createSidecarOrchestrator({
   sourcesInboundRouter: multistepSourcesRouter,
   credentialsInboundRouter: multistepCredentialsRouter,
   applyWorkflowRunPack: restoreWorkflowRunPack,
+  workflowProbeExecutor,
   // The hub link calls this on every (re)connect to announce the workflow
   // deployments this sidecar hosts so the hub re-registers their routes.
   // `createDeployRouter` runs synchronously during construction (below), so
