@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import type {
   AuthorizeFn,
@@ -275,18 +276,23 @@ async function seedWorkflowDefinition(
     steps: {},
     stepOrder: [],
   },
-): Promise<void> {
+): Promise<string> {
   const dir = path.join(baseDir, repoId.kind, repoId.id);
   await fs.mkdir(dir, { recursive: true });
+  const definition = {
+    id: "test-workflow",
+    triggers: [],
+    steps: workflow.steps,
+    stepOrder: workflow.stepOrder,
+  };
   await fs.writeFile(
     path.join(dir, "workflow.json"),
-    JSON.stringify({
-      id: "test-workflow",
-      triggers: [],
-      steps: workflow.steps,
-      stepOrder: workflow.stepOrder,
-    }),
+    JSON.stringify(definition),
   );
+  // The re-verify barrier recomputes the wire hash over the loaded
+  // projection, so return the approved hash of exactly these bytes for the
+  // caller to thread into `DEFINITION_HASH`.
+  return computeWireDefinitionHash(definition);
 }
 
 async function seedRun(
@@ -429,13 +435,14 @@ function makeSpawnEnv(opts: {
   channelId: string;
   hmacKeyHex: string;
   hostPubKeyHex: string;
+  definitionHash?: string;
 }): Record<string, string> {
   return {
     IPC_CHANNEL_ID: opts.channelId,
     IPC_HMAC_KEY: opts.hmacKeyHex,
     HOST_PUBKEY: opts.hostPubKeyHex,
     DEPLOYMENT_ID: "deployment-x",
-    DEFINITION_HASH: "definition-hash-abc",
+    DEFINITION_HASH: opts.definitionHash ?? "definition-hash-abc",
     MAILBOX_ADDRESS: "deployment-x@example.com",
     STEP_COUNT: "1",
   };
@@ -541,7 +548,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -569,6 +576,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -629,7 +637,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -643,6 +651,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
     const bindings = buildBindings({ baseDir, childKeyPair });
@@ -712,7 +721,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -738,6 +747,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -807,7 +817,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -835,6 +845,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
       WARM_KEEP: "true",
     });
@@ -925,7 +936,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -976,6 +987,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -1028,7 +1040,7 @@ describe("runWorkflowChild", () => {
     // seeded crashed StepStarted settles as a `StepFailed`
     // (crash-mid-invocation) rather than resolving to a coordination
     // primitive the resume could re-arm.
-    await seedWorkflowDefinition(
+    const definitionHash = await seedWorkflowDefinition(
       baseDir,
       { kind: "workflow", id: "workflow-asset" },
       {
@@ -1100,6 +1112,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -1230,7 +1243,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -1244,6 +1257,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -1305,7 +1319,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(
+    const definitionHash = await seedWorkflowDefinition(
       baseDir,
       { kind: "workflow", id: "workflow-asset" },
       {
@@ -1323,6 +1337,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
     const bindings = buildBindings({ baseDir, childKeyPair });
@@ -1369,7 +1384,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(
+    const definitionHash = await seedWorkflowDefinition(
       baseDir,
       { kind: "workflow", id: "workflow-asset" },
       { steps: { "step-1": { kind: "step" } }, stepOrder: ["step-1"] },
@@ -1384,6 +1399,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
     const bindings = buildBindings({ baseDir, childKeyPair });
@@ -1427,7 +1443,7 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -1441,6 +1457,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -1504,7 +1521,7 @@ describe("runWorkflowChild", () => {
     const otherKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    await seedWorkflowDefinition(baseDir, {
+    const definitionHash = await seedWorkflowDefinition(baseDir, {
       kind: "workflow",
       id: "workflow-asset",
     });
@@ -1518,6 +1535,7 @@ describe("runWorkflowChild", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
     );
 
@@ -1738,33 +1756,35 @@ function stubReactorEvent(type: string): StreamEvent {
 async function seedOneStepWorkflowDir(
   repoDir: string,
   stepId: string,
-): Promise<void> {
+): Promise<string> {
   await fs.mkdir(repoDir, { recursive: true });
+  const definition = {
+    id: "warm-roundtrip-workflow",
+    triggers: [{ type: "manual" }],
+    steps: {
+      [stepId]: {
+        kind: "step",
+        id: stepId,
+        agent: {
+          id: "warm-agent",
+          systemPrompt: "warm agent",
+          toolFactories: [],
+          capabilities: [],
+          inference: {
+            sources: [{ provider: "anthropic", model: "stub-model" }],
+          },
+        },
+        input: { from: "trigger.payload" },
+        drainBehavior: "cancel",
+      },
+    },
+    stepOrder: [stepId],
+  };
   await fs.writeFile(
     path.join(repoDir, "workflow.json"),
-    JSON.stringify({
-      id: "warm-roundtrip-workflow",
-      triggers: [{ type: "manual" }],
-      steps: {
-        [stepId]: {
-          kind: "step",
-          id: stepId,
-          agent: {
-            id: "warm-agent",
-            systemPrompt: "warm agent",
-            toolFactories: [],
-            capabilities: [],
-            inference: {
-              sources: [{ provider: "anthropic", model: "stub-model" }],
-            },
-          },
-          input: { from: "trigger.payload" },
-          drainBehavior: "cancel",
-        },
-      },
-      stepOrder: [stepId],
-    }),
+    JSON.stringify(definition),
   );
+  return computeWireDefinitionHash(definition);
 }
 
 /**
@@ -1890,7 +1910,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         message: "genesis",
       },
     );
-    await seedOneStepWorkflowDir(
+    const definitionHash = await seedOneStepWorkflowDir(
       substrate.getRepoDir(workflowDefinitionRepoId),
       stepId,
     );
@@ -1960,6 +1980,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
       WARM_KEEP: "true",
     });
@@ -2078,7 +2099,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       "refs/heads/main",
       { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
     );
-    await seedOneStepWorkflowDir(
+    const definitionHash = await seedOneStepWorkflowDir(
       substrate.getRepoDir(workflowDefinitionRepoId),
       stepId,
     );
@@ -2139,6 +2160,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
       }),
       WARM_KEEP: "true",
     });

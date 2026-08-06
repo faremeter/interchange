@@ -49,8 +49,6 @@
 // supervisor's recycle policy is OS-driven (drain, SIGTERM, SIGKILL,
 // respawn) and does not require a child-side control frame.
 
-import { type } from "arktype";
-
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
 import { base64Decode, hexEncode } from "@intx/types";
@@ -60,10 +58,7 @@ import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions/substrate";
-import {
-  readProcessingEntry,
-  workflowDefinitionEnvelopeSchema,
-} from "@intx/hub-sessions/substrate";
+import { readProcessingEntry } from "@intx/hub-sessions/substrate";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import type { AuthzCallResult } from "@intx/inference";
@@ -113,6 +108,7 @@ import type { CredentialsSnapshot } from "../supervisor/credentials";
 import { hashGrants } from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
+import { loadVerifiedWorkflowDefinition } from "./verified-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
 import {
   collectParkedApprovalCorrelations,
@@ -598,7 +594,17 @@ export async function runWorkflowChild(
     writer: opts.eventWriter,
   });
 
-  const definition = await loadWorkflowDefinition(opts.bindings);
+  // Re-verify barrier at the load boundary. `opts.env.definitionHash` is
+  // the hub-approved wire hash; the shared loader recomputes the hash over
+  // the validated projection and fails closed on any mismatch. This one
+  // load happens before both the resume loop and the trigger loop, so the
+  // same verified definition serves every fresh trigger AND every resume.
+  const definition = await loadVerifiedWorkflowDefinition({
+    substrate: opts.bindings.substrate,
+    repoId: opts.bindings.workflowDefinitionRepoId,
+    workflowPath: WORKFLOW_JSON_PATH,
+    approvedHash: opts.env.definitionHash,
+  });
 
   const authorize = createCredentialsBackedAuthorize(
     credentialsRef,
@@ -1540,52 +1546,6 @@ async function resolveTriggerPayload(args: {
   }
   const raw = base64Decode(rawMessageBase64);
   return extractConversationText(raw, args.messageId);
-}
-
-/**
- * Load the `WorkflowDefinition` from the workflow asset repo's deploy
- * ref. Mirrors the sibling `spawn-child` adapter's working-tree-read
- * pattern -- the deploy orchestrator's `writeTree` materializes
- * `workflow.json` under the substrate's repo dir, so a flat
- * `fs.readFile` returns the bytes without round-tripping through git.
- */
-async function loadWorkflowDefinition(
-  bindings: RunWorkflowChildBindings,
-): Promise<WorkflowDefinition> {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const dir = bindings.substrate.getRepoDir(bindings.workflowDefinitionRepoId);
-  const workflowPath = path.join(dir, WORKFLOW_JSON_PATH);
-  let raw: string;
-  try {
-    raw = await fs.readFile(workflowPath, "utf8");
-  } catch (cause) {
-    throw new Error(
-      `workflow-child: cannot read ${WORKFLOW_JSON_PATH} for ${bindings.workflowDefinitionRepoId.kind}/${bindings.workflowDefinitionRepoId.id} on ${bindings.workflowDefinitionRef}`,
-      { cause },
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(
-      `workflow-child: ${WORKFLOW_JSON_PATH} for ${bindings.workflowDefinitionRepoId.kind}/${bindings.workflowDefinitionRepoId.id} on ${bindings.workflowDefinitionRef} is not valid JSON`,
-      { cause },
-    );
-  }
-  const validated = workflowDefinitionEnvelopeSchema(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(
-      `workflow-child: ${WORKFLOW_JSON_PATH} for ${bindings.workflowDefinitionRepoId.kind}/${bindings.workflowDefinitionRepoId.id} on ${bindings.workflowDefinitionRef} failed envelope validation: ${validated.summary}`,
-    );
-  }
-  // The envelope schema enforces the structural shape; the
-  // discriminated narrow over every primitive variant lives downstream
-  // in the runtime body. The sibling `spawn-child` adapter follows the
-  // same pattern at the same boundary.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope schema enforces structural shape; primitive narrows live downstream in the runtime body
-  return validated as unknown as WorkflowDefinition;
 }
 
 function defaultClock(): Date {
