@@ -429,6 +429,15 @@ function projectEscalation(
   };
 }
 
+// INVARIANT: every grant-bearing field of `AgentDefinition` must be enumerated
+// here. The projector deliberately enumerates rather than spreads (so it can
+// DROP credential-adjacent fields like model-source `parameters` and REIFY
+// function-valued tool factories to inert data), which means a grant-bearing
+// field added to `AgentDefinition` but not added here would be SILENTLY dropped
+// from the inert projection -- and therefore from the approval hash and the
+// operator's gated view. The grant-surface reification tests
+// (`live-inert-projector.test.ts`) lock the current field coverage; extend them
+// alongside any new grant-bearing field.
 function projectAgent(agent: AgentDefinition): InertAgent {
   return {
     id: agent.id,
