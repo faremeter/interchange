@@ -1072,6 +1072,13 @@ export function createSidecarDeployRouter(deps: {
    * it.
    */
   writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
+  /**
+   * Materialize a source-ref deployment's frozen closure. Defaults to the real
+   * `applyFrozenWorkflowClosure` (registry fetch + SRI verify + layout);
+   * production never overrides it. A test seam so a unit test can drive the
+   * deploy/restore source-ref path without a live registry.
+   */
+  applyFrozenWorkflowClosure?: typeof applyFrozenWorkflowClosure;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1116,6 +1123,8 @@ export function createSidecarDeployRouter(deps: {
   const stepStateDataDir = multistepSubstrateEnv.SIDECAR_DATA_DIR;
   const persistWorkflowRunRecord =
     deps.writeWorkflowRunRecord ?? writeWorkflowRunRecord;
+  const applyClosure =
+    deps.applyFrozenWorkflowClosure ?? applyFrozenWorkflowClosure;
   const multistepSpawner =
     deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
   const multistepDeriveStepAddress: DeriveStepAddress =
@@ -1364,10 +1373,21 @@ export function createSidecarDeployRouter(deps: {
      * evaluated pinned closure; "live-authored" otherwise. Known at spec-build
      * time from the frame's `source`/`closure` presence -- earlier than
      * `closurePackageDir`, which the source-ref path sets only after the
-     * closure is applied. A boot-time restore uses it to refuse bringing a
-     * source-ref deployment back as live-authored.
+     * closure is applied. A boot-time restore uses it to re-materialize a
+     * source-ref deployment's closure rather than bringing it back as
+     * live-authored.
      */
     lineage: "source-ref" | "live-authored";
+    /**
+     * The source-ref inputs, carried so `buildWorkflowRunRecord` can persist
+     * them and a boot-time restore can re-run `applyFrozenWorkflowClosure` to
+     * re-materialize the pinned code. Set from the frame's `source`/`closure`
+     * on the source-ref deploy path; absent for a live-authored deployment.
+     * `source` carries no secret (the registry token is resolved from env at
+     * apply time); `closure` is frozen versions + SRIs.
+     */
+    source?: NonNullable<AgentDeployFrame["workflow"]>["source"];
+    closure?: NonNullable<AgentDeployFrame["workflow"]>["closure"];
   }
 
   /**
@@ -1381,8 +1401,12 @@ export function createSidecarDeployRouter(deps: {
     spec: WorkflowDeploySpec,
     sources: WorkflowRunRecord["sources"],
   ): WorkflowRunRecord {
-    return {
-      version: 1,
+    // Fields common to both lineages. The per-body approved hashes are
+    // re-threaded into the child's spawn env on restore so the onTrigger-body
+    // re-verify barrier survives a restart; omitted when the deployment has no
+    // bodies, matching the "no null entry" shape the deploy-time populate uses.
+    const base = {
+      version: 1 as const,
       agentAddress: spec.agentAddress,
       definitionId: spec.definition.id,
       sources,
@@ -1390,23 +1414,43 @@ export function createSidecarDeployRouter(deps: {
       ...(spec.hubPublicKey !== undefined
         ? { hubPublicKey: spec.hubPublicKey }
         : {}),
-      // Persist the hub-approved wire hash so a boot-time restore re-spawns the
-      // child with the SAME `DEFINITION_HASH` the original deploy carried,
-      // rather than recomputing it off the on-disk projection. Absent only for
-      // a legacy frame that carried no approved hash.
-      ...(spec.approvedWireHash !== undefined
-        ? { approvedWireHash: spec.approvedWireHash }
-        : {}),
-      // Persist the per-body approved hashes so a boot-time restore re-threads
-      // them into the child's spawn env and the onTrigger-body re-verify
-      // barrier survives a restart. Omitted when the deployment has no bodies,
-      // matching the "no null entry" shape the deploy-time populate uses.
       ...(Object.keys(spec.referencedDefinitionHashes).length > 0
         ? { referencedDefinitionHashes: spec.referencedDefinitionHashes }
         : {}),
-      // Persist the lineage so restore refuses to bring a source-ref
-      // deployment back as live-authored (which would run the inert shape).
-      lineage: spec.lineage,
+    };
+    if (spec.lineage === "source-ref") {
+      // The record schema requires all three for a source-ref record, so a
+      // spec missing any of them is a wiring defect -- fail loudly here rather
+      // than persist a record the boot scan would then reject as corrupt.
+      if (
+        spec.approvedWireHash === undefined ||
+        spec.source === undefined ||
+        spec.closure === undefined
+      ) {
+        throw new Error(
+          `buildWorkflowRunRecord: a source-ref deployment (${spec.agentAddress}) must carry approvedWireHash, source, and closure`,
+        );
+      }
+      return {
+        ...base,
+        lineage: "source-ref",
+        // Feeds the restored child's DEFINITION_HASH so it re-verifies the
+        // evaluated closure against the hub-approved pin, and the source +
+        // frozen closure a restore re-runs applyFrozenWorkflowClosure with.
+        approvedWireHash: spec.approvedWireHash,
+        source: spec.source,
+        closure: spec.closure,
+      };
+    }
+    return {
+      ...base,
+      lineage: "live-authored",
+      // Persisted so a restore re-spawns the child with the SAME
+      // DEFINITION_HASH the original deploy carried rather than recomputing it.
+      // Absent only for a legacy frame that carried no approved hash.
+      ...(spec.approvedWireHash !== undefined
+        ? { approvedWireHash: spec.approvedWireHash }
+        : {}),
     };
   }
 
@@ -2038,11 +2082,17 @@ export function createSidecarDeployRouter(deps: {
           : undefined,
       // Source-ref when the frame carries a pinned source + frozen closure --
       // the same signal that drives the closure-apply below. Persisted so a
-      // restore refuses to bring this back as live-authored.
+      // restore re-materializes it rather than mis-restoring as live-authored.
       lineage:
         projection.source !== undefined && projection.closure !== undefined
           ? "source-ref"
           : "live-authored",
+      // Carry the source-ref inputs so the record persists them and a restore
+      // can re-materialize the closure. Undefined on a live-authored frame.
+      ...(projection.source !== undefined ? { source: projection.source } : {}),
+      ...(projection.closure !== undefined
+        ? { closure: projection.closure }
+        : {}),
     };
     const record = buildWorkflowRunRecord(spec, spec.sources);
 
@@ -2077,7 +2127,7 @@ export function createSidecarDeployRouter(deps: {
       let effectiveDefinition: WorkflowProjectionDefinition =
         projection.definition;
       if (projection.source !== undefined && projection.closure !== undefined) {
-        const applied = await applyFrozenWorkflowClosure({
+        const applied = await applyClosure({
           source: projection.source,
           closure: projection.closure,
           instanceDir: pathJoin(
@@ -2252,11 +2302,19 @@ export function createSidecarDeployRouter(deps: {
         }
       }
       // Drop the run record so a boot-time restore does not re-spawn a
-      // torn-down deployment. Runs on every undeploy -- not only when a
-      // supervisor was active -- so a record left behind by a
-      // crash-interrupted deploy is reclaimed too.
+      // torn-down deployment, and reclaim a source-ref deployment's
+      // materialized closure tree. Both run on every undeploy -- not only when
+      // a supervisor was active -- so a record and closure left behind by a
+      // crash-interrupted deploy, or by a source-ref restore that materialized
+      // the closure and then failed to spawn (registry down), are reclaimed
+      // too. A live-authored deployment never creates the closure tree, so the
+      // `force` remove is a no-op there.
       if (stepStateDataDir !== undefined) {
         await deleteWorkflowRunRecord(stepStateDataDir, runId);
+        await rm(
+          pathJoin(stepStateDataDir, "workflow-definition-closures", runId),
+          { recursive: true, force: true },
+        );
       }
       releaseSlug(runId, frame.agentAddress);
       deps.unregisterDeployment({
@@ -2284,20 +2342,10 @@ export function createSidecarDeployRouter(deps: {
         try {
           // Integrity: the stored address must re-derive to its own directory
           // name. A mismatch means a corrupt or misplaced record; skip it
-          // rather than restore a deployment under the wrong slug.
-          // A source-ref deployment's runnable definition is the evaluated
-          // pinned closure, not the on-disk inert `workflow.json`. Restore
-          // re-reads that inert projection and can only bring the deployment
-          // back as live-authored, which runs the non-executable inert shape.
-          // Refuse loudly rather than mis-restore it; the record is kept so a
-          // later boot that re-materializes the closure can restore it. (That
-          // full source-ref restore is a separate follow-up.)
-          if (record.lineage === "source-ref") {
-            throw new Error(
-              `source-ref workflow deployment restore is not implemented; refusing to restore ${record.agentAddress} as live-authored, which would run the non-executable inert projection`,
-            );
-          }
-
+          // rather than restore a deployment under the wrong slug. (A source-ref
+          // record missing its source/closure/approvedWireHash is rejected
+          // earlier, at the scan boundary, by the record schema's discriminated
+          // union -- so no bespoke source-ref guard is needed here.)
           const derived = deriveDeploymentId(record.agentAddress);
           if (derived !== runId) {
             logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
@@ -2344,9 +2392,9 @@ export function createSidecarDeployRouter(deps: {
             sources: projection.sources,
             // The hub-approved wire hash the original deploy persisted, so the
             // restore re-spawn carries the same `DEFINITION_HASH` rather than a
-            // recompute. Absent for a record written before the field existed;
-            // the spawn core recomputes off the on-disk projection for that
-            // case alone.
+            // recompute. Absent only for a legacy live-authored record; the
+            // spawn core recomputes off the on-disk projection for that case
+            // alone (a source-ref record always carries it, by schema).
             approvedWireHash: record.approvedWireHash,
             // Re-thread the per-body approved hashes the original deploy
             // persisted, so a restored onTrigger body clears the same
@@ -2358,10 +2406,54 @@ export function createSidecarDeployRouter(deps: {
             referencedDefinitionHashes: record.referencedDefinitionHashes ?? {},
             sessionId: record.sessionId,
             hubPublicKey: record.hubPublicKey,
-            // The source-ref guard above already refused any source-ref record,
-            // so every deployment that reaches here restores as live-authored.
-            lineage: "live-authored",
+            // Preserve the persisted lineage; a legacy record with no lineage
+            // is live-authored.
+            lineage: record.lineage ?? "live-authored",
           };
+
+          // Source-ref: re-materialize the pinned closure so the restored child
+          // EVALUATES the pinned code (not the non-executable inert
+          // `workflow.json`), exactly as the fresh deploy does. The schema
+          // guarantees a source-ref record carries `source` + `closure`, so no
+          // undefined-checks are needed. Reclaim the deployment's closure
+          // instance dir first so repeated restarts do not accumulate orphaned
+          // materialized closures -- the prior process (the only reader) is
+          // dead, and restore is serial before `hubLink.connect()`, so there is
+          // no concurrent reader. The tarball fetch is a cache hit against the
+          // content-addressed closure cache (populated on the original deploy,
+          // survives restart) and SRI-verified either way; a registry/cache
+          // failure soft-fails the record (kept for the next boot), matching
+          // the `assertSourceBuildable` retry-on-later-boot behavior above.
+          if (record.lineage === "source-ref") {
+            const instanceDir = pathJoin(
+              dataDir,
+              "workflow-definition-closures",
+              runId,
+            );
+            await rm(instanceDir, { recursive: true, force: true });
+            const applied = await applyClosure({
+              source: record.source,
+              closure: record.closure,
+              instanceDir,
+              cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
+              cacheMaxBytes: requireSubstrateByteCap(
+                multistepSubstrateEnv,
+                "SIDECAR_CACHE_MAX_BYTES",
+              ),
+              registryMaxTarballBytes: requireSubstrateByteCap(
+                multistepSubstrateEnv,
+                "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
+              ),
+              registries: readRegistries(),
+            });
+            spec.closurePackageDir = applied.packageDir;
+            // Carry the source-ref inputs so a post-restore source rotation --
+            // which rebuilds the record from the spec -- re-persists them;
+            // without this a rotation would silently drop them and wedge the
+            // NEXT restart.
+            spec.source = record.source;
+            spec.closure = record.closure;
+          }
 
           // The slug is the caller's, matching `deployMultiStep`: claim before
           // the spawn, release on failure. Unlike deploy's soft-fail, restore
