@@ -1937,8 +1937,7 @@ describe("sendMultiStepDeployFrame", () => {
       sources,
       projection,
       approvedWireHash: frozenWireHash,
-      source,
-      closure,
+      sourceRef: { source, closure },
     });
 
     const sent = sentWorkflows[0];
@@ -1949,8 +1948,8 @@ describe("sendMultiStepDeployFrame", () => {
     // The inert projection itself is carried on the frame's `definition`
     // unchanged -- no live wire lineage leaks onto the frame.
     expect(sent.definition).toEqual(projection);
-    expect(sent.source).toEqual(source);
-    expect(sent.closure).toEqual(closure);
+    // The source-ref pin rides the frame as one co-required object.
+    expect(sent.sourceRef).toEqual({ source, closure });
   });
 
   test("a live definition and its inert projection hash differently so binding to the inert projection is load-bearing", async () => {
@@ -2148,8 +2147,9 @@ describe("deployCodeSourcedWorkflow", () => {
     }
     expect(await computeWireDefinitionHash(sent.definition)).toBe(wireHash);
     expect(sent.definition).toEqual(projection);
-    expect(sent.source).toEqual(SOURCE);
-    expect(sent.closure).toEqual(closure);
+    // The composed entrypoint assembles the pin from its `source` arg and the
+    // approve output's frozen closure into the frame's one co-required object.
+    expect(sent.sourceRef).toEqual({ source: SOURCE, closure });
   });
 
   test("refuses to deploy when the gate did not approve", async () => {

@@ -606,6 +606,24 @@ export const CredentialDelivery = type({
 });
 export type CredentialDelivery = typeof CredentialDelivery.infer;
 
+/**
+ * The source-ref pin: where a code-sourced (npm) workflow definition's bytes
+ * come from (`source`) plus the frozen dependency closure the hub resolved for
+ * that pin (`closure`, concrete versions + integrity SRIs). The two ALWAYS
+ * travel together -- the sidecar re-materializes the exact `closure` from
+ * `source` and re-evaluates the pinned code -- so they are one co-required
+ * object rather than two independently-optional fields (which would let a
+ * "source without closure" state exist and be silently read as live-authored,
+ * downgrading the source-ref evaluate-the-pinned-code guarantee to trusting the
+ * inline projection). This is the same shape `WorkflowProbeRequestFrame`
+ * co-requires. A live-authored deploy carries no pin.
+ */
+export const SourceRefPin = type({
+  source: WorkflowDefinitionSource,
+  closure: ToolPackageManifest,
+});
+export type SourceRefPin = typeof SourceRefPin.infer;
+
 export const AgentDeployWorkflow = type({
   definition: WorkflowProjectionDefinition,
   sources: { "[string]": InferenceSource.array().atLeastLength(1) },
@@ -635,17 +653,12 @@ export const AgentDeployWorkflow = type({
   // builder always stamps it, so a production deploy never leaves the child's
   // `DEFINITION_HASH` to a sidecar recompute.
   "approvedWireHash?": "string > 0",
-  // Where the definition's bytes come from -- the source-ref that names the npm
-  // registry publishing the definition package. Rides the frame so the sidecar
-  // can re-materialize and re-evaluate the definition from source at apply time
-  // instead of trusting an inline projection. Optional: only a code-sourced
-  // (npm) deploy carries it; a live-authored deploy has no remote source.
-  "source?": WorkflowDefinitionSource,
-  // The frozen dependency closure the hub resolved for the definition's pin --
-  // concrete versions and integrity SRIs -- so the sidecar materializes the
-  // exact tree the hub pinned when it re-evaluates the definition from `source`.
-  // Optional for the same reason as `source`.
-  "closure?": ToolPackageManifest,
+  // The source-ref pin (`source` + frozen `closure`) the sidecar re-materializes
+  // and re-evaluates the pinned code from, instead of trusting the inline
+  // projection. The two co-travel (see `SourceRefPin`), so presence of the pin
+  // is the single signal that this is a code-sourced deploy. Optional: only a
+  // code-sourced (npm) deploy carries it; a live-authored deploy has no pin.
+  "sourceRef?": SourceRefPin,
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {

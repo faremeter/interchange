@@ -1372,7 +1372,7 @@ export function createSidecarDeployRouter(deps: {
      * The deploy lineage, persisted on the deployment record. "source-ref"
      * marks a code-sourced deployment whose runnable definition is the
      * evaluated pinned closure; "live-authored" otherwise. Known at spec-build
-     * time from the frame's `source`/`closure` presence -- earlier than
+     * time from the frame's `sourceRef` presence -- earlier than
      * `closurePackageDir`, which the source-ref path sets only after the
      * closure is applied. A boot-time restore uses it to re-materialize a
      * source-ref deployment's closure rather than bringing it back as
@@ -1380,15 +1380,14 @@ export function createSidecarDeployRouter(deps: {
      */
     lineage: "source-ref" | "live-authored";
     /**
-     * The source-ref inputs, carried so `buildDeploymentRecord` can persist
-     * them and a boot-time restore can re-run `applyFrozenWorkflowClosure` to
-     * re-materialize the pinned code. Set from the frame's `source`/`closure`
-     * on the source-ref deploy path; absent for a live-authored deployment.
+     * The source-ref pin, carried so `buildDeploymentRecord` can persist it and
+     * a boot-time restore can re-run `applyFrozenWorkflowClosure` to
+     * re-materialize the pinned code. Set from the frame's `sourceRef` on the
+     * source-ref deploy path; absent for a live-authored deployment. Its
      * `source` carries no secret (the registry token is resolved from env at
-     * apply time); `closure` is frozen versions + SRIs.
+     * apply time); its `closure` is frozen versions + SRIs.
      */
-    source?: NonNullable<AgentDeployFrame["workflow"]>["source"];
-    closure?: NonNullable<AgentDeployFrame["workflow"]>["closure"];
+    sourceRef?: NonNullable<AgentDeployFrame["workflow"]>["sourceRef"];
   }
 
   /**
@@ -1420,27 +1419,22 @@ export function createSidecarDeployRouter(deps: {
         : {}),
     };
     if (spec.lineage === "source-ref") {
-      // The record schema requires all three for a source-ref record, so a
-      // spec missing any of them is a wiring defect -- fail loudly here rather
-      // than persist a record the boot scan would then reject as corrupt.
-      if (
-        spec.approvedWireHash === undefined ||
-        spec.source === undefined ||
-        spec.closure === undefined
-      ) {
+      // The record schema requires both for a source-ref record, so a spec
+      // missing either is a wiring defect -- fail loudly here rather than
+      // persist a record the boot scan would then reject as corrupt.
+      if (spec.approvedWireHash === undefined || spec.sourceRef === undefined) {
         throw new Error(
-          `buildDeploymentRecord: a source-ref deployment (${spec.agentAddress}) must carry approvedWireHash, source, and closure`,
+          `buildDeploymentRecord: a source-ref deployment (${spec.agentAddress}) must carry approvedWireHash and sourceRef`,
         );
       }
       return {
         ...base,
         lineage: "source-ref",
         // Feeds the restored child's DEFINITION_HASH so it re-verifies the
-        // evaluated closure against the hub-approved pin, and the source +
-        // frozen closure a restore re-runs applyFrozenWorkflowClosure with.
+        // evaluated closure against the hub-approved pin, and the source-ref
+        // pin a restore re-runs applyFrozenWorkflowClosure with.
         approvedWireHash: spec.approvedWireHash,
-        source: spec.source,
-        closure: spec.closure,
+        sourceRef: spec.sourceRef,
       };
     }
     return {
@@ -2082,18 +2076,16 @@ export function createSidecarDeployRouter(deps: {
         projection.definition.stepOrder.length === 1
           ? frame.hubPublicKey
           : undefined,
-      // Source-ref when the frame carries a pinned source + frozen closure --
-      // the same signal that drives the closure-apply below. Persisted so a
-      // restore re-materializes it rather than mis-restoring as live-authored.
+      // Source-ref when the frame carries a pinned source-ref (source + frozen
+      // closure) -- the same signal that drives the closure-apply below.
+      // Persisted so a restore re-materializes it rather than mis-restoring as
+      // live-authored.
       lineage:
-        projection.source !== undefined && projection.closure !== undefined
-          ? "source-ref"
-          : "live-authored",
-      // Carry the source-ref inputs so the record persists them and a restore
-      // can re-materialize the closure. Undefined on a live-authored frame.
-      ...(projection.source !== undefined ? { source: projection.source } : {}),
-      ...(projection.closure !== undefined
-        ? { closure: projection.closure }
+        projection.sourceRef !== undefined ? "source-ref" : "live-authored",
+      // Carry the source-ref pin so the record persists it and a restore can
+      // re-materialize the closure. Undefined on a live-authored frame.
+      ...(projection.sourceRef !== undefined
+        ? { sourceRef: projection.sourceRef }
         : {}),
     };
     const record = buildDeploymentRecord(spec, spec.sources);
@@ -2128,10 +2120,10 @@ export function createSidecarDeployRouter(deps: {
       // the inline projection unchanged.
       let effectiveDefinition: WorkflowProjectionDefinition =
         projection.definition;
-      if (projection.source !== undefined && projection.closure !== undefined) {
+      if (projection.sourceRef !== undefined) {
         const applied = await applyClosure({
-          source: projection.source,
-          closure: projection.closure,
+          source: projection.sourceRef.source,
+          closure: projection.sourceRef.closure,
           instanceDir: pathJoin(
             dataDir,
             "workflow-definition-closures",
@@ -2420,7 +2412,7 @@ export function createSidecarDeployRouter(deps: {
           // Source-ref: re-materialize the pinned closure so the restored child
           // EVALUATES the pinned code (not the non-executable inert
           // `workflow.json`), exactly as the fresh deploy does. The schema
-          // guarantees a source-ref record carries `source` + `closure`, so no
+          // guarantees a source-ref record carries a `sourceRef` pin, so no
           // undefined-checks are needed. Reclaim the deployment's closure
           // instance dir first so repeated restarts do not accumulate orphaned
           // materialized closures -- the prior process (the only reader) is
@@ -2438,8 +2430,8 @@ export function createSidecarDeployRouter(deps: {
             );
             await rm(instanceDir, { recursive: true, force: true });
             const applied = await applyClosure({
-              source: record.source,
-              closure: record.closure,
+              source: record.sourceRef.source,
+              closure: record.sourceRef.closure,
               instanceDir,
               cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
               cacheMaxBytes: requireSubstrateByteCap(
@@ -2453,12 +2445,10 @@ export function createSidecarDeployRouter(deps: {
               registries: readRegistries(),
             });
             spec.closurePackageDir = applied.packageDir;
-            // Carry the source-ref inputs so a post-restore source rotation --
-            // which rebuilds the record from the spec -- re-persists them;
-            // without this a rotation would silently drop them and wedge the
-            // NEXT restart.
-            spec.source = record.source;
-            spec.closure = record.closure;
+            // Carry the source-ref pin so a post-restore source rotation --
+            // which rebuilds the record from the spec -- re-persists it; without
+            // this a rotation would silently drop it and wedge the NEXT restart.
+            spec.sourceRef = record.sourceRef;
           }
 
           // The slug is the caller's, matching `deployMultiStep`: claim before

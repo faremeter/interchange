@@ -2114,12 +2114,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, head)).toBe(false);
   });
 
-  test("restore soft-skips a malformed source-ref record (missing source/closure) at the scan boundary", async () => {
+  test("restore soft-skips a malformed source-ref record (missing sourceRef) at the scan boundary", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-srcref-bad-");
     const head = "ins_srcref@example.com";
     const deploymentId = deriveDeploymentId(head);
 
-    // A source-ref record MUST carry source + closure + approvedWireHash -- the
+    // A source-ref record MUST carry a sourceRef pin + approvedWireHash -- the
     // record schema's discriminated union on `lineage` requires them. Write a
     // raw malformed one (lineage source-ref, none of the required fields)
     // straight to the record path, bypassing the typed writer.
@@ -2166,8 +2166,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const head = "ins_srcref_ok@example.com";
     const deploymentId = deriveDeploymentId(head);
 
-    // A well-formed source-ref record: lineage source-ref with source + closure
-    // + approvedWireHash, exactly what the deploy path persists.
+    // A well-formed source-ref record: lineage source-ref with a sourceRef pin
+    // (source + closure) + approvedWireHash, exactly what the deploy path
+    // persists.
     const record: WorkflowDeploymentRecord = {
       version: 1,
       agentAddress: head,
@@ -2176,8 +2177,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       hubPublicKey: "hub-pk",
       approvedWireHash: "a".repeat(64),
       lineage: "source-ref",
-      source: { kind: "registry", registry: "test-registry" },
-      closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      sourceRef: {
+        source: { kind: "registry", registry: "test-registry" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      },
     };
     await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
 
