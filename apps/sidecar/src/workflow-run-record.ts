@@ -5,16 +5,16 @@
 // teardown reclaims both and a boot scan can enumerate the active runs
 // beside the run state they resume.
 //
-// It carries only the inputs that are otherwise frame/in-memory only:
-// `sources` (each step's ordered inference-source failover chain, threaded to
-// the child via the spawn env and durable nowhere else), `sessionId`
-// (inference-event
-// correlation), `hubPublicKey` (the head's deploy-pack / inbound
-// verification key, recorded only in memory today), and `approvedWireHash`
-// (the hub-approved wire hash the deploy frame carried, so a restore re-spawn
-// feeds the child the same `DEFINITION_HASH` without recomputing it). The
-// definition itself
-// lives in `assets/workflow/<definitionId>/workflow.json`, referenced by
+// It carries the inputs that are otherwise frame/in-memory only: `sources`
+// (each step's ordered inference-source failover chain, threaded to the child
+// via the spawn env and durable nowhere else), `sessionId` (inference-event
+// correlation), `hubPublicKey` (the head's deploy-pack / inbound verification
+// key), `approvedWireHash` + `referencedDefinitionHashes` (the hub-approved
+// hashes the deploy frame carried, so a restore re-spawn feeds the child the
+// same re-verify anchors without recomputing them), `lineage`, and -- for a
+// source-ref deployment -- the `source` + frozen `closure` a restore needs to
+// re-materialize and re-evaluate the pinned code. The definition itself lives
+// in `assets/workflow/<definitionId>/workflow.json`, referenced by
 // `definitionId`, and each step's grants live in its agent-state repo, so
 // neither is duplicated here.
 
@@ -25,6 +25,8 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { InferenceSource } from "@intx/types/runtime";
+import { ToolPackageManifest } from "@intx/types/tool-packages";
+import { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import { writeFileAtomicDurable } from "./atomic-write";
 
@@ -41,12 +43,8 @@ function isENOENT(cause: unknown): boolean {
   );
 }
 
-/**
- * The on-disk run record. `version` guards the schema shape so a
- * future reader can reject or migrate a stale record rather than parse it
- * blindly. Validated at read time (the boot scan) at the trust boundary.
- */
-export const WorkflowRunRecord = type({
+// Fields common to both lineages.
+const workflowRunRecordBase = {
   version: "1",
   agentAddress: "string > 0",
   definitionId: "string > 0",
@@ -55,33 +53,59 @@ export const WorkflowRunRecord = type({
   },
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
-  // The hub-approved wire hash the deploy frame carried, persisted so a
-  // boot-time restore re-spawns the child with the same `DEFINITION_HASH` the
-  // original deploy fed it rather than recomputing it off the on-disk
-  // projection. Optional: a record written before this field existed omits it.
-  "approvedWireHash?": "string > 0",
   // The hub-approved wire hash per referenced onTrigger body id, from the
-  // deploy frame's `referencedDefinitions`. Persisted for the same reason as
-  // `approvedWireHash`: a boot-time restore re-threads these into the child's
-  // spawn env so the onTrigger-body re-verify barrier holds across a restart,
-  // rather than the body spawn failing closed for want of a hash. The hash
-  // originated out-of-band on the signed deploy frame (not from the on-disk
-  // body bytes), matching how the top-level `approvedWireHash` is carried
-  // across restart. Optional/omitted when the deployment has no bodies.
+  // deploy frame's `referencedDefinitions`. A boot-time restore re-threads
+  // these into the child's spawn env so the onTrigger-body re-verify barrier
+  // holds across a restart, rather than the body spawn failing closed for want
+  // of a hash. The hash originated out-of-band on the signed deploy frame (not
+  // from the on-disk body bytes), matching how the top-level `approvedWireHash`
+  // is carried across restart. Omitted when the deployment has no bodies.
   "referencedDefinitionHashes?": {
     "[string]": "string > 0",
   },
-  // The deploy lineage. "source-ref" marks a code-sourced deployment whose
-  // RUNNABLE definition is the evaluated pinned closure, NOT the on-disk inert
-  // `workflow.json` (a non-executable approval surface). A boot-time restore
-  // re-reads that inert projection and can only bring the deployment back as
-  // live-authored, which would run the non-executable shape -- so restore
-  // refuses a "source-ref" record loudly rather than mis-restoring it.
-  // Persisting closure re-materialization for a real source-ref restore is a
-  // separate follow-up. Absent for a record written before this field existed;
-  // that path only ever produced live-authored deployments, so an absent value
-  // is treated as "live-authored".
-  "lineage?": "'source-ref' | 'live-authored'",
+} as const;
+
+/**
+ * The on-disk deployment record. `version` guards the schema shape so a future
+ * reader can reject or migrate a stale record rather than parse it blindly.
+ * Validated at read time (the boot scan) at the trust boundary.
+ *
+ * A discriminated union on `lineage` encodes the source-ref coupling in the
+ * schema itself: a "source-ref" record MUST carry `source` + `closure` (so a
+ * restore can re-materialize the pinned closure) AND `approvedWireHash` (so the
+ * restored child re-verifies the evaluated closure against the hub-approved pin
+ * rather than against a sidecar recompute of the on-disk inert projection --
+ * the latter would collapse the out-of-band-pin property the barrier exists
+ * for). A malformed source-ref record therefore fails validation at the scan
+ * boundary and is soft-skipped as corruption, so the restore loop needs no
+ * bespoke source-ref guard. A "live-authored" record (or a legacy record with
+ * `lineage` absent) carries neither `source` nor `closure`, and its
+ * `approvedWireHash` stays optional (a record predating that field omits it,
+ * and the spawn core recomputes for that legacy case alone).
+ */
+export const WorkflowRunRecord = type({
+  ...workflowRunRecordBase,
+  lineage: "'source-ref'",
+  // Required for source-ref: the hub-approved wire hash the restored child
+  // re-verifies the evaluated closure against.
+  approvedWireHash: "string > 0",
+  // The source-ref inputs a restore re-runs `applyFrozenWorkflowClosure` with.
+  // `source` names the registry the definition package is published to; its
+  // token is resolved from the sidecar's env at apply time, so no secret is
+  // persisted here. `closure` is the frozen dependency tree (concrete versions
+  // + integrity SRIs) -- plain strings, no secrets. Both rode the signed frame.
+  source: WorkflowDefinitionSource,
+  closure: ToolPackageManifest,
+}).or({
+  ...workflowRunRecordBase,
+  // Absent for a legacy record; that path only produced live-authored
+  // deployments, so an absent value is treated as "live-authored".
+  "lineage?": "'live-authored'",
+  // Optional: the hub-approved wire hash a restore feeds the child as
+  // `DEFINITION_HASH` rather than recomputing it. A record predating this
+  // field omits it, and the spawn core recomputes off the on-disk projection
+  // for that legacy case alone.
+  "approvedWireHash?": "string > 0",
 });
 export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 

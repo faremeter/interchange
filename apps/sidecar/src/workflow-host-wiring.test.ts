@@ -19,6 +19,7 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
+import type { WorkflowDefinition } from "@intx/workflow";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 
 import {
@@ -661,6 +662,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * rotation's persist window; omitted, the router uses the real writer.
      */
     writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
+    /**
+     * Injectable closure materializer. A source-ref deploy/restore test passes
+     * a stub so the path runs without a live registry; omitted, the router
+     * uses the real `applyFrozenWorkflowClosure`.
+     */
+    applyFrozenWorkflowClosure?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["applyFrozenWorkflowClosure"];
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -744,6 +753,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         ? {
             writeWorkflowRunRecord: opts.writeWorkflowRunRecord,
           }
+        : {}),
+      ...(opts.applyFrozenWorkflowClosure !== undefined
+        ? { applyFrozenWorkflowClosure: opts.applyFrozenWorkflowClosure }
         : {}),
     });
     return {
@@ -2102,26 +2114,75 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, head)).toBe(false);
   });
 
-  test("restore refuses a source-ref record loudly and never spawns the inert shape", async () => {
-    const dataDir = await createTempBaseDir("sidecar-restore-srcref-data-");
+  test("restore soft-skips a malformed source-ref record (missing source/closure) at the scan boundary", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-srcref-bad-");
     const head = "run_srcref@example.com";
     const deploymentId = deriveDeploymentId(head);
 
-    // A source-ref deployment's runnable definition is the evaluated pinned
-    // closure, not the on-disk inert workflow.json. Restore can only bring it
-    // back as live-authored (it re-reads the inert projection), which would run
-    // the non-executable shape -- so restore must refuse it. The workflow.json
-    // is otherwise VALID, so it is the `lineage` marker, not a validation
-    // failure, that stops the restore.
+    // A source-ref record MUST carry source + closure + approvedWireHash -- the
+    // record schema's discriminated union on `lineage` requires them. Write a
+    // raw malformed one (lineage source-ref, none of the required fields)
+    // straight to the record path, bypassing the typed writer.
+    // `scanWorkflowRunRecords` validates against the schema and
+    // soft-skips it as corruption, so restore never reaches a spawn -- there is
+    // no bespoke source-ref guard in the restore loop to lean on.
+    const recordPath = path.join(
+      dataDir,
+      "workflow-runs",
+      deploymentId,
+      "deployment.json",
+    );
+    await fs.mkdir(path.dirname(recordPath), { recursive: true });
+    await fs.writeFile(
+      recordPath,
+      JSON.stringify({
+        version: 1,
+        agentAddress: head,
+        definitionId: "wf-srcref",
+        sources: { "step-1": [makeInferenceSource("step-1")] },
+        hubPublicKey: "hub-pk",
+        lineage: "source-ref",
+      }),
+      "utf8",
+    );
+
+    const spawner = makeReadyDrivingSpawner(9550);
+    const freshTransport = createInMemoryTransport();
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    await router.restoreWorkflowRuns();
+
+    // Rejected at the scan boundary: no child spawned, nothing registered.
+    expect(spawner.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+  });
+
+  test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-srcref-ok-");
+    const head = "run_srcref_ok@example.com";
+    const deploymentId = deriveDeploymentId(head);
+
+    // A well-formed source-ref record: lineage source-ref with source + closure
+    // + approvedWireHash, exactly what the deploy path persists.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
       definitionId: "wf-srcref",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
+      approvedWireHash: "a".repeat(64),
       lineage: "source-ref",
+      source: { kind: "registry", registry: "test-registry" },
+      closure: { schemaVersion: "1", topLevel: [], entries: [] },
     };
     await writeWorkflowRunRecord(dataDir, deploymentId, record);
+
+    // The on-disk inert workflow.json (the approval surface) restore re-reads
+    // and re-validates before spawning; a valid one so it clears the gate.
     const workflowJsonPath = path.join(
       dataDir,
       "assets",
@@ -2141,21 +2202,53 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       "utf8",
     );
 
-    const spawner = makeReadyDrivingSpawner(9550);
+    // Stub the closure materializer: record its inputs and return a fake
+    // package dir. Restore reads only `packageDir` (it validates the on-disk
+    // workflow.json itself), so a minimal stubbed definition is fine.
+    const fakePackageDir = path.join(dataDir, "fake-closure-package");
+    const applyCalls: { registry: string; entryCount: number }[] = [];
+    const applyStub: NonNullable<
+      Parameters<typeof buildMultistepFixture>[0]["applyFrozenWorkflowClosure"]
+    > = (args) => {
+      applyCalls.push({
+        registry: args.source.registry,
+        entryCount: args.closure.entries.length,
+      });
+      return Promise.resolve({
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- restore reads only packageDir on this path; the evaluated definition is unused
+        definition: {} as unknown as WorkflowDefinition,
+        packageDir: fakePackageDir,
+        deployDir: path.join(dataDir, "fake-deploy-dir"),
+      });
+    };
+
+    const spawner = makeReadyDrivingSpawner(9560);
     const freshTransport = createInMemoryTransport();
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
       transport: freshTransport,
-      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: dataDir,
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
+      },
+      applyFrozenWorkflowClosure: applyStub,
     });
 
-    await router.restoreWorkflowRuns();
+    const restorePromise = router.restoreWorkflowRuns();
+    await spawner.driveReadyFor(0);
+    await restorePromise;
 
-    // Refused: no child spawned, nothing registered. The record is KEPT so a
-    // later boot that re-materializes the closure can restore it.
-    expect(spawner.spawnCount()).toBe(0);
-    expect(isRegistered(freshTransport, head)).toBe(false);
-    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+    // Re-materialized (the frozen closure fed to the materializer) and spawned.
+    expect(applyCalls).toEqual([{ registry: "test-registry", entryCount: 0 }]);
+    expect(spawner.spawnCount()).toBe(1);
+    expect(isRegistered(freshTransport, head)).toBe(true);
+    // The child came back on the source-ref (evaluate-the-closure) load path:
+    // the spawn env carries the source-ref lineage marker and the freshly
+    // re-materialized package dir, not the inert-read live-authored path.
+    const spawnEnv = spawner.envFor(0);
+    expect(spawnEnv?.WORKFLOW_LINEAGE).toBe("source-ref");
+    expect(spawnEnv?.CLOSURE_PACKAGE_DIR).toBe(fakePackageDir);
   });
 
   test("restore is a no-op for a deployment already live in this process", async () => {
