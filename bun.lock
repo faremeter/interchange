@@ -406,6 +406,16 @@
         "@intx/mime": "workspace:*",
       },
     },
+    "packages/inference-catalog": {
+      "name": "@intx/inference-catalog",
+      "version": "0.2.2",
+      "devDependencies": {
+        "@intx/inference": "workspace:*",
+        "@intx/inference-discovery": "workspace:*",
+        "@intx/types": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "packages/inference-discovery": {
       "name": "@intx/inference-discovery",
       "version": "0.2.2",
@@ -895,6 +905,8 @@
     "@intx/hub-sessions": ["@intx/hub-sessions@workspace:packages/hub-sessions"],
 
     "@intx/inference": ["@intx/inference@workspace:packages/inference"],
+
+    "@intx/inference-catalog": ["@intx/inference-catalog@workspace:packages/inference-catalog"],
 
     "@intx/inference-discovery": ["@intx/inference-discovery@workspace:packages/inference-discovery"],
 
