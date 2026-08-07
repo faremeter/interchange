@@ -13,19 +13,22 @@ export const OPENAI_FIRSTPARTY_QUIRKS: Record<string, unknown> = {
   maxTokensField: "max_completion_tokens",
 };
 
-// kimi-serving backends require reasoning_content on every assistant turn. The
-// OpenAI adapter no longer forces that by default, so
-// forceAssistantReasoningContent is a required override here: drop it and these
-// deployments regress. reasoningFieldNames instead restates the adapter's
-// still-lenient default (read reasoning_content, then reasoning); it is
-// redundant with that default but kept as explicit catalog documentation of the
+// The reasoning-bearing opencode-zen relay offerings — the kimi models plus
+// qwen, deepseek, glm, and mimo — advertise reasoning_content on the wire. The
+// OpenAI adapter no longer forces reasoning content by default, so
+// forceAssistantReasoningContent is an override here. This requirement is
+// verified only for the Kimi backends; it is extended to the other reasoning
+// models on the same relay wire on the assumption they behave alike, which the
+// discovery matrix does not independently prove. reasoningFieldNames restates
+// the adapter's still-lenient default (read reasoning_content, then reasoning);
+// it is redundant with that default but kept as explicit documentation of the
 // reasoning fields these backends emit.
 //
-// Consumed only by the kimi offerings in providers.ts. It is exported so that
-// sibling module can import it, but the package's `exports` map declares only
-// `.` and `./models`, so Node's exports encapsulation blocks any external deep
-// import of this module — the constant is genuinely unreachable outside the
-// package, not merely undocumented.
+// Consumed by the opencode-zen reasoning offerings in providers.ts. It is
+// exported so that sibling module can import it, but the package's `exports`
+// map declares only `.` and `./models`, so Node's exports encapsulation blocks
+// any external deep import of this module — the constant is genuinely
+// unreachable outside the package, not merely undocumented.
 export const OPENAI_REASONING_QUIRKS: Record<string, unknown> = {
   forceAssistantReasoningContent: true,
   reasoningFieldNames: ["reasoning_content", "reasoning"],

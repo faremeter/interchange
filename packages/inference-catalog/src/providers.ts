@@ -35,8 +35,8 @@ export type CatalogOfferingSpec = {
   // guard test re-bakes from the provenance above and fails if this drifts.
   capabilities: Capability[];
   // Per-deployment adapter accommodations, explicit on every offering even when
-  // empty. See OPENAI_REASONING_QUIRKS for why the kimi-serving deployments
-  // carry explicit reasoning quirks.
+  // empty. See OPENAI_REASONING_QUIRKS for why the opencode-zen reasoning
+  // offerings carry explicit reasoning quirks.
   quirks: Record<string, unknown>;
 };
 
@@ -47,14 +47,17 @@ export type CatalogProviderSpec = {
   offerings: CatalogOfferingSpec[];
 };
 
-// The Fireworks / Moonshot / OpenRouter providers all offer the one `kimi-k3`
-// model, and the two OpenCode Zen providers both offer `kimi-k2.7-code`.
-// Distinct priorities give source resolution a deterministic order across the
+// Several models are offered by more than one provider: `kimi-k3` across the
+// Fireworks / Moonshot / OpenRouter relays, `kimi-k2.6` across those three plus
+// the two OpenCode Zen relays, and `kimi-k2.7-code` across the two OpenCode Zen
+// relays. Distinct
+// priorities give source resolution a deterministic order across the
 // deployments of a shared model. The anthropic and google-genai adapters carry
 // no accommodations, so those offerings ship an empty quirks bag. OpenAI Direct
 // serves gpt-5.x, which rejects `max_tokens`, so it carries
-// OPENAI_FIRSTPARTY_QUIRKS; the kimi-serving openai-compatible deployments
-// carry OPENAI_REASONING_QUIRKS.
+// OPENAI_FIRSTPARTY_QUIRKS. The openai-compatible relay offerings that advertise
+// reasoning carry OPENAI_REASONING_QUIRKS; gpt-5.4-mini, which advertises only
+// structured output, ships an empty bag.
 export const catalogProviders: CatalogProviderSpec[] = [
   {
     name: "Anthropic Direct",
@@ -156,6 +159,35 @@ export const catalogProviders: CatalogProviderSpec[] = [
         ],
         quirks: {},
       },
+      {
+        model: "claude-fable-5",
+        priority: 15,
+        discoverySource: { provider: "anthropic", model: "claude-fable-5" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
     ],
   },
   {
@@ -184,6 +216,40 @@ export const catalogProviders: CatalogProviderSpec[] = [
         model: "gpt-5.6-sol",
         priority: 5,
         discoverySource: { provider: "openai", model: "gpt-5.6-sol" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "document-input",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+      },
+      {
+        model: "gpt-5.6-terra",
+        priority: 10,
+        discoverySource: { provider: "openai", model: "gpt-5.6-terra" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "document-input",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+      },
+      {
+        model: "gpt-5.6-luna",
+        priority: 15,
+        discoverySource: { provider: "openai", model: "gpt-5.6-luna" },
         curatedCapabilities: [],
         capabilities: [
           "plain-text",
@@ -271,6 +337,98 @@ export const catalogProviders: CatalogProviderSpec[] = [
         ],
         quirks: {},
       },
+      {
+        model: "gemini-2.5-flash",
+        priority: 10,
+        discoverySource: {
+          provider: "google-genai",
+          model: "gemini-2.5-flash",
+        },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "audio-input",
+          "audio-input-streaming",
+          "video-input",
+          "video-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+      {
+        model: "gemini-3.5-flash",
+        priority: 15,
+        discoverySource: {
+          provider: "google-genai",
+          model: "gemini-3.5-flash",
+        },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "audio-input",
+          "audio-input-streaming",
+          "video-input",
+          "video-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+      {
+        model: "gemini-2.5-flash-image",
+        priority: 20,
+        discoverySource: {
+          provider: "google-genai",
+          model: "gemini-2.5-flash-image",
+        },
+        curatedCapabilities: [],
+        capabilities: ["image-output", "image-output-streaming"],
+        quirks: {},
+      },
+      {
+        model: "gemini-3.1-flash-image",
+        priority: 25,
+        discoverySource: {
+          provider: "google-genai",
+          model: "gemini-3.1-flash-image",
+        },
+        curatedCapabilities: [],
+        capabilities: ["image-output", "image-output-streaming"],
+        quirks: {},
+      },
     ],
   },
   {
@@ -282,6 +440,24 @@ export const catalogProviders: CatalogProviderSpec[] = [
         model: "kimi-k3",
         priority: 0,
         discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "kimi-k2.6",
+        priority: 0,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
         curatedCapabilities: [],
         capabilities: [
           "plain-text",
@@ -321,6 +497,24 @@ export const catalogProviders: CatalogProviderSpec[] = [
         ],
         quirks: OPENAI_REASONING_QUIRKS,
       },
+      {
+        model: "kimi-k2.6",
+        priority: 5,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
     ],
   },
   {
@@ -332,6 +526,24 @@ export const catalogProviders: CatalogProviderSpec[] = [
         model: "kimi-k3",
         priority: 20,
         discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "kimi-k2.6",
+        priority: 10,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
         curatedCapabilities: [],
         capabilities: [
           "plain-text",
@@ -371,6 +583,85 @@ export const catalogProviders: CatalogProviderSpec[] = [
         ],
         quirks: OPENAI_REASONING_QUIRKS,
       },
+      {
+        model: "kimi-k2.6",
+        priority: 15,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "qwen3.7-plus",
+        priority: 5,
+        discoverySource: { provider: "opencode-zen", model: "qwen3.7-plus" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "mimo-v2.5",
+        priority: 10,
+        discoverySource: { provider: "opencode-zen", model: "mimo-v2.5" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "glm-5.2",
+        priority: 20,
+        discoverySource: { provider: "opencode-zen", model: "glm-5.2" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "gpt-5.4-mini",
+        priority: 25,
+        discoverySource: { provider: "opencode-zen", model: "gpt-5.4-mini" },
+        curatedCapabilities: [],
+        capabilities: ["structured-output", "structured-output-streaming"],
+        quirks: {},
+      },
     ],
   },
   {
@@ -393,6 +684,57 @@ export const catalogProviders: CatalogProviderSpec[] = [
           "reasoning-content-streaming",
           "structured-output",
           "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "kimi-k2.6",
+        priority: 20,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.6" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "deepseek-v4-pro",
+        priority: 0,
+        discoverySource: { provider: "opencode-zen", model: "deepseek-v4-pro" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "reasoning-content",
+          "reasoning-content-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "deepseek-v4-flash",
+        priority: 5,
+        discoverySource: {
+          provider: "opencode-zen",
+          model: "deepseek-v4-flash",
+        },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "reasoning-content",
+          "reasoning-content-streaming",
         ],
         quirks: OPENAI_REASONING_QUIRKS,
       },
