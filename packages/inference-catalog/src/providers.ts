@@ -1,0 +1,401 @@
+import type { Capability } from "./capability";
+import { OPENAI_FIRSTPARTY_QUIRKS, OPENAI_REASONING_QUIRKS } from "./quirks";
+
+export type CatalogPlugin =
+  | "anthropic"
+  | "openai"
+  | "openai-compatible"
+  | "google-genai";
+
+export type DiscoverySource = {
+  // The discovery support-matrix provider name (e.g. "opencode-zen"), not the
+  // catalog provider name or the plugin.
+  provider: string;
+  // The exact wire model id the matrix probed (e.g. "kimi-k3").
+  model: string;
+};
+
+export type CatalogOfferingSpec = {
+  // References a CatalogModelSpec.canonicalName.
+  model: string;
+  // Lower is preferred first when several deployments serve one model.
+  priority: number;
+  // The (provider, model) whose wire capabilities this offering's baked
+  // `capabilities` are drawn from in the discovery support matrix, or null when
+  // this exact tuple has not been probed. Kept alongside the baked list as
+  // provenance: the guard recomputes from this tuple and asserts the baked
+  // value still matches.
+  discoverySource: DiscoverySource | null;
+  // Model capabilities the discovery matrix cannot prove (long-context,
+  // prompt-caching), curated by hand. Kept as provenance for the baked list.
+  curatedCapabilities: Capability[];
+  // The resolved capabilities this offering advertises: the matrix wire set for
+  // `discoverySource` (empty when null) followed by `curatedCapabilities`,
+  // baked to a literal so importing the catalog pulls no discovery rig. The
+  // guard test re-bakes from the provenance above and fails if this drifts.
+  capabilities: Capability[];
+  // Per-deployment adapter accommodations, explicit on every offering even when
+  // empty. See OPENAI_REASONING_QUIRKS for why the kimi-serving deployments
+  // carry explicit reasoning quirks.
+  quirks: Record<string, unknown>;
+};
+
+export type CatalogProviderSpec = {
+  name: string;
+  plugin: CatalogPlugin;
+  baseURL: string;
+  offerings: CatalogOfferingSpec[];
+};
+
+// The Fireworks / Moonshot / OpenRouter providers all offer the one `kimi-k3`
+// model, and the two OpenCode Zen providers both offer `kimi-k2.7-code`.
+// Distinct priorities give source resolution a deterministic order across the
+// deployments of a shared model. The anthropic and google-genai adapters carry
+// no accommodations, so those offerings ship an empty quirks bag. OpenAI Direct
+// serves gpt-5.x, which rejects `max_tokens`, so it carries
+// OPENAI_FIRSTPARTY_QUIRKS; the kimi-serving openai-compatible deployments
+// carry OPENAI_REASONING_QUIRKS.
+export const catalogProviders: CatalogProviderSpec[] = [
+  {
+    name: "Anthropic Direct",
+    plugin: "anthropic",
+    baseURL: "https://api.anthropic.com",
+    offerings: [
+      {
+        model: "claude-sonnet-5",
+        priority: 0,
+        discoverySource: { provider: "anthropic", model: "claude-sonnet-5" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "redacted-thinking",
+          "redacted-thinking-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+      {
+        model: "claude-opus-5",
+        priority: 5,
+        discoverySource: { provider: "anthropic", model: "claude-opus-5" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "redacted-thinking",
+          "redacted-thinking-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+      {
+        model: "claude-haiku-4-5-20251001",
+        priority: 10,
+        discoverySource: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5-20251001",
+        },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "redacted-thinking",
+          "redacted-thinking-streaming",
+        ],
+        quirks: {},
+      },
+    ],
+  },
+  {
+    name: "OpenAI Direct",
+    plugin: "openai",
+    baseURL: "https://api.openai.com/v1",
+    offerings: [
+      {
+        model: "gpt-5.5",
+        priority: 0,
+        discoverySource: { provider: "openai", model: "gpt-5.5" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "document-input",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+      },
+      {
+        model: "gpt-5.6-sol",
+        priority: 5,
+        discoverySource: { provider: "openai", model: "gpt-5.6-sol" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "document-input",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "Gemini Direct",
+    plugin: "google-genai",
+    baseURL: "https://generativelanguage.googleapis.com",
+    offerings: [
+      {
+        model: "gemini-2.5-pro",
+        priority: 0,
+        discoverySource: { provider: "google-genai", model: "gemini-2.5-pro" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "audio-input",
+          "audio-input-streaming",
+          "video-input",
+          "video-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+      {
+        model: "gemini-3.6-flash",
+        priority: 5,
+        discoverySource: {
+          provider: "google-genai",
+          model: "gemini-3.6-flash",
+        },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling-multi-turn",
+          "function-calling-multi-turn-streaming",
+          "function-calling-with-thinking",
+          "function-calling-with-thinking-streaming",
+          "vision-input",
+          "vision-input-streaming",
+          "audio-input",
+          "audio-input-streaming",
+          "video-input",
+          "video-input-streaming",
+          "document-input",
+          "document-input-streaming",
+          "code-execution",
+          "code-execution-streaming",
+          "grounding",
+          "grounding-streaming",
+          "files-api-reference",
+          "files-api-reference-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+    ],
+  },
+  {
+    name: "Fireworks Kimi",
+    plugin: "openai-compatible",
+    baseURL: "https://api.fireworks.ai/inference/v1",
+    offerings: [
+      {
+        model: "kimi-k3",
+        priority: 0,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "Moonshot Kimi",
+    plugin: "openai-compatible",
+    baseURL: "https://api.moonshot.ai/v1",
+    offerings: [
+      {
+        model: "kimi-k3",
+        priority: 10,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "OpenRouter Kimi",
+    plugin: "openai-compatible",
+    baseURL: "https://openrouter.ai/api/v1",
+    offerings: [
+      {
+        model: "kimi-k3",
+        priority: 20,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k3" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "OpenCode Zen v1",
+    plugin: "openai-compatible",
+    baseURL: "https://opencode.ai/zen/v1",
+    offerings: [
+      {
+        model: "kimi-k2.7-code",
+        priority: 0,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.7-code" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "OpenCode Zen Go v1",
+    plugin: "openai-compatible",
+    baseURL: "https://opencode.ai/zen/go/v1",
+    offerings: [
+      {
+        model: "kimi-k2.7-code",
+        priority: 10,
+        discoverySource: { provider: "opencode-zen", model: "kimi-k2.7-code" },
+        curatedCapabilities: [],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+    ],
+  },
+];
