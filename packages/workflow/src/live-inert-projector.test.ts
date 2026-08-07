@@ -23,7 +23,7 @@ import {
   step,
   type Primitive,
   type WorkflowDefinition,
-} from "@intx/workflow/definition";
+} from "./definition/index";
 import {
   WorkflowProjectionDefinition,
   WorkflowStep,

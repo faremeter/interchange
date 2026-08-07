@@ -36,7 +36,7 @@ import {
   ensureWorkflowDefinitionForAsset,
 } from "@intx/hub-sessions";
 import { catalogModels, catalogProviders } from "@intx/inference-catalog";
-import { computeLiveDefinitionHash } from "@intx/workflow-deploy";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 
 import { resolveDbConfig } from "./lib/db-config";
 

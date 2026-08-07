@@ -34,8 +34,8 @@ import { hexDecode, hexEncode } from "@intx/types";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { projectLiveToInert } from "@intx/workflow";
 import {
-  projectLiveToInert,
   walkCapabilities,
   type CapabilityWalkResult,
 } from "@intx/workflow-deploy";

@@ -19,15 +19,12 @@ import {
 } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
   hashDefinition,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
-import {
-  computeLiveDefinitionHash,
-  deriveRunAddress,
-  deriveRunAgentId,
-} from "@intx/workflow-deploy";
+import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
 import {
