@@ -84,7 +84,82 @@ const MULTI_STEP: WorkflowDeploymentRecord = {
   },
 };
 
+// A source-ref deployment: the record schema's discriminated union REQUIRES
+// source + closure + approvedWireHash for lineage "source-ref".
+const SOURCE_REF: WorkflowDeploymentRecord = {
+  version: 1,
+  agentAddress: "ins_dep_src@tenant.example",
+  definitionId: "wf_src",
+  sources: {
+    "step-1": [
+      {
+        id: "anthropic:mock",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "sk-s",
+        model: "claude-mock",
+      },
+    ],
+  },
+  approvedWireHash: "c".repeat(64),
+  lineage: "source-ref",
+  source: { kind: "registry", registry: "npm" },
+  closure: {
+    schemaVersion: "1",
+    // The workflow-definition package is the single top-level pin the sidecar
+    // re-materializes; its transitive deps would ride `entries`.
+    topLevel: [{ name: "@x/wf", version: "1.0.0" }],
+    entries: [],
+  },
+};
+
 describe("workflow deployment record store", () => {
+  test("round-trips a source-ref record (source + closure + approvedWireHash)", async () => {
+    const dataDir = await makeDataDir();
+    const deploymentId = "src-tenant-example";
+    await writeWorkflowDeploymentRecord(dataDir, deploymentId, SOURCE_REF);
+
+    const raw = await fs.readFile(recordPath(dataDir, deploymentId), "utf8");
+    const parsed = WorkflowDeploymentRecord(JSON.parse(raw));
+    if (parsed instanceof type.errors) {
+      throw new Error(`record failed validation: ${parsed.summary}`);
+    }
+    expect(parsed).toEqual(SOURCE_REF);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("rejects a source-ref record missing any of source / closure / approvedWireHash", () => {
+    // The whole safety argument for deleting the restore loop's hand-rolled
+    // source-ref guard is that the union rejects EVERY malformed source-ref
+    // record at the scan boundary -- so check each required field on its own,
+    // not just the all-missing shape (a future combinator swap could keep
+    // all-missing rejecting while silently admitting a partial record).
+    const rejects = (r: unknown): boolean =>
+      WorkflowDeploymentRecord(r) instanceof type.errors;
+
+    const base = {
+      version: 1,
+      agentAddress: "ins_dep_bad@tenant.example",
+      definitionId: "wf_bad",
+      sources: SOURCE_REF.sources,
+      lineage: "source-ref",
+    };
+    const source = { kind: "registry", registry: "npm" };
+    const closure = { schemaVersion: "1", topLevel: [], entries: [] };
+    const approvedWireHash = "c".repeat(64);
+
+    // All three required fields missing.
+    expect(rejects(base)).toBe(true);
+    // Each field present with the other two missing -- each is individually
+    // insufficient for a valid source-ref record.
+    expect(rejects({ ...base, source })).toBe(true);
+    expect(rejects({ ...base, closure })).toBe(true);
+    expect(rejects({ ...base, approvedWireHash })).toBe(true);
+    // All three present -> accepted.
+    expect(rejects({ ...base, source, closure, approvedWireHash })).toBe(false);
+  });
+
   test("round-trips a schema-valid record through disk (single-step)", async () => {
     const dataDir = await makeDataDir();
     const deploymentId = "abc123-tenant-example";
