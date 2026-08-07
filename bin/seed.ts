@@ -46,7 +46,11 @@ import {
   WORKFLOW_RUN_GRANT_ACTION,
   WORKFLOW_RUN_GRANT_RESOURCE,
 } from "./workflow-fixture";
-import { credentialFixtures, priceFixtures } from "./lib/catalog-dev-fixtures";
+import {
+  credentialFixtures,
+  priceFixtures,
+  unpricedOfferings,
+} from "./lib/catalog-dev-fixtures";
 
 const AuthResponse = type({ "user?": { id: "string" } });
 
@@ -839,17 +843,25 @@ checkOrSkip("create widgets wallet", w2Status, 201, w2Data);
 log("Creating model catalog...");
 
 // The dev credentials and pricing are authored per provider and offering; a
-// gap would silently drop one, so verify the fixtures cover every catalog
-// provider and offering before seeding anything.
+// gap would silently drop one, so verify coverage before seeding anything.
+// Every provider needs a credential fixture, and every offering must be either
+// priced or explicitly listed unpriced — never neither, never both.
 for (const p of catalogProviders) {
   if (!credentialFixtures[p.name]) {
     fatalMissing(`credential fixture for provider ${p.name}`);
   }
-  const prices = priceFixtures[p.name];
-  if (!prices) fatalMissing(`price fixtures for provider ${p.name}`);
   for (const o of p.offerings) {
-    if (!prices[o.model]) {
-      fatalMissing(`price fixture for ${p.name}/${o.model}`);
+    const priced = priceFixtures[p.name]?.[o.model] !== undefined;
+    const unpriced = (unpricedOfferings[p.name] ?? []).includes(o.model);
+    if (!priced && !unpriced) {
+      fatalMissing(
+        `price fixture for ${p.name}/${o.model} (or list it unpriced)`,
+      );
+    }
+    if (priced && unpriced) {
+      fatalMissing(
+        `pricing contradiction for ${p.name}/${o.model}: priced and listed unpriced`,
+      );
     }
   }
 }
@@ -1014,9 +1026,10 @@ for (const p of catalogProviders) {
       (x) => x.providerId === catalogProviderRow.id && x.modelId === modelId,
     );
     if (!offering) fatalMissing(`offering ${p.name}/${o.model}`);
-    // Dev-only pricing for this offering (coverage verified above).
+    // Dev-only pricing, or skip for offerings declared unpriced. Coverage was
+    // verified above, so a missing fixture here means explicitly unpriced.
     const price = priceFixtures[p.name]?.[o.model];
-    if (!price) fatalMissing(`price fixture for ${p.name}/${o.model}`);
+    if (!price) continue;
     const { status, data } = await api(
       "POST",
       `/api/tenants/${acmeTenantId}/catalog/offerings/${offering.id}/pricing`,

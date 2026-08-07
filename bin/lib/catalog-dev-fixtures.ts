@@ -81,3 +81,11 @@ export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
     "kimi-k2.7-code": { input: "0.0000006", output: "0.0000025" },
   },
 };
+
+// Offerings intentionally seeded without pricing, keyed by provider name to the
+// model canonical names. Dev pricing is a fake fixture, so a model can ship
+// without one — but absence must be declared here, not inferred: the seed
+// requires every offering to be either priced or explicitly listed here (never
+// neither, never both), so a dropped or mistyped price on a priced model still
+// aborts the seed rather than silently skipping its pricing row.
+export const unpricedOfferings: Record<string, readonly string[]> = {};
