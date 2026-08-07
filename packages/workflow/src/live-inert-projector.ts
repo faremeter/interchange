@@ -55,7 +55,7 @@ import type {
   StepPrimitive,
   Trigger,
   WorkflowDefinition,
-} from "@intx/workflow/definition";
+} from "./definition/index";
 
 // ---------------------------------------------------------------------------
 // Inert projection shapes

@@ -45,13 +45,13 @@ import {
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
   defineWorkflow,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
 import {
   assertChainHeadIsDefault,
-  computeLiveDefinitionHash,
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
   walkCapabilities,
