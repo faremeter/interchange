@@ -22,7 +22,10 @@ import { type } from "arktype";
 import type { RepoId, RepoStore } from "@intx/hub-sessions/substrate";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 import type { WorkflowDefinition } from "@intx/workflow";
+
+import { loadWorkflowDefinitionFromClosure } from "../workflow-definition-loader";
 
 export interface LoadVerifiedWorkflowDefinitionOpts {
   /** Substrate the deploy orchestrator wrote the workflow asset into. */
@@ -105,6 +108,57 @@ export async function loadVerifiedWorkflowDefinition(
   if (recomputed !== opts.approvedHash) {
     throw new Error(
       `workflow-host verified-definition loader: recomputed wire hash ${recomputed} for ${label} does not match the approved hash ${opts.approvedHash}; refusing to load a definition tampered after approval`,
+    );
+  }
+  return definition;
+}
+
+export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
+  /**
+   * Sidecar-local directory of the materialized workflow-definition closure:
+   * the package dir holding `package.json` (with `interchange.workflow`) and
+   * its laid-out `node_modules/`. The sidecar computes this when it applies
+   * the frozen closure and threads it through the child's spawn env.
+   */
+  packageDir: string;
+  /**
+   * Hub-approved wire hash the re-verify must match. Sourced from the hub
+   * authority (`SpawnTimeEnv.definitionHash`). The recompute projects the
+   * evaluated LIVE definition back to its inert form and hashes that; a value
+   * that differs throws.
+   */
+  approvedHash: string;
+  /**
+   * Test seam forwarded to `loadWorkflowDefinitionFromClosure` for the
+   * workflow entry's dynamic import. Production omits it and the entry is
+   * imported natively.
+   */
+  importModule?: (importUrl: string) => Promise<unknown>;
+}
+
+/**
+ * Evaluate a source-ref deployment's pinned code closure to a live
+ * `WorkflowDefinition` and re-verify it by project-then-hash before returning
+ * it. This is the source-ref counterpart to `loadVerifiedWorkflowDefinition`:
+ * the inert projection is a non-executable approval surface, so the runtime
+ * needs the live definition the closure evaluates to. The re-verify projects
+ * that live definition back to its inert form and hashes it
+ * (`computeLiveDefinitionHash`), matching the hub-approved wire hash by byte
+ * equality; a divergent closure fails closed here and never runs.
+ */
+export async function loadVerifiedWorkflowDefinitionFromClosure(
+  opts: LoadVerifiedWorkflowDefinitionFromClosureOpts,
+): Promise<WorkflowDefinition> {
+  const definition = await loadWorkflowDefinitionFromClosure({
+    packageDir: opts.packageDir,
+    ...(opts.importModule !== undefined
+      ? { importModule: opts.importModule }
+      : {}),
+  });
+  const recomputed = await computeLiveDefinitionHash(definition);
+  if (recomputed !== opts.approvedHash) {
+    throw new Error(
+      `workflow-host verified-definition loader: recomputed wire hash ${recomputed} for the source-ref closure at ${opts.packageDir} does not match the approved hash ${opts.approvedHash}; refusing to run a definition that no longer projects to the hub-approved content`,
     );
   }
   return definition;
