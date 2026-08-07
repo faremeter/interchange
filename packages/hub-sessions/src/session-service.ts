@@ -1302,6 +1302,7 @@ export function createSessionService(
       tenantId,
       deploymentId,
       deploymentDomain,
+      definition,
       definitionAssetId,
       config,
     } = params;

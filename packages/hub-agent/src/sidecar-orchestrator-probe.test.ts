@@ -31,7 +31,7 @@ import { createSidecarOrchestrator } from "./sidecar-orchestrator";
 import type { WorkflowProbeExecutor, WorkflowProbeResult } from "./ws/hub-link";
 
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 
@@ -156,6 +156,9 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
       createDeployRouter: () => ({
         deploy: () => Promise.resolve({ publicKey: "aa".repeat(32) }),
       }),
+      // This test exercises only the probe path; run-pack restore never fires,
+      // so a no-op applier satisfies the required config field.
+      applyWorkflowRunPack: () => Promise.resolve(),
       workflowProbeExecutor,
     });
 

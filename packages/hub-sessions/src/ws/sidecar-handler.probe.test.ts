@@ -12,7 +12,7 @@ import {
 // Accept-any authenticator: probe selection is address-independent, so the
 // handshake just needs to succeed to land the sidecar in `connections`.
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "sidecar",
+  kind: "shared",
   sidecarId,
 });
 
