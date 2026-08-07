@@ -611,14 +611,10 @@ export async function runWorkflowChild(
   //     re-verify the on-disk bytes' hash, unchanged.
   let definition: WorkflowDefinition;
   if (opts.env.lineage === "source-ref") {
-    const packageDir = opts.env.closurePackageDir;
-    if (packageDir === undefined) {
-      throw new Error(
-        "workflow-child: source-ref lineage reached the load boundary with no closurePackageDir; the spawn-env parser must guarantee it",
-      );
-    }
+    // The `SpawnTimeEnv` union guarantees a source-ref env carries
+    // `closurePackageDir`; no presence check is needed here.
     definition = await loadVerifiedWorkflowDefinitionFromClosure({
-      packageDir,
+      packageDir: opts.env.closurePackageDir,
       approvedHash: opts.env.definitionHash,
     });
   } else {
