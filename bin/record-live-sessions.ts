@@ -36,8 +36,8 @@ import {
   LIVE_TOOL_PROMPT,
   type RecordingFetchLike,
 } from "@intx/inference-testing";
+import { OPENAI_FIRSTPARTY_QUIRKS } from "@intx/inference-catalog";
 
-import { OPENAI_FIRSTPARTY_QUIRKS } from "./lib/openai-quirks";
 import { expectDone } from "./lib/recorder-helpers";
 
 const INFERENCE_OPTIONS: InferenceOptions = { tools: LIVE_TOOL_DEFINITIONS };

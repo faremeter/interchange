@@ -27,15 +27,17 @@ const CATALOG_TO_ADAPTER: Record<string, string> = {
 };
 
 // Canonical base URLs, mirrored here rather than imported. `ANTHROPIC_BASE`
-// and `GEMINI_BASE` are exported from the discovery packages' endpoint.ts, and
-// the first-party OpenAI base (a private const in the openai deployment) and
-// the OpenCode Zen relay bases (in bin/lib/catalog-seed-data.ts) are not
-// exported at all — but every one of those modules depends on this catalog, so
-// importing them back would be circular. The mirror is forced by dependency
-// direction, not laziness. (`GEMINI_BASE` would also be the wrong value to
-// import: it carries the `/v1beta` segment this origin-only map deliberately
-// omits, see below.) The wire never recorded which endpoint served each
-// capture, so every opencode-zen cell takes the primary zen/v1 relay base.
+// and `GEMINI_BASE` come from the discovery packages' endpoint.ts. All four
+// brand bases are also declared by @intx/inference-catalog's providers, a
+// zero-dependency upstream package, so those values could be imported from it —
+// but the mirror is kept deliberately, to hold @intx/inference-discovery free
+// of any dependency on the catalog (whose own guard already depends on
+// discovery; importing it back would knot the two together).
+// @intx/inference-catalog's guard asserts these bases agree, so the duplication
+// is checked rather than load-bearing. (`GEMINI_BASE` would also be the wrong
+// value to import: it carries the `/v1beta` segment this origin-only map
+// deliberately omits, see below.) The wire never recorded which endpoint served
+// each capture, so every opencode-zen cell takes the primary zen/v1 relay base.
 const CATALOG_TO_BASE_URL: Record<string, string> = {
   anthropic: "https://api.anthropic.com",
   // Origin only: the google-genai adapter's request path already carries the
