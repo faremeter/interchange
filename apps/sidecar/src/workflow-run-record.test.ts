@@ -53,6 +53,7 @@ const SINGLE_STEP: WorkflowRunRecord = {
     "body-a": "a".repeat(64),
     "body-b": "b".repeat(64),
   },
+  lineage: "live-authored",
 };
 
 // A multi-step deployment records no head hub key and may carry no session

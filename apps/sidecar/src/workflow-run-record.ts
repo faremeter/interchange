@@ -71,6 +71,17 @@ export const WorkflowRunRecord = type({
   "referencedDefinitionHashes?": {
     "[string]": "string > 0",
   },
+  // The deploy lineage. "source-ref" marks a code-sourced deployment whose
+  // RUNNABLE definition is the evaluated pinned closure, NOT the on-disk inert
+  // `workflow.json` (a non-executable approval surface). A boot-time restore
+  // re-reads that inert projection and can only bring the deployment back as
+  // live-authored, which would run the non-executable shape -- so restore
+  // refuses a "source-ref" record loudly rather than mis-restoring it.
+  // Persisting closure re-materialization for a real source-ref restore is a
+  // separate follow-up. Absent for a record written before this field existed;
+  // that path only ever produced live-authored deployments, so an absent value
+  // is treated as "live-authored".
+  "lineage?": "'source-ref' | 'live-authored'",
 });
 export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 
