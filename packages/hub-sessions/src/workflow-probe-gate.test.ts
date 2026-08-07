@@ -22,7 +22,6 @@ import type { ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   gateAndFreezeProbeResult,
-  materializeDeployGrantsFromFrozen,
   type FrozenApproval,
   type PersistFrozenApprovalFn,
 } from "./workflow-probe-gate";
@@ -189,50 +188,5 @@ describe("gateAndFreezeProbeResult", () => {
     if (result.reason !== "grants_not_approved")
       throw new Error("wrong reason");
     expect(result.unapprovedGrants).toEqual(["tool:escalate"]);
-  });
-});
-
-describe("materializeDeployGrantsFromFrozen", () => {
-  test("refuses to grant beyond the frozen approved set", async () => {
-    // Approve exactly `tool:fetch` and `effect:log`.
-    const probeResult = await makeProbeResult({
-      grants: ["tool:fetch", "effect:log"],
-    });
-    const approvals: ApprovalSet = new Set(probeResult.grants);
-    const { persist } = recordingPersist("def-abc");
-
-    const approved = await gateAndFreezeProbeResult({
-      assetId: "asset-1",
-      probeResult,
-      approvals,
-      persist,
-    });
-    if (!approved.ok) throw new Error("expected approval");
-
-    // A naive live re-walk of a mutated asset surfaces a SUPERSET: the two
-    // frozen grants plus an extra the freeze never approved.
-    const liveReWalk = ["tool:fetch", "effect:log", "tool:escalate"];
-
-    const deployGrants = materializeDeployGrantsFromFrozen(
-      approved.approvedGrants,
-      liveReWalk,
-    );
-
-    // The extra is refused; the result never exceeds the frozen set.
-    expect(deployGrants).not.toContain("tool:escalate");
-    expect(new Set(deployGrants)).toEqual(
-      new Set(["tool:fetch", "effect:log"]),
-    );
-    for (const grant of deployGrants) {
-      expect(approved.approvedGrants.has(grant)).toBe(true);
-    }
-  });
-
-  test("passes through a candidate set already within the frozen set", () => {
-    const frozen = new Set(["tool:fetch", "effect:log"]);
-    const deployGrants = materializeDeployGrantsFromFrozen(frozen, [
-      "tool:fetch",
-    ]);
-    expect(deployGrants).toEqual(["tool:fetch"]);
   });
 });

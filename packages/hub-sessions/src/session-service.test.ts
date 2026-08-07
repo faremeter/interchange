@@ -1855,7 +1855,7 @@ describe("sendMultiStepDeployFrame", () => {
     );
   });
 
-  test("source-ref arm carries the gate-frozen hash and inert projection verbatim and materializes deploy grants from the frozen approved set", async () => {
+  test("source-ref arm carries the gate-frozen hash and inert projection verbatim", async () => {
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
     mockRouter.sendAgentDeploy = ((
@@ -1912,11 +1912,6 @@ describe("sendMultiStepDeployFrame", () => {
       topLevel: [],
       entries: [],
     };
-    // The operator-approved (frozen) grant set. A candidate carrying an extra
-    // grant the freeze never approved must be dropped, so the shipped set is a
-    // strict subset of the frozen set.
-    const frozenApprovedGrants = new Set(["tool:read", "tool:write"]);
-    const deployGrantCandidates = ["tool:read", "tool:write", "tool:delete"];
 
     // The gate/freeze layer projects the live definition to its inert
     // needs-surface and hashes THAT; the sidecar probe serializes the inert
@@ -1944,8 +1939,6 @@ describe("sendMultiStepDeployFrame", () => {
       approvedWireHash: frozenWireHash,
       source,
       closure,
-      frozenApprovedGrants,
-      deployGrantCandidates,
     });
 
     const sent = sentWorkflows[0];
@@ -1958,12 +1951,6 @@ describe("sendMultiStepDeployFrame", () => {
     expect(sent.definition).toEqual(projection);
     expect(sent.source).toEqual(source);
     expect(sent.closure).toEqual(closure);
-    // Deploy grants are the frozen subset: the unapproved `tool:delete` is
-    // refused, so only the frozen-approved grants ride the frame.
-    expect(sent.approvedDeployGrants?.slice().sort()).toEqual([
-      "tool:read",
-      "tool:write",
-    ]);
   });
 
   test("a live definition and its inert projection hash differently so binding to the inert projection is load-bearing", async () => {
@@ -2163,12 +2150,6 @@ describe("deployCodeSourcedWorkflow", () => {
     expect(sent.definition).toEqual(projection);
     expect(sent.source).toEqual(SOURCE);
     expect(sent.closure).toEqual(closure);
-    // Deploy grants trace to the freeze: the full frozen approved set rides the
-    // frame when no narrower candidate set is supplied.
-    expect(sent.approvedDeployGrants?.slice().sort()).toEqual([
-      "tool:read",
-      "tool:write",
-    ]);
   });
 
   test("refuses to deploy when the gate did not approve", async () => {

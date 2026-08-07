@@ -646,12 +646,6 @@ export const AgentDeployWorkflow = type({
   // exact tree the hub pinned when it re-evaluates the definition from `source`.
   // Optional for the same reason as `source`.
   "closure?": ToolPackageManifest,
-  // The deploy-grant set materialized as a SUBSET of the hub's frozen approved
-  // grant set (`materializeDeployGrantsFromFrozen`), carried as the grant-shape
-  // strings the freeze pinned, so deploy grants trace to the frozen approved set
-  // rather than a fresh capability walk. Optional: only a deploy whose hub
-  // builder was handed the frozen approved set carries it.
-  "approvedDeployGrants?": "string[]",
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {
     if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {

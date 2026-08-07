@@ -80,10 +80,7 @@ import type {
 } from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
-import {
-  materializeDeployGrantsFromFrozen,
-  type InstallAndApproveResult,
-} from "./workflow-probe-gate";
+import type { InstallAndApproveResult } from "./workflow-probe-gate";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -493,16 +490,6 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * hub pinned.
    */
   closure?: ToolPackageManifest;
-  /**
-   * The hub's frozen approved grant set (grant-shape strings) established by
-   * the workflow gate/freeze. When supplied, deploy grants are materialized as
-   * a SUBSET of it -- never a fresh walk -- and carried on the frame as
-   * `approvedDeployGrants`. `deployGrantCandidates` is the candidate grant-shape
-   * set gated against it (defaults to the frozen set itself, i.e. the full
-   * approved set).
-   */
-  frozenApprovedGrants?: ReadonlySet<string>;
-  deployGrantCandidates?: Iterable<string>;
 };
 
 export type SendMultiStepDeployFrameArgs =
@@ -534,16 +521,6 @@ export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,
 ): Promise<{ publicKey: string }> {
   if (args.lineage === "source-ref") {
-    // Materialize deploy grants as a subset of the frozen approved set when the
-    // caller supplies it, so deploy grants trace to the freeze rather than a
-    // fresh capability walk. Absent: the frame carries no `approvedDeployGrants`.
-    const approvedDeployGrants =
-      args.frozenApprovedGrants !== undefined
-        ? materializeDeployGrantsFromFrozen(
-            args.frozenApprovedGrants,
-            args.deployGrantCandidates ?? args.frozenApprovedGrants,
-          )
-        : undefined;
     return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
       // The inert projection and its gate-frozen hash ride the frame verbatim;
       // neither is re-derived here. `projection` is already the frame's
@@ -553,7 +530,6 @@ export async function sendMultiStepDeployFrame(
       approvedWireHash: args.approvedWireHash,
       source: args.source,
       ...(args.closure !== undefined ? { closure: args.closure } : {}),
-      ...(approvedDeployGrants !== undefined ? { approvedDeployGrants } : {}),
     });
   }
 
@@ -626,11 +602,19 @@ export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
  * The single public composition entrypoint for a code-sourced (npm) deploy. It
  * consumes the approve output and builds the source-ref deploy frame internally,
  * so the security-load-bearing hand-off -- frozen wire hash, inert projection,
- * frozen closure, frozen approved grants -- is assembled in one place from one
- * cohesive object rather than reassembled by each caller. The frozen approval's
- * hash and projection ride the frame verbatim: nothing here recomputes the hash
- * or re-resolves the closure, so the child re-verify over the inert projection
- * matches the gate's freeze.
+ * frozen closure -- is assembled in one place from one cohesive object rather
+ * than reassembled by each caller. The frozen approval's hash and projection
+ * ride the frame verbatim: nothing here recomputes the hash or re-resolves the
+ * closure, so the child re-verify over the inert projection matches the gate's
+ * freeze.
+ *
+ * Runtime grant enforcement is NOT part of this hand-off: the enforced
+ * per-step authorization boundary is the deploy-time credentials snapshot
+ * (`createCredentialsBackedAuthorize`), sourced from the operator's
+ * `config.grants`. Enforcing the gate's frozen advertised-grant set as a
+ * runtime ceiling on top of that is a separate, not-yet-wired concern (the
+ * unconsumed `approvedDeployGrants` wire field that once rode this frame has
+ * been removed rather than shipped unenforced).
  *
  * A gate outcome that did not approve cannot deploy: an unapproved `approval`
  * fails closed here rather than shipping an unfrozen definition.
@@ -654,7 +638,6 @@ export async function deployCodeSourcedWorkflow(
     approvedWireHash: approval.approvedWireHash,
     source: args.source,
     closure,
-    frozenApprovedGrants: approval.approvedGrants,
   });
 }
 
