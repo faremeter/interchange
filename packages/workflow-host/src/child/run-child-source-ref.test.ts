@@ -492,6 +492,18 @@ describe("source-ref run child", () => {
 
   test("evaluates the closure to a live definition, re-verifies a matching hash, and runs a fresh trigger to terminal", async () => {
     const baseDir = await makeTempDir("srcref-fresh-ok-base-");
+    // The workflow runtime's commit chain and pending-event buffer are
+    // module-scoped maps keyed by runId (see `@intx/workflow`'s
+    // commit-chain), shared across every run in the process. Production
+    // hands each run a unique hub-assigned runId, so the keys never
+    // collide; a test that hardcodes a shared literal like "run-1" does
+    // collide with sibling tests that reuse the same literal and leave a
+    // buffered RunStarted behind (a run they never drove to terminal, so
+    // its chain is never dropped). Inheriting that stale buffer makes
+    // this fresh run's state read as already-started and stall with no
+    // schedulable primitives. A per-test unique runId keeps this run's
+    // chain isolated regardless of sibling ordering.
+    const runId = `srcref-fresh-run-${generateChannelId()}`;
     const { packageDir, approvedHash } = await materializeFixtureClosure(
       "srcref-fresh-ok-pkg-",
       "srcref-fresh",
@@ -555,12 +567,12 @@ describe("source-ref run child", () => {
 
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+      data: { runId, messageId: "msg-1", receivedAt: 1 },
     });
 
     let terminalSeq: number | null = null;
     for await (const payload of recvIter) {
-      if (payload.type === "terminal.event" && payload.data.runId === "run-1") {
+      if (payload.type === "terminal.event" && payload.data.runId === runId) {
         terminalSeq = payload.data.seq;
         break;
       }
@@ -574,7 +586,7 @@ describe("source-ref run child", () => {
     });
     supervisorToChild.close();
     const result = await runPromise;
-    expect(result.triggeredRunIds).toEqual(["run-1"]);
+    expect(result.triggeredRunIds).toEqual([runId]);
     // Evaluating the closure and driving a run to terminal is real work; the
     // default per-test timeout is too tight for it under full-suite load.
   }, 30000);
