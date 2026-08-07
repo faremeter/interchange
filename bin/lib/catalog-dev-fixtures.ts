@@ -88,4 +88,24 @@ export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
 // requires every offering to be either priced or explicitly listed here (never
 // neither, never both), so a dropped or mistyped price on a priced model still
 // aborts the seed rather than silently skipping its pricing row.
-export const unpricedOfferings: Record<string, readonly string[]> = {};
+export const unpricedOfferings: Record<string, readonly string[]> = {
+  "Anthropic Direct": ["claude-fable-5"],
+  "OpenAI Direct": ["gpt-5.6-terra", "gpt-5.6-luna"],
+  "Gemini Direct": [
+    "gemini-2.5-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash-image",
+    "gemini-3.1-flash-image",
+  ],
+  "Fireworks Kimi": ["kimi-k2.6"],
+  "Moonshot Kimi": ["kimi-k2.6"],
+  "OpenRouter Kimi": ["kimi-k2.6"],
+  "OpenCode Zen v1": [
+    "kimi-k2.6",
+    "qwen3.7-plus",
+    "mimo-v2.5",
+    "glm-5.2",
+    "gpt-5.4-mini",
+  ],
+  "OpenCode Zen Go v1": ["kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash"],
+};
