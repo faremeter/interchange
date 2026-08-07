@@ -32,6 +32,24 @@ describe("canonicalJsonStringify", () => {
     expect(canonicalJsonStringify("hi")).toBe('"hi"');
     expect(canonicalJsonStringify(true)).toBe("true");
   });
+
+  test("drops undefined-valued keys, matching a JSON round-trip", () => {
+    // The hub hashes a projection parsed off the JSON wire (undefined-valued
+    // keys already gone); a child hashes the in-memory projection. The two must
+    // canonicalize identically or re-verify breaks on a legitimate definition.
+    const withUndefined = { id: "w-1", state: undefined, steps: {} };
+    const roundTripped: unknown = JSON.parse(JSON.stringify(withUndefined));
+    expect(canonicalJsonStringify(withUndefined)).toBe(
+      canonicalJsonStringify(roundTripped),
+    );
+    expect(canonicalJsonStringify(withUndefined)).toBe(
+      '{"id":"w-1","steps":{}}',
+    );
+  });
+
+  test("renders undefined array elements as null, matching JSON.stringify", () => {
+    expect(canonicalJsonStringify([1, undefined, 2])).toBe("[1,null,2]");
+  });
 });
 
 describe("computeWireDefinitionHash", () => {
