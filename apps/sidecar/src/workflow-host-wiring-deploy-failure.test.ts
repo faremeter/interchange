@@ -218,6 +218,10 @@ describe("deploy-failure registry leak", () => {
         grants: [],
       } as unknown as AgentDeployFrame["config"],
       workflow: {
+        // Production always stamps the hub-approved wire hash; a placeholder
+        // satisfies the deploy path's fail-loud guard so this test reaches the
+        // spawn-failure behavior it exercises.
+        approvedWireHash: "a".repeat(64),
         definition: {
           id: "wf-1",
           triggers: [{ type: "manual" }],
@@ -361,6 +365,9 @@ describe("deploy-failure registry leak", () => {
         grants: [],
       } as unknown as AgentDeployFrame["config"],
       workflow: {
+        // Placeholder hub-approved wire hash so the deploy path's fail-loud
+        // guard passes; production always stamps it.
+        approvedWireHash: "a".repeat(64),
         definition: {
           id: "wf-single",
           triggers: [{ type: "manual" }],

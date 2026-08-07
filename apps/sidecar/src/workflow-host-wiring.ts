@@ -49,7 +49,6 @@ import {
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
 import { hexEncode, type SignalKind } from "@intx/types";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -1566,14 +1565,19 @@ export function createSidecarDeployRouter(deps: {
     try {
       // The child's `DEFINITION_HASH` is the HUB-APPROVED wire hash the deploy
       // frame carried (`spec.approvedWireHash`) -- the hub is the authority, so
-      // the child re-verifies its own recompute against it. A frame from the
-      // pre-source-ref raw-frame path carries no approved hash; only for that
-      // legacy case does the sidecar recompute the wire hash from the inert
-      // projection it received. The production hub deploy builder always stamps
-      // `approvedWireHash`, so a production deploy never recomputes here.
-      const definitionHash =
-        spec.approvedWireHash ??
-        (await computeWireDefinitionHash(spec.definition));
+      // the child re-verifies its own recompute against it. Both feeds into this
+      // core carry it: the production hub deploy builder always stamps it, and
+      // the boot restore re-attaches it from the persisted record. A missing
+      // hash here is therefore a wiring bug, not a legacy case to paper over:
+      // substituting a sidecar recompute would make the child re-verify against
+      // the sidecar's own hash rather than the hub authority -- a circular check
+      // that gives false assurance. Fail loud instead.
+      if (spec.approvedWireHash === undefined) {
+        throw new Error(
+          `workflow deploy spawn (${spec.agentAddress}): the deploy spec carries no approvedWireHash. The hub deploy builder must stamp the hub-approved wire hash and a restore must re-attach it from the persisted record; the sidecar will not recompute it, which would collapse the child's re-verify to a self-check.`,
+        );
+      }
+      const definitionHash = spec.approvedWireHash;
 
       // Per-deployment substrate-config keys the workflow-substrate-factory
       // validator requires. The boot edge's `multistepSubstrateEnv` carries

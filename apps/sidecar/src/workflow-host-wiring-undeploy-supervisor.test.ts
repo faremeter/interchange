@@ -289,6 +289,9 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
       config: {} as AgentDeployFrame["config"],
       workflow: {
+        // Placeholder hub-approved wire hash so the deploy path's fail-loud
+        // guard passes; production always stamps it.
+        approvedWireHash: "a".repeat(64),
         definition: {
           id: "wf-undeploy-supervisor",
           triggers: [{ type: "manual" }],
