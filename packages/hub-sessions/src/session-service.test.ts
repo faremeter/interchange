@@ -1826,7 +1826,7 @@ describe("sendMultiStepDeployFrame", () => {
     };
 
     const result = await sendMultiStepDeployFrame({
-      lineage: "live",
+      lineage: "live-authored",
       sidecarRouter: mockRouter,
       agentAddress: "ins_dep_abc@workflow.interchange",
       config,
@@ -2006,7 +2006,7 @@ describe("sendMultiStepDeployFrame", () => {
 
     // The live-authored arm stamps the hash of the LIVE wire lineage.
     await sendMultiStepDeployFrame({
-      lineage: "live",
+      lineage: "live-authored",
       sidecarRouter: mockRouter,
       agentAddress: "ins_dep_div@workflow.interchange",
       config,

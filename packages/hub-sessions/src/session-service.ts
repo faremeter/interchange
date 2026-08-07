@@ -442,7 +442,7 @@ type DeployFrameCommonArgs = {
  * the wire envelope and recomputes the wire hash the frame carries.
  */
 export type LiveAuthoredDeployFrameArgs = DeployFrameCommonArgs & {
-  lineage: "live";
+  lineage: "live-authored";
   definition: WorkflowDefinition;
   /**
    * Extracted onTrigger section bodies to carry inline so the sidecar
@@ -508,7 +508,8 @@ export type SendMultiStepDeployFrameArgs =
  * The `lineage` discriminant selects who owns the content hash. On the
  * `source-ref` arm the gate/freeze layer already hashed the inert projection,
  * so the frozen hash and the inert projection ride the frame verbatim. On the
- * `live` arm the hub holds the live definition and recomputes the wire hash.
+ * `live-authored` arm the hub holds the live definition and recomputes the
+ * wire hash.
  * The two arms are mutually exclusive at the type level: a source-ref deploy
  * cannot pass a live definition and cannot omit its frozen hash.
  *
@@ -890,7 +891,7 @@ export function createSessionService(
       try {
         if (workflowFrame !== undefined) {
           const ack = await sendMultiStepDeployFrame({
-            lineage: "live",
+            lineage: "live-authored",
             sidecarRouter,
             ...(sidecarAllocationRouter !== undefined
               ? { sidecarAllocationRouter }
@@ -1109,7 +1110,7 @@ export function createSessionService(
 
     const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
       sendMultiStepDeployFrame({
-        lineage: "live",
+        lineage: "live-authored",
         sidecarRouter,
         ...(sidecarAllocationRouter !== undefined
           ? { sidecarAllocationRouter }
