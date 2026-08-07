@@ -109,20 +109,37 @@ export function createDbFrozenApprovalWriter(
   db: DBExecutor,
 ): PersistFrozenApprovalFn {
   return async ({ assetId, approvedWireHash }) => {
-    const { definitionId } = await ensureWorkflowDefinitionForAsset(db, {
-      assetId,
-      wireHash: approvedWireHash,
+    // Ensure-then-stamp is one freeze: a crash between the two would persist a
+    // version row with a NULL `approvedWireHash`, which the schema treats as
+    // the legitimate "not yet approved" state -- indistinguishable from an
+    // un-approved definition. Wrap both writes in one transaction so the freeze
+    // is all-or-nothing.
+    return db.transaction(async (tx) => {
+      const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
+        assetId,
+        wireHash: approvedWireHash,
+      });
+      // `FROZEN_VERSION` is hand-coupled to the version the ensure helper
+      // projects; if that coupling ever drifts, the update would silently stamp
+      // zero rows and no hash would persist. Assert exactly one row so a drift
+      // fails loud instead of open.
+      const stamped = await tx
+        .update(workflowDefinitionVersion)
+        .set({ approvedWireHash })
+        .where(
+          and(
+            eq(workflowDefinitionVersion.definitionId, definitionId),
+            eq(workflowDefinitionVersion.version, FROZEN_VERSION),
+          ),
+        )
+        .returning({ id: workflowDefinitionVersion.id });
+      if (stamped.length !== 1) {
+        throw new Error(
+          `createDbFrozenApprovalWriter: expected to stamp exactly one ${FROZEN_VERSION} version row for definition ${definitionId}, but updated ${String(stamped.length)}`,
+        );
+      }
+      return { definitionId };
     });
-    await db
-      .update(workflowDefinitionVersion)
-      .set({ approvedWireHash })
-      .where(
-        and(
-          eq(workflowDefinitionVersion.definitionId, definitionId),
-          eq(workflowDefinitionVersion.version, FROZEN_VERSION),
-        ),
-      );
-    return { definitionId };
   };
 }
 
