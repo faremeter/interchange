@@ -183,6 +183,24 @@ export function createWorkflowSpawnChild(
     // sidecar-reads authorization plus push-time envelope validation; the
     // asset re-verifies against its OWN approved hash when it is deployed,
     // not from a parent that merely references it.
+    //
+    // KNOWN GAP (deliberately not closed here): a re-verify gate would only add
+    // value against an attacker who can overwrite this loose working-tree file
+    // but not the hub-authored committed asset it was checked out from -- i.e.
+    // local-disk tamper of SIDECAR_DATA_DIR. That is out of the sidecar's
+    // threat model (it is host/process-isolation's job): the same write also
+    // reaches sibling loose reads that are worse targets -- `sources.json`
+    // (routes inference, carries API keys) and a run's `grants.json` (its
+    // capability ceiling). Hardening one of many equivalent loose reads is
+    // theater; the hub-writes/sidecar-reads authorization plus push-time
+    // envelope validation above is the real boundary. Shipping a per-ref
+    // approved hash on the parent frame instead would not merely be redundant
+    // -- it would convert this late-bound reference into an early-bound one and
+    // fail closed against a child's legitimate independent redeploy. Whether a
+    // childWorkflow should instead be an OWNED, parent-namespaced sub-workflow
+    // (whose hash would then be intrinsic to the parent's approval, like an
+    // onTrigger body) is a product decision tracked separately, not a barrier
+    // to bolt on here.
     const definition = await readWorkflowDefinitionEnvelope({
       substrate: opts.substrate,
       repoId: { kind: "workflow", id: definitionRef },
