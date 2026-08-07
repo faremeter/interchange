@@ -64,11 +64,8 @@ import {
   type AgentDeployFrame,
   type CredentialDelivery,
 } from "@intx/types/sidecar";
-import { STEP_ID_PATTERN } from "@intx/workflow";
-import {
-  deriveWorkflowRunRepoId,
-  projectLiveToInert,
-} from "@intx/workflow-deploy";
+import { STEP_ID_PATTERN, projectLiveToInert } from "@intx/workflow";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import { applyFrozenWorkflowClosure } from "./workflow-closure-apply";
 import { readRegistries } from "./tool-materialization";

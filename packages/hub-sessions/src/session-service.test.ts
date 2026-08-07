@@ -11,7 +11,7 @@ import type {
 } from "@intx/types/runtime";
 import { base64Decode, hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
-import { projectLiveToInert } from "@intx/workflow-deploy";
+import { projectLiveToInert } from "@intx/workflow";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { extractAttachments } from "@intx/mime";

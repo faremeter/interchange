@@ -35,7 +35,7 @@ import {
   WORKFLOW_JSON_PATH,
   ensureWorkflowDefinitionForAsset,
 } from "@intx/hub-sessions";
-import { computeLiveDefinitionHash } from "@intx/workflow-deploy";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 
 import { resolveDbConfig } from "./lib/db-config";
 
