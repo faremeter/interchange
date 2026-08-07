@@ -108,7 +108,10 @@ import type { CredentialsSnapshot } from "../supervisor/credentials";
 import { hashGrants } from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
-import { loadVerifiedWorkflowDefinition } from "./verified-definition-loader";
+import {
+  loadVerifiedWorkflowDefinition,
+  loadVerifiedWorkflowDefinitionFromClosure,
+} from "./verified-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
 import {
   collectParkedApprovalCorrelations,
@@ -594,17 +597,38 @@ export async function runWorkflowChild(
     writer: opts.eventWriter,
   });
 
-  // Re-verify barrier at the load boundary. `opts.env.definitionHash` is
-  // the hub-approved wire hash; the shared loader recomputes the hash over
-  // the validated projection and fails closed on any mismatch. This one
-  // load happens before both the resume loop and the trigger loop, so the
+  // Re-verify barrier at the load boundary, branching on deployment lineage.
+  // `opts.env.definitionHash` is the hub-approved wire hash in both arms; the
+  // load happens once before both the resume loop and the trigger loop, so the
   // same verified definition serves every fresh trigger AND every resume.
-  const definition = await loadVerifiedWorkflowDefinition({
-    substrate: opts.bindings.substrate,
-    repoId: opts.bindings.workflowDefinitionRepoId,
-    workflowPath: WORKFLOW_JSON_PATH,
-    approvedHash: opts.env.definitionHash,
-  });
+  //
+  //   - source-ref: the inert `workflow.json` is a non-executable approval
+  //     surface (agents carry `modelSources`/no `inference`, tool factories are
+  //     plain data), so the child EVALUATES the pinned code closure to a live
+  //     definition and re-verifies by projecting it back to inert and hashing
+  //     (`computeLiveDefinitionHash`); a divergent closure fails closed.
+  //   - live-authored: read the inert `workflow.json` off the deploy tree and
+  //     re-verify the on-disk bytes' hash, unchanged.
+  let definition: WorkflowDefinition;
+  if (opts.env.lineage === "source-ref") {
+    const packageDir = opts.env.closurePackageDir;
+    if (packageDir === undefined) {
+      throw new Error(
+        "workflow-child: source-ref lineage reached the load boundary with no closurePackageDir; the spawn-env parser must guarantee it",
+      );
+    }
+    definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir,
+      approvedHash: opts.env.definitionHash,
+    });
+  } else {
+    definition = await loadVerifiedWorkflowDefinition({
+      substrate: opts.bindings.substrate,
+      repoId: opts.bindings.workflowDefinitionRepoId,
+      workflowPath: WORKFLOW_JSON_PATH,
+      approvedHash: opts.env.definitionHash,
+    });
+  }
 
   const authorize = createCredentialsBackedAuthorize(
     credentialsRef,
