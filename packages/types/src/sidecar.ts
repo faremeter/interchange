@@ -342,233 +342,16 @@ export const DrainDeliverFrame = type({
 });
 export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
 
-/**
- * Closed plain-JSON schema for a single wire step, one arm per workflow
- * primitive variant. It replaces the former `unknown` passthrough: a step
- * on the deploy frame must now declare a `kind` drawn from the closed set
- * of ten primitive kinds; a step with no `kind`, or a `kind` outside the
- * set, is rejected at this boundary instead of carried through opaque.
- *
- * Each arm declares its variant's own fields (type-checked when present)
- * but leaves them optional and passes undeclared keys through unmodified.
- * That is deliberate and mirrors the envelope's own contract: deeper
- * authoring-time primitive validation — required-field presence, selector
- * resolvability, DAG shape — lives on the workflow definition surface in
- * `@intx/workflow`, not on the wire. The closure that matters here is over
- * the KIND discriminant, which is what makes the canonical JSON of a step
- * deterministic across the child->hub boundary.
- *
- * The nested `agent`, inner `step`, `body`, `on`, and selector fields are
- * typed `unknown` on purpose. Two producers feed this schema: the
- * live-deploy passthrough ships a step whose `agent.toolFactories` are
- * functions that JSON-encode to `null`, while the live->inert projector in
- * `@intx/workflow-deploy` ships a reified plain-data agent. Both must
- * validate here; reifying the grant surface into plain data is the
- * projector's job, not this envelope's.
- */
-const commonStepFields = {
-  "id?": "string",
-  "after?": "string[]",
-} as const;
-
-const WireStepStep = type({
-  kind: "'step'",
-  ...commonStepFields,
-  "agent?": "unknown",
-  "input?": "unknown",
-  "reads?": "unknown",
-  "writes?": "unknown",
-  "retry?": "unknown",
-  "timeout?": "number",
-  "drainBehavior?": "'cancel' | 'wait'",
-  "triggers?": "number | 'unbounded'",
-});
-
-const WireStepMap = type({
-  kind: "'map'",
-  ...commonStepFields,
-  "over?": "unknown",
-  "step?": "unknown",
-  "retry?": "unknown",
-});
-
-const WireStepGate = type({
-  kind: "'gate'",
-  ...commonStepFields,
-  "when?": "unknown",
-  "then?": "string",
-  "else?": "string",
-});
-
-const WireStepAwaitSignal = type({
-  kind: "'awaitSignal'",
-  ...commonStepFields,
-  "name?": "string",
-  "timeout?": "number",
-  "onTimeout?": "string",
-  "drainBehavior?": "'cancel' | 'wait'",
-});
-
-const WireStepSleep = type({
-  kind: "'sleep'",
-  ...commonStepFields,
-  "duration?": "number",
-  "until?": "string",
-  "drainBehavior?": "'cancel' | 'wait'",
-});
-
-const WireStepChildWorkflow = type({
-  kind: "'childWorkflow'",
-  ...commonStepFields,
-  "definitionRef?": "string",
-  "input?": "unknown",
-  "drainBehavior?": "'cancel' | 'wait'",
-});
-
-const WireStepEscalation = type({
-  kind: "'escalation'",
-  ...commonStepFields,
-  "to?": "string",
-  "data?": "unknown",
-});
-
-const WireStepAction = type({
-  kind: "'action'",
-  ...commonStepFields,
-  "handler?": "string",
-  "input?": "unknown",
-  "effect?": "unknown",
-  "timeout?": "number",
-  "drainBehavior?": "'cancel' | 'wait'",
-});
-
-const WireStepLoop = type({
-  kind: "'loop'",
-  ...commonStepFields,
-  "body?": "unknown",
-  "while?": "string",
-  "carry?": "string",
-  "input?": "unknown",
-  "maxIterations?": "number",
-  "onExhausted?": "string",
-  "drainBehavior?": "'cancel' | 'wait'",
-});
-
-const WireStepOnTrigger = type({
-  kind: "'onTrigger'",
-  ...commonStepFields,
-  "on?": "unknown",
-  "body?": "unknown",
-  "drainBehavior?": "'cancel' | 'wait'",
-});
-
-/**
- * The closed union of wire step variants. Exported so the live->inert
- * projector's producer and its mutation-test suite can validate a single
- * step against the same schema the deploy frame applies to every step.
- */
-export const WorkflowStep = WireStepStep.or(WireStepMap)
-  .or(WireStepGate)
-  .or(WireStepAwaitSignal)
-  .or(WireStepSleep)
-  .or(WireStepChildWorkflow)
-  .or(WireStepEscalation)
-  .or(WireStepAction)
-  .or(WireStepLoop)
-  .or(WireStepOnTrigger);
-export type WorkflowStep = typeof WorkflowStep.infer;
-
-/**
- * The `steps` record on a wire projection: every value must validate
- * against the closed `WorkflowStep` union. The runtime constraint runs
- * through a `.narrow` over a `Record<string, unknown>` rather than a typed
- * `{ "[string]": WorkflowStep }` on purpose: the inferred type stays
- * `Record<string, unknown>` so the existing live-deploy producer
- * (`toWireWorkflowDefinition`, which hands a `Record<string, unknown>`
- * steps map to `sendAgentDeploy`) still typechecks, while the runtime
- * validation is fully closed over the primitive-kind set.
- */
-const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
-  for (const [stepId, step] of Object.entries(steps)) {
-    const parsed = WorkflowStep(step);
-    if (parsed instanceof type.errors) {
-      return ctx.mustBe(
-        `a record whose every step matches a known workflow primitive ` +
-          `variant; step ${JSON.stringify(stepId)} did not (${parsed.summary})`,
-      );
-    }
-  }
-  return true;
-});
-
-/**
- * Workflow projection carried on an `agent.deploy` frame. Its presence
- * at the deploy router routes the frame to the workflow deploy path --
- * single- or multi-step, both of which spawn the workflow-process child
- * -- as opposed to a per-step provision frame.
- *
- * `definition` is the wire projection of `WorkflowDefinition` from
- * `@intx/workflow`. The arktype validator enforces the structural
- * envelope the workflow-process child re-parses on the sidecar after
- * materialization (`packages/hub-sessions/src/workflow-kind.ts`'s
- * `workflowDefinitionEnvelopeSchema`): `id`, `triggers`, `steps`,
- * `stepOrder`, optional `state`. The wire validator MUST require every
- * field the envelope requires — the sidecar's deploy router serializes
- * `projection.definition` verbatim into `workflow.json` and the child
- * rejects a tree missing any envelope-required field. Deeper validation
- * of authoring-time primitive shape lives on the workflow definition
- * surface in `@intx/workflow`, not on the wire.
- *
- * `sources` pins an ordered, non-empty inference-source list per step in
- * `definition.stepOrder` so the workflow-process child can resolve inference
- * at step invocation without a round trip to the hub. The list is the step's
- * failover chain: element 0 is the active source (its id is the step's
- * `defaultSource`), and the reactor fails over forward through the tail on a
- * transient inference error. A workflow step pins a single-element list (no
- * per-step failover); a single-agent instance pins the instance's full
- * ordered source chain. Every `stepOrder` entry must have a matching
- * `sources` entry; the validator rejects frames that violate this at the
- * boundary.
- */
-export const WorkflowProjectionDefinition = type({
-  id: "string > 0",
-  triggers: "unknown[]",
-  stepOrder: "string[]",
-  steps: WorkflowSteps,
-  "state?": "Record<string, unknown>",
-  "+": "delete",
-});
-export type WorkflowProjectionDefinition =
-  typeof WorkflowProjectionDefinition.infer;
-
-/**
- * A workflow projection paired with its per-step inference-source pins, with
- * the invariant that every `stepOrder` entry has a `sources` failover chain.
- * The narrow here is the same coverage check the top-level `AgentDeployWorkflow`
- * applies to its own definition; this reusable form carries it into each
- * extracted onTrigger body under `referencedDefinitions`, so a body's sources
- * cover the body's stepOrder just as the top-level's cover the top-level's.
- */
-const WorkflowProjectionWithSources = type({
-  definition: WorkflowProjectionDefinition,
-  sources: { "[string]": InferenceSource.array().atLeastLength(1) },
-  // Hub-approved wire hash of this body's projection -- the freeze anchor for
-  // the referenced body, mirroring the top-level `approvedWireHash`. Carried so
-  // a body child can re-verify its own recompute of the body projection against
-  // the hub authority rather than trusting the bytes it materialized. Optional:
-  // a frame built before the source-ref hand-off omits it, and every existing
-  // referencedDefinitions producer still validates without it.
-  "approvedWireHash?": "string > 0",
-}).narrow((value, ctx) => {
-  for (const stepId of value.definition.stepOrder) {
-    if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
-      return ctx.mustBe(
-        `a workflow projection whose sources cover every step in stepOrder; ${JSON.stringify(stepId)} is missing`,
-      );
-    }
-  }
-  return true;
-});
+import {
+  WorkflowProjectionDefinition,
+  WorkflowProjectionWithSources,
+} from "./wire-workflow";
+// Re-export the wire-step/projection contracts that moved to `./wire-workflow`
+// so existing `@intx/types/sidecar` consumers keep resolving them here. Each
+// name is an arktype schema, so the single re-export carries both its value and
+// its inferred type.
+export { WorkflowStep } from "./wire-workflow";
+export { WorkflowProjectionDefinition };
 
 /**
  * The decrypted credential material and per-handle binding descriptors
@@ -624,51 +407,40 @@ export const SourceRefPin = type({
 });
 export type SourceRefPin = typeof SourceRefPin.infer;
 
-export const AgentDeployWorkflow = type({
-  definition: WorkflowProjectionDefinition,
-  sources: { "[string]": InferenceSource.array().atLeastLength(1) },
-  // Extracted onTrigger section bodies, materialized to their own workflow
-  // assets on the sidecar so a body child's spawn-child resolves the body by
-  // ref without a hub round-trip (the body id IS the asset ref). Optional: only
-  // an onTrigger deploy carries it, and every existing non-onTrigger deploy
-  // omits it and still validates. Each entry carries the body definition AND
-  // the body's own per-step inference-source pins, materialized beside the body
-  // on disk (`sources.json`) so a body child -- in-process, its env lost across
-  // a restart -- resolves inference durably without a hub round-trip.
-  "referencedDefinitions?": WorkflowProjectionWithSources.array(),
-  // Initial credential material for the deployment's tools, decrypted hub-side
-  // and delivered on the deploy frame so it is resident before any step runs
-  // (closing the race where a tool resolves a credential before a push lands).
-  // Run-global: a credential's secret is stored once, keyed by credentialId.
-  // Optional -- a deploy whose definition binds no credentials omits it.
-  "credentials?": CredentialDelivery,
-  // The hub-approved wire hash of `definition`'s projection -- the freeze
-  // anchor the hub gate wrote onto the definition version row
-  // (`computeWireDefinitionHash` in `@intx/types/wire-definition-hash`). It is
-  // the deployment's content-addressed handle and the value the sidecar feeds
-  // the child as `DEFINITION_HASH`: the child re-verifies its own recompute
-  // against THIS hub authority rather than trusting a sidecar-computed hash.
-  // Optional on the wire so a frame built before the source-ref hand-off (the
-  // raw-frame integration paths) still validates; the production hub deploy
-  // builder always stamps it, so a production deploy never leaves the child's
-  // `DEFINITION_HASH` to a sidecar recompute.
-  "approvedWireHash?": "string > 0",
-  // The source-ref pin (`source` + frozen `closure`) the sidecar re-materializes
-  // and re-evaluates the pinned code from, instead of trusting the inline
-  // projection. The two co-travel (see `SourceRefPin`), so presence of the pin
-  // is the single signal that this is a code-sourced deploy. Optional: only a
-  // code-sourced (npm) deploy carries it; a live-authored deploy has no pin.
-  "sourceRef?": SourceRefPin,
-}).narrow((value, ctx) => {
-  for (const stepId of value.definition.stepOrder) {
-    if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
-      return ctx.mustBe(
-        `a workflow projection whose sources cover every step in stepOrder; ${JSON.stringify(stepId)} is missing`,
-      );
-    }
-  }
-  return true;
-});
+/**
+ * A full workflow deploy frame: the shared `WorkflowProjectionWithSources` base
+ * (definition + per-step sources + approved hash, carrying the
+ * stepOrder-covered-by-sources narrow) intersected with the top-level-only
+ * extras. Sharing the base via `.and()` means the field set and the coverage
+ * narrow are defined once, not restated here.
+ */
+export const AgentDeployWorkflow = WorkflowProjectionWithSources.and(
+  type({
+    // Extracted onTrigger section bodies, materialized to their own workflow
+    // assets on the sidecar so a body child's spawn-child resolves the body by
+    // ref without a hub round-trip (the body id IS the asset ref). Optional:
+    // only an onTrigger deploy carries it, and every existing non-onTrigger
+    // deploy omits it and still validates. Each entry carries the body
+    // definition AND the body's own per-step inference-source pins, materialized
+    // beside the body on disk (`sources.json`) so a body child -- in-process,
+    // its env lost across a restart -- resolves inference durably without a hub
+    // round-trip.
+    "referencedDefinitions?": WorkflowProjectionWithSources.array(),
+    // Initial credential material for the deployment's tools, decrypted hub-side
+    // and delivered on the deploy frame so it is resident before any step runs
+    // (closing the race where a tool resolves a credential before a push lands).
+    // Run-global: a credential's secret is stored once, keyed by credentialId.
+    // Optional -- a deploy whose definition binds no credentials omits it.
+    "credentials?": CredentialDelivery,
+    // The source-ref pin (`source` + frozen `closure`) the sidecar
+    // re-materializes and re-evaluates the pinned code from, instead of trusting
+    // the inline projection. The two co-travel (see `SourceRefPin`), so presence
+    // of the pin is the single signal that this is a code-sourced deploy.
+    // Optional: only a code-sourced (npm) deploy carries it; a live-authored
+    // deploy has no pin.
+    "sourceRef?": SourceRefPin,
+  }),
+);
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
 
 /**
