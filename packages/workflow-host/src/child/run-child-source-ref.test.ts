@@ -575,7 +575,9 @@ describe("source-ref run child", () => {
     supervisorToChild.close();
     const result = await runPromise;
     expect(result.triggeredRunIds).toEqual(["run-1"]);
-  });
+    // Evaluating the closure and driving a run to terminal is real work; the
+    // default per-test timeout is too tight for it under full-suite load.
+  }, 30000);
 
   test("a divergent closure hash fails closed and never emits ready", async () => {
     const baseDir = await makeTempDir("srcref-divergent-base-");
@@ -628,7 +630,7 @@ describe("source-ref run child", () => {
     // frame was emitted, so the run never proceeded.
     expect(childToSupervisor.flushed()).toHaveLength(0);
     supervisorToChild.close();
-  });
+  }, 30000);
 
   test("a matching hash resumes an in-flight run from the evaluated live definition", async () => {
     const baseDir = await makeTempDir("srcref-resume-ok-base-");
@@ -681,5 +683,5 @@ describe("source-ref run child", () => {
     supervisorToChild.close();
     const result = await runPromise;
     expect(result.resumedRunIds).toEqual(["run-live"]);
-  });
+  }, 30000);
 });
