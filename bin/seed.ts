@@ -35,6 +35,7 @@ import {
   WORKFLOW_JSON_PATH,
   ensureWorkflowDefinitionForAsset,
 } from "@intx/hub-sessions";
+import { catalogModels, catalogProviders } from "@intx/inference-catalog";
 
 import { resolveDbConfig } from "./lib/db-config";
 
@@ -45,8 +46,7 @@ import {
   WORKFLOW_RUN_GRANT_ACTION,
   WORKFLOW_RUN_GRANT_RESOURCE,
 } from "./workflow-fixture";
-import { catalogModels, catalogProviders } from "./lib/catalog-seed-data";
-import { offeringCapabilities } from "./lib/offering-capabilities";
+import { credentialFixtures, priceFixtures } from "./lib/catalog-dev-fixtures";
 
 const AuthResponse = type({ "user?": { id: "string" } });
 
@@ -827,14 +827,32 @@ checkOrSkip("create widgets wallet", w2Status, 201, w2Data);
 
 // -- Create model catalog --
 //
-// The declarative deployment set lives in ./lib/catalog-seed-data; this driver
-// walks it. Each catalog provider gets a dedicated old-system provider (so its
-// credential has a provider FK) and a credential, then the catalog provider,
-// its offerings (carrying explicit quirks), and pricing. Ids are resolved by
-// listing after each create so the seed stays idempotent across re-runs where
-// a POST returns 409.
+// The declarative model/provider/offering set comes from
+// @intx/inference-catalog; this driver walks it and layers on the dev-only
+// credentials and pricing from ./lib/catalog-dev-fixtures (kept out of the
+// published package). Each catalog provider gets a dedicated old-system
+// provider (so its credential has a provider FK) and a credential, then the
+// catalog provider, its offerings (carrying baked capabilities and explicit
+// quirks), and pricing. Ids are resolved by listing after each create so the
+// seed stays idempotent across re-runs where a POST returns 409.
 
 log("Creating model catalog...");
+
+// The dev credentials and pricing are authored per provider and offering; a
+// gap would silently drop one, so verify the fixtures cover every catalog
+// provider and offering before seeding anything.
+for (const p of catalogProviders) {
+  if (!credentialFixtures[p.name]) {
+    fatalMissing(`credential fixture for provider ${p.name}`);
+  }
+  const prices = priceFixtures[p.name];
+  if (!prices) fatalMissing(`price fixtures for provider ${p.name}`);
+  for (const o of p.offerings) {
+    if (!prices[o.model]) {
+      fatalMissing(`price fixture for ${p.name}/${o.model}`);
+    }
+  }
+}
 
 const CredentialIdName = type({ id: "string", name: "string" });
 
@@ -863,6 +881,10 @@ const modelIdByName = new Map(
 );
 
 for (const p of catalogProviders) {
+  // Dev-only credential for this provider (coverage verified above).
+  const cred = credentialFixtures[p.name];
+  if (!cred) fatalMissing(`credential fixture for provider ${p.name}`);
+
   // Old-system provider that owns the credential. Its plugin mirrors the
   // catalog plugin (the old provider's plugin is free-form) and the metadata
   // baseURL matches the catalog endpoint.
@@ -897,16 +919,16 @@ for (const p of catalogProviders) {
     "POST",
     `/api/tenants/${acmeTenantId}/credentials`,
     {
-      name: p.credentialName,
+      name: cred.credentialName,
       type: "api_key",
       providerId: integrationProvider.id,
-      secret: p.credentialSecret,
+      secret: cred.credentialSecret,
       scopes: ["chat"],
     },
     aliceCookies,
   );
   checkOrSkip(
-    `create credential ${p.credentialName}`,
+    `create credential ${cred.credentialName}`,
     credStatus,
     201,
     credData,
@@ -922,8 +944,8 @@ for (const p of catalogProviders) {
     paginatedSchema(CredentialIdName),
     credListData,
     "credentials response",
-  ).data.find((c) => c.name === p.credentialName);
-  if (!credential) fatalMissing(`credential ${p.credentialName}`);
+  ).data.find((c) => c.name === cred.credentialName);
+  if (!credential) fatalMissing(`credential ${cred.credentialName}`);
 
   const { status: provStatus, data: provData } = await api(
     "POST",
@@ -964,7 +986,7 @@ for (const p of catalogProviders) {
         modelId,
         providerId: catalogProviderRow.id,
         priority: o.priority,
-        capabilities: offeringCapabilities(o),
+        capabilities: o.capabilities,
         quirks: o.quirks,
       },
       aliceCookies,
@@ -992,6 +1014,9 @@ for (const p of catalogProviders) {
       (x) => x.providerId === catalogProviderRow.id && x.modelId === modelId,
     );
     if (!offering) fatalMissing(`offering ${p.name}/${o.model}`);
+    // Dev-only pricing for this offering (coverage verified above).
+    const price = priceFixtures[p.name]?.[o.model];
+    if (!price) fatalMissing(`price fixture for ${p.name}/${o.model}`);
     const { status, data } = await api(
       "POST",
       `/api/tenants/${acmeTenantId}/catalog/offerings/${offering.id}/pricing`,
@@ -1000,8 +1025,8 @@ for (const p of catalogProviders) {
         // Pinned so a seed re-run collides on (offering, currency,
         // effectiveFrom) and skips rather than appending a duplicate.
         effectiveFrom: "2024-01-01T00:00:00.000Z",
-        inputTokenPrice: o.price.input,
-        outputTokenPrice: o.price.output,
+        inputTokenPrice: price.input,
+        outputTokenPrice: price.output,
       },
       aliceCookies,
     );
