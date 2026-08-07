@@ -6,12 +6,14 @@
 // sites import; the hash is a hex SHA-256 of the definition's canonical
 // JSON.
 //
-// The canonicalizer mirrors -- but is deliberately not the same as --
-// the runlocal repo-store's equality canonicalizer
-// (`packages/workflow/src/runlocal/repo-store.ts`). That one drops
-// `undefined`-valued fields for structural event comparison; this one
-// preserves them so the content hash is a faithful projection of the
-// wire bytes. The two are kept separate on purpose.
+// The canonicalizer mirrors `JSON.stringify`'s treatment of values JSON
+// cannot represent -- `undefined`-valued object keys are dropped, and
+// `undefined`/function/symbol array elements become `null` -- so the canonical
+// form is invariant to a JSON round-trip. This is load-bearing: the hub hashes
+// a projection parsed off the JSON wire (where such keys are already gone)
+// while a child hashes an in-memory projection, and the two must produce
+// byte-identical strings or re-verify would fail on a legitimately-approved
+// definition. Only the deterministic KEY ORDER differs from `JSON.stringify`.
 
 import { hexEncode } from "./hex";
 
@@ -22,15 +24,32 @@ import { hexEncode } from "./hex";
  * byte-identical strings and therefore hash equal.
  */
 export function canonicalJsonStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
+  if (value === null) return "null";
+  if (typeof value !== "object") {
+    // Primitives serialize as JSON does. A value JSON cannot represent
+    // (`undefined`, a function, a symbol) has no JSON text, so
+    // `JSON.stringify` returns `undefined`; canonicalize it to `null`, matching
+    // how JSON renders such a value as an array element (see below). A
+    // top-level such value never reaches a definition hash.
+    return JSON.stringify(value) ?? "null";
   }
   if (Array.isArray(value)) {
-    return `[${value.map(canonicalJsonStringify).join(",")}]`;
+    // JSON renders an `undefined`/function/symbol array element as `null`; the
+    // scalar branch above produces exactly that, so a plain recursive map keeps
+    // parity.
+    return `[${value.map((v) => canonicalJsonStringify(v)).join(",")}]`;
   }
-  const entries = Object.entries(value).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
+  // Drop keys whose value JSON.stringify would omit (`undefined`, functions,
+  // symbols). This is what makes the canonical form invariant to a JSON
+  // round-trip: the hub hashes a projection parsed off the JSON wire (where
+  // such keys are already gone) while a child hashes an in-memory projection,
+  // and the two must produce byte-identical strings or re-verify breaks.
+  const entries = Object.entries(value)
+    .filter(
+      ([, v]) =>
+        v !== undefined && typeof v !== "function" && typeof v !== "symbol",
+    )
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries
     .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJsonStringify(v)}`)
     .join(",")}}`;
