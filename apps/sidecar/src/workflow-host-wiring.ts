@@ -1348,6 +1348,16 @@ export function createSidecarDeployRouter(deps: {
      * records no head key.
      */
     hubPublicKey: string | undefined;
+    /**
+     * Sidecar-local directory of the materialized workflow-definition closure,
+     * set only on the source-ref deploy path after the frozen closure is
+     * applied. The spawn core threads it (plus a source-ref lineage marker)
+     * into the child's spawn env so the run child evaluates the pinned code to
+     * a live definition rather than reading the inert `workflow.json`. It is
+     * sidecar-local: it never travels on the hub deploy frame, is not persisted
+     * to the deployment record, and is absent for a live-authored deployment.
+     */
+    closurePackageDir?: string;
   }
 
   /**
@@ -1476,6 +1486,20 @@ export function createSidecarDeployRouter(deps: {
               REFERENCED_DEFINITION_HASHES: JSON.stringify(
                 spec.referencedDefinitionHashes,
               ),
+            }
+          : {}),
+        // Source-ref lineage: when the deploy path materialized a pinned code
+        // closure, thread its sidecar-local package dir plus a lineage marker
+        // so the run child EVALUATES the closure to a live definition and
+        // re-verifies by project-then-hash against `DEFINITION_HASH`, rather
+        // than reading the inert `workflow.json`. Sidecar-local; carried on the
+        // frozen substrate env because the value is fixed for the deployment's
+        // lifetime. Omitted for a live-authored deployment, whose child keeps
+        // the inert-read load path.
+        ...(spec.closurePackageDir !== undefined
+          ? {
+              WORKFLOW_LINEAGE: "source-ref",
+              CLOSURE_PACKAGE_DIR: spec.closurePackageDir,
             }
           : {}),
       };
@@ -2054,6 +2078,11 @@ export function createSidecarDeployRouter(deps: {
           );
         }
         effectiveDefinition = validated;
+        // Record the sidecar-local closure package dir so the spawn core
+        // threads it into the child's spawn env: the run child re-evaluates
+        // the pinned code to the live definition and runs THAT, rather than the
+        // inert `workflow.json` this branch also materializes for approval.
+        spec.closurePackageDir = applied.packageDir;
       }
 
       // Materialize the deploy-only durable state the spawned child and the
