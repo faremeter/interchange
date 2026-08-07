@@ -144,6 +144,40 @@ At every definition **load boundary** — the top-level run (fresh, resumed, or 
 
 Both hub-approved pins (the top-level `approvedWireHash` and the per-body `referencedDefinitionHashes`) are persisted on the sidecar's deployment record so that a **sidecar restart** re-threads them into the restored child's spawn env and the same barriers hold across the restart — rather than a restored definition or body failing closed for want of a hash.
 
+## The Sidecar Is Not an Authorization Authority
+
+A code-sourced workflow's package code is installed and **evaluated on the sidecar** — untrusted, author-controlled code runs there in an airlocked child to produce the inert projection and the capability walk. So it matters that **the sidecar is not trusted to decrypt credentials or to determine which code runs.** Those are the two things that grant a workflow real power, and both are anchored hub-side:
+
+**Credentials are decrypted and delivered by the hub.** The secrets a tool uses to reach an external system are held encrypted in the tenant vault and decrypted **hub-side** (`buildCredentialDelivery`); the sidecar **holds no credential cipher** — a credential persisted on the sidecar would be plaintext at rest, so the invariant is that none is. The hub decides _which_ credentials to deliver from its **own** content-addressed workflow asset plus the operator's approval — never from anything the sidecar supplies — and each delivered credential grant is scoped `credential:{id}/use` to a specific tool, resolving only a **tenant-owned** credential. A code-sourced deployment in fact ships **no** credential material at all today; author-declared credential bindings are inert (nothing to decrypt, nothing delivered). A tool whose secret the hub did not send is inert.
+
+**The code that runs is the code the operator's approval was bound to.** The dependency closure is hub-resolved and SRI-pinned; at every load boundary the child re-materializes it, re-projects, and re-checks the projection's content hash against the hub-approved hash, failing closed on any mismatch (see _Definition Approval and Re-Verification_ above). A sidecar cannot substitute different code without failing this barrier.
+
+Given those two anchors, the sidecar's **capability walk is advisory, not enforcement.** It exists to show the operator what the workflow appears to need, so the operator's `ApprovalSet` — the single human decision — can gate it at freeze time. A compromised or buggy sidecar can only:
+
+- **over-report** grants → the operator's `ApprovalSet` declines;
+- **under-report** grants → the workflow is under-provisioned and fails closed at the child's authorize check, never over-privileged;
+- **lie about the projection** → the re-verify barrier catches it and fails closed.
+
+None of these escalate privilege, because forging the advisory list yields **no new credential material** (hub-delivered, no sidecar cipher) and **no new code** (closure-pinned). The list's _accuracy_ still matters — it is the single artifact the operator's one decision is made against, so an under-stated list could win an approval whose true grant implications the operator did not see. That is **informed-consent** integrity, worth keeping honest, not a privilege-escalation boundary.
+
+### The child-side grant gate is defense-in-depth
+
+At tool-invoke time the child evaluates the step's grants (`grants.json`, the operator-approved `frame.config.grants`) through a _gated capability_ before yielding credential material. That is the honest enforcement path for a **healthy** sidecar — but the sidecar is itself the process that _writes_ `grants.json` and assembles the snapshot the child reads. So the child-side gate is **defense-in-depth, not a boundary against a compromised sidecar**: a compromised sidecar could forge `grants.json`, but it gains nothing — the real boundaries are the hub's credential cipher and the closure pin, not the grant evaluation the sidecar feeds the child.
+
+### What the grant list does NOT bound
+
+Grants gate `tool:` / `effect:` / `credential:` resources. They are **not** a compute or network sandbox: raw computation, filesystem access within the child's data dir, and outbound network to public endpoints are bounded by **host/process isolation of the child**, not by the grant list. Do not mistake the grant model for a syscall sandbox.
+
+### Trusted components
+
+The authorization model rests on exactly these anchors — not the sidecar:
+
+1. **The hub** — holds the only credential cipher; decides credential delivery from its own content-addressed asset plus the operator's approval; authors the workflow asset repo (hub-writes / sidecar-reads).
+2. **The operator's `ApprovalSet`** — the one human decision, gating the advisory grant set at freeze.
+3. **The tenant credential vault and tenant ownership** — a binding can only ever resolve a tenant-owned credential.
+4. **The closure pin + SRI + child re-verify** — only approved code runs; fail closed otherwise.
+5. **Host / process isolation of the child** — bounds the non-credential capabilities the grant list does not.
+
 ## Capability Grants
 
 Capability grants are the atomic unit of authorization. Every authorization decision is resolved by evaluating grants. Grants can be attached to a role (applying to all principals with that role) or directly to a principal.
