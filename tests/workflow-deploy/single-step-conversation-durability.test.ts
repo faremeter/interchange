@@ -42,6 +42,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   createDefaultDirectorRegistry,
   type Agent,
@@ -293,30 +294,38 @@ async function seedProcessingEntry(
   );
 }
 
+// The one-step workflow definition this test deploys, as its inert wire form.
+// It is the single source of truth for both the on-disk `workflow.json` the
+// child reads and the approved hash the spawn env carries: the run child now
+// re-verifies the loaded definition against `DEFINITION_HASH` at the load
+// boundary, so the hash must be the true content hash of these exact bytes,
+// not a placeholder.
+const ONE_STEP_WORKFLOW_DEFINITION = {
+  id: "durability-workflow",
+  triggers: [{ type: "manual" }],
+  steps: {
+    [STEP_ID]: {
+      kind: "step",
+      id: STEP_ID,
+      agent: {
+        id: "warm-agent",
+        systemPrompt: "warm agent",
+        toolFactories: [],
+        capabilities: [],
+        inference: { sources: [{ provider: "anthropic", model: "stub" }] },
+      },
+      input: { from: "trigger.payload" },
+      drainBehavior: "cancel",
+    },
+  },
+  stepOrder: [STEP_ID],
+};
+
 async function seedOneStepWorkflowDir(repoDir: string): Promise<void> {
   await fs.mkdir(repoDir, { recursive: true });
   await fs.writeFile(
     path.join(repoDir, "workflow.json"),
-    JSON.stringify({
-      id: "durability-workflow",
-      triggers: [{ type: "manual" }],
-      steps: {
-        [STEP_ID]: {
-          kind: "step",
-          id: STEP_ID,
-          agent: {
-            id: "warm-agent",
-            systemPrompt: "warm agent",
-            toolFactories: [],
-            capabilities: [],
-            inference: { sources: [{ provider: "anthropic", model: "stub" }] },
-          },
-          input: { from: "trigger.payload" },
-          drainBehavior: "cancel",
-        },
-      },
-      stepOrder: [STEP_ID],
-    }),
+    JSON.stringify(ONE_STEP_WORKFLOW_DEFINITION),
   );
 }
 
@@ -497,6 +506,14 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       substrate.getRepoDir(workflowDefinitionRepoId),
     );
 
+    // The run child re-verifies the loaded definition against DEFINITION_HASH
+    // at the load boundary, so the spawn env must carry the true content hash
+    // of the seeded bytes -- the same hash the hub freezes at approval and
+    // persists for a restore re-spawn.
+    const definitionHash = await computeWireDefinitionHash(
+      ONE_STEP_WORKFLOW_DEFINITION,
+    );
+
     const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
     await seedProcessingEntry(runRepoDir, {
       messageId: "msg-1",
@@ -621,7 +638,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         IPC_HMAC_KEY: hexEncode(hmacKey),
         HOST_PUBKEY: hexEncode(supervisorKeyPair.publicKey),
         DEPLOYMENT_ID,
-        DEFINITION_HASH: "definition-hash",
+        DEFINITION_HASH: definitionHash,
         MAILBOX_ADDRESS: MAILBOX,
         STEP_COUNT: "1",
         WARM_KEEP: "true",
