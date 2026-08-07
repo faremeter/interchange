@@ -315,20 +315,23 @@ async function runOneShotProbeChild(
 
   const deadline = createDeadline(args.childTimeoutMs);
   try {
+    // Race the result line against the deadline ONLY. Child exit is
+    // deliberately not a race arm: a child writes its result line and then
+    // exits promptly, so `handle.exited` and the buffered-line read both become
+    // ready, and an exit arm winning that race would discard an already-written
+    // result and fail the probe spuriously. Exit is not a distinct outcome the
+    // line read misses -- when the child exits its stdout write end closes, so
+    // `readResultLine` settles either with the trailing line (returned below)
+    // or null (the "closed its output" case). A child that neither writes nor
+    // exits is still caught by the deadline.
     const outcome = await Promise.race([
       linePromise.then((line) => ({ kind: "line" as const, line })),
-      handle.exited.then((code) => ({ kind: "exit" as const, code })),
       deadline.promise.then(() => ({ kind: "timeout" as const })),
     ]);
 
     if (outcome.kind === "timeout") {
       throw new Error(
         `workflow probe child ${String(handle.pid)} did not produce a result within ${String(args.childTimeoutMs)}ms`,
-      );
-    }
-    if (outcome.kind === "exit") {
-      throw new Error(
-        `workflow probe child ${String(handle.pid)} exited (code ${String(outcome.code)}) without producing a result`,
       );
     }
     if (outcome.line === null) {
