@@ -264,11 +264,15 @@ export interface MaterializeClosureArgs {
 
 /**
  * Result of `materializeClosure`: the per-instance store directory the
- * closure was laid out under (`<instanceScratchDir>/store`). A caller
- * computes a specific package's directory with `storeEntryDir`.
+ * closure was laid out under (`<instanceScratchDir>/store`), plus the exact
+ * host-filtered entries that were laid out under it. A caller computes a
+ * specific package's directory with `storeEntryDir`, and iterates `entries` to
+ * load exactly what was materialized -- rather than re-deriving the host filter
+ * with a second predicate and risking the two drifting apart.
  */
 export interface MaterializeClosureResult {
   readonly storeDir: string;
+  readonly entries: readonly ToolPackageManifestEntry[];
 }
 
 export class ToolLoaderError extends Error {
@@ -535,11 +539,10 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       // resolve the closure ranges and lay out the per-instance store)
       // are the eval-free materialization primitive. They import no
       // author code; that first `import()` happens only in phase 3
-      // below. `materializeClosure` owns the platform-filter logging as
-      // it selects the entries it lays out, so this method re-selects
-      // the surviving entries with the pure `entryMatchesHost` predicate
-      // to avoid re-emitting those debug logs.
-      const { storeDir } = await materializeClosure({
+      // below. `materializeClosure` returns the exact host-filtered
+      // entries it laid out, so phase 3 loads precisely those -- there is
+      // no second platform-filter pass that could drift from the first.
+      const { storeDir, entries } = await materializeClosure({
         manifest: args.manifest,
         instanceScratchDir: args.instanceScratchDir,
         assetRoot: args.assetRoot,
@@ -550,9 +553,6 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
         fetchTarball,
       });
 
-      const filtered = args.manifest.entries.filter((entry) =>
-        entryMatchesHost(entry, config.host),
-      );
       const topLevelKeys = new Set(
         args.manifest.topLevel.map((p) => `${p.name}@${p.version}`),
       );
@@ -563,7 +563,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       //    author code is imported.
       const loaded: LoadedToolPackage[] = [];
       const coveredTopLevelKeys = new Set<string>();
-      for (const entry of filtered) {
+      for (const entry of entries) {
         const key = `${entry.name}@${entry.version}`;
         if (!topLevelKeys.has(key)) continue;
         const pkgDir = storeEntryDir(storeDir, entry.name, entry.version);
@@ -875,7 +875,7 @@ export async function materializeClosure(
     }
   }
 
-  return { storeDir };
+  return { storeDir, entries: filtered };
 }
 
 /**
