@@ -36,11 +36,6 @@ import {
   resolveHostPlatform,
 } from "./sidecar-materialization-config";
 
-// Re-exported so the deploy-apply wiring in `workflow-host-wiring.ts`
-// keeps resolving the registry map from this module while the
-// definition itself lives in the shared materialization-config module.
-export { readRegistries };
-
 const logger = getLogger(["sidecar", "harness-builder"]);
 
 // Sentinel `previousDeployId` for an instance that has never applied
