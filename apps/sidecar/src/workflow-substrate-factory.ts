@@ -2183,12 +2183,16 @@ export function createSidecarSubstrateFactory(
     // An onTrigger section runs each event's body as a suspendable child.
     // The resolving adapter maps the body's definition ref to a definition
     // and delegates to the sidecar spawner, which returns the live handle
-    // `runOnTrigger` drives across the body's approval parks.
+    // `runOnTrigger` drives across the body's approval parks. A body is part
+    // of the parent's approval, so the adapter re-verifies it against the
+    // parent's frame-carried body hashes: thread the parsed
+    // `referencedDefinitionHashes` from the spawn env into the barrier.
     const spawnSuspendableChild = createWorkflowSpawnSuspendableChild({
       substrate,
       principal,
       deployRef: validated.WORKFLOW_DEFINITION_REF,
       runSuspendableChild: createSidecarSpawnSuspendableChild(childRunDeps),
+      referencedDefinitionHashes: env.spawn.referencedDefinitionHashes,
     });
 
     // Per-run scratch reclamation for the cold (multi-step) path. The

@@ -46,6 +46,13 @@ const SINGLE_STEP: WorkflowDeploymentRecord = {
   },
   sessionId: "ses_1",
   hubPublicKey: "deadbeef",
+  // Per-body approved hashes persisted for the onTrigger-body re-verify to
+  // survive a restart; round-tripped here so a schema change to the map shape
+  // is caught.
+  referencedDefinitionHashes: {
+    "body-a": "a".repeat(64),
+    "body-b": "b".repeat(64),
+  },
 };
 
 // A multi-step deployment records no head hub key and may carry no session

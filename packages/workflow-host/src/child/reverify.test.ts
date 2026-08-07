@@ -265,17 +265,28 @@ describe("Site B spawn-child load boundary", () => {
 
   const SIDECAR_PRINCIPAL: Principal = { kind: "sidecar" };
 
-  test("a matching per-body hash resolves and hands the definition to runChild", async () => {
-    const dataDir = await makeTempDir("reverify-siteb-match-");
+  // The re-verify barrier lives on the onTrigger-BODY spawn path
+  // (`createWorkflowSpawnSuspendableChild`), where the body's approved hash
+  // is intrinsic to the parent's approval and rides the signed frame. The
+  // terminal childWorkflow path (`createWorkflowSpawnChild`) resolves a
+  // SEPARATELY-approved asset the parent holds no hash for, so it reads +
+  // envelope-validates WITHOUT a gate -- a gate there could only
+  // fail-closed-always. These tests pin both halves of that contract.
+
+  test("the terminal childWorkflow path does NOT re-verify -- a divergent-but-valid asset still resolves", async () => {
+    const dataDir = await makeTempDir("reverify-siteb-child-nogate-");
     const substrate = createRepoStore({
       dataDir,
       signingKey: await generateKeyPair(),
       handlers: { workflow: workflowKindHandler },
       authorize: allowAll,
     });
-    const def = wireDefinition("body-ok");
-    const approvedHash = await computeWireDefinitionHash(def);
-    await seedBody(substrate, "body-ok", def);
+    // A childWorkflow asset the parent's frame carries no hash for. There is
+    // no approved-hash parameter on the terminal adapter at all, so any
+    // envelope-valid asset resolves -- the childWorkflow's integrity rests on
+    // the workflow-kind repo's hub-writes/sidecar-reads authorization, not a
+    // parent pin.
+    await seedBody(substrate, "child-nogate", wireDefinition("child-nogate"));
 
     const calls: Parameters<RunChildWorkflow>[0][] = [];
     const runChild: RunChildWorkflow = async (input) => {
@@ -287,11 +298,10 @@ describe("Site B spawn-child load boundary", () => {
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: { "body-ok": approvedHash },
     });
 
     const result = await spawn({
-      definitionRef: "body-ok",
+      definitionRef: "child-nogate",
       childRunId: "child-1",
       input: null,
       parentRunId: "parent-1",
@@ -300,10 +310,55 @@ describe("Site B spawn-child load boundary", () => {
     });
     expect(result.terminalStatus).toBe("completed");
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.definition.id).toBe("body-ok");
+    expect(calls[0]?.definition.id).toBe("child-nogate");
   });
 
-  test("a tampered referenced body fails closed and never reaches runChild", async () => {
+  test("a matching per-body hash resolves and reaches the body runner", async () => {
+    const dataDir = await makeTempDir("reverify-siteb-match-");
+    const substrate = createRepoStore({
+      dataDir,
+      signingKey: await generateKeyPair(),
+      handlers: { workflow: workflowKindHandler },
+      authorize: allowAll,
+    });
+    const def = wireDefinition("body-ok");
+    const approvedHash = await computeWireDefinitionHash(def);
+    await seedBody(substrate, "body-ok", def);
+
+    // The runner is reached only past the gate: it records the resolved
+    // definition, then throws a sentinel so the test observes "gate passed,
+    // runner reached with the right definition" without constructing a live
+    // SuspendableChildHandle.
+    const resolved: string[] = [];
+    const runSuspendableChild: RunSuspendableChild = async (input) => {
+      resolved.push(input.definition.id);
+      throw new Error("reached-body-runner-sentinel");
+    };
+    const spawn = createWorkflowSpawnSuspendableChild({
+      substrate,
+      principal: SIDECAR_PRINCIPAL,
+      deployRef: REF,
+      runSuspendableChild,
+      referencedDefinitionHashes: { "body-ok": approvedHash },
+    });
+
+    await expect(
+      spawn(
+        {
+          definitionRef: "body-ok",
+          childRunId: "child-1",
+          input: null,
+          parentRunId: "parent-1",
+          parentStepId: "step-a",
+          signal: new AbortController().signal,
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow(/reached-body-runner-sentinel/);
+    expect(resolved).toEqual(["body-ok"]);
+  });
+
+  test("a tampered referenced body fails closed and never runs", async () => {
     const dataDir = await makeTempDir("reverify-siteb-tamper-");
     const substrate = createRepoStore({
       dataDir,
@@ -311,92 +366,14 @@ describe("Site B spawn-child load boundary", () => {
       handlers: { workflow: workflowKindHandler },
       authorize: allowAll,
     });
-    const approved = wireDefinition("body-tampered");
-    const approvedHash = await computeWireDefinitionHash(approved);
+    const approvedHash = await computeWireDefinitionHash(
+      wireDefinition("body-tampered"),
+    );
     // Post-approval tamper: overwrite the body with a divergent projection.
     await seedBody(
       substrate,
       "body-tampered",
       wireDefinition("body-tampered", "-tampered"),
-    );
-
-    let runCalls = 0;
-    const runChild: RunChildWorkflow = async () => {
-      runCalls += 1;
-      return { terminalStatus: "completed" };
-    };
-    const spawn = createWorkflowSpawnChild({
-      substrate,
-      principal: SIDECAR_PRINCIPAL,
-      deployRef: REF,
-      runChild,
-      referencedDefinitionHashes: { "body-tampered": approvedHash },
-    });
-
-    await expect(
-      spawn({
-        definitionRef: "body-tampered",
-        childRunId: "child-2",
-        input: null,
-        parentRunId: "parent-2",
-        parentStepId: "step-a",
-        signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow(/does not match the approved hash/);
-    expect(runCalls).toBe(0);
-  });
-
-  test("a referenced body with no approved hash fails closed", async () => {
-    const dataDir = await makeTempDir("reverify-siteb-missing-");
-    const substrate = createRepoStore({
-      dataDir,
-      signingKey: await generateKeyPair(),
-      handlers: { workflow: workflowKindHandler },
-      authorize: allowAll,
-    });
-    await seedBody(substrate, "body-unlisted", wireDefinition("body-unlisted"));
-
-    let runCalls = 0;
-    const runChild: RunChildWorkflow = async () => {
-      runCalls += 1;
-      return { terminalStatus: "completed" };
-    };
-    const spawn = createWorkflowSpawnChild({
-      substrate,
-      principal: SIDECAR_PRINCIPAL,
-      deployRef: REF,
-      runChild,
-      referencedDefinitionHashes: {},
-    });
-
-    await expect(
-      spawn({
-        definitionRef: "body-unlisted",
-        childRunId: "child-3",
-        input: null,
-        parentRunId: "parent-3",
-        parentStepId: "step-a",
-        signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow(/no hub-approved wire hash/);
-    expect(runCalls).toBe(0);
-  });
-
-  test("the suspendable-child adapter routes through the same barrier and fails closed on tamper", async () => {
-    const dataDir = await makeTempDir("reverify-siteb-susp-");
-    const substrate = createRepoStore({
-      dataDir,
-      signingKey: await generateKeyPair(),
-      handlers: { workflow: workflowKindHandler },
-      authorize: allowAll,
-    });
-    const approvedHash = await computeWireDefinitionHash(
-      wireDefinition("body-susp"),
-    );
-    await seedBody(
-      substrate,
-      "body-susp",
-      wireDefinition("body-susp", "-tampered"),
     );
 
     let runCalls = 0;
@@ -409,22 +386,61 @@ describe("Site B spawn-child load boundary", () => {
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runSuspendableChild,
-      referencedDefinitionHashes: { "body-susp": approvedHash },
+      referencedDefinitionHashes: { "body-tampered": approvedHash },
     });
 
     await expect(
       spawn(
         {
-          definitionRef: "body-susp",
-          childRunId: "child-4",
+          definitionRef: "body-tampered",
+          childRunId: "child-2",
           input: null,
-          parentRunId: "parent-4",
+          parentRunId: "parent-2",
           parentStepId: "step-a",
           signal: new AbortController().signal,
         },
         () => undefined,
       ),
     ).rejects.toThrow(/does not match the approved hash/);
+    expect(runCalls).toBe(0);
+  });
+
+  test("a referenced body with no frame-carried hash fails closed", async () => {
+    const dataDir = await makeTempDir("reverify-siteb-missing-");
+    const substrate = createRepoStore({
+      dataDir,
+      signingKey: await generateKeyPair(),
+      handlers: { workflow: workflowKindHandler },
+      authorize: allowAll,
+    });
+    await seedBody(substrate, "body-unlisted", wireDefinition("body-unlisted"));
+
+    let runCalls = 0;
+    const runSuspendableChild: RunSuspendableChild = async () => {
+      runCalls += 1;
+      throw new Error("must not be reached");
+    };
+    const spawn = createWorkflowSpawnSuspendableChild({
+      substrate,
+      principal: SIDECAR_PRINCIPAL,
+      deployRef: REF,
+      runSuspendableChild,
+      referencedDefinitionHashes: {},
+    });
+
+    await expect(
+      spawn(
+        {
+          definitionRef: "body-unlisted",
+          childRunId: "child-3",
+          input: null,
+          parentRunId: "parent-3",
+          parentStepId: "step-a",
+          signal: new AbortController().signal,
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow(/no hub-approved wire hash/);
     expect(runCalls).toBe(0);
   });
 });

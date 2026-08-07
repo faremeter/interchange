@@ -64,6 +64,17 @@ export const WorkflowDeploymentRecord = type({
   // original deploy fed it rather than recomputing it off the on-disk
   // projection. Optional: a record written before this field existed omits it.
   "approvedWireHash?": "string > 0",
+  // The hub-approved wire hash per referenced onTrigger body id, from the
+  // deploy frame's `referencedDefinitions`. Persisted for the same reason as
+  // `approvedWireHash`: a boot-time restore re-threads these into the child's
+  // spawn env so the onTrigger-body re-verify barrier holds across a restart,
+  // rather than the body spawn failing closed for want of a hash. The hash
+  // originated out-of-band on the signed deploy frame (not from the on-disk
+  // body bytes), matching how the top-level `approvedWireHash` is carried
+  // across restart. Optional/omitted when the deployment has no bodies.
+  "referencedDefinitionHashes?": {
+    "[string]": "string > 0",
+  },
 });
 export type WorkflowDeploymentRecord = typeof WorkflowDeploymentRecord.infer;
 

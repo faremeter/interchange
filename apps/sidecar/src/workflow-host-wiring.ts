@@ -1388,6 +1388,13 @@ export function createSidecarDeployRouter(deps: {
       ...(spec.approvedWireHash !== undefined
         ? { approvedWireHash: spec.approvedWireHash }
         : {}),
+      // Persist the per-body approved hashes so a boot-time restore re-threads
+      // them into the child's spawn env and the onTrigger-body re-verify
+      // barrier survives a restart. Omitted when the deployment has no bodies,
+      // matching the "no null entry" shape the deploy-time populate uses.
+      ...(Object.keys(spec.referencedDefinitionHashes).length > 0
+        ? { referencedDefinitionHashes: spec.referencedDefinitionHashes }
+        : {}),
     };
   }
 
@@ -2310,10 +2317,14 @@ export function createSidecarDeployRouter(deps: {
             // the spawn core recomputes off the on-disk projection for that
             // case alone.
             approvedWireHash: record.approvedWireHash,
-            // The referenced-body definitions are already materialized on disk
-            // from the original deploy; their per-body approved hashes are not
-            // re-threaded at restore.
-            referencedDefinitionHashes: {},
+            // Re-thread the per-body approved hashes the original deploy
+            // persisted, so a restored onTrigger body clears the same
+            // re-verify barrier a fresh deploy does. The referenced-body
+            // definitions are already on disk from the original deploy; these
+            // hashes are the out-of-band pins the barrier checks them against.
+            // Absent for a record written before the field existed (a
+            // deployment with no bodies also omits it) -- an empty map then.
+            referencedDefinitionHashes: record.referencedDefinitionHashes ?? {},
             sessionId: record.sessionId,
             hubPublicKey: record.hubPublicKey,
           };
