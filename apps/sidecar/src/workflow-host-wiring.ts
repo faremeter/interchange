@@ -71,7 +71,7 @@ import {
   applyFrozenWorkflowClosure,
   type AppliedWorkflowClosure,
 } from "./workflow-closure-apply";
-import { readRegistries } from "./tool-materialization";
+import { readRegistries } from "./sidecar-materialization-config";
 
 import type {
   MultistepDrainRouter,
