@@ -2102,6 +2102,62 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, head)).toBe(false);
   });
 
+  test("restore refuses a source-ref record loudly and never spawns the inert shape", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-srcref-data-");
+    const head = "ins_srcref@example.com";
+    const deploymentId = deriveDeploymentId(head);
+
+    // A source-ref deployment's runnable definition is the evaluated pinned
+    // closure, not the on-disk inert workflow.json. Restore can only bring it
+    // back as live-authored (it re-reads the inert projection), which would run
+    // the non-executable shape -- so restore must refuse it. The workflow.json
+    // is otherwise VALID, so it is the `lineage` marker, not a validation
+    // failure, that stops the restore.
+    const record: WorkflowDeploymentRecord = {
+      version: 1,
+      agentAddress: head,
+      definitionId: "wf-srcref",
+      sources: { "step-1": [makeInferenceSource("step-1")] },
+      hubPublicKey: "hub-pk",
+      lineage: "source-ref",
+    };
+    await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
+    const workflowJsonPath = path.join(
+      dataDir,
+      "assets",
+      "workflow",
+      "wf-srcref",
+      "workflow.json",
+    );
+    await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
+    await fs.writeFile(
+      workflowJsonPath,
+      JSON.stringify({
+        id: "wf-srcref",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step", id: "step-1" } },
+      }),
+      "utf8",
+    );
+
+    const spawner = makeReadyDrivingSpawner(9550);
+    const freshTransport = createInMemoryTransport();
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    await router.restoreWorkflowDeployments();
+
+    // Refused: no child spawned, nothing registered. The record is KEPT so a
+    // later boot that re-materializes the closure can restore it.
+    expect(spawner.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+  });
+
   test("restore is a no-op for a deployment already live in this process", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-guard-data-");
     const head = "ins_guard@example.com";

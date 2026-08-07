@@ -1359,6 +1359,16 @@ export function createSidecarDeployRouter(deps: {
      * to the deployment record, and is absent for a live-authored deployment.
      */
     closurePackageDir?: string;
+    /**
+     * The deploy lineage, persisted on the deployment record. "source-ref"
+     * marks a code-sourced deployment whose runnable definition is the
+     * evaluated pinned closure; "live-authored" otherwise. Known at spec-build
+     * time from the frame's `source`/`closure` presence -- earlier than
+     * `closurePackageDir`, which the source-ref path sets only after the
+     * closure is applied. A boot-time restore uses it to refuse bringing a
+     * source-ref deployment back as live-authored.
+     */
+    lineage: "source-ref" | "live-authored";
   }
 
   /**
@@ -1395,6 +1405,9 @@ export function createSidecarDeployRouter(deps: {
       ...(Object.keys(spec.referencedDefinitionHashes).length > 0
         ? { referencedDefinitionHashes: spec.referencedDefinitionHashes }
         : {}),
+      // Persist the lineage so restore refuses to bring a source-ref
+      // deployment back as live-authored (which would run the inert shape).
+      lineage: spec.lineage,
     };
   }
 
@@ -2025,6 +2038,13 @@ export function createSidecarDeployRouter(deps: {
         projection.definition.stepOrder.length === 1
           ? frame.hubPublicKey
           : undefined,
+      // Source-ref when the frame carries a pinned source + frozen closure --
+      // the same signal that drives the closure-apply below. Persisted so a
+      // restore refuses to bring this back as live-authored.
+      lineage:
+        projection.source !== undefined && projection.closure !== undefined
+          ? "source-ref"
+          : "live-authored",
     };
     const record = buildDeploymentRecord(spec, spec.sources);
 
@@ -2267,6 +2287,19 @@ export function createSidecarDeployRouter(deps: {
           // Integrity: the stored address must re-derive to its own directory
           // name. A mismatch means a corrupt or misplaced record; skip it
           // rather than restore a deployment under the wrong slug.
+          // A source-ref deployment's runnable definition is the evaluated
+          // pinned closure, not the on-disk inert `workflow.json`. Restore
+          // re-reads that inert projection and can only bring the deployment
+          // back as live-authored, which runs the non-executable inert shape.
+          // Refuse loudly rather than mis-restore it; the record is kept so a
+          // later boot that re-materializes the closure can restore it. (That
+          // full source-ref restore is a separate follow-up.)
+          if (record.lineage === "source-ref") {
+            throw new Error(
+              `source-ref workflow deployment restore is not implemented; refusing to restore ${record.agentAddress} as live-authored, which would run the non-executable inert projection`,
+            );
+          }
+
           const derived = deriveDeploymentId(record.agentAddress);
           if (derived !== deploymentId) {
             logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${deploymentId}`;
@@ -2327,6 +2360,9 @@ export function createSidecarDeployRouter(deps: {
             referencedDefinitionHashes: record.referencedDefinitionHashes ?? {},
             sessionId: record.sessionId,
             hubPublicKey: record.hubPublicKey,
+            // The source-ref guard above already refused any source-ref record,
+            // so every deployment that reaches here restores as live-authored.
+            lineage: "live-authored",
           };
 
           // The slug is the caller's, matching `deployMultiStep`: claim before
