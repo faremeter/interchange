@@ -349,6 +349,7 @@ describe("parseWorkflowDefinitionRow", () => {
       assetId: null,
       name: "Test Definition",
       description: null,
+      wireHash: null,
       grantRequirements: null,
       modelRequirements: null,
       credentialBindings: null,
