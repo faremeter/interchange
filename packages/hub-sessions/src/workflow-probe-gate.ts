@@ -278,23 +278,3 @@ export async function installAndApproveWorkflowDefinition(
 
   return { approval, projection: probeResult.projection, closure };
 }
-
-/**
- * Materialize deploy grants as a SUBSET of the frozen approved set. The deploy
- * path may present a candidate grant set from any source -- including a naive
- * live re-walk of the (possibly mutated) asset, which can surface MORE grants
- * than were approved. Only grants in the frozen approved set are granted; every
- * extra is refused. The result is therefore always a subset of
- * `frozenApprovedGrants`, so a workflow can never acquire at deploy time a grant
- * it did not have frozen at approval.
- */
-export function materializeDeployGrantsFromFrozen(
-  frozenApprovedGrants: ReadonlySet<string>,
-  candidateGrants: Iterable<string>,
-): string[] {
-  const granted: string[] = [];
-  for (const grant of candidateGrants) {
-    if (frozenApprovedGrants.has(grant)) granted.push(grant);
-  }
-  return granted;
-}
