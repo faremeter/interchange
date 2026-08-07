@@ -1,6 +1,6 @@
 {
-  "id": "9f28e0f9-71a3-4914-8964-bca9bd35a2bb",
-  "prevId": "b2e86dd7-0615-4f48-849e-9bcf46fe8912",
+  "id": "44f32df5-eb72-4ecb-bfcf-c1e3913f3148",
+  "prevId": "3a23ac6e-907c-4fd7-abf3-8ca3fafb0399",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2276,13 +2276,20 @@
           "name": "url",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "token_hash_sha256": {
           "name": "token_hash_sha256",
           "type": "bytea",
           "primaryKey": false,
           "notNull": true
+        },
+        "credential_scope": {
+          "name": "credential_scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'shared'"
         },
         "status": {
           "name": "status",
@@ -2323,7 +2330,284 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "sidecar_credential_scope_check": {
+          "name": "sidecar_credential_scope_check",
+          "value": "\"sidecar\".\"credential_scope\" in ('shared', 'allocated')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.sidecar_allocation": {
+      "name": "sidecar_allocation",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "anchor_run_id": {
+          "name": "anchor_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provisioner_id": {
+          "name": "provisioner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provisioner_api_version": {
+          "name": "provisioner_api_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provisioner_binding_fingerprint": {
+          "name": "provisioner_binding_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sidecar_id": {
+          "name": "sidecar_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "placement_sharing": {
+          "name": "placement_sharing",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sidecar_reuse": {
+          "name": "sidecar_reuse",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'never'"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "ensure_accepted_generation": {
+          "name": "ensure_accepted_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_ref": {
+          "name": "external_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reconciliation_lease_id": {
+          "name": "reconciliation_lease_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reconciliation_lease_expires_at": {
+          "name": "reconciliation_lease_expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ensure_attempts": {
+          "name": "ensure_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "destroy_attempts": {
+          "name": "destroy_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "connect_deadline": {
+          "name": "connect_deadline",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_message": {
+          "name": "failure_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "sidecar_allocation_anchor_run_idx": {
+          "name": "sidecar_allocation_anchor_run_idx",
+          "columns": [
+            {
+              "expression": "anchor_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sidecar_allocation_active_sidecar_idx": {
+          "name": "sidecar_allocation_active_sidecar_idx",
+          "columns": [
+            {
+              "expression": "sidecar_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"sidecar_allocation\".\"status\" in ('provisioning', 'allocated', 'replacing', 'releasing')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sidecar_allocation_sidecar_idx": {
+          "name": "sidecar_allocation_sidecar_idx",
+          "columns": [
+            {
+              "expression": "sidecar_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sidecar_allocation_reconciliation_idx": {
+          "name": "sidecar_allocation_reconciliation_idx",
+          "columns": [
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"sidecar_allocation\".\"status\" in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing') and \"sidecar_allocation\".\"next_attempt_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sidecar_allocation_anchor_run_id_workflow_run_id_fk": {
+          "name": "sidecar_allocation_anchor_run_id_workflow_run_id_fk",
+          "tableFrom": "sidecar_allocation",
+          "tableTo": "workflow_run",
+          "columnsFrom": ["anchor_run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "sidecar_allocation_tenant_id_tenant_id_fk": {
+          "name": "sidecar_allocation_tenant_id_tenant_id_fk",
+          "tableFrom": "sidecar_allocation",
+          "tableTo": "tenant",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "sidecar_allocation_sidecar_id_sidecar_id_fk": {
+          "name": "sidecar_allocation_sidecar_id_sidecar_id_fk",
+          "tableFrom": "sidecar_allocation",
+          "tableTo": "sidecar",
+          "columnsFrom": ["sidecar_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "sidecar_allocation_status_check": {
+          "name": "sidecar_allocation_status_check",
+          "value": "\"sidecar_allocation\".\"status\" in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing', 'released', 'failed')"
+        },
+        "sidecar_allocation_placement_check": {
+          "name": "sidecar_allocation_placement_check",
+          "value": "\"sidecar_allocation\".\"placement_sharing\" = 'exclusive'"
+        },
+        "sidecar_allocation_generation_check": {
+          "name": "sidecar_allocation_generation_check",
+          "value": "\"sidecar_allocation\".\"generation\" >= 0"
+        },
+        "sidecar_allocation_accepted_generation_check": {
+          "name": "sidecar_allocation_accepted_generation_check",
+          "value": "\"sidecar_allocation\".\"ensure_accepted_generation\" is null or \"sidecar_allocation\".\"ensure_accepted_generation\" <= \"sidecar_allocation\".\"generation\""
+        }
+      },
       "isRLSEnabled": false
     },
     "public.agent_session": {
@@ -2962,12 +3246,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "wire_hash": {
-          "name": "wire_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "name": {
           "name": "name",
           "type": "text",
@@ -3049,17 +3327,11 @@
           "method": "btree",
           "with": {}
         },
-        "workflow_definition_asset_wire_hash_idx": {
-          "name": "workflow_definition_asset_wire_hash_idx",
+        "workflow_definition_asset_idx": {
+          "name": "workflow_definition_asset_idx",
           "columns": [
             {
               "expression": "asset_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "wire_hash",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3134,12 +3406,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'active'"
-        },
-        "approved_wire_hash": {
-          "name": "approved_wire_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3351,6 +3617,112 @@
           "columnsFrom": ["sidecar_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.workflow_run_launch_spec": {
+      "name": "workflow_run_launch_spec",
+      "schema": "",
+      "columns": {
+        "anchor_run_id": {
+          "name": "anchor_run_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deployment_domain": {
+          "name": "deployment_domain",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_authority_principal_id": {
+          "name": "source_authority_principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "definition_snapshot": {
+          "name": "definition_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "definition_hash": {
+          "name": "definition_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_offering_ids": {
+          "name": "source_offering_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "default_source_offering_id": {
+          "name": "default_source_offering_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deploy_content": {
+          "name": "deploy_content",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tool_package_pins": {
+          "name": "tool_package_pins",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "workflow_run_launch_spec_anchor_run_id_workflow_run_id_fk": {
+          "name": "workflow_run_launch_spec_anchor_run_id_workflow_run_id_fk",
+          "tableFrom": "workflow_run_launch_spec",
+          "tableTo": "workflow_run",
+          "columnsFrom": ["anchor_run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "workflow_run_launch_spec_source_authority_principal_id_principal_id_fk": {
+          "name": "workflow_run_launch_spec_source_authority_principal_id_principal_id_fk",
+          "tableFrom": "workflow_run_launch_spec",
+          "tableTo": "principal",
+          "columnsFrom": ["source_authority_principal_id"],
+          "columnsTo": ["id"],
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },

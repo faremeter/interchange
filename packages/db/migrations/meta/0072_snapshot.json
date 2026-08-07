@@ -1,6 +1,6 @@
 {
-  "id": "3a23ac6e-907c-4fd7-abf3-8ca3fafb0399",
-  "prevId": "1a73423f-623a-4ab4-8b4d-9cbdae96316e",
+  "id": "26d55ac6-8946-46f5-b055-3b90997381fd",
+  "prevId": "570a2dd4-c131-4b41-8d99-872451640682",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -819,12 +819,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "grant_target_exactly_one": {
-          "name": "grant_target_exactly_one",
-          "value": "num_nonnulls(\"grant\".\"principal_id\", \"grant\".\"role_id\") = 1"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.approval": {
@@ -1133,12 +1128,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "api_base_url": {
-          "name": "api_base_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "authorization_url": {
           "name": "authorization_url",
@@ -3333,112 +3322,6 @@
           "columnsFrom": ["sidecar_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.workflow_run_launch_spec": {
-      "name": "workflow_run_launch_spec",
-      "schema": "",
-      "columns": {
-        "anchor_run_id": {
-          "name": "anchor_run_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "schema_version": {
-          "name": "schema_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "deployment_domain": {
-          "name": "deployment_domain",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_authority_principal_id": {
-          "name": "source_authority_principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "definition_snapshot": {
-          "name": "definition_snapshot",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "definition_hash": {
-          "name": "definition_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_offering_ids": {
-          "name": "source_offering_ids",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "default_source_offering_id": {
-          "name": "default_source_offering_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "deploy_content": {
-          "name": "deploy_content",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tool_package_pins": {
-          "name": "tool_package_pins",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "workflow_run_launch_spec_anchor_run_id_workflow_run_id_fk": {
-          "name": "workflow_run_launch_spec_anchor_run_id_workflow_run_id_fk",
-          "tableFrom": "workflow_run_launch_spec",
-          "tableTo": "workflow_run",
-          "columnsFrom": ["anchor_run_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "workflow_run_launch_spec_source_authority_principal_id_principal_id_fk": {
-          "name": "workflow_run_launch_spec_source_authority_principal_id_principal_id_fk",
-          "tableFrom": "workflow_run_launch_spec",
-          "tableTo": "principal",
-          "columnsFrom": ["source_authority_principal_id"],
-          "columnsTo": ["id"],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
