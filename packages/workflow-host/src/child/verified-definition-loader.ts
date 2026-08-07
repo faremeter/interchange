@@ -83,18 +83,22 @@ export async function readWorkflowDefinitionEnvelope(
   const filePath = path.join(dir, opts.workflowPath);
   const label = `${opts.repoId.kind}/${opts.repoId.id}`;
 
+  // Neutral "definition read" prefix, NOT "verified": this envelope read is
+  // shared by the gated loaders below AND the deliberately-ungated childWorkflow
+  // spawn, so labeling its errors "verified" would misdescribe the ungated path.
+  // The re-verify errors that DO gate stay labeled "verified" in the loaders.
   let raw: string;
   try {
     raw = await fs.readFile(filePath, "utf8");
   } catch (cause) {
     if (isErrnoNotFound(cause)) {
       throw new Error(
-        `workflow-host verified-definition loader: ${opts.workflowPath} not present under ${label}`,
+        `workflow-host definition read: ${opts.workflowPath} not present under ${label}`,
         { cause },
       );
     }
     throw new Error(
-      `workflow-host verified-definition loader: cannot read ${opts.workflowPath} for ${label}`,
+      `workflow-host definition read: cannot read ${opts.workflowPath} for ${label}`,
       { cause },
     );
   }
@@ -104,7 +108,7 @@ export async function readWorkflowDefinitionEnvelope(
     parsed = JSON.parse(raw);
   } catch (cause) {
     throw new Error(
-      `workflow-host verified-definition loader: ${opts.workflowPath} for ${label} is not valid JSON`,
+      `workflow-host definition read: ${opts.workflowPath} for ${label} is not valid JSON`,
       { cause },
     );
   }
@@ -112,7 +116,7 @@ export async function readWorkflowDefinitionEnvelope(
   const validated = workflowDefinitionEnvelopeSchema(parsed);
   if (validated instanceof type.errors) {
     throw new Error(
-      `workflow-host verified-definition loader: ${opts.workflowPath} for ${label} failed envelope validation: ${validated.summary}`,
+      `workflow-host definition read: ${opts.workflowPath} for ${label} failed envelope validation: ${validated.summary}`,
     );
   }
   // The envelope schema enforces the structural shape the runtime body and
