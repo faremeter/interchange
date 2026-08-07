@@ -491,12 +491,18 @@ type MultistepDeployArgs = {
    */
   agentAddress?: string;
   /**
-   * Hub-approved wire hash to stamp on the deploy frame's workflow. When set,
-   * the sidecar sources the child's `DEFINITION_HASH` from it rather than
-   * recomputing the wire hash; omitted, the frame carries no approved hash and
-   * the router recomputes (the legacy raw-frame path).
+   * Hub-approved wire hash to stamp on the deploy frame's workflow -- the
+   * child's `DEFINITION_HASH`. Production always stamps it, so the helper
+   * defaults to a placeholder when unset; a test exercising re-verify passes a
+   * real computed hash here instead.
    */
   approvedWireHash?: string;
+  /**
+   * Build a frame with NO `approvedWireHash` to exercise the deploy path's
+   * fail-loud guard (the sidecar refuses to recompute a hub-authority hash).
+   * Overrides the helper's default placeholder.
+   */
+  omitApprovedWireHash?: boolean;
 };
 
 function makeInferenceSource(id: string): InferenceSourceFixture {
@@ -525,9 +531,12 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     workflow: {
       definition: args.definition,
       sources: args.sources,
-      ...(args.approvedWireHash !== undefined
-        ? { approvedWireHash: args.approvedWireHash }
-        : {}),
+      // Production always stamps the hub-approved hash; default a placeholder
+      // so a deploy test need not compute one, and only omit it when a test
+      // explicitly exercises the fail-loud guard.
+      ...(args.omitApprovedWireHash
+        ? {}
+        : { approvedWireHash: args.approvedWireHash ?? "a".repeat(64) }),
     },
   };
 }
@@ -827,7 +836,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
-    const frame = makeMultistepFrame({ definition, sources });
+    // The sidecar sources DEFINITION_HASH from the frame's hub-approved hash
+    // verbatim (never a recompute), so stamp the real wire hash and assert the
+    // child receives it.
+    const approvedWireHash = await computeWireDefinitionHash(definition);
+    const frame = makeMultistepFrame({ definition, sources, approvedWireHash });
 
     const deployPromise = router.deploy(frame);
 
@@ -843,9 +856,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       DEPLOYMENT_ID: "multi-example-com",
       MAILBOX_ADDRESS: "multi@example.com",
     });
-    expect(env.DEFINITION_HASH).toBe(
-      await computeWireDefinitionHash(definition),
-    );
+    expect(env.DEFINITION_HASH).toBe(approvedWireHash);
     expect(env[STEP_INFERENCE_SOURCES_ENV_KEY]).toBe(JSON.stringify(sources));
     expect(env.IPC_CHANNEL_ID).toMatch(/^[0-9a-f]{32}$/);
 
@@ -1460,6 +1471,41 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await expect(router.deploy(frame)).rejects.toThrow(
       /workflow\.definition\.steps is missing entry/,
+    );
+    expect(spawnerInvoked).toBe(false);
+  });
+
+  test("refuses to deploy a workflow frame carrying no approvedWireHash rather than recomputing it", async () => {
+    // The child re-verifies its own recompute against the HUB-approved wire
+    // hash. A frame that carries none is a wiring bug, not a legacy case: the
+    // sidecar must fail loud rather than substitute its own recompute, which
+    // would collapse the re-verify to a self-check. Production always stamps
+    // it, so only a malformed frame reaches this guard.
+    let spawnerInvoked = false;
+    const spawner: SubprocessSpawner = () => {
+      spawnerInvoked = true;
+      throw new Error("spawner must not run for a hash-less frame");
+    };
+
+    const { router } = await buildMultistepFixture({ spawner });
+
+    const frame = makeMultistepFrame({
+      // A single-step deploy parses the frame address as a run address, so use
+      // the canonical `run_<id>@<domain>` shape to reach the approved-wire-hash
+      // guard rather than tripping address parsing first.
+      agentAddress: "run_nohash@example.com",
+      definition: {
+        id: "wf-no-hash",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
+      omitApprovedWireHash: true,
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /carries no approvedWireHash/,
     );
     expect(spawnerInvoked).toBe(false);
   });
