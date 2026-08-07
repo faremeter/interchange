@@ -63,11 +63,15 @@ import {
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type CredentialDelivery,
+  type SourceRefPin,
 } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN, projectLiveToInert } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
-import { applyFrozenWorkflowClosure } from "./workflow-closure-apply";
+import {
+  applyFrozenWorkflowClosure,
+  type AppliedWorkflowClosure,
+} from "./workflow-closure-apply";
 import { readRegistries } from "./tool-materialization";
 
 import type {
@@ -1450,6 +1454,52 @@ export function createSidecarDeployRouter(deps: {
   }
 
   /**
+   * Materialize a source-ref deployment's frozen closure to its per-deployment
+   * instance dir and return the applied result. Owns the plumbing both the
+   * deploy path and the boot-time restore path share: the deterministic
+   * instance dir under `<dataDir>/workflow-definition-closures/<deploymentId>`,
+   * the content-addressed cache root, the two substrate byte caps, and the
+   * registry table. The caller consumes the result: deploy validates
+   * `applied.definition` and takes `packageDir`; restore takes `packageDir` and
+   * re-carries the pin on its spec.
+   *
+   * The instance dir is force-reclaimed before the apply. `deploymentId` is
+   * deterministic per agent address, so a redeploy or a boot-restore reuses the
+   * same dir; a prior soft-failed deploy or a dead prior process can leave it
+   * half-materialized. The rm makes the apply write into a clean dir either
+   * way (a no-op on a never-deployed address). It is safe to reclaim only
+   * because no live reader holds the dir when this runs -- a precondition each
+   * caller establishes and notes at its call site.
+   */
+  async function materializeDeploymentClosure(
+    dataDir: string,
+    deploymentId: string,
+    pin: SourceRefPin,
+  ): Promise<AppliedWorkflowClosure> {
+    const instanceDir = pathJoin(
+      dataDir,
+      "workflow-definition-closures",
+      deploymentId,
+    );
+    await rm(instanceDir, { recursive: true, force: true });
+    return applyClosure({
+      source: pin.source,
+      closure: pin.closure,
+      instanceDir,
+      cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
+      cacheMaxBytes: requireSubstrateByteCap(
+        multistepSubstrateEnv,
+        "SIDECAR_CACHE_MAX_BYTES",
+      ),
+      registryMaxTarballBytes: requireSubstrateByteCap(
+        multistepSubstrateEnv,
+        "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
+      ),
+      registries: readRegistries(),
+    });
+  }
+
+  /**
    * The single owner of the workflow-deployment spawn sequence: construct
    * the supervisor, register the single-step agent's outbound key + head
    * repo + hub key, spawn the workflow-process child, then register the
@@ -2121,25 +2171,14 @@ export function createSidecarDeployRouter(deps: {
       let effectiveDefinition: WorkflowProjectionDefinition =
         projection.definition;
       if (projection.sourceRef !== undefined) {
-        const applied = await applyClosure({
-          source: projection.sourceRef.source,
-          closure: projection.sourceRef.closure,
-          instanceDir: pathJoin(
-            dataDir,
-            "workflow-definition-closures",
-            deploymentId,
-          ),
-          cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
-          cacheMaxBytes: requireSubstrateByteCap(
-            multistepSubstrateEnv,
-            "SIDECAR_CACHE_MAX_BYTES",
-          ),
-          registryMaxTarballBytes: requireSubstrateByteCap(
-            multistepSubstrateEnv,
-            "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
-          ),
-          registries: readRegistries(),
-        });
+        // Safe to reclaim the instance dir inside the helper: this deploy is
+        // single-flight-guarded (the reservation above) and the child is not
+        // yet spawned, so no live reader holds it.
+        const applied = await materializeDeploymentClosure(
+          dataDir,
+          deploymentId,
+          projection.sourceRef,
+        );
         const validated = WorkflowProjectionDefinition(
           projectLiveToInert(applied.definition),
         );
@@ -2413,37 +2452,21 @@ export function createSidecarDeployRouter(deps: {
           // EVALUATES the pinned code (not the non-executable inert
           // `workflow.json`), exactly as the fresh deploy does. The schema
           // guarantees a source-ref record carries a `sourceRef` pin, so no
-          // undefined-checks are needed. Reclaim the deployment's closure
-          // instance dir first so repeated restarts do not accumulate orphaned
-          // materialized closures -- the prior process (the only reader) is
-          // dead, and restore is serial before `hubLink.connect()`, so there is
-          // no concurrent reader. The tarball fetch is a cache hit against the
-          // content-addressed closure cache (populated on the original deploy,
-          // survives restart) and SRI-verified either way; a registry/cache
-          // failure soft-fails the record (kept for the next boot), matching
-          // the `assertSourceBuildable` retry-on-later-boot behavior above.
+          // undefined-checks are needed. The helper reclaims the instance dir
+          // first, which is safe here because the prior process (the only
+          // reader) is dead and restore is serial before `hubLink.connect()`,
+          // so no concurrent reader holds it. The tarball fetch is a cache hit
+          // against the content-addressed closure cache (populated on the
+          // original deploy, survives restart) and SRI-verified either way; a
+          // registry/cache failure soft-fails the record (kept for the next
+          // boot), matching the `assertSourceBuildable` retry-on-later-boot
+          // behavior above.
           if (record.lineage === "source-ref") {
-            const instanceDir = pathJoin(
+            const applied = await materializeDeploymentClosure(
               dataDir,
-              "workflow-definition-closures",
               deploymentId,
+              record.sourceRef,
             );
-            await rm(instanceDir, { recursive: true, force: true });
-            const applied = await applyClosure({
-              source: record.sourceRef.source,
-              closure: record.sourceRef.closure,
-              instanceDir,
-              cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
-              cacheMaxBytes: requireSubstrateByteCap(
-                multistepSubstrateEnv,
-                "SIDECAR_CACHE_MAX_BYTES",
-              ),
-              registryMaxTarballBytes: requireSubstrateByteCap(
-                multistepSubstrateEnv,
-                "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
-              ),
-              registries: readRegistries(),
-            });
             spec.closurePackageDir = applied.packageDir;
             // Carry the source-ref pin so a post-restore source rotation --
             // which rebuilds the record from the spec -- re-persists it; without
