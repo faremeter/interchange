@@ -5,7 +5,6 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   createRepoStore,
   workflowKindHandler,
@@ -29,28 +28,14 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 let signingKey: KeyPair;
 
-// The re-verify barrier requires a hub-approved wire hash per referenced
-// definitionRef. This shared map carries the approved hash of every body
-// these tests resolve; the resolver looks the ref up here and routes the
-// load through `loadVerifiedWorkflowDefinition`. Entries whose on-disk
-// bytes are absent or envelope-invalid still fail closed at the loader
-// before the hash is compared, so their values are inconsequential.
-const bodyHashes: Record<string, string> = {};
+// This adapter is the TERMINAL childWorkflow resolver: it resolves a
+// separately-approved workflow asset the parent holds no hash for, so it
+// reads + envelope-validates without a re-verify gate. There is no
+// approved-hash parameter to supply. (The onTrigger-body re-verify gate lives
+// on the suspendable adapter and is covered in `reverify.test.ts`.)
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
-  for (const id of [
-    "wf-resolve",
-    "wf-missing",
-    "wf-invalid",
-    "wf-terminal",
-    "wf-throws",
-    "wf-pre-abort",
-    "wf-propagate",
-    "wf-scope",
-  ]) {
-    bodyHashes[id] = await computeWireDefinitionHash(validWorkflowEnvelope(id));
-  }
 });
 
 afterAll(async () => {
@@ -129,7 +114,6 @@ describe("workflow-host SpawnChildWorkflow adapter - definitionRef resolution", 
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -172,7 +156,6 @@ describe("workflow-host SpawnChildWorkflow adapter - definitionRef resolution", 
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -223,7 +206,6 @@ describe("workflow-host SpawnChildWorkflow adapter - definitionRef resolution", 
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -264,7 +246,6 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -303,7 +284,6 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -346,7 +326,6 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -401,7 +380,6 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();
@@ -512,7 +490,6 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
       principal: SIDECAR_PRINCIPAL,
       deployRef: REF,
       runChild,
-      referencedDefinitionHashes: bodyHashes,
     });
 
     const ctrl = new AbortController();

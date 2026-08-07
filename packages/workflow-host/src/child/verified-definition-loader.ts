@@ -1,14 +1,27 @@
-// Shared verified-definition loader for the workflow-process child.
+// Shared definition read + optional re-verify for the workflow-process child.
 //
-// The child reaches a workflow definition through two structurally
-// identical read paths: the top-level run child (`run-child.ts`) and the
-// spawn-child adapter (`adapters/spawn-child.ts`). Both read
-// `workflow.json` from the deploy working tree, parse it, and validate the
-// envelope. Collapsing them into this one function puts the re-verify
-// barrier in exactly one layer: once the envelope validates, the loader
-// recomputes the wire hash over the validated projection and refuses to
-// return a definition whose recompute does not match the hub-approved
-// hash. A mismatch throws -- fail closed, no fallback and no coercion.
+// The child reaches a workflow definition through structurally identical
+// read paths that read `workflow.json` from the deploy working tree, parse
+// it, and validate the envelope. `readWorkflowDefinitionEnvelope` owns that
+// read+validate step in one layer. `loadVerifiedWorkflowDefinition` wraps it
+// with the re-verify barrier: it recomputes the wire hash over the validated
+// projection and refuses to return a definition whose recompute does not
+// match the hub-approved hash. A mismatch throws -- fail closed, no fallback
+// and no coercion.
+//
+// The gate is a THIN WRAPPER, not baked into the read, precisely because the
+// re-verify barrier is load-bearing only where the caller holds an approved
+// hash that arrived OUT-OF-BAND from the bytes being checked (a signed spawn
+// env / deploy frame the file-writer cannot forge). Callers with such a hash
+// -- the top-level run child (`run-child.ts`, `SpawnTimeEnv.definitionHash`)
+// and the onTrigger-body spawn path (`adapters/spawn-child.ts`, the parent's
+// frame-carried `referencedDefinitionHashes[bodyId]`) -- use the gated
+// wrapper. A caller with no out-of-band pin -- a `childWorkflow` spawn, which
+// resolves a SEPARATELY-approved, hub-authored, sidecar-read-only asset the
+// parent's frame has no authority over -- uses `readWorkflowDefinitionEnvelope`
+// directly. Gating that path could only fail-closed-always, since there is no
+// approved hash to check against; its integrity is the asset repo's
+// hub-writes/sidecar-reads authorization plus push-time envelope validation.
 //
 // The barrier lives at the LOAD boundary, not at run start. A resumed run
 // reuses the definition this loader returned at child boot, so gating the
@@ -27,7 +40,7 @@ import type { WorkflowDefinition } from "@intx/workflow";
 
 import { loadWorkflowDefinitionFromClosure } from "../workflow-definition-loader";
 
-export interface LoadVerifiedWorkflowDefinitionOpts {
+export interface ReadWorkflowDefinitionEnvelopeOpts {
   /** Substrate the deploy orchestrator wrote the workflow asset into. */
   substrate: RepoStore;
   /**
@@ -40,6 +53,10 @@ export interface LoadVerifiedWorkflowDefinitionOpts {
    * tree. Production callers pass `workflow.json`.
    */
   workflowPath: string;
+}
+
+export interface LoadVerifiedWorkflowDefinitionOpts
+  extends ReadWorkflowDefinitionEnvelopeOpts {
   /**
    * Hub-approved wire hash the recompute must match. Sourced from the hub
    * authority: `SpawnTimeEnv.definitionHash` for the top-level run, or the
@@ -50,12 +67,15 @@ export interface LoadVerifiedWorkflowDefinitionOpts {
 }
 
 /**
- * Read, envelope-validate, and re-verify a workflow definition from the
- * deploy working tree. Returns the validated `WorkflowDefinition` only
- * when its recomputed wire hash matches `approvedHash`; otherwise throws.
+ * Read and envelope-validate a workflow definition from the deploy working
+ * tree. Returns the validated `WorkflowDefinition` WITHOUT a re-verify gate:
+ * this is the read step callers that hold no out-of-band approved hash use
+ * directly (a `childWorkflow` spawn resolving a separately-approved,
+ * hub-authored, sidecar-read-only asset). Callers that DO hold an out-of-band
+ * pin wrap this with `loadVerifiedWorkflowDefinition`.
  */
-export async function loadVerifiedWorkflowDefinition(
-  opts: LoadVerifiedWorkflowDefinitionOpts,
+export async function readWorkflowDefinitionEnvelope(
+  opts: ReadWorkflowDefinitionEnvelopeOpts,
 ): Promise<WorkflowDefinition> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
@@ -99,10 +119,28 @@ export async function loadVerifiedWorkflowDefinition(
   // state machine consume; the discriminated narrow over every primitive
   // variant lives downstream in the runtime body. `.onUndeclaredKey("ignore")`
   // is passthrough, not stripping, so the validated object carries the same
-  // fields the on-disk bytes did -- the recompute below therefore hashes a
-  // faithful projection of exactly what was read.
+  // fields the on-disk bytes did -- a hash recompute over it therefore hashes
+  // a faithful projection of exactly what was read.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope schema enforces structural shape; primitive narrows live downstream in the runtime body
-  const definition = validated as unknown as WorkflowDefinition;
+  return validated as unknown as WorkflowDefinition;
+}
+
+/**
+ * Read, envelope-validate, and re-verify a workflow definition from the
+ * deploy working tree. Returns the validated `WorkflowDefinition` only
+ * when its recomputed wire hash matches `approvedHash`; otherwise throws.
+ * The read+validate is delegated to `readWorkflowDefinitionEnvelope`; this
+ * function adds only the out-of-band-pin re-verify barrier.
+ */
+export async function loadVerifiedWorkflowDefinition(
+  opts: LoadVerifiedWorkflowDefinitionOpts,
+): Promise<WorkflowDefinition> {
+  const definition = await readWorkflowDefinitionEnvelope({
+    substrate: opts.substrate,
+    repoId: opts.repoId,
+    workflowPath: opts.workflowPath,
+  });
+  const label = `${opts.repoId.kind}/${opts.repoId.id}`;
 
   const recomputed = await computeWireDefinitionHash(definition);
   if (recomputed !== opts.approvedHash) {

@@ -127,6 +127,23 @@ When an agent is launched, the control plane processes each grant requirement:
 
 The `initialGrants` field on `CreateAgent` is a grant requirements manifest — it specifies requirements with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority.
 
+## Definition Approval and Re-Verification
+
+A code-sourced workflow definition is approved by **content hash**, not by asset id. Approval computes `computeWireDefinitionHash` over the definition's **inert wire projection** (`projectLiveToInert` — tool factories reified to plain data, model sources canonicalized to `(provider, model)`, credentials stripped) and records that hash as the version's approved identity. The inert projection is a deliberately non-executable approval surface; the runtime evaluates the pinned code to the live definition and runs that.
+
+### The re-verify barrier
+
+At every definition **load boundary** — the top-level run (fresh, resumed, or restored), and each referenced-definition spawn — the loader recomputes the wire hash and refuses to proceed unless it matches the approved hash. A mismatch throws; there is no fallback. This catches a definition that diverged from what was approved (a redeploy/resume divergence, or a post-approval mutation of the on-disk asset that the substrate's hub-writes / sidecar-reads authorization does not itself cover for a direct filesystem write).
+
+**The barrier is load-bearing only where the approved hash arrives _out-of-band_ from the bytes being checked** — from the hub's signed deploy frame or the child's spawn env, which a filesystem-level tamperer of the on-disk definition cannot also forge. Where no such out-of-band pin exists, a gate could only fail-closed-always, so it is deliberately absent and the definition's integrity rests on the asset repo's write-authorization plus push-time envelope validation. Applying this rule per load site:
+
+- **Source-ref closure evaluation** — the airlock. Author code sourced from a registry is evaluated to a live definition and re-verified by project-then-hash against `SpawnTimeEnv.definitionHash`. Load-bearing; this is the whole point of the content-hash approval.
+- **Top-level inert read** — re-verified against `SpawnTimeEnv.definitionHash` (the hub-approved hash on the signed frame). Load-bearing.
+- **onTrigger bodies** — a body is a section extracted from the parent's own approved definition, so the parent's approval carries the body's hash on the signed frame (`referencedDefinitionHashes[bodyId]`). The body spawn re-verifies against it. Load-bearing.
+- **childWorkflow spawns** — a `childWorkflow{definitionRef}` references a **separately-approved** workflow asset by id; the parent holds no hash for it and has no authority over it. There is no out-of-band pin, so the in-process spawn reads, envelope-validates, **and runs** the inert definition **without** a re-verify gate — there is no re-verify step between the read and execution on this path, so nothing here guards execution against post-approval drift. The child asset re-verifies against **its own** approved hash only when it is itself deployed as a top-level run (a separate execution), not from a parent that merely references it.
+
+Both hub-approved pins (the top-level `approvedWireHash` and the per-body `referencedDefinitionHashes`) are persisted on the sidecar's deployment record so that a **sidecar restart** re-threads them into the restored child's spawn env and the same barriers hold across the restart — rather than a restored definition or body failing closed for want of a hash.
+
 ## Capability Grants
 
 Capability grants are the atomic unit of authorization. Every authorization decision is resolved by evaluating grants. Grants can be attached to a role (applying to all principals with that role) or directly to a principal.

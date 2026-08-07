@@ -10,24 +10,36 @@
 // runtime-supplied `runChild` callback. The supervisor wires the
 // callback against a child `WorkflowRuntimeEnv` and `runtimeRun`.
 //
-// Resolution path:
-//   1. Look up the `definitionRef`'s hub-approved wire hash in the
-//      per-body `referencedDefinitionHashes` map (sourced from
-//      `SpawnTimeEnv.referencedDefinitionHashes`). A ref with no entry
-//      has no hub authority to verify against, so the resolver refuses
-//      to load it -- fail closed.
-//   2. Route the load through the shared `loadVerifiedWorkflowDefinition`
-//      re-verify barrier against `RepoId { kind: "workflow", id:
-//      definitionRef }`. The barrier reads `workflow.json` from the
-//      deploy working tree at `getRepoDir(repoId)` (the deploy-time
-//      `writeTree` materializes the file there, so a flat `fs.readFile`
-//      gives the envelope without a git object-database read), validates
-//      the envelope, recomputes the wire hash over the validated
-//      projection, and fails closed when the recompute differs from the
-//      approved hash. The state-machine-narrowed primitives are validated
-//      by the runtime body downstream. Both this adapter and the
-//      top-level run child route through the same loader, so the barrier
-//      lives in exactly one layer.
+// Two spawn types with DIFFERENT trust structures resolve here, so they
+// take different resolution paths -- not one shared resolver that pretends
+// they are the same:
+//
+//   - onTrigger BODY (the suspendable adapter): a body is a section
+//     extracted from the PARENT's own approved definition, so the parent's
+//     approval already carries the body's `approvedWireHash` on the signed
+//     deploy frame (surfaced here as `referencedDefinitionHashes[bodyId]`).
+//     That hash arrives OUT-OF-BAND from the on-disk bytes, so the body path
+//     routes through the `loadVerifiedWorkflowDefinition` re-verify barrier
+//     and fails closed on mismatch (or on a body with no frame-carried hash,
+//     which is a misconfigured deploy). This is where re-verify is
+//     load-bearing.
+//
+//   - childWorkflow (the terminal adapter): a `childWorkflow{definitionRef}`
+//     references a SEPARATELY-approved workflow asset by id. The parent's
+//     approval has no authority over that asset and carries no hash for it,
+//     so there is no out-of-band pin to verify against -- a gate here could
+//     only fail-closed-always. This path reads + envelope-validates the
+//     asset directly (`readWorkflowDefinitionEnvelope`). Its integrity rests
+//     on the workflow-kind repo's hub-writes / sidecar-reads authorization
+//     plus push-time envelope validation; the child asset's own content hash
+//     is re-verified when the child is itself deployed, not from a parent it
+//     is merely referenced by.
+//
+// Both paths read `workflow.json` from the deploy working tree at
+// `getRepoDir(repoId)` (the deploy-time `writeTree` materializes the file
+// there, so a flat `fs.readFile` gives the envelope without a git
+// object-database read) and share that read+validate step; only the terminal
+// re-verify gate differs.
 //
 // Drain coordination is handled by the supervisor's drain primitive
 // (`packages/workflow-host/src/supervisor`), not by this adapter. The
@@ -69,7 +81,10 @@ import type {
   WorkflowEvent,
 } from "@intx/workflow";
 
-import { loadVerifiedWorkflowDefinition } from "../child/verified-definition-loader";
+import {
+  loadVerifiedWorkflowDefinition,
+  readWorkflowDefinitionEnvelope,
+} from "../child/verified-definition-loader";
 
 const WORKFLOW_JSON_PATH = "workflow.json";
 
@@ -137,17 +152,6 @@ export interface WorkflowSpawnChildOpts {
    * invocation.
    */
   runChild: RunChildWorkflow;
-  /**
-   * Hub-approved wire hash per referenced onTrigger body id, sourced from
-   * `SpawnTimeEnv.referencedDefinitionHashes`. The resolver looks up the
-   * `definitionRef` here and routes the load through
-   * `loadVerifiedWorkflowDefinition`, which fails closed when the
-   * recomputed hash differs. A body with no entry has no hub authority to
-   * verify against, so the resolver refuses to load it. Absent (the
-   * default `{}`) means no referenced body can be resolved -- fail closed
-   * -- until the host wires the per-body hashes.
-   */
-  referencedDefinitionHashes?: Record<string, string>;
 }
 
 /**
@@ -171,14 +175,19 @@ export function createWorkflowSpawnChild(
       throw abortError(signal);
     }
 
-    const definition = await resolveDefinition(
-      {
-        substrate: opts.substrate,
-        deployRef: opts.deployRef,
-        referencedDefinitionHashes: opts.referencedDefinitionHashes ?? {},
-      },
-      definitionRef,
-    );
+    // childWorkflow spawn: resolve a SEPARATELY-approved workflow asset by
+    // id. The parent's approval carries no hash for it (there is no
+    // out-of-band pin), so this reads + envelope-validates the asset without
+    // a re-verify gate -- gating here could only fail-closed-always. The
+    // asset's integrity rests on the workflow-kind repo's hub-writes /
+    // sidecar-reads authorization plus push-time envelope validation; the
+    // asset re-verifies against its OWN approved hash when it is deployed,
+    // not from a parent that merely references it.
+    const definition = await readWorkflowDefinitionEnvelope({
+      substrate: opts.substrate,
+      repoId: { kind: "workflow", id: definitionRef },
+      workflowPath: WORKFLOW_JSON_PATH,
+    });
 
     // Re-check the abort signal after the resolution await. The
     // caller can fire `signal.abort()` between the entry-time check
@@ -274,23 +283,26 @@ export interface WorkflowSpawnSuspendableChildOpts {
   runSuspendableChild: RunSuspendableChild;
   /**
    * Hub-approved wire hash per referenced onTrigger body id, sourced from
-   * `SpawnTimeEnv.referencedDefinitionHashes`. Threaded into the shared
-   * `loadVerifiedWorkflowDefinition` re-verify barrier exactly as the
-   * terminal-only adapter threads it. Absent (the default `{}`) fails
-   * closed: no referenced body resolves until the host wires the hashes.
+   * `SpawnTimeEnv.referencedDefinitionHashes` (the parent's signed deploy
+   * frame). REQUIRED, not optional: a body is part of the parent's approval,
+   * so its hash is an out-of-band pin the body path re-verifies against. A
+   * `definitionRef` with no entry here is a misconfigured deploy and fails
+   * closed at resolution. The map may be empty (a deployment with no bodies),
+   * but the host must pass it explicitly rather than defaulting it away.
    */
-  referencedDefinitionHashes?: Record<string, string>;
+  referencedDefinitionHashes: Record<string, string>;
 }
 
 /**
  * Construct the production `WorkflowRuntimeEnv.SpawnSuspendableChild`
- * adapter. Mirrors {@link createWorkflowSpawnChild}: it resolves the
- * `definitionRef` to a concrete `WorkflowDefinition` from the deploy ref
- * and delegates to the runtime-supplied `runSuspendableChild`, which
- * returns the live handle `runOnTrigger` drives across the body's
- * approval parks. Sharing `resolveDefinition` keeps definitionRef
- * resolution owned by this layer for both the terminal-only and
- * park-aware spawn paths.
+ * adapter. Mirrors {@link createWorkflowSpawnChild} in shape -- resolve the
+ * `definitionRef` to a concrete `WorkflowDefinition` and delegate to the
+ * runtime-supplied `runSuspendableChild`, which returns the live handle
+ * `runOnTrigger` drives across the body's approval parks -- but a body is
+ * part of the parent's approval, so this path RE-VERIFIES the resolved
+ * definition against the parent's frame-carried body hash
+ * (`resolveVerifiedBody`), where the terminal childWorkflow adapter reads a
+ * separately-approved asset with no such pin.
  */
 export function createWorkflowSpawnSuspendableChild(
   opts: WorkflowSpawnSuspendableChildOpts,
@@ -311,11 +323,14 @@ export function createWorkflowSpawnSuspendableChild(
       throw abortError(signal);
     }
 
-    const definition = await resolveDefinition(
+    // onTrigger body spawn: the body's approved hash is intrinsic to the
+    // parent's approval and rides the signed frame, so this path re-verifies
+    // against that out-of-band pin.
+    const definition = await resolveVerifiedBody(
       {
         substrate: opts.substrate,
         deployRef: opts.deployRef,
-        referencedDefinitionHashes: opts.referencedDefinitionHashes ?? {},
+        referencedDefinitionHashes: opts.referencedDefinitionHashes,
       },
       definitionRef,
     );
@@ -345,16 +360,17 @@ export function createWorkflowSpawnSuspendableChild(
 }
 
 /**
- * Resolve a referenced onTrigger body's `definitionRef` to a verified
- * `WorkflowDefinition`. The load routes through the shared
- * `loadVerifiedWorkflowDefinition` re-verify barrier: it reads
- * `workflow.json` from the deploy working tree, validates the envelope,
- * recomputes the wire hash, and fails closed if the recompute differs
- * from the hub-approved hash for this body. A `definitionRef` with no
- * approved-hash entry has no hub authority to verify against, so the
- * resolver refuses to load it rather than resolving an unverified body.
+ * Resolve a referenced onTrigger body's `definitionRef` to a re-verified
+ * `WorkflowDefinition`. The body's `approvedWireHash` is intrinsic to the
+ * parent's approval and rides the signed deploy frame, so the load routes
+ * through the `loadVerifiedWorkflowDefinition` re-verify barrier: read
+ * `workflow.json`, validate the envelope, recompute the wire hash, and fail
+ * closed if it differs from the frame-carried hash for this body. A
+ * `definitionRef` with no frame-carried hash is a misconfigured deploy (the
+ * parent's approval should have carried every body's hash), so the resolver
+ * refuses to load it rather than resolving an unverified body.
  */
-async function resolveDefinition(
+async function resolveVerifiedBody(
   opts: {
     substrate: RepoStore;
     deployRef: string;
@@ -365,7 +381,7 @@ async function resolveDefinition(
   const approvedHash = opts.referencedDefinitionHashes[definitionRef];
   if (approvedHash === undefined) {
     throw new Error(
-      `workflow-runtime: spawn-child has no hub-approved wire hash for definitionRef ${JSON.stringify(definitionRef)} on ${opts.deployRef}; refusing to load an unverified referenced body`,
+      `workflow-runtime: spawn-child has no hub-approved wire hash for onTrigger body ${JSON.stringify(definitionRef)} on ${opts.deployRef}; the parent's approval should carry every body's hash -- refusing to load an unverified body`,
     );
   }
   return loadVerifiedWorkflowDefinition({
