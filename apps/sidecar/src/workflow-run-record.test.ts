@@ -85,7 +85,8 @@ const MULTI_STEP: WorkflowRunRecord = {
 };
 
 // A source-ref deployment: the record schema's discriminated union REQUIRES
-// source + closure + approvedWireHash for lineage "source-ref".
+// a sourceRef pin (source + closure) + approvedWireHash for lineage
+// "source-ref".
 const SOURCE_REF: WorkflowRunRecord = {
   version: 1,
   agentAddress: "ins_dep_src@tenant.example",
@@ -103,13 +104,15 @@ const SOURCE_REF: WorkflowRunRecord = {
   },
   approvedWireHash: "c".repeat(64),
   lineage: "source-ref",
-  source: { kind: "registry", registry: "npm" },
-  closure: {
-    schemaVersion: "1",
-    // The workflow-definition package is the single top-level pin the sidecar
-    // re-materializes; its transitive deps would ride `entries`.
-    topLevel: [{ name: "@x/wf", version: "1.0.0" }],
-    entries: [],
+  sourceRef: {
+    source: { kind: "registry", registry: "npm" },
+    closure: {
+      schemaVersion: "1",
+      // The workflow-definition package is the single top-level pin the sidecar
+      // re-materializes; its transitive deps would ride `entries`.
+      topLevel: [{ name: "@x/wf", version: "1.0.0" }],
+      entries: [],
+    },
   },
 };
 
@@ -129,12 +132,14 @@ describe("workflow run record store", () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
-  test("rejects a source-ref record missing any of source / closure / approvedWireHash", () => {
+  test("rejects a source-ref record missing sourceRef / a pin half / approvedWireHash", () => {
     // The whole safety argument for deleting the restore loop's hand-rolled
     // source-ref guard is that the union rejects EVERY malformed source-ref
-    // record at the scan boundary -- so check each required field on its own,
+    // record at the scan boundary -- so check each required piece on its own,
     // not just the all-missing shape (a future combinator swap could keep
-    // all-missing rejecting while silently admitting a partial record).
+    // all-missing rejecting while silently admitting a partial record). The
+    // `SourceRefPin` co-requires its `source` + `closure`, so a half-populated
+    // pin must be rejected too, not just an absent one.
     const rejects = (r: unknown): boolean =>
       WorkflowRunRecord(r) instanceof type.errors;
 
@@ -147,17 +152,25 @@ describe("workflow run record store", () => {
     };
     const source = { kind: "registry", registry: "npm" };
     const closure = { schemaVersion: "1", topLevel: [], entries: [] };
+    const sourceRef = { source, closure };
     const approvedWireHash = "c".repeat(64);
 
-    // All three required fields missing.
+    // Both required pieces (sourceRef, approvedWireHash) missing.
     expect(rejects(base)).toBe(true);
-    // Each field present with the other two missing -- each is individually
-    // insufficient for a valid source-ref record.
-    expect(rejects({ ...base, source })).toBe(true);
-    expect(rejects({ ...base, closure })).toBe(true);
+    // The pin present but no hash, and the hash present but no pin -- each is
+    // individually insufficient for a valid source-ref record.
+    expect(rejects({ ...base, sourceRef })).toBe(true);
     expect(rejects({ ...base, approvedWireHash })).toBe(true);
-    // All three present -> accepted.
-    expect(rejects({ ...base, source, closure, approvedWireHash })).toBe(false);
+    // A half-populated pin (only one of source/closure) is rejected by the
+    // pin's own co-requirement, even alongside a valid hash.
+    expect(rejects({ ...base, sourceRef: { source }, approvedWireHash })).toBe(
+      true,
+    );
+    expect(rejects({ ...base, sourceRef: { closure }, approvedWireHash })).toBe(
+      true,
+    );
+    // Full pin + hash -> accepted.
+    expect(rejects({ ...base, sourceRef, approvedWireHash })).toBe(false);
   });
 
   test("round-trips a schema-valid record through disk (single-step)", async () => {

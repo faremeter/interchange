@@ -12,8 +12,9 @@
 // key), `approvedWireHash` + `referencedDefinitionHashes` (the hub-approved
 // hashes the deploy frame carried, so a restore re-spawn feeds the child the
 // same re-verify anchors without recomputing them), `lineage`, and -- for a
-// source-ref deployment -- the `source` + frozen `closure` a restore needs to
-// re-materialize and re-evaluate the pinned code. The definition itself lives
+// source-ref deployment -- the `sourceRef` pin (source + frozen closure) a
+// restore needs to re-materialize and re-evaluate the pinned code. The
+// definition itself lives
 // in `assets/workflow/<definitionId>/workflow.json`, referenced by
 // `definitionId`, and each step's grants live in its agent-state repo, so
 // neither is duplicated here.
@@ -25,8 +26,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { InferenceSource } from "@intx/types/runtime";
-import { ToolPackageManifest } from "@intx/types/tool-packages";
-import { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import { SourceRefPin } from "@intx/types/sidecar";
 
 import { writeFileAtomicDurable } from "./atomic-write";
 
@@ -71,17 +71,18 @@ const workflowRunRecordBase = {
  * Validated at read time (the boot scan) at the trust boundary.
  *
  * A discriminated union on `lineage` encodes the source-ref coupling in the
- * schema itself: a "source-ref" record MUST carry `source` + `closure` (so a
- * restore can re-materialize the pinned closure) AND `approvedWireHash` (so the
- * restored child re-verifies the evaluated closure against the hub-approved pin
- * rather than against a sidecar recompute of the on-disk inert projection --
- * the latter would collapse the out-of-band-pin property the barrier exists
- * for). A malformed source-ref record therefore fails validation at the scan
- * boundary and is soft-skipped as corruption, so the restore loop needs no
- * bespoke source-ref guard. A "live-authored" record (or a legacy record with
- * `lineage` absent) carries neither `source` nor `closure`, and its
- * `approvedWireHash` stays optional (a record predating that field omits it,
- * and the spawn core recomputes for that legacy case alone).
+ * schema itself: a "source-ref" record MUST carry a `sourceRef` pin (its
+ * co-required source + frozen closure, so a restore can re-materialize the
+ * pinned closure) AND `approvedWireHash` (so the restored child re-verifies the
+ * evaluated closure against the hub-approved pin rather than against a sidecar
+ * recompute of the on-disk inert projection -- the latter would collapse the
+ * out-of-band-pin property the barrier exists for). A malformed source-ref
+ * record therefore fails validation at the scan boundary and is soft-skipped as
+ * corruption, so the restore loop needs no bespoke source-ref guard. A
+ * "live-authored" record (or a legacy record with `lineage` absent) carries no
+ * `sourceRef`, and its `approvedWireHash` stays optional (a record predating
+ * that field omits it, and the spawn core recomputes for that legacy case
+ * alone).
  */
 export const WorkflowRunRecord = type({
   ...workflowRunRecordBase,
@@ -89,13 +90,13 @@ export const WorkflowRunRecord = type({
   // Required for source-ref: the hub-approved wire hash the restored child
   // re-verifies the evaluated closure against.
   approvedWireHash: "string > 0",
-  // The source-ref inputs a restore re-runs `applyFrozenWorkflowClosure` with.
-  // `source` names the registry the definition package is published to; its
+  // The source-ref pin a restore re-runs `applyFrozenWorkflowClosure` with:
+  // `source` names the registry the definition package is published to (its
   // token is resolved from the sidecar's env at apply time, so no secret is
-  // persisted here. `closure` is the frozen dependency tree (concrete versions
-  // + integrity SRIs) -- plain strings, no secrets. Both rode the signed frame.
-  source: WorkflowDefinitionSource,
-  closure: ToolPackageManifest,
+  // persisted here) and `closure` is the frozen dependency tree (concrete
+  // versions + integrity SRIs) -- plain strings, no secrets. Both rode the
+  // signed frame and co-travel (see `SourceRefPin`).
+  sourceRef: SourceRefPin,
 }).or({
   ...workflowRunRecordBase,
   // Absent for a legacy record; that path only produced live-authored

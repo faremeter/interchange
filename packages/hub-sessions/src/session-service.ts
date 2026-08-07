@@ -43,7 +43,10 @@ import {
   type ToolPackagePin,
 } from "@intx/types/tool-packages";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
-import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type {
+  SourceRefPin,
+  WorkflowProjectionDefinition,
+} from "@intx/types/sidecar";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
@@ -479,17 +482,12 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    */
   approvedWireHash: string;
   /**
-   * Where the definition's bytes come from -- the source-ref that names the
-   * npm registry publishing the definition package. Carried on the frame so
-   * the sidecar can re-materialize the definition from source.
+   * The source-ref pin: where the definition's bytes come from plus the frozen
+   * dependency closure the hub resolved for it. The two co-travel, so they are
+   * one required object on this arm (see `SourceRefPin`) -- the sidecar
+   * re-materializes the exact tree from the pin at apply time.
    */
-  source: WorkflowDefinitionSource;
-  /**
-   * The frozen dependency closure the hub resolved for the definition's pin.
-   * Carried alongside `source` so the sidecar materializes the exact tree the
-   * hub pinned.
-   */
-  closure?: ToolPackageManifest;
+  sourceRef: SourceRefPin;
 };
 
 export type SendMultiStepDeployFrameArgs =
@@ -529,8 +527,7 @@ export async function sendMultiStepDeployFrame(
       definition: args.projection,
       sources: args.sources,
       approvedWireHash: args.approvedWireHash,
-      source: args.source,
-      ...(args.closure !== undefined ? { closure: args.closure } : {}),
+      sourceRef: args.sourceRef,
     });
   }
 
@@ -637,8 +634,7 @@ export async function deployCodeSourcedWorkflow(
     sources: args.sources,
     projection,
     approvedWireHash: approval.approvedWireHash,
-    source: args.source,
-    closure,
+    sourceRef: { source: args.source, closure },
   });
 }
 
