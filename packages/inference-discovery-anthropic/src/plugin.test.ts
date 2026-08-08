@@ -200,6 +200,9 @@ describe("buildRequestBody — wire-shape spot checks", () => {
       "claude-opus-5",
       "claude-fable-5",
       "claude-opus-4-8",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "claude-sonnet-4-6",
     ] as const) {
       for (const capability of [
         "reasoning-content",

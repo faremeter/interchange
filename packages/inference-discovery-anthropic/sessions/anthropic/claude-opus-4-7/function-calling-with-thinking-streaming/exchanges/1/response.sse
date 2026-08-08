@@ -1,0 +1,36 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-7","id":"msg_011CdqZ5mrx38uq88sCJMiEH","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":1150,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":11,"service_tier":"standard","inference_geo":"global"}}      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}           }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EtsCCokBCBAYAipAqqlfgYR76aOnpxdMDHH8SS0nwq0M+FmmF/x5kkc+ntO8uV+aZg1jESbdclw0VI9XxMc+mOheb6uYrSTvydiX7DIPY2xhdWRlLW9wdXMtNC03OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDK55ZuYmgt8uuqZL/hoMfZPPPBPQCHB9t9fFIjArS/eEEXy0KvF38QLWfDYOryrjQ+vdlwH1mrO192jdtd+VqTwOJGgs4HT25rFC5Lkqf08tIIWi2pDHf7FgEC0o4K9wlco8AfAnwbYXPvLXl5TtjwyBacw9/oJxfeg2voQK6+A9lImBHqiMmBWZ1avj3oD81SWtQtD6Fhl6IoTscReSI82vw8cw7pSQ23+Jnfi4zZPBnIM22fCV/OwIgQr1Okn1OGZ3GCUKBcxqa0y2n/gYAQ=="} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"It looks like the weather service"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" returned an empty response for Boston, MA, so I wasn't able to retrieve the current conditions. This could be a temporary issue with the service. Would you like me to try again, or is there anything else I can help you with?"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1              }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":1150,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":124,"output_tokens_details":{"thinking_tokens":44}}             }
+
+event: message_stop
+data: {"type":"message_stop"     }
+

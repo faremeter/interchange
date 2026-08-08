@@ -1,0 +1,67 @@
+{
+  "model": "claude-sonnet-4-5-20250929",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The user is asking about the weather in Boston, MA. Let me think through this:\n\n1. I need to find the current weather for a location\n2. I have a tool called \"get_weather\" that can look up current weather for a city\n3. The tool requires a \"location\" parameter which should be a city and optional region\n4. The user has provided \"Boston, MA\" which is exactly the format needed\n\nSo I should call the get_weather function with location = \"Boston, MA\"",
+          "signature": "ErYFCpQBCBAYAipAj5hRIMqYAn/eUaPY4R1afIuc/t8SkkD+XZR8G1Jx9/KRfMX7tEjqu1FK8AuMT7ts+Z9bDp+NfKRayTDGqsu+tzIaY2xhdWRlLXNvbm5ldC00LTUtMjAyNTA5Mjk4AEIIdGhpbmtpbmdaJDc0MjMxNmM4LTY3MzEtNDAxYy04ZmI3LWI0MWVjODAyM2NmMhIMwlHigQCzAgYbl2I9GgzueMZ8tZSkp0L36NoiMO6NOCiPHcCf3yBV8c99Sram5kBwGBkjdQl0gAIDVu0hhvZzOzLVsWeOUB926ExYfyrOA3iv59ArwiIUIno/CMm59ZvpgPm9O48xydOnrwyFHIypI2hr9r1g1eWkEUKA7y/GyO+xTa+A3pJp5FZOk2LPccS0NyPqDUsF+xXlJNxlt8H87dYfEZKEv1vKG6NCu/SZXSVzmLncSE1zB1eE60MEczcomnrPZ8/gzX5BdkVlK06A2Ugc+FKrZrqO9Lfx2gM/ghI3Alzd1Kd3L57BfGiAdrGs81eQcvj3nryqZDezmtqgSbc8lehGa91lcfQkH/p9JqH2/hslX08nlpTrM7en/QNYOLt6UtW+N17N7eV3UfT2syjjTjctE/jCnIkz4yJOha2uq8XlyMBiQ8tCropD2MxV8hwB0lq8iNYoVtVOWF+7MUq1M21D8qy/5BaCNP6y0ywLexkbclRyUkC2xssV+p11Oh6DQg3o0lUTtBekvPU1sODQD1+Rj/Ib85Jpwr2wLxyL7+St7bx3aoSCmOphnK3nh7JKnEWRoe92uMo6NwX62cHACc6aXq3+x5Z/0X88fVEw4yuUbFk1Fi6pKvE/Ux+22w8fC2w1YJ3jKQcUVGl6rkS8JSU/yqu6SdT6c/hVsyxzfrADy+a3PCkW08R4SVEEcjlBF7psg5/M7bum8hgB"
+        },
+        {
+          "type": "text",
+          "text": "I need to use the `get_weather` function to look up the current weather for Boston, MA.\n\n**Step-by-step thinking:**\n1. The user wants weather information for a specific location\n2. I have the `get_weather` tool available\n3. The required parameter is \"location\" \n4. The user provided \"Boston, MA\" which is in the correct format (city and region)\n5. I have all the information needed to make the call\n\nLet me call the tool now:"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01HKFsvccmdbVeL2rY8msyxT",
+          "name": "get_weather",
+          "input": {
+            "location": "Boston, MA"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01HKFsvccmdbVeL2rY8msyxT",
+          "content": "{}"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Look up the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      }
+    }
+  ],
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  }
+}

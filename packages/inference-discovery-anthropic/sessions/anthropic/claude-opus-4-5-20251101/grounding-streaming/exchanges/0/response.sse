@@ -1,0 +1,201 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-5-20251101","id":"msg_011CdqZn3zRw3qmsw2qbCk8y","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2227,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"not_available"}}        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01HZkSjLWnHnTtLQoSo6VGxM","name":"web_search","input":{}}              }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" \"top news t"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"oday August "}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"8 2026\"}"}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01HZkSjLWnHnTtLQoSo6VGxM","content":[{"type":"web_search_result","title":"Video. Latest news bulletin | August 8th, 2026 – Morning | Euronews","url":"https://www.euronews.com/video/2026/08/08/latest-news-bulletin-august-8th-2026-morning","encrypted_content":"EoQICioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDCTYTeAPcJR8b/7GjBoMFa9khWowFwZvcwMZIjBjpQttSXDIsMrJqr274iN8XjI4pOHdKtLqQszo3GxlUTDENsN+a49ax+kbySnw7AsqhweDFcJ/rA6ePJDHVzaVcPebWdjrxmXiwKK5mxuC5wAK5R0b70H4d2gYwhGaLUUGT5w9uh7m4F0VIs9tV39mUsZF6e5drWSNdwcLxTBvN7EfVXL/uuMqliw1k8JTMJUUi/jgpuyR0CZ5eBEhoZfhN/mhbQq7TXtrb9Oo8q+SFoOHwVWQ4XbCm1u6D+ZmMkli6U3cCpi3SxnVEn+YyIG5Mc1CpxY1sY6v/mZoFX9VRWMa9BNx5DtM9Pt6WqCP51z1f6v7ZcTNlVYyriqo/80kilEYbHEFTM55q1sGaRgB/3GXv0uIuKw1y0EpV0ePDESv9GKSkGd7xLkCHYCD5x0FdMjDFBFo9m5Pe5mSd264pjQx/DABbowZ/LzHSVVXCZppb/UDC/a0Glx//zXOQgV7rj3JdOFbW60g2pBkpNZmfRT+lOHiv1zCUEUuA4wnkVf2qvYElcvKpQ0Pm44hZu0ExAPxg7+LLZDTPJ3L1/spgnYGdYad3eA6ThZx3kaSYBy8pWMUFE6cN1SXh00gPCN14ZJRmIMbGyDCm7xH86QbwgRBSCfOmeG38RHDCLS1N/AJ3rUvtkwQb8aCTMtP1ax16DoVQQ+4tre+WnUPFbfyycqAXLJxtR7LCvGbxTACCrqvGHFrFAcqNuAkoyCBdPtXl4BvhrnZZE9PY3PbC57xGLoXbSRXWLs/U2ngr6F78YADW5YABbe5CNSwj09iqK0GFgCmTLzrqZAL+Y+hE0PJ5297yN0of9iOV6rTFUqkb7c6U+/93iiDh53ByF3narqeJrFg5LlBxorpf3GawiGmy8uyUj7FBeNDzXlGJ4ZnWxGrI+65VCtfeBXxXijrgqX4beOd8owPiVSJru2VNiJs5DUnLaDt6cfi4wUBeBPpoML6oaaf+uAixP4i+rSUPz3qjWDMdaRPtkWG+X87wdOSLQ6m5LaOr+HB8mSVG3INV2BvGxP75S+U48OifmS4+A+US5cvL2HC1baFViRRo96HYH712T8j4jndleR6sXSftEPktYFu8h4s2bTBStIQC8rOkSaO980IYZQUtcKm+PKbTSTia44tlh13eI51dV9NvpWFvYVxl4YWPmG+AQhjL+4drbo1ruaJpdeSIfYPqpp/KKxDCgc+DnTa1p6PvtLotJAH9HX4q9B1GkELeABPGrwmrG/QM7ZW1HrgxGugD3phLcApA1d+0DJLbyYYAw==","page_age":"11 hours ago"},{"type":"web_search_result","title":"top stories","url":"https://www.euronews.com/tag/top-stories?p=36","encrypted_content":"EuAQCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDGnLiChBt9XHbmzHLxoMb9sWCkFo8laNDWexIjAs+mlypFonm0EHEALfZYNiCPqO0p18pRQ9PD/ZXhhhFFymLEz7FW/rt/l6Lx+nEzsq4w+7xl2pR6SxeIBXZEYrg99wpg7TVFTJTXCeXcCT7vjCttGjqjIaiQh97bacluGelrDogxYXDcD7yVuZvMVBsD4K5KvhSTEIGEDtmlt5/KIFrb6XvJ5bkS+a0ocePtyVcBQxaORwsJJ42sx6ee2X8mPz8Z85dCBchu5T5w35osXH25OKVjiT0gTfHsj44xPqbyg6eyeQEC7vFUvwGF9wN4omxaC5beaEhlXa/ugOadJHgeEFgnPZ/9M+ASYt9pEjBDORwW982KMKOiUeLOOKA1XHCpXBnjQRu9oR1OeJ1cXJgIBM+aG/HBIaw8OYwE2kbqX0FKWT4OQEE7rRmMaOWg/iP9o/PbeN/z4FBfsho7DxJmgopT+lTIbfzfBB+1jeoeDyGPQqgu1JuIarZNuDl68blKLiLGkj6VTCpJNbjbcpxVndDzIdE96T+Q3apwSLYac5bFWlxNlnyO3kBCRtvU5mCP5a96obSzFPzX2Q+0y1LQ49DxNFIv4mL3An55gXG3A5oH7+4jh8PrhD8SgnKyBI/GrIH9DZkK7VpmVm+PL6Mal1sGhQ9Gm0iY11ukWFyYseLY0EJaezV7Xus+t1F7+y2kbk0CWH4nBGAkPuENW/8F8PNdLRulLznucO56L0C1zsQ0/WGah6TAfstHifjQoHJaw+zu0oN00sWLRWrKkVPJFHoeXWzkzK/ODetPs5NSrCDAG6v4UB4t7Pv2CDoysMkiqxOyeoIPjlwVLG+0smRT2OFjwtlcRFT7r6LZxUdibzPqrc5OmaZbCl8zH9sdSahVJ1nYyNLUIQqpbIecJNO5KrG7Y09WqoXBFPzitOHmK9iKdBom+0hsyfYl2BPyZF+/H5jJC3Rj/TkSu53SHffuvV8YcAVNJsGvnqO7IDXX0e2JzUD2p5slbCvD8liT/KW/2g3756u7ud405kvXsHxH3+RnEpIcfndvfCc0eFQK6+0uOkLKETaRDwJyDv/IsjQF6Z6XMVnKVvBTPD9AOVUWdOZ4/ziBLYTeJx5bOztEQN3ekoBYZhvAHeoZWmz+OTJ+ZsQWYb6N+POFtZhhAHsfJYoam0c58AyHIsUU4OwrZ4islwQmYex8U27H4lk74kpg5v/za8W1OoKr4StE/MBvJBxnT4+9/ANOX3RsIL0zUZnCE4RoBb+hIQ9QXsu773GtHEchMVID/J5Ij/CdYyUvG//ziba1S4VWkupjIOLRCWTzqRrqTGPalhkRktbZN2yI8l3TqztyFJ8FHhjAkR5SoA6uXzncT+wtzxnRuE9P7gT/GcXdioF0qjs08JXncv3YSmiIagHzgyTqUSDR2nTrSt7Y/gn+uiOgxfRKf250HivNEKLbdQvfPG7TD60K7skIonbx8RJLlGK2JGAkqUnuq+pTRW4fp6rH3UYdo/J+6oI9ZoJVE5lyU+KtoQA0F2J2o/Wy9OAJdOwuVgzpJh9rHEx93SVu5aEQx2Ly4fuEktKtbI6eeCFDad011Wuwryf9hdWwkKrsxKl6mI5d3vPRy3ahOQv5ONxCJrY8qzaXUhjkgQy4HD3PMy6Ys7wgUOspzS1JYDpoPjqNrRodYwzmvt49vZ3m6qafN2O0k7/QGd/Q6u+FxJ9F7IEQ48xq6vmdpWV297IBeGKvz0wLRqlhJbbwjKb18HU2Kn5CogPLTGeewrn6Etytb3g4ngMBiXA2Qog4OSS90bQB5rcd1FxzHjDpl9R2BNnkQnwq1c8YDQmxbytEKE3hpn7LTe7wCM0m8PTVvNlG+hpFNNVWmn94QlXPmOQNcNfK2J6XGzC9px3HSUeQK+xABE7q3ZPzawShq9UUa+y07BO13JnOP7YyXRD0vy0DB+qxpTH2p7w1EZeirz4594IGg/eWm+K4QWkoDHYB9rglGZT0yqYgSc7R+FbmYUIuDAkvGO342GkgBXmfrsCk8y5cmEk+bB1TG4nXKQwZH0sHMBC3DdXn2w+Oq7VykrwX0cSOXVtsANgw4+xXp92Htj+V7Plesev2L9+rwytZSXadUx7XNcN39SEAgkhYvNJ2AZKC+fUsmWmTADC9P4M9pu4j7vvuopDxSKSnidVobUTrdFEP9RtLIan1/BT1rnww4pxqmnhpRjSs9ADGSxjXw0Iyli8adjSAMXjkDLq7OZ+Jr7Wxzw0D3gOODzFxfZSS5aNC7tjlMCWRc8QswusUx8sDs/HsU884Geub0cxbdcDHlE90UcUj4bWM5NPxnB1xWqWAWCoylLTicJWGvXmty7SG9JIGbo+gjJHFVHQK2FNCqhR2lDqfdvS2k6g4spnDOBw2+ftt7AcTZY4pJdy2GqVjfercj0TEJ1dmSDyc48BCxiggfRGSbDTL1Mmdk5XowGw8CJFbSJ5z1ZUvppD/KMRWeM5tX/FGjRBaCjJ9egx6j3pvJJTa3oMhv+9km5CtB780ifMMMg8WO90RZtIqdcc+Al7hxVQBJSFx6pS52aiWHGDM5gLfJ9UmlVlFCT1EVQU3h2EcNi5HXhfulMw8Rp1tSoXMEO7NFz8rWiAr15te51GzH99AZw/l1R45LpZGTAGnRso+jN1k3u4GQxj1oZqHzCtsA6Nl+PHCcSvbfWMPxXpSJV2orjj9EUkVZh04zvlx/wwiC0oMZCzoHHnpo5H8rf3JEMiPCbiM6oPAIbpGj3sQUIQtalCN/44x+jcJ/yLArV4sDQVx3o1RsYAw==","page_age":null},{"type":"web_search_result","title":"euronews.com","url":"https://euronews.com/tag/news?p=6","encrypted_content":"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","page_age":null},{"type":"web_search_result","title":"top news stories today","url":"https://www.euronews.com/top-news-stories-today","encrypted_content":"EuAQCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDHHkzT9kHIiIPygGxRoMl0whJ6zESJw7Rr7sIjDmkGg9DLFGGOTeClJi3uATwX1FdvqvQNarNHbbKxEiVxRtwXmCZfYf3QgcHagIG8Uq4w97PRVxZsLwYaIvOQ14/wdQI0xjeJAvIYqKhDjDOnQ0AymalGWXXMWw3IQLzEnNHLYGIZOZeZtRPGuThZB8TELabMPB2SqmBCLn0tMtABippW9TIBc2413PU1LWb97yrLnE10Kw3SWAa5iPfnKBpuaXC9VBBenrLjSeKDacNWkPkr5rlPzLbrSjSBC+25338bJoS0jc+9MCCbkM2B1MQj4L3lNVkvHm67XR93kaOJUZ3Nu7UCOd+qF4CIgnlu1hON03Sv/7L6Ac8gracvjnUIB5uQ/T56A5VEXjKlHIl4xWm/9tHq6XYYzqWkyJYOKHTYUdXASn1FcM04xrp565An0A7VjYuT9h6ldyX8K6PrUlNSUisJSi78myekGaCElo+pbiIowHzqNRLRa9YL94YiOFw1AT3D5MozL0wx6FYHbVsn2sLais/wpTaIMCs6Hp9maT7VtdnkQZf/U4NNYvssUgLcpVLyiEjpS9q9l5dsiy+pw6OWuxmZmcU5AwTyVdzzR66Zcyg8I+Z483gos+LwktcGqXMTK84Qe5VzdguW62zaZmT/3SDs5viKthAbS8pptizvzd+0BMqIGH45Hh17NvX5dySHgMOihUgOIOLoMwJWk/BcACdSxneDPfp7clGFu3GmzdYpsBOwFuPx6rrqnNfd84rxXRSd7ysia/hoTGUuKVX8DDk//8MvQ81YvD171olvyx7min56b09h8BmyPhqncoTAeG8Qz4dzP69TXljMW5Kx8z+KW8ZUSisBUSZEE2rAF+2nuioGdnF24NtUk2d8H2RpA1bbP5vA/g39DOvLtdh6icqlwNpfRtJrvGxjxNF8MIu/tWgDuDoeQaYVdO92p8L2YAcR+GLb0u5PZsXVGxLaT9QaVEpgdWzTk/TdvU8MhdzmiKDSOGIRD0riVUzz9hv9cpZQQvo+r1CdoCFNEwsO3Y8AhBhyfdbPODvVN5nkqPqp1QeeM50Tej52owGtx7JJasnpl8ir8joDDIOY8aRdMewq5lYF74c7NL2l9O9k+NZxLVcyfi5RIH+4ZX06pP8qq7fVrVrwUb75EMrW5x/Qd1DWdigCrJ8LgvmW5Q7uZf/TaaUlJ+q+wAyWS+9GqOR4wCDjCknp2vCwgRu0d9Z2kwxt9lX45e8W4DBscn/fkBrXZMGmZpI9udQ05eyzaY2UzNc/UK6Igd8VmUcNV8u3tdr0m3Ut/fwj2wCKb9JQqElo26dL/Z0mw+hjRFNW0MzJH1TvJAJJQ/rP7V79yoHBK7vObV1ID2eaq8l0IbjnT9I078/wpXv0HqFauYY1sSOC3R2egcc1EH0RHmmpfeIgXlr+/2vdT6jT1OCeYqxQfUCZzy0Bxrhuei+Tr8gTBB3EO4S01NlME12Ew13TCIXmxSL3STXcQuKyem130pCLSK8Fnpr6IB0zFQ+JXaVoc1OthZRikiEGM19mmuiaBekltusE0hil9SUiVdOkGCuE+BigdUNaHGbcMEnLQkVHvvfbWw1gE+uAxEWyHYbEOT97cQunifRJwlb6EkGByKatoF7kH3R8eicd1xXr2OQIF2eRhSIcc6T1hqS7RSIqh2Fk2OazAaNyAP130HiXKM4VsBt854BmfGeeqeV5tzyj8S3i0EgN1ao85/NZ8tuif75CX0cDlSKbx24TYgBZOipUh8mTiaRtQhY+A9yS5ck14L+8mQmJ6IE1ossMILrUjZ5Bc9+Iz+rGQUmOgXRvoFwos0kZsjGjxrWLT0j0E4KZJUIdkNOreoeSpxWl+T0qsauBAGfNK7YUqcMBKpn0EiQydyxyQKZHwaccNrfNcGnkLunvRxsoDQIdGhz0s16h1WmF7UgmCbpi6MetXGT/FxT1FyqJqjxmKyp+zIFqNOayMgh5DqjzNGuOJkrfXdw27RJ68nk+Fee1kddQQhOJ4L2Y/z0QZtliQm9M0O+a0NJzcR1GprzC2Ldlnw1usY9Nn+cZmCqJr71aXjjE3lHlGiktA5KmBaSP49H2tUfc6XvFP2yhbXaXo2deGui7K5KBEMg5YiH9IdhEx9IUwVHbHjFDrWUSxi4YEOAj+zvElxhpAknB18mRuVDE5+Z271xYT1aGQH+lf18s0beS5vZFv53da5n5iavMkcgzC2f3xOcPtZwia98dR1S97KzNcjP6xFCu5e6S+3Tylw//F3mITAWgqQ1/OxsrnoN7jsBSqjhBT9i4D5MhKEu5r73CaTQbHBNxsbKgCsrkVIx3OiMBXTFAwuMbTWcuvSIMuqmLcUUJunQlpwIHT1puF/uKcBHHXlXl8X0hAooVP3m/Dq/KrvHRFBB4bXV57kMfAXEitstcpNigs6iRMRUHaNkHKLDdwwzQxRmaRxlWZ2djas5MM8FghyeJDaIfRtgYTqwAB77HsjAB/1RPVDS3sKqr7T9IHsuxriQHaY0/wiTSHvVVlIBnVLPkPixTLJjePi00jeMk+uRaISk08KPd0AOUFfRqQ//Egpgtv8kxfCjz9NOdie3qLz8tEJ2Vxkr06ypG5aOez+4EkU0KyjNf/N+Ko6+iijc1QMB//bRysCOcodp3mpIPyD6hBHnMI8MHAgNpz6K4wW5j5Mb0ETKDWvDGa63nKUy2GRJllskW3qgWiUhn/qV5DK2BtrbrnilbfiG/wHkisPgcgZyktS9tQ/nkYQGACJLNt0wHuNY8KY7inKIeF0+zcYAw==","page_age":null},{"type":"web_search_result","title":"www.euronews.com","url":"https://www.euronews.com/tag/news?p=5","encrypted_content":"Er4HCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDNWcYt3tpQ74ucjGWRoMs02uXiPguQBsW4UxIjCUkusCUu7wQ7OPCW8abvEgforCYZDAVnX5k5nVk/KZK27L5Jfkej2kb3U//Djn3bUqwQbua9pEQGZyTOCz+8LTQ0+OkG7YieF2TJ4afoSDpIUV9JiF6BZSErhyLNz9kag0N+lKlw0eA8Mq8Un9ukcY3JEAfh16zIi0pLcYktUMEns5sIhIYc0ub494e+JGZ2xFchdN6KEIr+ZSkEV43RtVr1OhrwjoaLtKcPd/7sP6lP7ofF/jPZzSdgk3HwfAxV+pCiKqeYVjxDeFXF5wNExOWgyb1isMiFccHGDzYJQfG/j5aIFCH0A153yV/fH3CvqIJQkuirAsle+isKNzeANfroiaK4FMxY4gPFVm/KLSVrMppVLE4bQeyluF58+s0nvuP5fk3RpnQ4u2bCM0PVzXCA+orcOtRNQ2gfcEjFDfwjunnTdShdka/yzGCzO8KLbqbruCHdph2ntVAeBEpTo5tGGKahdvMs8Gbj0657+A3oUvY6/z5Eq4T6qC+DuHaT1y3KJ8/3dz4mFzfH95uZbgASOsslqj4exuc7Fs4Lh8jJxqbXEutAM7MIE/96J3jTRSrRX3XyThkATMuAODW0IUKrKvBdYq+3pQsp8jmpKGyR7p0cofjM33+Tiol4Y2M/e+LYzbTO8wup8pjJn2I+82I35tidBjxqeVlCVmg30JeSzv2rwjRYHbW3MCWQKF6NyNmQ6J5yT+z5OF4R0OjIKYU56Xtx282Cih/j952U8rayNiDPeIRrlY0ipKxR3LBzgcG1YXbncvFXwCNOgw60vIl/HjFinu8qK+zT//7AxjPVFktW/xHpnFmaYeSDUz4xpHmeMh4grLN9O6fmPiOERxKsKB0O44R4tfv6CAniEsiar68RDddQieFRhs5geSoSnkxvPvAnG0xGAIY4If19ORgyY2OozYYWbAx/YXSJm8LqVP17GLXMwhB33a7ilwARculnHHcmAs8ccSv0FZBzYM0GFZ/0r7dzotQhnvvpoG0p365OCbAgbBh81KZM+8Jwt9uQPgXB/PdEAMIHyDgLKbPQIkY0JVH+pgsObAWtAtL2CHYJ3T5Ic2vpGz0dvbfr9Xm4m/1DDebcvIIPNYp/5j/nVM3mJzLhwIFdaJ+E+DQz5dSVP2HCx82SWpFt6UqZuTC+sChR9wBO85ZKVKqeY2L1mdERgD","page_age":null},{"type":"web_search_result","title":"www.euronews.com","url":"https://www.euronews.com/tag/news?p=1","encrypted_content":"EqwHCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDJE/wdoxJMx5KlGMuRoMjbJqE8PEMkGiE3c4IjAlUGuR4YL8PPvLxUyLBMh/xqEwnRzH3p3beecPLv0QdXTwlae/heD1kvk3l+o3PesqrwbBLGBSk5mj8OZztkqkogUXKU9kE4MU1Uh/Hu9CqIPdc7HxIF7HUxHc3+I+qMUcF0F/BTcXTdQCR5X6MTkBy0E6yTvkKi/yDyOInc36yL9DQuj7cKqhauIb4X5zVaO9ZwF2NApfK2Yikhb7zsh8JMcbcpD8hAUkibzC64MsTxK+ZAprV6TN6AUURe3pg89/HBLcRJ+uSytKeTe3iRq+LPM7sFSVawDmoSmj3cLuj82tt9UcBdGFaq+c40Fxa9i4Y9v9DktrtSExCz7xD66Z5VPzf7LF4uw5tOUzMZ3fIPTYxCTAop/69PpQ7Pdxw+y38I2VG+HfKz9RjKoAhxnub3SpCy0fL9dynLMQgsiEvUObjv0VX2gZp/i3VTwZYPx8I7DArra8SfCRehWeJlx8lQmzjCImurjnLbT59z6z+Ch9VHZVT7mR0YeaLpSoZAG1nNSfherHYplBjHkIsLUBCH9pppOHZDP28sUu812mGuCoiUgnAyyRerzQ7wSsAtcY0yxDsmEqBjGh37y9LPKU+CBflKfduh5HV8DjY0vZz/cPjKxQ+xRCRv46lSLGkMhg+BV+4kfkydhdVLOIa6UmR1FjkTn3D5rjKGB0U5MoEljsj/bhHyITapDJOflQPKzkNVEHyVEX01vLPxIF0ub9b6VZhcEoYDkSM9Le2S0A+Pdd4TytyQnZBpTrQOHvc5nzIejTGfUnjdQ5gTdRugJyhxgZvGXx0pC7TmTFWhd20XoDYwnF48RwDDDpVGtp6wk2IWDWfLCLF+1/9XQR+I9KzLIEMO8acNuGaG9aOt+XpLPJmR7F+xi8+WIzxIkqs0xU51UOcQjQsxo4LdHDtk775Yj8+ZrP5TDZbQiDWdS8FpvhIdPj0OTNC5KjkInnYYIrytSUuEUYbo1rSksAaew5OXvbhfUpebN0ZqJfhzchG2q0aqcmD6qJmgNq0IcfGhGqvg7cUNtsbalWnhT/wzd4igx5gy7qLllss0/tz3yTRlQww6bgoq2IuIM6E2j/RT/vMeNdUDIkFPuP6uwSXHplyFIIqdXNZTAOjQuPMNdrqzDJrVy7f61Esc4iZsNGI5Fu4BgD","page_age":null}],"caller":{"type":"direct"}}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"The"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" search results show news bulletins but don't include specific headlines. Let me search more specifically for today's breaking news."}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2             }
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"server_tool_use","id":"srvtoolu_01Fczi8mmARE18hrQCxQyzSS","name":"web_search","input":{}}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"query\""}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": \"break"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ing new"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s today\"}"}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01Fczi8mmARE18hrQCxQyzSS","content":[{"type":"web_search_result","title":"Breaking News, Latest News and Videos | CNN","url":"https://www.cnn.com/","encrypted_content":"EtoCCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDNJSVmNakX1cLwTQahoMpICdanvYRmR+ZI+7IjBHHjXOsYLK8ByJjrNkDIZ8/j4j3gzMyMzlxMpH0R9ZD7LA6TbgiGnpJm/ouGTNyAAq3QHIM6Ssz2o8j6WH6NNm59f7H0cRQcVr7GG2S0yelt1pVhBsH+O3NzOi6Q0L1XfoBZIsVsoStO66kfSGEJsxsRSDBgjiz/qSaw+YZFwpc0AFhUyZHjUVOZKOrgi1iV9YoS+npmMCYNvVpa+9m+oU0TtZYJUfO6f9nTJI3K2y7FBIS8bFa6onKZy4WHuIgK5j1a2qE494du3VqSIjekj1LCPyOniBuxDsyLMJMG7nhzC7NsL3Nt2FoxOxWmA2CcKmAFDrsbgWPueHwi9BxU3qzQJkkmgTy63jPdHMujJKcxgD","page_age":"4 hours ago"},{"type":"web_search_result","title":"CBS News | Breaking news, top stories & today's latest headlines","url":"https://www.cbsnews.com/","encrypted_content":"EpgLCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDJTaNNWgTnjGlMivNxoMzGpplldTTysthRwpIjCx+jOBB3IU9nozIb9LON3FcEekwQV4m3jemKxlieBH8G6Rn4/0+kHmPCakLFKmBpgqmwrPfAfr/aSP+lDkCtAHxBHaR2/aEXGW6GArwd+Y9nsF/rei2+6bGB3/TW+ghoA6R43o/J9F7IRJcPMRh4brfD0SBp6gk/8SQM6nrHhP8J6Znvxq4tFJu9yM3AzVqkNCcQBL1zStyoIRNErnfczcWnNv+tLco6iR3gHef8Je6+1tkP41SUni3WrVPU0ZRMgzrQvYOS/94o12DpaSziT6T0HEwDjxgiItCP4rCHDUBEwlFHm5BtgL9vBraBtpE37a9Vj7/cPCqxcPvNxynNYkeN47zc6Djqm/YQ5PhPm8DqboMM4/mRYoj6Q6w/4NxK77qDl6FoA1vsE6zNz4fPKKWuZ6XO/2MqvPMKXzmWSxJOUV4KduIDdE6uniSR6nrjkLAkwcc+Ssuq2fP7C62CcnWraC8aBCrQD6HCzHWfm+SijMOv7eg4jCqA8ht29DX3xaeI+Ah0L2SgdRVYQUUaW8VtzYT7LBA/FdxxDKCNAnSVe8hCLGvL9gp7A7r++E61ljQl51iI18gFZyhaX5a21XlFqc24pZVICsyq3q0U5TPDvFvWHwG1k6QTb04ssqY6Yo6VA2hAjQzCHnyh32kSPURyVhCDt2+ub2pcXE4cU2bXaw9RzrByDtwSqdZ1sI6pyX8P+3W/t4NGk96x5ah5lj2cnYMYVojUWQB8Hg6u8bcrbGHld7TewD+qZtzQBH8GkH0Fl76U7QNomGxQ1Pz5lHs1DhT/QoPkawr5ehXYV04+EulZHFWeCoIZeDdVPNh9I00I2eM3Y5jOdApveAsHmMtMOqorls761fqloLQT4o6oq/vinVqRytssrxzMYB3VCzdxy1JcqAYZwbOHmWIg2rhO3MKwZVYf9E8D1fWZxCPb/YrOyXnHfAnI4yDWH6FNDoLOGicWIUo/AZCB0dBD9yYDhFwfSvMDoSRlJd/AsozUHzoP+LnHFcvv9GsmoPfS6DhprtuEAdTb1pzXvtNIQuK8VMD9Knrlry/4b/9XDqkDFCIZgTldItzh8dAOIya2hn3BQDYoWCgOfm6nArOEP8jzstCzHOBfMIOMXTq+5cUcfzaZNIAQfxonVgI/874R0PkkgbO/OV3/YNtijUnjKWdz8yEiysZ+Z4uqRABYOueeG5vB0uresrD2IBRNAw+q6rUGLOJXSM3CcI9aYguLBRByIJBIYaQ3DIZNxuoVYUM5f/Mhi8aRW1qA3/4a/rZ9UxHRyK7ELhTLxgdopT4xxfQo9aEyyPEYZBsSxhChiQO8Mvn158W29gmT0APAPfq3RQK+Svu299feq79cFiK/8p48hpy3floc/CDcXg8SWQPudApVZfj+1NRJf4NHEn5CbgwMeTvuAHPvlvvSPeooCFdSg9l/wVdLNo20Ow8jx4dj6kQmMYVjwFXDBJMIG+PIwAsC5Eua6TxCr7hGPmR7ZtwSTmeCL4txJC0bJz/pq8l4INCLwSO/A+7YW6JqM2zd4DvHHrJ7wha64Wo6bsdJo8QUsLuw4LFi3sqz/lQ4fEekYu/aLdLCP5KN/b9xAfky3CIN5ZHnGKTDUNN3LP8mB4CgN4Tz8iZewntUQpkm+J8BtoHsUKzjf7INnljDBGuoPkAeVAyhcg22MdzDxpmWM56FQsaq9jnKzOnjiV6DTTyk2OEtwzhQgnCrexb1VN7nqHRA6aTjxWKmav1sRX3vEPr5zC6UNKewNK8B8n6dTgCoAjmOoes2XcKYgpiIk+j7f2DLqdQKWo6QSnv7HxkRgD","page_age":"4 hours ago"},{"type":"web_search_result","title":"NBC News - Breaking Headlines and Video Reports on World, U.S. and Local Angles | NBC News","url":"https://www.nbcnews.com/","encrypted_content":"EuIGCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDKPhiuCGAJ9xh1tOQhoM3lu1JERZUFv7nCgMIjDxrlncwpbfyd+jb49Q7hpgNokyNAUCxdMXaCk48FjbRoRcmacZ4n1kSQM+OVD7YOQq5QUeL7hcg9iB60IEq+yV/0Bq0UJ1Ey0VjXdZ7xUCul1CyUTN60RkYTo2jPZQ1rqqVb4JZqhGLPrKGL2IM2BbOOVbrVd/EPqLexA+Mz9RuiZoC++WZuSZ2VWvS7/wrPEo6iq8AE7cZjaZ94d1Eh4UJP3Rd0Os+uNh2pB9GFWLuN+bh2UEAaZXFRrh7kgiv5Jh1fghygAy0L2H9sG57jojuOItDrGHfRVUulVz5rMGNzn+X7wPLDZlVU+D31O/mOpNCsMGsS4lRwnwBnzwBYKccqPvWbk8YCm2RWiaGPNlUgH81vsQrMyalJkvaXvaXOnIwFoljotecq5boLtmKuRzJg3iP1mh+O748Q9YYD7gmluXUdGDDsuUKf7vgdNxuiQRpDFgd2NVJlE7uo81YfNGIvyM65mcwqFUJDm8Ja25n0VkJW8SIuD3q1YPfoF3BssjdUopIZ0DNW9wPldVV83gvWYSVet9xJD16WJvhBAdD76PbOlMJD2hH7b1Cnt0KkMryXPXw9HzeaaIViFnw5EV15eDK3sM4D3el6aRdHHtyaHlSDmOAF1iHRr3X3PdGnWNFHzn4ofLjo3kBuFtMDCRfdSHAgAmIs5ex22lOCbT0cBMHcG8rCyu9Fb5IGyzfFsAotPggrkBxGMq2P+NbBviSOasefMBuauceVfzmptpnPCXrKvnxEAD5UrrghYma5axLnPbu5kwM4vawevryl231oRhy4ZzYtUK70umnTNhSAVv/XNjYhFYMN1IN8ZXT1izPF0A47zbpNRC7WGFACQ/qr8h6ieY9v80Af6m+cmN7Rqo8Nwd9ZKaSA6ZGwvPnedjMmT+73icajAqr0SPZ1M8GbBOehO/bSMAk5AYEJdcL9FOGbtyL8CZHL16Hv5hcgJaEcpgS1Jejhi2kbTwh2UnNyR0xaph+ORdPDWhMPZMjOO2sDc1mCeluKjSwZ/JloLUHbAvRl1Z0Cm/kW5gsxEscrQfub4/vaEYAw==","page_age":"12 hours ago"},{"type":"web_search_result","title":"MS NOW (formerly MSNBC) - US News Today | Breaking News","url":"https://www.ms.now/","encrypted_content":"EqgCCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPiAvgFDe1pwdQ5w3RoM6huycDGoxdiZpF2xIjB6yNZoH8mZMDrcm+olM8mNlm6dI3a6gwKhHN2p3/99zlrZIbIPp6T+qJwUwyaL2foqqwEjiIa5Pca5e6nmqadL0MlIOH5G9zQ03CQgEegoRk2eN60A4PyV62AXJ9jxjQCP4q8wgNrnknFnofM5cHV/5kSKG/cbqv+UwM9aMl67l67BcYHQCRPqVeeoJtPOlrsPyg0/MORkdCeCgr89730tZ1BAJq4xLZMiLXtRlwI8FE3jzrENnmtwvxVJM2vBkRykxzI9EmEH+Ei8lyESIRMkDTKtFc3qqJQrKWpGBVEYAw==","page_age":"7 hours ago"},{"type":"web_search_result","title":"The Washington Post - Breaking news and latest headlines, U.S. news, world news, and video","url":"https://www.washingtonpost.com/","encrypted_content":"EroHCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDOEuRFnz8OzKcbflbRoMuBGQkZA61aAhx3HiIjBYiNTyUV90rBAtjp53FKZO7QrETm5Bv8lodhgxwKePAk16VONzGAEoZs/uRICn2YEqvQZLWgognrMXwcnwXdXjcCquFIteUuajrIoLT0xL85UER4OGyzzr2q3elgLPqdB8w5tTnigmkVEpxnXxLa1BOsrQyXO/HbnXDYCAkb6Rdro/UKJKlGIX/CYSz3008MbhEeCXWe1BDlwdzNo+IlwNS1QjjCn9ofCmaWb/qlPN+viNMHbzpuOv3IPmxHW28Nl/HgooDSOa6u9x2wezdRkKqc3PQAoZQHhdGrztwRHwgF4V2DsBOwZsaEZjUnDfVVe8afuwVi2MZbysTr9d/PTd26qsPRxYnHFQALEy3j5GDP0wSMO4tHQ8GdK7ndIFV+9y1fvsoj+wk8NUT+8NJAsRFddEKuayHg50J5auQ0AMlzpk3p0FIKwh8naiNNfKbr1Dg9+3Ebj7zUVZRQNLmV2sDGuJaC0R8O64dxYMPNR/k2YG3c7sO2BQWoN4mFH44lfZrkq9pclMLIeOfgZi+xzgbtnZ8uP7EGZMPk+d96k5FP1gejkDyBa5QUjnWe9H8X9W7z32b9XbDHykoA+Y9mEjnPqY08fyTa7h2Rrf3kOSQ4hB1Iz52D0/YT5hUCjXIw6pOORpt0CKTRpXPHynYi5oQDvtF+8pmuYkQ97eAC2RLXpgjFXoXQRhlI5dqRgfBPli2oDzhM4RPmA0D9cqJ6NE/qstiidu929hvajxuoOAJny/73zt9DNGrADUqvts6x1ha9V/YJHYQOztdlDqIjvH9B+d5TtWAVmeFSn4wc5uequGeZVrQ5LZT3iKwiTeDbpgAnoc/D2E4oHiAjjkxXU1cPmYPcS3OVTKsdBOL///mEkAkRV98HvLnXf6zr80FQ0eSDnQWwwKqXRrInuAgzq76SwwcFMtD/Oo2VXgiLCTrV1nCBn1cNaIVb0fE+6FsA+/lYoGWJXbliHj6OJSMnt7w6KJxucTnNYREFmk70ReQnKyTMduOkoigYJbQxIce1ckqssetsI7XUqWwfNlKqpI7NL0iRuWfx15wuYGLVutQQmRmNrhz+T14HGPydliyktmAIBs2mdOH+j0YwIZxU1sVSNVQD5dpooWon4wmcRERcY4CMJEF6kQR4diM56jwqz0d3R+MvMALDJ2qpCHxXRyGAM=","page_age":"4 hours ago"},{"type":"web_search_result","title":"ABC News - Breaking News, Latest News and Videos","url":"https://abcnews.com/","encrypted_content":"EtoCCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDODLvpj5GwxjlQO/kBoMCzsO6w9bJGhMolz+IjDmtTmfAt8BbEVsdPRbzXCPWVUs7sKly2SExx9RM9NsSuVVlsukWZNUGT55rzbWkiIq3QEjJYS0/YxoLN4LmPwmyiCbTkIFQQfE7EIgVB7aaFWA9paGHHlwtHdiscrkvWwmYQkEl6kJ2x6Q8Dqd5vJLPuqSK3I8pdFCeee2OyYt4AjXz85NkzEqjZ/Hp4rXD7p1U7eNodObSmptJij0ngqW2Ul1wrk54pANQNzjI98mqGV2Q0PE/p3+JP83Zjoub9hLJ06fuVAdAhu7rdlX+TQbnlGNYaHfMI8wPGilaO41v0gNNyMCOyeuuKwi4qb4r13jBlSZtoRXhay9TJugFdFy8/EbLrzN6n2Kekuyab5gYRgD","page_age":"8 hours ago"},{"type":"web_search_result","title":"Yahoo News: Latest and Breaking News, Headlines, Live Updates, and More","url":"https://www.yahoo.com/news/","encrypted_content":"EtUJCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDO5RbgtPdIny81llmhoMnlUGZkIgK1WFSlTSIjCaagBqGquqf1R1n42iVRkFsrLuKDGEhy5iUANIUhtkSJ59cZrDO+jPHJPOGeJNgTIq2Ai4xvFowmVvl4O3i3M4tTn55VIuJM24htRjfkkzfP+hjdoczYsACaOlkUnBiqx46DUV9zXdiIwURdhHF204UlmPozU9ZMvGm7ItUagU2x8saw0Nfm4TeniB15gnYhe5U1o2dRqEXhX3UghOTdLc0/LyjlDUsh80d85wp6idZmCIiISFts9cvkGVY+9XgKn2EFRBz19YTunKZKm1K8NiK7tU6fu4pbwsC0Z+SOc6lksB6e6qci8JnIAkAh7eQLFLgFAXzH0Ug1teGMoPf9mXNl3xBzI/+mFbPtSMhKEHTtIiFcgVYvoCgmfhXgzVospd7NfmYI15NIy/1nS+/cZx7S44rqdu8NfvtCXEjNqHBrv+lzC8UALmsbEjVKo7416NEnN1Ay0yS1aAI+vVtBaJGjrujtSYjaZZijTfqJykdRfP/NvtHiOEGEqzgJsXXW2NtKdlVt9bWSJNWPpfDYeC7H0560mkyZ0A0jqqc2thuz55aL0D3/jMpztLB1DgSZWiaGpVaGYBl3gmDbxwVkddjmYcecZoSokfsZM5y1L5KDXCdmELvEXGw2VcsvM/WgdCfD0+tAsM84vmXhnH6p8/xOIFub6/Am1livrL+JFoQwGW3M3Xors/6Z4WkEuhdNOPbaXqzsXi/h+jS+gHUVk93y+CM8SVfH29yglu4GG0O5xrIYRDjU0tfqFfAx1DyZJPhmYz8VW7tCWEbEP+9noYs+mo4OFdjqAYk8HlkqOwNfapE1pocbMdBwMlmzraLqfiirijYqC/dyu+FWG+qOAROfkJQ/C2nkQ5dY+1ylthqJylFVjWKY9xGbT/NNtQLmnhnfsw2u935cN76wQ0/Dd/wsNUhj8rowMwTB/QDeR7W1pcSCp2GYvS5WiZ+3nRN6j7qsmh78EDvBRi3Mn+K/fIUqV2aXyuwTEk25Owr0JZ6+6iShYfA04+DT2Nuhfg2s83m14z3yFEhf9kZSd4u5T3WvcXTsy3CvhjZEO8+XcXoyja1PXf6VVnc9Yt8lnLajod8KSyOvlw35kQm5/rUlR6XruPbmb2xNFo5PFybqJPPKutv+lWZBUExn0GdiUPfO9osxqAb3Ec9UqpYB8if0i5R+6k2dZL5d1W5cczpPXydy1djWawjzg3YDcRIK/0Xo+df3Ihg+ijtAsL+ncy4dPiit+6HPfWZ4XJNFvc4iT2nxBw21vI8buu6AaGI+BIAwdJt00TcL3fN4sEigFQUerOivmU66ld9pN3AjZJXwMmscpgIvr9WG05JSjCkDuzJNvlfUmAw3N5CNfOYslqDgG3+ivAxceDrFb9V6XZR1XUGO6+cd+v2AfORqbUFBFcjPFIX5NqKI/l6H+KHAYaxptXoNBle7ry7LfD1pDQJUAukDC51OMi9iZE7z3rq/TnWaTBhy3usV1I9i9KvftGf3TndRPBSd7UWuGwlBb+Ivt1tHLe/zgXIOl3yqXR/jSCPohzrEZmLwDn8JCwKxgD","page_age":"2 hours ago"},{"type":"web_search_result","title":"Fox News - Breaking News Updates | Latest News Headlines | Photos & News Videos","url":"https://www.foxnews.com/","encrypted_content":"EtcICioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDJQPIzLXfxoDxcXk/RoMn+q1kPvMIOuswSELIjApXLYKRAdotCaI/Ps1DaNVSjhGwF3juuZgrm7loAUjAAY3LtaZwCthftG5b1wiCiQq2gfibPcfSuUsuuZ4d2LKOC/HXsQeGYaAq8RdcpxChxcsOwzLeXE0B47Wx8UN3CVWomxH1FgXWYfq7c9wUfj0T2gCNDlJxlzrRUKu6fuZNFte0SZMIPqcjjTSXK3YuzWdKxvjIR2pnqFjfeeTBqWL37los/lozmDNcnB6zkvrHVxJISFwIbqOc1MeVIPWCN6M6OYD4Ldh3qNdvBlKE4qPRvczVIkMaw414l7sz8ISwnfPtbnUS7GBU3kE2fXUaQntNftktMfM7hEwpTYM2ByL9YYimsE1jjH+clzZqmM/2MwY1Z65vhJddCvXHOjAPJz4kt8qEy/T6oGtj26YBjt8CdJlfcH+5WNiPY4IIcpeMQIDRX+Qx7O8DSccbQFre8ATVyv6ichW57bVcDQ1YK4f8uyo7HS3KgU8OrmXLw9bTZbCK3hL0x3K03J9tdcWo5f3dj8y+YH/mkKWnUdHZIuOzFJb9SPqrlupJnlo6Y4/pp70SPZZlg3Xb2rl16L9kaZcN6vDqgdvGpROyhC1QJ8Be9P1ZAEyLW9srntOci4CEnRQcZc/Yb6qv3KxqOqMTaqsvyIHnF8Grh81zsK1qOAd7A+iG5xiwu7ZMdJ9S1nR1QYxKbse9qg+uXb1ogQuM9P4buN1DM2Lv2dZI9jGvMqpJG9zdV+MI5FXY4i8Ey8PPwFEZubFU4v58MwbqJbji54O53+wWh4QrKc3wLFiCp29HDOahoL/tGEYhOE1jU2uQydTmQnocXcRF3/EfZM9bbPZFuXUgTWc0rhVm1F5uFa3iCaWl2PzgWJM0PER0eoWuBZ+dfACCIlfnFXMrGgJa8Evn/oru3MZTL0Yb+egwNiVQQuIE+YHcGqETQLa0/8kqTgSrYSxQpXb8z07CQjCBfWHfgrdtVgXQ1RHEjdJVzj7v/l7AEDS3eCyy25/NglFQd+6IhuQ+mkThZuk/YChU5eue3TLUGmFM3i9fOJZGFvBIvtCie4831sqDZ2Sm1iU5l4IabFmTEvRLRW5ByedftT7RoPHEswgkVZ+uvgw/NqQc9RDOY6mNB1J93j0//05BXQQYvOgj13yrQVoCNMuszjPnLmIJanPBGdNDDwAv5UDUgsC8mExwOEOnz0ls70gK3m96mNTUh9fOiWw8rXPXGufbxmUZhDBgP8/PTjBTzIMaOmpFC+PZB8HcZSJE69T2K7mn20lTKMj6EfVQhbzzRp54LHCpt7i1ND8U5+/S9MYYraulrZW3MGrTFJapUKjmWczKX/8Kk4GPjsajPsoOBfbu7qVcsAnQjEgH7WojulcwMVrarz+YFF73j2NzhgD","page_age":"3 hours ago"},{"type":"web_search_result","title":"Chilling new video shows armed citizens, off-duty trooper confront In-N-Out gunman during deadly rampage","url":"https://www.foxnews.com/us/chilling-new-video-shows-armed-citizens-off-duty-trooper-confront-in-n-out-gunman-deadly-rampage","encrypted_content":"EtsDCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDFTCNzIWrRNfx0XEdxoMOSkO82ExNptEbvqcIjDUd7rqLB7RF47z7ehQzMXs83rOm6zY4DoQl6770SqxJXBByRZRtdHS0Uu/0BMbG54q3gLEkGHH1D8HNzHupC8osWi38rayYzlfkdQ0lh1uleymzwtdWV6X8O7me2AAfXb4wG+04bdDNeL6H/V1bIxut4/Nn5jsa5Jdw0AAwatHf76HyX5/D6vORTgTwYSXUVhY/wC89FOWqyEHZGC9ERc1QJvKG+HcUouRQJyE7ge2zp8G/Fg4EJ4OvR43dekOLFvSmQY+r+7sFezFPmvYAi6vyKPkvJaWLkNPh8Hrtpk/LphSsGv7StgGSmfcX910OG+FAEMGh3hh9IMWsjo119ZjyZIwQLXjlVhdihejTDvcVBejIuqbLuha+V4ofFltt1OO7egFKLWrQ58ZYQ5OFuKNrrt1zeZ+mWgK5FLH4Erv0AZps68Ge1E2ewkW5w5wmQVj7ysdImIRGQlqOxQc71Z8+xV+d8gy1iA6D8jLBQvj0OZ7GK21NnzX5VMMQn4COwpL9JVPkauE6+Wlm0srl5yu3RgD","page_age":null},{"type":"web_search_result","title":"Former Miss North Carolina USA says conservative Christian values played role in losing crown","url":"https://www.foxnews.com/lifestyle/former-miss-north-carolina-usa-says-conservative-christian-values-played-role-losing-crown","encrypted_content":"EroDCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDJ8ihQKEDVKyumpo7xoMkApLUA/lH63t1T2GIjBED8vEFPPa5dktwEA0t+dPAvSgucgDtfSv03jNPFhmpYEiLp42r7qFH16HSApjjCAqvQIM+bdL3UGpHqOIUu0uc8b54POxScSVI67ezs5jVMrSQuDa2B/x+EIHTIxGmpRUHmC9R9/Z8tTSnMdqP0ECwzRDf5VUNCFqZFn3GF7KZ/bDQTuK8EjIZ4lsqIPYePzNikpkyDv8JmfQABPo7vKN4ML7INgO0pZ2STnWmOBA9yk6UizH6LOdXt/xatH8V7RnZQeGBmkkJ7P3GCxlaLBZVEyQ0ol2GXBZVOz9xAIlAyfV2nD6CdkHeAkaueNDIkFzRgX6G1OkhSptqxeUD6SF4BpLJtF4adppwc8pz6QQMRrPFsAYUF0n3hn3quJEWhxxTPWLISVEQuDZ+Tw3XmKCmxzQHic6HylRurMgqy1NRIlqtSXa6h43zEMjrlBjDJNpi0NwBUlGJcoEiDJy+/Sw57nwuaQcQUdDr1j2T06B9hgD","page_age":null}],"caller":{"type":"direct"}}    }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":5,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"Based"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" on my search results, here are some of today's top news headlines:\n\n**Top Headlines for August 8"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":", 2026:**\n\n1. "}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":5          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":6,"content_block":{"citations":[],"type":"text","text":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"Jack Gruber / USA Today Network via Reuters file · Senate passes short-term bill to prevent a shutdown before the midterm elections · FORSUBSCRIBERSTh...","url":"https://www.nbcnews.com/","title":"NBC News - Breaking Headlines and Video Reports on World, U.S. and Local Angles | NBC News","encrypted_index":"Eo8BCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDL7dB60fHNYcWlQfiBoMT+4x/GZXN8bVqsr1IjB6dxmzgVVONjDdEa6FYeghsun62XnR2QRr9TDcNeOnS38moXkwKzEqMaqzG0SUaR8qE9gCz0yuNxMqTclR2WAsHhqBhHkYBA=="}}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"**Senate passes short-term bill to prevent a shutdown before the midterm elections**"}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":6              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":7,"content_block":{"type":"text","text":""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" (NBC News)\n\n2. "}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":7        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":8,"content_block":{"citations":[],"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"The U.S. government has refunded more than $100 billion to several companies for tariffs they paid after the Supreme Court deemed them illegal, accord...","url":"https://www.cbsnews.com/","title":"CBS News | Breaking news, top stories & today's latest headlines","encrypted_index":"Eo8BCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDGj6VHovahgPbkUnDhoMPAiUXEpbSrZrUASpIjBsAnYDLGyVeIKcFzxWMfvuuvEog6Ce6HM/t934fdR0HnY3IYaWi/pPpGUrITMnC9EqE6AN4VxkDuPzfyYowS9CtOVUvsMYBA=="}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"text_delta","text":"**The U.S. government has refunded more than $100 billion to several companies for tariffs they paid after the Supreme Court deemed them illegal**"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":8       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":9,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":", according to a court filing this week. (CBS News)\n\n3. "}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":9   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":10,"content_block":{"citations":[],"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"President Donald Trump distanced himself from voters’ ire with Republicans ahead of the 2026 midterm elections, telling Punchbowl News in an interview...","url":"https://www.yahoo.com/news/","title":"Yahoo News: Latest and Breaking News, Headlines, Live Updates, and More","encrypted_index":"EpABCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDD8lREMEg9v7YX1rahoMjeIyZEqMIamt89xWIjAoyOKNnCO8DlwaWy01v2RBYjdnYA6SmYfow2WUNExtSrLSkYEzmO/v3cFz1HdzTQ8qFHAA6gC4h/kj+JJspJcTkbjzKv6CGAQ="}}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":"**President Donald Trump distanced himself from voters' ire with Republicans ahead of the 2026 midterm elections**, telling Punchbowl News in an interview released Friday he thinks voters are angry with the party more generally, but not him."}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":10   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":11,"content_block":{"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" (Yahoo News)\n\n4. "}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":11   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":12,"content_block":{"citations":[],"type":"text","text":""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"D.C.’s top prosecutor spent a year navigating the president’s demands. Now she finds her job at risk amid a rare break with him over cases of alleged ...","url":"https://www.washingtonpost.com/","title":"The Washington Post - Breaking news and latest headlines, U.S. news, world news, and video","encrypted_index":"EpIBCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDHKMBP+IfScJ3WPUfBoMfF9c37OknAxskM+ZIjAP7feWJBOyon+lg7PYXMmgT9dO7zOcxLQOgDMsf8xicIeeY/ntLVvhHZA70OHZxKUqFv6MdDHe1rhmCYv7Ft5CbXY+oDM509UYBA=="}}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":"**D.C.'s top prosecutor spent a year navigating the president's demands. Now she finds her job at risk** amid a rare break with him over cases of alleged vandalism."}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":12       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":13,"content_block":{"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" (Washington Post)\n\n5. "}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":13              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":14,"content_block":{"citations":[],"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"BREAKING NEWS: Chilling new video shows armed citizens, off-duty trooper confront In-N-Out gunman during deadly rampage\n\nTwin Falls police released vi...","url":"https://www.foxnews.com/us/chilling-new-video-shows-armed-citizens-off-duty-trooper-confront-in-n-out-gunman-deadly-rampage","title":"Chilling new video shows armed citizens, off-duty trooper confront In-N-Out gunman during deadly rampage","encrypted_index":"EpABCioIEhgCIiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDDT9n+3aVaQ6+LmAiBoMeU5MajctgCSzs2EiIjDT2tthcHM46iu9t6FVRfPx2wWJkZ85hQK8ghO41o1xMNd0+kH0HhdcUglK734iVrAqFA54UX5V9Edch5g7oK8ACEX4bmlzGAQ="}}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":"**Chilling new video shows armed citizens,"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" off-duty trooper confront In-N-Out gunman during deadly rampage** - Twin Falls police released video of the deadly Idaho In-N-Out shooting."} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":14  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":15,"content_block":{"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" (Fox News)"}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":15        }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":16473,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":490,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":0}} }
+
+event: message_stop
+data: {"type":"message_stop"         }
+

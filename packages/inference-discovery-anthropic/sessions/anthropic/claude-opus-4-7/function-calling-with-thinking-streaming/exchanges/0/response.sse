@@ -1,0 +1,57 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-7","id":"msg_011CdqZ5PcVLQJMiwBP1NCH6","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":813,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"global"}}               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eu8ECokBCBAYAipAf2L2mEEA40DEz0YGEgSqLxP0jXdGnZqXKXt95t7nEn4xO4y6WsIcpItbIz6D+My/trkBMpa35ao140G8Ab4lUDIPY2xhdWRlLW9wdXMtNC03OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDL4oPEy0dD0ZDmp+OxoMHf6Ct5Sr+L+FUQQkIjAnocIhwu26H1UP8axCEWlidxXCCAmHHpgLW5elhWkpMfnjeuK1dbxn9cabFoL9x/QqkgNhlECBWg92EAC46azdppWKlg1KuMbnCVVvSOe/FfiaqHvYyAGV200ffFmmif1Unjecw0CUB1wmVXSzoB+g7Uc9/PETo3kJz/+O+C6oGVsfHeFhO0wX8kCyxz+6Io0DSlH4yZdKJ0K0zFFJFMgwojrggBgZZbvsbU6EyjhvlmFpB2Eg24mltG0BWinB78vg/uzRdVozTXrqDzY/dJCXkYhdEuUwSBH46+kPVKl1NkCYDa5hpGipHtE3GHaePUVViSh0ZIQ6L6ldi8l839FGhF6sqVjec5nHxioNhtEZHNT9jgjrCaL4xhIu0qk23aQhL3BTOEWbp4jUD+DGxA+M7EI2yD1HPUnpVMrXqV2w/a4UAGx3jrtPROwuVRZz7lg0cMpVNKfCbDfTpYZVtWdIQCNR/WNa6NdsCJ2pan/VbjJBzL94WTfpuaW9KGAiljgD4SdfW2e3feg/nj1eSKTlqz/qgpG7Cg56jJdweH6UC8XPd6n/WBo5jSj+xTwWfRACI8T5ivnvIGKDxrtAJzRawmUsJasYAQ=="}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Step-"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"by-step reasoning:\n1. The user is asking for current weather information for a specific city.\n2. I have a `get_weather` tool available that looks up current weather for a city.\n3. The t"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ool requires a `location` parameter, which the user has explicitly provided as \"Boston, MA\".\n4. I'll call the `get_weather` tool with that exact location value."}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01FB2Y38sDry2iPjbxMjx4eK","name":"get_weather","input":{},"caller":{"type":"direct"}} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"location\":"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" \"Bosto"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"n, MA\"}"}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2             }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":813,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":323,"output_tokens_details":{"thinking_tokens":137}}       }
+
+event: message_stop
+data: {"type":"message_stop"         }
+

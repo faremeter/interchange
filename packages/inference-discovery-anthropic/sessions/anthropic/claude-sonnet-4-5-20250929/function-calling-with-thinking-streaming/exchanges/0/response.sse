@@ -1,0 +1,84 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_011CdqaEuHJbFiHb73hba4iy","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":632,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"not_available"}}           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}             }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is asking about"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the weather in Boston, MA. Let"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me think step"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" by step:"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n1. I"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" need to find out the current weather for a specific location\n2. I have access to a `get_weather` function that takes a location parameter\n3. The"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" location is \"Boston, MA\" which is exactly what the user specified\n4. The function requires a \"location\" parameter (required)"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n5. I have all the information needed to make this call\n\nSo I should call the get_weather function with location=\"Boston, MA\"."}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EtgFCpQBCBAYAipAk1+3Z7wkQZs+KUBVSmJ8jsc2xgv6JFOpoa5ZOfsc2jv8rMw77SpdEwktKOp69uDCCN3+V3W00kV76iPIdkF7bjIaY2xhdWRlLXNvbm5ldC00LTUtMjAyNTA5Mjk4AEIIdGhpbmtpbmdaJDc0MjMxNmM4LTY3MzEtNDAxYy04ZmI3LWI0MWVjODAyM2NmMhIM460CkZ/u2vaeWyXxGgyAEGYVtEds148TlSUiMFf9587UBaKGOHtgJhhEcTJDYRXkdMjE3gx5ximJ5cu6j064R83ZLGkhUg6nayQksyrwAzyX3MzAlx8/3l/F8Z/9aBFc+zw4Z168TTqQOcJYzx47cgQ6LZP0LvnX/HinMn5EUTJr5OTw5ozl8MOJv6B78+S1ZBcxbyChLltUAxUMoU6YSz9ptJvtI8s1qiEnjWDn6DDHLFGVmtfPKHYO8uv0eLQrP11HgaOp+4XDYpThqDuv5VVlipKbFhwn13bpTB3oDxRcWacgshdPaqJ8dWo+NSKfkw/BRmIFTewZ+0Uk5zN5DupApcAJDNF52ajudg/30/d0/O04A3gQBsl5VKNqJoEeH0+bLTfwHgGVW15qn1oYudvelzqXLtnsC9ZPKX6XA2YB2jqIu25TTDpwphhaz1/vqKefj6d+UNRtpbPP5J/T5szOBa0sBZGBGinS4fjPrvC9JNLj6E3fgvvrtDRqmjK6O4VKTgIkWrkcfNVgG3ZKMCK3pxGefFlNSlpUOfgsl6ZGIjMz4zl/xlxFLSlGi66JehNdzCpNJXIw1RHhMMn9i4+HBZcV773Lc4eDB7ovjdmZUpROA1B2fRUNLR6t8sQrqLfG/yAt4OXNh9mz2kECYllaAoGiBE8YK5yt0lu8t7Tm1EJA68YihLTqSpkD+ZRWoVDlc2GyXs8VXmuMpJYU8juAcjPcblIexv64++/2HTYeph4ixIL7cmiya/vgRc8YAQ=="}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Let me think through this step by step:\n\n1. The user wants to know the weather for"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" a specific location\n2. The location is \"Boston, MA\"\n3. I have a `get_weather` function available that takes a location parameter\n4. I have all the required information to make the call\n\nI'll now"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" call the get_weather function for Boston, MA:"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1             }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01GK4ajhHqE6nRGU49M6M1rn","name":"get_weather","input":{},"caller":{"type":"direct"}}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"loc"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"at"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ion\": \"B"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"oston, M"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"A\"}"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2  }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":632,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":259,"output_tokens_details":{"thinking_tokens":121}}      }
+
+event: message_stop
+data: {"type":"message_stop"    }
+
