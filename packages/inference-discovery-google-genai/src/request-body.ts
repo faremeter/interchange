@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  CapabilityNotBuildableError,
   resolveMediaPath,
   type Capability,
   type CapabilityIntent,
@@ -149,7 +150,8 @@ interface GeminiRequestBody {
 function modelSupportsCapability(model: string, capability: Capability): void {
   if (TEXT_MODELS.has(model)) {
     if (!TEXT_MODEL_CAPABILITIES.has(capability)) {
-      throw new Error(
+      throw new CapabilityNotBuildableError(
+        capability,
         `google-genai: model ${model} does not support capability ${capability}`,
       );
     }
@@ -157,7 +159,8 @@ function modelSupportsCapability(model: string, capability: Capability): void {
   }
   if (IMAGE_MODELS.has(model)) {
     if (!IMAGE_MODEL_CAPABILITIES.has(capability)) {
-      throw new Error(
+      throw new CapabilityNotBuildableError(
+        capability,
         `google-genai: model ${model} does not support capability ${capability}`,
       );
     }
@@ -463,7 +466,8 @@ export function buildRequestBody(opts: {
     case "redacted-thinking":
     case "redacted-thinking-streaming":
     case "structured-output-refusal-streaming":
-      throw new Error(
+      throw new CapabilityNotBuildableError(
+        opts.capability,
         `google-genai: capability ${opts.capability} is not supported by any google-genai model`,
       );
     default: {

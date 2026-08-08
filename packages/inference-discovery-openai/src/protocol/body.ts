@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import {
+  CapabilityNotBuildableError,
   type Capability,
   type CapabilityIntent,
   type MediaRef,
@@ -363,7 +364,8 @@ export function buildRequestBody(args: BuildRequestBodyArgs): unknown {
     case "structured-output-refusal-streaming":
       return buildStructuredOutputBody(model, intent, true);
     default:
-      throw new Error(
+      throw new CapabilityNotBuildableError(
+        capability,
         `OpenAI protocol: capability "${capability}" not implemented`,
       );
   }
