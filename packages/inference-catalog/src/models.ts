@@ -21,6 +21,7 @@ export const catalogModels: CatalogModelSpec[] = [
   { canonicalName: "kimi-k3", displayName: "Kimi K3" },
   { canonicalName: "kimi-k2.7-code", displayName: "Kimi K2.7 Code" },
   { canonicalName: "claude-fable-5", displayName: "Claude Fable 5" },
+  { canonicalName: "claude-opus-4-8", displayName: "Claude Opus 4.8" },
   { canonicalName: "gpt-5.6-terra", displayName: "GPT-5.6 Terra" },
   { canonicalName: "gpt-5.6-luna", displayName: "GPT-5.6 Luna" },
   { canonicalName: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash" },
