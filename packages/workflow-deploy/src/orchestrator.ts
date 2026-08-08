@@ -42,6 +42,7 @@ import {
   type Primitive,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
+import { rewriteInlineOnTriggerBodies } from "@intx/workflow";
 
 import {
   createApprovalSetGate,
@@ -1009,20 +1010,19 @@ export async function extractOnTriggerBodies(args: {
   workflow: WorkflowDefinition;
   referencedDefinitions: readonly ReferencedBodyDefinition[];
 }> {
-  const steps: Record<string, Primitive> = { ...args.workflow.steps };
+  // Structural rewrite (shared with the source-ref run child and sidecar
+  // deploy router). The orchestrator then layers the live-authored deploy
+  // machinery -- capability walk, hub write, and source-pinning -- onto each
+  // extracted body.
+  const { workflow, bodies } = rewriteInlineOnTriggerBodies(args.workflow);
+  if (bodies.length === 0) {
+    return { workflow: args.workflow, referencedDefinitions: [] };
+  }
   const referencedDefinitions: ReferencedBodyDefinition[] = [];
-  let rewritten = false;
-  for (const [stepId, primitive] of Object.entries(steps)) {
-    if (primitive.kind !== "onTrigger") continue;
-    if (!("inline" in primitive.body)) continue;
-    const bodyRef = `${args.workflow.id}__${stepId}`;
-    const bodyDefinition: WorkflowDefinition = {
-      ...primitive.body.inline,
-      id: bodyRef,
-    };
-    const bodyWalk = walkCapabilities(bodyDefinition, args.registry);
+  for (const { definition } of bodies) {
+    const bodyWalk = walkCapabilities(definition, args.registry);
     await writeWorkflowRepoTree({
-      workflow: bodyDefinition,
+      workflow: definition,
       walk: bodyWalk,
       workflowRepo: args.workflowRepo,
     });
@@ -1031,21 +1031,13 @@ export async function extractOnTriggerBodies(args: {
     // `pinBodySources`. The pins ride inline so the body child resolves
     // inference off disk, durably across a restart.
     const bodySources = pinBodySources({
-      body: bodyDefinition,
+      body: definition,
       config: args.config,
       operatorApprovals: args.operatorApprovals,
     });
-    referencedDefinitions.push({
-      definition: bodyDefinition,
-      sources: bodySources,
-    });
-    steps[stepId] = { ...primitive, body: { ref: bodyRef } };
-    rewritten = true;
+    referencedDefinitions.push({ definition, sources: bodySources });
   }
-  if (!rewritten) {
-    return { workflow: args.workflow, referencedDefinitions: [] };
-  }
-  return { workflow: { ...args.workflow, steps }, referencedDefinitions };
+  return { workflow, referencedDefinitions };
 }
 
 /**

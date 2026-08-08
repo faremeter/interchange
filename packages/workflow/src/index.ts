@@ -6,6 +6,11 @@ export type {
 export * from "./state-machine/index";
 export * from "./definition/index";
 export {
+  rewriteInlineOnTriggerBodies,
+  type ExtractedOnTriggerBody,
+  type OnTriggerBodyRewrite,
+} from "./ontrigger-bodies";
+export {
   projectLiveToInert,
   computeLiveDefinitionHash,
   type InertAgent,
