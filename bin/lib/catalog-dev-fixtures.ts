@@ -104,6 +104,8 @@ export const unpricedOfferings: Record<string, readonly string[]> = {
     "gemini-3.5-flash",
     "gemini-2.5-flash-image",
     "gemini-3.1-flash-image",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
   ],
   "Fireworks Kimi": ["kimi-k2.6"],
   "Moonshot Kimi": ["kimi-k2.6"],
