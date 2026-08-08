@@ -147,26 +147,39 @@ interface GeminiRequestBody {
   generationConfig?: GeminiGenerationConfig;
 }
 
-function modelSupportsCapability(model: string, capability: Capability): void {
-  if (TEXT_MODELS.has(model)) {
-    if (!TEXT_MODEL_CAPABILITIES.has(capability)) {
-      throw new CapabilityNotBuildableError(
-        capability,
-        `google-genai: model ${model} does not support capability ${capability}`,
-      );
-    }
-    return;
+// The two request shapes google-genai builds. A model's class selects its
+// capability surface (text is multimodal-in/text-out; image is output-only) and
+// its request body. Known models classify by set membership; a model absent
+// from both sets is classified by the caller-supplied override, defaulting to
+// text so an unknown chat model is probeable without being pre-registered. This
+// is deliberately not a gate: discovery must reach models the sets do not yet
+// list. An unknown image model needs its class declared, because its request
+// shape cannot be inferred from identity.
+export type GeminiModelClass = "text" | "image";
+
+function classifyModel(
+  model: string,
+  override: GeminiModelClass | undefined,
+): GeminiModelClass {
+  if (TEXT_MODELS.has(model)) return "text";
+  if (IMAGE_MODELS.has(model)) return "image";
+  return override ?? "text";
+}
+
+function assertCapabilityBuildable(
+  model: string,
+  capability: Capability,
+  modelClass: GeminiModelClass | undefined,
+): void {
+  const resolved = classifyModel(model, modelClass);
+  const supported =
+    resolved === "image" ? IMAGE_MODEL_CAPABILITIES : TEXT_MODEL_CAPABILITIES;
+  if (!supported.has(capability)) {
+    throw new CapabilityNotBuildableError(
+      capability,
+      `google-genai: ${resolved}-class model ${model} does not support capability ${capability}`,
+    );
   }
-  if (IMAGE_MODELS.has(model)) {
-    if (!IMAGE_MODEL_CAPABILITIES.has(capability)) {
-      throw new CapabilityNotBuildableError(
-        capability,
-        `google-genai: model ${model} does not support capability ${capability}`,
-      );
-    }
-    return;
-  }
-  throw new Error(`google-genai: unknown model ${model}`);
 }
 
 function extensionFor(path: string): string {
@@ -411,8 +424,9 @@ export function buildRequestBody(opts: {
   model: string;
   capability: Capability;
   intent: CapabilityIntent;
+  modelClass?: GeminiModelClass | undefined;
 }): GeminiRequestBody {
-  modelSupportsCapability(opts.model, opts.capability);
+  assertCapabilityBuildable(opts.model, opts.capability, opts.modelClass);
 
   switch (opts.capability) {
     case "plain-text":

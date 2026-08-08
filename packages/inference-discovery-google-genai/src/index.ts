@@ -14,8 +14,10 @@ import {
 } from "@intx/inference-discovery";
 import { buildAuthHeaders } from "./auth";
 import { buildEndpointURL } from "./endpoint";
-import { buildRequestBody } from "./request-body";
+import { buildRequestBody, type GeminiModelClass } from "./request-body";
 import { reconstructResponseFromSSE } from "./sse";
+
+export type { GeminiModelClass } from "./request-body";
 
 const PROVIDER_NAME = "google-genai";
 const MODELS = [
@@ -48,6 +50,11 @@ const FILES_API_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
 
 export interface GoogleGenaiPluginOptions {
   apiKey: string;
+  // Request-shape class for models absent from the known text/image sets. A
+  // known model classifies by set membership and ignores this; an unknown model
+  // uses it, defaulting to text. Discovery of an unknown image model must set
+  // it, because the image request shape cannot be inferred from identity.
+  modelClass?: GeminiModelClass | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -257,9 +264,9 @@ function buildMultiTurnTurn2Body(opts: {
 }
 
 export function* iterateCaptureSteps(
-  opts: IterateCaptureStepsOpts,
+  opts: IterateCaptureStepsOpts & { modelClass?: GeminiModelClass | undefined },
 ): Generator<CaptureStep, void, CapturedResponse> {
-  const { model, capability, intent } = opts;
+  const { model, capability, intent, modelClass } = opts;
 
   if (FILES_API_CAPABILITIES.has(capability)) {
     const upload = buildUploadDescriptor(intent);
@@ -290,7 +297,12 @@ export function* iterateCaptureSteps(
   }
 
   if (MULTI_TURN_CAPABILITIES.has(capability)) {
-    const turn1Body = buildRequestBody({ model, capability, intent });
+    const turn1Body = buildRequestBody({
+      model,
+      capability,
+      intent,
+      modelClass,
+    });
     const url = buildEndpointURL({ model, capability });
     const turn1Response = yield {
       kind: "json",
@@ -317,20 +329,21 @@ export function* iterateCaptureSteps(
   yield {
     kind: "json",
     url: buildEndpointURL({ model, capability }),
-    body: buildRequestBody({ model, capability, intent }),
+    body: buildRequestBody({ model, capability, intent, modelClass }),
   };
 }
 
 export function createGoogleGenaiPlugin(
   opts: GoogleGenaiPluginOptions,
 ): ProviderPlugin {
-  const apiKey = opts.apiKey;
+  const { apiKey, modelClass } = opts;
   return {
     name: PROVIDER_NAME,
     models: MODELS,
     redactRequestHeaders: REDACT_REQUEST_HEADERS,
     redactResponseHeaders: REDACT_RESPONSE_HEADERS,
     buildAuthHeaders: () => buildAuthHeaders(apiKey),
-    iterateCaptureSteps,
+    iterateCaptureSteps: (stepOpts) =>
+      iterateCaptureSteps({ ...stepOpts, modelClass }),
   };
 }
