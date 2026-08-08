@@ -41,6 +41,17 @@ export interface RunCaptureOpts {
   fetch?: FetchLike;
 }
 
+export interface RunCaptureResult {
+  // HTTP status of the last exchange the capture performed. For an all-2xx
+  // capture this is the final turn's status; when a turn returns non-2xx the
+  // capture stops there and this reports that status, so a caller can classify
+  // an http-error outcome without reopening the fixture (the capture format
+  // does not persist the status line).
+  finalStatus: number;
+  // Count of exchanges performed, each written under exchanges/<n>/.
+  exchangeCount: number;
+}
+
 function headersToObject(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};
   headers.forEach((value, key) => {
@@ -141,25 +152,33 @@ async function captureStep(args: {
   const kind = detectResponseKind(response.headers);
 
   let captured: ResponseBody;
-  let parsedForGenerator: unknown | null;
-  let bytesForGenerator: Uint8Array | null;
+  let parsedForGenerator: unknown | null = null;
+  let bytesForGenerator: Uint8Array | null = null;
   // Read the body as raw bytes regardless of kind so the capture writes them
-  // verbatim. For a JSON response we also parse the body: a multi-turn
-  // iterator consumes the parsed turn's response (via CapturedResponse.parsed)
-  // to build the next turn's request. The bytes written to disk are the
-  // original network bytes, not a re-serialised parsed value.
+  // verbatim. For a successful JSON response we also parse the body: a
+  // multi-turn iterator consumes the parsed turn's response (via
+  // CapturedResponse.parsed) to build the next turn's request. The bytes
+  // written to disk are the original network bytes, not a re-serialised parsed
+  // value.
   const buf = await response.arrayBuffer();
   const bytes = new Uint8Array(buf);
-  if (kind === "sse") {
+  const ok = response.status >= 200 && response.status < 300;
+  if (!ok) {
+    // A non-2xx response is an error payload, not a decodable turn. Persist its
+    // bytes for inspection but neither parse them nor hand them to the
+    // generator: a 4xx/5xx body may not be JSON, and runCapture stops the
+    // capture on a non-2xx status, so nothing downstream consumes it. Parsing
+    // here would turn a non-JSON error body into a bare SyntaxError before the
+    // bytes were ever written.
+    captured =
+      kind === "sse" ? { kind: "sse", bytes } : { kind: "json", bytes };
+  } else if (kind === "sse") {
     captured = { kind: "sse", bytes };
-    parsedForGenerator = null;
     bytesForGenerator = bytes;
   } else {
     const text = new TextDecoder().decode(bytes);
-    const parsed: unknown = JSON.parse(text);
+    parsedForGenerator = JSON.parse(text);
     captured = { kind: "json", bytes };
-    parsedForGenerator = parsed;
-    bytesForGenerator = null;
   }
 
   const captureInput: WriteCaptureInput = {
@@ -181,7 +200,9 @@ async function captureStep(args: {
   };
 }
 
-export async function runCapture(opts: RunCaptureOpts): Promise<void> {
+export async function runCapture(
+  opts: RunCaptureOpts,
+): Promise<RunCaptureResult> {
   const { plugin, model, capability, intent, outDir } = opts;
   const doFetch = opts.fetch ?? defaultFetch;
   const now = opts.now ?? defaultNow;
@@ -209,6 +230,7 @@ export async function runCapture(opts: RunCaptureOpts): Promise<void> {
   let exchangeIndex = 0;
   let firstStepURL: string | undefined;
   let finalRequestBody: unknown;
+  let finalStatus = 0;
   let iterResult = iterator.next();
   while (!iterResult.done) {
     const step = iterResult.value;
@@ -221,6 +243,15 @@ export async function runCapture(opts: RunCaptureOpts): Promise<void> {
       doFetch,
     });
     exchangeIndex += 1;
+    finalStatus = captured.status;
+    if (captured.status < 200 || captured.status >= 300) {
+      // Non-2xx: stop before feeding the error response to the generator's next
+      // turn and before the success-path post-processing (dispatch
+      // reconstruction, manifest write), neither of which is meaningful for a
+      // failed capture. The bytes are on disk; the caller classifies from
+      // finalStatus.
+      return { finalStatus, exchangeCount: exchangeIndex };
+    }
     iterResult = iterator.next(captured);
   }
 
@@ -265,4 +296,6 @@ export async function runCapture(opts: RunCaptureOpts): Promise<void> {
     capability,
   };
   await writeCaptureManifest(outDir, manifest);
+
+  return { finalStatus, exchangeCount: exchangeIndex };
 }
