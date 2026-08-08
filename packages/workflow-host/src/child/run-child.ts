@@ -61,6 +61,7 @@ import type {
 import { readProcessingEntry } from "@intx/hub-sessions/substrate";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { rewriteInlineOnTriggerBodies } from "@intx/workflow";
 import type { AuthzCallResult } from "@intx/inference";
 
 import type {
@@ -617,6 +618,15 @@ export async function runWorkflowChild(
       packageDir: opts.env.closurePackageDir,
       approvedHash: opts.env.definitionHash,
     });
+    // Post-verify structural rewrite: the re-verify above hashed the closure's
+    // INLINE onTrigger bodies (matching the frozen approval); now lift each to
+    // a `{ ref }` so the runtime dispatches the body to its own materialized
+    // body child (`assets/workflow/<ref>/`) instead of throwing on an inline
+    // body (`runOnTrigger`). The sidecar deploy materialized each body's
+    // `workflow.json` + `sources.json` under the same ref. The rewrite MUST
+    // follow the re-verify -- rewriting first would diverge from the frozen
+    // inline-body hash.
+    definition = rewriteInlineOnTriggerBodies(definition).workflow;
   } else {
     definition = await loadVerifiedWorkflowDefinition({
       substrate: opts.bindings.substrate,
