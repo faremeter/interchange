@@ -1,0 +1,1 @@
+{"id":"06c6743179bc19c97ea1cf2aa3dfd48a","object":"chat.completion","created":1786200374,"model":"minimax-m2.7","choices":[{"index":0,"message":{"role":"assistant","content":"{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":253,"total_tokens":253,"prompt_tokens_details":{"cached_tokens":36}}}

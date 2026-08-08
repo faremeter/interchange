@@ -1,0 +1,42 @@
+data: {"id":"06c6743751026608c3861e9ceee94a12","object":"chat.completion.chunk","created":1786200375,"model":"minimax-m2.7","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200375,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200375,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200375,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200376,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200377,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200378,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200378,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200379,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200379,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200380,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200381,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[{"index":1,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[{"index":1,"delta":{"content":"{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}"},"finish_reason":null}]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":302,"total_tokens":302,"prompt_tokens_details":{"cached_tokens":76}}}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200382,"model":"","choices":[]}
+
+data: {"choices":[],"cost":"0"}
+
