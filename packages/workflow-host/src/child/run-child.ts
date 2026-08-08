@@ -112,6 +112,7 @@ import {
   loadVerifiedWorkflowDefinition,
   loadVerifiedWorkflowDefinitionFromClosure,
 } from "./verified-definition-loader";
+import { loadWorkflowDirectorRegistryFromClosure } from "../workflow-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
 import {
   collectParkedApprovalCorrelations,
@@ -572,7 +573,6 @@ export async function runWorkflowChild(
       return entry.grants;
     },
   };
-  const directors = opts.bindings.directors ?? createDefaultDirectorRegistry();
   const clock = opts.bindings.clock ?? defaultClock;
   const newId = opts.bindings.newId ?? defaultNewId;
 
@@ -625,6 +625,21 @@ export async function runWorkflowChild(
       approvedHash: opts.env.definitionHash,
     });
   }
+
+  // Directors resolve from the pinned closure on the source-ref arm so a
+  // custom director authored in the workflow's own package runs; the
+  // live-authored arm keeps the injected-or-default registry. Loading
+  // directors OUTSIDE the definition-hash re-verify is safe: the approved
+  // hash pins each director's id + config (which director runs cannot change
+  // post-approval) and the closure's SRI pins its module bytes. Folding
+  // directors into the hash would be redundant, so it is deliberately not
+  // done -- see `loadWorkflowDirectorRegistryFromClosure`.
+  const directors =
+    opts.env.lineage === "source-ref"
+      ? await loadWorkflowDirectorRegistryFromClosure({
+          packageDir: opts.env.closurePackageDir,
+        })
+      : (opts.bindings.directors ?? createDefaultDirectorRegistry());
 
   const authorize = createCredentialsBackedAuthorize(
     credentialsRef,

@@ -28,7 +28,6 @@ import { fileURLToPath } from "node:url";
 
 import { type } from "arktype";
 
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import { getLogger } from "@intx/log";
 import { hexDecode, hexEncode } from "@intx/types";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
@@ -46,6 +45,7 @@ import {
   generateChannelId,
   generateHmacKey,
   loadWorkflowDefinitionFromClosure,
+  loadWorkflowDirectorRegistryFromClosure,
   signHmac,
   verifyHmac,
   type FrameEnvelope,
@@ -515,7 +515,23 @@ async function computeProbePayload(
   const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
   const projection = projectLiveToInert(definition);
   const wireHash = await computeWireDefinitionHash(projection);
-  const walk = walkCapabilities(definition, createDefaultDirectorRegistry());
+  // Compose the director registry from the SAME closure the run-child will,
+  // so the `director:<id>` grants advertised here match what the runtime
+  // resolves. Built-ins-only when the closure ships no `interchange.directors`.
+  const directors = await loadWorkflowDirectorRegistryFromClosure({
+    packageDir,
+  });
+  const walk = walkCapabilities(definition, directors);
+  // Fail closed on an unresolved director: the runtime does not re-gate
+  // `director:<id>` against the approved grant set, so this advertisement is
+  // the only approval checkpoint for a director. Shipping an ok probe whose
+  // grant set silently omits a director the runtime would still try to
+  // resolve would let the operator approve an incomplete manifest. Mirrors
+  // the live-authored approval gate (`createApprovalSetGate`).
+  const [unresolved] = walk.unresolvedDirectors;
+  if (unresolved !== undefined) {
+    return { ok: false, error: `unresolvable director: ${unresolved}` };
+  }
   return {
     ok: true,
     projection,

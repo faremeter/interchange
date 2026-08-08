@@ -24,6 +24,12 @@ import { pathToFileURL } from "node:url";
 
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import {
+  createDefaultDirectorRegistry,
+  createWorkflowDirectorRegistry,
+  isAnnotatedDirectorFactory,
+  type DirectorRegistry,
+} from "@intx/agent";
 import { PackageJSON } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
@@ -86,7 +92,11 @@ export async function loadWorkflowDefinitionFromClosure(
     );
   }
 
-  const entryAbs = await resolveContainedEntry(args.packageDir, entryRel);
+  const entryAbs = await resolveContainedEntry(
+    args.packageDir,
+    entryRel,
+    "interchange.workflow",
+  );
 
   const importUrl =
     args.importCacheKey === undefined
@@ -111,6 +121,88 @@ export async function loadWorkflowDefinitionFromClosure(
   const definition = selectWorkflowDefinition(mod, args.packageDir, entryRel);
   logger.debug`loaded workflow definition ${definition.id} from ${args.packageDir}`;
   return definition;
+}
+
+export interface LoadWorkflowDirectorRegistryFromClosureArgs {
+  /**
+   * Directory of the materialized workflow package within the closure --
+   * the same directory `loadWorkflowDefinitionFromClosure` reads. Both the
+   * approval-time probe and the run-child call this over the SAME frozen
+   * closure, so the director set they compose cannot drift.
+   */
+  readonly packageDir: string;
+  /** See `LoadWorkflowDefinitionFromClosureArgs.importCacheKey`. */
+  readonly importCacheKey?: string;
+  /** Test seam for dynamic import; see the definition loader's variant. */
+  readonly importModule?: (importUrl: string) => Promise<unknown>;
+}
+
+/**
+ * Compose the `DirectorRegistry` for a workflow closure from the closure
+ * package's OWN `interchange.directors` module (if any), alongside the
+ * built-in default director. A package with no `interchange.directors`
+ * field composes to the built-ins-only registry -- absence is valid, a
+ * workflow need not ship a director. A present-but-empty directors module
+ * is malformed and throws, matching the tool-package loader.
+ *
+ * Only the workflow's OWN package directors are loaded here. Directors
+ * shipped by PINNED dependency packages are deliberately not resolved on
+ * the source-ref path yet: the airlocked probe does not materialize pinned
+ * packages, so loading them here would let the runtime resolve a director
+ * the probe never advertised for approval. A workflow referencing a
+ * pinned-package director fails closed (the capability walk reports it as
+ * unresolved).
+ *
+ * @throws if the directors entry path escapes the package, the module
+ *   cannot be imported, or it exports no `AnnotatedDirectorFactory` value
+ */
+export async function loadWorkflowDirectorRegistryFromClosure(
+  args: LoadWorkflowDirectorRegistryFromClosureArgs,
+): Promise<DirectorRegistry> {
+  const importModule =
+    args.importModule ?? ((url: string) => import(url) as Promise<unknown>);
+
+  const pkgJson = await readPackageJSON(args.packageDir);
+  const entryRel = pkgJson.interchange?.directors;
+  if (entryRel === undefined) {
+    // No custom directors: built-ins only.
+    return createDefaultDirectorRegistry();
+  }
+
+  const entryAbs = await resolveContainedEntry(
+    args.packageDir,
+    entryRel,
+    "interchange.directors",
+  );
+
+  const importUrl =
+    args.importCacheKey === undefined
+      ? pathToFileURL(entryAbs).href
+      : `${pathToFileURL(entryAbs).href}?importCacheKey=${encodeURIComponent(args.importCacheKey)}`;
+
+  let mod: unknown;
+  try {
+    mod = await importModule(importUrl);
+  } catch (cause) {
+    throw new Error(
+      `failed to import interchange.directors entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir}`,
+      { cause },
+    );
+  }
+  if (mod === null || typeof mod !== "object") {
+    throw new Error(
+      `interchange.directors entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} did not evaluate to a module object`,
+    );
+  }
+
+  const loaded = Object.values(mod).filter(isAnnotatedDirectorFactory);
+  if (loaded.length === 0) {
+    throw new Error(
+      `interchange.directors entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} exported no AnnotatedDirectorFactory values`,
+    );
+  }
+  logger.debug`loaded ${String(loaded.length)} custom director(s) from ${args.packageDir}`;
+  return createWorkflowDirectorRegistry(loaded);
 }
 
 async function readPackageJSON(packageDir: string): Promise<PackageJSON> {
@@ -157,6 +249,7 @@ async function readPackageJSON(packageDir: string): Promise<PackageJSON> {
 async function resolveContainedEntry(
   packageDir: string,
   entryRel: string,
+  fieldLabel: string,
 ): Promise<string> {
   const entryAbs = path.resolve(packageDir, entryRel);
   const containmentRoot = packageDir.endsWith(path.sep)
@@ -164,7 +257,7 @@ async function resolveContainedEntry(
     : packageDir + path.sep;
   if (entryAbs !== packageDir && !entryAbs.startsWith(containmentRoot)) {
     throw new Error(
-      `interchange.workflow entry path ${JSON.stringify(entryRel)} escapes the workflow package directory ${packageDir}`,
+      `${fieldLabel} entry path ${JSON.stringify(entryRel)} escapes the workflow package directory ${packageDir}`,
     );
   }
 
@@ -175,7 +268,7 @@ async function resolveContainedEntry(
     realEntryAbs = await fs.realpath(entryAbs);
   } catch (cause) {
     throw new Error(
-      `interchange.workflow entry path ${JSON.stringify(entryRel)} for workflow package at ${packageDir} could not be resolved`,
+      `${fieldLabel} entry path ${JSON.stringify(entryRel)} for workflow package at ${packageDir} could not be resolved`,
       { cause },
     );
   }
@@ -187,7 +280,7 @@ async function resolveContainedEntry(
     !realEntryAbs.startsWith(realContainmentRoot)
   ) {
     throw new Error(
-      `interchange.workflow entry path ${JSON.stringify(entryRel)} for workflow package at ${packageDir} escapes the package directory via a symlink`,
+      `${fieldLabel} entry path ${JSON.stringify(entryRel)} for workflow package at ${packageDir} escapes the package directory via a symlink`,
     );
   }
   return entryAbs;

@@ -7,6 +7,7 @@ import { defineDirector } from "./director";
 import {
   createDefaultDirectorRegistry,
   createDirectorRegistry,
+  createWorkflowDirectorRegistry,
 } from "./director-registry";
 import { defaultDirectorFactory } from "./default-director";
 
@@ -123,5 +124,36 @@ describe("createDefaultDirectorRegistry", () => {
 
     expect(ref.id).toBe("@intx/agent/default");
     expect(ref.config).toEqual({});
+  });
+});
+
+describe("createWorkflowDirectorRegistry", () => {
+  test("composes the built-in default with the loaded closure directors", () => {
+    const registry = createWorkflowDirectorRegistry([factoryA]);
+
+    expect(registry.resolve({ id: factoryA.id, config: {} })).toBe(factoryA);
+    // The built-in default is always present alongside the loaded set.
+    expect(registry.defaultFactory()).toBe(defaultDirectorFactory);
+  });
+
+  test("is built-ins only when no closure directors are loaded", () => {
+    const registry = createWorkflowDirectorRegistry([]);
+
+    expect(registry.defaultFactory()).toBe(defaultDirectorFactory);
+    expect(() => registry.resolve({ id: factoryA.id, config: {} })).toThrow(
+      /unknown director in registry/,
+    );
+  });
+
+  test("throws when a loaded director shadows the built-in default id", () => {
+    const shadow = defineDirector({
+      id: defaultDirectorFactory.id,
+      configSchema: emptySchema,
+      factory: () => stubDirector(),
+    }).factory;
+
+    expect(() => createWorkflowDirectorRegistry([shadow])).toThrow(
+      /id collision/,
+    );
   });
 });

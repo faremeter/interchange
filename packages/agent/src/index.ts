@@ -60,6 +60,7 @@ export {
 export {
   createDefaultDirectorRegistry,
   createDirectorRegistry,
+  createWorkflowDirectorRegistry,
   UnknownDirectorIdError,
 } from "./director-registry";
 export {
