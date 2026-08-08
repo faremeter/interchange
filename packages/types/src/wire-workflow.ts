@@ -6,6 +6,7 @@
 
 import { type } from "arktype";
 
+import { CredentialBinding } from "./credentials";
 import { InferenceSource } from "./runtime";
 
 /**
@@ -102,6 +103,15 @@ export const WorkflowProjectionDefinition = type({
   stepOrder: "string[]",
   steps: WorkflowSteps,
   "state?": "Record<string, unknown>",
+  // The definition's credential bindings, projected verbatim by the
+  // live->inert projector (`projectDefinition`). This MUST stay in sync with
+  // that projector: because of the `"+": "delete"` below, a binding the
+  // projector emits but this schema omits would be silently stripped at the
+  // wire boundary, desyncing the hub-resolved bindings from the projection
+  // the sidecar validates and re-verifies. Bindings are the operator-approved
+  // credential request surface (no secret material), so they belong in the
+  // hashed projection.
+  "credentialBindings?": CredentialBinding.array(),
   "+": "delete",
 });
 export type WorkflowProjectionDefinition =
