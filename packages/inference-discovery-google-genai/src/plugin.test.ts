@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  CapabilityNotBuildableError,
   INTENTS,
   SUPPORT_MATRIX,
   getSessionDir,
@@ -303,14 +304,56 @@ describe("buildRequestBody — unsupported pairs", () => {
     ).toThrow(/does not support capability/);
   });
 
-  test("throws for an unknown model", () => {
+  test("throws CapabilityNotBuildableError, not a bare Error", () => {
+    expect(() =>
+      buildRequestBody({
+        model: "gemini-2.5-flash",
+        capability: "image-output",
+        intent: INTENTS["image-output"],
+      }),
+    ).toThrow(CapabilityNotBuildableError);
+  });
+
+  test("an unknown model defaults to the text class and builds text", () => {
     expect(() =>
       buildRequestBody({
         model: "gemini-99-unknown",
         capability: "plain-text",
         intent: INTENTS["plain-text"],
       }),
-    ).toThrow(/unknown model/);
+    ).not.toThrow();
+  });
+
+  test("an unknown model cannot build an image capability by default", () => {
+    expect(() =>
+      buildRequestBody({
+        model: "gemini-99-unknown",
+        capability: "image-output",
+        intent: INTENTS["image-output"],
+      }),
+    ).toThrow(CapabilityNotBuildableError);
+  });
+
+  test("an unknown model with modelClass image builds image-output", () => {
+    expect(() =>
+      buildRequestBody({
+        model: "gemini-99-unknown",
+        capability: "image-output",
+        intent: INTENTS["image-output"],
+        modelClass: "image",
+      }),
+    ).not.toThrow();
+  });
+
+  test("a known model ignores a conflicting modelClass override", () => {
+    expect(() =>
+      buildRequestBody({
+        model: "gemini-2.5-flash",
+        capability: "image-output",
+        intent: INTENTS["image-output"],
+        modelClass: "image",
+      }),
+    ).toThrow(CapabilityNotBuildableError);
   });
 
   test("throws for capabilities no google-genai model exposes (e.g. function-calling)", () => {

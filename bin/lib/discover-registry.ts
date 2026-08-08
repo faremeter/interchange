@@ -14,16 +14,30 @@
 
 import type { ProviderPlugin } from "@intx/inference-discovery";
 import { createAnthropicPlugin } from "@intx/inference-discovery-anthropic";
-import { createGoogleGenaiPlugin } from "@intx/inference-discovery-google-genai";
+import {
+  createGoogleGenaiPlugin,
+  type GeminiModelClass,
+} from "@intx/inference-discovery-google-genai";
 import {
   createOpenAIPlugin,
   createOpencodeZenPlugin,
 } from "@intx/inference-discovery-openai";
 
+// Options a caller can pass when constructing a plug-in. Empty for most
+// providers; the probe uses modelClass to declare the request shape of a
+// google-genai model absent from the known text/image sets. bin/discover does
+// not pass options — it only touches models the support matrix already lists.
+export interface PluginCreateOptions {
+  modelClass?: GeminiModelClass;
+}
+
 export interface RegisteredPlugin {
   name: string;
   requiredEnv: readonly string[];
-  create(env: Record<string, string>): ProviderPlugin;
+  create(
+    env: Record<string, string>,
+    options?: PluginCreateOptions,
+  ): ProviderPlugin;
 }
 
 function anthropicCreate(env: Record<string, string>): ProviderPlugin {
@@ -34,12 +48,15 @@ function anthropicCreate(env: Record<string, string>): ProviderPlugin {
   return createAnthropicPlugin({ apiKey });
 }
 
-function googleGenaiCreate(env: Record<string, string>): ProviderPlugin {
+function googleGenaiCreate(
+  env: Record<string, string>,
+  options?: PluginCreateOptions,
+): ProviderPlugin {
   const apiKey = env.GOOGLE_API_KEY;
   if (apiKey === undefined) {
     throw new Error("GOOGLE_API_KEY missing from validated env");
   }
-  return createGoogleGenaiPlugin({ apiKey });
+  return createGoogleGenaiPlugin({ apiKey, modelClass: options?.modelClass });
 }
 
 function openaiCreate(env: Record<string, string>): ProviderPlugin {

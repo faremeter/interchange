@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { INTENTS } from "@intx/inference-discovery/catalog";
 
 import {
   PLUGIN_REGISTRY,
@@ -78,6 +79,23 @@ describe("create factory env wiring", () => {
     expect(() => requireEntry("google-genai").create({})).toThrow(
       "GOOGLE_API_KEY",
     );
+  });
+
+  test("google-genai threads modelClass so an unknown image model probes", () => {
+    // The image class must reach the plug-in's build path: with it, an unknown
+    // model builds image-output; without it the default text class would raise
+    // CapabilityNotBuildableError. A create that drops options.modelClass fails
+    // here.
+    const plugin = requireEntry("google-genai").create(
+      { GOOGLE_API_KEY: "test-key" },
+      { modelClass: "image" },
+    );
+    const iterator = plugin.iterateCaptureSteps({
+      model: "imagen-99-unknown",
+      capability: "image-output",
+      intent: INTENTS["image-output"],
+    });
+    expect(() => iterator.next()).not.toThrow();
   });
 
   test("openai builds a gpt-5.5 plug-in from OPENAI_API_KEY", () => {
