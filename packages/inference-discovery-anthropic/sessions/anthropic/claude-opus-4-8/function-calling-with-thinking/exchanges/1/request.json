@@ -1,0 +1,69 @@
+{
+  "model": "claude-opus-4-8",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "EsAECokBCBAYAipAEA+Eq6lisbPZyjppXyu6HsvWbotwtCMskWbR7Tk4wRnVWhs+IqPK3FrQcHzn2EIB4zzsPYtbcEA3TFaHIA4pTTIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDH8iULsgA93pfHlb1RoMuw+ekD+u6wTCE1VjIjBq7r6gAYkavX+J1TXTz4FxdWnXp1J1aflNQdi1QwUu8jrqTAuTRLLuVPeW3fzbMm0q4wKyWcVTyuswA+6SLK6JYpIJ7CKAxUlY/EnEXqgvW/HRGLLLSYvFX4C+Mtd7FNz97PQRAFHp/is8F2xAG8DoVGAapjhbmsicLqkfrORwFYM0+0LyRHX2gVy29+MYzL9aDin8LQNcUPbpkvCyUYREpfOPnZn1aXKw3GP/fbJ1htJgv/hHj3HKW2f+3gx/RHgmGZ+CVVzZCnBcJvmzPg/cFXcz3mTaZisHifwWmS8rsP12xkwnhZTQMIqBY0xDgJeQSkze0zmPBIJWHAb3Wx2aiC3hFAB0GRsCwDqzSgDrSaLDsFV0MUKUis1g8bU58V5/EDFrf7TO780JRgteTifcTZoG46uie+C/5Wj3FBc0Y87MceSJi0Y7D7LNGhqziErc+mwE3B4n0PQVSp4GlsppboiEvvdLJGe72u8PSjy6cK/yeTYeBt5fIKpooy+fyX3MFXhD23d/25mibBVpgjUWWFOCSfNSGAE="
+        },
+        {
+          "type": "text",
+          "text": "I'll help you find the weather in Boston, MA. Let me think through this:\n\n1. The user wants current weather information for a specific city.\n2. I have a `get_weather` tool that looks up current weather by location.\n3. The location is clearly \"Boston, MA\".\n\nNow I'll call the tool:"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_0198cHqGwsPBs4ViqFpNU8Ss",
+          "name": "get_weather",
+          "input": {
+            "location": "Boston, MA"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_0198cHqGwsPBs4ViqFpNU8Ss",
+          "content": "{}"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Look up the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      }
+    }
+  ],
+  "thinking": {
+    "type": "adaptive"
+  },
+  "output_config": {
+    "effort": "max"
+  }
+}
