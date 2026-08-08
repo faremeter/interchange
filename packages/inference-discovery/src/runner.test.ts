@@ -531,4 +531,73 @@ describe("runCapture", () => {
       }),
     ).rejects.toThrow(/dialed https:\/\/evil\.test/);
   });
+
+  test("returns the final status and exchange count on success", async () => {
+    const stubFetch: FetchLike = async () =>
+      new Response(JSON.stringify({ reply: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const result = await runCapture({
+      plugin: makePlugin(),
+      model: "test-model",
+      capability: "plain-text",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    expect(result).toEqual({ finalStatus: 200, exchangeCount: 1 });
+  });
+
+  test("stops on a non-2xx JSON response without writing a manifest", async () => {
+    const stubFetch: FetchLike = async () =>
+      new Response(JSON.stringify({ error: { message: "gone" } }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const result = await runCapture({
+      plugin: makePlugin(),
+      model: "test-model",
+      capability: "plain-text",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    expect(result).toEqual({ finalStatus: 404, exchangeCount: 1 });
+    // The error body is persisted for inspection, but the capture is not
+    // manifested as a session: session.json is a success artifact.
+    const rootEntries = (await fs.readdir(dir)).sort();
+    expect(rootEntries).toEqual(["exchanges"]);
+    expect(
+      await readJSON(path.join(dir, "exchanges", "0", "response.json")),
+    ).toEqual({ error: { message: "gone" } });
+  });
+
+  test("does not parse a non-JSON error body (no SyntaxError)", async () => {
+    const stubFetch: FetchLike = async () =>
+      new Response("<html>500 Internal Server Error</html>", {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const result = await runCapture({
+      plugin: makePlugin(),
+      model: "test-model",
+      capability: "plain-text",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    expect(result).toEqual({ finalStatus: 500, exchangeCount: 1 });
+    const body = await fs.readFile(
+      path.join(dir, "exchanges", "0", "response.json"),
+      "utf8",
+    );
+    expect(body).toBe("<html>500 Internal Server Error</html>");
+  });
 });
