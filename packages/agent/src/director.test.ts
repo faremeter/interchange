@@ -3,7 +3,8 @@ import { type } from "arktype";
 
 import type { ReactorDirector } from "@intx/types/runtime";
 
-import { defineDirector } from "./director";
+import { defineDirector, isAnnotatedDirectorFactory } from "./director";
+import { defineTool, definePlugin } from "./tool";
 import type { BaseEnv } from "./env";
 
 const emptySchema = type({});
@@ -170,5 +171,54 @@ describe("defineDirector", () => {
     expect(Reflect.get(sharedFactory, "id")).toBeUndefined();
     expect(Reflect.get(sharedFactory, "requires")).toBeUndefined();
     expect(Reflect.get(sharedFactory, "configSchema")).toBeUndefined();
+  });
+});
+
+describe("isAnnotatedDirectorFactory", () => {
+  test("accepts a real director factory", () => {
+    const { factory } = defineDirector({
+      id: "@vendor/pkg/name",
+      configSchema: emptySchema,
+      requires: ["transport"],
+      factory: () => stubDirector(),
+    });
+    expect(isAnnotatedDirectorFactory(factory)).toBe(true);
+  });
+
+  test("rejects a tool factory -- the configSchema discriminator", () => {
+    // A tool factory carries id + requires but no configSchema. Without
+    // that discriminator, a tool export from a directors-entry module
+    // would be wrongly accepted as a director.
+    const toolFactory = defineTool({
+      id: "@vendor/pkg/tool",
+      requires: ["storage"],
+      definitions: [{ name: "do_thing" }],
+      factory: () => ({
+        definitions: [],
+        run: async () => ({ callId: "c", content: "" }),
+      }),
+    });
+    expect(isAnnotatedDirectorFactory(toolFactory)).toBe(false);
+  });
+
+  test("rejects a plugin factory", () => {
+    const pluginFactory = definePlugin({
+      id: "@vendor/pkg/plugin",
+      factory: () => ({ value: 1 }),
+    });
+    expect(isAnnotatedDirectorFactory(pluginFactory)).toBe(false);
+  });
+
+  test("rejects a non-function and a bare function with no metadata", () => {
+    // A plain object with the right keys is still not callable.
+    expect(
+      isAnnotatedDirectorFactory({
+        id: "x",
+        requires: [],
+        configSchema: emptySchema,
+      }),
+    ).toBe(false);
+    expect(isAnnotatedDirectorFactory(() => stubDirector())).toBe(false);
+    expect(isAnnotatedDirectorFactory(null)).toBe(false);
   });
 });

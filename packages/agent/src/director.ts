@@ -24,6 +24,7 @@ import type {
 } from "./director-types";
 import type { BaseEnv } from "./env";
 import { validateNamespacedId } from "./namespace";
+import { isAnnotatedPluginFactory } from "./tool";
 
 /**
  * Result of `defineDirector`. The `factory` half is what the registry
@@ -138,4 +139,37 @@ export function validateDirectorConfig(
   schema: DirectorConfigSchema,
 ): void {
   validateConfig(config, schema);
+}
+
+/**
+ * Structural check for an `AnnotatedDirectorFactory` export. The shape is
+ * callable + `{ id: string, requires: string[], configSchema: function }`.
+ * The `configSchema` field is the discriminator against tool factories
+ * (which carry only `id` and `requires`); without it, any tool-factory
+ * export from a directors-entry module would be accepted as a director.
+ *
+ * Shared by the tool-package loader (`@intx/tool-packaging`) and the
+ * workflow-closure director loader (`@intx/workflow-host`) so both accept
+ * and reject exactly the same shapes -- one accept/reject rule the
+ * approval-time probe and the runtime cannot drift apart on. Two copies of
+ * "is this a valid director" would be a silent congruence hole.
+ */
+export function isAnnotatedDirectorFactory(
+  value: unknown,
+): value is AnnotatedDirectorFactory<unknown, BaseEnv> {
+  if (typeof value !== "function") return false;
+  if (isAnnotatedPluginFactory(value)) return false;
+  if (!("id" in value) || !("requires" in value)) return false;
+  if (!("configSchema" in value)) return false;
+  const id = (value as { id: unknown }).id;
+  const requires = (value as { requires: unknown }).requires;
+  const configSchema = (value as { configSchema: unknown }).configSchema;
+  if (typeof id !== "string") return false;
+  if (!Array.isArray(requires)) return false;
+  if (!requires.every((r) => typeof r === "string")) return false;
+  // `defineDirector` requires a callable arktype validator. A non-callable
+  // schema would crash later inside config validation; reject here so the
+  // failure surfaces at load time rather than at first config-validation.
+  if (typeof configSchema !== "function") return false;
+  return true;
 }
