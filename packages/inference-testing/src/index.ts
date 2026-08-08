@@ -96,6 +96,9 @@ export type {
   RunTurnOpts,
 } from "./session-replay";
 
+export { classifyReplay, classifySession } from "./classify-replay";
+export type { ReplayOutcome, ReplayClassification } from "./classify-replay";
+
 export { userTurn } from "./turns";
 export {
   LIVE_WEATHER_TOOL,
