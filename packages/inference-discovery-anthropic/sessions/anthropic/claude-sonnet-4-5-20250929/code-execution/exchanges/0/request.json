@@ -1,0 +1,16 @@
+{
+  "model": "claude-sonnet-4-5-20250929",
+  "max_tokens": 512,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Compute the 12th Fibonacci number by running code."
+    }
+  ],
+  "tools": [
+    {
+      "type": "code_execution_20250522",
+      "name": "code_execution"
+    }
+  ]
+}

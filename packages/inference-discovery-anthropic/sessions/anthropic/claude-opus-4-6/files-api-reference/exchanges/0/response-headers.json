@@ -1,0 +1,18 @@
+{
+  "anthropic-organization-id": "742316c8-6731-401c-8fb7-b41ec8023cf2",
+  "anthropic-workspace-id": "wrkspc_012WGcKPGiAkqEoxA4nL7vM2",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "a27fb33bd9b9d9c6-MCI",
+  "connection": "keep-alive",
+  "content-encoding": "gzip",
+  "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+  "content-type": "application/json",
+  "date": "Sat, 08 Aug 2026 15:54:31 GMT",
+  "request-id": "req_011CdqYzRPWheiAHdHiTVqXb",
+  "server": "cloudflare",
+  "server-timing": "x-originResponse;dur=266",
+  "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+  "transfer-encoding": "chunked",
+  "vary": "Accept-Encoding",
+  "x-robots-tag": "none"
+}

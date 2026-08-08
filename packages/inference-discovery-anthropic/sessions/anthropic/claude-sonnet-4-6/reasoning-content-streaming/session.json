@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "baseURL": "https://api.anthropic.com"
+  },
+  "origin": "live",
+  "capturedAt": "2026-08-08T15:59:36.120Z",
+  "capability": "reasoning-content-streaming"
+}

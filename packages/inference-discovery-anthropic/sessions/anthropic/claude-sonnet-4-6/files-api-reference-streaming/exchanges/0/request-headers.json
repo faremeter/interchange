@@ -1,0 +1,6 @@
+{
+  "Content-Type": "multipart/form-data; boundary=----intx-anthropic-2654c8a2447b414a9d0dde297df76853",
+  "anthropic-beta": "files-api-2025-04-14",
+  "x-api-key": "<REDACTED>",
+  "anthropic-version": "2023-06-01"
+}

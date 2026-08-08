@@ -1,0 +1,45 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-7","id":"msg_011CdqZ8kdNENFHR6WsCXved","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":65,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"global"}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}    }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EtAECokBCBAYAipA+nmpuYw24jxMGuafjB2Wg+BEzHbZsHE99r/qqqSNV1uKjcaYH5RiPdlAQBe+0W6WVDWDqZJCiWZSkEFL48rSODIPY2xhdWRlLW9wdXMtNC03OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDBm6Jvn81RN5dn4giBoMx+8W+Rkdj++2tddsIjB2RRmvHKaPdsfRS7r2Oyr6F2wgN3iUpABu2dsjrkCPOeZh2TM/je/b6mfU50Mbs4Iq8wL9GcSDIwK8k9/o/VKCB20ZzwbwVBOjvC0Hov+WtsV5oQp6k3C2ICYTsmF9I6GSkX6fOlaUIHuuaEBS3vdb97vVWiiVsWlcQb2z2RTwV79Ph1VaDlAWQ1Gpj8peMQYLI1LRaR2s7VGyLeTwxGF5LIQjDnp2CH6BHdR6PFo/v2nVl4LjbNjiB5hcJryoXWXlAWK2cn81xDytsoq7nHionEvQimIqhaAuznnG0dA/RhQNvRMinsjR0XVXpsYtXxVztsOc7kvZ9S+Tu4SFaU0gb2ewQI78yqgXn3f/XBmzidi7BYSZj5ychDH5alipL0ugAwvUlzPqSpfrwCOnT5Kf+PyF4wpLbjPAsyyjxgJjQSab6xDsB5/sp6sGJrzbsHLQrelzMmBnQd39YTa2tt6WLDWSZJGUABUAeUKZX03ERyO3IvNzHJ3vgGmx2ct49WUeDAjZxgeGP7sp2qfjRJiqGNlZYw+JKA7U5n2uFRDOojQoSgMW2BgB"}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"# Reasoning\n\nLet me define variables:\n- Let **b"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"** = cost of the ball\n- Then the bat costs **b + $1.00** (since it's $1.00 more than the ball)\n\nSetting up the equation from the total cost:\n$$b + (b + 1.00) = 1.10$$"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nSolving:\n$$2b + 1.00 = 1.10$$\n$$2b = 0.10$$\n$$b = 0.05$$\n\n**Verification:**\n- Ball: $0.05\n- Bat: $0.05 + $1.00 = $1.05\n- Total: $0.05 + $1"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":".05 = $1.10 ✓\n- Difference: $1.05 − $0.05 = $1.00 ✓\n\n# Answer\n\n**The ball costs $0.05 (5 cents).**\n\n(A common intuitive answer is $0.10, but that would"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" make the bat $1.10 — only $1.00 more if the ball were $0.10, which gives a total of $1.20, not $1.10.)"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1           }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":65,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":533,"output_tokens_details":{"thinking_tokens":209}}      }
+
+event: message_stop
+data: {"type":"message_stop"}
+
