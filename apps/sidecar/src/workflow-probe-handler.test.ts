@@ -3,7 +3,13 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { hexDecode, hexEncode } from "@intx/types";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
+import {
+  encodeEnvelope,
+  signHmac,
+  type FrameEnvelope,
+} from "@intx/workflow-host";
 
 import {
   createWorkflowProbeExecutor,
@@ -160,6 +166,71 @@ describe("createWorkflowProbeExecutor", () => {
     },
     SPAWN_TEST_TIMEOUT_MS,
   );
+
+  test("returns a written result even when the child exit resolves before the read", async () => {
+    // A one-shot child writes its result line and then exits promptly, so both
+    // the buffered line and `handle.exited` become ready together. A handle
+    // whose `exited` is ALREADY resolved and whose stdout carries a valid signed
+    // result reproduces that race deterministically: the former `exit` race arm
+    // would win and discard the written result; racing only the line must
+    // return it.
+    const projection = {
+      id: "race-fixture",
+      triggers: [],
+      stepOrder: [],
+      steps: {},
+    };
+    const raceSpawner: ProbeChildSpawner = ({ env }) => {
+      const channelId = env["PROBE_IPC_CHANNEL_ID"];
+      const hmacHex = env["PROBE_IPC_HMAC_KEY"];
+      if (channelId === undefined || hmacHex === undefined) {
+        throw new Error("probe spawn env missing channel id / hmac key");
+      }
+      const hmacKey = hexDecode(hmacHex);
+      const stdout = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const payload = {
+            ok: true as const,
+            projection,
+            grants: ["cap:probe-race"],
+            wireHash: "a".repeat(64),
+          };
+          const envelope: FrameEnvelope = { seq: 0, channelId, payload };
+          const mac = hexEncode(
+            await signHmac(encodeEnvelope(envelope), hmacKey),
+          );
+          controller.enqueue(
+            new TextEncoder().encode(`${JSON.stringify({ envelope, mac })}\n`),
+          );
+          controller.close();
+        },
+      });
+      return {
+        pid: 4242,
+        stdout,
+        exited: Promise.resolve(0),
+        kill: () => {
+          /* mock handle: already exited, nothing to reap */
+        },
+      };
+    };
+
+    const materialize: MaterializeWorkflowClosure = () =>
+      Promise.resolve({
+        packageDir: "/unused-by-the-race-spawner",
+        cleanup: () => Promise.resolve(),
+      });
+
+    const executor = createWorkflowProbeExecutor({
+      materialize,
+      spawnProbeChild: raceSpawner,
+    });
+
+    const result = await executor.probe(probeFrame());
+    expect(result.projection).toEqual(projection);
+    expect(result.grants).toEqual(["cap:probe-race"]);
+    expect(result.wireHash).toBe("a".repeat(64));
+  });
 
   test(
     "rejects and reaps the child when the workflow entry throws during evaluation",
