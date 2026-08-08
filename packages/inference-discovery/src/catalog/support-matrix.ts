@@ -41,6 +41,7 @@ const ANTHROPIC_MODELS = [
   "claude-opus-5",
   "claude-fable-5",
   "claude-haiku-4-5-20251001",
+  "claude-opus-4-8",
 ] as const;
 
 const GEMINI_PROVIDER = "google-genai";

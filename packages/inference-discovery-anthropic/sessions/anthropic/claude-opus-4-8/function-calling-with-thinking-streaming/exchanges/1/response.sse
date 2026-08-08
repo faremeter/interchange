@@ -1,0 +1,42 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-8","id":"msg_011CdpfYPRXMT8ux937Dpspp","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":744,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"global"}} }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EtcECokBCBAYAipA3GR23lk0z+djlwm4DzZKN81mQ2VDK4v9NcrrpT7H2KyWXp0rYPWVfu8sAQrZf2pn4bFlFyif73Z/Ayhy5jPlljIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDIrsrmlxeRhgoEeEkRoM8a+lEkEc24OCzWliIjDxzK6bzFo6cH8ScUS9acEa1ZcOzAl+G3r+XMvFB0tRFgkc+pxq3JuL+b2bDkf6yjIq+gIerJ6I3V04Nv7vLb02cIdoHAF9BoG37ugpR1KuZ3BoSRxQwTgJQkJw/6pVlkuC1HKdVpwOEHHtdMTHjhdgJMDyu9VWQF+bfq2ky0h+hbV46xbpQG0sLjDl+DqArUco4z+07mcTl5ZmTzYnrSwobH+DqxLGIVI1z736uo0eFfYoetofQA8KBoVPPcxhPBV7qTqHYmbd5U3aBATwsawRYZuWCjrnYGIT6iDthNXayu+z92vv2ldkJRMIeLJ0ayZQSUbU9B8MunpHH1gYul7L0RfrgHL8+E3v2wPCQkrYGz2mI43n9Pu+KYYxTCXKbdRpQAOWweJVwt4xxTPNi2VGFt5Nc/kjiP2l9YZeOU9nRQMtuLf0dqhgbU994XCPXFzsj3Zm2TBzJE2HBxn1C3bl27gcdDVwpaH96GhyqdKe8Ose5KO/tBTGdjVw4OyqTWKMq4hOl+P6fzJN3L3m3CYXeYWX3bjjvEQ9CwKf8lOpIofG2MdPWb4580dRv1wYAQ=="}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I attempted to look up the weather for Boston, MA, but un"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"fortunately the weather service returned an empty response with no data.\n\nI don't want to guess or make up conditions, so I can't give you the current temperature or forecast right now. A few options:\n\n-"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" **Try again in a moment** — the service may be temporarily unavailable.\n- **Check another source** — a site like weather.gov or your preferred weather app should have up-to-date info"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" for Boston.\n\nWould you like me to try the lookup again?"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1      }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":744,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":259,"output_tokens_details":{"thinking_tokens":105}}       }
+
+event: message_stop
+data: {"type":"message_stop"       }
+

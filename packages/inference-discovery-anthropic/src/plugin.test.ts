@@ -195,7 +195,12 @@ describe("buildRequestBody — wire-shape spot checks", () => {
   });
 
   test("adaptive-thinking models use thinking:adaptive with output_config effort", () => {
-    for (const model of [SONNET5, "claude-opus-5", "claude-fable-5"] as const) {
+    for (const model of [
+      SONNET5,
+      "claude-opus-5",
+      "claude-fable-5",
+      "claude-opus-4-8",
+    ] as const) {
       for (const capability of [
         "reasoning-content",
         "function-calling-with-thinking",

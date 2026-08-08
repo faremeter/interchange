@@ -1,0 +1,54 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-8","id":"msg_011CdpfY1DYRpPH58KPzAwsV","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":423,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"global"}}      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}         }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eu0FCokBCBAYAipAOIvOmQXo9a4rO9JCINsPXS825nAp8wGVmisY94kEmZuB1n75sDTn6Qr5G88CnfGD/eZn89Qd3QAH8a1movCBqDIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDPExSlaRj2jQVLx2ZBoM1e3Rso1o/2L9sAmwIjABB1ObCFvOe9fymA6aH90rzlE+bNXSgqDtBBHZqSDjdV3apPbiafo1bhdkN6LlpmcqkAQUJAtlLkcQcjf8xJAqYhiBWxv4hxNWJWDCayiBIwAAoR2HTCwsIRJP0WdFwDkS7kZ9vwQ2GEAsFtYEflb3cGU4YAPpHcJJ8xC/35AQsGSe/67qCBS5hD52ieHES0V9Ipy3uUvZtf3OFlzutxLhPNrfG77hBJ2KfZ0aH1516JgCsBA7hAvA4n5LBcLRxBlZcR888UR630gTyn5IYmRaLzhznICmVMn1pb7o/jyraTxMz+pQP5fz2ity08WsriTB5S+iW4suHgSgdKpFY18BRYO4clQa9PYAugpn8Qwk2w7nk7PuhK47cZeuDfRGLwLm5J0ECsMfg4xQ0bpnSuocqhC0v6yvbpqlmlh2JAeupnLEyppRT/rkU1hCcumFE+Yv6rNvxRqdrv4qMnDY2w8rL/U+1+h8w/FyM8H3kzA44FBO+ADo75rulmkpnDig8ckhpU9P5f+04c9ULeBzmqg8ON/Fs71Zkw+qlnITKGBUXDfWGf8U51VDm6TQjMO6jlPgOPOiC/dBQ935PKjqYBNQnMRzPVWryQMlNIswQaflXqhGVxApyZTm+WPGr2ED4PEXGXGlUqEp3k/54JtO1PN9eab9ugLXBdJui60UoOSMDDjzDVyoOIDv6Tbg1GSjUULQNeYCX+jCXJ56JXp9AP1mX+l/tVHYpzYuWKk8YyWcWh4AdSOxQqdEdlolYbvP8dtZEgIYAQ=="}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I'll help you find the weather in Boston, MA. Let me reason through this:\n\n1. The user wants current"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" weather information for a specific city.\n2. I have a `get_weather` tool that looks up current weather by location.\n3. I'll call it with the location \"Boston, MA\".\n\nLet me make that call now."}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_014Ugw45AC7e1gwckWpEohvX","name":"get_weather","input":{},"caller":{"type":"direct"}}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"location"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\": \"Bosto"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"n, MA\"}"}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2          }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":423,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":314,"output_tokens_details":{"thinking_tokens":166}}}
+
+event: message_stop
+data: {"type":"message_stop"     }
+
