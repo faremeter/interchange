@@ -49,7 +49,10 @@ import type {
   AnnotatedToolFactory,
   BaseEnv,
 } from "@intx/agent";
-import { isAnnotatedPluginFactory } from "@intx/agent";
+import {
+  isAnnotatedDirectorFactory,
+  isAnnotatedPluginFactory,
+} from "@intx/agent";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
 import type { ToolCall, ToolResult } from "@intx/types/runtime";
@@ -906,33 +909,4 @@ function isAnnotatedToolFactory(value: unknown): value is LoadedToolFactory {
   if (typeof id !== "string") return false;
   if (!Array.isArray(requires)) return false;
   return requires.every((r) => typeof r === "string");
-}
-
-/**
- * Structural check for an `AnnotatedDirectorFactory` export. The shape
- * is callable + `{ id: string, requires: string[], configSchema:
- * function }`. The `configSchema` field is the discriminator against
- * tool factories (which carry only `id` and `requires`); without it,
- * any tool-factory export from a directors-entry module would be
- * accepted as a director.
- */
-function isAnnotatedDirectorFactory(
-  value: unknown,
-): value is LoadedDirectorFactory {
-  if (typeof value !== "function") return false;
-  if (isAnnotatedPluginFactory(value)) return false;
-  if (!("id" in value) || !("requires" in value)) return false;
-  if (!("configSchema" in value)) return false;
-  const id = (value as { id: unknown }).id;
-  const requires = (value as { requires: unknown }).requires;
-  const configSchema = (value as { configSchema: unknown }).configSchema;
-  if (typeof id !== "string") return false;
-  if (!Array.isArray(requires)) return false;
-  if (!requires.every((r) => typeof r === "string")) return false;
-  // `defineDirector` requires a callable arktype validator. A non-
-  // callable schema would crash later inside `validateDirectorConfig`;
-  // reject here so the failure surfaces as `package.entry.invalid` at
-  // load time rather than at first config-validation call.
-  if (typeof configSchema !== "function") return false;
-  return true;
 }

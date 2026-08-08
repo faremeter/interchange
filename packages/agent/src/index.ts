@@ -52,7 +52,11 @@ export {
 } from "./director-types";
 export { validateNamespacedId } from "./namespace";
 export { CanonicalizationError, canonicalizeForHash } from "./canonicalize";
-export { type DefinedDirector, defineDirector } from "./director";
+export {
+  type DefinedDirector,
+  defineDirector,
+  isAnnotatedDirectorFactory,
+} from "./director";
 export {
   createDefaultDirectorRegistry,
   createDirectorRegistry,
