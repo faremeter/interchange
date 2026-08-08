@@ -28,7 +28,7 @@ import {
 // google-genai model absent from the known text/image sets. bin/discover does
 // not pass options — it only touches models the support matrix already lists.
 export interface PluginCreateOptions {
-  modelClass?: GeminiModelClass;
+  modelClass?: GeminiModelClass | undefined;
 }
 
 export interface RegisteredPlugin {
