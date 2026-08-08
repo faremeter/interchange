@@ -1,4 +1,6 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InferenceEvent } from "@intx/types/runtime";
 import type { InvariantViolation } from "./invariants";
@@ -122,5 +124,32 @@ describe("classifySession over a committed fixture", () => {
     );
     const result = await classifySession(sessionDir);
     expect(result.outcome).toBe("captured");
+  });
+});
+
+describe("classifySession throw handling", () => {
+  const created: string[] = [];
+  afterEach(() => {
+    for (const dir of created) rmSync(dir, { recursive: true, force: true });
+    created.length = 0;
+  });
+
+  test("a session whose replay throws resolves to misled, not a crash", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "classify-throw-"));
+    created.push(dir);
+    // A session.json exists so a caller reaches replay, but the manifest is
+    // malformed and the exchange body is undecodable. The documented contract
+    // is that a batch caller sees this cell as misled rather than the whole run
+    // crashing.
+    writeFileSync(
+      join(dir, "session.json"),
+      JSON.stringify({ schemaVersion: "2" }),
+    );
+    mkdirSync(join(dir, "exchanges", "0"), { recursive: true });
+    writeFileSync(join(dir, "exchanges", "0", "response.json"), "not json {{{");
+
+    const result = await classifySession(dir);
+    expect(result.outcome).toBe("misled");
+    expect(result.reason).toMatch(/replay decode threw/);
   });
 });
