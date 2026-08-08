@@ -4,6 +4,7 @@
     { "path": "packages/types" },
     { "path": "packages/crypto" },
     { "path": "packages/inference" },
+    { "path": "packages/inference-catalog" },
     { "path": "packages/storage-isogit" },
     { "path": "packages/log" },
     { "path": "packages/db" },

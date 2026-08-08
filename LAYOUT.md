@@ -4,13 +4,14 @@ The system has three deployment contexts: a shared foundation consumed by everyt
 
 ## Shared Foundation
 
-Consumed by both the control plane and the agent runtime. Pure logic and type definitions. No environment assumptions, no I/O beyond what the caller provides.
+Consumed by both the control plane and the agent runtime. Pure logic and type definitions. No environment assumptions, no I/O beyond what the caller provides. This is also the home for published pure contracts consumed by both internal trees and external consumers (`@intx/types`, `@intx/inference-catalog`).
 
-| Package       | Purpose                                                                                                                                                                                             |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@intx/types` | ArkType schemas, API contract, event protocol types, and the runtime interfaces (`ContextStore`, `CryptoProvider`, `MessageTransport`, `ToolRunner`). The stability contract between the two trees. |
-| `@intx/authz` | Grant evaluation engine. Pattern matching, specificity ordering, condition evaluation. The hub uses it for API authorization; the harness uses it for tool-call gate enforcement.                   |
-| `@intx/log`   | Logging abstraction.                                                                                                                                                                                |
+| Package                   | Purpose                                                                                                                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@intx/types`             | ArkType schemas, API contract, event protocol types, and the runtime interfaces (`ContextStore`, `CryptoProvider`, `MessageTransport`, `ToolRunner`). The stability contract between the two trees. |
+| `@intx/inference-catalog` | Declarative, dependency-free catalog of inference models, providers, and their offering capabilities and quirks. The typed authoring source for the dev seed; published for external consumers.     |
+| `@intx/authz`             | Grant evaluation engine. Pattern matching, specificity ordering, condition evaluation. The hub uses it for API authorization; the harness uses it for tool-call gate enforcement.                   |
+| `@intx/log`               | Logging abstraction.                                                                                                                                                                                |
 
 Breaking changes to shared foundation packages cascade into both trees. These packages carry the strictest versioning discipline.
 
@@ -116,7 +117,7 @@ Deployable processes under `apps/`. Each wires packages from one deployment cont
 
 1. Agent-runtime packages depend on control-plane packages only through the db-free `@intx/hub-sessions/substrate` seam — the repo-substrate primitives (`RepoStore`, workflow-run claim-check, event log, kind-handler protocol) the server runtime host needs to read and write the agent-state and workflow-run repos. They never link the control plane's db-backed services barrel. Test-only dev dependencies that exercise a cross-tree wire contract are also permitted (e.g. `hub-agent`'s dev dependency on `hub-sessions`).
 2. The control plane reaches into the agent-runtime tree at a set of deliberate crossings introduced by the workflow-process migration: the hub is itself a git server and workflow deployer, so `@intx/hub-api` and `@intx/hub-sessions` value-import agent-runtime packages that implement that shared machinery — packages such as the git pack and timeline layers (`@intx/storage-isogit`, `@intx/pack-transport`), deployment-address and repo-id derivation (`@intx/workflow-deploy`), the agent and workflow runtimes the substrate drives (`@intx/agent`, `@intx/workflow`), and the message, crypto, and tool-packaging primitives the sidecar link shares (`@intx/mime`, `@intx/crypto`, `@intx/tool-packaging`). These are deliberate — the control plane co-owns the git/workflow substrate — not accidental layering rot. What stays out of bounds is the reverse and the database seam: the agent-runtime tree never links the control plane's db-backed services barrel (Rule 1), and no crossing pulls the hub's Postgres/database layer into a shipped agent-runtime artifact.
-3. Both trees depend on the shared foundation (`types`, `authz`, `log`).
+3. Both trees depend on the shared foundation (`types`, `authz`, `log`, `inference-catalog`). (`@intx/inference-catalog` additionally carries test-only dev dependencies on `@intx/inference-discovery` and `@intx/inference` — its guard re-bakes offering capabilities against the discovery matrix and validates quirks against the adapter schemas. These are build/test-time only and absent from the published artifact, which has no runtime dependencies.)
 4. Environment-specific packages depend on `types` for interfaces, never on each other (`tools-lsp` on `tools-posix` is the documented exception — see the tool-set table).
 5. The harness depends on `types` for interfaces and `inference` for portable logic. It does not depend on any environment-specific package.
 

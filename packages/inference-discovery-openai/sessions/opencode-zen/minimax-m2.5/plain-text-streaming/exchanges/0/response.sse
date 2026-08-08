@@ -1,0 +1,24 @@
+: keep-alive
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":"The user","reasoning_details":[{"type":"reasoning.text","text":"The user","format":"unknown","index":0}]}}]}
+
+: keep-alive
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" says: \"Reply with a single sentence: the capital of France is Paris.\"\n\nWe need to comply. There's no policy violation. The user wants a single sentence answer. So reply: \"The","reasoning_details":[{"type":"reasoning.text","text":" says: \"Reply with a single sentence: the capital of France is Paris.\"\n\nWe need to comply. There's no policy violation. The user wants a single sentence answer. So reply: \"The","format":"unknown","index":0}]}}]}
+
+: keep-alive
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" capital of France is Paris.\" That is one sentence. Good.\n\nWe must ensure we do not add extra text, punctuation beyond period at end is","reasoning_details":[{"type":"reasoning.text","text":" capital of France is Paris.\" That is one sentence. Good.\n\nWe must ensure we do not add extra text, punctuation beyond period at end is","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" fine. Provide only that.","reasoning_details":[{"type":"reasoning.text","text":" fine. Provide only that.","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"The capital of France is Paris."}}]}
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":"","reasoning":null}}]}
+
+data: {"id":"gen-1786200274-eLyhl5iuJ9tiia87uOjY","object":"chat.completion.chunk","created":1786200274,"model":"minimax-m2.5","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":54,"completion_tokens":87,"total_tokens":141,"prompt_tokens_details":{"audio_tokens":0,"cached_tokens":0,"cache_write_tokens":0},"completion_tokens_details":{"audio_tokens":0,"reasoning_tokens":79}}}
+
+data: [DONE]
+
+data: {"choices":[],"cost":"0"}
+

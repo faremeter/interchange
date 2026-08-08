@@ -1,0 +1,48 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-opus-4-8","id":"msg_011CdpfbxG4HtbMG5Zgb2uNw","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"global"}}          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}            }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EsgFCokBCBAYAipA0sIfyv9e+EXUfYPN5K07JIKDLQ1ob5X+XBkbsuzFPUqA/asWSyjCjbBrvh4pS6s94lI9016dheHF0tU/7THAjjIPY2xhdWRlLW9wdXMtNC04OABCCHRoaW5raW5nWiQ3NDIzMTZjOC02NzMxLTQwMWMtOGZiNy1iNDFlYzgwMjNjZjISDNWwV2iUA1+C3AoCehoMvVKDfIuq6bnAEuG/IjCs4WTd+zIER3JzcpTCjQu6uKkZChGyUHB0tdI8l/PmD1s7qP+puA72ki6yw2doP9Mq6wN86/bRy1DR8TDQLzGCVr0AFmWt0QszKd1kpdockpYUxnYnG7RKdO/hz05o0j0/gP/WvUQ1h/caHRMC7MZG+T1YdUX05ocFTPsV9/O+fwsGNrepiGb12iG7LJ3LUBVNqJ+j7A++SPjR2uXs2YWKR9Mf/wbBKzhLHN+8uOU76fzTRT9I8Hvo2FXAHDzGn4pzX/WrcipNs/sFL6kCIC10mi3/DPNjfaIydxXH/TbgDJ/2CcSQL6LW2wwaCrnQTENVC07O59ADAzY6/rU+AP5LnfObxcvj/ldYGug6E3AnT94K2wH4nrHUxfJpIPErqDFdTDTu3tOqvWrOBUqeSYMGSR9yQp/tHlCZxdOVy90QWxkNG+TBrF6R0BfoTjLL5D6ImSLJ37fgqXRLEW/8HSBsvkC6pJWSDJ1+e3SkwJldQACPAcKd0bCEt001PC+c3fYS0ck72Piz+G29JDRXGwwmUIXN1OYomY5Uct7HdzauwvQ3po9rJ3gI3JtyIz7JAVFXWhEfB1G/LXkmcYwQ8S/vq3mIPBVTBUw69ru1i0UhyyoA82mUX0g6CzVC8Kf0mbSE1gQMhn8n/+tZGJsmnArcigVUlIhQDfGU9S8ukOTIqoGT4xhdPt6y0YVdJjWRfSDlLpRSGLkZx6xrwnqrvhgB"}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"## Setting Up the Problem\n\nLet me define a variable:\n- Let the **ball** cost = $x$\n- Then the **bat** cost"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"s $1.00 more, so bat = $x + 1.00$\n\n## Writing the Equation\n\nTogether they cost $1.10:\n\n$$x + (x + 1.00) = 1.10$$\n\n## Solving\n\n$$2x + 1.00 = 1"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":".10$$\n\n$$2x = 0.10$$\n\n$$x = 0.05$$\n\n## Verification\n\n- Ball = **$0.05**\n- Bat = $0.05 + $1.00 = **$1.05**\n- Total: $0.05 + $1.05 = **$1"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":".10** ✓\n- Difference: $1.05 − $0.05 = **$1.00** ✓\n\n## Answer\n\n**The ball costs $0.05 (5 cents).**\n\n*Note: The tempting answer is $0.10, but that would make the bat $1.10,"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" giving a total of $1.20 — and a difference of only $1.00... wait, actually the difference would be exactly $1.00 but the total would be wrong. The key is that the $1.00 difference must be split corre"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ctly, leaving 5 cents for the ball.*"}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1               }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":614,"output_tokens_details":{"thinking_tokens":233}}               }
+
+event: message_stop
+data: {"type":"message_stop"              }
+

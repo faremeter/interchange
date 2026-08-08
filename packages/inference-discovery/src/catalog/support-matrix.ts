@@ -41,6 +41,7 @@ const ANTHROPIC_MODELS = [
   "claude-opus-5",
   "claude-fable-5",
   "claude-haiku-4-5-20251001",
+  "claude-opus-4-8",
 ] as const;
 
 const GEMINI_PROVIDER = "google-genai";
@@ -127,6 +128,18 @@ const OPENCODE_NON_VISION_CAPABILITIES = [
   "function-calling-multi-turn",
   "reasoning-content",
   "reasoning-content-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
+// Text + tool-calling with neither reasoning_content nor vision. Several
+// net-new relay models emit no reasoning_content field (they reason in-band
+// with <think> tags in content, or not at all) and soft-decline or return
+// empty on image input, so they carry only this base set plus whatever else
+// they demonstrated.
+const OPENCODE_BASE_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
 ] as const satisfies readonly SupportEntry["capability"][];
 
 // The first-party api.openai.com deployment covers what the OpenAI-protocol
@@ -224,6 +237,27 @@ const ANTHROPIC_UNSUPPORTED_OUTPUT_MODALITIES = [
   "image-output",
   "image-output-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
+
+// Net-new opencode-zen models probed live, grouped by the capability profile
+// each actually demonstrated on the wire. grok-4.5 (the relay reports its
+// upstream endpoint unavailable, returning empty or error bodies) and the
+// deprecated mimo-v2-omni / mimo-v2-pro (relay returns a 404 deprecation
+// notice) were probed but excluded. Vision and reasoning_content vary per
+// model, so the groups differ.
+const OPENCODE_FULL_STRUCTURED_MODELS = [
+  "kimi-k2.5",
+  "qwen3.5-plus",
+  "qwen3.6-plus",
+  "qwen3.8-max",
+] as const;
+const OPENCODE_REASONING_ONLY_MODELS = ["glm-5", "glm-5.1"] as const;
+const OPENCODE_BASE_STRUCTURED_MODELS = [
+  "hy3",
+  "mimo-v2.5-pro",
+  "minimax-m2.5",
+  "minimax-m2.7",
+] as const;
+const OPENCODE_NONVISION_STRUCTURED_MODELS = ["qwen3.7-max"] as const;
 
 const MATRIX: SupportEntry[] = [
   ...ANTHROPIC_MODELS.flatMap((model) =>
@@ -419,6 +453,49 @@ const MATRIX: SupportEntry[] = [
     notes:
       "Probe against the configured OpenCode base URL returned invalid_request_error with message 'Error from provider (Console Go): Upstream request failed'. No fixture; the upstream/routing failure is recorded as http-error.",
   },
+  ...OPENCODE_FULL_STRUCTURED_MODELS.flatMap((model) =>
+    rows(OPENCODE_PROVIDER, model, OPENCODE_FULL_CAPABILITIES, "captured"),
+  ),
+  ...OPENCODE_FULL_STRUCTURED_MODELS.flatMap((model) =>
+    rows(OPENCODE_PROVIDER, model, STRUCTURED_OUTPUT_CAPABILITIES, "captured"),
+  ),
+  ...OPENCODE_REASONING_ONLY_MODELS.flatMap((model) =>
+    rows(
+      OPENCODE_PROVIDER,
+      model,
+      OPENCODE_NON_VISION_CAPABILITIES,
+      "captured",
+    ),
+  ),
+  ...OPENCODE_BASE_STRUCTURED_MODELS.flatMap((model) =>
+    rows(OPENCODE_PROVIDER, model, OPENCODE_BASE_CAPABILITIES, "captured"),
+  ),
+  ...OPENCODE_BASE_STRUCTURED_MODELS.flatMap((model) =>
+    rows(OPENCODE_PROVIDER, model, STRUCTURED_OUTPUT_CAPABILITIES, "captured"),
+  ),
+  ...OPENCODE_NONVISION_STRUCTURED_MODELS.flatMap((model) =>
+    rows(
+      OPENCODE_PROVIDER,
+      model,
+      OPENCODE_NON_VISION_CAPABILITIES,
+      "captured",
+    ),
+  ),
+  ...OPENCODE_NONVISION_STRUCTURED_MODELS.flatMap((model) =>
+    rows(OPENCODE_PROVIDER, model, STRUCTURED_OUTPUT_CAPABILITIES, "captured"),
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "minimax-m3",
+    OPENCODE_BASE_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENCODE_PROVIDER,
+    "minimax-m3",
+    ["vision-input"] as const,
+    "captured",
+  ),
   ...OPENAI_FIRST_PARTY_MODELS.flatMap((model) =>
     rows(OPENAI_PROVIDER, model, OPENAI_CAPTURED_CAPABILITIES, "captured"),
   ),

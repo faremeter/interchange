@@ -1,0 +1,51 @@
+{
+  "model": "qwen3.6-plus",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "Thinking Process:\n1.  **Identify User Intent:** The user wants to know the current weather in Boston, MA.\n2.  **Check Available Tools:** The user explicitly says \"Use the provided tool.\" The provided tool is `get_weather` which takes a `location` parameter.\n3.  **Extract Parameters:** The location is clearly stated as \"Boston, MA\".\n4.  **Formulate Tool Call:** Call `get_weather(location=\"Boston, MA\")`.",
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "call_ead1750bf403490980acd98b",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\": \"Boston, MA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_ead1750bf403490980acd98b",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

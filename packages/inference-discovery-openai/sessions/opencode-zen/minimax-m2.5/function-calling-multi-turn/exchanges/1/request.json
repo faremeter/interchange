@@ -1,0 +1,60 @@
+{
+  "model": "minimax-m2.5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "refusal": null,
+      "reasoning": "The user is asking me to check the weather in Boston, MA, and they specifically mentioned to use the provided tool. I have a function called \"get_weather\" available, so I'll use that to look up the weather in Boston, MA.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The user is asking me to check the weather in Boston, MA, and they specifically mentioned to use the provided tool. I have a function called \"get_weather\" available, so I'll use that to look up the weather in Boston, MA.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "call_function_msbng1zcup42_1",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\": \"Boston, MA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_function_msbng1zcup42_1",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

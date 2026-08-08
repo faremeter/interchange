@@ -1,0 +1,8 @@
+data: {"id":"06c6743f8d59d1ba3d177e321f27dc95","object":"chat.completion.chunk","created":1786200383,"model":"minimax-m3","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>\nThe user asks","name":"MiniMax AI"}}],"usage":null}
+
+data: {"id":"06c6743f8d59d1ba3d177e321f27dc95","object":"chat.completion.chunk","created":1786200383,"model":"minimax-m3","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":" for a single sentence: \"the capital of France is Paris.\" I should reply with that sentence.\n</think>\nThe capital of France is Paris.","name":"MiniMax AI"}}],"usage":null}
+
+data: {"id":"06c6743f8d59d1ba3d177e321f27dc95","object":"chat.completion.chunk","created":1786200383,"model":"minimax-m3","choices":[],"usage":{"prompt_tokens":189,"completion_tokens":32,"total_tokens":221,"prompt_tokens_details":{"cached_tokens":114}}}
+
+data: {"choices":[],"cost":"0"}
+
