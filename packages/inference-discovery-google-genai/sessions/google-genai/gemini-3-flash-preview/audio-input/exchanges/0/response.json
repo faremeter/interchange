@@ -1,0 +1,36 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "\"I got that,\" one man says, to which another responds, \"Yeah.\"",
+            "thoughtSignature": "EqQFCqEFARFNMg/8L+HHB5cUxoXBTz0ej5QRUqgN6KEa3UEofsY2vu0R3fzuYHEvGk6Xk0T0gNmBNWzO04O7gtjciLsNtC7s9fJ4otuxIPGYCGbX0zZyo37orn1NYb8eqCfYSM0UNpgPbCOWXpAHxNbFiJksDRT4vKeCdeYAfe481LeCPlfkaD/HwVEf3+wsBJi3xSs1pPeTWuCsmjuzkCHs/kqeoWZ+8oHpvZZM6WPkc8n45XXwxUfpI4mIPWASCKrIgA5XmidlAkfCNy83FMjtU7enXpu2ky/j6bTrZfSAUpaeasYkPDXpITIGGF4IBORolzx6anOAkPkuUgt7Ev7xcJ8gY3BBZigHrRH/oLCWiKVEHQNiz/FOYltyQadMjBCDP3QQx/Rw8KxZkvaXBfeOPKrBBLYE6V4DdH2NA/donNd848sKaOv4FuqvfzZCX0lpRWX2gyEvo/uWAxrCLn0aqMJmOoBKSQiC67PEONHnCMZwmMvOICD02C3ddmXZ5KU/S3gAUkphfZA4FGGsJ6389cwZaoIGg2r8OmvwutKqB+St+YZyZQfPCqar+yTU363pCAcJNO853udmP3f/OaNIdcdwkTTwViJK7Ut/VVEU5W7Vaq98o4t+vxX4VlQsGupAm1QYouZz3H6KzwYKSG7xojk0ZH8ZPH2jLBQiJeqAZCwqvZOIiY0cRK1qGk8+IqN7DuF2lLY5oXtCS/p2uOe1gGjQCUegNGfAWzYimb4/jwU2r9mulLPZgZK2JL5JHJ92Yy+JIb/Hh4uWbdPuu3a/IuJyoqPMgSRQOurLll0K2nfnAv3C6X5uYhuczU7JNmEGJ6U1bV2gdJonErev0F4QTaC9cd9tAx4fidYDY7YN9KWIB/6epNJZ0jzZdovwtNMiPAFrDQ=="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 110,
+    "candidatesTokenCount": 17,
+    "totalTokenCount": 325,
+    "promptTokensDetails": [
+      {
+        "modality": "AUDIO",
+        "tokenCount": 100
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 10
+      }
+    ],
+    "thoughtsTokenCount": 198,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "uVl3aqyjDsqhz7IPgNnduA4"
+}

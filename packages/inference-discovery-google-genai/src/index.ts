@@ -25,6 +25,8 @@ const MODELS = [
   "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-3.1-flash-image",
+  "gemini-3-flash-preview",
+  "gemini-3.1-pro-preview",
 ] as const;
 const REDACT_REQUEST_HEADERS = ["x-goog-api-key"] as const;
 const REDACT_RESPONSE_HEADERS: readonly string[] = [];

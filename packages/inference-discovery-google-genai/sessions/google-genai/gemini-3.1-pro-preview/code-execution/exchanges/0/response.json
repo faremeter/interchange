@@ -1,0 +1,54 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "executableCode": {
+              "language": "PYTHON",
+              "code": "def fib(n):\n    if n \u003c= 0: return 0\n    if n == 1: return 1\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n\nprint(fib(12))\n",
+              "id": "3hqk16ni"
+            },
+            "thoughtSignature": "Es0HCsoHARFNMg8ayL2Y2lokHnCUWrMIoGzTE97pIzLT4gEd1QyDkfk8XET+FgttQ1cafxFEl1TajmfFrtI01CsYpLe7XE6uYqhx828J/rV/Ku1BaKwsYtffYqPUcRyzNhqKFkhHEKxrNtt0VBSjll7CH0UGpPDIzMhDj7gV06CBt83nmsuC4qMrGO5A4mHkWNyeX2SkpxNmw32tJBE3+H7Y9gayYm/wBseUHdPfROlJP8upunTe/N8CllvwyGix6+chZ3WABrDJEeaJROJnG3hy2oAyGSaj5aEwnC2JjyOp+zg8yxeEdSFIpqnRlb+gJh1QkuVtye0gDc9eR93jkEykdcZ4zitSbNGub7x/NdM2IQsYtcHu13dzdKQ0vargIuzh6GwuK/F2hhlb2RWPA07f+aLFJzplZywL13+AS1rwuS/ccZjCprQfhABFubDTV1tFNObTLqcJvjEUjXsa/F6dQnijFFcpuPGBQ6XU3mFUQx3OtngU3AfJQMfkfKk9/Cg6icH+ChJTnWFFa/fT1b0dY2v10+hSj0TFi0H0Zc+U45U3HGDhaoRb9v02C9vcDcfD9Liy5PKJGjk5SP5vm0svTn/TeWvr6linyPL4zXxzZL566cZ8SgcAU8eRAw542iD3nj1Clg9zUgvT+u7KgjHu6UbGOXzExjNRSw0ieqQNeGtV3ulX/jzgZ1m0baEPpc2gKqK6Z2gES05F81LV+8/ov/uYVtsZF4CLKJ5Hp7waG+W1SP3oZ8vM48a7NY1jR1vaM/LfyrCAv1iImEr9OaC7ofbuIJKDsuVfWqNF3VAbBnRRcF0HbDk/Bbl11csmNein+rOgBFuE2HsFI70O7AvnBD1TwWlFG0Q2Sa9OwlZCWJh33JwhzDG5QyXIhQWGsio5kthpHRz6NBT+M2p9x58QhZXFLSS77WZFq7qX67rnz27zg+SYTVKsV6XgaQz0eiFHBLPKZ9f+KNBsQ8SO7j9jJ1gwsrl8LX2oYHsqICGbACA4ynFfIgwkshv3SkslaiOgNwGWiH4D3PtAzF8G7lJ9+H0Wv1SXwn1Lmh9+MIo/cRqKEcjqrQwsrW82/N868PEJdnimqLua9s6mkj/fyaZZPCbNUnEP9wvecEdURDFBZZILIBpRMInJkuWo5GoEP+flT4Y8LPbXONDaMSq9OU0F8PkK6nGmmJs1peRfecNWVAyLtoGqOJKtveJ546FLBMRCBliYg/9Gp47qVr+pwwYqa09l0tA1mSmnLyH8znnRsPNbm5FHPvp9oHTAbFn19EmX9XSco9TAYkkuk59caQ=="
+          },
+          {
+            "codeExecutionResult": {
+              "outcome": "OUTCOME_OK",
+              "output": "144\n",
+              "id": "3hqk16ni"
+            }
+          },
+          {
+            "text": "The 12th Fibonacci number is **144**. \n\n(Note: This assumes the sequence starts with $F_0 = 0$ and $F_1 = 1$. The sequence goes 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, **144**).",
+            "thoughtSignature": "Em4KbAERTTIP9nDw+Sg6rK0LzacV0uYksGIHmvE5aHaNsBo2BLrQr0CMKggWFou14k5rYosJ3vhUITyxwRCNHYcEIbHPUDQdnyDZNCWDbxaygDc3Z66+gmzc96cUuNmgNZ66lJcke1WH5alOhSup7A=="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 413,
+    "candidatesTokenCount": 180,
+    "totalTokenCount": 1514,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 413
+      }
+    ],
+    "toolUsePromptTokenCount": 504,
+    "toolUsePromptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 504
+      }
+    ],
+    "thoughtsTokenCount": 417,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "responseId": "WFp3asjlFLjiz7IP3_HK2A8"
+}

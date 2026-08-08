@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}",
+            "thoughtSignature": "EsgGCsUGARFNMg+g16gASMe60ai3QUfg1I7TNKpruvwzPQ3b3OKPJnwPKpllhT6qBKuoGjYVp41+O9aTPGkcWXfKZas8yQ+kBtO+DnpUZeWRn/IHIx1kntEHr+upBwkwV8XqixKAhN3clpXHQGtCHa9K/YZBqskypvuwI68SFJiCk8WzwLJ9U5QJarkl7S8oMXMN8Z5nhi8I5xSHGBjkBV/FqCMqoevP8+Q1DLji4q8WkAeD51fAfbRmIsfurMGHtkabAeIkj2yUaVSVM5vV7ZjQhWxvQfd4896xnretJ7eehlUDKGrtpex2++L3pO/6yNKKTWwv1rMqBNTE0OaxFmsLbRBwuLWoLQC5DGNk8pXG01vIhQAyJ1D1uL+wZLfQNUHPhjgC3BRWeIrsGiNaEwyYHFyVMXiWxyd1mRsoHonU/fAs+C2o8ZMCblXj0ezRwivCa4+aTOJJ/zVSj71RBXFbWLI+o/URQLoIX4tfFvSO8gFkS8ZYwDoTl+SLJ2axCzaiznNAPFpoJaNRP3eiuHAtEOZQXSijksmu0PHNYvd++MbLFuuQLKBLUDwS7rc/JskS4b02WL0X+4IBNaVNWiWdHLaVNNlvPZV4Hu0jKO3iQ0fMwGmOTk0qO9oVaRCsr49olQ6eTssJ6LjUAz5nseA+65Ev65lB9uENVgA9Xb2UgsZ6viUopiLJ48CmMJaRQZfklJiKKhoyRQBMIt4PW31UNfqcCsmUft+MRPUwOHcqCmP2LvGUAd4c4ONIP7/TdTIZr3MQj0cKscZ7hIwD/qj/l96W/0BVVD3xE2QAEeVQF1r1GWZ9ORa2Noej6/QXJYrNJQ3YhLr/ZWA4jeIQAX3C/aO1b13uWZaooDeLestLO6mMDnIUJKy00xXOyIFl7Uiod/LbI5NDkFdUrN99ki8Sk6rZEnNYJy6MPuKLG5fptMdqPL/1aedxn69WZSKpiOjcmMugvxFuSLJaCaMDfC6W2/XI5sAukTEgjN7k+LDkbP4xKTmLRcaV3RDLq4/6bKgKVp02mH20foGThQJbqEk8cxw3Hck65ZB6Q55vrlOy/2WQWyjq/BPQhxr8phQml5QYpJv+tKnnR/UVXPQie1WgNaOmmI2vbUuR"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 39,
+    "candidatesTokenCount": 18,
+    "totalTokenCount": 289,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 39
+      }
+    ],
+    "thoughtsTokenCount": 232,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "8Vl3apKtMPXpz7IP6saciQg"
+}

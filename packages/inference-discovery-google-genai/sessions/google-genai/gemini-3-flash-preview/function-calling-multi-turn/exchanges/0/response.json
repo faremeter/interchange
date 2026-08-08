@@ -1,0 +1,38 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "location": "Boston, MA"
+              },
+              "id": "857nk9va"
+            },
+            "thoughtSignature": "EjQKMgERTTIPVqqKdavGel6daPPRotavT3GBtdaUHVAnj0oBB+OSg1+Mq9DfYkr+fVoqrjIQ"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "finishMessage": "Model generated function call(s)."
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 80,
+    "candidatesTokenCount": 18,
+    "totalTokenCount": 98,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 80
+      }
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "d113avaaN--tz7IP56XJqAw"
+}

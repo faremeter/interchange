@@ -15,6 +15,8 @@ const TEXT_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-pro",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-3.1-pro-preview",
 ]);
 const IMAGE_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-flash-image",
@@ -250,6 +252,7 @@ const DYNAMIC_THINKING_BUDGET = -1;
 const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-pro",
   "gemini-3.6-flash",
+  "gemini-3.1-pro-preview",
 ]);
 
 // The thinking budget to request when a probe wants thinking suppressed: 0

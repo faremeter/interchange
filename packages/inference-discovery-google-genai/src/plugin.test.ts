@@ -214,6 +214,8 @@ describe("createGoogleGenaiPlugin", () => {
       "gemini-3.6-flash",
       "gemini-3.5-flash",
       "gemini-3.1-flash-image",
+      "gemini-3-flash-preview",
+      "gemini-3.1-pro-preview",
     ]);
     expect(plugin.redactRequestHeaders).toEqual(["x-goog-api-key"]);
     expect(plugin.redactResponseHeaders).toEqual([]);
@@ -436,7 +438,11 @@ describe("buildRequestBody — wire-shape spot checks", () => {
   });
 
   test("thinking-mandatory models use the dynamic budget where flash disables thinking", () => {
-    for (const model of ["gemini-2.5-pro", "gemini-3.6-flash"] as const) {
+    for (const model of [
+      "gemini-2.5-pro",
+      "gemini-3.6-flash",
+      "gemini-3.1-pro-preview",
+    ] as const) {
       const streaming = buildRequestBody({
         model,
         capability: "plain-text-streaming",

@@ -1,0 +1,54 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "executableCode": {
+              "language": "PYTHON",
+              "code": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n\nprint(f\"The 12th Fibonacci number (starting from F0=0) is: {fibonacci(12)}\")\n",
+              "id": "6sxa28cf"
+            },
+            "thoughtSignature": "EqUDCqIDARFNMg9qaOCLyugK7D9YiTswt/fCSbTpYiQlDfQEFxzjnWyIjif5c15acp+re12r29y5wiH3W1NxDwGCGv9XwmDPC5LxoQnqDT6K0us3NfYWe9xqkLXZ9FTbqVKjwi1nqGJSjPKw8m0AdIgsH1XZTgWTviMUL+E+KkGFcSd8D35c1d/w1t2SHJVfLkyIcFqT35gEAGl6JRo2vHYqCKhL0qR+XqqxXhmHB7taIJ+CEcFF9Km5MTHV1Uim6gqhg5gwjbc/W0CAF3QyWKo/LvIQ7gtqs+k39okd5gaUXOuokrWRRXP2M+ddkvs33vRwtwoOztEsaMB6I9b4W4XuVE1lqL7LxqMV33TNaxyXvCsZIuPMQdwDhoXRiAIsFkCRETBUqyD5LD9ZsoC97L3IYo/lzk+Rl3iub0F2dpnn9vGMGab57/mWzszAICCj9GQoqa8Kw49m/+ANbb9ZxKTecNoPnGFI/jdEOvfpcsv1OQOcKmYHLi3HlaWkGpGAzm4Y2eOX8GBxZmkz4m176QOnDxJ2sTi/KzjZy+ca02b6Y2sO2+HMDg=="
+          },
+          {
+            "codeExecutionResult": {
+              "outcome": "OUTCOME_OK",
+              "output": "The 12th Fibonacci number (starting from F0=0) is: 144\n",
+              "id": "6sxa28cf"
+            }
+          },
+          {
+            "text": "The 12th Fibonacci number is **144**. \n\nThis is calculated based on the standard sequence starting with $F_0 = 0$ and $F_1 = 1$:\n$0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144$",
+            "thoughtSignature": "ElUKUwERTTIPtKvy6gsIv7TGJpTJw4A1DQfhfdIcU/3NqOJxYNCF6LOi+Fzk/RYSNBHJ6VjsG6sAoFmefEee7x0oO1Bn9X72t0HfmTeOVST89srwhn+r"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 187,
+    "candidatesTokenCount": 173,
+    "totalTokenCount": 838,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 187
+      }
+    ],
+    "toolUsePromptTokenCount": 291,
+    "toolUsePromptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 291
+      }
+    ],
+    "thoughtsTokenCount": 187,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "zll3as2hFvSEz7IP0PvceQ"
+}

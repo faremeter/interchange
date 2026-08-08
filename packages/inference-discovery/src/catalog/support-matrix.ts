@@ -55,6 +55,8 @@ const GEMINI_TEXT_MODELS = [
   "gemini-2.5-pro",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-3.1-pro-preview",
 ] as const;
 const GEMINI_IMAGE_MODELS = [
   "gemini-2.5-flash-image",

@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "{\n  \"name\": \"Alice\",\n  \"age\": 30,\n  \"email\": \"alice@example.com\"\n}",
+            "thoughtSignature": "EoQHCoEHARFNMg96BLazgqVtr7EgmoNSRyTptM4cgKsPYw+C7tVe/ENGTHiDTn2RaoEi8XaDqE6lwxOnwVGkCBssr2l5wJXOyl18qGAx+6igOFcn/xD853C31hYzVcaSohyrFczr2/E0Zxc+BAuEzuWOLj27SE7esIPXtg3QlIGLfL47HMCEiMjqG0EV91P2PpgC7LXsm5vKMQ1ODqLWvkSAaRMs/a+sTxHl4x1RX05OW1bCpwXq/kC+o4nXl3XedN02CyN87lgyZSLcQiL9uTK5qqj1H+a7CC3VN5l45IE0nB8vd9rEgfshGHKR15LL5Z3PwKW0Tumd07eqc4p+xKiXSU5dGmM4CyowJ872OIPyhB/YdBfyBzySO5/3ACtwh0/Yn+7nlCI3cMKkV4XzQyxAk/9NZDrfe0GyHMWCEeZAWfYpnXBLxmMS/OKddZ0xUuCeA1GwHYwhN6xfm7qcuuJapvmvDYkGk6QO3ZsVQzaJTiQO/cXPJyHzMHp/BHPk1Q6S2rTa64o1AAj2eNVlHsBOJrV4AbuHvZzwoN+P8hd7Ug87nrdLEx2/pcoFOU9vovgtHHoU5Tlf/5UpCyIh6tK1KHMtoeT2wgUiJCHbQr94OZLcY+2FX3UIP1zMxQPSrZQpHteISXfxYUl/RYvLSJSNKFaTZp7Lm7e8Avdw6t1/RYGDWbdQjk/Rjztpfk/ul+XFDViMPSTXo/b37n67v/5Tldz5k8w7tHuDycwlcJVR8H+cMDbNeHv4lKGhRkLvh8RSWnqVjRETINon8uz3ksYyB6fg8DJy/63bqFLi5KnZjyL09JGJpLqnUnpJf3/035rAGvyNDOonUNe/achBrl+IAZCv+mQwiYd39pyk6H454fdqX0uRo++yQT2d0SSMoPlCiGk5Wd8tRIGtWQGTFjiXR2KLiLjdLiSBbMSLlP6toDMBLBuRTzEebmMaGZ9s3tudur/55SL+wh/Zcq6h4ys3KkqQ/MQ6TaF2WpzttKEfSLwi43zDt1eHf1BUCYIiRtISFjdAwpqoPjUuqluMhfJkT/qZuGGcDxtQvzoxOQwcMS1I4ErszB2/CAk/nOA1tOygR0d8TNuAI4KfoQghpFNVCadRYtcP84jh4G3ggdK7DlaG1f+EoZ/kZkmO3Mgk+rNvxdwFg6qv26DHkHeCfO1lKnmm8GAT58w/2n5pOf/3vYQvdntA"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 39,
+    "candidatesTokenCount": 32,
+    "totalTokenCount": 333,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 39
+      }
+    ],
+    "thoughtsTokenCount": 262,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "responseId": "klp3asCPKfiHz7IPyLupgQg"
+}
