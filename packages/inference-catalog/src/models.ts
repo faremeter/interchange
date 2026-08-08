@@ -45,6 +45,14 @@ export const catalogModels: CatalogModelSpec[] = [
     canonicalName: "gemini-3.1-flash-image",
     displayName: "Gemini 3.1 Flash Image",
   },
+  {
+    canonicalName: "gemini-3-flash-preview",
+    displayName: "Gemini 3 Flash Preview",
+  },
+  {
+    canonicalName: "gemini-3.1-pro-preview",
+    displayName: "Gemini 3.1 Pro Preview",
+  },
   { canonicalName: "kimi-k2.6", displayName: "Kimi K2.6" },
   { canonicalName: "qwen3.7-plus", displayName: "Qwen 3.7 Plus" },
   { canonicalName: "mimo-v2.5", displayName: "MiMo v2.5" },
