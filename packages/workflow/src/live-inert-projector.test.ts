@@ -256,6 +256,72 @@ describe("hash binds to the grant surface", () => {
       ),
     );
   });
+
+  test("adding a credential binding changes projection and hash", async () => {
+    // A binding names WHICH provider-backed credential the code may request;
+    // it is part of the operator-approved surface, so it must move both the
+    // projection bytes and the hash. Same agent/steps as the baseline -- only
+    // the binding differs -- so the binding is the isolated mover.
+    await expectGrantMutation(
+      defineWorkflow({
+        id: "wf_main",
+        trigger: { type: "mail", to: "wf@acme.test" },
+        steps: {
+          main: step({
+            agent: mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]),
+          }),
+        },
+        credentialBindings: [
+          {
+            package: "test/alpha",
+            handle: "api_key",
+            provider: "openai",
+            locator: "tenant",
+          },
+        ],
+      }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wire boundary preserves credentialBindings (the `"+": "delete"` guard)
+// ---------------------------------------------------------------------------
+
+describe("wire validator preserves credentialBindings", () => {
+  test("a projected binding survives WorkflowProjectionDefinition validation", () => {
+    // `WorkflowProjectionDefinition` carries `"+": "delete"`, so any key it
+    // does not declare is stripped at the wire boundary. If the projector
+    // emitted `credentialBindings` but the schema omitted it, the binding
+    // would vanish between the hub-resolved projection and the one the sidecar
+    // validates -- silently, with no error. Round-trip a projected definition
+    // through the schema and assert the binding survives.
+    const binding = {
+      package: "test/alpha",
+      handle: "api_key",
+      provider: "openai",
+      locator: "tenant",
+    } as const;
+    const projection = projectLiveToInert(
+      defineWorkflow({
+        id: "wf_main",
+        trigger: { type: "mail", to: "wf@acme.test" },
+        steps: {
+          main: step({
+            agent: mkAgent([alphaTool], baseCapabilities, [OPENAI]),
+          }),
+        },
+        credentialBindings: [binding],
+      }),
+    );
+    const validated = WorkflowProjectionDefinition(projection);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `projection failed the wire schema: ${validated.summary}`,
+      );
+    }
+    expect(validated.credentialBindings).toEqual([binding]);
+  });
 });
 
 // ---------------------------------------------------------------------------
