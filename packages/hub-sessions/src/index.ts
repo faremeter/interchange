@@ -17,6 +17,7 @@ export {
 } from "./session-service";
 export {
   installAndApproveWorkflowDefinition,
+  createDbFrozenApprovalWriter,
   type InstallAndApproveArgs,
   type InstallAndApproveResult,
   type ProbeGateResult,
