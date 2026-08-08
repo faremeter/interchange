@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAetux33F7KJytjXw3YzldwWPKhZT",
+  "object": "chat.completion",
+  "created": 1786209210,
+  "model": "gpt-5-2025-08-07",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Two side-by-side globes compare the Moon’s albedo with a faint water signature, marked by streaked data and a small blue highlight.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 166,
+    "total_tokens": 391,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 128,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

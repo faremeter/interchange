@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-EAezyRpYqOpU90v2SxYlBKiH22CJg",
+  "object": "chat.completion",
+  "created": 1786209586,
+  "model": "gpt-4.1-2025-04-14",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Two global maps compare the Moon's surface albedo (left) and water signature (right), highlighting differences in their distribution.",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 271,
+    "completion_tokens": 25,
+    "total_tokens": 296,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_eaf45f9173"
+}

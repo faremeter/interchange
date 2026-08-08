@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAewtoLxLSlR1tz4n6TXVvufrNRXc",
+  "object": "chat.completion",
+  "created": 1786209395,
+  "model": "gpt-5.4-2026-03-05",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Two side-by-side grayscale spherical images compare “Albedo” and “Water Signature,” with a blue arrow highlighting a bright spot on the right image.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 246,
+    "completion_tokens": 33,
+    "total_tokens": 279,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

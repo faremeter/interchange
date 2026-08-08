@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-EAexY7ZwwH3uBjxXuP66ZEOQll3PW",
+  "object": "chat.completion",
+  "created": 1786209436,
+  "model": "o1-2024-12-17",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "A pair of spherical lunar maps compares the Moon’s surface brightness (albedo) on the left and water content signals on the right.",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 240,
+    "completion_tokens": 296,
+    "total_tokens": 536,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 256,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_3a3b06ba9f"
+}

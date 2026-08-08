@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAey6IL148vTaWZDDIEytZUWO0eXM",
+  "object": "chat.completion",
+  "created": 1786209470,
+  "model": "o3-2025-04-16",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Side-by-side lunar globes display striped albedo data and a faint water-signature map.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 240,
+    "completion_tokens": 105,
+    "total_tokens": 345,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 64,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

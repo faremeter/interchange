@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAewQaDUReuMQEngvRDWXPR8UwCEh",
+  "object": "chat.completion",
+  "created": 1786209366,
+  "model": "gpt-5.1-2025-11-13",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The document is a chapter-by-chapter outline of *The Adventures of Tom Sawyer*, briefly listing the key events and themes in each chapter (such as Tom’s schemes, adventures, moral struggles, and relationships).",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 553,
+    "completion_tokens": 51,
+    "total_tokens": 604,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

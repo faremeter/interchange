@@ -1,0 +1,30 @@
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"obfuscation":"8GHexqkx4tCx5"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"That"},"logprobs":null,"finish_reason":null}],"obfuscation":"epPOiDA92tB"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"'s"},"logprobs":null,"finish_reason":null}],"obfuscation":"7jwq8Prbs7lrr"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" correct"},"logprobs":null,"finish_reason":null}],"obfuscation":"dNkMwCw"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"O8GK8a52Inh8yS"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"sDfoXJSo9cy"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" capital"},"logprobs":null,"finish_reason":null}],"obfuscation":"zrNemsf"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" of"},"logprobs":null,"finish_reason":null}],"obfuscation":"YI630K8COTQF"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" France"},"logprobs":null,"finish_reason":null}],"obfuscation":"CWdhwpOA"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" is"},"logprobs":null,"finish_reason":null}],"obfuscation":"DpdWmt4yQddZ"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" indeed"},"logprobs":null,"finish_reason":null}],"obfuscation":"crgJ3ldC"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" Paris"},"logprobs":null,"finish_reason":null}],"obfuscation":"KhfDnYCse"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}],"obfuscation":"GXD307pZzGcYgI"}
+
+data: {"id":"chatcmpl-EAezCLFASgr0bQXp0z9R2T8XIhxFV","object":"chat.completion.chunk","created":1786209538,"model":"gpt-4-0613","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}],"obfuscation":"m3sKp0FuY"}
+
+data: [DONE]
+
