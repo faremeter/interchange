@@ -89,7 +89,7 @@ export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
 // neither, never both), so a dropped or mistyped price on a priced model still
 // aborts the seed rather than silently skipping its pricing row.
 export const unpricedOfferings: Record<string, readonly string[]> = {
-  "Anthropic Direct": ["claude-fable-5"],
+  "Anthropic Direct": ["claude-fable-5", "claude-opus-4-8"],
   "OpenAI Direct": ["gpt-5.6-terra", "gpt-5.6-luna"],
   "Gemini Direct": [
     "gemini-2.5-flash",
