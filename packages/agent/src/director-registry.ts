@@ -97,3 +97,20 @@ export function createDefaultDirectorRegistry(): DirectorRegistry {
     defaultId: defaultDirectorFactory.id,
   });
 }
+
+/**
+ * Build the director registry for a workflow closure: the built-in default
+ * plus the closure's own `defineDirector` factories. A closure that ships no
+ * directors passes `loaded: []` and composes to `[defaultDirectorFactory]` --
+ * identical to `createDefaultDirectorRegistry`. A closure director whose id
+ * shadows the built-in (or another loaded director) throws at construction,
+ * the same fail-loud `createDirectorRegistry` applies to any duplicate.
+ */
+export function createWorkflowDirectorRegistry(
+  loaded: readonly AnnotatedDirectorFactory<unknown, BaseEnv>[],
+): DirectorRegistry {
+  return createDirectorRegistry({
+    factories: [defaultDirectorFactory, ...loaded],
+    defaultId: defaultDirectorFactory.id,
+  });
+}

@@ -1,6 +1,8 @@
 export {
   loadWorkflowDefinitionFromClosure,
+  loadWorkflowDirectorRegistryFromClosure,
   type LoadWorkflowDefinitionFromClosureArgs,
+  type LoadWorkflowDirectorRegistryFromClosureArgs,
 } from "./workflow-definition-loader";
 export {
   createWorkflowRunRepoStore,

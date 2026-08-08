@@ -28,6 +28,12 @@ const WORKFLOW_PACKAGE_DIR = path.resolve(
   import.meta.dir,
   "../../../packages/workflow",
 );
+// The agent package a fixture entry imports `defineAgent`/director refs from,
+// laid out under the fixture's node_modules the same way as @intx/workflow.
+const AGENT_PACKAGE_DIR = path.resolve(
+  import.meta.dir,
+  "../../../packages/agent",
+);
 
 const SPAWN_TEST_TIMEOUT_MS = 30_000;
 
@@ -54,6 +60,31 @@ export default defineWorkflow({
 
 const THROWING_ENTRY = `throw new Error("probe fixture boom");`;
 
+// A workflow whose agent references a director id the closure does not ship
+// (no interchange.directors). The capability walk resolves it against the
+// built-ins-only registry, reports it unresolved, and the probe must fail
+// closed rather than advertise a grant set missing the director.
+const UNRESOLVABLE_DIRECTOR_ENTRY = `
+import { defineWorkflow, step } from "@intx/workflow/definition";
+import { defineAgent } from "@intx/agent";
+export default defineWorkflow({
+  id: "probe-unresolvable-director",
+  trigger: { type: "mail", to: "probe@example.com" },
+  steps: {
+    act: step({
+      agent: defineAgent({
+        id: "agent_x",
+        systemPrompt: "x",
+        tools: [],
+        capabilities: [],
+        inference: { sources: [{ provider: "openai", model: "gpt-4o" }] },
+        director: { id: "@unshipped/pkg/director", config: {} },
+      }),
+    }),
+  },
+});
+`;
+
 async function layoutClosureFixture(entrySource: string): Promise<string> {
   const packageDir = await fs.mkdtemp(path.join(os.tmpdir(), "wf-probe-"));
   createdDirs.push(packageDir);
@@ -65,6 +96,7 @@ async function layoutClosureFixture(entrySource: string): Promise<string> {
     path.join(scopeDir, "workflow"),
     "dir",
   );
+  await fs.symlink(AGENT_PACKAGE_DIR, path.join(scopeDir, "agent"), "dir");
 
   await fs.writeFile(
     path.join(packageDir, "package.json"),
@@ -249,6 +281,26 @@ describe("createWorkflowProbeExecutor", () => {
       for (const pid of pids) {
         expect(isProcessAlive(pid)).toBe(false);
       }
+    },
+    SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "fails closed when the workflow references a director the closure does not ship",
+    async () => {
+      const executor = createWorkflowProbeExecutor({
+        materialize: fixtureMaterializer(UNRESOLVABLE_DIRECTOR_ENTRY),
+        spawnProbeChild: recordingSpawner([]),
+      });
+
+      // The custom director id resolves against nothing (the closure ships no
+      // interchange.directors), so the walk reports it unresolved and the probe
+      // refuses rather than advertising a grant set missing the director. This
+      // is the only approval checkpoint for a director -- the runtime does not
+      // re-gate director:<id> against the approved set.
+      await expect(executor.probe(probeFrame())).rejects.toThrow(
+        /unresolvable director/,
+      );
     },
     SPAWN_TEST_TIMEOUT_MS,
   );
