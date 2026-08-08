@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The capital of France is Paris.",
+            "thoughtSignature": "ErEFCq4FARFNMg8r1sLEMfQXFRFCCh3Ksplg6lX5Z20JNE977PU7t0m0tBOnFNubOOg4pcsjoeOF6rnox6TFQTYuZk6F5W7wTi3QCJGL41/ga5XIm7V0o4AmZIgO4mabfWQTwZsE7Hc4JUFYzjaKuH9pGPgt5ZoOh38wlyehv8Rq3fXjmQDVQe01kIJEPP7bRo7tDuZPF2TVCJSsCLvQiZY7N+clxg2oXE+IvS/eo4y6lXy5gGzvyGboOcIh40y7KdaZMbj/pvzESCDjvFkrA1u9w9HOIl6vE2b/usJR9XaZzUzZIcpjYUAACRYTzCEqFgu6n2ZfvHYI0/koca1qqaBiCRbeMQae3/wnOHrm+cxlQZVwC1Zjn4nTFNT7l9HJFiSI66PB10vrwU5gw3o/ZLx16wmZi63wmw8B0qFb1qhCVjVmySiF/6PcSCE4n0wegxme4fTThnqhlIhteiqKZifacxK99g5EGoDASRR9sVeDDDdj7bXyvl1wflMXo1ZsLGNGW4a8iBHo9B2jPbi9RzAKSATkmZM2kWYXmjrgerPxmHSlESRzaCwdFTt4hZSWdlQ5ATWUyA/Q6Hl29N/dKkc7zAZmUMvtCNBieq9i6OlP3MrWS3BkEj78DS37vV3x0RHhuSD/SWdNszhGPEtMy2OAUQwyLB/vsqzp6NDLjiMvolTzFl/0Jk0Msbs8vNd/8R/bHZNd1fhIGl9YtSm7kpR3yVg7CEoRNLZbVZ2Te8Wkt8xrB7XysN9LE5GChVeAei5TuFY3XT395TTfkyH2lV/683/H23K1Dq1eBPdsfttK5liNJA2te5meNC6geWc+uichWjd+dT52w8Gl+R85i/tfe82mQVgR48Uxo76RgqI0vp1w9xujohAN/CAZtTEMOpwwx4DoOmPI2f9UWbozCLnEN6k="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 14,
+    "candidatesTokenCount": 7,
+    "totalTokenCount": 183,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 14
+      }
+    ],
+    "thoughtsTokenCount": 162,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "responseId": "9Vl3asPACsXXz7IP3futgA4"
+}

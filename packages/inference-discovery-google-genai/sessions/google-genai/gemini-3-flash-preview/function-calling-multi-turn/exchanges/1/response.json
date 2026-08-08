@@ -1,0 +1,31 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The current weather in Boston, MA is clear with a temperature of 68°F.",
+            "thoughtSignature": "EjQKMgERTTIP0vsTIE5fbF3K+vX99IKYAQN1y/r7bHWggmA9+VAyrMzipiqrM51U3kC16AOf"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 126,
+    "candidatesTokenCount": 19,
+    "totalTokenCount": 145,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 126
+      }
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "eF13apyUJqSIz7IPyePuwQc"
+}

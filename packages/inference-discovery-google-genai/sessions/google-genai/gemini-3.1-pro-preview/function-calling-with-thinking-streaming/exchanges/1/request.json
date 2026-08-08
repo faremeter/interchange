@@ -1,0 +1,69 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "f8dm56kk"
+          },
+          "thoughtSignature": "EssECsgEARFNMg+tPYA54V/LVFLKWM2TjwwTnpXZehWvyTGJEle+tHs3dKgUcwrmlV4KVNAvN1aGIV3mtX7HSbPyIwEkAa3Lkyr18XBGULK3u6dY65hAsiUxvsjYbdm5mtkzu7H0oP5XMcX1WN3aSS1Pml5s5EZs8neQ9ArxrEumTIOFumANgSh7qiWNXTEdGuET4IEsY1MZOblexz3xO8Rw/5C/0teonYb7ecrkRaGTjeGsSFIPm5y8+FWonMe1iWBTQggbiy3DS0ojpUrYWdIv0b3fww4l+xkxTfhbFgvOgOqCmG2pn0iJWTtHnjWGeo6QOc2Lz6eFQAIgj0JGUsP6gi6fqVWwuUSDEiPhc5Yr0E1elczk/KJQFqyKiq8eF6YDosvlnYVBWQH5M7PZDdBlfhTt9PaOgN+qFj/zvcjS5dmlqPnb4RjSt/ym6bJTaxBS0j+EFRBcoEXDYxmSxigN5Kcrs7AcwC1Kje2PsK839jOrtKG3nQ8Q0hQHH8wRqpJCWPDkCEmFc6c6IDRgRojkYN8Kt4DE+N9tAgGqskj+XLVNHnUl6+/ibXlNaeup2crivzzokbnaJhznLspSfbgZPbzTN9SAJPhA3lN/a8WXlxe12fLNGAKy6MINQ2e3lo0VtZGWsxDM3kTiRlfStbV7wUdc6aong4II0dcqfLwbIYVt5DffqsfnhZXI/b1oScdbjMxIz9mId3nM/N6LTDDly14UxMnsDIC9laib+5lto9/wGMugc05w6JwyYihfZ0YZetAPgBhY1Td8xLA="
+        },
+        {
+          "text": ""
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {}
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

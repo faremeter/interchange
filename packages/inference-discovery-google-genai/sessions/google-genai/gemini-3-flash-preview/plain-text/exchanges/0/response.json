@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The capital of France is Paris.",
+            "thoughtSignature": "EqoCCqcCARFNMg+PjRFZE4CmSaRW/AxQVyQx1ESUJahnRXvhhDKWlN4oQ8y0xEh33k8X56u5KtOuU+JDeyukJSR+dL04fDah73sSMlvaZDPhbNB385gX+Xp4W8UU8/zJ2q22al9cU6CYzwKktxqNawbdzo3E+4+eO8DWLm9LSlD5bv5QXrZiCIN/cPMVd75hILWCvchowmi7m9u8kYe6NG6bvyz0+fdvP2S82ZgpKVJV/V3Ds6SDXM7Rn0RoNjpK0Wwh/I/InshiTRqPVuhmbrMLV0kqEAaf5jQ8CN/x9VO29A4q3+sfVzsufBaS0iQ6NSNx0kymU8S22I4e7o6lFSxfZwvk9b3ZU2/Zol+jVl+tj+k3XAOcDibWhvsMreZ1sB7ebIUqIZhBYTWpmQ=="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 14,
+    "candidatesTokenCount": 7,
+    "totalTokenCount": 82,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 14
+      }
+    ],
+    "thoughtsTokenCount": 61,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "oFl3ataoItKHz7IPruK0-Qc"
+}

@@ -1,0 +1,18 @@
+{
+  "promptFeedback": {
+    "blockReason": "PROHIBITED_CONTENT"
+  },
+  "usageMetadata": {
+    "promptTokenCount": 18,
+    "totalTokenCount": 18,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 18
+      }
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "responseId": "mlp3atWJI_Xpz7IP262BqQc"
+}

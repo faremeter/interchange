@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "location": "Boston, MA"
+              },
+              "id": "femd0gbo"
+            },
+            "thoughtSignature": "EvoDCvcDARFNMg+roET7USF1E/IEUCrhVO/lAnJpLQuchDn5Mq/rY/nGaXpQQ9ByZCMuTGWSO/XGtdHkmzOdfsx9At70m1pkVZx5Xxfaq5cyuWc2FkV0BPro8yMgWnEm2nkk3gCVusiNKA8gyAIBUQjEpQGM+dhha6vU0r5Y3GhW73LBwcfbGA1J5u8wXKK7w3R7lhk1iq39QKmaG60bUe9WDXZsWFeCJGcntk7ROZvSUb33CX70mzncP/p068bydDHyPrLNkX9Bio0lnCnkH4d8db2MgMdISwbIhdQPhnxF8kdBT2gwNy3cnBnrAKCjNW95odJW8LmM4Fhmc4JRHaDfAMr8Xzr1yr61UrcsArCrP+lWPZL2fF7Oz/wlsPZfPpNa4cmZFey0NADYdpAqlTscsp4nHNoQ+XxisJZD179K6wfq7HGEPxseeCZsfRBpnfdHms0AAMddBZoMoBXV2vE2JNVfGTebH6OgcuAR8jkPSzHn3Hq4A3kycA0mIqaa+ctGG7XrZzzbFopEHf14Yfiv6bQkAI+K4VqWUUWT6rOEhmWJak6cZUwQoDnWK1ZZg2PxmWApKlv+pAuMvwHeYpbx6JUenRCm4suzQ7m4USLZSrNISsMEq9TeI57OjlPX4mvElVgMC6JKT23XD7vZ3/liQJK6RICQAuXVdU8="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "finishMessage": "Model generated function call(s)."
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 80,
+    "candidatesTokenCount": 18,
+    "totalTokenCount": 223,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 80
+      }
+    ],
+    "thoughtsTokenCount": 125,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "responseId": "BV53asbBOpatqtsP2MCPyQg"
+}

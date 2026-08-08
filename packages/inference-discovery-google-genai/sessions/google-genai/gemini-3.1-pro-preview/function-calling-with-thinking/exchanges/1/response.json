@@ -1,0 +1,36 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "**Handling the Empty Weather Data Response**\n\nOkay, so the weather tool spat back an empty payload. That almost always means either no data is available, or, in some mock environments, it's a placeholder. My initial reaction is to just tell the user I'm looking into it, or to quickly whip up a mock response, but that's not ideal, so I need to wait for the final output. The actual response is empty, it's just `{}`.\n\nAlright, so a blank response. In this instance, I should probably state that the information isn't available. However, since this is a test environment, I could also state that the \"weather is currently unavailable\".\n\nWait. Looking back at previous interactions, I've handled empty responses by simply reporting that I couldn't get the information, or that I need to acknowledge this. I'll just inform the user in a graceful manner.\n\n\n",
+            "thought": true
+          },
+          {
+            "text": "I'm sorry, but I couldn't retrieve the current weather for Boston, MA at the moment. Please try again later!",
+            "thoughtSignature": "EqgFCqUFARFNMg82bTvZfHKIegbi33B3qlqt+qZAbVlBtHT0mse43XS7UyP1iHJNOww8nxvE50lY8xlP0oCbxzoXuxxGbbJSDwSWCRgsuZ+GoL3qxX5Q1Fqoj9MOFAdhhmxtRsuaZSyd+zwOReQeXSBNZYmkkbB9Z5J3MpMe0/q/Bt8sRwaSKYthF2ocBBSxd9/qOg7blvXQHdP6Z3IeALW6hxoACNwCqmEmDLQojsCVKUdp66H/nnXCpQXAXcP+Vb+y4RKAo7gotEGmDfKIAO9SRs57R7nLnye+jweM7HPXnonWbgPKeC9mayObFMpm2XTDCRrrLrFylQaj221JUR+Ks0Qeu8GaTf+q7AJDJV1yrG5wdnVAVTJdF+EClMme91ZgBXx6i5vuO+OjFcdzBnbfUUCDMqeRSdnJVOUcfGDVaMtTS208RdM9MzrCXdtxVcp5XLO7AOCJD/biNw31uATePCg12+6GoqNU2w34zA5Xl4iBiTgYhdZqODfjLMCNNebms+Y3+8co9eIOegqsU0W06e5hB1eDhCpunbLogOPO4Vnb6nwKsRDXdYlaSpGBvK1xiWb+9EBW035KwexNV2WAVH0ar5o1UnEIwS7EBrSQGibesaXecZgpZa0KnA7aS6GtTY7bMrLcy1Dt9yw62AtcbbOKn4dXBrMgrf0iuWoL54fzaNLRYMYyGwgudm8qhF23/Hic3mnQcPadbxtddposH2fmd/67WpYVT31DZy1FtJ8ZSvsUhuqfYL1bs+HuDPWkv5nZvGmmMixRgBR/ttfMqsXgAAvhU4+3Oplop7uytcZufx2hq2SAQzL5Ad8r5Z/HMeS5qzRSqXIMT1pcULFBDHgR8QQ9+tMNzZp/fL6v/K1UiDn21m0Gjb4AWpseX4jwFnV0uKWepOs="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 421,
+    "candidatesTokenCount": 27,
+    "totalTokenCount": 585,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 421
+      }
+    ],
+    "thoughtsTokenCount": 137,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "responseId": "zFt3asaeC9SkmtkPj6rKuAE"
+}

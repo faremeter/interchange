@@ -1,0 +1,70 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "text": "**My Reasoning to Get Boston's Weather**\n\nOkay, so the goal is clear: the user needs the current weather in Boston, MA. That's straightforward. Now, let's see what tools I have at my disposal. Ah, there's the `get_weather` tool. Perfect! The description says it's for looking up the current weather for a city, which is precisely what I need. It also takes a `location` parameter, which is ideal.\n\nThe user's location is \"Boston, MA\". Therefore, I need to extract this parameter. Done. Now, the final step is to formulate the tool call: I'll call `get_weather` and pass \"Boston, MA\" as the `location`. That should do the trick! Now to execute the call.\n\n\n",
+          "thought": true
+        },
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "30g4cvou"
+          },
+          "thoughtSignature": "EtIECs8EARFNMg/TwAKtZ4XQSUl1MfG1sPTsZIRw1AEff2tb24ddRsp0BVRxm97zmsf6+kqy4j0yBnS2TKg7WZ8aYnC+CvXpODlSGB5UblQvwZb+57o4tOKlsi+Z+KZI9eRXpTiTDOnzFLRqD8mpU3csd9zHyjvRpYFXmCom+8kRmPH5kQ3WGLWJEFVx93YIUOkXH+Ufr2Ko4E3JnP1x98tlJPl/dqEe22zXxa08R9ZmCkrK8RyMDiNKpn+O9oFzUl6FNZsfe/C0kA3PN+sWzDo36L4HUKLAw2UovE2P4OpxkjHDYtqXImiPFB+LTtp0YXLme4vbJkU/rSJCgDmwhqXSO+S0EVT9GaKsDs+/qtarA9BMCkZ2bCRNFwolLKVUG/Wkkn3BiZcqIiVbw46i7XTqYqJwGfB8RI8+zwj6tlHh4iyJfpTznmzGRo7vWPuUGiwHNzg3Xfm5azP3+yqEqQb4vmNN6y69thRM3uaUEBQwTH9P1H184ngkSbG4Omg/YIpZKqYGrS9gqw+xSMEOT58fb4SojVe/14LZMUh7nRZfPbjNQ7pklI213hBEmHSW7ev142STK5vex9vAuGX7Ms9u0CxG1jMOhomZJ8K0x/LMvkFtBSzxxdoPWlR5vqLWW7g32mzFCwfUAkzjgRRvGhBNXDH31teCQnBkikLkrOS/SIrw0A1QRNNOaKqB09Ybt02TO3Qp4xI4v0FIL3nBErOIGgGcY9/gvWS+Q0+KC/cy2CUhMrE8UIj+dU6qgGhGA34Jwad5t2r7OnnFBIIxbaC4LBnx"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {}
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

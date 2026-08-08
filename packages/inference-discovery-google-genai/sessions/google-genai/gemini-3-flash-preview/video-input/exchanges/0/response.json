@@ -1,0 +1,36 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The video shows a side-by-side comparison of the Moon's albedo and water signature maps.",
+            "thoughtSignature": "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"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 393,
+    "candidatesTokenCount": 22,
+    "totalTokenCount": 819,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 380
+      }
+    ],
+    "thoughtsTokenCount": 404,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "v1l3apT6BOShz7IPvrOngAg"
+}

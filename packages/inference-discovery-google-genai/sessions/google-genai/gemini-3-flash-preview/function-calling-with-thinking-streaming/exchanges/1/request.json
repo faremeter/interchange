@@ -1,0 +1,69 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "c5hvw3uq"
+          },
+          "thoughtSignature": "EugDCuUDARFNMg+oajaL9qTB1phk8s5PBC0kLkJx9d4DfbFBziXquWOIZThQknbenWus8BoMWc8TqSa/YyTMCBAsRFEIX7ku9n/TuH2SQ9XknlRNUfNHfgdl9BXY/wQy8QdxNOAUpQCXTglcUxwK9q2Zgw3IotYg0tqrgMF4ee0k4Q7Y3j1WK6QHNqMUu2k1iqbbri33gqcX+tbOmsAsa81+2L9CvkK3yZHvkbkTYu4C48/hH1nZvVd1efU87ivljYU5/7hzOQGCgD1e4G8xdEliJzycPRrxdbv3x8qgQ/OTPBPcgK+dMthvVk1ZV0emkx13p57NUys69JREnjiQRJp4kh77jP632Ez4n5tBm5ntgrI58Vno/3MLzXWdLcBzr9iURImGQdqhodpOlFvFoPXdmpBlm8sNTqdKMIzCVA6HVpPqdqe/XNUw3AtX9TOTanhPZJHm6oCfk6umghxwpWc5ACsN109QvD9RaaEBA4he0xxP4p8979rx63QsQ8QZDjKarQ0/AyxEWVwKmXAC1oVRZ3hW69U+rvaTtTD8QF33fpIk9cMY+zWV/HaWX0NyEdzitjV0gee6U+mWKEPoYVE0CrjUpGfnCT47f5GqFPjdYlJPqqE2AXGpGpTXPKosLnNMArb8dgoJzcE="
+        },
+        {
+          "text": ""
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {}
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Think step by step about which tool to call, then call it. What is the weather in Boston, MA?"
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "text": "**My Process for Gathering the User's Weather Request**\n\nAlright, a straightforward request here. The user is asking for the weather in Boston, Massachusetts. Let me break down my thought process:\n\n1.  **Understand the core need:** The user's intent is clear; they want current weather information for a specified location. That's the key.\n2.  **Select the right tool:** I have a dedicated `get_weather` tool, and that is specifically what I need to use for this task. It's the perfect fit.\n3.  **Identify the inputs:** The tool needs a location. The user has explicitly provided \"Boston, MA\". No ambiguity there.\n4.  **Construct the call:** Now I need to formulate the tool call. It will be: `get_weather(location='Boston, MA')`. This is precise and delivers exactly what's needed. I'm ready to execute this call and get the results.\n\n\n",
+          "thought": true
+        },
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "location": "Boston, MA"
+            },
+            "id": "pykldr3u"
+          },
+          "thoughtSignature": "EsYECsMEARFNMg/JrGrlvGGUZFqV0GDRThWmi3jLLXmZV///S2BZoTjTJWrgIIoKGSzohBmduxdtrUIzqATyjalkonUWZX/yu7yexEUNCQhIQPHhuCJUpI8d/6h1dQvxuMp7GipB0WDvtPVXeiFjDaqQaSa9ahesJxZ65fMOjpsCkVM0XL/qsE9cthLTqtRO9KAvqDRMRMsfzhbisKp4i4Bx0l80TEDH7mUql1O4hWBxNR9Nw8LMH60zHc6KeDe51ORVWQ+UD+Hh3aPnJ6Ray07bmg8rHvonn6L9297sCcphsOK/r+cXbHXfH5Imgd+t7A0gZpHvJtaT1fUcTfh29DOpgRYXm68iIIGrBKUDWYL2NcVoCDEBGG6pJsUXtvjD0sgwympFRBMUNHjCV12e8VAA/6kWoj2w9d5MEQeC/LV6Z9jJkkwSxqHZvEnVZnRM613f2lEIHUmj3WXqZ25A+nl0przItha6e6hVBx+mLdqGz69OxJP55Ja8/8vl/dboUojTGUh1yG1aa+Vr/R6XfLlZjyCUsFScE4CA9xN0RMrbfkUOnLg1C42hvtXzZHSRhUY5fnPxJv8+ckOP++NQCmwDtO2tHlIJKFTg5d2JGZ851nVQeyLqjmi77f/Ft6RCs/cca0paFmMU5XywThg7VFPDyhp03PeIZotS2xPMW+TTY8TqOS2rNY5pt4EKS6c0WrYhLaSb6TX1N2uEgO5odzl1SiTeayFwzcgoOmzXqznA3HJIrVZ5mr4cVV3XuqziUByUfrkJd+Cp"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {}
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Look up the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City and optional region, e.g. 'Boston, MA'."
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "thinkingConfig": {
+      "thinkingBudget": 1024,
+      "includeThoughts": true
+    }
+  }
+}
