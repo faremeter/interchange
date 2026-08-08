@@ -74,3 +74,86 @@ describe("PackageJSON interchange.credentials", () => {
     ).toBe(false);
   });
 });
+
+describe("PackageJSON", () => {
+  test("accepts a package with an interchange.tools entry", () => {
+    const result = PackageJSON({
+      name: "@intx/tools-posix",
+      version: "1.2.3",
+      interchange: { tools: "./dist/tools.js" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+    expect(result).toMatchObject({
+      interchange: { tools: "./dist/tools.js" },
+    });
+  });
+
+  test("accepts a package with an interchange.workflow entry", () => {
+    const result = PackageJSON({
+      name: "@intx/workflow-example",
+      version: "1.2.3",
+      interchange: { workflow: "./dist/wf.js" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+    expect(result).toMatchObject({
+      interchange: { workflow: "./dist/wf.js" },
+    });
+  });
+
+  test("accepts a package with both tools and workflow", () => {
+    const result = PackageJSON({
+      name: "@intx/combined",
+      version: "1.2.3",
+      interchange: { tools: "./dist/tools.js", workflow: "./dist/wf.js" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+    expect(result).toMatchObject({
+      interchange: { tools: "./dist/tools.js", workflow: "./dist/wf.js" },
+    });
+  });
+
+  test("accepts a package with neither tools nor workflow", () => {
+    const result = PackageJSON({
+      name: "left-pad",
+      version: "1.3.0",
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a package with an empty interchange object", () => {
+    const result = PackageJSON({
+      name: "left-pad",
+      version: "1.3.0",
+      interchange: {},
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a non-string interchange.workflow", () => {
+    const result = PackageJSON({
+      name: "@intx/workflow-example",
+      version: "1.2.3",
+      interchange: { workflow: 42 },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a non-string interchange.tools", () => {
+    const result = PackageJSON({
+      name: "@intx/tools-posix",
+      version: "1.2.3",
+      interchange: { tools: 42 },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("ignores undeclared keys alongside workflow", () => {
+    const result = PackageJSON({
+      name: "@intx/workflow-example",
+      version: "1.2.3",
+      description: "an upstream npm field",
+      interchange: { workflow: "./dist/wf.js", extra: "passthrough" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+});

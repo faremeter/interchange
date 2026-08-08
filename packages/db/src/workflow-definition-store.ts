@@ -11,22 +11,38 @@ type DBHandle = DB["db"];
 type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
 
 /**
- * The definition that a workflow asset belongs to, or null when the asset was
- * never folded into a definition. This is the single expression of the
- * deployment -> definition mapping (a deployment names its asset via
- * `definitionAssetId`); the run backfill and the native-run insert sites both
- * resolve through it. Null on a miss is deliberate, not an error: a deployment
- * whose asset the run-once fold never covered has no definition yet, and its
- * runs anchor on `deploymentId` until that gap closes.
+ * The selector that keys a workflow definition's identity: the asset it
+ * projects and the content hash of its wire projection. A single asset backs
+ * many definitions distinguished by their wire hash, so both fields are
+ * required to name exactly one definition.
+ */
+export type WorkflowDefinitionSelector = {
+  assetId: string;
+  wireHash: string;
+};
+
+/**
+ * The definition a selector names, or null when no definition has been folded
+ * for that `(assetId, wireHash)` pair. This is the single expression of the
+ * deployment -> definition mapping (a deployment names its asset and wire hash);
+ * the run backfill and the native-run insert sites both resolve through it.
+ * Null on a miss is deliberate, not an error: a deployment whose selector the
+ * run-once fold never covered has no definition yet, and its runs anchor on
+ * `deploymentId` until that gap closes.
  */
 export async function resolveDefinitionIdForAsset(
   db: DBExecutor,
-  assetId: string,
+  selector: WorkflowDefinitionSelector,
 ): Promise<string | null> {
   const row = await db
     .select({ id: workflowDefinition.id })
     .from(workflowDefinition)
-    .where(eq(workflowDefinition.assetId, assetId))
+    .where(
+      and(
+        eq(workflowDefinition.assetId, selector.assetId),
+        eq(workflowDefinition.wireHash, selector.wireHash),
+      ),
+    )
     .limit(1)
     .then((rows) => rows[0]);
   return row?.id ?? null;

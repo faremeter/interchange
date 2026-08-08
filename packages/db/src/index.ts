@@ -61,6 +61,7 @@ export {
   createWorkflowDefinitionStore,
   resolveDefinitionIdForAsset,
   type WorkflowDefinitionRollbackResult,
+  type WorkflowDefinitionSelector,
 } from "./workflow-definition-store";
 export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";
 export { resolveActivePrice, type ModelPricingRow } from "./pricing";

@@ -7,12 +7,21 @@ export {
   createSessionService,
   SessionLaunchError,
   bridgeOrchestratorDeployContent,
+  deployCodeSourcedWorkflow,
   type SessionService,
   type DeployWorkflowDefinitionParams,
   type DeployWorkflowDefinitionResult,
   type DeployPreparedWorkflowDefinitionParams,
   type PreparedWorkflowDeployer,
+  type DeployCodeSourcedWorkflowArgs,
 } from "./session-service";
+export {
+  installAndApproveWorkflowDefinition,
+  createDbFrozenApprovalWriter,
+  type InstallAndApproveArgs,
+  type InstallAndApproveResult,
+  type ProbeGateResult,
+} from "./workflow-probe-gate";
 export type { WorkflowDefinition } from "@intx/workflow/definition";
 export {
   createEventCollectorRegistry,

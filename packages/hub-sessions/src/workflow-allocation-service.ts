@@ -23,6 +23,7 @@ import {
   hashDefinition,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 import { deriveDeploymentAddress } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
@@ -229,11 +230,16 @@ export function createWorkflowAllocationService({
       deploymentId: args.deploymentId,
       deploymentDomain: args.deploymentDomain,
     });
+    // Key the definition by its wire-projection content hash, matching
+    // `deployWorkflowDefinition`: the same definition resolves to the same
+    // `(assetId, wireHash)` row whether it deploys through the normal or the
+    // exclusive-allocation path, so the two never mint divergent definitions.
+    const wireHash = await computeLiveDefinitionHash(args.definition);
     await db.transaction(async (tx) => {
-      const { definitionId } = await ensureWorkflowDefinitionForAsset(
-        tx,
-        args.definitionAssetId,
-      );
+      const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
+        assetId: args.definitionAssetId,
+        wireHash,
+      });
       await tx.insert(workflowRun).values({
         id: args.deploymentId,
         tenantId: args.tenantId,

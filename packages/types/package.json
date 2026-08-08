@@ -54,6 +54,16 @@
       "intx-src": "./src/package-json.ts",
       "types": "./dist/package-json.d.ts",
       "default": "./dist/package-json.js"
+    },
+    "./wire-definition-hash": {
+      "intx-src": "./src/wire-definition-hash.ts",
+      "types": "./dist/wire-definition-hash.d.ts",
+      "default": "./dist/wire-definition-hash.js"
+    },
+    "./workflow-sources": {
+      "intx-src": "./src/workflow-sources.ts",
+      "types": "./dist/workflow-sources.d.ts",
+      "default": "./dist/workflow-sources.js"
     }
   },
   "dependencies": {

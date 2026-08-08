@@ -120,7 +120,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await versionStatus("2")).toBe("active");
     });
 
-    test("resolveDefinitionIdForAsset resolves a folded asset and nulls a miss", async () => {
+    test("resolveDefinitionIdForAsset resolves a folded selector and nulls a miss", async () => {
       await seedTenants(h.db, [{ id: "tnt_root" }]);
       await seedPrincipal(h.db, { id: "prn_creator", tenantId: "tnt_root" });
       await h.db.insert(asset).values({
@@ -135,13 +135,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: "tnt_root",
         name: "asset-backed",
         assetId: "ast_1",
+        wireHash: "hash_a",
       });
 
-      expect(await resolveDefinitionIdForAsset(h.db, "ast_1")).toBe(
-        "wfd_asset",
-      );
-      // An asset the fold never covered has no definition: null, not an error.
-      expect(await resolveDefinitionIdForAsset(h.db, "ast_missing")).toBeNull();
+      expect(
+        await resolveDefinitionIdForAsset(h.db, {
+          assetId: "ast_1",
+          wireHash: "hash_a",
+        }),
+      ).toBe("wfd_asset");
+      // A selector the fold never covered has no definition: null, not an
+      // error. Same asset, a different wire hash, resolves to nothing.
+      expect(
+        await resolveDefinitionIdForAsset(h.db, {
+          assetId: "ast_1",
+          wireHash: "hash_b",
+        }),
+      ).toBeNull();
+      expect(
+        await resolveDefinitionIdForAsset(h.db, {
+          assetId: "ast_missing",
+          wireHash: "hash_a",
+        }),
+      ).toBeNull();
     });
   },
 );

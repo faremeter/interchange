@@ -1,4 +1,8 @@
 export {
+  loadWorkflowDefinitionFromClosure,
+  type LoadWorkflowDefinitionFromClosureArgs,
+} from "./workflow-definition-loader";
+export {
   createWorkflowRunRepoStore,
   type WorkflowRunRepoStoreOpts,
 } from "./adapters/repo-store";
@@ -136,6 +140,7 @@ export {
   createSupervisorBackedTransport,
   createWarmAgentCache,
   discoverInFlightRuns,
+  loadVerifiedWorkflowDefinition,
   parseSpawnTimeEnv,
   runWorkflowChild,
   runWorkflowChildFromProcessEnv,
@@ -152,6 +157,7 @@ export {
   type DrainController,
   type GrantEvaluator,
   type LoadParkedApproval,
+  type LoadVerifiedWorkflowDefinitionOpts,
   type RunWorkflowChildBindings,
   type RunWorkflowChildFromProcessEnvOpts,
   type RunWorkflowChildOpts,

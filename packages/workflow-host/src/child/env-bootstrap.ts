@@ -69,14 +69,39 @@ const SpawnTimeEnvShape = type({
   // so the warm-keep decision is deterministic and a multi-step agent is
   // never warm-kept by a silent default.
   "WARM_KEEP?": "string",
+  // JSON object mapping each referenced onTrigger body id to the hub-approved
+  // wire hash of that body's projection. The sidecar's deploy router injects
+  // it (via the substrate env) from the deploy frame's per-body approved
+  // hashes so a body child can re-verify its own recompute against the hub
+  // authority. Optional: only an onTrigger deploy that carried referenced
+  // bodies with approved hashes sets it; absent otherwise. Parsed to a record
+  // below; malformed JSON or a non-string value throws.
+  "REFERENCED_DEFINITION_HASHES?": "string",
+  // Deployment lineage marker selecting the child's definition load path.
+  // `"source-ref"` for a deployment whose definition was sourced from a pinned
+  // code closure the sidecar materialized; the child evaluates that closure to
+  // a LIVE definition and re-verifies it by project-then-hash. Absent (or
+  // `"live-authored"`) means the child reads the inert `workflow.json` off the
+  // deploy tree. Optional so a live-authored deployment, which ships no marker,
+  // still parses; parsed to the `lineage` field below and cross-checked against
+  // CLOSURE_PACKAGE_DIR.
+  "WORKFLOW_LINEAGE?": "string > 0",
+  // Sidecar-local directory of the materialized workflow-definition closure a
+  // source-ref deployment evaluates. The sidecar computes it when it applies
+  // the frozen closure and threads it here; it never travels on the hub deploy
+  // frame. Present iff the lineage is `"source-ref"`; a mismatch between the
+  // two throws below.
+  "CLOSURE_PACKAGE_DIR?": "string > 0",
 }).onUndeclaredKey("ignore");
 
 /**
- * Parsed and validated spawn-time env. The hex-encoded trust anchors
- * decode to their raw byte representations so the IPC channel
- * constructors can consume them without re-validating the hex shape.
+ * The lineage-independent fields of the parsed spawn-time env. The hex-encoded
+ * trust anchors decode to their raw byte representations so the IPC channel
+ * constructors can consume them without re-validating the hex shape. The
+ * lineage-correlated pair (`lineage` + `closurePackageDir`) rides the
+ * `SpawnTimeEnv` union below.
  */
-export interface SpawnTimeEnv {
+export interface SpawnTimeEnvBase {
   /** Channel identifier minted by the supervisor for this spawn. */
   channelId: string;
   /** 32-byte shared HMAC key for the event channel. */
@@ -85,8 +110,21 @@ export interface SpawnTimeEnv {
   hostPublicKey: Uint8Array;
   /** Deployment identity the supervisor manages. */
   deploymentId: string;
-  /** Content hash of the deployed `WorkflowDefinition`. */
+  /**
+   * Content hash of the deployed `WorkflowDefinition`. This is the
+   * hub-approved wire hash the deploy frame carried
+   * (`AgentDeployWorkflow.approvedWireHash`), not a sidecar recompute -- the
+   * hub is the authority, so the child re-verifies its own recompute against
+   * this value.
+   */
   definitionHash: string;
+  /**
+   * Hub-approved wire hash per referenced onTrigger body id. Empty when the
+   * deployment carried no referenced bodies (or none with an approved hash).
+   * A body child re-verifies its body projection recompute against the entry
+   * keyed by the body id.
+   */
+  referencedDefinitionHashes: Record<string, string>;
   /** Mail address the deployment registered on the bus. */
   mailboxAddress: string;
   /**
@@ -104,6 +142,35 @@ export interface SpawnTimeEnv {
    */
   warmKeep: boolean;
 }
+
+/**
+ * Parsed and validated spawn-time env. `lineage` and `closurePackageDir` form a
+ * discriminated pair rather than two independent fields: a source-ref
+ * deployment always carries the closure dir it evaluates, and a live-authored
+ * one never does. `parseLineage` enforces that correlation at the boundary, and
+ * modeling it here lets a consumer that narrows on `lineage` read
+ * `closurePackageDir` with the right type and no redundant presence check.
+ */
+export type SpawnTimeEnv = SpawnTimeEnvBase &
+  (
+    | {
+        /**
+         * Evaluate the pinned code closure at `closurePackageDir` to a live
+         * definition and re-verify it by project-then-hash.
+         */
+        lineage: "source-ref";
+        /** Sidecar-local dir of the materialized workflow-definition closure. */
+        closurePackageDir: string;
+      }
+    | {
+        /**
+         * Read the inert `workflow.json` off the deploy tree. An absent lineage
+         * marker parses as this arm.
+         */
+        lineage: "live-authored";
+        closurePackageDir?: undefined;
+      }
+  );
 
 /**
  * Parse and validate `process.env`-shaped input into the typed
@@ -155,17 +222,102 @@ export function parseSpawnTimeEnv(
       `workflow-child STEP_COUNT must be a positive integer; got ${JSON.stringify(validated.STEP_COUNT)}`,
     );
   }
+  const referencedDefinitionHashes = parseReferencedDefinitionHashes(
+    validated.REFERENCED_DEFINITION_HASHES,
+  );
+  // Spread the correlated lineage pair verbatim so the discriminated union is
+  // preserved -- destructuring into separate fields would erase the
+  // source-ref-implies-closurePackageDir correlation the union encodes.
+  const lineageEnv = parseLineage(
+    validated.WORKFLOW_LINEAGE,
+    validated.CLOSURE_PACKAGE_DIR,
+  );
   return {
     channelId: validated.IPC_CHANNEL_ID,
     hmacKey,
     hostPublicKey,
     deploymentId: validated.DEPLOYMENT_ID,
     definitionHash: validated.DEFINITION_HASH,
+    referencedDefinitionHashes,
     mailboxAddress: validated.MAILBOX_ADDRESS,
     stepCount,
     // Strict `=== "true"` so any other value (including the key's
     // absence) reads false. Warm-keep is opt-in and deterministic; a
     // typo'd or partial value must not silently enable it.
     warmKeep: validated.WARM_KEEP === "true",
+    ...lineageEnv,
   };
+}
+
+/**
+ * Resolve the deployment lineage and its closure package directory from the
+ * two optional spawn-env keys, cross-checking them so an inconsistent pair
+ * fails closed rather than loading the wrong definition path.
+ *
+ * An absent `WORKFLOW_LINEAGE` marker is the live-authored common case. A
+ * source-ref lineage MUST carry `CLOSURE_PACKAGE_DIR` (there is nothing to
+ * evaluate without it); a live-authored lineage must NOT carry one (only a
+ * source-ref deployment materializes a closure). Any other pairing is a
+ * boundary wiring bug and throws.
+ */
+function parseLineage(
+  rawLineage: string | undefined,
+  rawClosurePackageDir: string | undefined,
+):
+  | { lineage: "source-ref"; closurePackageDir: string }
+  | { lineage: "live-authored"; closurePackageDir?: undefined } {
+  if (rawLineage === undefined || rawLineage === "live-authored") {
+    if (rawClosurePackageDir !== undefined) {
+      throw new Error(
+        "workflow-child live-authored deployment must not carry CLOSURE_PACKAGE_DIR; only a source-ref deployment evaluates a closure",
+      );
+    }
+    return { lineage: "live-authored" };
+  }
+  if (rawLineage === "source-ref") {
+    if (rawClosurePackageDir === undefined) {
+      throw new Error(
+        "workflow-child source-ref deployment requires CLOSURE_PACKAGE_DIR; the sidecar must thread the materialized closure package directory",
+      );
+    }
+    return { lineage: "source-ref", closurePackageDir: rawClosurePackageDir };
+  }
+  throw new Error(
+    `workflow-child WORKFLOW_LINEAGE must be "source-ref" or "live-authored"; got ${JSON.stringify(rawLineage)}`,
+  );
+}
+
+/** A JSON object of `bodyId -> approved wire hash`, each a non-empty string. */
+const ReferencedDefinitionHashesShape = type({
+  "[string]": "string > 0",
+});
+
+/**
+ * Parse the `REFERENCED_DEFINITION_HASHES` env value into a validated
+ * `bodyId -> approvedWireHash` record. An absent value is the common case (a
+ * deployment with no referenced onTrigger bodies) and yields an empty record.
+ * A present value must be a JSON object whose every value is a non-empty
+ * string; malformed JSON or an off-shape object throws so the child aborts
+ * before it trusts an unparseable per-body hash map.
+ */
+function parseReferencedDefinitionHashes(
+  raw: string | undefined,
+): Record<string, string> {
+  if (raw === undefined) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(
+      "workflow-child REFERENCED_DEFINITION_HASHES must be valid JSON",
+      { cause },
+    );
+  }
+  const validated = ReferencedDefinitionHashesShape(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `workflow-child REFERENCED_DEFINITION_HASHES failed validation: ${validated.summary}`,
+    );
+  }
+  return validated;
 }

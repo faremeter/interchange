@@ -17,6 +17,8 @@ import {
   InferenceSource,
 } from "./runtime";
 import { SignalKind } from "./signals";
+import { ToolPackageManifest } from "./tool-packages";
+import { WorkflowDefinitionSource } from "./workflow-sources";
 
 // ---------------------------------------------------------------------------
 // Sidecar → Hub
@@ -340,65 +342,16 @@ export const DrainDeliverFrame = type({
 });
 export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
 
-/**
- * Workflow projection carried on an `agent.deploy` frame. Its presence
- * at the deploy router routes the frame to the workflow deploy path --
- * single- or multi-step, both of which spawn the workflow-process child
- * -- as opposed to a per-step provision frame.
- *
- * `definition` is the wire projection of `WorkflowDefinition` from
- * `@intx/workflow`. The arktype validator enforces the structural
- * envelope the workflow-process child re-parses on the sidecar after
- * materialization (`packages/hub-sessions/src/workflow-kind.ts`'s
- * `workflowDefinitionEnvelopeSchema`): `id`, `triggers`, `steps`,
- * `stepOrder`, optional `state`. The wire validator MUST require every
- * field the envelope requires — the sidecar's deploy router serializes
- * `projection.definition` verbatim into `workflow.json` and the child
- * rejects a tree missing any envelope-required field. Deeper validation
- * of authoring-time primitive shape lives on the workflow definition
- * surface in `@intx/workflow`, not on the wire.
- *
- * `sources` pins an ordered, non-empty inference-source list per step in
- * `definition.stepOrder` so the workflow-process child can resolve inference
- * at step invocation without a round trip to the hub. The list is the step's
- * failover chain: element 0 is the active source (its id is the step's
- * `defaultSource`), and the reactor fails over forward through the tail on a
- * transient inference error. A workflow step pins a single-element list (no
- * per-step failover); a single-agent instance pins the instance's full
- * ordered source chain. Every `stepOrder` entry must have a matching
- * `sources` entry; the validator rejects frames that violate this at the
- * boundary.
- */
-const WorkflowProjectionDefinition = type({
-  id: "string > 0",
-  triggers: "unknown[]",
-  stepOrder: "string[]",
-  steps: { "[string]": "unknown" },
-  "state?": "Record<string, unknown>",
-  "+": "delete",
-});
-
-/**
- * A workflow projection paired with its per-step inference-source pins, with
- * the invariant that every `stepOrder` entry has a `sources` failover chain.
- * The narrow here is the same coverage check the top-level `AgentDeployWorkflow`
- * applies to its own definition; this reusable form carries it into each
- * extracted onTrigger body under `referencedDefinitions`, so a body's sources
- * cover the body's stepOrder just as the top-level's cover the top-level's.
- */
-const WorkflowProjectionWithSources = type({
-  definition: WorkflowProjectionDefinition,
-  sources: { "[string]": InferenceSource.array().atLeastLength(1) },
-}).narrow((value, ctx) => {
-  for (const stepId of value.definition.stepOrder) {
-    if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
-      return ctx.mustBe(
-        `a workflow projection whose sources cover every step in stepOrder; ${JSON.stringify(stepId)} is missing`,
-      );
-    }
-  }
-  return true;
-});
+import {
+  WorkflowProjectionDefinition,
+  WorkflowProjectionWithSources,
+} from "./wire-workflow";
+// Re-export the wire-step/projection contracts that moved to `./wire-workflow`
+// so existing `@intx/types/sidecar` consumers keep resolving them here. Each
+// name is an arktype schema, so the single re-export carries both its value and
+// its inferred type.
+export { WorkflowStep } from "./wire-workflow";
+export { WorkflowProjectionDefinition };
 
 /**
  * The decrypted credential material and per-handle binding descriptors
@@ -436,34 +389,58 @@ export const CredentialDelivery = type({
 });
 export type CredentialDelivery = typeof CredentialDelivery.infer;
 
-export const AgentDeployWorkflow = type({
-  definition: WorkflowProjectionDefinition,
-  sources: { "[string]": InferenceSource.array().atLeastLength(1) },
-  // Extracted onTrigger section bodies, materialized to their own workflow
-  // assets on the sidecar so a body child's spawn-child resolves the body by
-  // ref without a hub round-trip (the body id IS the asset ref). Optional: only
-  // an onTrigger deploy carries it, and every existing non-onTrigger deploy
-  // omits it and still validates. Each entry carries the body definition AND
-  // the body's own per-step inference-source pins, materialized beside the body
-  // on disk (`sources.json`) so a body child -- in-process, its env lost across
-  // a restart -- resolves inference durably without a hub round-trip.
-  "referencedDefinitions?": WorkflowProjectionWithSources.array(),
-  // Initial credential material for the deployment's tools, decrypted hub-side
-  // and delivered on the deploy frame so it is resident before any step runs
-  // (closing the race where a tool resolves a credential before a push lands).
-  // Run-global: a credential's secret is stored once, keyed by credentialId.
-  // Optional -- a deploy whose definition binds no credentials omits it.
-  "credentials?": CredentialDelivery,
-}).narrow((value, ctx) => {
-  for (const stepId of value.definition.stepOrder) {
-    if (!Object.prototype.hasOwnProperty.call(value.sources, stepId)) {
-      return ctx.mustBe(
-        `a workflow projection whose sources cover every step in stepOrder; ${JSON.stringify(stepId)} is missing`,
-      );
-    }
-  }
-  return true;
+/**
+ * The source-ref pin: where a code-sourced (npm) workflow definition's bytes
+ * come from (`source`) plus the frozen dependency closure the hub resolved for
+ * that pin (`closure`, concrete versions + integrity SRIs). The two ALWAYS
+ * travel together -- the sidecar re-materializes the exact `closure` from
+ * `source` and re-evaluates the pinned code -- so they are one co-required
+ * object rather than two independently-optional fields (which would let a
+ * "source without closure" state exist and be silently read as live-authored,
+ * downgrading the source-ref evaluate-the-pinned-code guarantee to trusting the
+ * inline projection). This is the same shape `WorkflowProbeRequestFrame`
+ * co-requires. A live-authored deploy carries no pin.
+ */
+export const SourceRefPin = type({
+  source: WorkflowDefinitionSource,
+  closure: ToolPackageManifest,
 });
+export type SourceRefPin = typeof SourceRefPin.infer;
+
+/**
+ * A full workflow deploy frame: the shared `WorkflowProjectionWithSources` base
+ * (definition + per-step sources + approved hash, carrying the
+ * stepOrder-covered-by-sources narrow) intersected with the top-level-only
+ * extras. Sharing the base via `.and()` means the field set and the coverage
+ * narrow are defined once, not restated here.
+ */
+export const AgentDeployWorkflow = WorkflowProjectionWithSources.and(
+  type({
+    // Extracted onTrigger section bodies, materialized to their own workflow
+    // assets on the sidecar so a body child's spawn-child resolves the body by
+    // ref without a hub round-trip (the body id IS the asset ref). Optional:
+    // only an onTrigger deploy carries it, and every existing non-onTrigger
+    // deploy omits it and still validates. Each entry carries the body
+    // definition AND the body's own per-step inference-source pins, materialized
+    // beside the body on disk (`sources.json`) so a body child -- in-process,
+    // its env lost across a restart -- resolves inference durably without a hub
+    // round-trip.
+    "referencedDefinitions?": WorkflowProjectionWithSources.array(),
+    // Initial credential material for the deployment's tools, decrypted hub-side
+    // and delivered on the deploy frame so it is resident before any step runs
+    // (closing the race where a tool resolves a credential before a push lands).
+    // Run-global: a credential's secret is stored once, keyed by credentialId.
+    // Optional -- a deploy whose definition binds no credentials omits it.
+    "credentials?": CredentialDelivery,
+    // The source-ref pin (`source` + frozen `closure`) the sidecar
+    // re-materializes and re-evaluates the pinned code from, instead of trusting
+    // the inline projection. The two co-travel (see `SourceRefPin`), so presence
+    // of the pin is the single signal that this is a code-sourced deploy.
+    // Optional: only a code-sourced (npm) deploy carries it; a live-authored
+    // deploy has no pin.
+    "sourceRef?": SourceRefPin,
+  }),
+);
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
 
 /**
@@ -821,6 +798,76 @@ export const SyncRequestFrame = type({
 export type SyncRequestFrame = typeof SyncRequestFrame.infer;
 
 // ---------------------------------------------------------------------------
+// Workflow probe (bidirectional)
+// ---------------------------------------------------------------------------
+//
+// A probe asks a connected sidecar to inspect a code-sourced workflow WITHOUT
+// deploying it: materialize the frozen dependency closure, evaluate the entry
+// module to a live `WorkflowDefinition`, project it to its inert needs
+// surface, and return that projection plus the derived grant set and content
+// hash. The request/result/error trio is correlated by `requestId`, entirely
+// independent of the address maps -- a token-authed sidecar can serve a probe
+// in its pre-deploy state, with no agent deployed and no routable address.
+
+/**
+ * Hub asks a connected sidecar to probe a code-sourced workflow. Correlated by
+ * `requestId`; the sidecar answers with `workflow.probe.result` on success or
+ * `workflow.probe.error` on failure, both carrying the same `requestId`.
+ *
+ * The frame carries everything the sidecar's probe child needs to run the
+ * probe with no further hub round-trip:
+ *   - `source` names where the definition's bytes come from (the registry that
+ *     publishes the definition package).
+ *   - `closure` is the frozen dependency closure the hub already resolved --
+ *     concrete versions and integrity SRIs -- so the child materializes the
+ *     exact tree the hub pinned.
+ *   - `entry` is the `interchange.workflow` module path within the package
+ *     whose evaluation produces the `WorkflowDefinition`.
+ */
+export const WorkflowProbeRequestFrame = type({
+  type: "'workflow.probe.request'",
+  requestId: "string",
+  source: WorkflowDefinitionSource,
+  closure: ToolPackageManifest,
+  entry: "string",
+});
+export type WorkflowProbeRequestFrame = typeof WorkflowProbeRequestFrame.infer;
+
+/**
+ * A connected sidecar's answer to a `workflow.probe.request`: the inert
+ * needs-surface projection of the probed workflow, the inert grant set derived
+ * from it, and the content hash of the projection. Correlated to the request
+ * by `requestId`.
+ *
+ * `projection` is the same closed `WorkflowProjectionDefinition` a deploy frame
+ * carries. `grants` is the deployment-wide inert grant surface -- the set of
+ * capability-grant strings the workflow requires -- for pre-deploy operator
+ * inspection. `wireHash` is the hex SHA-256 of the projection's canonical JSON
+ * (`computeWireDefinitionHash` in `@intx/types/wire-definition-hash`), the
+ * deployment's content-addressed handle.
+ */
+export const WorkflowProbeResultFrame = type({
+  type: "'workflow.probe.result'",
+  requestId: "string",
+  projection: WorkflowProjectionDefinition,
+  grants: "string[]",
+  wireHash: "string",
+});
+export type WorkflowProbeResultFrame = typeof WorkflowProbeResultFrame.infer;
+
+/**
+ * A connected sidecar reports that a `workflow.probe.request` failed --
+ * materialization, evaluation, projection, or hashing threw. Correlated to the
+ * request by `requestId`; `error` describes the failure.
+ */
+export const WorkflowProbeErrorFrame = type({
+  type: "'workflow.probe.error'",
+  requestId: "string",
+  error: "string",
+});
+export type WorkflowProbeErrorFrame = typeof WorkflowProbeErrorFrame.infer;
+
+// ---------------------------------------------------------------------------
 // Discriminated frame unions
 // ---------------------------------------------------------------------------
 
@@ -841,7 +888,9 @@ export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
   .or(PackDoneFrame)
   .or(PackAckFrame)
   .or(PackRejectFrame)
-  .or(MailInboundAckFrame);
+  .or(MailInboundAckFrame)
+  .or(WorkflowProbeResultFrame)
+  .or(WorkflowProbeErrorFrame);
 export type SidecarFrame = typeof SidecarFrame.infer;
 
 /** All frame types the hub sends to the sidecar. */
@@ -860,7 +909,8 @@ export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
   .or(SignalDeliverFrame)
   .or(RunGrantsFrame)
   .or(SignalCorrelationRegisterAckFrame)
-  .or(DrainDeliverFrame);
+  .or(DrainDeliverFrame)
+  .or(WorkflowProbeRequestFrame);
 export type HubFrame = typeof HubFrame.infer;
 
 /** Any frame on the wire, regardless of direction. */

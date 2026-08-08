@@ -9,6 +9,7 @@ import {
   parseModelProviderRow,
   parsePrincipalRow,
   parseWorkflowDefinitionRow,
+  parseWorkflowDefinitionVersionRow,
   parseWorkflowRunRow,
 } from "./parse-row";
 import type {
@@ -17,6 +18,7 @@ import type {
   modelProvider,
   principal,
   workflowDefinition,
+  workflowDefinitionVersion,
   workflowRun,
 } from "./schema";
 
@@ -249,6 +251,40 @@ describe("parseModelOfferingRow", () => {
   });
 });
 
+type WorkflowDefinitionVersionRow =
+  typeof workflowDefinitionVersion.$inferSelect;
+
+function makeWorkflowDefinitionVersionRow(
+  overrides: Partial<WorkflowDefinitionVersionRow> = {},
+): WorkflowDefinitionVersionRow {
+  return {
+    id: "wdv_0123456789abcdef",
+    definitionId: "wfd_0123456789abcdef",
+    version: "1",
+    status: "active",
+    approvedWireHash: null,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+describe("parseWorkflowDefinitionVersionRow", () => {
+  test("passes a null approvedWireHash through as null", () => {
+    const parsed = parseWorkflowDefinitionVersionRow(
+      makeWorkflowDefinitionVersionRow(),
+    );
+    expect(parsed.approvedWireHash).toBeNull();
+  });
+
+  test("passes a present approvedWireHash through as a string", () => {
+    const approvedWireHash = "sha256:abc123";
+    const parsed = parseWorkflowDefinitionVersionRow(
+      makeWorkflowDefinitionVersionRow({ approvedWireHash }),
+    );
+    expect(parsed.approvedWireHash).toBe(approvedWireHash);
+  });
+});
+
 type WorkflowRunRow = typeof workflowRun.$inferSelect;
 
 function makeWorkflowRunRow(
@@ -313,6 +349,7 @@ describe("parseWorkflowDefinitionRow", () => {
       assetId: null,
       name: "Test Definition",
       description: null,
+      wireHash: null,
       grantRequirements: null,
       modelRequirements: null,
       credentialBindings: null,

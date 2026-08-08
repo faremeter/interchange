@@ -7,6 +7,7 @@ import { type } from "arktype";
 
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -18,11 +19,11 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
+import type { WorkflowDefinition } from "@intx/workflow";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 
 import {
   assembleRunCredentialsSnapshot,
-  computeWireDefinitionHash,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
   deriveDeploymentId,
@@ -489,6 +490,19 @@ type MultistepDeployArgs = {
    * tests (whose derived per-step repos do not parse the frame address).
    */
   agentAddress?: string;
+  /**
+   * Hub-approved wire hash to stamp on the deploy frame's workflow -- the
+   * child's `DEFINITION_HASH`. Production always stamps it, so the helper
+   * defaults to a placeholder when unset; a test exercising re-verify passes a
+   * real computed hash here instead.
+   */
+  approvedWireHash?: string;
+  /**
+   * Build a frame with NO `approvedWireHash` to exercise the deploy path's
+   * fail-loud guard (the sidecar refuses to recompute a hub-authority hash).
+   * Overrides the helper's default placeholder.
+   */
+  omitApprovedWireHash?: boolean;
 };
 
 function makeInferenceSource(id: string): InferenceSourceFixture {
@@ -517,6 +531,12 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     workflow: {
       definition: args.definition,
       sources: args.sources,
+      // Production always stamps the hub-approved hash; default a placeholder
+      // so a deploy test need not compute one, and only omit it when a test
+      // explicitly exercises the fail-loud guard.
+      ...(args.omitApprovedWireHash
+        ? {}
+        : { approvedWireHash: args.approvedWireHash ?? "a".repeat(64) }),
     },
   };
 }
@@ -604,24 +624,6 @@ describe("validateWorkflowProjection", () => {
   });
 });
 
-describe("computeWireDefinitionHash", () => {
-  test("is stable across key-ordering differences", async () => {
-    const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: { kind: "step" } } };
-    const b = { steps: { s1: { kind: "step" } }, stepOrder: ["s1"], id: "w-1" };
-    expect(await computeWireDefinitionHash(a)).toBe(
-      await computeWireDefinitionHash(b),
-    );
-  });
-
-  test("differs across different definitions", async () => {
-    const a = { id: "w-1", stepOrder: ["s1"], steps: { s1: {} } };
-    const b = { id: "w-2", stepOrder: ["s1"], steps: { s1: {} } };
-    expect(await computeWireDefinitionHash(a)).not.toBe(
-      await computeWireDefinitionHash(b),
-    );
-  });
-});
-
 describe("createSidecarDeployRouter multi-step branch", () => {
   async function buildMultistepFixture(opts: {
     spawner: SubprocessSpawner;
@@ -669,6 +671,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * rotation's persist window; omitted, the router uses the real writer.
      */
     writeWorkflowDeploymentRecord?: typeof writeWorkflowDeploymentRecord;
+    /**
+     * Injectable closure materializer. A source-ref deploy/restore test passes
+     * a stub so the path runs without a live registry; omitted, the router
+     * uses the real `applyFrozenWorkflowClosure`.
+     */
+    applyFrozenWorkflowClosure?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["applyFrozenWorkflowClosure"];
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -753,6 +763,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             writeWorkflowDeploymentRecord: opts.writeWorkflowDeploymentRecord,
           }
         : {}),
+      ...(opts.applyFrozenWorkflowClosure !== undefined
+        ? { applyFrozenWorkflowClosure: opts.applyFrozenWorkflowClosure }
+        : {}),
     });
     return {
       router,
@@ -823,7 +836,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
-    const frame = makeMultistepFrame({ definition, sources });
+    // The sidecar sources DEFINITION_HASH from the frame's hub-approved hash
+    // verbatim (never a recompute), so stamp the real wire hash and assert the
+    // child receives it.
+    const approvedWireHash = await computeWireDefinitionHash(definition);
+    const frame = makeMultistepFrame({ definition, sources, approvedWireHash });
 
     const deployPromise = router.deploy(frame);
 
@@ -839,9 +856,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       DEPLOYMENT_ID: "multi-example-com",
       MAILBOX_ADDRESS: "multi@example.com",
     });
-    expect(env.DEFINITION_HASH).toBe(
-      await computeWireDefinitionHash(definition),
-    );
+    expect(env.DEFINITION_HASH).toBe(approvedWireHash);
     expect(env[STEP_INFERENCE_SOURCES_ENV_KEY]).toBe(JSON.stringify(sources));
     expect(env.IPC_CHANNEL_ID).toMatch(/^[0-9a-f]{32}$/);
 
@@ -881,6 +896,79 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Use unused supervisorToChild to silence the linter.
     void supervisorToChild;
     void supervisorIpcKeyPair;
+  });
+
+  test("sources the child's DEFINITION_HASH from the frame's hub-approved wire hash, not a sidecar recompute", async () => {
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      return {
+        pid: 9001,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
+
+    const multiDataDir = await createTempBaseDir("sidecar-approved-hash-");
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: multiDataDir },
+    });
+
+    const sources = defaultMultistepSources();
+    const definition = {
+      id: "wf-approved-hash",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    // A sentinel that is deliberately NOT the wire hash of `definition`, so an
+    // assertion that the child received it proves the value came from the
+    // frame (the hub authority) and was not recomputed at the sidecar.
+    const HUB_APPROVED_HASH = "hub-approved-sentinel-hash";
+    const recomputed = await computeWireDefinitionHash(definition);
+    expect(HUB_APPROVED_HASH).not.toBe(recomputed);
+
+    const frame = makeMultistepFrame({
+      definition,
+      sources,
+      approvedWireHash: HUB_APPROVED_HASH,
+    });
+    const deployPromise = router.deploy(frame);
+
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const env = observedEnv;
+    // The child's DEFINITION_HASH is the frame's hub-approved hash, verbatim.
+    expect(env.DEFINITION_HASH).toBe(HUB_APPROVED_HASH);
+
+    // Drive the child to exit so the deploy's spawn pumps unwind, then let the
+    // deploy settle (it rejects once the child dies mid-handshake, which is
+    // fine -- the env assertion above is the subject under test).
+    const channelId = env.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    childToSupervisor.close();
+    eventChildToSupervisor.close();
+    resolveExit?.(0);
+    await deployPromise.catch(() => undefined);
+    void supervisorToChild;
   });
 
   test("a second same-address deploy is rejected mid-spawn and never deletes the live deployment record", async () => {
@@ -1383,6 +1471,41 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await expect(router.deploy(frame)).rejects.toThrow(
       /workflow\.definition\.steps is missing entry/,
+    );
+    expect(spawnerInvoked).toBe(false);
+  });
+
+  test("refuses to deploy a workflow frame carrying no approvedWireHash rather than recomputing it", async () => {
+    // The child re-verifies its own recompute against the HUB-approved wire
+    // hash. A frame that carries none is a wiring bug, not a legacy case: the
+    // sidecar must fail loud rather than substitute its own recompute, which
+    // would collapse the re-verify to a self-check. Production always stamps
+    // it, so only a malformed frame reaches this guard.
+    let spawnerInvoked = false;
+    const spawner: SubprocessSpawner = () => {
+      spawnerInvoked = true;
+      throw new Error("spawner must not run for a hash-less frame");
+    };
+
+    const { router } = await buildMultistepFixture({ spawner });
+
+    const frame = makeMultistepFrame({
+      // A single-step deploy parses the frame address as an instance address,
+      // so use the canonical `ins_<id>@<domain>` shape to reach the spawn-core
+      // guard rather than tripping address parsing first.
+      agentAddress: "ins_nohash@example.com",
+      definition: {
+        id: "wf-no-hash",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
+      omitApprovedWireHash: true,
+    });
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /carries no approvedWireHash/,
     );
     expect(spawnerInvoked).toBe(false);
   });
@@ -2035,6 +2158,146 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     expect(spawner.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
+  });
+
+  test("restore soft-skips a malformed source-ref record (missing sourceRef) at the scan boundary", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-srcref-bad-");
+    const head = "ins_srcref@example.com";
+    const deploymentId = deriveDeploymentId(head);
+
+    // A source-ref record MUST carry a sourceRef pin + approvedWireHash -- the
+    // record schema's discriminated union on `lineage` requires them. Write a
+    // raw malformed one (lineage source-ref, none of the required fields)
+    // straight to the record path, bypassing the typed writer.
+    // `scanWorkflowDeploymentRecords` validates against the schema and
+    // soft-skips it as corruption, so restore never reaches a spawn -- there is
+    // no bespoke source-ref guard in the restore loop to lean on.
+    const recordPath = path.join(
+      dataDir,
+      "workflow-runs",
+      deploymentId,
+      "deployment.json",
+    );
+    await fs.mkdir(path.dirname(recordPath), { recursive: true });
+    await fs.writeFile(
+      recordPath,
+      JSON.stringify({
+        version: 1,
+        agentAddress: head,
+        definitionId: "wf-srcref",
+        sources: { "step-1": [makeInferenceSource("step-1")] },
+        hubPublicKey: "hub-pk",
+        lineage: "source-ref",
+      }),
+      "utf8",
+    );
+
+    const spawner = makeReadyDrivingSpawner(9550);
+    const freshTransport = createInMemoryTransport();
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    await router.restoreWorkflowDeployments();
+
+    // Rejected at the scan boundary: no child spawned, nothing registered.
+    expect(spawner.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+  });
+
+  test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-srcref-ok-");
+    const head = "ins_srcref_ok@example.com";
+    const deploymentId = deriveDeploymentId(head);
+
+    // A well-formed source-ref record: lineage source-ref with a sourceRef pin
+    // (source + closure) + approvedWireHash, exactly what the deploy path
+    // persists.
+    const record: WorkflowDeploymentRecord = {
+      version: 1,
+      agentAddress: head,
+      definitionId: "wf-srcref",
+      sources: { "step-1": [makeInferenceSource("step-1")] },
+      hubPublicKey: "hub-pk",
+      approvedWireHash: "a".repeat(64),
+      lineage: "source-ref",
+      sourceRef: {
+        source: { kind: "registry", registry: "test-registry" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      },
+    };
+    await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
+
+    // The on-disk inert workflow.json (the approval surface) restore re-reads
+    // and re-validates before spawning; a valid one so it clears the gate.
+    const workflowJsonPath = path.join(
+      dataDir,
+      "assets",
+      "workflow",
+      "wf-srcref",
+      "workflow.json",
+    );
+    await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
+    await fs.writeFile(
+      workflowJsonPath,
+      JSON.stringify({
+        id: "wf-srcref",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step", id: "step-1" } },
+      }),
+      "utf8",
+    );
+
+    // Stub the closure materializer: record its inputs and return a fake
+    // package dir. Restore reads only `packageDir` (it validates the on-disk
+    // workflow.json itself), so a minimal stubbed definition is fine.
+    const fakePackageDir = path.join(dataDir, "fake-closure-package");
+    const applyCalls: { registry: string; entryCount: number }[] = [];
+    const applyStub: NonNullable<
+      Parameters<typeof buildMultistepFixture>[0]["applyFrozenWorkflowClosure"]
+    > = (args) => {
+      applyCalls.push({
+        registry: args.source.registry,
+        entryCount: args.closure.entries.length,
+      });
+      return Promise.resolve({
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- restore reads only packageDir on this path; the evaluated definition is unused
+        definition: {} as unknown as WorkflowDefinition,
+        packageDir: fakePackageDir,
+        deployDir: path.join(dataDir, "fake-deploy-dir"),
+      });
+    };
+
+    const spawner = makeReadyDrivingSpawner(9560);
+    const freshTransport = createInMemoryTransport();
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: dataDir,
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
+      },
+      applyFrozenWorkflowClosure: applyStub,
+    });
+
+    const restorePromise = router.restoreWorkflowDeployments();
+    await spawner.driveReadyFor(0);
+    await restorePromise;
+
+    // Re-materialized (the frozen closure fed to the materializer) and spawned.
+    expect(applyCalls).toEqual([{ registry: "test-registry", entryCount: 0 }]);
+    expect(spawner.spawnCount()).toBe(1);
+    expect(isRegistered(freshTransport, head)).toBe(true);
+    // The child came back on the source-ref (evaluate-the-closure) load path:
+    // the spawn env carries the source-ref lineage marker and the freshly
+    // re-materialized package dir, not the inert-read live-authored path.
+    const spawnEnv = spawner.envFor(0);
+    expect(spawnEnv?.WORKFLOW_LINEAGE).toBe("source-ref");
+    expect(spawnEnv?.CLOSURE_PACKAGE_DIR).toBe(fakePackageDir);
   });
 
   test("restore is a no-op for a deployment already live in this process", async () => {

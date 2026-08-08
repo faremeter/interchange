@@ -40,7 +40,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import semver from "semver";
 import npmRegistryFetch from "npm-registry-fetch";
 import { type } from "arktype";
 
@@ -55,15 +54,39 @@ import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
 import type { ToolCall, ToolResult } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
-import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 import type {
   ToolPackageManifest,
   ToolPackageManifestEntry,
 } from "@intx/types/tool-packages";
 
 import type { TarballCache } from "./cache";
-import { TarballIntegrityMismatchError } from "./cache";
+import {
+  DEFAULT_MAX_REGISTRY_TARBALL_BYTES,
+  DEFAULT_REGISTRY_FETCH_TIMEOUT_MS,
+  ToolLoaderError,
+  describeError,
+} from "./loader-internal";
+import {
+  buildRegistryFetchOpts,
+  defaultTarballUrl,
+  readResponseWithLimit,
+} from "./registry-fetch";
 import type { RegistryConfig } from "./resolver";
+import { materializeClosure, storeEntryDir } from "./store-layout";
+
+// Re-export the members that moved to focused modules so existing `./loader`
+// and package-root consumers keep resolving them here: the public failure type
+// and fetch caps (now in `loader-internal`), the registry fetch helpers, and
+// the closure materialization + store-layout entry points.
+export {
+  ToolLoaderError,
+  DEFAULT_MAX_REGISTRY_TARBALL_BYTES,
+  DEFAULT_REGISTRY_FETCH_TIMEOUT_MS,
+  buildRegistryFetchOpts,
+  readResponseWithLimit,
+  materializeClosure,
+  storeEntryDir,
+};
 
 const logger = getLogger(["sidecar", "tool-packaging", "loader"]);
 
@@ -176,27 +199,6 @@ export interface LoaderConfig {
   readonly importModule?: (importUrl: string) => Promise<unknown>;
 }
 
-/**
- * Default cap on a single HTTP-registry tarball fetch. Matches the
- * hub's `DEFAULT_HUB_MAX_TARBALL_BYTES` so a tarball the hub accepted
- * on upload is one the sidecar can also fetch back when a registry
- * mirror replays it.
- */
-export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
-
-/**
- * Default deadline for a single HTTP-registry tarball fetch, covering
- * both the request and the streamed body read. `readResponseWithLimit`
- * consumes the body through a manual reader loop, so the byte cap bounds
- * size but nothing bounds time: a registry that accepts the connection
- * and then stalls mid-stream would block the fetch -- and the deploy's
- * tool materialization awaiting it -- indefinitely.
- * The deadline is generous so a legitimately large tarball on a slow
- * link still completes within it. Callers that need a different bound
- * pass `registryFetchTimeoutMs` to `createToolLoader`.
- */
-export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
-
 export type TarballFetcher = (
   entry: ToolPackageManifestEntry,
   ctx: {
@@ -230,22 +232,49 @@ export interface ToolLoader {
   loadManifest(args: LoadManifestArgs): Promise<LoadedToolPackage[]>;
 }
 
-export class ToolLoaderError extends Error {
-  readonly category: DeployApplyErrorCategory;
-  readonly package:
-    | { readonly name: string; readonly version: string }
-    | undefined;
+/**
+ * Arguments for `materializeClosure`, the eval-free materialization
+ * primitive `loadManifest` wraps. Everything phases 1-2 need is passed
+ * explicitly so the function stands alone without a `ToolLoader`
+ * instance: the closure's `cache`, `registries`, `host`, and resolved
+ * `fetchTarball` are threaded in directly. There is no import seam here
+ * because `materializeClosure` never imports author code — that first
+ * `import()` belongs to `loadManifest`'s phase-3 loop.
+ */
+export interface MaterializeClosureArgs {
+  readonly manifest: ToolPackageManifest;
+  readonly instanceScratchDir: string;
+  readonly assetRoot: string;
+  readonly assetMounts: ReadonlyMap<string, string>;
+  readonly host: HostPlatform;
+  readonly cache: TarballCache;
+  /**
+   * Registry identifier → registry config, the same map
+   * `createToolLoader` keys its registries under. Used both to gate
+   * `kind: "registry"` entries against the sidecar config and as the
+   * `registries` context handed to `fetchTarball`.
+   */
+  readonly registries: ReadonlyMap<string, RegistryConfig>;
+  /**
+   * Resolved tarball fetcher. `createToolLoader` builds the default
+   * (npm-registry-fetch + filesystem) fetcher or honors a test seam and
+   * threads the result here; `materializeClosure` does not construct one
+   * of its own.
+   */
+  readonly fetchTarball: TarballFetcher;
+}
 
-  constructor(opts: {
-    category: DeployApplyErrorCategory;
-    message: string;
-    package?: { name: string; version: string };
-  }) {
-    super(opts.message);
-    this.name = "ToolLoaderError";
-    this.category = opts.category;
-    this.package = opts.package;
-  }
+/**
+ * Result of `materializeClosure`: the per-instance store directory the
+ * closure was laid out under (`<instanceScratchDir>/store`), plus the exact
+ * host-filtered entries that were laid out under it. A caller computes a
+ * specific package's directory with `storeEntryDir`, and iterates `entries` to
+ * load exactly what was materialized -- rather than re-deriving the host filter
+ * with a second predicate and risking the two drifting apart.
+ */
+export interface MaterializeClosureResult {
+  readonly storeDir: string;
+  readonly entries: readonly ToolPackageManifestEntry[];
 }
 
 export function createToolLoader(config: LoaderConfig): ToolLoader {
@@ -270,104 +299,6 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
   const fetchTarball = config.fetchTarball ?? makeDefaultTarballFetcher();
   const importModule =
     config.importModule ?? ((u: string) => import(u) as Promise<unknown>);
-
-  async function materialize(
-    entry: ToolPackageManifestEntry,
-    assetRoot: string,
-    assetMounts: ReadonlyMap<string, string>,
-  ): Promise<{ dir: string; release: () => void }> {
-    // Resolve registry-sourced entries against the sidecar config
-    // before doing any I/O. If the manifest references an unknown
-    // registry name the apply fails loudly here, regardless of whether
-    // the bytes are already cached, so the failure surfaces even on
-    // cache hits that would otherwise hide the misconfiguration.
-    if (entry.source.kind === "registry") {
-      if (!registriesByName.has(entry.source.registry)) {
-        throw new ToolLoaderError({
-          category: "registry.unknown",
-          message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
-          package: { name: entry.name, version: entry.version },
-        });
-      }
-    } else if (entry.source.kind === "asset") {
-      // Reject up front (parallel to the registry.unknown gate) so a
-      // cache hit cannot hide a missing mount from the manifest fan-out.
-      if (!assetMounts.has(entry.source.assetId)) {
-        throw new ToolLoaderError({
-          category: "asset.mount.missing",
-          message: `manifest entry references assetId "${entry.source.assetId}" which is not in the deploy pack's asset-mounts map`,
-          package: { name: entry.name, version: entry.version },
-        });
-      }
-    }
-
-    // Probe cache presence with `has` rather than `get`: the bytes are
-    // only needed when they have to be fetched-then-stored, and
-    // `extractTarball` below re-reads them from disk on the way to the
-    // per-integrity unpack directory. `has` checks file existence
-    // without reading or atime-touching the bytes, so a cache-hit
-    // apply avoids the wasted read of a tarball that immediately gets
-    // discarded.
-    if (!(await config.cache.has(entry.integrity))) {
-      const bytes = await fetchTarball(entry, {
-        registries: config.registries,
-        assetRoot,
-        assetMounts,
-      });
-      try {
-        await config.cache.put(entry.integrity, bytes);
-      } catch (err) {
-        if (err instanceof TarballIntegrityMismatchError) {
-          throw new ToolLoaderError({
-            category: "integrity.mismatch",
-            message: `bytes for ${entry.name}@${entry.version} did not match pinned integrity`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        throw err;
-      }
-    }
-
-    try {
-      return await config.cache.extractTarball(entry.integrity);
-    } catch (err) {
-      // Eviction is reserved for the integrity-mismatch path: the bytes
-      // on disk no longer match the pinned hash, so the entry is poison
-      // and must be re-fetched. Other failures — tar parse errors, FS
-      // transients (EIO, ENOSPC) — leave the cached bytes intact. The
-      // cache's `evict` defers physical reclaim of the extraction tree
-      // until every outstanding `release` from a concurrent
-      // `extractTarball` has fired, so a parallel agent's in-flight
-      // `hardlinkTree` walk against the same extraction will not
-      // ENOENT mid-readdir.
-      if (err instanceof TarballIntegrityMismatchError) {
-        await config.cache.evict(entry.integrity);
-      }
-      throw new ToolLoaderError({
-        category: "tarball.extract.failed",
-        message: `tar extraction failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
-        package: { name: entry.name, version: entry.version },
-      });
-    }
-  }
-
-  function passesPlatformFilter(entry: ToolPackageManifestEntry): boolean {
-    if (
-      entry.os !== undefined &&
-      !platformListMatches(entry.os, config.host.os)
-    ) {
-      logger.debug`platform.mismatch.skipped: ${entry.name}@${entry.version} requires os ${entry.os.join(",")} (host is ${config.host.os})`;
-      return false;
-    }
-    if (
-      entry.cpu !== undefined &&
-      !platformListMatches(entry.cpu, config.host.cpu)
-    ) {
-      logger.debug`platform.mismatch.skipped: ${entry.name}@${entry.version} requires cpu ${entry.cpu.join(",")} (host is ${config.host.cpu})`;
-      return false;
-    }
-    return true;
-  }
 
   async function loadTopLevel(
     entry: ToolPackageManifestEntry,
@@ -588,93 +519,55 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
 
   return {
     async loadManifest(args) {
-      const filtered = args.manifest.entries.filter(passesPlatformFilter);
-      const storeDir = path.join(args.instanceScratchDir, "store");
+      // Phases 1-2 (fetch + SRI-verify + extract into the cache, then
+      // resolve the closure ranges and lay out the per-instance store)
+      // are the eval-free materialization primitive. They import no
+      // author code; that first `import()` happens only in phase 3
+      // below. `materializeClosure` returns the exact host-filtered
+      // entries it laid out, so phase 3 loads precisely those -- there is
+      // no second platform-filter pass that could drift from the first.
+      const { storeDir, entries } = await materializeClosure({
+        manifest: args.manifest,
+        instanceScratchDir: args.instanceScratchDir,
+        assetRoot: args.assetRoot,
+        assetMounts: args.assetMounts,
+        host: config.host,
+        cache: config.cache,
+        registries: config.registries,
+        fetchTarball,
+      });
+
       const topLevelKeys = new Set(
         args.manifest.topLevel.map((p) => `${p.name}@${p.version}`),
       );
 
-      // 1. Materialize every filtered entry into the cache and capture
-      //    its extraction directory. This validates the manifest is
-      //    registry-chain-consistent (each entry resolves end-to-end
-      //    against its declared source) and primes the cache so the
-      //    layout step can hardlink without re-fetching.
-      //
-      //    Each materialize() returns an `{ dir, release }` pair: the
-      //    cache treats the returned `dir` as held until `release` is
-      //    called, so a concurrent eviction of the same integrity
-      //    defers its physical reclaim of the extraction tree until
-      //    after the buildStoreLayout pass below has finished walking
-      //    every dir to hardlink files out. Releases are aggregated and
-      //    drained in a `finally` so an error mid-layout still hands
-      //    the cache its references back.
-      const extractionByEntry = new Map<string, string>();
-      const entriesByNameVersion = new Map<string, ToolPackageManifestEntry>();
-      const releases: (() => void)[] = [];
-      try {
-        for (const entry of filtered) {
-          const handle = await materialize(
-            entry,
-            args.assetRoot,
-            args.assetMounts,
-          );
-          const key = `${entry.name}@${entry.version}`;
-          extractionByEntry.set(key, handle.dir);
-          entriesByNameVersion.set(key, entry);
-          releases.push(handle.release);
-        }
-
-        // 2. Build the per-instance store layout. Each filtered entry
-        //    gets a real directory at `<store>/<name>/<version>/`
-        //    populated by hardlinks from its cache extraction; the
-        //    direct-dependency walk then symlinks `node_modules/<dep>`
-        //    into each layout dir so Node's standard ancestor walk
-        //    resolves bare-specifier imports from inside the package's
-        //    body against the closure's pinned versions.
-        const rangeResolution = await resolveRangesByFirstArrival({
-          topLevel: args.manifest.topLevel,
-          filtered,
-          extractionByEntry,
-          entriesByNameVersion,
-        });
-        await buildStoreLayout({
-          filtered,
-          storeDir,
-          extractionByEntry,
-          rangeResolution,
-        });
-
-        // 3. Then load only the top-level packages; transitive entries
-        //    exist for `node_modules/` satisfaction but do not contribute
-        //    factories of their own.
-        const loaded: LoadedToolPackage[] = [];
-        const coveredTopLevelKeys = new Set<string>();
-        for (const entry of filtered) {
-          const key = `${entry.name}@${entry.version}`;
-          if (!topLevelKeys.has(key)) continue;
-          const pkgDir = storeEntryDir(storeDir, entry.name, entry.version);
-          loaded.push(await loadTopLevel(entry, pkgDir));
-          coveredTopLevelKeys.add(key);
-        }
-        // Top-level pins the platform filter dropped contribute zero
-        // factories, which is a legitimate operator choice (e.g. an
-        // optionalDependencies-shaped opt-in for a single-platform
-        // helper). Surface it as a warn so an apply that produces no
-        // tools at all because every pin was platform-filtered out is
-        // diagnosable from the logs without re-reading the manifest.
-        const droppedTopLevelKeys: string[] = [];
-        for (const key of topLevelKeys) {
-          if (!coveredTopLevelKeys.has(key)) droppedTopLevelKeys.push(key);
-        }
-        if (droppedTopLevelKeys.length > 0) {
-          logger.warn`tool-package apply dropped top-level pins via platform filter on host os=${config.host.os} cpu=${config.host.cpu}: ${droppedTopLevelKeys.join(", ")}`;
-        }
-        return loaded;
-      } finally {
-        for (const release of releases) {
-          release();
-        }
+      // 3. Load only the top-level packages; transitive entries exist
+      //    for `node_modules/` satisfaction but do not contribute
+      //    factories of their own. This is the first point at which
+      //    author code is imported.
+      const loaded: LoadedToolPackage[] = [];
+      const coveredTopLevelKeys = new Set<string>();
+      for (const entry of entries) {
+        const key = `${entry.name}@${entry.version}`;
+        if (!topLevelKeys.has(key)) continue;
+        const pkgDir = storeEntryDir(storeDir, entry.name, entry.version);
+        loaded.push(await loadTopLevel(entry, pkgDir));
+        coveredTopLevelKeys.add(key);
       }
+      // Top-level pins the platform filter dropped contribute zero
+      // factories, which is a legitimate operator choice (e.g. an
+      // optionalDependencies-shaped opt-in for a single-platform
+      // helper). Surface it as a warn so an apply that produces no
+      // tools at all because every pin was platform-filtered out is
+      // diagnosable from the logs without re-reading the manifest.
+      const droppedTopLevelKeys: string[] = [];
+      for (const key of topLevelKeys) {
+        if (!coveredTopLevelKeys.has(key)) droppedTopLevelKeys.push(key);
+      }
+      if (droppedTopLevelKeys.length > 0) {
+        logger.warn`tool-package apply dropped top-level pins via platform filter on host os=${config.host.os} cpu=${config.host.cpu}: ${droppedTopLevelKeys.join(", ")}`;
+      }
+      return loaded;
     },
   };
 
@@ -803,669 +696,6 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       }
     };
   }
-}
-
-export function buildRegistryFetchOpts(
-  registry: RegistryConfig,
-): Record<string, unknown> {
-  const opts: Record<string, unknown> = { registry: registry.url };
-  if (registry.auth?.token !== undefined) {
-    opts.token = registry.auth.token;
-  }
-  if (registry.auth?.basic !== undefined) {
-    const { user, pass } = registry.auth.basic;
-    // `npm-registry-fetch` builds the `Authorization: Basic` header by
-    // base64-encoding `<username>:<password>` itself. Pre-encoding
-    // `pass` would double-encode the password component (the registry
-    // would see `base64(plaintext)` as the password, not `plaintext`).
-    opts.forceAuth = { username: user, password: pass };
-  }
-  return opts;
-}
-
-function defaultTarballUrl(
-  registryUrl: string,
-  name: string,
-  version: string,
-): string {
-  const base = registryUrl.endsWith("/") ? registryUrl : `${registryUrl}/`;
-  // Match npm's canonical tarball URL: {registry}/{name}/-/{basename}-{version}.tgz
-  const basename = name.startsWith("@") ? name.split("/")[1] : name;
-  if (basename === undefined) {
-    throw new Error(`internal: cannot derive tarball basename for ${name}`);
-  }
-  return `${base}${name}/-/${basename}-${version}.tgz`;
-}
-
-/**
- * Read an HTTP-registry tarball response into a Uint8Array while enforcing
- * `maxBytes`. Two guards:
- *
- *   1. If the upstream sent a `Content-Length` header, parse it (digit-
- *      only, per RFC 9110 §8.6) and reject up front when the declared
- *      length exceeds the cap. A header that fails the digit shape is
- *      also rejected so a header like `1e9` cannot read as 1e9 against
- *      `Number()` while a digit-only cap check would pass.
- *   2. Stream the body chunk-by-chunk, tallying byte length, and abort
- *      the read when the running total crosses the cap. This catches
- *      the missing-or-lying header case.
- *
- * An optional `signal` adds a time guard: when it aborts (the caller's
- * fetch deadline), the in-flight read is cancelled and the call rejects,
- * so a registry that streams the body slowly or stalls mid-stream cannot
- * outlast the deadline while staying under the byte cap.
- *
- * All rejections surface as `registry.fetch.failed` so the apply layer
- * routes them the same as any other registry-side fetch defect.
- *
- * Exported for direct unit testing.
- */
-export async function readResponseWithLimit(
-  res: Response,
-  maxBytes: number,
-  ctx: {
-    readonly registry: string;
-    readonly name: string;
-    readonly version: string;
-  },
-  signal?: AbortSignal,
-): Promise<Uint8Array> {
-  const declaredLengthRaw = res.headers.get("content-length");
-  if (declaredLengthRaw !== null) {
-    if (!/^\d+$/.test(declaredLengthRaw)) {
-      throw new ToolLoaderError({
-        category: "registry.fetch.failed",
-        message: `registry "${ctx.registry}" returned non-digit Content-Length ${JSON.stringify(declaredLengthRaw)} for ${ctx.name}@${ctx.version}`,
-        package: { name: ctx.name, version: ctx.version },
-      });
-    }
-    const declaredLength = Number(declaredLengthRaw);
-    if (!Number.isFinite(declaredLength) || declaredLength > maxBytes) {
-      throw new ToolLoaderError({
-        category: "registry.fetch.failed",
-        message: `tarball for ${ctx.name}@${ctx.version} declares Content-Length ${declaredLengthRaw} which exceeds the ${String(maxBytes)}-byte cap`,
-        package: { name: ctx.name, version: ctx.version },
-      });
-    }
-  }
-
-  const body = res.body;
-  if (body === null) {
-    // No body and the upstream returned 2xx: treat as a zero-byte
-    // tarball. The cache and tar-extract layers will reject the
-    // resulting bytes as non-tar content, but the fetch itself didn't
-    // fail — keep this path simple rather than over-rejecting.
-    return new Uint8Array(0);
-  }
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  // Cancelling the reader settles any pending read() as done, so the
-  // post-read check below surfaces the timeout even when the underlying
-  // body stream does not itself observe the abort signal.
-  let timedOut = false;
-  const onAbort = () => {
-    timedOut = true;
-    void reader.cancel();
-  };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  if (signal?.aborted === true) onAbort();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (timedOut) {
-        throw new ToolLoaderError({
-          category: "registry.fetch.failed",
-          message: `tarball read for ${ctx.name}@${ctx.version} exceeded the registry fetch timeout`,
-          package: { name: ctx.name, version: ctx.version },
-        });
-      }
-      if (done) break;
-      if (value === undefined) continue;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        // Stop reading; we already have enough evidence the upstream
-        // is over the cap. The reader.cancel() call requests
-        // cancellation upstream; the runtime decides whether to drop
-        // the in-flight TCP frames or just unsubscribe our reader.
-        await reader.cancel();
-        throw new ToolLoaderError({
-          category: "registry.fetch.failed",
-          message: `tarball for ${ctx.name}@${ctx.version} streamed past the ${String(maxBytes)}-byte cap`,
-          package: { name: ctx.name, version: ctx.version },
-        });
-      }
-      chunks.push(value);
-    }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    reader.releaseLock();
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-}
-
-function storeEntryDir(
-  storeDir: string,
-  name: string,
-  version: string,
-): string {
-  // `@scope/name` carries a slash that, taken naively, would push the
-  // package's contents one directory deeper than `loadTopLevel`
-  // expects. Mirror npm's on-disk shape: `node_modules/@scope/name/`,
-  // so a scoped entry's dir is `<store>/@scope/name/<version>/`.
-  return path.join(storeDir, name, version);
-}
-
-interface BuildStoreLayoutArgs {
-  readonly filtered: readonly ToolPackageManifestEntry[];
-  readonly storeDir: string;
-  readonly extractionByEntry: ReadonlyMap<string, string>;
-  readonly rangeResolution: RangeResolution;
-}
-
-/**
- * Build the per-instance `<store>/<name>/<version>/` tree for every
- * filtered manifest entry: hardlink each entry's source files in from
- * the cache extraction, then symlink each direct dep into the entry's
- * `node_modules/`. Hardlinks keep byte usage to one copy per integrity
- * per filesystem; symlinks at the `node_modules/` boundary let Node's
- * realpath-based resolver walk to the dep's own layout dir (with its
- * own `node_modules/`) so transitive resolution composes recursively.
- */
-async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
-  // First materialize every layout dir with its hardlinked contents.
-  // node_modules symlinks come after, so a dep's layout dir is already
-  // populated when its parent's symlink starts pointing at it.
-  for (const entry of args.filtered) {
-    const key = `${entry.name}@${entry.version}`;
-    const extraction = args.extractionByEntry.get(key);
-    if (extraction === undefined) {
-      throw new Error(
-        `internal: layout build for ${key} found no cache extraction`,
-      );
-    }
-    const layoutDir = storeEntryDir(args.storeDir, entry.name, entry.version);
-    await fs.mkdir(path.dirname(layoutDir), { recursive: true });
-    await hardlinkTree(extraction, layoutDir);
-  }
-
-  for (const entry of args.filtered) {
-    const key = `${entry.name}@${entry.version}`;
-    const extraction = args.extractionByEntry.get(key);
-    if (extraction === undefined) {
-      throw new Error(
-        `internal: layout link pass for ${key} found no cache extraction`,
-      );
-    }
-    const layoutDir = storeEntryDir(args.storeDir, entry.name, entry.version);
-    const deps = await readDirectDependencies(extraction, entry);
-
-    if (deps.length === 0) continue;
-    const modulesDir = path.join(layoutDir, "node_modules");
-    await fs.mkdir(modulesDir, { recursive: true });
-
-    for (const dep of deps) {
-      const pickedVersion = args.rangeResolution.lookup(dep.name, dep.range);
-      if (pickedVersion === null) {
-        if (dep.optional) {
-          logger.debug`optional.dropped.skipped: ${entry.name}@${entry.version} optional dep ${dep.name}@${dep.range} has no satisfying version in the closure (likely platform-filtered out)`;
-          continue;
-        }
-        throw new ToolLoaderError({
-          category: "package.entry.invalid",
-          message: `${entry.name}@${entry.version} depends on ${dep.name}@${dep.range} but the manifest closure has no satisfying version; the resolver was expected to include it`,
-          package: { name: entry.name, version: entry.version },
-        });
-      }
-      const target = storeEntryDir(args.storeDir, dep.name, pickedVersion);
-      const symlinkPath = path.join(modulesDir, dep.name);
-      // Scoped deps live one directory deep under `node_modules/`;
-      // ensure the scope dir exists before linking.
-      await fs.mkdir(path.dirname(symlinkPath), { recursive: true });
-      const relativeTarget = path.relative(path.dirname(symlinkPath), target);
-      try {
-        await fs.symlink(relativeTarget, symlinkPath, "dir");
-      } catch (err) {
-        if (!isEEXIST(err)) throw err;
-        const existing = await fs.readlink(symlinkPath);
-        if (existing !== relativeTarget) {
-          // A symlink collision inside the loader's per-package
-          // layout pass is a loader-layer invariant violation, not an
-          // unknown error shape — route it through the same structured
-          // envelope every other loader failure uses so atomic-apply
-          // surfaces it as `package.entry.invalid` instead of falling
-          // back to the unknown-shape catch-all (`factory.construct.
-          // failed`).
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `symlink collision at ${symlinkPath}: existing target ${existing} differs from ${relativeTarget}`,
-          });
-        }
-      }
-    }
-  }
-}
-
-interface ResolveRangesArgs {
-  readonly topLevel: readonly {
-    readonly name: string;
-    readonly version: string;
-  }[];
-  readonly filtered: readonly ToolPackageManifestEntry[];
-  readonly extractionByEntry: ReadonlyMap<string, string>;
-  readonly entriesByNameVersion: ReadonlyMap<string, ToolPackageManifestEntry>;
-}
-
-interface RangeResolution {
-  lookup(name: string, range: string): string | null;
-}
-
-/**
- * Walk the closure in BFS order from the top-level pins (in their
- * input order) and record, for each `(name, range)` first encountered,
- * the version chosen out of the closure. Subsequent edges with the
- * same `(name, range)` reuse the recorded pick instead of re-running
- * `semver.maxSatisfying` against the current closure shape.
- *
- * Mirrors the resolver's first-arrival-per-`(name, range)` semantics
- * on the loader side. Without this, two requirers with overlapping
- * ranges of the same dep could each pick a different version of that
- * dep — `maxSatisfying` is deterministic given its candidate set, but
- * the candidate set is the full closure for the name and a transitive
- * addition since the first arrival can shift the answer. Recording
- * the first arrival per range freezes the pick so every requirer in
- * the same equivalence class lands on the same version of the dep.
- *
- * Returns null for a `(name, range)` that has no satisfying entry in
- * the filtered closure; callers decide whether that is fatal (hard
- * dep) or skippable (optional dep).
- */
-async function resolveRangesByFirstArrival(
-  args: ResolveRangesArgs,
-): Promise<RangeResolution> {
-  const recorded = new Map<string, string | null>();
-  const visited = new Set<string>();
-  const filteredKeys = new Set(
-    args.filtered.map((e) => `${e.name}@${e.version}`),
-  );
-
-  function rangeKey(name: string, range: string): string {
-    return `${name}@${range}`;
-  }
-
-  function pickFromClosure(name: string, range: string): string | null {
-    const candidates: string[] = [];
-    for (const entry of args.entriesByNameVersion.values()) {
-      if (entry.name !== name) continue;
-      if (!filteredKeys.has(`${entry.name}@${entry.version}`)) continue;
-      candidates.push(entry.version);
-    }
-    if (candidates.length === 0) return null;
-    const valid = candidates.filter((v) => semver.valid(v) !== null);
-    if (valid.length > 0) {
-      const picked = semver.maxSatisfying(valid, range, {
-        includePrerelease: true,
-      });
-      if (picked !== null) return picked;
-    }
-    // Literal-version fallback: when a transitive dep's range is
-    // itself a concrete version string (e.g. `'1.0.0'` not
-    // `'^1.0.0'`), `maxSatisfying` rejects on prerelease semantics but
-    // the literal match is valid.
-    if (candidates.includes(range)) return range;
-    return null;
-  }
-
-  // BFS frontier carries the entry whose direct deps we are about to
-  // fan out on next. Seed with the top-level pins in pin order, mapped
-  // through the filtered closure so platform-filtered tops are skipped
-  // (their deps would not have layout dirs to link into).
-  const queue: ToolPackageManifestEntry[] = [];
-  for (const pin of args.topLevel) {
-    const key = `${pin.name}@${pin.version}`;
-    const entry = args.entriesByNameVersion.get(key);
-    if (entry === undefined) continue;
-    if (!filteredKeys.has(key)) continue;
-    if (visited.has(key)) continue;
-    visited.add(key);
-    queue.push(entry);
-  }
-
-  while (queue.length > 0) {
-    const entry = queue.shift();
-    if (entry === undefined) break;
-    const extraction = args.extractionByEntry.get(
-      `${entry.name}@${entry.version}`,
-    );
-    if (extraction === undefined) continue;
-    const deps = await readDirectDependencies(extraction, entry);
-    for (const dep of deps) {
-      const key = rangeKey(dep.name, dep.range);
-      // `recorded.get(key)` returning `null` is the "we picked this
-      // range against the closure and got nothing" cached answer.
-      // Caching the null is safe only because the closure is static
-      // across this loader pass — `entriesByNameVersion` does not
-      // grow underneath us. If a future change starts adding entries
-      // mid-walk (e.g. lazy fetches during BFS), the cached null
-      // would shadow the new candidates and produce a phantom miss;
-      // the cache key would need to be invalidated alongside the
-      // closure additions.
-      let picked = recorded.get(key);
-      if (picked === undefined) {
-        picked = pickFromClosure(dep.name, dep.range);
-        recorded.set(key, picked);
-      }
-      if (picked === null) continue;
-      const depKey = `${dep.name}@${picked}`;
-      if (visited.has(depKey)) continue;
-      visited.add(depKey);
-      const depEntry = args.entriesByNameVersion.get(depKey);
-      if (depEntry === undefined) continue;
-      queue.push(depEntry);
-    }
-  }
-
-  return {
-    lookup(name, range) {
-      const key = rangeKey(name, range);
-      if (recorded.has(key)) {
-        const picked = recorded.get(key);
-        return picked === undefined ? null : picked;
-      }
-      // The BFS only walks entries reachable from the top-level pins.
-      // A dep declared by an entry the BFS did not reach (e.g. a
-      // closure entry that no top-level chain ever required) is not
-      // pre-recorded; fall through to a fresh pick from the closure
-      // so the layout for such entries still resolves deterministically.
-      const fallback = pickFromClosure(name, range);
-      recorded.set(key, fallback);
-      return fallback;
-    },
-  };
-}
-
-async function hardlinkTree(
-  srcDir: string,
-  destDir: string,
-  extractionRoot: string = srcDir,
-): Promise<void> {
-  await fs.mkdir(destDir, { recursive: true });
-  const entries = await fs.readdir(srcDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const src = path.join(srcDir, entry.name);
-    const dest = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      await hardlinkTree(src, dest, extractionRoot);
-    } else if (entry.isFile()) {
-      try {
-        await fs.link(src, dest);
-      } catch (err) {
-        if (!isEEXIST(err)) throw err;
-      }
-    } else if (entry.isSymbolicLink()) {
-      // Preserve symlinks from the tarball verbatim; npm packages
-      // occasionally ship them and clobbering with a hardlink would
-      // change the file's identity.
-      //
-      // ISOMORPHIC-LAYOUT ASSUMPTION: writing the source-side
-      // relative target verbatim into the destination only works
-      // because the source extraction tree and the per-instance
-      // store tree mirror each other entry-for-entry — the symlink
-      // copies into the same shape, so the relative target still
-      // resolves to the same sibling in the destination. A future
-      // change that flattens, reshapes, or partially copies the
-      // extraction tree would invalidate every symlink it touched
-      // and would need to rewrite the targets instead of preserving
-      // them.
-      //
-      // Symlink targets originate from the tarball and cross the trust
-      // boundary into the sidecar. Resolve each target against the
-      // symlink's own directory and verify it lands inside the
-      // extraction root; a target that escapes would let a malicious
-      // tarball point at arbitrary sidecar-readable files via the
-      // layout dir's `node_modules` walk.
-      //
-      // The `tar` package version we use rejects absolute symlink
-      // targets during extraction, so by the time we observe a
-      // symlink here it is necessarily relative.
-      //
-      // The immediate target of `src` may itself be a directory whose
-      // own contents include another symlink. Resolving only the
-      // first hop with `path.resolve(path.dirname(src), target)`
-      // checks containment of the link's literal target — a chain
-      // whose first hop lands inside the extraction root but whose
-      // realpath ultimately escapes (target is a directory that
-      // itself contains an escaping symlink) would slip past.
-      // `fs.realpath` walks the full chain and returns the canonical
-      // absolute path; verify containment against that.
-      const target = await fs.readlink(src);
-      // Compare against the realpath of the extraction root so a chain
-      // whose canonical path lands under the same logical root, but
-      // via a symlinked tmpdir prefix (notably macOS where `/tmp`
-      // resolves to `/private/tmp`), is not incorrectly flagged as
-      // an escape.
-      let realExtractionRoot: string;
-      try {
-        realExtractionRoot = await fs.realpath(extractionRoot);
-      } catch (err) {
-        throw new ToolLoaderError({
-          category: "package.entry.invalid",
-          message: `tarball symlink ${src} → ${target}: extraction-root realpath failed: ${describeError(err)}`,
-        });
-      }
-      // `path.resolve` produces the absolute path the symlink would
-      // dereference to without following any links itself; realpath
-      // walks the chain. A dangling symlink — one whose target chain
-      // ENOENTs before the final inode — is harmless on disk (it
-      // points at a name that does not exist), so the containment
-      // check falls back to the literal resolved path in that case.
-      // Any other realpath error is fatal; we cannot prove containment
-      // and the package is rejected.
-      //
-      // The fallback anchors the literal resolution at `realpath(src
-      // dirname)` rather than the as-declared `dirname(src)`. The
-      // dirname already exists on disk (extraction wrote it); realpath
-      // walks any symlinks in the prefix so the comparison against
-      // `realExtractionRoot` is realpath-vs-realpath on both sides.
-      // Without this, platforms whose extraction-root prefix contains
-      // symlinks (notably macOS, where `/var/folders/...` resolves to
-      // `/private/var/folders/...`) would reject a properly-contained
-      // dangling link because the literal path keeps the as-declared
-      // prefix while the extraction root has been realpath'd.
-      let targetAbs: string;
-      try {
-        targetAbs = await fs.realpath(path.resolve(path.dirname(src), target));
-      } catch (err) {
-        if (!isENOENT(err)) {
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `tarball contains symlink ${src} → ${target} whose target could not be resolved: ${describeError(err)}`,
-          });
-        }
-        let srcDirReal: string;
-        try {
-          srcDirReal = await fs.realpath(path.dirname(src));
-        } catch (dirErr) {
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `tarball symlink ${src} → ${target}: dirname realpath failed during dangling-link fallback: ${describeError(dirErr)}`,
-          });
-        }
-        targetAbs = path.resolve(srcDirReal, target);
-      }
-      const realContainmentRoot = realExtractionRoot.endsWith(path.sep)
-        ? realExtractionRoot
-        : realExtractionRoot + path.sep;
-      if (
-        targetAbs !== realExtractionRoot &&
-        !targetAbs.startsWith(realContainmentRoot)
-      ) {
-        throw new ToolLoaderError({
-          category: "package.entry.invalid",
-          message: `tarball contains symlink ${src} → ${target} that escapes the package extraction directory`,
-        });
-      }
-      try {
-        await fs.symlink(target, dest);
-      } catch (err) {
-        if (!isEEXIST(err)) throw err;
-      }
-    }
-  }
-}
-
-interface DirectDep {
-  readonly name: string;
-  readonly range: string;
-  readonly optional: boolean;
-}
-
-/**
- * Read the package.json at `extractionDir/package.json` and return the
- * union of `dependencies` and `optionalDependencies`. Each entry is
- * tagged with whether it came from the optional field so the layout
- * pass can decide whether a missing closure entry is fatal (hard dep)
- * or skippable (the resolver's platform filter excluded it from the
- * closure for this host).
- *
- * `dependencies` shadows `optionalDependencies` when the same name
- * appears in both — npm treats the dep as required in that case.
- */
-async function readDirectDependencies(
-  extractionDir: string,
-  entry: { readonly name: string; readonly version: string },
-): Promise<DirectDep[]> {
-  const pkgJsonRaw = await fs.readFile(
-    path.join(extractionDir, "package.json"),
-    "utf8",
-  );
-  let pkg: unknown;
-  try {
-    pkg = JSON.parse(pkgJsonRaw);
-  } catch (err) {
-    throw new ToolLoaderError({
-      category: "package.entry.invalid",
-      message: `malformed package.json in ${entry.name}@${entry.version}: ${describeError(err)}`,
-      package: { name: entry.name, version: entry.version },
-    });
-  }
-  const byName = new Map<string, DirectDep>();
-  if (pkg === null || typeof pkg !== "object") return [];
-  const record: Record<string, unknown> = { ...pkg };
-  // A non-string range value (number, null, nested object, array) is
-  // a malformed package.json the npm CLI would also reject. Silently
-  // dropping it would let the closure resolver later reject the apply
-  // with a misleading `package.entry.invalid` for the wrong layer —
-  // the malformation is here, not in the closure walk. Surface it as
-  // `package.entry.invalid` directly so the operator-facing message
-  // points at the bad package.
-  //
-  // Iteration order matters: write optionalDependencies FIRST, then
-  // dependencies. The `dependencies` write overwrites the same key on
-  // collision, which is the npm-shadowing rule documented above.
-  // Reversing these two blocks would silently make the optional
-  // declaration win and demote a hard dependency to optional.
-  const optionalDeps = record["optionalDependencies"];
-  if (optionalDeps !== undefined) {
-    assertDepMapShape(optionalDeps, "optionalDependencies", entry);
-    if (optionalDeps !== null && typeof optionalDeps === "object") {
-      for (const [name, range] of Object.entries(optionalDeps)) {
-        if (typeof range !== "string") {
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `package.json field optionalDependencies["${name}"] in ${entry.name}@${entry.version} is ${typeof range}, expected a string range`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        byName.set(name, { name, range, optional: true });
-      }
-    }
-  }
-  const deps = record["dependencies"];
-  if (deps !== undefined) {
-    assertDepMapShape(deps, "dependencies", entry);
-    if (deps !== null && typeof deps === "object") {
-      for (const [name, range] of Object.entries(deps)) {
-        if (typeof range !== "string") {
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `package.json field dependencies["${name}"] in ${entry.name}@${entry.version} is ${typeof range}, expected a string range`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        byName.set(name, { name, range, optional: false });
-      }
-    }
-  }
-  return Array.from(byName.values());
-}
-
-/**
- * Reject array-shaped `dependencies` / `optionalDependencies`. The
- * surrounding code narrows with `typeof X === "object"`, which is true
- * for arrays — and `Object.entries(["foo"])` produces `[["0", "foo"]]`,
- * feeding nonsense package names into the closure resolver. Failure
- * downstream is loud but the message points at the wrong layer. Reject
- * at the package-json read with a clear, structured failure instead.
- */
-function assertDepMapShape(
-  value: unknown,
-  field: "dependencies" | "optionalDependencies",
-  entry: { readonly name: string; readonly version: string },
-): void {
-  if (Array.isArray(value)) {
-    throw new ToolLoaderError({
-      category: "package.entry.invalid",
-      message: `package.json#${field} for ${entry.name}@${entry.version} must be an object map of name→range, not an array`,
-      package: { name: entry.name, version: entry.version },
-    });
-  }
-}
-
-/**
- * npm's `os`/`cpu` filter language. Each list entry is either a bare
- * platform string (allow-list) or a `!`-prefixed string (block-list).
- *
- *   - Any `!`-prefixed entry switches the list into block-list mode:
- *     the entry matches the host iff no `!host` token appears. Bare
- *     entries in the same list are ignored (this matches npm's own
- *     `npm-install-checks` semantics, which keys "blocked" off the
- *     presence of any `!` token).
- *   - With no `!` token the list is an allow-list: the entry matches
- *     iff the host string appears verbatim.
- *
- * The plain `entries.includes(host)` check the loader used previously
- * treated `!win32` as a literal token, so `os: ["!win32"]` on linux
- * read as a never-matching allow-list and the package was incorrectly
- * filtered out.
- */
-function platformListMatches(
-  entries: readonly string[],
-  host: string,
-): boolean {
-  const hasNegation = entries.some((e) => e.startsWith("!"));
-  if (hasNegation) {
-    return !entries.includes(`!${host}`);
-  }
-  return entries.includes(host);
-}
-
-function isEEXIST(err: unknown): boolean {
-  if (err === null || typeof err !== "object") return false;
-  if (!("code" in err)) return false;
-  return (err as { code: unknown }).code === "EEXIST";
-}
-
-function isENOENT(err: unknown): boolean {
-  if (err === null || typeof err !== "object") return false;
-  if (!("code" in err)) return false;
-  return (err as { code: unknown }).code === "ENOENT";
 }
 
 function readInterchangeEntry(
@@ -1705,8 +935,4 @@ function isAnnotatedDirectorFactory(
   // load time rather than at first config-validation call.
   if (typeof configSchema !== "function") return false;
   return true;
-}
-
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

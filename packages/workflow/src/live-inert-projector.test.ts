@@ -1,0 +1,610 @@
+import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
+
+import {
+  defineAgent,
+  defineTool,
+  type AgentDefinition,
+  type AnnotatedToolFactory,
+  type InferencePreference,
+  type ToolDeclaration,
+} from "@intx/agent";
+import {
+  action,
+  awaitSignal,
+  childWorkflow,
+  defineWorkflow,
+  escalation,
+  gate,
+  loop,
+  map,
+  onTrigger,
+  sleep,
+  step,
+  type Primitive,
+  type WorkflowDefinition,
+} from "./definition/index";
+import {
+  WorkflowProjectionDefinition,
+  WorkflowStep,
+} from "@intx/types/sidecar";
+import {
+  canonicalJsonStringify,
+  computeWireDefinitionHash,
+} from "@intx/types/wire-definition-hash";
+
+import {
+  computeLiveDefinitionHash,
+  projectLiveToInert,
+  type InertStepStep,
+} from "./live-inert-projector";
+
+// ---------------------------------------------------------------------------
+// Corpus builders
+// ---------------------------------------------------------------------------
+
+function mkTool(
+  id: string,
+  definitions: readonly ToolDeclaration[],
+  requires: readonly string[] = [],
+): AnnotatedToolFactory {
+  return defineTool({
+    id,
+    requires,
+    definitions,
+    factory: () => ({
+      definitions: [],
+      run: async () => ({ callId: "c", content: "" }),
+    }),
+  });
+}
+
+const alphaTool = mkTool(
+  "test/alpha",
+  [{ name: "alpha_read" }, { name: "alpha_write", approval: "ask" }],
+  ["storage"],
+);
+const betaTool = mkTool("test/beta", [{ name: "beta_do" }]);
+// Same declarations as `alphaTool` plus one extra tool name.
+const alphaToolPlus = mkTool(
+  "test/alpha",
+  [
+    { name: "alpha_read" },
+    { name: "alpha_write", approval: "ask" },
+    { name: "alpha_extra" },
+  ],
+  ["storage"],
+);
+// Same as `alphaTool` but `alpha_write` no longer requires approval.
+const alphaToolNoApproval = mkTool(
+  "test/alpha",
+  [{ name: "alpha_read" }, { name: "alpha_write" }],
+  ["storage"],
+);
+// Same declarations as `betaTool` under a different factory id.
+const gammaTool = mkTool("test/gamma", [{ name: "beta_do" }]);
+
+function mkAgent(
+  factories: readonly AnnotatedToolFactory[],
+  capabilities: readonly string[],
+  sources: readonly InferencePreference[],
+): AgentDefinition {
+  return defineAgent({
+    id: "agent_main",
+    systemPrompt: "main agent",
+    tools: factories,
+    capabilities,
+    inference: { sources },
+  });
+}
+
+const OPENAI: InferencePreference = { provider: "openai", model: "gpt-4o" };
+
+const baseCapabilities = ["mail.send:acme.test"] as const;
+
+function mkSingleStep(agent: AgentDefinition): WorkflowDefinition {
+  return defineWorkflow({
+    id: "wf_main",
+    trigger: { type: "mail", to: "wf@acme.test" },
+    steps: { main: step({ agent }) },
+  });
+}
+
+/** The baseline workflow: one step, a two-factory agent, one model source. */
+function baseWorkflow(): WorkflowDefinition {
+  return mkSingleStep(
+    mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]),
+  );
+}
+
+function mainStepOf(definition: WorkflowDefinition): InertStepStep {
+  const projection = projectLiveToInert(definition);
+  const main = projection.steps["main"];
+  if (main === undefined || main.kind !== "step") {
+    throw new Error("expected a projected `step` at key `main`");
+  }
+  return main;
+}
+
+function toolNamesOf(step_: InertStepStep): string[] {
+  return step_.agent.toolFactories.flatMap((factory) =>
+    factory.definitions.map((declaration) => declaration.name),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Grant-surface reification
+// ---------------------------------------------------------------------------
+
+describe("grant-surface reification", () => {
+  test("projects a plain-data entry for every tool declaration name", () => {
+    const main = mainStepOf(baseWorkflow());
+    const names = toolNamesOf(main);
+    // Positive assertion on the names themselves. A "grant set is non-empty"
+    // check would pass on the toolFactories:[null] bug; naming each grant is
+    // the only assertion that catches a silently-lost grant surface.
+    expect(names).toContain("alpha_read");
+    expect(names).toContain("alpha_write");
+    expect(names).toContain("beta_do");
+  });
+
+  test("carries the approval flag per declaration", () => {
+    const main = mainStepOf(baseWorkflow());
+    const declarations = main.agent.toolFactories.flatMap(
+      (factory) => factory.definitions,
+    );
+    const alphaWrite = declarations.find((d) => d.name === "alpha_write");
+    const alphaRead = declarations.find((d) => d.name === "alpha_read");
+    expect(alphaWrite?.approval).toBe("ask");
+    expect(alphaRead?.approval).toBeUndefined();
+  });
+
+  test("N factories produce N non-null entries with their ids", () => {
+    const main = mainStepOf(baseWorkflow());
+    expect(main.agent.toolFactories).toHaveLength(2);
+    for (const factory of main.agent.toolFactories) {
+      expect(factory).not.toBeNull();
+      expect(typeof factory.id).toBe("string");
+      expect(factory.id.length).toBeGreaterThan(0);
+    }
+    expect(main.agent.toolFactories.map((f) => f.id)).toEqual([
+      "test/alpha",
+      "test/beta",
+    ]);
+  });
+
+  test("canonicalizes model sources to (provider, model)", () => {
+    const main = mainStepOf(baseWorkflow());
+    expect(main.agent.modelSources).toEqual([
+      { provider: "openai", model: "gpt-4o" },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hash sensitivity to the grant surface
+// ---------------------------------------------------------------------------
+
+describe("hash binds to the grant surface", () => {
+  test("hash(with-tools) != hash(with-tools-stripped)", async () => {
+    const withTools = baseWorkflow();
+    const stripped = mkSingleStep(mkAgent([], baseCapabilities, [OPENAI]));
+    expect(await computeLiveDefinitionHash(withTools)).not.toBe(
+      await computeLiveDefinitionHash(stripped),
+    );
+  });
+
+  // Each grant-surface mutation must move BOTH the projection bytes and the
+  // hash. Testing the projection change alone would not prove the hash is
+  // bound to the surface; testing the hash alone would not prove the surface
+  // is what moved it.
+  const baselineWorkflow = baseWorkflow();
+  const baselineBytes = canonicalJsonStringify(
+    projectLiveToInert(baselineWorkflow),
+  );
+
+  async function expectGrantMutation(
+    mutated: WorkflowDefinition,
+  ): Promise<void> {
+    const mutatedBytes = canonicalJsonStringify(projectLiveToInert(mutated));
+    expect(mutatedBytes).not.toBe(baselineBytes);
+    expect(await computeLiveDefinitionHash(mutated)).not.toBe(
+      await computeLiveDefinitionHash(baselineWorkflow),
+    );
+  }
+
+  test("adding a tool name changes projection and hash", async () => {
+    await expectGrantMutation(
+      mkSingleStep(
+        mkAgent([alphaToolPlus, betaTool], baseCapabilities, [OPENAI]),
+      ),
+    );
+  });
+
+  test("flipping an approval flag changes projection and hash", async () => {
+    await expectGrantMutation(
+      mkSingleStep(
+        mkAgent([alphaToolNoApproval, betaTool], baseCapabilities, [OPENAI]),
+      ),
+    );
+  });
+
+  test("swapping a factory id changes projection and hash", async () => {
+    await expectGrantMutation(
+      mkSingleStep(mkAgent([alphaTool, gammaTool], baseCapabilities, [OPENAI])),
+    );
+  });
+
+  test("adding a mail.send domain changes projection and hash", async () => {
+    await expectGrantMutation(
+      mkSingleStep(
+        mkAgent(
+          [alphaTool, betaTool],
+          ["mail.send:acme.test", "mail.send:beta.test"],
+          [OPENAI],
+        ),
+      ),
+    );
+  });
+
+  test("changing provider or model changes projection and hash", async () => {
+    await expectGrantMutation(
+      mkSingleStep(
+        mkAgent([alphaTool, betaTool], baseCapabilities, [
+          { provider: "anthropic", model: "claude-3-7-sonnet" },
+        ]),
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credentials excluded from the hashed preimage
+// ---------------------------------------------------------------------------
+
+describe("credential material is excluded", () => {
+  test("rotating per-source parameters is a hash no-op", async () => {
+    const v1 = mkSingleStep(
+      mkAgent([alphaTool], baseCapabilities, [
+        {
+          provider: "openai",
+          model: "gpt-4o",
+          parameters: { apiKeyRef: "v1" },
+        },
+      ]),
+    );
+    const v2 = mkSingleStep(
+      mkAgent([alphaTool], baseCapabilities, [
+        {
+          provider: "openai",
+          model: "gpt-4o",
+          parameters: { apiKeyRef: "v2" },
+        },
+      ]),
+    );
+    // A credential/parameter rotation must not trip re-verify: the projection
+    // keeps only the (provider, model) identity, so the two hash equal.
+    expect(await computeLiveDefinitionHash(v1)).toBe(
+      await computeLiveDefinitionHash(v2),
+    );
+    const main = mainStepOf(v1);
+    expect(main.agent.modelSources).toEqual([
+      { provider: "openai", model: "gpt-4o" },
+    ]);
+    expect(canonicalJsonStringify(projectLiveToInert(v1))).not.toContain(
+      "apiKeyRef",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No-op mutations do not move the hash
+// ---------------------------------------------------------------------------
+
+function reorderKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(reorderKeysDeep);
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value).reverse()) {
+      out[k] = reorderKeysDeep(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+describe("no-op mutations do not move the hash", () => {
+  test("key reordering leaves the hash unchanged", async () => {
+    const projection = projectLiveToInert(baseWorkflow());
+    const reordered = reorderKeysDeep(projection);
+    expect(await computeWireDefinitionHash(reordered)).toBe(
+      await computeWireDefinitionHash(projection),
+    );
+  });
+
+  test("whitespace differences leave the hash unchanged", async () => {
+    const projection = projectLiveToInert(baseWorkflow());
+    const spaced: unknown = JSON.parse(JSON.stringify(projection, null, 4));
+    expect(await computeWireDefinitionHash(spaced)).toBe(
+      await computeWireDefinitionHash(projection),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unreifiable / corrupt shapes fail loud
+// ---------------------------------------------------------------------------
+
+describe("unreifiable shapes throw", () => {
+  test("an unknown step kind throws rather than projecting to null", () => {
+    const raw: unknown = {
+      id: "wf_bad",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["s"],
+      steps: { s: { kind: "teleport", id: "s" } },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- deliberately-invalid input to exercise the fail-loud path
+    const bad = raw as WorkflowDefinition;
+    expect(() => projectLiveToInert(bad)).toThrow(/unknown kind/);
+  });
+
+  test("a tool factory that reified to null throws", () => {
+    const raw: unknown = {
+      id: "wf_nullfac",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["s"],
+      steps: {
+        s: {
+          kind: "step",
+          id: "s",
+          agent: {
+            id: "a",
+            systemPrompt: "p",
+            toolFactories: [null],
+            capabilities: [],
+            inference: { sources: [] },
+          },
+        },
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- simulates the JSON-round-tripped toolFactories:[null] grant-loss bug
+    const bad = raw as WorkflowDefinition;
+    expect(() => projectLiveToInert(bad)).toThrow(/not a function/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nested grant surfaces (loop body, inline onTrigger body)
+// ---------------------------------------------------------------------------
+
+describe("nested grant surfaces are reified", () => {
+  const loopWorkflow = defineWorkflow({
+    id: "wf_loop",
+    trigger: { type: "manual" },
+    steps: {
+      rework: loop({
+        body: defineWorkflow({
+          id: "body",
+          steps: {
+            work: step({
+              agent: mkAgent([alphaTool], baseCapabilities, [OPENAI]),
+            }),
+          },
+        }),
+        while: "loop.again",
+        carry: "loop.carry",
+        maxIterations: 3,
+        onExhausted: "done",
+      }),
+      done: step({
+        agent: mkAgent([], baseCapabilities, [OPENAI]),
+        after: ["rework"],
+      }),
+    },
+  });
+
+  const onTriggerWorkflow = defineWorkflow({
+    id: "wf_ontrigger",
+    trigger: { type: "manual" },
+    steps: {
+      sect: onTrigger({
+        on: { type: "mail", to: "sect@acme.test" },
+        body: defineWorkflow({
+          id: "sec",
+          steps: {
+            handle: step({
+              agent: mkAgent([betaTool], baseCapabilities, [OPENAI]),
+            }),
+          },
+        }),
+      }),
+    },
+  });
+
+  test("a loop body's tool names appear in the projection", () => {
+    const bytes = canonicalJsonStringify(projectLiveToInert(loopWorkflow));
+    expect(bytes).toContain("alpha_read");
+    expect(bytes).toContain("alpha_write");
+  });
+
+  test("an inline onTrigger body's tool names appear in the projection", () => {
+    const projection = projectLiveToInert(onTriggerWorkflow);
+    const sect = projection.steps["sect"];
+    if (sect === undefined || sect.kind !== "onTrigger") {
+      throw new Error("expected an onTrigger step");
+    }
+    if (!("inline" in sect.body)) {
+      throw new Error("expected an inline onTrigger body");
+    }
+    const bytes = canonicalJsonStringify(sect.body.inline);
+    expect(bytes).toContain("beta_do");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Serialize -> round-trip -> recompute hash is byte-identical
+// ---------------------------------------------------------------------------
+
+describe("child->hub determinism", () => {
+  const stateful = defineWorkflow({
+    id: "wf_state",
+    trigger: { type: "mail", to: "wf@acme.test" },
+    steps: {
+      main: step({
+        agent: mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]),
+      }),
+    },
+    state: { schema: type({ counter: "number" }) },
+  });
+
+  test("a JSON round-trip recomputes a byte-identical hash", async () => {
+    const projection = projectLiveToInert(stateful);
+    const roundTripped: unknown = JSON.parse(JSON.stringify(projection));
+    expect(canonicalJsonStringify(roundTripped)).toBe(
+      canonicalJsonStringify(projection),
+    );
+    expect(await computeWireDefinitionHash(roundTripped)).toBe(
+      await computeWireDefinitionHash(projection),
+    );
+  });
+
+  test("the projector output validates against the closed wire schema", () => {
+    const projection = projectLiveToInert(stateful);
+    expect(
+      WorkflowProjectionDefinition(projection) instanceof type.errors,
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compatibility guard: the closed schema accepts every real Primitive
+// ---------------------------------------------------------------------------
+
+describe("closed step schema accepts every real Primitive variant", () => {
+  // Build the corpus with `defineWorkflow` so the step shapes are exactly the
+  // ones the existing live-deploy path passes through the wire projection.
+  const toolAgent = mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]);
+  const plainAgent = mkAgent([], baseCapabilities, [OPENAI]);
+
+  const corpus: WorkflowDefinition[] = [
+    defineWorkflow({
+      id: "wf_stepmap",
+      trigger: { type: "mail", to: "sm@acme.test" },
+      steps: {
+        plan: step({ agent: toolAgent }),
+        fan: map({
+          over: { from: "steps.plan.output" },
+          step: step({ agent: toolAgent }),
+          after: ["plan"],
+        }),
+      },
+    }),
+    defineWorkflow({
+      id: "wf_gate",
+      trigger: { type: "manual" },
+      steps: {
+        decide: gate({
+          when: { from: "trigger.payload" },
+          then: "yes",
+          else: "no",
+        }),
+        yes: step({ agent: plainAgent, after: ["decide"] }),
+        no: step({ agent: plainAgent, after: ["decide"] }),
+      },
+    }),
+    defineWorkflow({
+      id: "wf_misc",
+      trigger: { type: "manual" },
+      steps: {
+        act: action({ handler: "do.thing" }),
+        wait: awaitSignal({ name: "go", after: ["act"] }),
+        nap: sleep({ duration: 1000, after: ["wait"] }),
+        child: childWorkflow({ definitionRef: "wf_other", after: ["nap"] }),
+        esc: escalation({ to: "ops@acme.test", after: ["child"] }),
+      },
+    }),
+    defineWorkflow({
+      id: "wf_loop",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: defineWorkflow({
+            id: "body",
+            steps: { work: step({ agent: toolAgent }) },
+          }),
+          while: "loop.again",
+          carry: "loop.carry",
+          maxIterations: 3,
+          onExhausted: "done",
+        }),
+        done: step({ agent: plainAgent, after: ["rework"] }),
+      },
+    }),
+    defineWorkflow({
+      id: "wf_ontrigger",
+      trigger: { type: "manual" },
+      steps: {
+        sect: onTrigger({
+          on: { type: "mail", to: "sect@acme.test" },
+          body: defineWorkflow({
+            id: "sec",
+            steps: { handle: step({ agent: toolAgent }) },
+          }),
+        }),
+      },
+    }),
+  ];
+
+  const seenKinds = new Set<Primitive["kind"]>();
+  for (const definition of corpus) {
+    for (const [stepId, primitive] of Object.entries(definition.steps)) {
+      seenKinds.add(primitive.kind);
+      test(`${definition.id}.${stepId} (${primitive.kind}) validates as a live primitive`, () => {
+        // The live primitive still carries function-valued tool factories;
+        // the closed schema must accept it because the live-deploy path ships
+        // exactly this shape (a JSON round-trip nulls the functions later).
+        const result = WorkflowStep(primitive);
+        // A validation failure here is a STOP-and-report blocker: the fix
+        // would require editing the shared producer `toWireWorkflowDefinition`,
+        // which this task must not touch.
+        expect(result instanceof type.errors).toBe(false);
+      });
+    }
+  }
+
+  test("every projected step validates against the closed schema", () => {
+    for (const definition of corpus) {
+      const projection = projectLiveToInert(definition);
+      for (const [stepId, projected] of Object.entries(projection.steps)) {
+        const result = WorkflowStep(projected);
+        if (result instanceof type.errors) {
+          throw new Error(
+            `projected step ${definition.id}.${stepId} failed the closed ` +
+              `schema: ${result.summary}`,
+          );
+        }
+      }
+      expect(
+        WorkflowProjectionDefinition(projection) instanceof type.errors,
+      ).toBe(false);
+    }
+  });
+
+  test("the corpus exercises all ten primitive kinds", () => {
+    const expectedKinds: Primitive["kind"][] = [
+      "action",
+      "awaitSignal",
+      "childWorkflow",
+      "escalation",
+      "gate",
+      "loop",
+      "map",
+      "onTrigger",
+      "sleep",
+      "step",
+    ];
+    expect([...seenKinds].sort()).toEqual(expectedKinds.sort());
+  });
+});

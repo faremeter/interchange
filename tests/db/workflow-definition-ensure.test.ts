@@ -10,6 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import { ensureWorkflowDefinitionForAsset } from "@intx/hub-sessions";
+import { resolveDefinitionIdForAsset } from "@intx/db";
 import { workflowDefinition, workflowDefinitionVersion } from "@intx/db/schema";
 import {
   createTestDb,
@@ -21,6 +22,8 @@ import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 const TENANT = "tnt";
 const CREATOR = "prn_creator";
 const ASSET = "ast_wf";
+const WIRE_A = "wirehash_a";
+const WIRE_B = "wirehash_b";
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "ensureWorkflowDefinitionForAsset (real DB)",
@@ -54,10 +57,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    test("projects a definition and version 1 over the asset", async () => {
+    test("projects a definition and version 1 over the selector", async () => {
       const { definitionId, created } = await ensureWorkflowDefinitionForAsset(
         h.db,
-        ASSET,
+        { assetId: ASSET, wireHash: WIRE_A },
       );
       expect(created).toBe(true);
 
@@ -70,6 +73,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(def?.id).toBe(definitionId);
       expect(def?.tenantId).toBe(TENANT);
       expect(def?.creatorPrincipalId).toBe(CREATOR);
+      expect(def?.wireHash).toBe(WIRE_A);
       expect(def?.name).toBe("wf-name");
       expect(def?.description).toBe("WF Display");
 
@@ -81,11 +85,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(versions[0]?.version).toBe("1");
     });
 
-    test("is idempotent: a second call returns the same id and adds no rows", async () => {
-      const first = await ensureWorkflowDefinitionForAsset(h.db, ASSET);
+    test("is idempotent: a second call with the same selector returns the same id and adds no rows", async () => {
+      const first = await ensureWorkflowDefinitionForAsset(h.db, {
+        assetId: ASSET,
+        wireHash: WIRE_A,
+      });
       expect(first.created).toBe(true);
 
-      const second = await ensureWorkflowDefinitionForAsset(h.db, ASSET);
+      const second = await ensureWorkflowDefinitionForAsset(h.db, {
+        assetId: ASSET,
+        wireHash: WIRE_A,
+      });
       expect(second.created).toBe(false);
       expect(second.definitionId).toBe(first.definitionId);
 
@@ -101,19 +111,72 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(versions).toHaveLength(1);
     });
 
+    test("two definitions share one asset under distinct wire hashes and resolve independently", async () => {
+      const a = await ensureWorkflowDefinitionForAsset(h.db, {
+        assetId: ASSET,
+        wireHash: WIRE_A,
+      });
+      const b = await ensureWorkflowDefinitionForAsset(h.db, {
+        assetId: ASSET,
+        wireHash: WIRE_B,
+      });
+      expect(a.created).toBe(true);
+      expect(b.created).toBe(true);
+      expect(a.definitionId).not.toBe(b.definitionId);
+
+      // Both persist against the one asset.
+      const defs = await h.db
+        .select()
+        .from(workflowDefinition)
+        .where(eq(workflowDefinition.assetId, ASSET));
+      expect(defs).toHaveLength(2);
+
+      // Each selector resolves to its own definition id, not the other's.
+      expect(
+        await resolveDefinitionIdForAsset(h.db, {
+          assetId: ASSET,
+          wireHash: WIRE_A,
+        }),
+      ).toBe(a.definitionId);
+      expect(
+        await resolveDefinitionIdForAsset(h.db, {
+          assetId: ASSET,
+          wireHash: WIRE_B,
+        }),
+      ).toBe(b.definitionId);
+
+      // Each definition carries its own version "1".
+      for (const definitionId of [a.definitionId, b.definitionId]) {
+        const versions = await h.db
+          .select()
+          .from(workflowDefinitionVersion)
+          .where(eq(workflowDefinitionVersion.definitionId, definitionId));
+        expect(versions).toHaveLength(1);
+        expect(versions[0]?.version).toBe("1");
+      }
+    });
+
     test("throws when the asset does not exist", async () => {
       await expect(
-        ensureWorkflowDefinitionForAsset(h.db, "ast_missing"),
+        ensureWorkflowDefinitionForAsset(h.db, {
+          assetId: "ast_missing",
+          wireHash: WIRE_A,
+        }),
       ).rejects.toThrow(/no asset found/);
     });
 
-    test("concurrent calls for one asset yield a single definition and version", async () => {
+    test("concurrent calls for one selector yield a single definition and version", async () => {
       // Concurrency safety is the whole reason for the conflict-and-read-back
-      // path: several deploys of the same asset can race. Fire many at once and
-      // assert exactly one definition, one version, and one winner.
+      // path: several deploys of the same selector can race. Fire many at once
+      // and assert exactly one definition, one version, and one winner.
       const results = await Promise.all(
         Array.from({ length: 8 }, () =>
-          h.db.transaction((tx) => ensureWorkflowDefinitionForAsset(tx, ASSET)),
+          h.db.transaction((tx) =>
+            ensureWorkflowDefinitionForAsset(tx, {
+              assetId: ASSET,
+              wireHash: WIRE_A,
+            }),
+          ),
         ),
       );
 

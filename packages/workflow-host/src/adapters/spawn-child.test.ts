@@ -28,6 +28,12 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 let signingKey: KeyPair;
 
+// This adapter is the TERMINAL childWorkflow resolver: it resolves a
+// separately-approved workflow asset the parent holds no hash for, so it
+// reads + envelope-validates without a re-verify gate. There is no
+// approved-hash parameter to supply. (The onTrigger-body re-verify gate lives
+// on the suspendable adapter and is covered in `reverify.test.ts`.)
+
 beforeAll(async () => {
   signingKey = await generateKeyPair();
 });

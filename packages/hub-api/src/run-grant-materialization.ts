@@ -230,20 +230,46 @@ export type StageRunGrantsResult =
     };
 
 /**
- * Derive and stage a run's grant rows from its definition: the walk's
- * runtime `tool:`/`effect:` grants plus the resolved declared
- * requirements. Returns the staged rows and their wire projection, or a
- * rejection when a declared requirement's authority is insufficient. No
- * database write happens here -- `commitRunGrants` performs the canonical
- * reservation before a caller exposes those grants to a delivery transport.
+ * The capability walk for a workflow definition: the deploy-approved lift the
+ * run's runtime `tool:`/`effect:` grants project from. Isolated from
+ * `stageRunGrants` so a caller that walks a definition once can bind the walk
+ * to a stable identity and reuse it, rather than re-walking on every run (the
+ * mail-triggered path does exactly this).
  */
-export async function stageRunGrants(
-  args: StageRunGrantsArgs,
-): Promise<StageRunGrantsResult> {
+export function buildCapabilityWalk(
+  definition: WorkflowDefinition,
+): CapabilityWalkResult {
   const directorRegistry = createDefaultDirectorRegistry();
-  const walk = walkCapabilities(args.definition, directorRegistry);
+  return walkCapabilities(definition, directorRegistry);
+}
+
+export type StageRunGrantsFromWalkArgs = Omit<
+  StageRunGrantsArgs,
+  "definition"
+> & {
+  /**
+   * An already-computed capability walk. `stageRunGrants` supplies a fresh
+   * walk of a live definition; the mail-triggered path supplies the walk it
+   * froze at the deployment's approved identity, so no re-walk happens per run.
+   */
+  walk: CapabilityWalkResult;
+};
+
+/**
+ * Stage a run's grant rows from an ALREADY-COMPUTED capability walk plus the
+ * resolved declared requirements. This is the walk-free tail shared by
+ * `stageRunGrants` (which walks a live definition then delegates here) and the
+ * mail-triggered materializer (which passes a walk cached at the deployment's
+ * approved identity). Returns the staged rows and their wire projection, or a
+ * rejection when a declared requirement's authority is insufficient. No
+ * database write happens here -- `commitRunGrants` performs it once the caller
+ * has accepted delivery.
+ */
+export async function stageRunGrantsFromWalk(
+  args: StageRunGrantsFromWalkArgs,
+): Promise<StageRunGrantsResult> {
   const runtimeGrantRows = deriveRunRuntimeGrantRows(
-    walk,
+    args.walk,
     args.tenantId,
     args.runPrincipalId,
     args.now,
@@ -265,6 +291,27 @@ export async function stageRunGrants(
   const grantRows = [...runtimeGrantRows, ...materialization.grantRows];
   const stepGrants = grantRows.map((g) => runGrantToWire(g));
   return { ok: true, grantRows, stepGrants };
+}
+
+/**
+ * Derive and stage a run's grant rows from its definition: the walk's
+ * runtime `tool:`/`effect:` grants plus the resolved declared
+ * requirements. Walks the live definition and delegates to
+ * `stageRunGrantsFromWalk`. No database write happens here --
+ * `commitRunGrants` performs it once the caller has accepted delivery.
+ */
+export async function stageRunGrants(
+  args: StageRunGrantsArgs,
+): Promise<StageRunGrantsResult> {
+  return stageRunGrantsFromWalk({
+    walk: buildCapabilityWalk(args.definition),
+    tenantId: args.tenantId,
+    runPrincipalId: args.runPrincipalId,
+    now: args.now,
+    invokerGrants: args.invokerGrants,
+    creatorGrants: args.creatorGrants,
+    grantRequirements: args.grantRequirements,
+  });
 }
 
 /**
@@ -512,6 +559,18 @@ export type MailTriggeredRunGrantsDeps = {
 };
 
 /**
+ * A deployment's deploy-approved grant basis: the frozen capability walk the
+ * run's runtime `tool:`/`effect:` grants project from, and the creator-sourced
+ * grant requirements resolved against it. Both are pure functions of the
+ * approved definition content, so they are computed once per deployment and
+ * cached; nothing here depends on a live re-read of the asset blob.
+ */
+type FrozenRunGrantBasis = {
+  readonly walk: CapabilityWalkResult;
+  readonly creatorRequirements: readonly GrantRequirement[];
+};
+
+/**
  * Build the mail-triggered run-grants materializer the sidecar router's
  * `mail.outbound` handler invokes for each workflow-deployment recipient.
  *
@@ -535,6 +594,18 @@ export function createMailTriggeredRunGrantsMaterializer(
   agentAddress: string;
   runId: string;
 }) => Promise<MailTriggeredRunGrantsResult> {
+  // Closure-level cache of each deployment's deploy-approved grant basis, keyed
+  // by the workflow definition's identity. A definition id is content-addressed
+  // -- keyed by `(assetId, wireHash)`, frozen at approval -- and the anchor run
+  // carries that id, so the key names the APPROVED definition content, not the
+  // mutable asset blob behind it. The first trigger of a deployment hydrates
+  // and walks the definition once and freezes the result here; every later
+  // trigger consumes the frozen basis WITHOUT re-reading the asset blob or
+  // re-walking it. This closes the mutated-asset TOCTOU: rewriting the blob
+  // under a stable asset id cannot change a run's grants, because runs bind to
+  // the frozen approved walk, never a live re-hydrate.
+  const frozenBasisByDefinition = new Map<string, FrozenRunGrantBasis>();
+
   return async ({ agentAddress, runId }) => {
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
@@ -581,6 +652,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     const definitionAssetId = anchor.definitionAssetId;
     const tenantId = anchor.tenantId;
     const deploymentId = anchor.deploymentId;
+    const definitionId = anchor.definitionId;
 
     const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
     if (committed !== null) {
@@ -590,23 +662,40 @@ export function createMailTriggeredRunGrantsMaterializer(
       };
     }
 
-    const definition = await hydrateDefinition(
-      deps.assetService,
-      definitionAssetId,
-    );
-
-    const parsedRequirements = parseGrantRequirements(definition);
-    if (!parsedRequirements.ok) {
-      throw new Error(
-        `mail-triggered run ${runId} for ${agentAddress}: ${parsedRequirements.message}`,
+    let basis = frozenBasisByDefinition.get(definitionId);
+    if (basis === undefined) {
+      // First trigger of this deployment: read and walk the approved
+      // definition exactly once, then freeze the result. Neither the read nor
+      // the walk runs again for this definition id.
+      const definition = await hydrateDefinition(
+        deps.assetService,
+        definitionAssetId,
       );
+
+      const parsedRequirements = parseGrantRequirements(definition);
+      if (!parsedRequirements.ok) {
+        throw new Error(
+          `mail-triggered run ${runId} for ${agentAddress}: ${parsedRequirements.message}`,
+        );
+      }
+      // Invoker-sourced requirements are not materialized on the mail path:
+      // filter them out BEFORE staging rather than teaching the resolver a
+      // skip mode, so the external route keeps resolving invoker grants.
+      const creatorRequirements = parsedRequirements.requirements.filter(
+        (r) => r.source !== "invoker",
+      );
+      basis = {
+        walk: buildCapabilityWalk(definition),
+        creatorRequirements,
+      };
+      frozenBasisByDefinition.set(definitionId, basis);
     }
-    // Invoker-sourced requirements are not materialized on the mail path:
-    // filter them out BEFORE staging rather than teaching the resolver a
-    // skip mode, so the external route keeps resolving invoker grants.
-    const creatorRequirements = parsedRequirements.requirements.filter(
-      (r) => r.source !== "invoker",
-    );
+
+    // Creator authority is resolved LIVE per run: the definition's grant SHAPE
+    // is frozen above, but which grants the creator currently holds is not part
+    // of that shape and can change between triggers. This reads the asset row's
+    // creator column and the creator's grants -- not the definition blob -- so
+    // it is not the re-read the frozen basis eliminates.
     const creatorPrincipalId = await loadAssetCreatorPrincipalId(
       deps.db,
       tenantId,
@@ -616,7 +705,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       deps.grantStore,
       tenantId,
       creatorPrincipalId,
-      creatorRequirements,
+      basis.creatorRequirements,
     );
 
     // Derive the run principal id from `(tenantId, runId)`. The runId is the
@@ -624,14 +713,14 @@ export function createMailTriggeredRunGrantsMaterializer(
     // principal and canonical grant snapshot.
     const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
     const now = new Date();
-    const staged = await stageRunGrants({
-      definition,
+    const staged = await stageRunGrantsFromWalk({
+      walk: basis.walk,
       tenantId: tenantId,
       runPrincipalId,
       now,
       invokerGrants: [],
       creatorGrants,
-      grantRequirements: creatorRequirements,
+      grantRequirements: basis.creatorRequirements,
     });
     if (!staged.ok) {
       return {

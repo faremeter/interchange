@@ -32,6 +32,7 @@ import {
   type RunGrantsFrame,
   type SignalCorrelationRegisterFrame,
   type CredentialDelivery,
+  type WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
 import type {
   ConnectorThreadState,
@@ -39,6 +40,8 @@ import type {
   InferenceSource,
 } from "@intx/types/runtime";
 import type { SidecarCredentialIdentity } from "../sidecar-allocation/contracts";
+import type { ToolPackageManifest } from "@intx/types/tool-packages";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   createSidecarEmitter,
   type SidecarEventEmitter,
@@ -134,6 +137,32 @@ export type SendPackOptions = {
   repoId?: RepoId;
 };
 
+/**
+ * Everything a `sendProbe` caller supplies to populate the outbound
+ * `workflow.probe.request` frame: where the definition's bytes come from, the
+ * frozen dependency closure the hub already resolved, and the
+ * `interchange.workflow` entry-module path whose evaluation produces the
+ * `WorkflowDefinition`. The `requestId` is minted inside `sendProbe`, not
+ * supplied here.
+ */
+export type SendProbeArgs = {
+  source: WorkflowDefinitionSource;
+  closure: ToolPackageManifest;
+  entry: string;
+};
+
+/**
+ * The payload a `sendProbe` promise resolves with, lifted off the sidecar's
+ * `workflow.probe.result` frame: the inert needs-surface projection of the
+ * probed workflow, the inert grant set derived from it, and the projection's
+ * content hash.
+ */
+export type WorkflowProbeResult = {
+  projection: WorkflowProjectionDefinition;
+  grants: string[];
+  wireHash: string;
+};
+
 export type SidecarRouter = {
   handleOpen(ws: WsHandle): void;
   handleMessage(ws: WsHandle, data: string): void;
@@ -192,6 +221,23 @@ export type SidecarRouter = {
     config: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }>;
+  /**
+   * Ask a connected sidecar to probe a code-sourced workflow WITHOUT
+   * deploying it, and resolve with the sidecar's inert answer (needs-surface
+   * projection + grant set + content hash). Selects any connected sidecar via
+   * `findSidecarForNewAgent` -- the probe runs in the sidecar's pre-deploy
+   * state, so it needs no deployed agent and enters no address map -- and
+   * correlates the round-trip purely by a minted `requestId`. Rejects if no
+   * sidecar is connected, if the probe times out (`probeTimeoutMs`), if the
+   * sidecar answers `workflow.probe.error`, or if the sidecar disconnects with
+   * the probe in flight.
+   *
+   * Optional so existing `SidecarRouter` consumers -- and their test doubles
+   * -- that never probe need not implement it, mirroring `DeployRouter`'s
+   * optional `undeploy`. The concrete `createSidecarRouter` always provides
+   * it.
+   */
+  sendProbe?(args: SendProbeArgs): Promise<WorkflowProbeResult>;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
   sendSourcesUpdate(
     agentAddress: string,
@@ -404,6 +450,11 @@ export type SidecarRouterConfig = {
     use: "registration" | "readiness" | "routing",
   ) => Promise<boolean>;
   challengeTimeoutMs?: number;
+  /** Timeout for a `sendProbe` round-trip. A probe materializes a workflow's
+   * dependency closure and evaluates it on the sidecar, so it can run longer
+   * than a routine `sendRequest`; it gets its own timeout rather than sharing
+   * the request timeout. */
+  probeTimeoutMs?: number;
   disconnectQueueMaxSize?: number;
   disconnectQueueTTLMs?: number;
   pingTimeoutMs?: number;
@@ -435,6 +486,10 @@ export type WsHandle = {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CHALLENGE_TIMEOUT_MS = 30_000;
+// A probe fetches a workflow's dependency closure from a registry and
+// evaluates it on the sidecar, so it runs longer than a routine request; its
+// default timeout is correspondingly wider than DEFAULT_REQUEST_TIMEOUT_MS.
+export const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
 const DEFAULT_DISCONNECT_QUEUE_MAX_SIZE = 100;
 const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PING_TIMEOUT_MS = 60_000;
@@ -447,6 +502,7 @@ export function createSidecarRouter(
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     challengeTimeoutMs = DEFAULT_CHALLENGE_TIMEOUT_MS,
+    probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
     hubPublicKey: hubPublicKeyHex,
     authenticateSidecar,
     validateSidecarIdentity = async () => true,
@@ -582,6 +638,21 @@ export function createSidecarRouter(
     timer: ReturnType<typeof setTimeout>;
   };
   const pendingUndeploys = new Map<string, PendingUndeploy>();
+
+  // requestId → pending workflow probe (resolved by workflow.probe.result,
+  // rejected by workflow.probe.error). Result-carrying, unlike `pending`
+  // (which resolves void): a probe returns the sidecar's inert projection +
+  // grant set + wire hash. Keyed on requestId alone -- the probe runs in the
+  // sidecar's pre-deploy state and enters no address map, so `handleClose`'s
+  // ws-keyed sweep is its ONLY disconnect cleanup.
+  type PendingProbe = {
+    requestId: string;
+    ws: WsHandle;
+    resolve(result: WorkflowProbeResult): void;
+    reject(error: string): void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const pendingProbes = new Map<string, PendingProbe>();
 
   // Receives agent-state packs pushed from sidecars. The wire frames
   // (`repo.pack.push` / `repo.pack.done`) are shared with the
@@ -951,6 +1022,8 @@ export function createSidecarRouter(
       case "agent.undeploy.ack":
       case "repo.pack.ack":
       case "repo.pack.reject":
+      case "workflow.probe.result":
+      case "workflow.probe.error":
         return true;
       case "register":
       case "reconnect":
@@ -1093,6 +1166,16 @@ export function createSidecarRouter(
         return;
       case "repo.pack.done":
         return handlePackDone(ws, frame);
+      case "workflow.probe.result":
+        resolveProbe(frame.requestId, {
+          projection: frame.projection,
+          grants: frame.grants,
+          wireHash: frame.wireHash,
+        });
+        return;
+      case "workflow.probe.error":
+        rejectProbe(frame.requestId, frame.error);
+        return;
       default:
         return assertNever(frame);
     }
@@ -2068,6 +2151,17 @@ export function createSidecarRouter(
       req.reject(`Sidecar ${conn.sidecarId} disconnected`);
     }
 
+    // Reject any in-flight probes sent to this sidecar. A probe never enters
+    // the address maps, so this ws-keyed sweep is its ONLY disconnect cleanup:
+    // without it a probe whose sidecar drops mid-flight would hang until its
+    // own timeout instead of failing fast on the disconnect.
+    for (const [requestId, probe] of pendingProbes) {
+      if (probe.ws !== ws) continue;
+      clearTimeout(probe.timer);
+      pendingProbes.delete(requestId);
+      probe.reject(`Sidecar ${conn.sidecarId} disconnected`);
+    }
+
     // Cancel any in-flight inbound pack transfers from this sidecar
     // across both receivers. The two receivers track their own in-
     // flight transferIds, so a pending workflow-run transfer for an
@@ -2216,6 +2310,22 @@ export function createSidecarRouter(
     if (req.ws !== ws) return;
     clearTimeout(req.timer);
     pendingUndeploys.delete(agentAddress);
+    req.reject(error);
+  }
+
+  function resolveProbe(requestId: string, result: WorkflowProbeResult): void {
+    const req = pendingProbes.get(requestId);
+    if (req === undefined) return;
+    clearTimeout(req.timer);
+    pendingProbes.delete(requestId);
+    req.resolve(result);
+  }
+
+  function rejectProbe(requestId: string, error: string): void {
+    const req = pendingProbes.get(requestId);
+    if (req === undefined) return;
+    clearTimeout(req.timer);
+    pendingProbes.delete(requestId);
     req.reject(error);
   }
 
@@ -3185,6 +3295,55 @@ export function createSidecarRouter(
     return undefined;
   }
 
+  function sendProbe(args: SendProbeArgs): Promise<WorkflowProbeResult> {
+    // Select any connected sidecar, exactly as the pre-deploy window does.
+    // A probe runs in the sidecar's pre-deploy state, so it targets a
+    // connection, not an address -- `findSidecarForNewAgent` ignores its
+    // argument and returns the first connection. Throw immediately on an empty
+    // registry rather than register a probe that could only time out.
+    const ws = findSidecarForNewAgent("");
+    if (ws === undefined) {
+      return Promise.reject(
+        new Error("No sidecar available to probe workflow"),
+      );
+    }
+    const conn = connections.get(ws);
+    if (conn === undefined) {
+      return Promise.reject(
+        new Error("No sidecar connected to probe workflow"),
+      );
+    }
+
+    const requestId = nextRequestId();
+
+    return new Promise<WorkflowProbeResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingProbes.delete(requestId);
+        reject(
+          new Error(`Probe ${requestId} timed out after ${probeTimeoutMs}ms`),
+        );
+      }, probeTimeoutMs);
+
+      pendingProbes.set(requestId, {
+        requestId,
+        ws,
+        resolve,
+        reject(error: string) {
+          reject(new Error(error));
+        },
+        timer,
+      });
+
+      conn.send({
+        type: "workflow.probe.request",
+        requestId,
+        source: args.source,
+        closure: args.closure,
+        entry: args.entry,
+      });
+    });
+  }
+
   function sendAgentUndeploy(
     agentAddress: string,
     reason: string,
@@ -3408,6 +3567,7 @@ export function createSidecarRouter(
     routeMail,
     sendRunGrants,
     sendAgentDeploy,
+    sendProbe,
     sendAgentUndeploy,
     sendSourcesUpdate,
     sendCredentialsUpdate,

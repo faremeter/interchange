@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
+import { type } from "arktype";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,10 @@ import type {
   MessageAttachment,
 } from "@intx/types/runtime";
 import { base64Decode, hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { projectLiveToInert } from "@intx/workflow";
+import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { extractAttachments } from "@intx/mime";
 import {
   asset as assetTable,
@@ -1821,6 +1826,7 @@ describe("sendMultiStepDeployFrame", () => {
     };
 
     const result = await sendMultiStepDeployFrame({
+      lineage: "live-authored",
       sidecarRouter: mockRouter,
       agentAddress: "ins_dep_abc@workflow.interchange",
       config,
@@ -1841,6 +1847,343 @@ describe("sendMultiStepDeployFrame", () => {
       "plan",
     ]);
     expect(sent.sources).toEqual(sources);
+    // The hub stamps the approved wire hash on every frame it builds: it is the
+    // hash of the wire projection the frame carries, so the sidecar can feed it
+    // to the child as DEFINITION_HASH without recomputing.
+    expect(sent.approvedWireHash).toBe(
+      await computeWireDefinitionHash(sent.definition),
+    );
+  });
+
+  test("source-ref arm carries the gate-frozen hash and inert projection verbatim", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { sendMultiStepDeployFrame } = await import("./session-service");
+    const { defineWorkflow, step } = await import("@intx/workflow/definition");
+    const { defineAgent } = await import("@intx/agent");
+    const stubAgent = defineAgent({
+      id: "stub",
+      systemPrompt: "you stub",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_sourced",
+      trigger: { type: "manual" },
+      steps: { only: step({ agent: stubAgent, after: [] }) },
+    });
+    const sources = {
+      only: [
+        {
+          id: "src-only",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          apiKey: "secret-only",
+          model: "mock-model",
+        },
+      ],
+    };
+    const config: HarnessConfig = {
+      sessionId: "ses-sourced",
+      agentId: "ins_dep_src",
+      tenantId: "tenant-1",
+      principalId: "prin-src",
+      agentAddress: "ins_dep_src@workflow.interchange",
+      systemPrompt: "deployment-level",
+      tools: [],
+      grants: [],
+      sources: Object.values(sources).flat(),
+      defaultSource: "src-only",
+    };
+
+    const source = { kind: "registry", registry: "npm" } as const;
+    const closure: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [],
+      entries: [],
+    };
+
+    // The gate/freeze layer projects the live definition to its inert
+    // needs-surface and hashes THAT; the sidecar probe serializes the inert
+    // projection to the wire and the hub validates it back to a closed
+    // `WorkflowProjectionDefinition`. Mirror that round-trip so the source-ref
+    // arm receives exactly the probe-result shape it gets in production, and
+    // compute the gate-frozen hash the same way the gate does.
+    const inertProjection = projectLiveToInert(definition);
+    const frozenWireHash = await computeWireDefinitionHash(inertProjection);
+    const roundTripped: unknown = JSON.parse(JSON.stringify(inertProjection));
+    const projection = WorkflowProjectionDefinition(roundTripped);
+    if (projection instanceof type.errors) {
+      throw new Error(
+        `inert projection failed WorkflowProjectionDefinition validation: ${projection.summary}`,
+      );
+    }
+
+    await sendMultiStepDeployFrame({
+      lineage: "source-ref",
+      sidecarRouter: mockRouter,
+      agentAddress: "ins_dep_src@workflow.interchange",
+      config,
+      sources,
+      projection,
+      approvedWireHash: frozenWireHash,
+      sourceRef: { source, closure },
+    });
+
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    // The gate-frozen hash rides the frame VERBATIM -- the source-ref arm never
+    // recomputes it, so the child's re-verify over the inert projection matches.
+    expect(sent.approvedWireHash).toBe(frozenWireHash);
+    // The inert projection itself is carried on the frame's `definition`
+    // unchanged -- no live wire lineage leaks onto the frame.
+    expect(sent.definition).toEqual(projection);
+    // The source-ref pin rides the frame as one co-required object.
+    expect(sent.sourceRef).toEqual({ source, closure });
+  });
+
+  test("a live definition and its inert projection hash differently so binding to the inert projection is load-bearing", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { sendMultiStepDeployFrame } = await import("./session-service");
+    const { defineWorkflow, step } = await import("@intx/workflow/definition");
+    const { defineAgent } = await import("@intx/agent");
+    const stubAgent = defineAgent({
+      id: "stub",
+      systemPrompt: "you stub",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_divergent",
+      trigger: { type: "manual" },
+      steps: { only: step({ agent: stubAgent, after: [] }) },
+    });
+    const sources = {
+      only: [
+        {
+          id: "src-only",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          apiKey: "secret-only",
+          model: "mock-model",
+        },
+      ],
+    };
+    const config: HarnessConfig = {
+      sessionId: "ses-divergent",
+      agentId: "ins_dep_div",
+      tenantId: "tenant-1",
+      principalId: "prin-div",
+      agentAddress: "ins_dep_div@workflow.interchange",
+      systemPrompt: "deployment-level",
+      tools: [],
+      grants: [],
+      sources: Object.values(sources).flat(),
+      defaultSource: "src-only",
+    };
+
+    // The live-authored arm stamps the hash of the LIVE wire lineage.
+    await sendMultiStepDeployFrame({
+      lineage: "live-authored",
+      sidecarRouter: mockRouter,
+      agentAddress: "ins_dep_div@workflow.interchange",
+      config,
+      definition,
+      sources,
+    });
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    const liveWireHash = sent.approvedWireHash;
+    if (liveWireHash === undefined) {
+      throw new Error("live-authored arm did not stamp a wire hash");
+    }
+
+    // The gate freezes over the INERT projection. The live wire lineage and the
+    // inert projection diverge (the live agent carries `inference`, the inert
+    // projection carries `modelSources`), so a source-ref deploy MUST bind to
+    // the inert hash -- binding to the live recompute would fail the child
+    // re-verify closed.
+    const inertHash = await computeWireDefinitionHash(
+      projectLiveToInert(definition),
+    );
+    expect(liveWireHash).not.toBe(inertHash);
+  });
+});
+
+describe("deployCodeSourcedWorkflow", () => {
+  // Reproduce the approve output the composed entrypoint consumes: run the real
+  // gate/freeze over an inert projection (as `installAndApproveWorkflowDefinition`
+  // does after a probe) and pair its ok-arm with the frozen closure the pin
+  // resolved to. The gate owns the frozen hash and the projection it hashed; the
+  // closure is a passthrough. The entrypoint must build a source-ref frame that
+  // binds to exactly these values with no recompute or re-resolution.
+  async function makeApproveOutput(grants: string[]) {
+    const { defineWorkflow, step } = await import("@intx/workflow/definition");
+    const { defineAgent } = await import("@intx/agent");
+    const { gateAndFreezeProbeResult } = await import("./workflow-probe-gate");
+    const stubAgent = defineAgent({
+      id: "stub",
+      systemPrompt: "you stub",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_composed",
+      trigger: { type: "manual" },
+      steps: { only: step({ agent: stubAgent, after: [] }) },
+    });
+    // The gate hashes the inert projection the sidecar ships back; mirror the
+    // probe's serialize/validate round-trip so the approve output carries the
+    // exact closed `WorkflowProjectionDefinition` shape production hands it.
+    const roundTripped: unknown = JSON.parse(
+      JSON.stringify(projectLiveToInert(definition)),
+    );
+    const projection = WorkflowProjectionDefinition(roundTripped);
+    if (projection instanceof type.errors) {
+      throw new Error(
+        `inert projection failed WorkflowProjectionDefinition validation: ${projection.summary}`,
+      );
+    }
+    const wireHash = await computeWireDefinitionHash(projection);
+    const approval = await gateAndFreezeProbeResult({
+      assetId: "asset-composed",
+      probeResult: { projection, grants, wireHash },
+      approvals: new Set(grants),
+      persist: async () => ({ definitionId: "def-composed" }),
+    });
+    const closure: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [],
+      entries: [],
+    };
+    return { approval, projection, closure, wireHash };
+  }
+
+  const SOURCES = {
+    only: [
+      {
+        id: "src-only",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        apiKey: "secret-only",
+        model: "mock-model",
+      },
+    ],
+  };
+  const CONFIG: HarnessConfig = {
+    sessionId: "ses-composed",
+    agentId: "ins_dep_composed",
+    tenantId: "tenant-1",
+    principalId: "prin-composed",
+    agentAddress: "ins_dep_composed@workflow.interchange",
+    systemPrompt: "deployment-level",
+    tools: [],
+    grants: [],
+    sources: Object.values(SOURCES).flat(),
+    defaultSource: "src-only",
+  };
+  const SOURCE = { kind: "registry", registry: "npm" } as const;
+
+  test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    const { approval, projection, closure, wireHash } = await makeApproveOutput(
+      ["tool:read", "tool:write"],
+    );
+
+    // Approve surfaces the projection and closure the deploy frame needs.
+    if (!approval.ok) throw new Error("expected approval");
+    expect(approval.projection).toBe(projection);
+
+    await deployCodeSourcedWorkflow({
+      sidecarRouter: mockRouter,
+      agentAddress: "ins_dep_composed@workflow.interchange",
+      config: CONFIG,
+      sources: SOURCES,
+      approved: { approval, projection, closure },
+      source: SOURCE,
+    });
+
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    // Frame hash == gate frozen hash == recompute over the frame's inert
+    // definition: the composed entrypoint neither recomputes the hash nor
+    // re-resolves the closure, so a downstream child re-verify would pass.
+    expect(sent.approvedWireHash).toBe(wireHash);
+    if (sent.definition === undefined) {
+      throw new Error("frame carried no definition");
+    }
+    expect(await computeWireDefinitionHash(sent.definition)).toBe(wireHash);
+    expect(sent.definition).toEqual(projection);
+    // The composed entrypoint assembles the pin from its `source` arg and the
+    // approve output's frozen closure into the frame's one co-required object.
+    expect(sent.sourceRef).toEqual({ source: SOURCE, closure });
+  });
+
+  test("refuses to deploy when the gate did not approve", async () => {
+    const mockRouter = createMockRouter();
+    let deployAttempted = false;
+    mockRouter.sendAgentDeploy = (() => {
+      deployAttempted = true;
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    const { projection, closure } = await makeApproveOutput([
+      "tool:read",
+      "tool:write",
+    ]);
+    // A gate outcome that rejected the advisory grants: no frozen hash exists,
+    // so the composed entrypoint must fail closed rather than ship a frame.
+    const approval = {
+      ok: false as const,
+      reason: "grants_not_approved" as const,
+      unapprovedGrants: ["tool:escalate"],
+    };
+
+    await expect(
+      deployCodeSourcedWorkflow({
+        sidecarRouter: mockRouter,
+        agentAddress: "ins_dep_composed@workflow.interchange",
+        config: CONFIG,
+        sources: SOURCES,
+        approved: { approval, projection, closure },
+        source: SOURCE,
+      }),
+    ).rejects.toThrow(/unapproved/);
+    expect(deployAttempted).toBe(false);
   });
 });
 
