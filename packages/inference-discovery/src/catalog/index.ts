@@ -22,3 +22,4 @@ export {
   loadCaptureManifest,
   writeCaptureManifest,
 } from "./capture-manifest";
+export { CapabilityNotBuildableError } from "./errors";

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  CapabilityNotBuildableError,
   resolveMediaPath,
   type Capability,
   type CapabilityIntent,
@@ -461,7 +462,8 @@ export function buildRequestBody(opts: {
     case "structured-output":
     case "structured-output-streaming":
     case "structured-output-refusal-streaming":
-      throw new Error(
+      throw new CapabilityNotBuildableError(
+        opts.capability,
         `anthropic: capability ${opts.capability} is not supported by any Anthropic model`,
       );
     default: {
