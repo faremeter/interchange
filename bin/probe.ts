@@ -17,7 +17,6 @@
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  CAPABILITIES,
   CapabilityNotBuildableError,
   INTENTS,
   type Capability,
@@ -26,38 +25,12 @@ import {
   assertNotCI,
   requireEnvSet,
   runCapture,
+  type ProviderPlugin,
 } from "@intx/inference-discovery";
-import {
-  PLUGIN_REGISTRY,
-  findPlugin,
-  type PluginCreateOptions,
-} from "./lib/discover-registry";
+import { PLUGIN_REGISTRY, findPlugin } from "./lib/discover-registry";
+import { parseProbeArgs, MODEL_CLASSES } from "./lib/probe-args";
 
 const ROOT = resolve(import.meta.dirname, "..");
-
-type ModelClass = NonNullable<PluginCreateOptions["modelClass"]>;
-const MODEL_CLASSES: readonly ModelClass[] = ["text", "image"];
-
-function isModelClass(value: string): value is ModelClass {
-  return (MODEL_CLASSES as readonly string[]).includes(value);
-}
-
-function isCapability(value: string): value is Capability {
-  return (CAPABILITIES as readonly string[]).includes(value);
-}
-
-interface ProbeArgs {
-  provider: string;
-  model: string;
-  modelClass: ModelClass | undefined;
-  capabilities: readonly Capability[];
-  outDir: string;
-}
-
-type ParsedArgs =
-  | { kind: "run"; args: ProbeArgs }
-  | { kind: "help" }
-  | { kind: "error"; message: string };
 
 function buildHelpText(): string {
   const providers = PLUGIN_REGISTRY.map((entry) => {
@@ -77,9 +50,10 @@ Options:
   --provider <name>       Required. Selects the provider plug-in.
   --model <name>          Required. The model to probe; need not be in the
                           support matrix.
-  --model-class <class>   google-genai only: text (default) or image. Sets
-                          the request shape for a model absent from the known
-                          sets. An image model must set this.
+  --model-class <class>   google-genai only: ${MODEL_CLASSES.join(" or ")}
+                          (default text). Sets the request shape for a model
+                          absent from the known sets. An image model must set
+                          this.
   --only <capability>     Restrict to this capability. Repeatable. Defaults
                           to every capability the provider can build.
   --out <dir>             Scratch output directory. Defaults to
@@ -95,86 +69,6 @@ CI guard:
 `;
 }
 
-function parseArgs(argv: readonly string[]): ParsedArgs {
-  let provider: string | undefined;
-  let model: string | undefined;
-  let modelClass: ModelClass | undefined;
-  let outDir: string | undefined;
-  const only: Capability[] = [];
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--help" || arg === "-h") return { kind: "help" };
-    const takeValue = (): string | undefined => {
-      const value = argv[i + 1];
-      if (value === undefined || value.startsWith("--")) {
-        return undefined;
-      }
-      i++;
-      return value;
-    };
-    switch (arg) {
-      case "--provider": {
-        const value = takeValue();
-        if (value === undefined)
-          return { kind: "error", message: `${arg} needs a value` };
-        provider = value;
-        break;
-      }
-      case "--model": {
-        const value = takeValue();
-        if (value === undefined)
-          return { kind: "error", message: `${arg} needs a value` };
-        model = value;
-        break;
-      }
-      case "--model-class": {
-        const value = takeValue();
-        if (value === undefined || !isModelClass(value)) {
-          return {
-            kind: "error",
-            message: `--model-class must be one of: ${MODEL_CLASSES.join(", ")}`,
-          };
-        }
-        modelClass = value;
-        break;
-      }
-      case "--out": {
-        const value = takeValue();
-        if (value === undefined)
-          return { kind: "error", message: `${arg} needs a value` };
-        outDir = value;
-        break;
-      }
-      case "--only": {
-        const value = takeValue();
-        if (value === undefined)
-          return { kind: "error", message: `${arg} needs a value` };
-        if (!isCapability(value)) {
-          return { kind: "error", message: `unknown capability '${value}'` };
-        }
-        only.push(value);
-        break;
-      }
-      default:
-        return { kind: "error", message: `unknown argument '${String(arg)}'` };
-    }
-  }
-
-  if (provider === undefined)
-    return { kind: "error", message: "--provider is required" };
-  if (model === undefined)
-    return { kind: "error", message: "--model is required" };
-
-  const capabilities = only.length > 0 ? only : CAPABILITIES;
-  const out = outDir ?? resolve(ROOT, "tmp", "probe", provider, model);
-
-  return {
-    kind: "run",
-    args: { provider, model, modelClass, capabilities, outDir: out },
-  };
-}
-
 type CellVerdict =
   | { kind: "captured-2xx"; status: number }
   | { kind: "http-error"; status: number }
@@ -182,21 +76,21 @@ type CellVerdict =
   | { kind: "call-failed"; message: string };
 
 async function probeCapability(
-  args: ProbeArgs,
-  plugin: Parameters<typeof runCapture>[0]["plugin"],
+  plugin: ProviderPlugin,
+  model: string,
+  cellDir: string,
   capability: Capability,
 ): Promise<CellVerdict> {
-  const outDir = resolve(args.outDir, capability);
   // runCapture never cleans its output directory, so a re-probe would leave a
   // prior run's exchanges beside the new ones. Clear the cell first.
-  rmSync(outDir, { recursive: true, force: true });
+  rmSync(cellDir, { recursive: true, force: true });
   try {
     const result = await runCapture({
       plugin,
-      model: args.model,
+      model,
       capability,
       intent: INTENTS[capability],
-      outDir,
+      outDir: cellDir,
     });
     const ok = result.finalStatus >= 200 && result.finalStatus < 300;
     return ok
@@ -227,7 +121,7 @@ function formatVerdict(verdict: CellVerdict): string {
 }
 
 async function main(): Promise<number> {
-  const parsed = parseArgs(process.argv.slice(2));
+  const parsed = parseProbeArgs(process.argv.slice(2));
 
   if (parsed.kind === "help") {
     console.log(buildHelpText());
@@ -253,18 +147,27 @@ async function main(): Promise<number> {
 
   const env = requireEnvSet(registered.requiredEnv);
   const plugin = registered.create(env, { modelClass: args.modelClass });
+  const outDir =
+    args.outDir !== undefined
+      ? resolve(ROOT, args.outDir)
+      : resolve(ROOT, "tmp", "probe", args.provider, args.model);
 
   const classLabel =
     args.provider === "google-genai"
       ? ` model-class=${args.modelClass ?? "text (default)"}`
       : "";
   console.error(
-    `[probe] provider=${args.provider} model=${args.model}${classLabel} capabilities=${String(args.capabilities.length)} out=${args.outDir}`,
+    `[probe] provider=${args.provider} model=${args.model}${classLabel} capabilities=${String(args.capabilities.length)} out=${outDir}`,
   );
 
   const counts = { captured: 0, httpError: 0, unsupported: 0, failed: 0 };
   for (const capability of args.capabilities) {
-    const verdict = await probeCapability(args, plugin, capability);
+    const verdict = await probeCapability(
+      plugin,
+      args.model,
+      resolve(outDir, capability),
+      capability,
+    );
     console.error(`[probe] ${capability.padEnd(38)} ${formatVerdict(verdict)}`);
     if (verdict.kind === "captured-2xx") counts.captured++;
     else if (verdict.kind === "http-error") counts.httpError++;
@@ -276,9 +179,12 @@ async function main(): Promise<number> {
     `[probe] done captured=${String(counts.captured)} http-error=${String(counts.httpError)} unsupported=${String(counts.unsupported)} call-failed=${String(counts.failed)}`,
   );
   console.error(
-    `[probe] classify the captures: bin/classify-sessions --dir ${args.outDir}`,
+    `[probe] classify the captures: bin/classify-sessions --dir ${outDir}`,
   );
-  return 0;
+  // A call-failed cell is an unexpected error, not a normal outcome; surface it
+  // in the exit code so a scripted caller can tell a clean sweep from one that
+  // hit a bug. http-error and unsupported are expected discovery results.
+  return counts.failed > 0 ? 1 : 0;
 }
 
 const exitCode = await main();
