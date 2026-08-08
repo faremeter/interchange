@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAex7wRuJM0DQlcC4RP7h6BkIYqvC",
+  "object": "chat.completion",
+  "created": 1786209409,
+  "model": "gpt-5.4-mini-2026-03-17",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The image compares two side-by-side spherical maps labeled “Albedo” and “Water Signature,” showing a bright striped globe on the left and a darker globe with a highlighted spot on the right.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 246,
+    "completion_tokens": 42,
+    "total_tokens": 288,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

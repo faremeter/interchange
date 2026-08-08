@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAey8qjX56OWN8JWtOtZJ8tw5Jo67",
+  "object": "chat.completion",
+  "created": 1786209472,
+  "model": "o3-2025-04-16",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The document is a table of contents for “The Adventures of Tom Sawyer,” listing the titles and brief descriptors of the novel’s first seventeen chapters.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 553,
+    "completion_tokens": 201,
+    "total_tokens": 754,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 128,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

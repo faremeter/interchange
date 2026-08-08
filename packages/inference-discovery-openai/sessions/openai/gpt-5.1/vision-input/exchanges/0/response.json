@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAewOtEnHaAXVidb47e4VG3LdOUx7",
+  "object": "chat.completion",
+  "created": 1786209364,
+  "model": "gpt-5.1-2025-11-13",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The image shows two side‑by‑side spherical maps labeled “Albedo” and “Water Signature,” comparing surface reflectivity with detected water on a celestial body.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 42,
+    "total_tokens": 267,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

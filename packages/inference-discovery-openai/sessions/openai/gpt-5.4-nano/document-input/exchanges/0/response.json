@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAexIpunViJp49Nbx0c3swplDwKbz",
+  "object": "chat.completion",
+  "created": 1786209420,
+  "model": "gpt-5.4-nano-2026-03-17",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The attached document is a table of contents for **_The Adventures of Tom Sawyer_**, outlining the plot across chapters I–XVII with Tom navigating temptations, school and church life, and ultimately joining/participating in pirate and Indian-related adventures.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 553,
+    "completion_tokens": 54,
+    "total_tokens": 607,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

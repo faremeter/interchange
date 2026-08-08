@@ -1,0 +1,20 @@
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"finish_reason":null}],"obfuscation":"aY0IK"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"the"},"finish_reason":null}],"obfuscation":"6jdA"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" capital"},"finish_reason":null}],"obfuscation":"13m4v0xnj2WQyUl"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" of"},"finish_reason":null}],"obfuscation":"YY55"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" France"},"finish_reason":null}],"obfuscation":""}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" is"},"finish_reason":null}],"obfuscation":"v6T3"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" Paris"},"finish_reason":null}],"obfuscation":"8"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}],"obfuscation":"rKKWWj"}
+
+data: {"id":"chatcmpl-EAewqyHnjtTKAGagmfQ8sEbEhXJaD","object":"chat.completion.chunk","created":1786209392,"model":"gpt-5.4-2026-03-05","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"obfuscation":"V"}
+
+data: [DONE]
+

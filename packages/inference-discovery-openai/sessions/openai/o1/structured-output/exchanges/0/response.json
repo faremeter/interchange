@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-EAexmWNeSkg0KtznB9acMmnYRe9es",
+  "object": "chat.completion",
+  "created": 1786209450,
+  "model": "o1-2024-12-17",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"name\":\"Alice\",\"age\":30,\"email\":\"alice@example.com\"}",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 85,
+    "completion_tokens": 221,
+    "total_tokens": 306,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 192,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_fcd29b5aad"
+}

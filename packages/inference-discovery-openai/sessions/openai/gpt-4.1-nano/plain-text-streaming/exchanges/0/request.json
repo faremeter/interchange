@@ -1,0 +1,10 @@
+{
+  "model": "gpt-4.1-nano",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ],
+  "stream": true
+}

@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-EAexgZm6vr9eYABUPgySScwQAds2e",
+  "object": "chat.completion",
+  "created": 1786209444,
+  "model": "o1-2024-12-17",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "This document serves as a detailed chapter-by-chapter overview of Mark Twain’s \"The Adventures of Tom Sawyer,\" outlining Tom’s mischievous exploits, strategic ploys, encounters with friends and foes, and the moral and imaginative adventures that shape his journey.",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 322,
+    "total_tokens": 870,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 256,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_3a3b06ba9f"
+}

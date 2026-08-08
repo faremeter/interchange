@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAevovC90kWhZc7ILqHn4XH4sJuDt",
+  "object": "chat.completion",
+  "created": 1786209328,
+  "model": "gpt-5-nano-2025-08-07",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Current weather in Boston, MA: 68°F with clear skies. Would you like an hourly forecast or a longer-range outlook?",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 201,
+    "completion_tokens": 355,
+    "total_tokens": 556,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 320,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

@@ -170,6 +170,72 @@ const OPENAI_UNSUPPORTED_REASONING = [
   "reasoning-content-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
+// Net-new first-party OpenAI models probed on the Chat Completions wire. The
+// gpt-5.x line, the o-series reasoning models, and the gpt-4.1/gpt-4o families
+// all carry the full captured surface (OPENAI_CAPTURED_CAPABILITIES). The two
+// oldest models carry less and get their own rows below.
+const OPENAI_NETNEW_FULL_MODELS = [
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5.1",
+  "gpt-5.2",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "o1",
+  "o3",
+  "o3-mini",
+  "o4-mini",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "gpt-4o",
+  "gpt-4o-mini",
+] as const;
+
+// gpt-4-turbo takes image and document input but rejects json_schema
+// structured output.
+const OPENAI_MULTIMODAL_NO_STRUCTURED_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
+  "vision-input",
+  "document-input",
+] as const satisfies readonly SupportEntry["capability"][];
+
+// The original gpt-4 is text-only and predates structured output.
+const OPENAI_TEXT_ONLY_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
+] as const satisfies readonly SupportEntry["capability"][];
+
+const OPENAI_GPT4_MULTIMODAL_UNSUPPORTED = [
+  "vision-input",
+  "document-input",
+] as const satisfies readonly SupportEntry["capability"][];
+
+const OPENAI_NETNEW_REASONING_NOTE =
+  "First-party api.openai.com Chat Completions responses for this model carry " +
+  "no reasoning or reasoning_content field; the assistant message holds only " +
+  "role, content, refusal, and annotations. OpenAI exposes reasoning tokens " +
+  "solely through the Responses API, which this Chat-Completions plug-in does " +
+  "not probe. This holds for the o-series reasoning models too: they reason " +
+  "internally but surface no reasoning field on this wire.";
+
+const OPENAI_STRUCTURED_UNSUPPORTED_NOTE =
+  "This model rejects response_format of type json_schema with an HTTP 400 " +
+  "invalid_request_error. Strict structured output is a later-model feature " +
+  "on the Chat Completions wire; gpt-4 and gpt-4-turbo predate it.";
+
+const OPENAI_GPT4_MULTIMODAL_NOTE =
+  "The original text-only gpt-4 returns an HTTP 500 server_error when sent " +
+  "image or document content parts. Multimodal input on this Chat Completions " +
+  "wire arrived with gpt-4o and gpt-4-turbo, not gpt-4.";
+
 // Builds one SupportEntry per capability for a single (provider, model,
 // outcome). notes is included only when supplied, so captured rows stay
 // notes-free while misled/unsupported rows carry their explanation. rows does
@@ -523,6 +589,60 @@ const MATRIX: SupportEntry[] = [
       "misled",
       "Live stream under strict json_schema + a policy-declining prompt never emitted a non-null delta.refusal field. The assistant instead streamed schema-conformant JSON whose steps array carried a textual decline (content fragments; finish_reason stop). The fixture is retained as evidence of this wire behavior; synthetic SSE unit tests cover the adapter's delta.refusal parser independently.",
     ),
+  ),
+  ...OPENAI_NETNEW_FULL_MODELS.flatMap((model) =>
+    rows(OPENAI_PROVIDER, model, OPENAI_CAPTURED_CAPABILITIES, "captured"),
+  ),
+  ...OPENAI_NETNEW_FULL_MODELS.flatMap((model) =>
+    rows(
+      OPENAI_PROVIDER,
+      model,
+      OPENAI_UNSUPPORTED_REASONING,
+      "unsupported",
+      OPENAI_NETNEW_REASONING_NOTE,
+    ),
+  ),
+  ...rows(
+    OPENAI_PROVIDER,
+    "gpt-4-turbo",
+    OPENAI_MULTIMODAL_NO_STRUCTURED_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENAI_PROVIDER,
+    "gpt-4-turbo",
+    OPENAI_UNSUPPORTED_REASONING,
+    "unsupported",
+    OPENAI_NETNEW_REASONING_NOTE,
+  ),
+  ...rows(
+    OPENAI_PROVIDER,
+    "gpt-4-turbo",
+    STRUCTURED_OUTPUT_CAPABILITIES,
+    "unsupported",
+    OPENAI_STRUCTURED_UNSUPPORTED_NOTE,
+  ),
+  ...rows(OPENAI_PROVIDER, "gpt-4", OPENAI_TEXT_ONLY_CAPABILITIES, "captured"),
+  ...rows(
+    OPENAI_PROVIDER,
+    "gpt-4",
+    OPENAI_UNSUPPORTED_REASONING,
+    "unsupported",
+    OPENAI_NETNEW_REASONING_NOTE,
+  ),
+  ...rows(
+    OPENAI_PROVIDER,
+    "gpt-4",
+    STRUCTURED_OUTPUT_CAPABILITIES,
+    "unsupported",
+    OPENAI_STRUCTURED_UNSUPPORTED_NOTE,
+  ),
+  ...rows(
+    OPENAI_PROVIDER,
+    "gpt-4",
+    OPENAI_GPT4_MULTIMODAL_UNSUPPORTED,
+    "unsupported",
+    OPENAI_GPT4_MULTIMODAL_NOTE,
   ),
 ];
 

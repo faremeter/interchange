@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAewbmeaOKNXiIeGAzZHZKqk4S8a8",
+  "object": "chat.completion",
+  "created": 1786209377,
+  "model": "gpt-5.2-2025-12-11",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Two spherical maps labeled “Albedo” and “Water Signature” are shown side by side, with the right one mostly dark except for a highlighted spot near the top.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 246,
+    "completion_tokens": 37,
+    "total_tokens": 283,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

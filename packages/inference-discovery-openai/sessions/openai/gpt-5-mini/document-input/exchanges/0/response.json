@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAev6TOEhuV2cGFS0pYc3eZUAZ0kN",
+  "object": "chat.completion",
+  "created": 1786209284,
+  "model": "gpt-5-mini-2025-08-07",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The table of contents on page 1 identifies The Adventures of Tom Sawyer, a coming-of-age novel that follows mischievous young Tom’s pranks, adventures, friendships, and moral growth amid danger and small‑town life on the 19th-century Mississippi River.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 553,
+    "completion_tokens": 383,
+    "total_tokens": 936,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 320,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

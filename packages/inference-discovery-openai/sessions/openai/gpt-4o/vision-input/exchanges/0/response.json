@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-EAf0VHtHHlwvZksvlrUy7ZVBW9137",
+  "object": "chat.completion",
+  "created": 1786209619,
+  "model": "gpt-4o-2024-08-06",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The image shows two spherical maps labeled \"Albedo\" and \"Water Signature,\" depicting different data views of the Moon.",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 271,
+    "completion_tokens": 24,
+    "total_tokens": 295,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_2fe17714a7"
+}

@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAeyZk2hZ1diA3vS89Krn0igv1hv8",
+  "object": "chat.completion",
+  "created": 1786209499,
+  "model": "o3-mini-2025-01-31",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The document is a detailed table of contents for \"The Adventures of Tom Sawyer,\" outlining each chapter's key events and themes—from Tom's mischievous escapades and clever ruses to his moral dilemmas and transformative adventures.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 551,
+    "completion_tokens": 442,
+    "total_tokens": 993,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 384,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_736b519f26"
+}

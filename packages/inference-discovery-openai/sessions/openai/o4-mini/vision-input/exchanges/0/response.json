@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAeyvDSdURBczYLMcv0sAHYDecIHN",
+  "object": "chat.completion",
+  "created": 1786209521,
+  "model": "o4-mini-2025-04-16",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Side-by-side grayscale globe maps of the Moon showing albedo variations on the left and a faint water signature (highlighted by an arrow) on the right.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 346,
+    "completion_tokens": 114,
+    "total_tokens": 460,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 64,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

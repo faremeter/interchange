@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-EAevuuxXG8BU9rjli0Jel5VcVRweR",
+  "object": "chat.completion",
+  "created": 1786209334,
+  "model": "gpt-5-nano-2025-08-07",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "It's the table-of-contents page for The Adventures of Tom Sawyer, listing chapters I through XVII with playful subtitles that sketch Tom's various escapades and adventures.",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 553,
+    "completion_tokens": 746,
+    "total_tokens": 1299,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 704,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

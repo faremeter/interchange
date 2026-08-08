@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-EAezdPOuRab7lQtzwP7tWt9afjnl6",
+  "object": "chat.completion",
+  "created": 1786209565,
+  "model": "gpt-4-turbo-2024-04-09",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The image shows two spherical diagrams labeled \"Albedo\" and \"Water Signature,\" indicating their respective characteristics with the right sphere highlighting a specific region with a blue mark.",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 271,
+    "completion_tokens": 33,
+    "total_tokens": 304,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_9df61e0122"
+}
