@@ -1,0 +1,36 @@
+data: {"id":"06c6740a1e337f555b94de7bbf7289bb","object":"chat.completion.chunk","created":1786200331,"model":"minimax-m2.7","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200331,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200331,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200331,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200331,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200332,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200333,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200333,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[{"index":1,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[{"index":1,"delta":{"content":"The capital of"},"finish_reason":null}]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[{"index":1,"delta":{"content":" France is Paris."},"finish_reason":null}]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[]}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":178,"total_tokens":178,"prompt_tokens_details":{"cached_tokens":54}}}
+
+data: {"id":"","object":"chat.completion.chunk","created":1786200334,"model":"","choices":[]}
+
+data: {"choices":[],"cost":"0"}
+

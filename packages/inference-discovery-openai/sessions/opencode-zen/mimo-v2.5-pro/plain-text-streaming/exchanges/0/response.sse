@@ -1,0 +1,30 @@
+: keep-alive
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":"The user wants","reasoning_details":[{"type":"reasoning.text","text":"The user wants","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" me to reply","reasoning_details":[{"type":"reasoning.text","text":" me to reply","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" with a single sentence","reasoning_details":[{"type":"reasoning.text","text":" with a single sentence","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" stating","reasoning_details":[{"type":"reasoning.text","text":" stating","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" that the capital","reasoning_details":[{"type":"reasoning.text","text":" that the capital","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":" of France is Paris","reasoning_details":[{"type":"reasoning.text","text":" of France is Paris","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning":".","reasoning_details":[{"type":"reasoning.text","text":".","format":"unknown","index":0}]}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"The"}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":" capital of France is"}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":" Paris."}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":"","reasoning":null}}]}
+
+data: {"id":"gen-1786200240-IZjY8EelMDbZjqtsMb19","object":"chat.completion.chunk","created":1786200240,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":264,"completion_tokens":29,"total_tokens":293,"prompt_tokens_details":{"audio_tokens":0,"cached_tokens":256,"cache_write_tokens":0},"completion_tokens_details":{"audio_tokens":0,"reasoning_tokens":0}}}
+
+data: [DONE]
+
+data: {"choices":[],"cost":"0"}
+

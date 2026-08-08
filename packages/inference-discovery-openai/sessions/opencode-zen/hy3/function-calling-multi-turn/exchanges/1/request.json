@@ -1,0 +1,60 @@
+{
+  "model": "hy3",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "refusal": null,
+      "reasoning": "The user is asking for the weather in Boston, MA. I have a tool called get_weather that looks up the current weather for a city. I should call this tool with the location \"Boston, MA\".\n\nLet me make the tool call",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The user is asking for the weather in Boston, MA. I have a tool called get_weather that looks up the current weather for a city. I should call this tool with the location \"Boston, MA\".\n\nLet me make the tool call",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "index": 0,
+          "id": "chatcmpl-tool-2c17bb5ab67447c5afa3b7b51695b06b",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\": \"Boston, MA\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "chatcmpl-tool-2c17bb5ab67447c5afa3b7b51695b06b",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

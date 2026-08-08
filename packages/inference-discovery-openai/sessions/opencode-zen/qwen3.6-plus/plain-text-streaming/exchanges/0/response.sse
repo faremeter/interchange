@@ -1,0 +1,250 @@
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"role":"assistant","content":null,"reasoning_content":"Here"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"'s a thinking process"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":":\n\n1."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"  **Analyze"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" User Input:**\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"   - User says"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":": \"Reply"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" with a single sentence"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":":"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" the capital of France"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" is Paris.\"\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"  "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" - Key constraint:"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" \"Reply"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" with a single sentence"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\"\n   -"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Content to include/respond"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" to: \"the"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" capital"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" of France is Paris"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\"\n\n2."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"  **Ident"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"ify Constraints:**\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"   - Must be"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" exactly one sentence."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n   - Should"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" acknowledge or incorporate the"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" given"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" fact/statement."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n  "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" - No extra text"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":","}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" explanations, or multiple"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" sentences.\n\n3"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":".  **Form"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"ulate Response:**\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"   - I need"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" to craft"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" a single sentence that"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" confirms or states the"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" fact.\n  "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" - Options:\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"     - \"You"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" are correct that the"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" capital of France is"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Paris.\"\n    "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" - \"Indeed,"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" the capital of"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" France is Paris.\""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n     - \""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"That is correct:"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" the capital of France"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" is Paris.\"\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"   - Check constraint"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":": All"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" are single sentences."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" All"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" convey the required fact"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":".\n   -"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Let's pick the"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" simplest and"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" most direct one that"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" matches the prompt"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"'s tone: \""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"Indeed"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":", the capital of"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" France is Paris.\""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n\n4. "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" **Verify Constraints:**"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n   - Single"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" sentence? Yes."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n   - Matches"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" requested content? Yes"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"\n   - No"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" extra fluff?"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Yes.\n\n  "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Wait, the prompt"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" says \"Reply"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" with a single sentence"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":": the capital of"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" France is Paris.\""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" This could be interpreted"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" as \"Just output"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" exactly that phrase as"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" a single sentence.\""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" To be perfectly compliant"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":", I'll"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" just output: \""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"The capital of France"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" is Paris.\" That"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"'s one sentence,"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" directly matches"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" the instruction.\n\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"   Let's"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" double-check: \""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"Reply with a single"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" sentence: the capital"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" of France is Paris"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":".\" -> This is"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" a common prompt format"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" meaning"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" \"Your entire response"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" should be one sentence"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":", and it should"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" state"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" that the capital of"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" France"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" is Paris.\" So"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" outputting exactly that"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" sentence works.\n\n"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"  "}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Final check: \""}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":"The capital"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" of France is Paris"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":".\" -> 1"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" sentence."}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":" Meets all constraints"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":null,"reasoning_content":". Ready.✅"}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":"The capital of","reasoning_content":null}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":null,"logprobs":null,"delta":{"content":" France is Paris.","reasoning_content":null}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[{"index":0,"finish_reason":"stop","logprobs":null,"delta":{"content":"","reasoning_content":null}}],"usage":null}
+
+data: {"id":"chatcmpl-94c9a2dc-c18a-4abb-bdea-3f705b375aa1","object":"chat.completion.chunk","created":1786200513,"model":"qwen3.6-plus","choices":[],"usage":{"prompt_tokens":23,"completion_tokens":426,"total_tokens":449,"prompt_tokens_details":{},"completion_tokens_details":{"reasoning_tokens":414}}}
+
+data: [DONE]
+
+data: {"choices":[],"cost":"0"}
+

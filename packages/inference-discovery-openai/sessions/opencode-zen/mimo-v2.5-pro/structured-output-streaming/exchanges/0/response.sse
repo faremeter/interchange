@@ -1,0 +1,24 @@
+: keep-alive
+
+: keep-alive
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"{\""}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"name\": \"Alice"}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"\", \"age\":"}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":" 30,"}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":" \"email\": \""}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"alice@example.com\"}"}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"gen-1786200268-972dzi6hOd7bRiVyCFG5","object":"chat.completion.chunk","created":1786200268,"model":"mimo-v2.5-pro","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":287,"completion_tokens":22,"total_tokens":309,"prompt_tokens_details":{"audio_tokens":0,"cached_tokens":256,"cache_write_tokens":0},"completion_tokens_details":{"audio_tokens":0,"reasoning_tokens":0}}}
+
+data: [DONE]
+
+data: {"choices":[],"cost":"0"}
+
