@@ -548,7 +548,7 @@ describe("runCapture", () => {
       fetch: stubFetch,
     });
 
-    expect(result).toEqual({ finalStatus: 200, exchangeCount: 1 });
+    expect(result).toEqual({ finalStatus: 200 });
   });
 
   test("stops on a non-2xx JSON response without writing a manifest", async () => {
@@ -567,7 +567,7 @@ describe("runCapture", () => {
       fetch: stubFetch,
     });
 
-    expect(result).toEqual({ finalStatus: 404, exchangeCount: 1 });
+    expect(result).toEqual({ finalStatus: 404 });
     // The error body is persisted for inspection, but the capture is not
     // manifested as a session: session.json is a success artifact.
     const rootEntries = (await fs.readdir(dir)).sort();
@@ -593,7 +593,7 @@ describe("runCapture", () => {
       fetch: stubFetch,
     });
 
-    expect(result).toEqual({ finalStatus: 500, exchangeCount: 1 });
+    expect(result).toEqual({ finalStatus: 500 });
     const body = await fs.readFile(
       path.join(dir, "exchanges", "0", "response.json"),
       "utf8",
