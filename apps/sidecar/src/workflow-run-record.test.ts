@@ -6,11 +6,11 @@ import path from "node:path";
 import { type } from "arktype";
 
 import {
-  WorkflowDeploymentRecord,
-  writeWorkflowDeploymentRecord,
-  deleteWorkflowDeploymentRecord,
-  scanWorkflowDeploymentRecords,
-} from "./workflow-deployment-record";
+  WorkflowRunRecord,
+  writeWorkflowRunRecord,
+  deleteWorkflowRunRecord,
+  scanWorkflowRunRecords,
+} from "./workflow-run-record";
 
 async function makeDataDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "wdr-"));
@@ -29,7 +29,7 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
-const SINGLE_STEP: WorkflowDeploymentRecord = {
+const SINGLE_STEP: WorkflowRunRecord = {
   version: 1,
   agentAddress: "ins_abc123@tenant.example",
   definitionId: "wf_abc123",
@@ -50,7 +50,7 @@ const SINGLE_STEP: WorkflowDeploymentRecord = {
 
 // A multi-step deployment records no head hub key and may carry no session
 // id -- both optional fields absent.
-const MULTI_STEP: WorkflowDeploymentRecord = {
+const MULTI_STEP: WorkflowRunRecord = {
   version: 1,
   agentAddress: "ins_dep_xyz@tenant.example",
   definitionId: "wf_xyz",
@@ -76,11 +76,11 @@ const MULTI_STEP: WorkflowDeploymentRecord = {
   },
 };
 
-describe("workflow deployment record store", () => {
+describe("workflow run record store", () => {
   test("round-trips a schema-valid record through disk (single-step)", async () => {
     const dataDir = await makeDataDir();
     const deploymentId = "abc123-tenant-example";
-    await writeWorkflowDeploymentRecord(dataDir, deploymentId, SINGLE_STEP);
+    await writeWorkflowRunRecord(dataDir, deploymentId, SINGLE_STEP);
 
     // The record embeds source apiKeys, so it must not be group/world
     // readable on a shared host.
@@ -88,7 +88,7 @@ describe("workflow deployment record store", () => {
     expect(stat.mode & 0o077).toBe(0);
 
     const raw = await fs.readFile(recordPath(dataDir, deploymentId), "utf8");
-    const parsed = WorkflowDeploymentRecord(JSON.parse(raw));
+    const parsed = WorkflowRunRecord(JSON.parse(raw));
     if (parsed instanceof type.errors) {
       throw new Error(`record failed validation: ${parsed.summary}`);
     }
@@ -100,10 +100,10 @@ describe("workflow deployment record store", () => {
   test("round-trips a record with the optional fields absent (multi-step)", async () => {
     const dataDir = await makeDataDir();
     const deploymentId = "dep_xyz-tenant-example";
-    await writeWorkflowDeploymentRecord(dataDir, deploymentId, MULTI_STEP);
+    await writeWorkflowRunRecord(dataDir, deploymentId, MULTI_STEP);
 
     const raw = await fs.readFile(recordPath(dataDir, deploymentId), "utf8");
-    const parsed = WorkflowDeploymentRecord(JSON.parse(raw));
+    const parsed = WorkflowRunRecord(JSON.parse(raw));
     if (parsed instanceof type.errors) {
       throw new Error(`record failed validation: ${parsed.summary}`);
     }
@@ -121,13 +121,13 @@ describe("workflow deployment record store", () => {
     // A source rotation overwrites the existing record in place. The
     // atomic write must replace it cleanly, leaving only the record and
     // no `.tmp` staging file behind.
-    await writeWorkflowDeploymentRecord(dataDir, deploymentId, SINGLE_STEP);
-    await writeWorkflowDeploymentRecord(dataDir, deploymentId, MULTI_STEP);
+    await writeWorkflowRunRecord(dataDir, deploymentId, SINGLE_STEP);
+    await writeWorkflowRunRecord(dataDir, deploymentId, MULTI_STEP);
 
     const dir = path.join(dataDir, "workflow-runs", deploymentId);
     expect(await fs.readdir(dir)).toEqual(["deployment.json"]);
 
-    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(dataDir);
     expect(scanned.map((s) => s.record)).toEqual([MULTI_STEP]);
 
     await fs.rm(dataDir, { recursive: true, force: true });
@@ -138,33 +138,33 @@ describe("workflow deployment record store", () => {
     const deploymentId = "gone-1";
 
     // No-op when the record was never written.
-    await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
+    await deleteWorkflowRunRecord(dataDir, deploymentId);
 
-    await writeWorkflowDeploymentRecord(dataDir, deploymentId, SINGLE_STEP);
+    await writeWorkflowRunRecord(dataDir, deploymentId, SINGLE_STEP);
     expect(await fileExists(recordPath(dataDir, deploymentId))).toBe(true);
 
-    await deleteWorkflowDeploymentRecord(dataDir, deploymentId);
+    await deleteWorkflowRunRecord(dataDir, deploymentId);
     expect(await fileExists(recordPath(dataDir, deploymentId))).toBe(false);
 
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 });
 
-describe("scanWorkflowDeploymentRecords", () => {
+describe("scanWorkflowRunRecords", () => {
   test("returns an empty list when the workflow-runs directory is absent", async () => {
     const dataDir = await makeDataDir();
     // First boot: nothing has been deployed, so `workflow-runs/` does not
     // exist. That is the legitimate empty case, not an error.
-    expect(await scanWorkflowDeploymentRecords(dataDir)).toEqual([]);
+    expect(await scanWorkflowRunRecords(dataDir)).toEqual([]);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
   test("returns every schema-valid record keyed by its directory name", async () => {
     const dataDir = await makeDataDir();
-    await writeWorkflowDeploymentRecord(dataDir, "dep-a", SINGLE_STEP);
-    await writeWorkflowDeploymentRecord(dataDir, "dep-b", MULTI_STEP);
+    await writeWorkflowRunRecord(dataDir, "dep-a", SINGLE_STEP);
+    await writeWorkflowRunRecord(dataDir, "dep-b", MULTI_STEP);
 
-    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(dataDir);
     const byId = new Map(scanned.map((s) => [s.deploymentId, s.record]));
     expect(byId.size).toBe(2);
     expect(byId.get("dep-a")).toEqual(SINGLE_STEP);
@@ -175,7 +175,7 @@ describe("scanWorkflowDeploymentRecords", () => {
 
   test("soft-fails a corrupt or schema-invalid record while returning the valid ones", async () => {
     const dataDir = await makeDataDir();
-    await writeWorkflowDeploymentRecord(dataDir, "dep-valid", SINGLE_STEP);
+    await writeWorkflowRunRecord(dataDir, "dep-valid", SINGLE_STEP);
 
     // A directory whose record is not valid JSON.
     const corruptDir = path.join(dataDir, "workflow-runs", "dep-corrupt");
@@ -195,7 +195,7 @@ describe("scanWorkflowDeploymentRecords", () => {
       recursive: true,
     });
 
-    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(dataDir);
     expect(scanned.map((s) => s.deploymentId)).toEqual(["dep-valid"]);
     expect(scanned[0]?.record).toEqual(SINGLE_STEP);
 

@@ -38,10 +38,10 @@ import {
   type MultistepSourcesRouter,
 } from "./workflow-run-pack-client";
 import {
-  scanWorkflowDeploymentRecords,
-  writeWorkflowDeploymentRecord,
-  type WorkflowDeploymentRecord,
-} from "./workflow-deployment-record";
+  scanWorkflowRunRecords,
+  writeWorkflowRunRecord,
+  type WorkflowRunRecord,
+} from "./workflow-run-record";
 
 function createMinimalStubRepoStore(): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -668,7 +668,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * pass a blockable/failing stub so a recycle can be driven into the
      * rotation's persist window; omitted, the router uses the real writer.
      */
-    writeWorkflowDeploymentRecord?: typeof writeWorkflowDeploymentRecord;
+    writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
@@ -748,9 +748,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       ...(opts.readyTimeoutMs !== undefined
         ? { readyTimeoutMs: opts.readyTimeoutMs }
         : {}),
-      ...(opts.writeWorkflowDeploymentRecord !== undefined
+      ...(opts.writeWorkflowRunRecord !== undefined
         ? {
-            writeWorkflowDeploymentRecord: opts.writeWorkflowDeploymentRecord,
+            writeWorkflowRunRecord: opts.writeWorkflowRunRecord,
           }
         : {}),
     });
@@ -883,7 +883,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     void supervisorIpcKeyPair;
   });
 
-  test("a second same-address deploy is rejected mid-spawn and never deletes the live deployment record", async () => {
+  test("a second same-address deploy is rejected mid-spawn and never deletes the live run record", async () => {
     // Pins the synchronous single-flight reservation guard. The first
     // deploy runs its durable writes and then suspends inside
     // supervisor.spawn awaiting the child's `ready` handshake -- the window
@@ -1760,7 +1760,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   // A mock spawner that serves a fresh control/event channel per spawn and
   // lets the test complete each child's `ready` handshake. Both `deploy` and
-  // `restoreWorkflowDeployments` block on `supervisor.spawn` until `ready`
+  // `restoreWorkflowRuns` block on `supervisor.spawn` until `ready`
   // lands, so every spawned child needs its handshake driven.
   function makeReadyDrivingSpawner(pidBase: number) {
     type Spawn = {
@@ -1932,7 +1932,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Nothing is registered before restore -- the restart started clean.
     expect(isRegistered(freshTransport, head)).toBe(false);
 
-    const restorePromise = routerB.restoreWorkflowDeployments();
+    const restorePromise = routerB.restoreWorkflowRuns();
     await second.driveReadyFor(0);
     await restorePromise;
 
@@ -1973,7 +1973,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // The good deployment re-spawns (exactly one handshake to drive);
     // scan order is filesystem-dependent, but only the good record spawns.
-    const restorePromise = routerB.restoreWorkflowDeployments();
+    const restorePromise = routerB.restoreWorkflowRuns();
     await second.driveReadyFor(0);
     await restorePromise;
 
@@ -1996,14 +1996,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // MUST be rejected by `validateWorkflowProjection`, the second gate the
     // deploy path applies. If restore ran only the arktype it would spawn a
     // child for a structurally invalid definition.
-    const record: WorkflowDeploymentRecord = {
+    const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
       definitionId: "wf-missing-step",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
     };
-    await writeWorkflowDeploymentRecord(dataDir, deploymentId, record);
+    await writeWorkflowRunRecord(dataDir, deploymentId, record);
     const workflowJsonPath = path.join(
       dataDir,
       "assets",
@@ -2031,7 +2031,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
     });
 
-    await router.restoreWorkflowDeployments();
+    await router.restoreWorkflowRuns();
 
     expect(spawner.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
@@ -2056,7 +2056,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // restore pass must NOT spawn a second child for an address the core's
     // double-spawn guard already owns (the transition guard the B-reroute
     // follow-up leans on).
-    await router.restoreWorkflowDeployments();
+    await router.restoreWorkflowRuns();
 
     expect(spawner.spawnCount()).toBe(1);
     expect(isRegistered(transport, head)).toBe(true);
@@ -2098,14 +2098,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // a corrupt or misplaced record that must not be restored under the
     // wrong slug.
     const wrongDir = "not-the-right-slug";
-    const record: WorkflowDeploymentRecord = {
+    const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
       definitionId: "wf-mismatch",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
     };
-    await writeWorkflowDeploymentRecord(dataDir, wrongDir, record);
+    await writeWorkflowRunRecord(dataDir, wrongDir, record);
 
     const spawner = makeReadyDrivingSpawner(9800);
     const freshTransport = createInMemoryTransport();
@@ -2115,7 +2115,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
     });
 
-    await router.restoreWorkflowDeployments();
+    await router.restoreWorkflowRuns();
 
     expect(spawner.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
@@ -2157,7 +2157,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    await routerB.restoreWorkflowDeployments();
+    await routerB.restoreWorkflowRuns();
 
     expect(second.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
@@ -2246,7 +2246,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       // to drive; the unbuildable record faults before its spawner is ever
       // reached. Restore is serial and per-record isolated, so scan order does
       // not change the outcome.
-      const restorePromise = routerB.restoreWorkflowDeployments();
+      const restorePromise = routerB.restoreWorkflowRuns();
       await second.driveReadyFor(0);
       await restorePromise;
 
@@ -2459,7 +2459,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a source rotation survives a full sidecar restart", async () => {
-    // Restart-durability: a rotation is persisted into the deployment record,
+    // Restart-durability: a rotation is persisted into the run record,
     // so a fresh sidecar process (a restore over the same data dir) respawns
     // the deployment on the ROTATED sources, not the deploy-time ones.
     const dataDir = await createTempBaseDir("sidecar-rot-restart-");
@@ -2497,7 +2497,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       transport: createInMemoryTransport(),
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
     });
-    const restorePromise = routerB.restoreWorkflowDeployments();
+    const restorePromise = routerB.restoreWorkflowRuns();
     await second.driveReadyFor(0);
     await restorePromise;
 
@@ -2534,8 +2534,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.driveReadyFor(0);
     await deployPromise;
 
-    // Replace the deployment record file with a directory so the rotation's
-    // writeWorkflowDeploymentRecord rejects (EISDIR) -- a deterministic,
+    // Replace the run record file with a directory so the rotation's
+    // writeWorkflowRunRecord rejects (EISDIR) -- a deterministic,
     // root-immune write fault (a chmod guard would be bypassed under root).
     const recordFile = path.join(
       dataDir,
@@ -2588,20 +2588,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // writer.
     let gate: Promise<void> | null = null;
     let release: () => void = () => undefined;
-    const persist: typeof writeWorkflowDeploymentRecord = async (
-      d,
-      id,
-      rec,
-    ) => {
+    const persist: typeof writeWorkflowRunRecord = async (d, id, rec) => {
       if (gate !== null) await gate;
-      await writeWorkflowDeploymentRecord(d, id, rec);
+      await writeWorkflowRunRecord(d, id, rec);
     };
 
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
       multistepSourcesRouter: sourcesRouter,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
-      writeWorkflowDeploymentRecord: persist,
+      writeWorkflowRunRecord: persist,
     });
 
     const deployPromise = router.deploy(singleStepFrame(addr, "wf-rotinterok"));
@@ -2640,7 +2636,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // durable record converges on the rotated sources.
     release();
     await rotatePromise;
-    const scanned = await scanWorkflowDeploymentRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(dataDir);
     const record = scanned.find(
       (s) => s.deploymentId === deriveDeploymentId(addr),
     );
@@ -2660,23 +2656,19 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     let gate: Promise<void> | null = null;
     let release: () => void = () => undefined;
-    const persist: typeof writeWorkflowDeploymentRecord = async (
-      d,
-      id,
-      rec,
-    ) => {
+    const persist: typeof writeWorkflowRunRecord = async (d, id, rec) => {
       if (gate !== null) {
         await gate;
         throw new Error("rotation persist boom");
       }
-      await writeWorkflowDeploymentRecord(d, id, rec);
+      await writeWorkflowRunRecord(d, id, rec);
     };
 
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
       multistepSourcesRouter: sourcesRouter,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
-      writeWorkflowDeploymentRecord: persist,
+      writeWorkflowRunRecord: persist,
     });
 
     const deployPromise = router.deploy(

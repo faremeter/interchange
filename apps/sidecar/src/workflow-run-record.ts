@@ -1,9 +1,9 @@
-// Sidecar-local persistence of the per-deployment record needed to
-// re-establish a workflow deployment across a sidecar PROCESS restart. The
-// record is co-located with the deployment's workflow-run substrate at
+// Sidecar-local persistence of the per-run record needed to re-establish a
+// workflow run across a sidecar PROCESS restart. The record is co-located
+// with the run's workflow-run substrate at
 // `${dataDir}/workflow-runs/<deploymentId>/deployment.json`, so a single
-// teardown reclaims both and a boot scan can enumerate the active
-// deployments beside the run state they resume.
+// teardown reclaims both and a boot scan can enumerate the active runs
+// beside the run state they resume.
 //
 // It carries only the inputs that are otherwise frame/in-memory only:
 // `sources` (each step's ordered inference-source failover chain, threaded to
@@ -25,11 +25,7 @@ import { InferenceSource } from "@intx/types/runtime";
 
 import { writeFileAtomicDurable } from "./atomic-write";
 
-const logger = getLogger([
-  "interchange",
-  "sidecar",
-  "workflow-deployment-record",
-]);
+const logger = getLogger(["interchange", "sidecar", "workflow-run-record"]);
 
 const RECORD_FILENAME = "deployment.json";
 
@@ -43,11 +39,11 @@ function isENOENT(cause: unknown): boolean {
 }
 
 /**
- * The on-disk deployment record. `version` guards the schema shape so a
+ * The on-disk run record. `version` guards the schema shape so a
  * future reader can reject or migrate a stale record rather than parse it
  * blindly. Validated at read time (the boot scan) at the trust boundary.
  */
-export const WorkflowDeploymentRecord = type({
+export const WorkflowRunRecord = type({
   version: "1",
   agentAddress: "string > 0",
   definitionId: "string > 0",
@@ -57,27 +53,26 @@ export const WorkflowDeploymentRecord = type({
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
 });
-export type WorkflowDeploymentRecord = typeof WorkflowDeploymentRecord.infer;
+export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 
 function recordPath(dataDir: string, deploymentId: string): string {
   return pathJoin(dataDir, "workflow-runs", deploymentId, RECORD_FILENAME);
 }
 
 /**
- * Persist a deployment record. Written after the deployment's slug is
- * claimed and before the child is spawned, so a crash mid-spawn leaves a
- * record the boot scan re-drives. Idempotent: it overwrites any existing
- * record for the same deployment.
+ * Persist a run record. Written after the run's slug is claimed and before
+ * the child is spawned, so a crash mid-spawn leaves a record the boot scan
+ * re-drives. Idempotent: it overwrites any existing record for the same run.
  */
-export async function writeWorkflowDeploymentRecord(
+export async function writeWorkflowRunRecord(
   dataDir: string,
   deploymentId: string,
-  record: WorkflowDeploymentRecord,
+  record: WorkflowRunRecord,
 ): Promise<void> {
   const path = recordPath(dataDir, deploymentId);
   await mkdir(dirname(path), { recursive: true });
   // Atomic + durable: this is the sole restore source for the
-  // deployment's `sources`/`hubPublicKey`, and a rotation overwrites the
+  // run's `sources`/`hubPublicKey`, and a rotation overwrites the
   // existing record in place, so an interrupted write must never expose a
   // torn record the boot scan would then skip. Owner-only (0o600): the
   // record embeds each source's `apiKey`, so it must not be world-readable
@@ -89,39 +84,39 @@ export async function writeWorkflowDeploymentRecord(
 }
 
 /**
- * Remove a deployment record. Called on undeploy and on a soft-failed
- * deploy so a torn-down or never-completed deployment is not restored on
- * the next boot. A missing record is not an error (`force`).
+ * Remove a run record. Called on undeploy and on a soft-failed deploy so a
+ * torn-down or never-completed run is not restored on the next boot. A
+ * missing record is not an error (`force`).
  */
-export async function deleteWorkflowDeploymentRecord(
+export async function deleteWorkflowRunRecord(
   dataDir: string,
   deploymentId: string,
 ): Promise<void> {
   await rm(recordPath(dataDir, deploymentId), { force: true });
 }
 
-/** A restorable deployment: its directory-derived id plus the validated record. */
-export interface ScannedWorkflowDeployment {
+/** A restorable run: its directory-derived id plus the validated record. */
+export interface ScannedWorkflowRun {
   /** The `workflow-runs/<deploymentId>` directory name the record was found under. */
   deploymentId: string;
-  record: WorkflowDeploymentRecord;
+  record: WorkflowRunRecord;
 }
 
 /**
- * Enumerate the persisted deployment records under `workflow-runs/` so a
- * boot-time restore can re-establish each deployment. Soft-fails per record:
- * a missing `deployment.json`, unparseable JSON, or a record that fails schema
+ * Enumerate the persisted run records under `workflow-runs/` so a boot-time
+ * restore can re-establish each run. Soft-fails per record: a missing
+ * `deployment.json`, unparseable JSON, or a record that fails schema
  * validation is logged and skipped rather than wedging the whole boot -- one
- * corrupt record must not strand every other deployment. An absent
- * `workflow-runs/` directory is the legitimate first-boot case and yields an
- * empty list, not an error.
+ * corrupt record must not strand every other run. An absent `workflow-runs/`
+ * directory is the legitimate first-boot case and yields an empty list, not
+ * an error.
  *
  * The returned `deploymentId` is the directory name; the caller cross-checks it
  * against the record's own address before trusting it.
  */
-export async function scanWorkflowDeploymentRecords(
+export async function scanWorkflowRunRecords(
   dataDir: string,
-): Promise<ScannedWorkflowDeployment[]> {
+): Promise<ScannedWorkflowRun[]> {
   const runsDir = pathJoin(dataDir, "workflow-runs");
   let entries;
   try {
@@ -131,7 +126,7 @@ export async function scanWorkflowDeploymentRecords(
     throw cause;
   }
 
-  const scanned: ScannedWorkflowDeployment[] = [];
+  const scanned: ScannedWorkflowRun[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const deploymentId = entry.name;
@@ -160,7 +155,7 @@ export async function scanWorkflowDeploymentRecords(
       continue;
     }
 
-    const record = WorkflowDeploymentRecord(parsed);
+    const record = WorkflowRunRecord(parsed);
     if (record instanceof type.errors) {
       logger.warn`skipping workflow-runs/${deploymentId}: ${RECORD_FILENAME} failed validation: ${record.summary}`;
       continue;

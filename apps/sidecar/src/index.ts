@@ -519,7 +519,7 @@ if (sidecarDeployRouter === undefined) {
     "sidecar boot: deploy router was not constructed before workflow-deployment restore",
   );
 }
-await sidecarDeployRouter.restoreWorkflowDeployments();
+await sidecarDeployRouter.restoreWorkflowRuns();
 
 orchestrator.start();
 

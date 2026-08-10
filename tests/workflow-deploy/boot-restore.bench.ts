@@ -1,13 +1,13 @@
 // BOOT-RESTORE benchmark (NOT a CI test).
 //
 // Measures the sidecar's boot-time restore cost -- the wall-clock the
-// `restoreWorkflowDeployments()` driver takes to bring a batch of persisted
+// `restoreWorkflowRuns()` driver takes to bring a batch of persisted
 // deployments back to ready -- as a function of the number of restored
 // deployments. Restore runs once at boot, before `hubLink.connect()`, and
 // spawns each deployment's supervisor SERIALLY; this bench quantifies the
 // per-deployment restore cost that serial spawn imposes.
 //
-// The measured operation is `SidecarDeployRouter.restoreWorkflowDeployments()`
+// The measured operation is `SidecarDeployRouter.restoreWorkflowRuns()`
 // in `apps/sidecar/src/workflow-host-wiring.ts`. For each batch size N the
 // bench:
 //
@@ -17,7 +17,7 @@
 //      disk exactly as a live deploy would leave them.
 //   2. RESTORE (timed): builds a SECOND router with a FRESH transport (an
 //      empty registration table -- the sidecar-restart model) over the SAME
-//      data dir, then brackets `restoreWorkflowDeployments()` with
+//      data dir, then brackets `restoreWorkflowRuns()` with
 //      `performance.now()`. The child handshakes are driven concurrently (the
 //      driver blocks on each `supervisor.spawn` until its child signals
 //      `ready`), so the measured interval is the real serial restore-to-ready
@@ -31,7 +31,7 @@
 // rather than OS process-spawn latency. The FIRST batch's sample is discarded
 // (cold: first isogit/module warm), matching the standalone latency gate.
 //
-// The measured interval ends when `restoreWorkflowDeployments()` resolves --
+// The measured interval ends when `restoreWorkflowRuns()` resolves --
 // i.e. once every supervisor has spawned and handshaked `ready`. AFTER that,
 // each supervisor's dispatch loop runs against the disk-backed stub RepoStore
 // (which mirrors the wiring test's fixture and implements only the handful of
@@ -386,7 +386,7 @@ function singleStepFrame(
 
 /**
  * Stand up N single-step deployments through a first router (SETUP, untimed),
- * then time a fresh router's `restoreWorkflowDeployments()` bringing all N
+ * then time a fresh router's `restoreWorkflowRuns()` bringing all N
  * back to ready (RESTORE). Returns the measured restore wall-clock in ms.
  * Confirms every restored address is live before returning.
  */
@@ -435,7 +435,7 @@ async function measureRestore(n: number): Promise<number> {
   }
 
   const t0 = performance.now();
-  await routerB.restoreWorkflowDeployments();
+  await routerB.restoreWorkflowRuns();
   const elapsed = performance.now() - t0;
 
   await Promise.all(readyDrivers);
@@ -444,7 +444,7 @@ async function measureRestore(n: number): Promise<number> {
   for (const address of addresses) {
     if (!active.has(address)) {
       throw new Error(
-        `restore left ${address} inactive: activeAddresses did not include it after restoreWorkflowDeployments resolved`,
+        `restore left ${address} inactive: activeAddresses did not include it after restoreWorkflowRuns resolved`,
       );
     }
   }
@@ -512,7 +512,7 @@ async function main(): Promise<void> {
   const results = {
     generatedAt: new Date().toISOString(),
     measured:
-      "SidecarDeployRouter.restoreWorkflowDeployments() wall-clock to bring N persisted single-step deployments back to ready",
+      "SidecarDeployRouter.restoreWorkflowRuns() wall-clock to bring N persisted single-step deployments back to ready",
     sizes: opts.sizes,
     sampleNote:
       "first (cold) batch discarded; each sample is one fresh router restoring N records over a scratch data dir with an in-memory ready-driving spawner (no real Bun.spawn)",

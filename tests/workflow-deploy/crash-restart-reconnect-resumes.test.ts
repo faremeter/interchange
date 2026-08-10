@@ -12,7 +12,7 @@
 // drive the run to the mid-run `SignalAwaited` pause. Quiesce the
 // workflow-run pack pipeline, then KILL the sidecar subprocess (process
 // death, not a hub-link drop). Start a fresh sidecar against the crashed
-// process's SIDECAR_DATA_DIR: its `restoreWorkflowDeployments()` re-spawns
+// process's SIDECAR_DATA_DIR: its `restoreWorkflowRuns()` re-spawns
 // the deployment, whose workflow-process child re-seeds the parked run via
 // `resumeFromEvents`. The runtime re-arms the awaiting-signal gate against
 // the host-rehydrated signal channel (its `readState` reads the run's live
