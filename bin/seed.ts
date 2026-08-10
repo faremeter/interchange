@@ -988,8 +988,11 @@ for (const p of catalogProviders) {
   for (const o of p.offerings) {
     const modelId = modelIdByName.get(o.model);
     if (modelId === undefined) {
-      log(`  SKIP offering ${p.name}/${o.model} (model not seeded)`);
-      continue;
+      // Every catalog offering must name a catalog model; a miss means the
+      // offering references a model absent from catalogModels (a typo or an
+      // omission the catalog guard test should also catch). Dropping it
+      // silently would ship a dev catalog missing a model the author intended.
+      fatalMissing(`offering ${p.name}/${o.model}: model absent from catalog`);
     }
     const { status, data } = await api(
       "POST",
