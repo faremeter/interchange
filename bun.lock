@@ -431,6 +431,9 @@
         "@intx/inference-discovery": "workspace:*",
         "arktype": "catalog:",
       },
+      "devDependencies": {
+        "@intx/inference": "workspace:*",
+      },
     },
     "packages/inference-discovery-google-genai": {
       "name": "@intx/inference-discovery-google-genai",

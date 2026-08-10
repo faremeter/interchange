@@ -124,8 +124,10 @@ export interface AnthropicRequestBody {
 // paired with output_config.effort. This is the only model-keyed branch in
 // this file: the adaptive requirement can be selected only by model identity,
 // because the API surfaces it solely as a runtime 400 with no build-time
-// signal. Add a model here when its API rejects the classic shape.
-const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
+// signal. Add a model here when its API rejects the classic shape. This set
+// must match the runtime adapter's ADAPTIVE_THINKING_MODELS, or a captured
+// fixture would stop proving the production wire; a guard test pins them equal.
+export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-5",
   "claude-opus-5",
   "claude-fable-5",
