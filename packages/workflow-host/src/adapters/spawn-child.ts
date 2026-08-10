@@ -378,6 +378,68 @@ export function createWorkflowSpawnSuspendableChild(
 }
 
 /**
+ * In-memory variant of {@link createWorkflowSpawnSuspendableChild} for the
+ * source-ref (code-sourced) path. The parent child re-evaluated the whole
+ * pinned closure in one sandbox and re-verified it against the approved hash --
+ * which already covers every inline onTrigger body -- so the body definitions
+ * are in hand and already proven. Resolve each `definitionRef` from that
+ * in-memory `bodies` map and run it in-process, with NO disk round-trip and NO
+ * separate per-body re-verify: materializing the body back out and
+ * re-fingerprinting it would round-trip trusted-in-hand data for no gain, and
+ * the closure re-eval on restart re-derives the same bodies durably. The body
+ * still runs in the parent's sandbox (in-process today; a stricter per-body
+ * boundary is the deferred, opt-in SandboxBoundary case).
+ */
+export function createInMemorySpawnSuspendableChild(opts: {
+  bodies: ReadonlyMap<string, WorkflowDefinition>;
+  runSuspendableChild: RunSuspendableChild;
+}): HostSpawnSuspendableChild {
+  return async (
+    {
+      definitionRef,
+      childRunId,
+      input,
+      parentRunId,
+      parentStepId,
+      signal,
+      resumeFromEvents,
+    },
+    onEvent,
+  ) => {
+    if (signal.aborted) {
+      throw abortError(signal);
+    }
+
+    const definition = opts.bodies.get(definitionRef);
+    if (definition === undefined) {
+      throw new Error(
+        `workflow-runtime: source-ref spawn-child has no in-memory onTrigger ` +
+          `body for ${JSON.stringify(definitionRef)}; the parent's closure ` +
+          `re-eval should have extracted every inline body`,
+      );
+    }
+
+    if (signal.aborted) {
+      throw abortError(signal);
+    }
+
+    return opts.runSuspendableChild(
+      {
+        definition,
+        definitionRef,
+        childRunId,
+        input,
+        parentRunId,
+        parentStepId,
+        signal,
+        ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
+      },
+      onEvent,
+    );
+  };
+}
+
+/**
  * Resolve a referenced onTrigger body's `definitionRef` to a re-verified
  * `WorkflowDefinition`. The body's `approvedWireHash` is intrinsic to the
  * parent's approval and rides the signed deploy frame, so the load routes

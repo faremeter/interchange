@@ -13,10 +13,19 @@ import {
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "@intx/hub-sessions";
 import type { AuthorizeFn, Principal, RepoId } from "@intx/hub-sessions";
-import type { WorkflowDefinition, WorkflowEvent } from "@intx/workflow";
+import type {
+  SpawnSuspendableChild,
+  SuspendableChildHandle,
+  WorkflowDefinition,
+  WorkflowEvent,
+} from "@intx/workflow";
 
 import { createWorkflowRunRepoStore } from "./repo-store";
-import { createWorkflowSpawnChild, type RunChildWorkflow } from "./spawn-child";
+import {
+  createWorkflowSpawnChild,
+  createInMemorySpawnSuspendableChild,
+  type RunChildWorkflow,
+} from "./spawn-child";
 
 const tempDirs: string[] = [];
 
@@ -546,3 +555,85 @@ function abortDOMException(signal: AbortSignal): Error {
   if (reason instanceof Error) return reason;
   return new DOMException("aborted", "AbortError");
 }
+
+// The source-ref in-memory suspendable-child resolver: the parent already
+// re-evaluated + re-verified the whole closure, so onTrigger bodies resolve
+// from the in-hand map with no disk read and no separate per-body re-verify.
+describe("createInMemorySpawnSuspendableChild - in-memory body resolution", () => {
+  /* eslint-disable @typescript-eslint/no-unsafe-type-assertion -- test stubs: the resolver copies the definition by reference and identity-compares the handle; neither is structurally inspected */
+  const bodyDef = {
+    id: "wf__sect",
+    triggers: [],
+    stepOrder: [],
+    steps: {},
+  } as unknown as WorkflowDefinition;
+  const fakeHandle = {} as unknown as SuspendableChildHandle;
+  /* eslint-enable @typescript-eslint/no-unsafe-type-assertion */
+
+  // Body inference events are not asserted in these unit tests.
+  const noopOnEvent = () => {
+    /* no-op event sink */
+  };
+
+  function makeInput(
+    ref: string,
+    signal: AbortSignal,
+  ): Parameters<SpawnSuspendableChild>[0] {
+    return {
+      definitionRef: ref,
+      childRunId: "child-run",
+      input: undefined,
+      parentRunId: "parent-run",
+      parentStepId: "sect",
+      signal,
+    };
+  }
+
+  test("resolves the body from the in-memory map and delegates to the executor", async () => {
+    let seen: WorkflowDefinition | undefined;
+    const spawn = createInMemorySpawnSuspendableChild({
+      bodies: new Map([["wf__sect", bodyDef]]),
+      runSuspendableChild: async (args) => {
+        seen = args.definition;
+        return fakeHandle;
+      },
+    });
+
+    const handle = await spawn(
+      makeInput("wf__sect", new AbortController().signal),
+      noopOnEvent,
+    );
+
+    expect(seen).toBe(bodyDef);
+    expect(handle).toBe(fakeHandle);
+  });
+
+  test("fails loud when the ref is not in the map", async () => {
+    const spawn = createInMemorySpawnSuspendableChild({
+      bodies: new Map(),
+      runSuspendableChild: async () => fakeHandle,
+    });
+
+    await expect(
+      spawn(makeInput("missing", new AbortController().signal), noopOnEvent),
+    ).rejects.toThrow(/no in-memory onTrigger body/);
+  });
+
+  test("short-circuits a pre-aborted signal without resolving or executing", async () => {
+    let executorCalled = false;
+    const spawn = createInMemorySpawnSuspendableChild({
+      bodies: new Map([["wf__sect", bodyDef]]),
+      runSuspendableChild: async () => {
+        executorCalled = true;
+        return fakeHandle;
+      },
+    });
+    const ctrl = new AbortController();
+    ctrl.abort();
+
+    await expect(
+      spawn(makeInput("wf__sect", ctrl.signal), noopOnEvent),
+    ).rejects.toThrow();
+    expect(executorCalled).toBe(false);
+  });
+});
