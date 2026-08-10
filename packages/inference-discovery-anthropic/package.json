@@ -15,6 +15,9 @@
     "@intx/inference-discovery": "workspace:*",
     "arktype": "catalog:"
   },
+  "devDependencies": {
+    "@intx/inference": "workspace:*"
+  },
   "files": [
     "dist",
     "README.md",
