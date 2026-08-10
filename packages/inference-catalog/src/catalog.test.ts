@@ -16,6 +16,7 @@ import {
 import { CAPABILITIES, CURATED_CAPABILITIES } from "@intx/types";
 
 import { CATALOG_CAPABILITIES } from "./capability";
+import { catalogModels } from "./models";
 import { catalogProviders, type CatalogPlugin } from "./providers";
 
 // Each catalog plugin maps to the adapter quirk validator that governs the
@@ -164,4 +165,20 @@ describe("catalog public surface", () => {
     }
     expect(offenders).toEqual([]);
   });
+});
+
+describe("catalog offering models", () => {
+  // Models and offerings live in separate files (models.ts, providers.ts); this
+  // is the cross-check that keeps them aligned. Every offering must name a model
+  // the flat catalogModels list carries — otherwise the seed would drop the
+  // offering (it resolves offerings by model name) and the published `./models`
+  // subpath would omit a model an offering advertises.
+  const modelNames = new Set(catalogModels.map((model) => model.canonicalName));
+  for (const provider of catalogProviders) {
+    for (const offering of provider.offerings) {
+      test(`${provider.name} / ${offering.model} is a known catalog model`, () => {
+        expect(modelNames.has(offering.model)).toBe(true);
+      });
+    }
+  }
 });
