@@ -143,7 +143,7 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
 // are non-deterministic). Production sends a lower effort (the API default; see
 // ADAPTIVE_THINKING_EFFORT in the runtime adapter), so capturing at "max" is a
 // deliberate capture-time choice: the two efforts are an intentional pair, not
-// drift.
+// drift. A guard test in this package checks both effort values.
 export const ADAPTIVE_THINKING_CAPTURE_EFFORT: AnthropicEffort = "max";
 
 // The adaptive path carries no budget_tokens, so it cannot reuse the

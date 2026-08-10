@@ -50,7 +50,8 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
 // sends "max" instead: only "max" reliably elicits a thinking block to capture,
 // so the production default and the capture value are an intentional pair, not
 // drift. ADAPTIVE_THINKING_MODELS above must match across the two layers; the
-// effort values, by contrast, are meant to differ.
+// effort values, by contrast, are meant to differ. A guard test in the
+// discovery package checks both effort values.
 export const ADAPTIVE_THINKING_EFFORT = "high";
 
 // ---------------------------------------------------------------------------
