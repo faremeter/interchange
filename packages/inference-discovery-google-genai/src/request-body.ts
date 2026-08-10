@@ -11,7 +11,7 @@ import {
 // Text models share the full multimodal text capability surface; only
 // thinking-budget handling differs for models that cannot disable thinking
 // (see minimalThinkingBudget). Image models are output-only.
-const TEXT_MODELS: ReadonlySet<string> = new Set([
+export const TEXT_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-flash",
   "gemini-2.5-pro",
   "gemini-3.6-flash",
@@ -19,7 +19,7 @@ const TEXT_MODELS: ReadonlySet<string> = new Set([
   "gemini-3-flash-preview",
   "gemini-3.1-pro-preview",
 ]);
-const IMAGE_MODELS: ReadonlySet<string> = new Set([
+export const IMAGE_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-flash-image",
   "gemini-3.1-flash-image",
 ]);
@@ -164,6 +164,14 @@ function classifyModel(
   if (TEXT_MODELS.has(model)) return "text";
   if (IMAGE_MODELS.has(model)) return "image";
   return override ?? "text";
+}
+
+// True when the model's class is known from set membership, so its request
+// shape is not a guess. A caller (the probe) uses this to tell an operator when
+// it is defaulting an unknown model to the text class rather than classifying a
+// known one — the default is deliberate, but it should never be silent.
+export function isKnownModel(model: string): boolean {
+  return TEXT_MODELS.has(model) || IMAGE_MODELS.has(model);
 }
 
 function assertCapabilityBuildable(

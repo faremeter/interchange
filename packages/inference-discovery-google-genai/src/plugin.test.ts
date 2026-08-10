@@ -12,7 +12,7 @@ import {
 } from "@intx/inference-discovery/catalog";
 import type { CaptureStep, CapturedResponse } from "@intx/inference-discovery";
 import { createGoogleGenaiPlugin, iterateCaptureSteps } from "./index";
-import { buildRequestBody } from "./request-body";
+import { buildRequestBody, TEXT_MODELS, IMAGE_MODELS } from "./request-body";
 import { buildEndpointURL, isStreamingCapability } from "./endpoint";
 
 const TEST_API_KEY = "test-key";
@@ -220,6 +220,17 @@ describe("createGoogleGenaiPlugin", () => {
     ]);
     expect(plugin.redactRequestHeaders).toEqual(["x-goog-api-key"]);
     expect(plugin.redactResponseHeaders).toEqual([]);
+  });
+
+  test("advertised models are exactly the classified text and image sets", () => {
+    // MODELS (the advertised roster) and TEXT_MODELS/IMAGE_MODELS (which
+    // classify request shape) are separate lists edited by hand. If a model is
+    // advertised but absent from both sets, classifyModel defaults it to text
+    // and the probe builds a text request for it; this catches that drift.
+    const plugin = createGoogleGenaiPlugin({ apiKey: TEST_API_KEY });
+    expect(new Set(plugin.models)).toEqual(
+      new Set([...TEXT_MODELS, ...IMAGE_MODELS]),
+    );
   });
 
   test("buildAuthHeaders returns x-goog-api-key", () => {

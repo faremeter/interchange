@@ -27,17 +27,17 @@ import {
   runCapture,
   type ProviderPlugin,
 } from "@intx/inference-discovery";
-import { PLUGIN_REGISTRY, findPlugin } from "./lib/discover-registry";
+import {
+  PLUGIN_REGISTRY,
+  findPlugin,
+  formatProviderHelp,
+} from "./lib/discover-registry";
+import { isKnownModel } from "@intx/inference-discovery-google-genai";
 import { parseProbeArgs, MODEL_CLASSES } from "./lib/probe-args";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
 function buildHelpText(): string {
-  const providers = PLUGIN_REGISTRY.map((entry) => {
-    const envList = entry.requiredEnv.join(", ");
-    return `  ${entry.name}\n    requires env: ${envList}`;
-  }).join("\n");
-
   return `Usage: bin/probe --provider <name> --model <name> [options]
 
 Sweeps a single model across the capabilities its provider can build,
@@ -61,7 +61,7 @@ Options:
   --help, -h              Show this message.
 
 Available providers:
-${providers}
+${formatProviderHelp()}
 
 CI guard:
   Probing makes real, paid network calls and must never run in CI. If the
@@ -152,10 +152,22 @@ async function main(): Promise<number> {
       ? resolve(ROOT, args.outDir)
       : resolve(ROOT, "tmp", "probe", args.provider, args.model);
 
-  const classLabel =
-    args.provider === "google-genai"
-      ? ` model-class=${args.modelClass ?? "text (default)"}`
-      : "";
+  // For google-genai, the request shape depends on the model class. The label
+  // must distinguish a declared class, a class known from the model's set
+  // membership, and a class the tool is guessing for an unknown model — the
+  // last case is a deliberate default (probing must not require pre-registering
+  // a model) but the operator has to see that it is a guess, especially for an
+  // image model where a wrong text guess reports image-output as unsupported.
+  let classLabel = "";
+  if (args.provider === "google-genai") {
+    if (args.modelClass !== undefined) {
+      classLabel = ` model-class=${args.modelClass} (declared)`;
+    } else if (isKnownModel(args.model)) {
+      classLabel = " model-class=auto (from known model)";
+    } else {
+      classLabel = ` model-class=text (ASSUMED — ${args.model} unknown to google-genai; pass --model-class to confirm)`;
+    }
+  }
   console.error(
     `[probe] provider=${args.provider} model=${args.model}${classLabel} capabilities=${String(args.capabilities.length)} out=${outDir}`,
   );

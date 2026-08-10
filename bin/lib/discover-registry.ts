@@ -104,3 +104,12 @@ export const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
 export function findPlugin(name: string): RegisteredPlugin | undefined {
   return PLUGIN_REGISTRY.find((entry) => entry.name === name);
 }
+
+// The "Available providers" block shared by bin/discover and bin/probe help
+// text, so the two CLIs advertise providers and their required env identically.
+export function formatProviderHelp(): string {
+  return PLUGIN_REGISTRY.map((entry) => {
+    const envList = entry.requiredEnv.join(", ");
+    return `  ${entry.name}\n    requires env: ${envList}`;
+  }).join("\n");
+}
