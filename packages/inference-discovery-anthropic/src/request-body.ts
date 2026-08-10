@@ -137,10 +137,14 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-4-6",
 ]);
 
-// Adaptive thinking is the model's own per-request choice; empirically only
-// effort "max" reliably elicits a thinking block to capture (low/medium/high/
-// xhigh are non-deterministic).
-const ADAPTIVE_THINKING_EFFORT: AnthropicEffort = "max";
+// The effort the capture rig sends on the adaptive-thinking wire. Adaptive
+// thinking is the model's own per-request choice, and empirically only effort
+// "max" reliably elicits a thinking block to capture (low/medium/high/xhigh
+// are non-deterministic). Production sends a lower effort (the API default; see
+// ADAPTIVE_THINKING_EFFORT in the runtime adapter), so capturing at "max" is a
+// deliberate capture-time choice: the two efforts are an intentional pair, not
+// drift.
+export const ADAPTIVE_THINKING_CAPTURE_EFFORT: AnthropicEffort = "max";
 
 // The adaptive path carries no budget_tokens, so it cannot reuse the
 // budget-derived THINKING_MAX_TOKENS. A flat ceiling sized to let effort:max
@@ -155,7 +159,7 @@ const ADAPTIVE_THINKING_MAX_TOKENS = 4096;
 function applyThinking(body: AnthropicRequestBody, model: string): void {
   if (ADAPTIVE_THINKING_MODELS.has(model)) {
     body.thinking = { type: "adaptive" };
-    body.output_config = { effort: ADAPTIVE_THINKING_EFFORT };
+    body.output_config = { effort: ADAPTIVE_THINKING_CAPTURE_EFFORT };
     body.max_tokens = ADAPTIVE_THINKING_MAX_TOKENS;
     return;
   }
