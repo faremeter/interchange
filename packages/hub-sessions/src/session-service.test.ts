@@ -23,6 +23,9 @@ import {
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
+import type { DB } from "@intx/db";
+import { generateId } from "@intx/hub-common";
+import { deriveRunAddress } from "@intx/workflow-deploy";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
@@ -2093,12 +2096,21 @@ describe("deployCodeSourcedWorkflow", () => {
       },
     ],
   };
+  const DEPLOYMENT_DOMAIN = "workflow.interchange";
+  // The deployment's anchor run id and the run address it derives to. The
+  // coherence guard in deployCodeSourcedWorkflow asserts they match, so the
+  // successful-deploy test passes a consistent pair.
+  const ANCHOR_RUN_ID = generateId("workflowRun");
+  const DEPLOY_ADDRESS = deriveRunAddress({
+    runId: ANCHOR_RUN_ID,
+    domain: DEPLOYMENT_DOMAIN,
+  });
   const CONFIG: HarnessConfig = {
     sessionId: "ses-composed",
     agentId: "ins_dep_composed",
     tenantId: "tenant-1",
     principalId: "prin-composed",
-    agentAddress: "ins_dep_composed@workflow.interchange",
+    agentAddress: DEPLOY_ADDRESS,
     systemPrompt: "deployment-level",
     tools: [],
     grants: [],
@@ -2106,6 +2118,28 @@ describe("deployCodeSourcedWorkflow", () => {
     defaultSource: "src-only",
   };
   const SOURCE = { kind: "registry", registry: "npm" } as const;
+  const TENANT = "tnt_test";
+  // These unit tests assert FRAME logic plus the SHAPE of the anchor
+  // workflow_run row the composed entrypoint writes (status, self-ref) -- not
+  // its persistence (the real anchor-in-a-live-DB proof is the walking-skeleton
+  // e2e). A capturing db records the single anchor insert and answers the
+  // persisted-definition guard's existence query with a matching row; the
+  // fail-path tests throw before reaching the insert.
+  let capturedAnchorRow: Record<string, unknown> | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition existence query and .insert(...).values(...) are exercised
+  const CAPTURING_DB = {
+    query: {
+      workflowDefinition: {
+        findFirst: () => Promise.resolve({ id: "def-composed" }),
+      },
+    },
+    insert: () => ({
+      values: (row: Record<string, unknown>) => {
+        capturedAnchorRow = row;
+        return Promise.resolve();
+      },
+    }),
+  } as unknown as DB["db"];
 
   test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {
     const mockRouter = createMockRouter();
@@ -2130,11 +2164,15 @@ describe("deployCodeSourcedWorkflow", () => {
 
     await deployCodeSourcedWorkflow({
       sidecarRouter: mockRouter,
-      agentAddress: "ins_dep_composed@workflow.interchange",
+      agentAddress: DEPLOY_ADDRESS,
       config: CONFIG,
       sources: SOURCES,
       approved: { approval, projection, closure },
       source: SOURCE,
+      db: CAPTURING_DB,
+      tenantId: TENANT,
+      anchorRunId: ANCHOR_RUN_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
     });
 
     const sent = sentWorkflows[0];
@@ -2151,6 +2189,15 @@ describe("deployCodeSourcedWorkflow", () => {
     // The composed entrypoint assembles the pin from its `source` arg and the
     // approve output's frozen closure into the frame's one co-required object.
     expect(sent.sourceRef).toEqual({ source: SOURCE, closure });
+
+    // The anchor workflow_run row is born "deployed" (live but pre-trigger) and
+    // self-referential (anchorRunId === id), matching deployWorkflowDefinition;
+    // its address is the run address derived from the anchor run id.
+    expect(capturedAnchorRow).toBeDefined();
+    expect(capturedAnchorRow?.status).toBe("deployed");
+    expect(capturedAnchorRow?.id).toBe(ANCHOR_RUN_ID);
+    expect(capturedAnchorRow?.anchorRunId).toBe(ANCHOR_RUN_ID);
+    expect(capturedAnchorRow?.address).toBe(DEPLOY_ADDRESS);
   });
 
   test("refuses to deploy when the gate did not approve", async () => {
@@ -2177,17 +2224,21 @@ describe("deployCodeSourcedWorkflow", () => {
     await expect(
       deployCodeSourcedWorkflow({
         sidecarRouter: mockRouter,
-        agentAddress: "ins_dep_composed@workflow.interchange",
+        agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
         approved: { approval, projection, closure },
         source: SOURCE,
+        db: CAPTURING_DB,
+        tenantId: TENANT,
+        anchorRunId: ANCHOR_RUN_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
       }),
     ).rejects.toThrow(/unapproved/);
     expect(deployAttempted).toBe(false);
   });
 
-  test("fails closed when the definition carries credential bindings but no db/cipher/tenant is supplied", async () => {
+  test("fails closed when the definition carries credential bindings but no credentialCipher is supplied", async () => {
     const mockRouter = createMockRouter();
     let deployAttempted = false;
     mockRouter.sendAgentDeploy = (() => {
@@ -2201,8 +2252,8 @@ describe("deployCodeSourcedWorkflow", () => {
     ]);
     if (!approval.ok) throw new Error("expected approval");
     // A projection carrying a credential binding: resolution must run, and with
-    // no db/cipher/tenant supplied it fails closed before any frame is sent
-    // (never delivering an unresolvable-credential deployment).
+    // db + tenant present but no credentialCipher it fails closed before any
+    // frame is sent (never delivering an unresolvable-credential deployment).
     const withBinding = {
       ...projection,
       credentialBindings: [
@@ -2218,13 +2269,17 @@ describe("deployCodeSourcedWorkflow", () => {
     await expect(
       deployCodeSourcedWorkflow({
         sidecarRouter: mockRouter,
-        agentAddress: "ins_dep_cred@workflow.interchange",
+        agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
         approved: { approval, projection: withBinding, closure },
         source: SOURCE,
+        db: CAPTURING_DB,
+        tenantId: TENANT,
+        anchorRunId: ANCHOR_RUN_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
       }),
-    ).rejects.toThrow(/db\/credentialCipher\/tenantId were not supplied/);
+    ).rejects.toThrow(/no credentialCipher was supplied/);
     expect(deployAttempted).toBe(false);
   });
 });
