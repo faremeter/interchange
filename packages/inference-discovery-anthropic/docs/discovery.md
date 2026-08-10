@@ -46,7 +46,7 @@ thinks). This is a capture-time choice and does not mirror the
 production effort, which is the lower API default (see
 `ADAPTIVE_THINKING_EFFORT` in the runtime adapter). The committed
 adaptive fixtures therefore carry `max`, not the production effort
-value.
+value. A guard test checks both the runtime and capture effort values.
 
 | Model                       | Tier      | Extended thinking | Vision | Document input | Code execution | Web search |
 | --------------------------- | --------- | ----------------- | ------ | -------------- | -------------- | ---------- |
