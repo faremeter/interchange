@@ -91,7 +91,11 @@ import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
-import type { HostSpawnSuspendableChild } from "../adapters/spawn-child";
+import type {
+  HostSpawnSuspendableChild,
+  RunSuspendableChild,
+} from "../adapters/spawn-child";
+import { createInMemorySpawnSuspendableChild } from "../adapters/spawn-child";
 import {
   createControlChannelSender,
   createEventChannelSender,
@@ -347,6 +351,15 @@ export interface RunWorkflowChildBindings {
    * inference events reach the hub stream. The runtime contract stays narrow.
    */
   spawnSuspendableChild?: HostSpawnSuspendableChild;
+  /**
+   * Raw in-process suspendable-child executor. On the source-ref lineage,
+   * `run-child` builds the in-memory body resolver from this executor plus the
+   * bodies map it extracts AFTER re-evaluating the closure -- the substrate
+   * factory cannot build that resolver because the bodies map does not exist
+   * pre-eval. Optional for the same reason as `spawnSuspendableChild`: a child
+   * that runs no onTrigger section omits it.
+   */
+  runSuspendableChild?: RunSuspendableChild;
   /** Host-process scheduler singleton. The child consumes the same instance. */
   scheduler: Scheduler;
   /** Grant evaluator wired against the host's grant-rule grammar. */
@@ -610,6 +623,10 @@ export async function runWorkflowChild(
   //     (`computeLiveDefinitionHash`); a divergent closure fails closed.
   //   - live-authored: read the inert `workflow.json` off the deploy tree and
   //     re-verify the on-disk bytes' hash, unchanged.
+  // Extracted source-ref onTrigger bodies, keyed by ref, for the in-memory
+  // suspendable-child resolver below (empty on the live-authored arm, which
+  // resolves bodies from disk instead).
+  let bodiesMap = new Map<string, WorkflowDefinition>();
   let definition: WorkflowDefinition;
   if (opts.env.lineage === "source-ref") {
     // The `SpawnTimeEnv` union guarantees a source-ref env carries
@@ -620,13 +637,15 @@ export async function runWorkflowChild(
     });
     // Post-verify structural rewrite: the re-verify above hashed the closure's
     // INLINE onTrigger bodies (matching the frozen approval); now lift each to
-    // a `{ ref }` so the runtime dispatches the body to its own materialized
-    // body child (`assets/workflow/<ref>/`) instead of throwing on an inline
-    // body (`runOnTrigger`). The sidecar deploy materialized each body's
-    // `workflow.json` + `sources.json` under the same ref. The rewrite MUST
-    // follow the re-verify -- rewriting first would diverge from the frozen
-    // inline-body hash.
-    definition = rewriteInlineOnTriggerBodies(definition).workflow;
+    // a `{ ref }` so the runtime dispatches to the body child, and keep the
+    // extracted body definitions in an in-memory map. The source-ref
+    // suspendable-child resolver runs each body from THIS map -- the parent's
+    // already-re-verified closure -- with no disk read and no separate per-body
+    // re-verify. The rewrite MUST follow the re-verify: rewriting first would
+    // diverge from the frozen inline-body hash.
+    const { workflow, bodies } = rewriteInlineOnTriggerBodies(definition);
+    definition = workflow;
+    bodiesMap = new Map(bodies.map((b) => [b.ref, b.definition]));
   } else {
     definition = await loadVerifiedWorkflowDefinition({
       substrate: opts.bindings.substrate,
@@ -650,6 +669,32 @@ export async function runWorkflowChild(
           packageDir: opts.env.closurePackageDir,
         })
       : (opts.bindings.directors ?? createDefaultDirectorRegistry());
+
+  // Suspendable-child (onTrigger body) resolver, selected ONCE per deployment:
+  // the bodies map is immutable and the per-run `onEvent` is injected later in
+  // `buildRuntimeEnv`. On source-ref, resolve each body from the parent's
+  // in-memory closure (already re-verified above) via the raw executor binding;
+  // the live-authored arm keeps the injected disk-backed binding. A source-ref
+  // deployment that carries bodies but whose host wired no executor is a
+  // misconfiguration -- fail loud at startup rather than silently falling back
+  // to a disk read (the exact behaviour this arm exists to avoid).
+  let suspendableChildHost: HostSpawnSuspendableChild | undefined;
+  if (bodiesMap.size > 0) {
+    const executor = opts.bindings.runSuspendableChild;
+    if (executor === undefined) {
+      throw new Error(
+        "workflow-child: source-ref deployment carries onTrigger bodies but " +
+          "the host wired no runSuspendableChild executor; cannot resolve " +
+          "bodies in-memory",
+      );
+    }
+    suspendableChildHost = createInMemorySpawnSuspendableChild({
+      bodies: bodiesMap,
+      runSuspendableChild: executor,
+    });
+  } else {
+    suspendableChildHost = opts.bindings.spawnSuspendableChild;
+  }
 
   const authorize = createCredentialsBackedAuthorize(
     credentialsRef,
@@ -712,6 +757,7 @@ export async function runWorkflowChild(
       runtimeRepoStore,
       authorize,
       directors,
+      suspendableChildHost,
       clock,
       newId,
       drainController,
@@ -804,6 +850,7 @@ export async function runWorkflowChild(
           definition,
           authorize,
           directors,
+          suspendableChildHost,
           clock,
           newId,
           eventSender,
@@ -880,6 +927,7 @@ async function handleControlPayload(
     definition: WorkflowDefinition;
     authorize: WorkflowAuthorizeFn;
     directors: DirectorRegistry;
+    suspendableChildHost: HostSpawnSuspendableChild | undefined;
     clock: () => Date;
     newId: (prefix: string) => string;
     eventSender: ReturnType<typeof createEventChannelSender>;
@@ -939,6 +987,7 @@ async function handleControlPayload(
         runtimeRepoStore: ctx.runtimeRepoStore,
         authorize: ctx.authorize,
         directors: ctx.directors,
+        suspendableChildHost: ctx.suspendableChildHost,
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
@@ -1297,6 +1346,7 @@ function buildRuntimeEnv(args: {
   runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
   authorize: WorkflowAuthorizeFn;
   directors: DirectorRegistry;
+  suspendableChildHost: HostSpawnSuspendableChild | undefined;
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
@@ -1346,7 +1396,7 @@ function buildRuntimeEnv(args: {
   // inference events ride the parent run's event channel to the hub stream
   // (and inherit its loud-on-failure logging), while the runtime env keeps the
   // narrow contract with no event slot.
-  const hostSuspendable = args.bindings.spawnSuspendableChild;
+  const hostSuspendable = args.suspendableChildHost;
   const spawnSuspendableChild: SpawnSuspendableChild | undefined =
     hostSuspendable === undefined
       ? undefined

@@ -2187,11 +2187,19 @@ export function createSidecarSubstrateFactory(
     // of the parent's approval, so the adapter re-verifies it against the
     // parent's frame-carried body hashes: thread the parsed
     // `referencedDefinitionHashes` from the spawn env into the barrier.
+    // The raw in-process body executor is shared into BOTH the disk-backed
+    // combined resolver here (the live-authored lineage, which reads + re-
+    // verifies each body off the deploy tree) AND the child bindings, where
+    // run-child builds the source-ref in-memory resolver from it after re-
+    // evaluating the closure. Built once so both share one repoStore/runChild;
+    // a child is one lineage or the other per `env.lineage`, never both.
+    const runSuspendableChild =
+      createSidecarSpawnSuspendableChild(childRunDeps);
     const spawnSuspendableChild = createWorkflowSpawnSuspendableChild({
       substrate,
       principal,
       deployRef: validated.WORKFLOW_DEFINITION_REF,
-      runSuspendableChild: createSidecarSpawnSuspendableChild(childRunDeps),
+      runSuspendableChild,
       referencedDefinitionHashes: env.spawn.referencedDefinitionHashes,
     });
 
@@ -2301,6 +2309,7 @@ export function createSidecarSubstrateFactory(
       initialSources: stepInferenceSources,
       spawnChild,
       spawnSuspendableChild,
+      runSuspendableChild,
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,
       loadParkedApproval,
