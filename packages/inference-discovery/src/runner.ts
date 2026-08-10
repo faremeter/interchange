@@ -48,8 +48,6 @@ export interface RunCaptureResult {
   // an http-error outcome without reopening the fixture (the capture format
   // does not persist the status line).
   finalStatus: number;
-  // Count of exchanges performed, each written under exchanges/<n>/.
-  exchangeCount: number;
 }
 
 function headersToObject(headers: Headers): Record<string, string> {
@@ -250,7 +248,7 @@ export async function runCapture(
       // reconstruction, manifest write), neither of which is meaningful for a
       // failed capture. The bytes are on disk; the caller classifies from
       // finalStatus.
-      return { finalStatus, exchangeCount: exchangeIndex };
+      return { finalStatus };
     }
     iterResult = iterator.next(captured);
   }
@@ -297,5 +295,5 @@ export async function runCapture(
   };
   await writeCaptureManifest(outDir, manifest);
 
-  return { finalStatus, exchangeCount: exchangeIndex };
+  return { finalStatus };
 }
