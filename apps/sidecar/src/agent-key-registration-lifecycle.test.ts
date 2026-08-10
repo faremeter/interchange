@@ -35,7 +35,7 @@ import {
   createSidecarDeployRouter,
   deriveDeploymentId,
 } from "./workflow-host-wiring";
-import { WorkflowDeploymentRecord } from "./workflow-deployment-record";
+import { WorkflowRunRecord } from "./workflow-run-record";
 import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
@@ -333,13 +333,11 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       deploymentId,
       "deployment.json",
     );
-    const parsedRecord = WorkflowDeploymentRecord(
+    const parsedRecord = WorkflowRunRecord(
       JSON.parse(await fs.readFile(recordFile, "utf8")),
     );
     if (parsedRecord instanceof type.errors) {
-      throw new Error(
-        `deployment record failed validation: ${parsedRecord.summary}`,
-      );
+      throw new Error(`run record failed validation: ${parsedRecord.summary}`);
     }
     expect(parsedRecord.agentAddress).toBe(AGENT_ADDRESS);
 
