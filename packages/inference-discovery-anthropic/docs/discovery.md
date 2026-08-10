@@ -39,6 +39,15 @@ the adaptive shape `thinking: {type: "adaptive"}` paired with
 `output_config: {effort}`; the request builder selects the shape by
 model. `claude-haiku-4-5-20251001` still uses the classic shape.
 
+On the adaptive shape the rig sends `output_config: {effort: "max"}`
+deliberately: only `max` reliably elicits a thinking block to capture
+(the lower effort levels are non-deterministic about whether the model
+thinks). This is a capture-time choice and does not mirror the
+production effort, which is the lower API default (see
+`ADAPTIVE_THINKING_EFFORT` in the runtime adapter). The committed
+adaptive fixtures therefore carry `max`, not the production effort
+value.
+
 | Model                       | Tier      | Extended thinking | Vision | Document input | Code execution | Web search |
 | --------------------------- | --------- | ----------------- | ------ | -------------- | -------------- | ---------- |
 | `claude-fable-5`            | Flagship  | yes (adaptive)    | yes    | yes            | yes            | yes        |
