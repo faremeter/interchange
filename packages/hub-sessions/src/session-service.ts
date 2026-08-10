@@ -12,7 +12,11 @@ import {
   createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
-import { listAssetsForTenant, type DB } from "@intx/db";
+import {
+  buildCredentialDelivery,
+  listAssetsForTenant,
+  type DB,
+} from "@intx/db";
 import {
   grant as grantTable,
   sidecarAllocation as sidecarAllocationTable,
@@ -20,6 +24,7 @@ import {
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/sidecar";
+import type { CredentialCipher } from "@intx/types";
 import { generateId } from "@intx/hub-common";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
@@ -488,6 +493,14 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * re-materializes the exact tree from the pin at apply time.
    */
   sourceRef: SourceRefPin;
+  /**
+   * Resolved credential material for the definition's credential bindings,
+   * delivered to the child on the frame (mirrors the live-authored arm). The
+   * hub resolves + decrypts here; the source-ref child decrypts nothing. The
+   * grant that AUTHORIZES a credential's use is minted per-run by run-grant
+   * materialization, not carried on this frame.
+   */
+  credentials?: CredentialDelivery;
 };
 
 export type SendMultiStepDeployFrameArgs =
@@ -528,6 +541,9 @@ export async function sendMultiStepDeployFrame(
       sources: args.sources,
       approvedWireHash: args.approvedWireHash,
       sourceRef: args.sourceRef,
+      ...(args.credentials !== undefined
+        ? { credentials: args.credentials }
+        : {}),
     });
   }
 
@@ -594,6 +610,17 @@ export async function sendMultiStepDeployFrame(
 export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
   approved: InstallAndApproveResult;
   source: WorkflowDefinitionSource;
+  /**
+   * The hub DB handle + credential cipher + the definition's OWN tenant, used
+   * to resolve the definition's credential bindings into delivered material.
+   * REQUIRED when the definition carries credential bindings (resolution fails
+   * closed without them); omit only for a binding-free deployment. `tenantId`
+   * is the definition's own tenant (tenant-owned resolution walks up from it);
+   * do not pass a request/config tenant that may differ from the definition's.
+   */
+  db?: DB["db"];
+  credentialCipher?: CredentialCipher;
+  tenantId?: string;
 };
 
 /**
@@ -606,13 +633,13 @@ export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
  * closure, so the child re-verify over the inert projection matches the gate's
  * freeze.
  *
- * Runtime grant enforcement is NOT part of this hand-off: the enforced
- * per-step authorization boundary is the deploy-time credentials snapshot
- * (`createCredentialsBackedAuthorize`), sourced from the operator's
- * `config.grants`. Enforcing the gate's frozen advertised-grant set as a
- * runtime ceiling on top of that is a separate, not-yet-wired concern (the
- * unconsumed `approvedDeployGrants` wire field that once rode this frame has
- * been removed rather than shipped unenforced).
+ * Credential MATERIAL for the definition's tenant-owned bindings is resolved
+ * here (`buildCredentialDelivery`) and delivered to the child on the frame.
+ * Credential GRANT enforcement is a SEPARATE layer: the `credential:{id}` /
+ * `use` grant the runtime gate checks is minted per-run by run-grant
+ * materialization into `runs/<runId>/grants.json`, not carried on this frame --
+ * the deploy-time `config.grants` spawn-time snapshot is suppressed once the
+ * sidecar wires per-run grant pushes, so it is not the enforcement transport.
  *
  * A gate outcome that did not approve cannot deploy: an unapproved `approval`
  * fails closed here rather than shipping an unfrozen definition.
@@ -626,6 +653,43 @@ export async function deployCodeSourcedWorkflow(
       `deployCodeSourcedWorkflow: refusing to deploy an unapproved workflow (gate reason: ${approval.reason})`,
     );
   }
+
+  // Resolve the operator-approved credential bindings into delivered material.
+  // Tenant-owned resolution keys off the definition's tenant and walks up the
+  // hierarchy; it does not consult creator/invoker (the only locator today is
+  // `tenant`). A code-sourced deployment has no single authenticated invoker,
+  // so invoker is null; when principal-owned locators arrive, the asset creator
+  // must be resolved and passed here. A resolution failure is fail-closed.
+  const bindings = projection.credentialBindings ?? [];
+  let credentials: CredentialDelivery | undefined;
+  if (bindings.length > 0) {
+    if (
+      args.db === undefined ||
+      args.credentialCipher === undefined ||
+      args.tenantId === undefined
+    ) {
+      throw new Error(
+        "deployCodeSourcedWorkflow: definition carries credential bindings but " +
+          "db/credentialCipher/tenantId were not supplied; cannot resolve " +
+          "credential material",
+      );
+    }
+    const delivery = await buildCredentialDelivery({
+      db: args.db,
+      tenantId: args.tenantId,
+      bindings,
+      creatorPrincipalId: null,
+      invokerPrincipalId: null,
+      credentialCipher: args.credentialCipher,
+    });
+    if (!delivery.ok) {
+      throw new Error(
+        `deployCodeSourcedWorkflow: credential binding resolution failed: ${delivery.reason.message}`,
+      );
+    }
+    credentials = delivery.delivery;
+  }
+
   return sendMultiStepDeployFrame({
     lineage: "source-ref",
     sidecarRouter: args.sidecarRouter,
@@ -635,6 +699,7 @@ export async function deployCodeSourcedWorkflow(
     projection,
     approvedWireHash: approval.approvedWireHash,
     sourceRef: { source: args.source, closure },
+    ...(credentials !== undefined ? { credentials } : {}),
   });
 }
 

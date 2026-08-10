@@ -2186,6 +2186,47 @@ describe("deployCodeSourcedWorkflow", () => {
     ).rejects.toThrow(/unapproved/);
     expect(deployAttempted).toBe(false);
   });
+
+  test("fails closed when the definition carries credential bindings but no db/cipher/tenant is supplied", async () => {
+    const mockRouter = createMockRouter();
+    let deployAttempted = false;
+    mockRouter.sendAgentDeploy = (() => {
+      deployAttempted = true;
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    const { approval, projection, closure } = await makeApproveOutput([
+      "tool:read",
+    ]);
+    if (!approval.ok) throw new Error("expected approval");
+    // A projection carrying a credential binding: resolution must run, and with
+    // no db/cipher/tenant supplied it fails closed before any frame is sent
+    // (never delivering an unresolvable-credential deployment).
+    const withBinding = {
+      ...projection,
+      credentialBindings: [
+        {
+          package: "test/tool",
+          handle: "api_key",
+          provider: "openai",
+          locator: "tenant" as const,
+        },
+      ],
+    };
+
+    await expect(
+      deployCodeSourcedWorkflow({
+        sidecarRouter: mockRouter,
+        agentAddress: "ins_dep_cred@workflow.interchange",
+        config: CONFIG,
+        sources: SOURCES,
+        approved: { approval, projection: withBinding, closure },
+        source: SOURCE,
+      }),
+    ).rejects.toThrow(/db\/credentialCipher\/tenantId were not supplied/);
+    expect(deployAttempted).toBe(false);
+  });
 });
 
 describe("deployInstanceAtHead inference-source pinning", () => {
