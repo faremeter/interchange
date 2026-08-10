@@ -20,6 +20,7 @@ import {
 import {
   grant as grantTable,
   sidecarAllocation as sidecarAllocationTable,
+  workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
@@ -611,16 +612,28 @@ export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
   approved: InstallAndApproveResult;
   source: WorkflowDefinitionSource;
   /**
-   * The hub DB handle + credential cipher + the definition's OWN tenant, used
-   * to resolve the definition's credential bindings into delivered material.
-   * REQUIRED when the definition carries credential bindings (resolution fails
-   * closed without them); omit only for a binding-free deployment. `tenantId`
-   * is the definition's own tenant (tenant-owned resolution walks up from it);
-   * do not pass a request/config tenant that may differ from the definition's.
+   * The hub DB handle, the definition's OWN tenant, the deployment's anchor run
+   * id, and the mail domain its run address lives under. REQUIRED: this function
+   * writes the deployment's anchor `workflow_run` row, and run-grant
+   * materialization keys off it. `tenantId` is the definition's own tenant
+   * (tenant-owned credential resolution walks up from it); do not pass a
+   * request/config tenant that may differ. `anchorRunId` is caller-supplied: the
+   * deployment mail address is frozen into the approved package bytes at
+   * authoring time, so the run id it derives from is fixed before this runs and
+   * cannot be minted here. `deploymentDomain` pairs with `anchorRunId` to
+   * re-derive the run address and assert it matches `agentAddress`, failing
+   * closed on an incoherent pair.
    */
-  db?: DB["db"];
+  db: DB["db"];
+  tenantId: string;
+  anchorRunId: string;
+  deploymentDomain: string;
+  /**
+   * Credential cipher, REQUIRED only when the definition carries credential
+   * bindings (resolution fails closed without it); omit for a binding-free
+   * deployment.
+   */
   credentialCipher?: CredentialCipher;
-  tenantId?: string;
 };
 
 /**
@@ -654,6 +667,42 @@ export async function deployCodeSourcedWorkflow(
     );
   }
 
+  // Fail-closed persisted-definition guard. The anchor row this writes carries
+  // an FK to `workflow_definition`, so a phantom `definitionId` would otherwise
+  // reach the INSERT and fail with a raw constraint violation. A mis-wired
+  // caller -- or a test double that skips the approve step's DB writer -- could
+  // pass an approval whose definition was never persisted; verify it exists and
+  // fail with a domain error before deploying, rather than deploying and then
+  // failing the anchor insert into a deployed-but-unanchored state.
+  const persistedDefinition = await args.db.query.workflowDefinition.findFirst({
+    where: eq(workflowDefinitionTable.id, approval.definitionId),
+    columns: { id: true },
+  });
+  if (persistedDefinition === undefined) {
+    throw new Error(
+      `deployCodeSourcedWorkflow: approval.definitionId ${approval.definitionId} does not reference a persisted workflow_definition row`,
+    );
+  }
+
+  // Coherence guard, run BEFORE the deploy frame: the anchor row's id and its
+  // routing address must name the same run. The deployment mail address is
+  // frozen into the approved package bytes at authoring time, so its run id is
+  // fixed before this runs and the caller owns `anchorRunId`. A mismatched
+  // (anchorRunId, agentAddress) pair would let run-grant materialization find
+  // the anchor by `address` while `deriveRunAddress` from `anchorRunId` names a
+  // different run -- a silent grant-identity split. Fail closed here, before the
+  // frame is sent or any row is persisted, rather than deploying an incoherent
+  // pair.
+  const derivedAddress = deriveRunAddress({
+    runId: args.anchorRunId,
+    domain: args.deploymentDomain,
+  });
+  if (derivedAddress !== args.agentAddress) {
+    throw new Error(
+      `deployCodeSourcedWorkflow: anchorRunId ${args.anchorRunId} derives address ${derivedAddress} but agentAddress is ${args.agentAddress}`,
+    );
+  }
+
   // Resolve the operator-approved credential bindings into delivered material.
   // Tenant-owned resolution keys off the definition's tenant and walks up the
   // hierarchy; it does not consult creator/invoker (the only locator today is
@@ -663,15 +712,10 @@ export async function deployCodeSourcedWorkflow(
   const bindings = projection.credentialBindings ?? [];
   let credentials: CredentialDelivery | undefined;
   if (bindings.length > 0) {
-    if (
-      args.db === undefined ||
-      args.credentialCipher === undefined ||
-      args.tenantId === undefined
-    ) {
+    if (args.credentialCipher === undefined) {
       throw new Error(
         "deployCodeSourcedWorkflow: definition carries credential bindings but " +
-          "db/credentialCipher/tenantId were not supplied; cannot resolve " +
-          "credential material",
+          "no credentialCipher was supplied; cannot resolve credential material",
       );
     }
     const delivery = await buildCredentialDelivery({
@@ -690,7 +734,7 @@ export async function deployCodeSourcedWorkflow(
     credentials = delivery.delivery;
   }
 
-  return sendMultiStepDeployFrame({
+  const result = await sendMultiStepDeployFrame({
     lineage: "source-ref",
     sidecarRouter: args.sidecarRouter,
     agentAddress: args.agentAddress,
@@ -701,6 +745,31 @@ export async function deployCodeSourcedWorkflow(
     sourceRef: { source: args.source, closure },
     ...(credentials !== undefined ? { credentials } : {}),
   });
+
+  // Write the deployment's anchor `workflow_run` row -- the deployment's
+  // first-class record that owns its routing address and public key, mirroring
+  // the live-authored `deployWorkflowDefinition`. Run-grant materialization keys
+  // off this row (address + live status), so WITHOUT it no per-run grants (tool,
+  // capability, OR credential) ever materialize for a source-ref deployment.
+  // Born "deployed" (live but pre-trigger): the first trigger's materialization
+  // flips it to "running" via `anchorWithPrincipal`'s guarded update, which a
+  // row born "running" would skip. Its `anchorRunId` equals its own id, so the
+  // anchor references itself. The deployer read grant the live-authored path
+  // also seeds is deferred to the production route, which carries the
+  // authenticated deployer principal; this stays a single insert with no grant
+  // row to pair atomically.
+  await args.db.insert(workflowRunTable).values({
+    id: args.anchorRunId,
+    tenantId: args.tenantId,
+    anchorRunId: args.anchorRunId,
+    definitionId: approval.definitionId,
+    address: args.agentAddress,
+    publicKey: result.publicKey,
+    status: "deployed",
+    createdAt: new Date(),
+  });
+
+  return result;
 }
 
 /**

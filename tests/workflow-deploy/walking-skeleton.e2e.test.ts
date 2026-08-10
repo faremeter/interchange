@@ -53,6 +53,7 @@ import {
 } from "@intx/hub-sessions";
 import {
   workflowDefinitionVersion as workflowDefinitionVersionTable,
+  workflowRun as workflowRunTable,
   tenant as tenantTable,
 } from "@intx/db/schema";
 import type {
@@ -62,6 +63,7 @@ import type {
 } from "@intx/tool-packaging";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { WorkflowDefinitionRegistrySource } from "@intx/types/workflow-sources";
+import { generateId } from "@intx/hub-common";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
@@ -78,7 +80,10 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "walking-skeleton-e2e";
+// A run-first anchor id (run_<hex>): the live trigger->run path derives the run
+// id from the deployment address via parseRunAddress, which requires the run_
+// prefix, so a non-run_ literal would throw "Invalid run address" mid-test.
+const DEPLOYMENT_ID = generateId("workflowRun");
 const STEP_ID = "run";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
@@ -399,7 +404,7 @@ describe("walking skeleton e2e", () => {
     };
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: DEPLOYMENT_ID,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
@@ -417,8 +422,29 @@ describe("walking skeleton e2e", () => {
       agentAddress: deploymentMailAddress,
       config,
       sources: { [STEP_ID]: [inferenceSource] },
+      db: h.db,
+      tenantId: TENANT_ID,
+      anchorRunId: DEPLOYMENT_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
     });
     expect(deployResult.publicKey.length).toBeGreaterThan(0);
+
+    // The composed entrypoint wrote the deployment's anchor workflow_run row.
+    // Run-grant materialization keys off this row by address; without it, no
+    // per-run grants would ever materialize for this source-ref deployment.
+    const anchorRow = await h.db
+      .select({
+        address: workflowRunTable.address,
+        publicKey: workflowRunTable.publicKey,
+        tenantId: workflowRunTable.tenantId,
+      })
+      .from(workflowRunTable)
+      .where(eq(workflowRunTable.id, DEPLOYMENT_ID))
+      .limit(1)
+      .then((rows) => rows[0]);
+    expect(anchorRow?.address).toBe(deploymentMailAddress);
+    expect(anchorRow?.publicKey).toBe(deployResult.publicKey);
+    expect(anchorRow?.tenantId).toBe(TENANT_ID);
 
     // Register the deployment so the fixture helpers resolve its workflow-run
     // repo, then wait for the deployment address to become routable.
