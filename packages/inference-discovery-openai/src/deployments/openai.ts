@@ -40,6 +40,7 @@ const REDACT_RESPONSE_HEADERS: readonly string[] = [
   "set-cookie",
   "x-request-id",
   "openai-organization",
+  "openai-project",
 ];
 
 export interface CreateOpenAIPluginOpts {

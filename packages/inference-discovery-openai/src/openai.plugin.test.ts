@@ -61,6 +61,7 @@ describe("createOpenAIPlugin", () => {
       "set-cookie",
       "x-request-id",
       "openai-organization",
+      "openai-project",
     ]);
   });
 
