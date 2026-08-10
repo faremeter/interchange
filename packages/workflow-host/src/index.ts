@@ -20,6 +20,7 @@ export {
 export {
   createWorkflowSpawnChild,
   createWorkflowSpawnSuspendableChild,
+  createInMemorySpawnSuspendableChild,
   type ChildTerminalStatus,
   type RunChildWorkflow,
   type RunSuspendableChild,
