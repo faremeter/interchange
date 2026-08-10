@@ -14,7 +14,7 @@ build-admin-ui: FORCE
 
 lint: FORCE
 	prettier -c .
-	eslint --cache .
+	NODE_OPTIONS=--max-old-space-size=8192 eslint --cache .
 	$(BUN) bin/gen-api-docs.ts --check
 	$(BUN) bin/check-deps.ts
 	$(BUN) bin/check-launchers.ts
