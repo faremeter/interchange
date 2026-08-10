@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { INTENTS } from "@intx/inference-discovery/catalog";
+import { INTENTS, SUPPORT_MATRIX } from "@intx/inference-discovery/catalog";
 import { createOpenAIPlugin } from "./index";
 import {
   buildMultiTurnTurn1Body,
@@ -63,6 +63,22 @@ describe("createOpenAIPlugin", () => {
       "openai-organization",
       "openai-project",
     ]);
+  });
+
+  test("every openai model in the support matrix is advertised", () => {
+    // OPENAI_MODELS (advertised) and the support-matrix openai rows are edited
+    // separately. A matrix model absent from the advertised roster is one the
+    // plugin never surfaces, so this catches that drift between the two lists.
+    const advertised = new Set(makePlugin().models);
+    const matrixModels = new Set(
+      SUPPORT_MATRIX.filter((entry) => entry.provider === "openai").map(
+        (entry) => entry.model,
+      ),
+    );
+    const unadvertised = [...matrixModels].filter(
+      (model) => !advertised.has(model),
+    );
+    expect(unadvertised).toEqual([]);
   });
 
   test("buildAuthHeaders attaches a Bearer token", () => {

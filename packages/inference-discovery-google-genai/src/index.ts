@@ -18,6 +18,7 @@ import { buildRequestBody, type GeminiModelClass } from "./request-body";
 import { reconstructResponseFromSSE } from "./sse";
 
 export type { GeminiModelClass } from "./request-body";
+export { isKnownModel } from "./request-body";
 
 const PROVIDER_NAME = "google-genai";
 const MODELS = [
