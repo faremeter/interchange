@@ -89,6 +89,33 @@ function liveFixtureModule(id: string, suffix = ""): string {
   return `export const workflow = ${JSON.stringify(def)};\n`;
 }
 
+// A fixture whose only step is an onTrigger section carrying an INLINE body,
+// so the source-ref child's post-verify rewrite extracts a non-empty bodies
+// map -- the shape that drives the in-memory suspendable-child resolver.
+function onTriggerFixtureModule(id: string): string {
+  const def = {
+    id,
+    triggers: [{ type: "manual" }],
+    steps: {
+      sect: {
+        kind: "onTrigger",
+        id: "sect",
+        on: { type: "mail", to: `${id}@example.com` },
+        body: {
+          inline: {
+            id: "body-inner",
+            triggers: [{ type: "manual" }],
+            steps: { w: { kind: "sleep", id: "w", durationMs: 5 } },
+            stepOrder: ["w"],
+          },
+        },
+      },
+    },
+    stepOrder: ["sect"],
+  };
+  return `export const workflow = ${JSON.stringify(def)};\n`;
+}
+
 /**
  * Materialize a fixture workflow-definition closure on disk and return its
  * package dir plus the hub-approved wire hash of the live definition it
@@ -98,6 +125,7 @@ async function materializeFixtureClosure(
   prefix: string,
   id: string,
   suffix = "",
+  moduleSource?: string,
 ): Promise<{ packageDir: string; approvedHash: string }> {
   const packageDir = await makeTempDir(prefix);
   await fsp.writeFile(
@@ -111,7 +139,7 @@ async function materializeFixtureClosure(
   );
   await fsp.writeFile(
     path.join(packageDir, "workflow.mjs"),
-    liveFixtureModule(id, suffix),
+    moduleSource ?? liveFixtureModule(id, suffix),
     "utf8",
   );
   const live = await loadWorkflowDefinitionFromClosure({ packageDir });
@@ -640,6 +668,56 @@ describe("source-ref run child", () => {
 
     // The barrier fires before the child announces readiness: no upstream
     // frame was emitted, so the run never proceeded.
+    expect(childToSupervisor.flushed()).toHaveLength(0);
+    supervisorToChild.close();
+  }, 30000);
+
+  test("source-ref onTrigger bodies with no executor binding fail closed at startup", async () => {
+    const baseDir = await makeTempDir("srcref-ontrigger-noexec-base-");
+    // A closure whose onTrigger body the child extracts to a non-empty bodies
+    // map. `buildBindings` wires no `runSuspendableChild` executor, so the
+    // child cannot build the in-memory body resolver -- proving the source-ref
+    // arm SELECTS the in-memory path (it detects bodies and requires the
+    // executor) rather than silently falling back to a disk read.
+    const { packageDir, approvedHash } = await materializeFixtureClosure(
+      "srcref-ontrigger-noexec-pkg-",
+      "srcref-ot-noexec",
+      "",
+      onTriggerFixtureModule("srcref-ot-noexec"),
+    );
+
+    const supervisorKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSourceRefEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash: approvedHash,
+        closurePackageDir: packageDir,
+      }),
+    );
+    const bindings = buildBindings(baseDir);
+
+    await expect(
+      runWorkflowChild({
+        env,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings,
+      }),
+    ).rejects.toThrow(
+      /carries onTrigger bodies but the host wired no runSuspendableChild/,
+    );
+
+    // The check fires at startup, before the child announces readiness.
     expect(childToSupervisor.flushed()).toHaveLength(0);
     supervisorToChild.close();
   }, 30000);
