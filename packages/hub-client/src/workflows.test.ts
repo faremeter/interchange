@@ -70,7 +70,7 @@ describe("listWorkflowDeployments", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({
       method: "GET",
-      path: `/api/tenants/${TENANT_ID}/workflows/instances`,
+      path: `/api/tenants/${TENANT_ID}/workflows/deployments`,
       body: undefined,
     });
     expect(result).toEqual(rows);
@@ -99,7 +99,7 @@ describe("deployWorkflow", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({
       method: "POST",
-      path: `/api/tenants/${TENANT_ID}/workflows/instances`,
+      path: `/api/tenants/${TENANT_ID}/workflows/deployments`,
       body: {
         assetId: "asset_wf1",
         sources,

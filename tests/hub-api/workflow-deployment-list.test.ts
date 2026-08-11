@@ -26,7 +26,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
-// Exercises GET /workflows/instances against a real migrated schema. The list
+// Exercises GET /workflows/deployments against a real migrated schema. The list
 // enumerates each deployment's anchor run -- the workflow_run whose id equals
 // its deployment_id -- and synthesizes the deployment shape from the run and
 // its definition. Only
@@ -253,7 +253,7 @@ async function fetchList(
   app: ReturnType<typeof createApp>,
 ): Promise<{ res: Response; rows: ListRow[] }> {
   const res = await app.request(
-    `/api/tenants/${TENANT_ID}/workflows/instances`,
+    `/api/tenants/${TENANT_ID}/workflows/deployments`,
   );
   if (res.status !== 200) return { res, rows: [] };
   const body: unknown = await res.json();
@@ -272,7 +272,7 @@ async function fetchList(
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "GET /workflows/instances (anchor-run list)",
+  "GET /workflows/deployments (anchor-run list)",
   () => {
     test("lists an anchor run as a deployed deployment", async () => {
       await seedAnchor({

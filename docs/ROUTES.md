@@ -160,7 +160,7 @@ When a user approves with `scope: "always"`, the system creates a persistent cap
 
 The workflow-process model (see LAYOUT.md and ARCHITECTURE.md) is driven through a tenant-scoped route group at `/api/tenants/:tenantId/workflows`, a notable group in the same sense as the git and mail surfaces. It exposes a deployment resource with members for launching, driving, and observing workflow runs:
 
-- Deploy a workflow and list a tenant's workflow deployments (`POST` and `GET .../workflows/instances`).
+- Deploy a workflow and list a tenant's workflow deployments (`POST` and `GET .../workflows/deployments`).
 - Drive a running deployment by delivering a signal or inbound mail (`POST .../workflows/:deploymentId/signals`, `POST .../workflows/:deploymentId/mail`).
 - Observe a deployment's runs and per-run events (`GET .../workflows/:deploymentId/runs`, `GET .../workflows/:deploymentId/runs/:runId/events`).
 

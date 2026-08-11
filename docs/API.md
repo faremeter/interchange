@@ -49,8 +49,8 @@
 | GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
-| POST | /api/tenants/:tenantId/workflows/instances | Deploy a workflow |
-| GET | /api/tenants/:tenantId/workflows/instances | List workflow deployments |
+| POST | /api/tenants/:tenantId/workflows/deployments | Deploy a workflow |
+| GET | /api/tenants/:tenantId/workflows/deployments | List workflow deployments |
 | POST | /api/tenants/:tenantId/workflows/:deploymentId/signals | Deliver a signal to a workflow run |
 | POST | /api/tenants/:tenantId/workflows/:deploymentId/mail | Trigger a workflow run |
 | GET | /api/tenants/:tenantId/workflows/:deploymentId/runs | List workflow runs |
@@ -584,7 +584,7 @@ Body: WorkflowRollbackRequest
 
 ## Workflows
 
-### POST /api/tenants/:tenantId/workflows/instances
+### POST /api/tenants/:tenantId/workflows/deployments
 Deploy a workflow
 
 Hydrates a workflow definition from its workflow asset's workflow.json and deploys it through the general multi-step workflow deploy path. Returns the deployment record.
@@ -597,7 +597,7 @@ Body: unknown
 500: ErrorResponse -- Deployment projection row missing after deploy
 502: ErrorResponse -- Sidecar unavailable
 
-### GET /api/tenants/:tenantId/workflows/instances
+### GET /api/tenants/:tenantId/workflows/deployments
 List workflow deployments
 
 Lists the workflow deployments for the tenant, most recent first.
