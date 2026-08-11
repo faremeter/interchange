@@ -310,7 +310,7 @@ export async function seedWorkflowRun(
   await db.insert(workflowRun).values({
     id: r.id,
     tenantId: r.tenantId,
-    deploymentId: r.deploymentId ?? null,
+    anchorRunId: r.deploymentId ?? null,
     definitionId,
     principalId: r.principalId ?? null,
     address: r.address ?? null,

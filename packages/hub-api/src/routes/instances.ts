@@ -512,12 +512,12 @@ export function createInstanceRoutes({
 
         // The folded run IS the launched instance: it owns the plain routing
         // address and carries the runtime bindings an agent_instance would.
-        // `deploymentId` is null (a folded run has no deployment); the public
+        // `anchorRunId` is null (a folded run has no deployment); the public
         // key lands later at deploy-ack.
         await tx.insert(workflowRun).values({
           id: instanceId,
           definitionId: definition.id,
-          deploymentId: null,
+          anchorRunId: null,
           tenantId: tenant.id,
           principalId: instancePrincipalId,
           address: agentAddress,
@@ -709,7 +709,7 @@ export function createInstanceRoutes({
         const runConditions = [
           eq(workflowRun.tenantId, tenantCtx.id),
           isNotNull(workflowRun.address),
-          isNull(workflowRun.deploymentId),
+          isNull(workflowRun.anchorRunId),
         ];
         if (definitionId !== undefined) {
           runConditions.push(eq(workflowRun.definitionId, definitionId));

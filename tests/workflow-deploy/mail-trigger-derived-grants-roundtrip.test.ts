@@ -394,7 +394,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(runs).toHaveLength(1);
       const runRow = runs[0];
       if (runRow === undefined) throw new Error("unreachable");
-      expect(runRow.deploymentId).toBe(DEPLOYMENT_ID);
+      expect(runRow.anchorRunId).toBe(DEPLOYMENT_ID);
       expect(runRow.tenantId).toBe(TENANT_ID);
       expect(runRow.principalId).toBe(runPrincipal.id);
 
@@ -429,7 +429,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(workflowRunTable).values({
         id: DEPLOYMENT_ID,
         tenantId: TENANT_ID,
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         definitionId: `wfd_${DEPLOYMENT_ID}`,
         address: deploymentMailAddress,
         status: "running",

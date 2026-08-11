@@ -32,7 +32,7 @@ export async function resolveWorkflowPrincipalNames(
       anchorAddress: anchor.address,
     })
     .from(workflowRun)
-    .leftJoin(anchor, eq(workflowRun.deploymentId, anchor.id))
+    .leftJoin(anchor, eq(workflowRun.anchorRunId, anchor.id))
     .where(inArray(workflowRun.id, runIds));
 
   for (const r of runs) {

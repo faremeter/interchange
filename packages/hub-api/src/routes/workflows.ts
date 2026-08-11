@@ -261,7 +261,7 @@ async function deploymentAnchorRunExists(
       and(
         eq(workflowRun.id, deploymentId),
         eq(workflowRun.tenantId, tenantId),
-        isNotNull(workflowRun.deploymentId),
+        isNotNull(workflowRun.anchorRunId),
       ),
     )
     .limit(1);
@@ -644,8 +644,8 @@ export function createWorkflowRoutes({
         .where(
           and(
             eq(workflowRun.tenantId, tenant.id),
-            eq(workflowRun.id, workflowRun.deploymentId),
-            isNotNull(workflowRun.deploymentId),
+            eq(workflowRun.id, workflowRun.anchorRunId),
+            isNotNull(workflowRun.anchorRunId),
           ),
         )
         .orderBy(desc(workflowRun.createdAt));
@@ -714,14 +714,14 @@ export function createWorkflowRoutes({
           signalRun,
           and(
             eq(signalRun.id, runId),
-            eq(signalRun.deploymentId, workflowRun.id),
+            eq(signalRun.anchorRunId, workflowRun.id),
           ),
         )
         .where(
           and(
             eq(workflowRun.id, deploymentId),
             eq(workflowRun.tenantId, tenant.id),
-            isNotNull(workflowRun.deploymentId),
+            isNotNull(workflowRun.anchorRunId),
           ),
         )
         .limit(1);
@@ -1038,14 +1038,14 @@ export function createWorkflowRoutes({
           topLevelRun,
           and(
             eq(topLevelRun.id, runId),
-            eq(topLevelRun.deploymentId, workflowRun.id),
+            eq(topLevelRun.anchorRunId, workflowRun.id),
           ),
         )
         .where(
           and(
             eq(workflowRun.id, deploymentId),
             eq(workflowRun.tenantId, tenant.id),
-            isNotNull(workflowRun.deploymentId),
+            isNotNull(workflowRun.anchorRunId),
           ),
         )
         .limit(1);

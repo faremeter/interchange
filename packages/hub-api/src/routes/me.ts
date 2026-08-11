@@ -241,7 +241,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
       const conditions: SQL[] = [
         eq(workflowRun.status, "running"),
         isNotNull(workflowRun.address),
-        isNull(workflowRun.deploymentId),
+        isNull(workflowRun.anchorRunId),
       ];
       if (cursor) {
         conditions.push(

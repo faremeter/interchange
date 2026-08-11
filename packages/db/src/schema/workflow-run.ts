@@ -30,7 +30,7 @@ export const workflowRun = pgTable(
     // The definition a run belongs to, carried by every run: a folded
     // agent-origin run sets it at launch, and a deployment's anchor run and its
     // child runs carry the deployment's definition. It is the run's anchor to a
-    // first-class definition. `cascade` matches `deploymentId`'s onDelete, so
+    // first-class definition. `cascade` matches `anchorRunId`'s onDelete, so
     // deleting the definition removes its runs.
     definitionId: text("definition_id")
       .notNull()
@@ -42,7 +42,7 @@ export const workflowRun = pgTable(
     // deployment id -- so an anchor row is self-referential. The only runtime
     // read of the column (`resolveWorkflowPrincipalNames`) degrades gracefully
     // when it is null.
-    deploymentId: text("deployment_id").references(
+    anchorRunId: text("anchor_run_id").references(
       (): AnyPgColumn => workflowRun.id,
       { onDelete: "cascade" },
     ),

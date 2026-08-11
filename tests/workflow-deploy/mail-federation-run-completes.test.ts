@@ -347,7 +347,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(workflowRunTable).values({
         id: RECEIVER_ID,
         tenantId: RECEIVER_TENANT_ID,
-        deploymentId: RECEIVER_ID,
+        anchorRunId: RECEIVER_ID,
         definitionId: `wfd_${RECEIVER_ID}`,
         address: receiverAddress,
         status: "running",

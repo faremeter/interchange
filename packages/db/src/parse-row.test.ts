@@ -258,7 +258,7 @@ function makeWorkflowRunRow(
   return {
     id: "run_0123456789abcdef",
     definitionId: "wfd_0123456789abcdef",
-    deploymentId: "dep_0123456789abcdef",
+    anchorRunId: "dep_0123456789abcdef",
     tenantId: "tnt_acme",
     principalId: null,
     status: "running",

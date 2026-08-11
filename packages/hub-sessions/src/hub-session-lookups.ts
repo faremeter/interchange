@@ -269,7 +269,7 @@ export function createHubSessionLookups(
         await workflowRunStore.createIfAbsent(
           {
             id: runId,
-            deploymentId: anchor.id,
+            anchorRunId: anchor.id,
             definitionId,
             tenantId,
             principalId: null,
@@ -369,7 +369,7 @@ export function createHubSessionLookups(
         .select({
           id: workflowRun.id,
           address: workflowRun.address,
-          deploymentId: workflowRun.deploymentId,
+          anchorRunId: workflowRun.anchorRunId,
         })
         .from(workflowRun)
         .where(
@@ -381,7 +381,7 @@ export function createHubSessionLookups(
         .limit(1);
       if (
         anchor === undefined ||
-        anchor.deploymentId !== anchor.id ||
+        anchor.anchorRunId !== anchor.id ||
         anchor.address === null
       ) {
         logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no running deployment anchor`;
@@ -473,11 +473,11 @@ export function createHubSessionLookups(
         try {
           await db.transaction(async (tx) => {
             const [ownedRun] = await tx
-              .select({ deploymentId: workflowRun.deploymentId })
+              .select({ anchorRunId: workflowRun.anchorRunId })
               .from(workflowRun)
               .where(eq(workflowRun.id, runId))
               .limit(1);
-            if (ownedRun?.deploymentId !== anchor.id) {
+            if (ownedRun?.anchorRunId !== anchor.id) {
               logger.error`Ignoring terminal event for run ${runId}: it does not belong to source deployment ${anchor.id}`;
               return;
             }

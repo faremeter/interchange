@@ -1771,7 +1771,7 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
     const runRow = runInserts[0]?.rows[0];
     expect(runRow).toBeDefined();
     expect(runRow?.["definitionId"]).toBe("wfd_folded_1");
-    expect(runRow?.["deploymentId"]).toBeNull();
+    expect(runRow?.["anchorRunId"]).toBeNull();
     expect(runRow?.["status"]).toBe("running");
     expect(typeof runRow?.["address"]).toBe("string");
 
@@ -2131,7 +2131,7 @@ describe("DELETE /workflows/runs/:instanceId (folded run)", () => {
     return {
       id: RUN_ID,
       tenantId: TENANT_ID,
-      deploymentId: null,
+      anchorRunId: null,
       definitionId: "wfd_folded",
       principalId: RUN_PRINCIPAL,
       address: RUN_ADDRESS,

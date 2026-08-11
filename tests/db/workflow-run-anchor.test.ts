@@ -74,7 +74,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const store = createWorkflowRunStore(h.db);
       await store.anchorWithPrincipal({
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
         principalId: "prn-run",
@@ -105,7 +105,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const store = createWorkflowRunStore(h.db);
       await store.anchorWithPrincipal({
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
         principalId: "prn-run",
@@ -143,7 +143,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const store = createWorkflowRunStore(h.db);
       await store.anchorWithPrincipal({
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
         principalId: "prn-run",

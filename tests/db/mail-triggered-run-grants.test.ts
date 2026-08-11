@@ -124,7 +124,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(workflowRun).values({
         id: DEPLOYMENT,
         tenantId: TENANT,
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         definitionId: DEFINITION,
         address: WORKFLOW_ADDRESS,
         status: "running",
@@ -182,7 +182,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(workflowRun)
         .where(eq(workflowRun.id, RUN_ID));
       expect(runs).toHaveLength(1);
-      expect(runs[0]?.deploymentId).toBe(DEPLOYMENT);
+      expect(runs[0]?.anchorRunId).toBe(DEPLOYMENT);
       expect(runs[0]?.principalId).toBe(runPrincipalId);
       expect(runs[0]?.status).toBe("running");
       // The committed run anchors on the deployment's definition -- the one the
