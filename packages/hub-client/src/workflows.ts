@@ -73,7 +73,7 @@ export async function listWorkflowDeployments(
 ): Promise<WorkflowDeployment[]> {
   const raw = await transport.fetch<unknown>(
     "GET",
-    `${workflowsBasePath(tenantId)}/instances`,
+    `${workflowsBasePath(tenantId)}/deployments`,
   );
   const deployments = WorkflowDeploymentList(raw);
   if (deployments instanceof type.errors) {
@@ -91,7 +91,7 @@ export async function deployWorkflow(
 ): Promise<WorkflowDeployment> {
   const raw = await transport.fetch<unknown>(
     "POST",
-    `${workflowsBasePath(tenantId)}/instances`,
+    `${workflowsBasePath(tenantId)}/deployments`,
     {
       assetId: input.assetId,
       sources: input.sources,

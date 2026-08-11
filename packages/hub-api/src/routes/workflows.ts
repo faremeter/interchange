@@ -307,7 +307,7 @@ export function createWorkflowRoutes({
   }
 
   app.post(
-    "/instances",
+    "/deployments",
     requireGrant("workflow:*", "create"),
     describeRoute({
       tags: ["Workflows"],
@@ -594,7 +594,7 @@ export function createWorkflowRoutes({
   );
 
   app.get(
-    "/instances",
+    "/deployments",
     requireGrant("workflow:*", "read"),
     describeRoute({
       tags: ["Workflows"],

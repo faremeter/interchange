@@ -903,7 +903,7 @@ function assertBody<T extends Type>(schema: T, raw: unknown): T["infer"] {
   return parsed;
 }
 
-describe("POST /workflows/instances", () => {
+describe("POST /workflows/deployments", () => {
   test("deploys a workflow and returns the deployment record", async () => {
     const deployCalls: DeployWorkflowDefinitionParams[] = [];
     const app = createTestApp({
@@ -917,7 +917,7 @@ describe("POST /workflows/instances", () => {
     });
 
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -963,7 +963,7 @@ describe("POST /workflows/instances", () => {
     });
 
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1005,7 +1005,7 @@ describe("POST /workflows/instances", () => {
     });
 
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1028,7 +1028,7 @@ describe("POST /workflows/instances", () => {
   test("rejects a caller without the workflow create grant", async () => {
     const app = createTestApp({ grants: [] });
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1052,7 +1052,7 @@ describe("POST /workflows/instances", () => {
       grants: [makeGrant({ action: "create" })],
     });
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1084,7 +1084,7 @@ describe("POST /workflows/instances", () => {
       ),
     });
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1119,7 +1119,7 @@ describe("POST /workflows/instances", () => {
       workflowJson: WORKFLOW_JSON_WITH_TOOLS,
     });
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1158,7 +1158,7 @@ describe("POST /workflows/instances", () => {
       },
     });
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1182,7 +1182,7 @@ describe("POST /workflows/instances", () => {
       db: { assetRow: undefined },
     });
     const res = await app.fetch(
-      authedPost(`${base()}/instances`, {
+      authedPost(`${base()}/deployments`, {
         assetId: ASSET_ID,
         sources: [
           {
@@ -1200,13 +1200,13 @@ describe("POST /workflows/instances", () => {
   });
 });
 
-describe("GET /workflows/instances", () => {
+describe("GET /workflows/deployments", () => {
   test("lists the tenant's workflow deployments", async () => {
     const app = createTestApp({
       db: { deploymentList: [deploymentRow] },
     });
     const res = await app.fetch(
-      new Request(`http://localhost${base()}/instances`),
+      new Request(`http://localhost${base()}/deployments`),
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -1235,7 +1235,7 @@ describe("GET /workflows/instances", () => {
     });
 
     const res = await app.fetch(
-      new Request(`http://localhost${base()}/instances`),
+      new Request(`http://localhost${base()}/deployments`),
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([
