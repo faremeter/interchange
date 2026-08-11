@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import {
 import { initAgentRepo } from "./init";
 import {
   applyPack,
+  publishPackAtomically,
   receivePackObjects,
   type CommitVerifier,
   type TreeValidator,
@@ -405,6 +406,181 @@ describe("applyPack", () => {
     );
     await expect(fs.promises.access(packPath)).rejects.toThrow();
     await expect(fs.promises.access(idxPath)).rejects.toThrow();
+  });
+});
+
+describe("publishPackAtomically", () => {
+  test("renames the completed pack before publishing its index", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    const renames: { from: string; to: string }[] = [];
+    const renameSpy = spyOn(fs.promises, "rename").mockImplementation(
+      async (from, to) => {
+        await originalRename(from, to);
+        renames.push({ from: from.toString(), to: to.toString() });
+      },
+    );
+
+    try {
+      await publishPackAtomically(targetDir, pack, "rename-order");
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    const finalPack = path.join(
+      targetDir,
+      ".git",
+      "objects",
+      "pack",
+      "pack-recv-rename-order.pack",
+    );
+    const finalIdx = finalPack.replace(/\.pack$/, ".idx");
+    expect(renames).toEqual([
+      {
+        from: path.join(
+          targetDir,
+          ".git",
+          "objects",
+          "pack-staging",
+          "rename-order",
+          "pack.pack",
+        ),
+        to: finalPack,
+      },
+      {
+        from: path.join(
+          targetDir,
+          ".git",
+          "objects",
+          "pack-staging",
+          "rename-order",
+          "pack.idx",
+        ),
+        to: finalIdx,
+      },
+    ]);
+    await fs.promises.access(finalPack);
+    await fs.promises.access(finalIdx);
+    await expect(
+      fs.promises.access(
+        path.join(targetDir, ".git", "objects", "pack-staging", "rename-order"),
+      ),
+    ).rejects.toThrow();
+  });
+
+  test.each(["pack", "idx"] as const)(
+    "does not overwrite an existing final %s",
+    async (extension) => {
+      const source = await makeSourceRepo();
+      const pack = await createPackFromRepo(source.dir, source.oids);
+      const targetDir = await tempDir();
+      await initAgentRepo(targetDir);
+
+      const packDir = path.join(targetDir, ".git", "objects", "pack");
+      const existingPath = path.join(
+        packDir,
+        `pack-recv-duplicate.${extension}`,
+      );
+      await fs.promises.mkdir(packDir, { recursive: true });
+      await fs.promises.writeFile(existingPath, "existing");
+
+      await expect(
+        publishPackAtomically(targetDir, pack, "duplicate"),
+      ).rejects.toThrow(/already published/);
+      expect(await fs.promises.readFile(existingPath, "utf8")).toBe("existing");
+    },
+  );
+
+  test("rejects concurrent publishers using the same transfer ID", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const originalIndexPack = git.indexPack.bind(git);
+    let signalIndexingStarted: () => void = () => undefined;
+    const indexingStarted = new Promise<void>((resolve) => {
+      signalIndexingStarted = resolve;
+    });
+    let releaseIndexing: () => void = () => undefined;
+    const indexingReleased = new Promise<void>((resolve) => {
+      releaseIndexing = resolve;
+    });
+    let blockNextIndex = true;
+    const indexPackSpy = spyOn(git, "indexPack").mockImplementation(
+      async (args) => {
+        if (blockNextIndex) {
+          blockNextIndex = false;
+          signalIndexingStarted();
+          await indexingReleased;
+        }
+        return originalIndexPack(args);
+      },
+    );
+
+    let firstPublish: Promise<string[]> | undefined;
+    try {
+      firstPublish = publishPackAtomically(targetDir, pack, "concurrent");
+      await indexingStarted;
+
+      await expect(
+        publishPackAtomically(targetDir, pack, "concurrent"),
+      ).rejects.toThrow(/already published or in progress/);
+      expect(indexPackSpy).toHaveBeenCalledTimes(1);
+
+      releaseIndexing();
+      await firstPublish;
+    } finally {
+      releaseIndexing();
+      await firstPublish?.catch(() => undefined);
+      indexPackSpy.mockRestore();
+    }
+  });
+
+  test("cleans up when index publication fails after the pack rename", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    let renameCount = 0;
+    const renameSpy = spyOn(fs.promises, "rename").mockImplementation(
+      async (from, to) => {
+        renameCount += 1;
+        if (renameCount === 2) throw new Error("index publish failed");
+        await originalRename(from, to);
+      },
+    );
+
+    try {
+      await expect(
+        publishPackAtomically(targetDir, pack, "partial"),
+      ).rejects.toThrow("index publish failed");
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    const finalPack = path.join(
+      targetDir,
+      ".git",
+      "objects",
+      "pack",
+      "pack-recv-partial.pack",
+    );
+    await expect(fs.promises.access(finalPack)).rejects.toThrow();
+    await expect(
+      fs.promises.access(finalPack.replace(/\.pack$/, ".idx")),
+    ).rejects.toThrow();
+    await expect(
+      fs.promises.access(
+        path.join(targetDir, ".git", "objects", "pack-staging", "partial"),
+      ),
+    ).rejects.toThrow();
   });
 });
 

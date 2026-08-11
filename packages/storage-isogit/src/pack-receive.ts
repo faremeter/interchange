@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import git from "isomorphic-git";
+
+import { hasCode } from "@intx/types";
+
 import { readRawObject } from "./isogit-helpers";
 import { withRepoDirLock } from "./repo-lock";
 
@@ -75,8 +78,8 @@ function stripGpgsig(raw: string): string {
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
-// Sibling of objects/pack/. Lives on the same filesystem so fs.link and
-// fs.rename between staging and pack/ are atomic metadata operations.
+// Sibling of objects/pack/. Lives on the same filesystem so fs.rename
+// between staging and pack/ is an atomic metadata operation.
 const STAGING_DIR_NAME = "pack-staging";
 
 /**
@@ -93,6 +96,27 @@ function publishedPackPaths(
   const finalPackPath = path.join(packDir, `pack-recv-${transferId}.pack`);
   const finalIdxPath = finalPackPath.replace(/\.pack$/, ".idx");
   return { finalPackPath, finalIdxPath };
+}
+
+async function pathExists(filepath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(filepath);
+    return true;
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "ENOENT") return false;
+    throw cause;
+  }
+}
+
+function transferIdCollisionError(
+  dir: string,
+  transferId: string,
+  cause?: unknown,
+): Error {
+  return new Error(
+    `transferId "${transferId}" already published or in progress in ${dir}; callers must guarantee transferId uniqueness across all historical and concurrent receives`,
+    { cause },
+  );
 }
 
 /**
@@ -261,18 +285,20 @@ async function writeTreeEntries(
  * non-recursively (verified at the source line refs above), so any
  * sibling directory under `objects/` is invisible to discovery.
  *
- * We stage in `objects/pack-staging/<transferId>/`. The per-transfer
- * subdirectory keeps concurrent receives' temp pairs isolated from each
- * other; the kernel guarantees that the staging directory and the
- * final `objects/pack/` are on the same filesystem (they share a
- * parent), so `fs.link` and `fs.rename` between them are atomic
- * metadata operations.
+ * We stage in `objects/pack-staging/<transferId>/`. Exclusive creation
+ * of the per-transfer subdirectory reserves the transfer ID and keeps
+ * concurrent receives' temp pairs isolated from each other. The kernel
+ * guarantees that the staging directory and the final `objects/pack/`
+ * are on the same filesystem (they share a parent), so `fs.rename`
+ * between them is an atomic metadata operation.
  *
  * # Sequence (numbered for cross-reference with cleanup contract)
  *
- *   1. Create `objects/pack-staging/<transferId>/` and write the pack
- *      bytes to `pack.pack` inside it. Readers scanning
- *      `objects/pack/` do not see this file (different directory).
+ *   1. Reserve the transfer ID by exclusively creating
+ *      `objects/pack-staging/<transferId>/`, reject any existing final
+ *      path for the same ID, and write the pack bytes to `pack.pack`
+ *      inside it. Readers scanning `objects/pack/` do not see this file
+ *      (different directory).
  *
  *   2. Run `git.indexPack` against the staging path — iso-git derives
  *      the `.idx` filename from the `.pack` filename and writes
@@ -284,11 +310,11 @@ async function writeTreeEntries(
  *   3. Atomic publish (transitions readers from "no new pack" to "new
  *      pack visible"):
  *
- *        a. `fs.link` staging `.pack` -> final `.pack`. The new
+ *        a. `fs.rename` staging `.pack` -> final `.pack`. The new
  *           `.pack` now exists in `objects/pack/`. Readers scanning
  *           for `.idx` files still do not see the new pack (no `.idx`
  *           for it in `objects/pack/` yet). The staging `.pack`
- *           directory entry is still present.
+ *           directory entry vanishes.
  *
  *        b. `fs.rename` staging `.idx` -> final `.idx`. The new `.idx`
  *           appears atomically in `objects/pack/`; readers' next
@@ -298,9 +324,7 @@ async function writeTreeEntries(
  *           the first place, this transition is observable only to
  *           this function.
  *
- *        c. Remove the staging directory recursively (`unlink` of the
- *           remaining `.pack` plus `rmdir`). The final `.pack` inode
- *           persists via the link created in 3a.
+ *        c. Remove the now-empty staging directory.
  *
  *   4. On any throw before publish completes, recursively remove the
  *      staging directory. `fs.rm({recursive: true, force: true})`
@@ -311,13 +335,17 @@ async function writeTreeEntries(
  *
  * On successful return, no staging files remain. On throw before
  * publish (steps 1-2), the staging directory and any files inside it
- * are removed. A throw partway through publish (between 3a and 3b)
- * leaves a linked-but-unindexed `.pack` in `objects/pack/`; this is
- * harmless (iso-git ignores `.pack` files with no matching `.idx`,
- * verified at `index.cjs:3394-3398`) and the recovery path on the next
- * call would re-write the same content. The cleanup-on-throw path
- * here attempts to remove the orphan `.pack` but does not mask the
- * original publish error.
+ * are removed. On a throw partway through publish (between 3a and 3b),
+ * cleanup attempts to remove both the staging directory and the
+ * unindexed `.pack` published by this call without masking the original
+ * error. An abrupt process termination or a cleanup failure can still
+ * leave an unindexed `.pack` in `objects/pack/` and files in the staging
+ * directory. Iso-git ignores `.pack` files with no matching `.idx`
+ * (verified at `index.cjs:3394-3398`), so repository reads remain
+ * unaffected. The staging reservation rejects concurrent reuse, and the
+ * final-path guard rejects historical reuse of that transfer ID. Callers
+ * must retry with a fresh ID; orphaned files remain harmless until
+ * manually removed.
  *
  * # Validation timing
  *
@@ -370,13 +398,36 @@ export async function publishPackAtomically(
   const packDir = path.join(dir, ".git", "objects", "pack");
   const stagingRoot = path.join(dir, ".git", "objects", STAGING_DIR_NAME);
   const stagingDir = path.join(stagingRoot, transferId);
-
-  await fs.promises.mkdir(packDir, { recursive: true });
-  await fs.promises.mkdir(stagingDir, { recursive: true });
-
   const stagingPackPath = path.join(stagingDir, "pack.pack");
   const stagingIdxPath = stagingPackPath.replace(/\.pack$/, ".idx");
   const { finalPackPath, finalIdxPath } = publishedPackPaths(dir, transferId);
+
+  await fs.promises.mkdir(packDir, { recursive: true });
+  await fs.promises.mkdir(stagingRoot, { recursive: true });
+  try {
+    // mkdir without recursive is an atomic reservation for concurrent
+    // calls using the same transfer ID.
+    await fs.promises.mkdir(stagingDir);
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "EEXIST") {
+      throw transferIdCollisionError(dir, transferId, cause);
+    }
+    throw cause;
+  }
+
+  try {
+    // Unlike link, rename may replace an existing destination. Check for
+    // a historical publication after acquiring the staging reservation.
+    if ((await pathExists(finalPackPath)) || (await pathExists(finalIdxPath))) {
+      throw transferIdCollisionError(dir, transferId);
+    }
+  } catch (err) {
+    await fs.promises
+      .rm(stagingDir, { recursive: true, force: true })
+      .catch(() => undefined);
+    throw err;
+  }
+
   // iso-git's indexPack takes a repo-root-relative filepath; derive it
   // from the absolute path rather than rebuilding the segment list so
   // the two stay coupled.
@@ -406,50 +457,32 @@ export async function publishPackAtomically(
     throw err;
   }
 
-  // Step 3: atomic publish. The .pack link (3a) and the .idx rename
+  // Step 3: atomic publish. The .pack rename (3a) and the .idx rename
   // (3b) are the two operations that determine externally-observable
   // state; a failure inside this block means the publish is partial
   // or absent, and the recovery rms below clear the half-published
   // pack from objects/pack/. Staging-directory cleanup is NOT part of
   // this block — see below.
+  let packPublished = false;
   try {
-    await fs.promises.link(stagingPackPath, finalPackPath); // 3a
+    await fs.promises.rename(stagingPackPath, finalPackPath); // 3a
+    packPublished = true;
     await fs.promises.rename(stagingIdxPath, finalIdxPath); // 3b
   } catch (err) {
-    // EEXIST on the link means `finalPackPath` already exists, which
-    // can only happen if a prior publishPackAtomically call on the
-    // same `dir` used the same `transferId`. The contract is that
-    // transferId is unique across all historical receives on `dir`;
-    // both production callers honour this (hub uses crypto.randomUUID,
-    // sidecar uses a per-process monotonic counter). Treat the EEXIST
-    // as a programmer error and surface it cleanly without running
-    // the recovery rms — those would destroy the earlier call's
-    // published pack and break any reader holding it.
-    if (
-      err !== null &&
-      typeof err === "object" &&
-      "code" in err &&
-      err.code === "EEXIST"
-    ) {
-      await fs.promises
-        .rm(stagingDir, { recursive: true, force: true })
-        .catch(() => undefined);
-      throw new Error(
-        `transferId "${transferId}" already published in ${dir}; callers must guarantee transferId uniqueness across all historical receives`,
-        { cause: err },
-      );
-    }
     // Partial-publish recovery: if 3a succeeded and 3b failed we
-    // leave a linked-but-unindexed .pack in objects/pack/. The rm of
-    // finalPackPath clears it; finalIdxPath cannot exist here (3b
-    // never completed), so no rm is needed for it. Each recovery rm
-    // is wrapped so a secondary failure (permissions, I/O) does not
-    // mask the original publish error — the caller needs to see the
-    // publish failure, not whatever the cleanup tripped on.
+    // leave an unindexed .pack in objects/pack/. Remove it only when
+    // this call completed 3a; a failure during 3a must not remove a
+    // file another publisher may own. Each recovery rm is wrapped so
+    // a secondary failure (permissions, I/O) does not mask the
+    // original publish failure.
     await fs.promises
       .rm(stagingDir, { recursive: true, force: true })
       .catch(() => undefined);
-    await fs.promises.rm(finalPackPath, { force: true }).catch(() => undefined);
+    if (packPublished) {
+      await fs.promises
+        .rm(finalPackPath, { force: true })
+        .catch(() => undefined);
+    }
     throw err;
   }
 
@@ -461,8 +494,8 @@ export async function publishPackAtomically(
   // EACCES/EBUSY/EIO on the staging rm trigger the recovery rms above
   // and delete a pack that was already published and (potentially)
   // already read by concurrent observers. A leftover staging
-  // directory on rm failure leaks disk until external cleanup; that
-  // is strictly preferable to retroactively destroying a successful
+  // directory on rm failure leaks disk until manually removed; that is
+  // strictly preferable to retroactively destroying a successful
   // publish.
   await fs.promises
     .rm(stagingDir, { recursive: true, force: true })
