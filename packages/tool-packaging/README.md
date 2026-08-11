@@ -29,13 +29,12 @@ Concretely the loader:
    `cache.extractTarball`. A single sha512 produces a single
    extraction shared across instances.
 3. Lays out each entry under `<scratch>/store/<name>/<version>/` by
-   hardlinking the file tree from the cache extraction. Each layout
+   copying the file tree from the cache extraction. Each layout
    directory then gets `node_modules/<dep>` symlinked into it pointing
    at the sibling `store/<dep>/<depVersion>/` chosen for that
-   requirer. Hardlinks keep on-disk usage to one copy per integrity
-   per filesystem; symlinks at the `node_modules/` boundary let
-   Node's realpath-based resolver walk to the dep's own layout dir
-   (which has its own `node_modules/`).
+   requirer. Symlinks at the `node_modules/` boundary let Node's
+   realpath-based resolver walk to the dep's own layout dir (which has
+   its own `node_modules/`).
 4. Dynamically imports each top-level entry's `interchange.tools`
    module and collects the `AnnotatedToolFactory` /
    `AnnotatedPluginFactory` values it exports.

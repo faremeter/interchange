@@ -16,7 +16,7 @@
 //      `cache.extractTarball` so a single sha512 has a single extraction
 //      shared across instances.
 //   3. Lays out each entry under `<scratch>/store/<name>/<version>/` by
-//      hardlinking the file tree from the cache extraction. Each layout
+//      copying the file tree from the cache extraction. Each layout
 //      directory gets its own `node_modules/<dep>` symlink to the
 //      sibling `store/<dep>/<depVersion>/` chosen for that requirer.
 //      Diamond dependencies share a single store entry; version
@@ -37,7 +37,7 @@
 // one of the `DeployApplyErrorCategory` values. The atomic-apply layer
 // catches these and translates them into wire-level frames.
 
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import semver from "semver";
@@ -338,7 +338,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       // cache's `evict` defers physical reclaim of the extraction tree
       // until every outstanding `release` from a concurrent
       // `extractTarball` has fired, so a parallel agent's in-flight
-      // `hardlinkTree` walk against the same extraction will not
+      // layout copy against the same extraction will not
       // ENOENT mid-readdir.
       if (err instanceof TarballIntegrityMismatchError) {
         await config.cache.evict(entry.integrity);
@@ -598,14 +598,14 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       //    its extraction directory. This validates the manifest is
       //    registry-chain-consistent (each entry resolves end-to-end
       //    against its declared source) and primes the cache so the
-      //    layout step can hardlink without re-fetching.
+      //    layout step can copy without re-fetching.
       //
       //    Each materialize() returns an `{ dir, release }` pair: the
       //    cache treats the returned `dir` as held until `release` is
       //    called, so a concurrent eviction of the same integrity
       //    defers its physical reclaim of the extraction tree until
       //    after the buildStoreLayout pass below has finished walking
-      //    every dir to hardlink files out. Releases are aggregated and
+      //    every dir to copy files out. Releases are aggregated and
       //    drained in a `finally` so an error mid-layout still hands
       //    the cache its references back.
       const extractionByEntry = new Map<string, string>();
@@ -626,7 +626,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
 
         // 2. Build the per-instance store layout. Each filtered entry
         //    gets a real directory at `<store>/<name>/<version>/`
-        //    populated by hardlinks from its cache extraction; the
+        //    populated by copies from its cache extraction; the
         //    direct-dependency walk then symlinks `node_modules/<dep>`
         //    into each layout dir so Node's standard ancestor walk
         //    resolves bare-specifier imports from inside the package's
@@ -971,15 +971,14 @@ interface BuildStoreLayoutArgs {
 
 /**
  * Build the per-instance `<store>/<name>/<version>/` tree for every
- * filtered manifest entry: hardlink each entry's source files in from
+ * filtered manifest entry: copy each entry's source files in from
  * the cache extraction, then symlink each direct dep into the entry's
- * `node_modules/`. Hardlinks keep byte usage to one copy per integrity
- * per filesystem; symlinks at the `node_modules/` boundary let Node's
+ * `node_modules/`. Symlinks at the `node_modules/` boundary let Node's
  * realpath-based resolver walk to the dep's own layout dir (with its
  * own `node_modules/`) so transitive resolution composes recursively.
  */
 async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
-  // First materialize every layout dir with its hardlinked contents.
+  // First materialize every layout dir with its copied contents.
   // node_modules symlinks come after, so a dep's layout dir is already
   // populated when its parent's symlink starts pointing at it.
   for (const entry of args.filtered) {
@@ -992,7 +991,7 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
     }
     const layoutDir = storeEntryDir(args.storeDir, entry.name, entry.version);
     await fs.mkdir(path.dirname(layoutDir), { recursive: true });
-    await hardlinkTree(extraction, layoutDir);
+    await copyTree(extraction, layoutDir);
   }
 
   for (const entry of args.filtered) {
@@ -1190,7 +1189,7 @@ async function resolveRangesByFirstArrival(
   };
 }
 
-async function hardlinkTree(
+async function copyTree(
   srcDir: string,
   destDir: string,
   extractionRoot: string = srcDir,
@@ -1201,16 +1200,16 @@ async function hardlinkTree(
     const src = path.join(srcDir, entry.name);
     const dest = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
-      await hardlinkTree(src, dest, extractionRoot);
+      await copyTree(src, dest, extractionRoot);
     } else if (entry.isFile()) {
       try {
-        await fs.link(src, dest);
+        await fs.copyFile(src, dest, fsConstants.COPYFILE_EXCL);
       } catch (err) {
         if (!isEEXIST(err)) throw err;
       }
     } else if (entry.isSymbolicLink()) {
       // Preserve symlinks from the tarball verbatim; npm packages
-      // occasionally ship them and clobbering with a hardlink would
+      // occasionally ship them and replacing one with a regular file would
       // change the file's identity.
       //
       // ISOMORPHIC-LAYOUT ASSUMPTION: writing the source-side

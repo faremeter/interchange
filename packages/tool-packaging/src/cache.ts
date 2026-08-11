@@ -11,10 +11,11 @@
 // one entry (used after extraction discovers a corrupted file on disk).
 //
 // `maxBytes` covers both the tarball bytes and the size of the
-// extracted directory tree the loader hardlinks from. The extraction
+// extracted directory tree the loader copies from. The extraction
 // tree dominates disk usage in practice (tarballs are gzip-compressed;
-// the unpacked tree is multiples larger), so the cap reflects the
-// caller-visible cost of holding an entry.
+// the unpacked tree is multiples larger), so the cap reflects the cost
+// of holding one cache entry but excludes the loader's per-instance
+// copies.
 //
 // Integrity is verified on store and re-verified inside
 // `extractTarball` before unpacking. `get` returns bytes without
@@ -24,7 +25,7 @@
 //
 // `extractTarball` is the second face of the same on-disk store: it
 // unpacks the tarball into a sibling `extracted/` directory keyed by
-// the same integrity, so the per-instance loader can symlink into a
+// the same integrity, so the per-instance loader can copy from a
 // stable, deduplicated extraction without re-doing the tar work on
 // every apply. The unpack is gated by a per-integrity tmp-and-rename
 // dance with the same crash-safety properties as `put`.
@@ -73,7 +74,7 @@ export interface TarballCache {
    * cannot reuse the on-disk extraction. The extraction directory's
    * physical reclaim is deferred until every in-flight reader released
    * by `extractTarball` has dropped its reference, so an evict that
-   * races a concurrent `hardlinkTree` walk of the same extraction does
+   * races a concurrent `copyTree` walk of the same extraction does
    * not pull the tree out from under the walk and surface as ENOENT.
    *
    * Until every reader releases, the on-disk extraction is left in
@@ -160,7 +161,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
   // defers physical removal of the extraction tree until the count
   // reaches zero. This decouples mark-as-bad (atomic, prompt) from
   // physical reclaim (deferred, safe) so an integrity-mismatch evict
-  // that races a concurrent `hardlinkTree` walk against the same
+  // that races a concurrent `copyTree` walk against the same
   // extraction does not pull the tree out from under the walk and
   // surface as ENOENT mid-readdir.
   //
@@ -342,21 +343,15 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
 
   /**
    * Sum the on-disk size of every regular file under `dir` recursively.
-   * Returns 0 when `dir` does not exist. Hardlinks are counted once
-   * per inode would be ideal, but `node:fs` does not expose inode-
-   * dedup walking without a manual ino map; the loader hardlinks
-   * extraction trees into per-instance store dirs, so the extraction
-   * tree itself holds one link per file and `stat.size` per entry is
-   * the right number to charge to this cache entry.
+   * Returns 0 when `dir` does not exist. Each regular file's
+   * `stat.size` is charged to this cache entry once.
    *
    * ACCOUNTING vs. DISK USAGE: `maxBytes` bounds the sum reported by
    * this walker, not the actual disk consumption of the cache plus
-   * its downstream hardlink consumers. The loader's per-instance
-   * store dirs share inodes with `cache/extracted/`; evicting an
-   * entry here drops the cache's reference but the underlying file
-   * survives as long as any per-instance dir still points at it.
-   * The cap is a steady-state ceiling on the cache tree's own
-   * accounting, not a disk-usage limit. Concurrent vanishes during
+   * its downstream consumers. The loader's per-instance store dirs
+   * contain independent copies that are outside this cache tree, so
+   * the cap is a steady-state ceiling on the cache's own accounting,
+   * not a sidecar-wide disk-usage limit. Concurrent vanishes during
    * the walk are silently dropped via the inner `lstat` try/catch
    * below; under the single-process contract this is rare, but the
    * returned `total` reports the cap-relevant sum within one sweep's
@@ -366,7 +361,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
    * `lstat` here returns the link itself rather than its target, and
    * `dirent.isSymbolicLink()` is the entry-walk equivalent. An npm
    * tarball that ships symlinks is preserved verbatim by the loader's
-   * hardlink-tree pass; charging the link's own size (zero in our
+   * copy-tree pass; charging the link's own size (zero in our
    * accounting) avoids both symlink-loop divergence and double-counting
    * the target through whatever path also names it directly.
    *
@@ -568,7 +563,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         if (!isENOENT(err)) throw err;
       }
       // The extraction is derived from the tarball bytes and is
-      // useless once the tarball is gone. If a hardlinkTree walk is
+      // useless once the tarball is gone. If a copyTree walk is
       // in-flight for the same integrity, removing the tree now would
       // surface as ENOENT mid-walk; defer the physical reclaim until
       // every outstanding `release` from `extractTarball` has fired.

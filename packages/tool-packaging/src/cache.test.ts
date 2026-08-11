@@ -189,7 +189,7 @@ describe("LRU eviction when over cap", () => {
     // The cap-driven sweep removes the tarball blob immediately but
     // must defer the extraction-tree rm until every in-flight reader
     // releases — the same refcount/deferred-reclaim contract `evict`
-    // honors. Without that gate, a concurrent `hardlinkTree` walk
+    // honors. Without that gate, a concurrent `copyTree` walk
     // against the LRU victim would observe ENOENT mid-readdir when
     // the sweep fires.
     const a = await packFixtureTarball(scratch, {
@@ -463,7 +463,7 @@ describe("extractTarball", () => {
   });
 
   test("evict defers extraction removal while a reader still holds an unreleased handle", async () => {
-    // An in-flight `hardlinkTree` walk against an integrity's
+    // An in-flight `copyTree` walk against an integrity's
     // extraction tree must not see the tree disappear mid-readdir when
     // another agent in the same sidecar process trips an
     // integrity-mismatch evict for the same integrity. The cache holds
