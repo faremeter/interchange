@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import type { StorageRuntime } from "./runtime";
 
 /**
  * Process-wide per-directory serialization for agent-repo object-store
@@ -30,10 +30,11 @@ import { resolve } from "node:path";
 const locks = new Map<string, Promise<void>>();
 
 export async function withRepoDirLock<T>(
+  runtime: StorageRuntime,
   dir: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = resolve(dir);
+  const key = runtime.path.resolve(dir);
   const previous = locks.get(key) ?? Promise.resolve();
   let releaseFn: () => void = () => undefined;
   const tail = new Promise<void>((res) => {

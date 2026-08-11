@@ -8,7 +8,7 @@ import {
   createSSHSignature,
   verifySSHSignature,
 } from "@intx/crypto";
-import { initRepo } from "./init";
+import { initRepo } from "./node";
 import type { CommitSigner } from "./signer";
 
 const tempDirs: string[] = [];

@@ -3,17 +3,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
-import { initAgentRepo } from "./init";
+import { initAgentRepo } from "./node";
 import {
   applyPack,
   receivePackObjects,
   type CommitVerifier,
   type TreeValidator,
-} from "./pack-receive";
-import { collectReachableObjects } from "./object-walk";
-import { repoDiskUsage } from "./repo-disk";
-import { runGC } from "./gc";
-import { IsogitStore } from "./store";
+} from "./node";
+import { collectReachableObjects } from "./node";
+import {
+  createIsogitStorage,
+  createNodeIsogitRuntime,
+  type IsogitRuntime,
+} from "./node";
+import { repoDiskUsage } from "./node";
+import { runGC } from "./node";
+import { IsogitStore } from "./node";
 
 const author = { name: "Test", email: "test@test.dev" };
 
@@ -89,6 +94,23 @@ async function deployOnto(
   const pack = await packFor(source.dir, source.tipOids);
   await applyPack(dir, pack, "refs/heads/deploy", source.tip, transferId);
   return source.tip;
+}
+
+function runtimeFailingOnFlush(failOn: number): IsogitRuntime {
+  const runtime = createNodeIsogitRuntime();
+  let flushCount = 0;
+  return {
+    ...runtime,
+    flush: () => {
+      flushCount += 1;
+      if (flushCount === failOn) {
+        return Promise.reject(
+          new Error(`injected flush ${flushCount.toString()} failure`),
+        );
+      }
+      return Promise.resolve();
+    },
+  };
 }
 
 describe("runGC", () => {
@@ -300,5 +322,83 @@ describe("runGC", () => {
     expect(after.length).toBeGreaterThanOrEqual(1);
     expect(after[0]?.hash).toBe(before[0]?.hash);
     await store.readManifestHistory(10);
+  });
+
+  test("keeps superseded object bodies quarantined when the commit flush fails", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const mainTip = await commitOnMain(dir, "main-state.txt");
+    const deployTip = await deployOnto(
+      dir,
+      { "deploy/prompt.txt": "deploy content" },
+      "deploy-1",
+    );
+    const before = repoDiskUsage(dir);
+    expect(before.packCount).toBeGreaterThan(0);
+    expect(before.looseObjectCount).toBeGreaterThan(0);
+
+    const failingStorage = createIsogitStorage(runtimeFailingOnFlush(1));
+    await expect(
+      failingStorage.runGC(dir, { retention: "keep-history" }),
+    ).rejects.toThrow("injected flush 1 failure");
+
+    const trashRoot = path.join(dir, ".git", "objects", "gc-trash");
+    const trashRuns = await fs.promises.readdir(trashRoot);
+    expect(trashRuns).toHaveLength(1);
+    const trashRun = trashRuns[0];
+    if (trashRun === undefined) throw new Error("missing GC quarantine");
+    const retiredPacks = await fs.promises.readdir(
+      path.join(trashRoot, trashRun, "pack"),
+    );
+    const retiredLooseDirectories = await fs.promises.readdir(
+      path.join(trashRoot, trashRun, "loose"),
+    );
+    expect(retiredPacks.some((name) => name.endsWith(".pack"))).toBe(true);
+    expect(retiredPacks.some((name) => name.endsWith(".idx"))).toBe(true);
+    expect(retiredLooseDirectories.length).toBeGreaterThan(0);
+
+    expect((await git.readCommit({ fs, dir, oid: mainTip })).oid).toBe(mainTip);
+    expect((await git.readCommit({ fs, dir, oid: deployTip })).oid).toBe(
+      deployTip,
+    );
+
+    // A later GC first removes the abandoned quarantine, durably flushes
+    // that cleanup, and then performs its own consolidation.
+    await runGC(dir, { retention: "keep-history" });
+    expect(await fs.promises.readdir(trashRoot)).toEqual([]);
+    expect((await git.readCommit({ fs, dir, oid: mainTip })).oid).toBe(mainTip);
+    expect((await git.readCommit({ fs, dir, oid: deployTip })).oid).toBe(
+      deployTip,
+    );
+  });
+
+  test("keeps refs readable when the quarantine cleanup flush fails", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const mainTip = await commitOnMain(dir, "main-state.txt");
+    const deployTip = await deployOnto(
+      dir,
+      { "deploy/prompt.txt": "deploy content" },
+      "deploy-1",
+    );
+
+    const failingStorage = createIsogitStorage(runtimeFailingOnFlush(2));
+    await expect(
+      failingStorage.runGC(dir, { retention: "keep-history" }),
+    ).rejects.toThrow("injected flush 2 failure");
+
+    expect((await git.readCommit({ fs, dir, oid: mainTip })).oid).toBe(mainTip);
+    expect((await git.readCommit({ fs, dir, oid: deployTip })).oid).toBe(
+      deployTip,
+    );
+    expect(
+      await fs.promises.readdir(path.join(dir, ".git", "objects", "gc-trash")),
+    ).toEqual([]);
+
+    await runGC(dir, { retention: "keep-history" });
+    expect((await git.readCommit({ fs, dir, oid: mainTip })).oid).toBe(mainTip);
+    expect((await git.readCommit({ fs, dir, oid: deployTip })).oid).toBe(
+      deployTip,
+    );
   });
 });

@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createIsogitStore } from "./index";
+import { createIsogitStore } from "./node";
 import type { ConversationTurn, TokenUsage } from "@intx/types/runtime";
 
 const ZERO_USAGE: TokenUsage = {

@@ -1,6 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import git from "isomorphic-git";
+import { hasCode } from "@intx/types";
+import type { StorageRuntime } from "./runtime";
 
 /**
  * Disk-occupancy snapshot of an agent repo's `.git` directory. Drives the
@@ -18,20 +18,18 @@ export type RepoDiskUsage = {
  * does not exist (a repo subtree that has not been created yet) -- absence
  * is a real zero, not an error to surface.
  */
-function countDirEntries(dir: string): number {
-  let entries: string[];
+async function countDirEntries(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<number> {
   try {
-    entries = fs.readdirSync(dir);
+    return (await runtime.fs.readdir(dir)).length;
   } catch (cause) {
-    if (
-      cause instanceof Error &&
-      (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
+    if (hasCode(cause) && cause.code === "ENOENT") {
       return 0;
     }
     throw cause;
   }
-  return entries.length;
 }
 
 /**
@@ -39,18 +37,19 @@ function countDirEntries(dir: string): number {
  * un-packed per-commit objects isomorphic-git writes on each commit; their
  * count rising and collapsing after a repack is the pack-growth signature a
  * GC pass reclaims. The two-hex-char fan-out dirs plus `pack`/`info` are the
- * only children of `objects/`; the latter two are skipped.
+ * only children of `objects/`; the latter two are skipped. Keep this filter in
+ * step with the synchronous Node counterpart in `node-metrics.ts`.
  */
-export function countLooseObjects(repoDir: string): number {
-  const objectsDir = path.join(repoDir, ".git", "objects");
+export async function countLooseObjects(
+  runtime: StorageRuntime,
+  repoDir: string,
+): Promise<number> {
+  const objectsDir = runtime.path.join(repoDir, ".git", "objects");
   let fanoutDirs: string[];
   try {
-    fanoutDirs = fs.readdirSync(objectsDir);
+    fanoutDirs = await runtime.fs.readdir(objectsDir);
   } catch (cause) {
-    if (
-      cause instanceof Error &&
-      (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
+    if (hasCode(cause) && cause.code === "ENOENT") {
       return 0;
     }
     throw cause;
@@ -60,7 +59,10 @@ export function countLooseObjects(repoDir: string): number {
     if (name === "pack" || name === "info") continue;
     // Loose-object fan-out dirs are exactly two lowercase hex chars.
     if (!/^[0-9a-f]{2}$/.test(name)) continue;
-    total += countDirEntries(path.join(objectsDir, name));
+    total += await countDirEntries(
+      runtime,
+      runtime.path.join(objectsDir, name),
+    );
   }
   return total;
 }
@@ -71,16 +73,16 @@ export function countLooseObjects(repoDir: string): number {
  * GC pass, so the pack count is the monotonic accumulation a write-path GC
  * trigger watches.
  */
-export function countPackFiles(repoDir: string): number {
-  const packDir = path.join(repoDir, ".git", "objects", "pack");
+export async function countPackFiles(
+  runtime: StorageRuntime,
+  repoDir: string,
+): Promise<number> {
+  const packDir = runtime.path.join(repoDir, ".git", "objects", "pack");
   let entries: string[];
   try {
-    entries = fs.readdirSync(packDir);
+    entries = await runtime.fs.readdir(packDir);
   } catch (cause) {
-    if (
-      cause instanceof Error &&
-      (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
+    if (hasCode(cause) && cause.code === "ENOENT") {
       return 0;
     }
     throw cause;
@@ -91,31 +93,31 @@ export function countPackFiles(repoDir: string): number {
 /**
  * Total byte size of the repo's `.git` directory (loose + pack + refs +
  * logs). A coarse repo-size proxy for the disk-pressure warning. Walks the
- * tree with `fs.lstatSync`; bounded by the repo size, which is the thing
- * being measured.
+ * tree through the configured filesystem; bounded by the repo size, which is
+ * the thing being measured.
  */
-export function gitBytes(repoDir: string): number {
-  const gitDir = path.join(repoDir, ".git");
+export async function gitBytes(
+  runtime: StorageRuntime,
+  repoDir: string,
+): Promise<number> {
+  const gitDir = runtime.path.join(repoDir, ".git");
   let total = 0;
   const stack: string[] = [gitDir];
   while (stack.length > 0) {
     const current = stack.pop();
     if (current === undefined) break;
-    let stat: fs.Stats;
+    let stat;
     try {
-      stat = fs.lstatSync(current);
+      stat = await runtime.fs.lstat(current);
     } catch (cause) {
-      if (
-        cause instanceof Error &&
-        (cause as NodeJS.ErrnoException).code === "ENOENT"
-      ) {
+      if (hasCode(cause) && cause.code === "ENOENT") {
         continue;
       }
       throw cause;
     }
     if (stat.isDirectory()) {
-      for (const child of fs.readdirSync(current)) {
-        stack.push(path.join(current, child));
+      for (const child of await runtime.fs.readdir(current)) {
+        stack.push(runtime.path.join(current, child));
       }
     } else if (stat.isFile()) {
       total += stat.size;
@@ -135,10 +137,17 @@ export type RepoObjectCounts = {
   looseObjectCount: number;
 };
 
-export function repoObjectCounts(dir: string): RepoObjectCounts {
+export async function repoObjectCounts(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<RepoObjectCounts> {
+  const [packCount, looseObjectCount] = await Promise.all([
+    countPackFiles(runtime, dir),
+    countLooseObjects(runtime, dir),
+  ]);
   return {
-    packCount: countPackFiles(dir),
-    looseObjectCount: countLooseObjects(dir),
+    packCount,
+    looseObjectCount,
   };
 }
 
@@ -146,10 +155,17 @@ export function repoObjectCounts(dir: string): RepoObjectCounts {
  * Snapshot the GC-relevant disk counters for the agent repo at `dir`,
  * including the full `.git` byte walk.
  */
-export function repoDiskUsage(dir: string): RepoDiskUsage {
+export async function repoDiskUsage(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<RepoDiskUsage> {
+  const [bytes, counts] = await Promise.all([
+    gitBytes(runtime, dir),
+    repoObjectCounts(runtime, dir),
+  ]);
   return {
-    gitBytes: gitBytes(dir),
-    ...repoObjectCounts(dir),
+    gitBytes: bytes,
+    ...counts,
   };
 }
 
@@ -163,13 +179,14 @@ export function repoDiskUsage(dir: string): RepoDiskUsage {
  * complete.
  */
 export async function listRepoRefs(
+  runtime: StorageRuntime,
   dir: string,
 ): Promise<{ ref: string; oid: string }[]> {
-  const branches = await git.listBranches({ fs, dir });
+  const branches = await git.listBranches({ fs: runtime.fs.git, dir });
   const refs: { ref: string; oid: string }[] = [];
   for (const branch of branches) {
     const ref = `refs/heads/${branch}`;
-    const oid = await git.resolveRef({ fs, dir, ref });
+    const oid = await git.resolveRef({ fs: runtime.fs.git, dir, ref });
     refs.push({ ref, oid });
   }
   return refs;

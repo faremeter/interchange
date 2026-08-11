@@ -3,10 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
-import { createDeployPack, createNegotiatedPack } from "./pack-send";
-import { collectReachableObjects } from "./object-walk";
-import { applyPack } from "./pack-receive";
-import { initAgentRepo } from "./init";
+import { createDeployPack, createNegotiatedPack } from "./node";
+import { collectReachableObjects } from "./node";
+import { applyPack } from "./node";
+import { initAgentRepo } from "./node";
 
 const tempDirs: string[] = [];
 

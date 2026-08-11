@@ -10,10 +10,10 @@ import {
   switchBranch,
   listBranches,
   logHistory,
-} from "./index";
+} from "./node";
 import { base64Encode } from "@intx/types";
-import { IsogitStore } from "./store";
-import { initAgentRepo } from "./init";
+import { IsogitStore } from "./node";
+import { initAgentRepo } from "./node";
 import type {
   AssistantTurn,
   ConversationTurn,

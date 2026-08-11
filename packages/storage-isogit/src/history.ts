@@ -1,31 +1,41 @@
-import fs from "node:fs";
 import git from "isomorphic-git";
 import type { ContextCommit } from "@intx/types/runtime";
 import { AUTHOR } from "./init";
+import { flushRuntime, type StorageRuntime } from "./runtime";
 
 /**
  * Switch the working tree to the named branch. The branch must already exist.
  */
-export async function switchBranch(dir: string, ref: string): Promise<void> {
-  await git.checkout({ fs, dir, ref });
+export async function switchBranch(
+  runtime: StorageRuntime,
+  dir: string,
+  ref: string,
+): Promise<void> {
+  await git.checkout({ fs: runtime.fs.git, dir, ref });
+  await flushRuntime(runtime);
 }
 
 /**
  * Create a new branch at HEAD and immediately switch to it.
  */
 export async function createAndSwitchBranch(
+  runtime: StorageRuntime,
   dir: string,
   name: string,
 ): Promise<void> {
-  await git.branch({ fs, dir, ref: name });
-  await git.checkout({ fs, dir, ref: name });
+  await git.branch({ fs: runtime.fs.git, dir, ref: name });
+  await git.checkout({ fs: runtime.fs.git, dir, ref: name });
+  await flushRuntime(runtime);
 }
 
 /**
  * Return the name of the currently checked-out branch.
  */
-export async function currentBranch(dir: string): Promise<string> {
-  const branch = await git.currentBranch({ fs, dir });
+export async function currentBranch(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<string> {
+  const branch = await git.currentBranch({ fs: runtime.fs.git, dir });
   if (branch === null || branch === undefined) {
     throw new Error("Repository is in detached HEAD state");
   }
@@ -35,18 +45,22 @@ export async function currentBranch(dir: string): Promise<string> {
 /**
  * List all local branches.
  */
-export async function listBranches(dir: string): Promise<string[]> {
-  return git.listBranches({ fs, dir });
+export async function listBranches(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<string[]> {
+  return git.listBranches({ fs: runtime.fs.git, dir });
 }
 
 /**
  * Return recent commits as ContextCommit entries.
  */
 export async function logHistory(
+  runtime: StorageRuntime,
   dir: string,
   limit = 10,
 ): Promise<ContextCommit[]> {
-  const entries = await git.log({ fs, dir, depth: limit });
+  const entries = await git.log({ fs: runtime.fs.git, dir, depth: limit });
   return entries.map((e) => {
     const base = {
       hash: e.oid,

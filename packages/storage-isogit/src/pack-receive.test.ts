@@ -8,15 +8,28 @@ import {
   createSSHSignature,
   verifySSHSignature,
 } from "@intx/crypto";
-import { initAgentRepo } from "./init";
+import { initAgentRepo } from "./node";
+import { createIsogitStorage } from "./index";
 import {
   applyPack,
-  publishPackAtomically,
   receivePackObjects,
   type CommitVerifier,
   type TreeValidator,
-} from "./pack-receive";
-import { collectReachableObjects } from "./object-walk";
+} from "./node";
+import { collectReachableObjects } from "./node";
+import { createNodeIsogitRuntime } from "./node-runtime";
+import { publishPackAtomically as publishPackAtomicallyImpl } from "./pack-receive";
+import { normalizeRuntime } from "./runtime";
+
+const publishRuntime = normalizeRuntime(createNodeIsogitRuntime());
+
+function publishPackAtomically(
+  dir: string,
+  pack: Uint8Array,
+  transferId: string,
+): Promise<string[]> {
+  return publishPackAtomicallyImpl(publishRuntime, dir, pack, transferId);
+}
 
 const tempDirs: string[] = [];
 
@@ -1111,6 +1124,102 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+function createStorageFailingPromotionFlush(
+  targetDir: string,
+  ref: string,
+  expectedSha: string,
+) {
+  let failureInjected = false;
+  return createIsogitStorage({
+    ...createNodeIsogitRuntime(),
+    flush: async () => {
+      const currentSha = await git
+        .resolveRef({ fs, dir: targetDir, ref })
+        .catch(() => null);
+      if (!failureInjected && currentSha === expectedSha) {
+        failureInjected = true;
+        throw new Error("injected post-promotion flush failure");
+      }
+    },
+  });
+}
+
+describe("post-promotion flush failures", () => {
+  test("receive retains the durable pack for the promoted ref", async () => {
+    const source = await makeRepoWithPaths([
+      { filepath: "state/v1.jsonl", content: "v1" },
+    ]);
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    const ref = "refs/heads/state";
+    const transferId = "receive-flush-failure";
+    const storage = createStorageFailingPromotionFlush(
+      targetDir,
+      ref,
+      source.commitSha,
+    );
+    await storage.initAgentRepo(targetDir);
+
+    await expect(
+      storage.receivePackObjects(
+        targetDir,
+        pack,
+        ref,
+        source.commitSha,
+        transferId,
+        null,
+      ),
+    ).rejects.toThrow("injected post-promotion flush failure");
+
+    expect(await fileExists(publishedPackFile(targetDir, transferId))).toBe(
+      true,
+    );
+    expect(await fileExists(publishedIdxFile(targetDir, transferId))).toBe(
+      true,
+    );
+    expect(await git.resolveRef({ fs, dir: targetDir, ref })).toBe(
+      source.commitSha,
+    );
+    expect(
+      (await git.readCommit({ fs, dir: targetDir, oid: source.commitSha })).oid,
+    ).toBe(source.commitSha);
+  });
+
+  test("apply retains the durable pack and materialized tree for the promoted ref", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    const ref = "refs/heads/deploy";
+    const transferId = "apply-flush-failure";
+    const storage = createStorageFailingPromotionFlush(
+      targetDir,
+      ref,
+      source.commitSha,
+    );
+    await storage.initAgentRepo(targetDir);
+
+    await expect(
+      storage.applyPack(targetDir, pack, ref, source.commitSha, transferId),
+    ).rejects.toThrow("injected post-promotion flush failure");
+
+    expect(await fileExists(publishedPackFile(targetDir, transferId))).toBe(
+      true,
+    );
+    expect(await fileExists(publishedIdxFile(targetDir, transferId))).toBe(
+      true,
+    );
+    expect(await git.resolveRef({ fs, dir: targetDir, ref })).toBe(
+      source.commitSha,
+    );
+    expect(
+      await fs.promises.readFile(
+        path.join(targetDir, "deploy", "prompt.txt"),
+        "utf8",
+      ),
+    ).toBe("You are a helpful agent.");
+  });
+});
+
 // These tests assert that post-publish validation rejections in
 // receivePackObjects and applyPack remove the published .pack + .idx
 // pair from objects/pack/. Without this, rejected packs would
@@ -1175,11 +1284,19 @@ describe("receivePackObjects unpublishes on post-publish rejection", () => {
     const pack = await createPackFromRepo(source.dir, source.oids);
 
     const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
+    let flushes = 0;
+    const storage = createIsogitStorage({
+      ...createNodeIsogitRuntime(),
+      flush: () => {
+        flushes += 1;
+        return Promise.resolve();
+      },
+    });
+    await storage.initAgentRepo(targetDir);
 
     const bogusExpected = "0".repeat(40);
     await expect(
-      receivePackObjects(
+      storage.receivePackObjects(
         targetDir,
         pack,
         "refs/heads/state",
@@ -1195,6 +1312,7 @@ describe("receivePackObjects unpublishes on post-publish rejection", () => {
     expect(await fileExists(publishedIdxFile(targetDir, "rejected-sha"))).toBe(
       false,
     );
+    expect(flushes).toBe(2);
   });
 
   test("path_violation removes .pack and .idx", async () => {
@@ -1236,11 +1354,19 @@ describe("applyPack unpublishes on post-publish rejection", () => {
     const pack = await createPackFromRepo(source.dir, source.oids);
 
     const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
+    let flushes = 0;
+    const storage = createIsogitStorage({
+      ...createNodeIsogitRuntime(),
+      flush: () => {
+        flushes += 1;
+        return Promise.resolve();
+      },
+    });
+    await storage.initAgentRepo(targetDir);
 
     const bogusExpected = "0".repeat(40);
     await expect(
-      applyPack(
+      storage.applyPack(
         targetDir,
         pack,
         "refs/heads/deploy",
@@ -1255,5 +1381,6 @@ describe("applyPack unpublishes on post-publish rejection", () => {
     expect(
       await fileExists(publishedIdxFile(targetDir, "apply-rejected-sha")),
     ).toBe(false);
+    expect(flushes).toBe(2);
   });
 });

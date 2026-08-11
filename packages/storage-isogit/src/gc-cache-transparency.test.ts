@@ -13,8 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
-import { initAgentRepo } from "./init";
-import { runGC } from "./gc";
+import { initAgentRepo } from "./node";
+import { runGC } from "./node";
 
 const author = { name: "Test", email: "test@test.dev" };
 const tempDirs: string[] = [];
