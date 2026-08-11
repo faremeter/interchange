@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 import { main } from "@intx/example-agent-rewind";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type { InferenceSource } from "@intx/types/runtime";
 
 const SOURCE: InferenceSource = {

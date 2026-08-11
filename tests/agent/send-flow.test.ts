@@ -24,7 +24,7 @@ import {
 } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
 
 const SOURCE: InferenceSource = {

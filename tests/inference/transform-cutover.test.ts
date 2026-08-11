@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 
-import { createIsogitStore, initAgentRepo } from "@intx/storage-isogit";
+import { createIsogitStore, initAgentRepo } from "@intx/storage-isogit/node";
 import {
   createReactor,
   createSizeCapTransform,

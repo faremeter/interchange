@@ -40,7 +40,7 @@ import {
 } from "@intx/agent";
 import { noopAuditStore } from "@intx/agent/testing";
 import { setupHarness, type Harness } from "@intx/inference-testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import { createWorkflowStepInvoker } from "@intx/workflow-host";
 import type {
   AuthorizeContext,

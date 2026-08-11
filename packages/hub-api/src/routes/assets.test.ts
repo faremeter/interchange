@@ -37,7 +37,7 @@ import {
   type SidecarRouter,
   type ValidatePushResult,
 } from "@intx/hub-sessions";
-import { collectReachableObjects } from "@intx/storage-isogit";
+import { collectReachableObjects } from "@intx/storage-isogit/node";
 
 import { createApp } from "../app";
 import type { GetSession } from "../session";

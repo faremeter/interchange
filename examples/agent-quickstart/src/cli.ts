@@ -36,7 +36,7 @@ import {
   resolveStdio,
   type SingleSourceMainOptions,
 } from "@intx/example-agent-common";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 
 const EXAMPLE_NAME = "agent-quickstart";
 

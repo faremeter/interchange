@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   BodyStructure,
   InboundMessage,

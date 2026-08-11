@@ -12,7 +12,7 @@ Consumed by `@intx/agent` for in-process persistence, and by
 repositories that move between the hub and the sidecar as packs.
 
 ```ts
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 
 const store = await createIsogitStore("./tmp/agent-repo", signer);
 

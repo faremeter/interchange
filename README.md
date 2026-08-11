@@ -154,7 +154,7 @@ import {
   defineAgent,
 } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 
 const def = defineAgent({
   id: "quickstart",

@@ -39,7 +39,7 @@ import {
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { evaluateGrants } from "@intx/authz";
 import type { HostCredentialCapability } from "@intx/harness";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import { noopAuditStore } from "@intx/agent/testing";
 import type { GrantRule } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";

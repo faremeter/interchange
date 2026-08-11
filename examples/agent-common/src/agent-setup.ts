@@ -24,7 +24,7 @@ import {
   type BaseEnv,
 } from "@intx/agent";
 import { permissiveAuthorize } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import { resolveSource } from "./env-source";

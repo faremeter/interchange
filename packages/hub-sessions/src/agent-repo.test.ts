@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
-import { createDeployPack } from "@intx/storage-isogit";
+import { createDeployPack } from "@intx/storage-isogit/node";
 import { createAgentRepoStore } from "./agent-repo";
 import type { KeyPair } from "@intx/types/runtime";
 

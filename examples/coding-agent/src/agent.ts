@@ -17,7 +17,7 @@ import {
   type Dependencies,
 } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import { createLSPPlugin } from "@intx/tools-lsp";
 import { createPosixTools, type PosixTools } from "@intx/tools-posix";
 import type { InferenceSource } from "@intx/types/runtime";

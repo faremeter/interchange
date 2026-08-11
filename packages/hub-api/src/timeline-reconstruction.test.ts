@@ -7,7 +7,7 @@ import {
   IsogitStore,
   initAgentRepo,
   createMailAuditStore,
-} from "@intx/storage-isogit";
+} from "@intx/storage-isogit/node";
 import type { ConversationTurn } from "@intx/types/runtime";
 import type { ErrorRecord } from "@intx/types/audit";
 import { reconstructTimeline } from "./timeline-reconstruction";

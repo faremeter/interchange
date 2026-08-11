@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { type } from "arktype";
 
 import { createInboundMessage } from "@intx/mime";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ContextStore,
   InferenceSource,

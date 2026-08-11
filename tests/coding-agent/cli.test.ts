@@ -166,7 +166,7 @@ describe("coding-agent CLI", () => {
     // Verify the on-disk history projection survived both runs by
     // opening the context store directly — the issue's acceptance gate
     // for resume-from-crash.
-    const { createIsogitStore } = await import("@intx/storage-isogit");
+    const { createIsogitStore } = await import("@intx/storage-isogit/node");
     const store = await createIsogitStore(contextDir);
     const loaded = await store.load();
     // Each round-trip produces a user turn and an assistant turn, so we
