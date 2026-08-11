@@ -1,8 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
 import git from "isomorphic-git";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
+import { flushRuntime, type StorageRuntime } from "./runtime";
 
 const AUTHOR = {
   name: "interchange-harness",
@@ -16,9 +15,12 @@ const HUB_AUTHOR = {
 
 const DEFAULT_GITIGNORE = "keys/\n";
 
-async function isGitRepo(dir: string): Promise<boolean> {
-  return fs.promises
-    .stat(path.join(dir, ".git"))
+async function isGitRepo(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<boolean> {
+  return runtime.fs
+    .stat(runtime.path.join(dir, ".git"))
     .then(() => true)
     .catch(() => false);
 }
@@ -49,27 +51,32 @@ export type InitRepoOpts = {
  * work, so the initial commit is always created.
  */
 export async function initRepo(
+  runtime: StorageRuntime,
   dir: string,
   opts: InitRepoOpts = {},
 ): Promise<void> {
-  await fs.promises.mkdir(dir, { recursive: true });
+  await runtime.fs.mkdir(dir, { recursive: true });
 
-  if (await isGitRepo(dir)) return;
+  if (await isGitRepo(runtime, dir)) return;
 
-  await git.init({ fs, dir, defaultBranch: "main" });
+  await git.init({ fs: runtime.fs.git, dir, defaultBranch: "main" });
 
   const gitignoreBody = opts.gitignore ?? DEFAULT_GITIGNORE;
-  await fs.promises.writeFile(path.join(dir, ".gitignore"), gitignoreBody);
-  await git.add({ fs, dir, filepath: ".gitignore" });
+  await runtime.fs.writeFile(
+    runtime.path.join(dir, ".gitignore"),
+    gitignoreBody,
+  );
+  await git.add({ fs: runtime.fs.git, dir, filepath: ".gitignore" });
 
   const author = opts.signer === undefined ? AUTHOR : HUB_AUTHOR;
   await git.commit({
-    fs,
+    fs: runtime.fs.git,
     dir,
     message: "Initialize repository",
     author,
     ...buildSigningArgs(opts.signer),
   });
+  await flushRuntime(runtime);
 }
 
 /**
@@ -81,23 +88,30 @@ export async function initRepo(
  *
  * Idempotent: safe to call on a directory that already contains a git repo.
  */
-export async function initAgentRepo(dir: string): Promise<void> {
-  await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.mkdir(path.join(dir, "state"), { recursive: true });
+export async function initAgentRepo(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<void> {
+  await runtime.fs.mkdir(dir, { recursive: true });
+  await runtime.fs.mkdir(runtime.path.join(dir, "state"), { recursive: true });
 
-  if (await isGitRepo(dir)) return;
+  if (await isGitRepo(runtime, dir)) {
+    await flushRuntime(runtime);
+    return;
+  }
 
-  await git.init({ fs, dir, defaultBranch: "main" });
+  await git.init({ fs: runtime.fs.git, dir, defaultBranch: "main" });
 
-  await fs.promises.writeFile(path.join(dir, ".gitignore"), "keys/\n");
-  await git.add({ fs, dir, filepath: ".gitignore" });
+  await runtime.fs.writeFile(runtime.path.join(dir, ".gitignore"), "keys/\n");
+  await git.add({ fs: runtime.fs.git, dir, filepath: ".gitignore" });
 
   await git.commit({
-    fs,
+    fs: runtime.fs.git,
     dir,
     message: "Initialize agent repository",
     author: AUTHOR,
   });
+  await flushRuntime(runtime);
 }
 
 export { AUTHOR, HUB_AUTHOR };

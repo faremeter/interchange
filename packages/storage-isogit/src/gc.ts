@@ -1,7 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
+import { hasCode } from "@intx/types";
 import { collectReachableObjects } from "./object-walk";
 import { publishPackAtomically } from "./pack-receive";
 import {
@@ -12,8 +11,15 @@ import {
   type RepoDiskUsage,
 } from "./repo-disk";
 import { withRepoDirLock } from "./repo-lock";
+import { flushRuntime, type StorageRuntime } from "./runtime";
 
 const logger = getLogger(["interchange", "storage-isogit", "gc"]);
+const GC_TRASH_DIR = "gc-trash";
+
+type ObjectStoreEntry = {
+  name: string;
+  filepath: string;
+};
 
 /**
  * How much commit history a GC pass preserves.
@@ -67,6 +73,7 @@ export type GCPolicy = {
  * would then delete it.
  */
 async function collectHistoryObjects(
+  runtime: StorageRuntime,
   dir: string,
   tipOid: string,
 ): Promise<Set<string>> {
@@ -82,7 +89,11 @@ async function collectHistoryObjects(
 
     let parents: string[];
     try {
-      const { commit } = await git.readCommit({ fs, dir, oid: commitOid });
+      const { commit } = await git.readCommit({
+        fs: runtime.fs.git,
+        dir,
+        oid: commitOid,
+      });
       parents = commit.parent;
     } catch (err) {
       if (err instanceof Error && "code" in err && err.code === "NotFoundError")
@@ -90,7 +101,7 @@ async function collectHistoryObjects(
       throw err;
     }
 
-    for (const oid of await collectReachableObjects(dir, commitOid)) {
+    for (const oid of await collectReachableObjects(runtime, dir, commitOid)) {
       objects.add(oid);
     }
     for (const parent of parents) {
@@ -102,59 +113,130 @@ async function collectHistoryObjects(
 }
 
 /**
- * Absolute paths of every `.pack` and `.idx` file currently in the repo's
- * pack directory. Snapshotted before the consolidated pack is published so
- * the freshly published pair is never in the removal set.
+ * Every `.pack` and `.idx` file currently in the repo's pack directory.
+ * Snapshotted before the consolidated pack is published so the freshly
+ * published pair is never in the retirement set.
  */
-function listPackFiles(dir: string): string[] {
-  const packDir = path.join(dir, ".git", "objects", "pack");
+async function listPackFiles(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<ObjectStoreEntry[]> {
+  const packDir = runtime.path.join(dir, ".git", "objects", "pack");
   let entries: string[];
   try {
-    entries = fs.readdirSync(packDir);
+    entries = await runtime.fs.readdir(packDir);
   } catch (cause) {
-    if (
-      cause instanceof Error &&
-      (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
+    if (hasCode(cause) && cause.code === "ENOENT") {
       return [];
     }
     throw cause;
   }
   return entries
     .filter((name) => name.endsWith(".pack") || name.endsWith(".idx"))
-    .map((name) => path.join(packDir, name));
+    .map((name) => ({
+      name,
+      filepath: runtime.path.join(packDir, name),
+    }));
 }
 
 /**
- * Remove every loose object fan-out directory under `.git/objects/`.
- *
- * Safe only after the consolidated pack containing the entire keep set is
- * published: every kept object that was loose is then also packed, and every
- * loose object outside the keep set is garbage. The `pack` and `info`
- * children are left untouched.
+ * Snapshot every loose-object fan-out directory under `.git/objects/`.
+ * Non-object children such as `pack`, `info`, and `gc-trash` are excluded by
+ * the two-lowercase-hex directory-name constraint.
  */
-async function removeLooseObjects(dir: string): Promise<void> {
-  const objectsDir = path.join(dir, ".git", "objects");
+async function listLooseObjectDirectories(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<ObjectStoreEntry[]> {
+  const objectsDir = runtime.path.join(dir, ".git", "objects");
   let entries: string[];
   try {
-    entries = fs.readdirSync(objectsDir);
+    entries = await runtime.fs.readdir(objectsDir);
   } catch (cause) {
-    if (
-      cause instanceof Error &&
-      (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
-      return;
+    if (hasCode(cause) && cause.code === "ENOENT") {
+      return [];
     }
     throw cause;
   }
-  for (const name of entries) {
-    if (name === "pack" || name === "info") continue;
-    if (!/^[0-9a-f]{2}$/.test(name)) continue;
-    await fs.promises.rm(path.join(objectsDir, name), {
-      recursive: true,
-      force: true,
-    });
+  return entries
+    .filter((name) => /^[0-9a-f]{2}$/.test(name))
+    .map((name) => ({
+      name,
+      filepath: runtime.path.join(objectsDir, name),
+    }));
+}
+
+function gcTrashRoot(runtime: StorageRuntime, dir: string): string {
+  return runtime.path.join(dir, ".git", "objects", GC_TRASH_DIR);
+}
+
+/**
+ * Delete quarantine left by a prior GC that reached its durability commit
+ * point but did not finish cleanup. Quarantine is outside every path Git
+ * scans for packs or loose objects. If it is present in a durable namespace,
+ * the replacement pack was part of that same flushed namespace; a crash
+ * before the flush restores the prior namespace without quarantine instead.
+ */
+async function removeStaleGCTrash(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<boolean> {
+  const trashRoot = gcTrashRoot(runtime, dir);
+  let entries: string[];
+  try {
+    entries = await runtime.fs.readdir(trashRoot);
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "ENOENT") return false;
+    throw cause;
   }
+  if (entries.length === 0) return false;
+
+  await runtime.fs.remove(trashRoot, { recursive: true, force: true });
+  return true;
+}
+
+/**
+ * Retire the old object-store namespace without deleting object bodies.
+ * LightningFS persists file bodies eagerly but its directory namespace only
+ * at flush time. Renaming into an unscanned quarantine therefore leaves both
+ * crash outcomes valid: a pre-flush reopen sees the old namespace and a
+ * post-flush reopen sees the consolidated pack plus quarantined old bodies.
+ */
+async function quarantineSupersededObjects(
+  runtime: StorageRuntime,
+  dir: string,
+  transferId: string,
+  supersededPacks: readonly ObjectStoreEntry[],
+  looseObjectDirectories: readonly ObjectStoreEntry[],
+): Promise<string> {
+  const trashDir = runtime.path.join(gcTrashRoot(runtime, dir), transferId);
+  const packTrashDir = runtime.path.join(trashDir, "pack");
+  const looseTrashDir = runtime.path.join(trashDir, "loose");
+  await runtime.fs.mkdir(packTrashDir, { recursive: true });
+  await runtime.fs.mkdir(looseTrashDir, { recursive: true });
+
+  const orderedPacks = [...supersededPacks].sort((left, right) => {
+    const leftRank = left.name.endsWith(".idx") ? 0 : 1;
+    const rightRank = right.name.endsWith(".idx") ? 0 : 1;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    if (left.name < right.name) return -1;
+    if (left.name > right.name) return 1;
+    return 0;
+  });
+  for (const entry of orderedPacks) {
+    await runtime.fs.rename(
+      entry.filepath,
+      runtime.path.join(packTrashDir, entry.name),
+    );
+  }
+  for (const entry of looseObjectDirectories) {
+    await runtime.fs.rename(
+      entry.filepath,
+      runtime.path.join(looseTrashDir, entry.name),
+    );
+  }
+
+  return trashDir;
 }
 
 /**
@@ -168,8 +250,10 @@ async function removeLooseObjects(dir: string): Promise<void> {
  * other's live objects). Pack the keep set into one self-contained pack via
  * `git.packObjects` and publish it through the same atomic staging dance
  * receives use, so a concurrent unlocked reader never observes a torn pack.
- * Only then remove the packs that predated this pass and every loose object;
- * each kept object is by then present in the consolidated pack.
+ * Only then rename the packs that predated this pass and every loose-object
+ * fan-out directory into an unscanned quarantine. A flush makes the new pack
+ * and retired namespace durable together; object bodies are deleted only
+ * after that commit point, followed by a second cleanup flush.
  *
  * # Concurrency
  *
@@ -178,23 +262,28 @@ async function removeLooseObjects(dir: string): Promise<void> {
  * inline after a commit/apply while still holding that lock, and external
  * callers not already under it use {@link runGC}, which acquires it. The
  * lock excludes concurrent writers, so the keep set computed from the refs
- * cannot be invalidated by a commit landing mid-pass. Removal of a
+ * cannot be invalidated by a commit landing mid-pass. Retirement of a
  * superseded pack or loose object races only with unlocked readers, the same
- * POSIX window `unpublishPack` already accepts — and strictly safer here,
- * since every removed-but-reachable object is also in the freshly published
- * consolidated pack.
+ * window `unpublishPack` already accepts. Indexes are retired before their
+ * packs, and every retired-but-reachable object is also in the freshly
+ * published consolidated pack.
  *
  * Returns the disk usage before and after plus the reclaimed byte delta. A
- * repo with no resolvable refs is left untouched. Exported for use within
- * the storage package only — it is intentionally absent from the package's
- * public barrel.
+ * repo with no resolvable refs is not repacked, though stale quarantine is
+ * still reclaimed. Exported for use within the storage package only — it is
+ * intentionally absent from the package's public barrel.
  */
 export async function gcUnderLock(
+  runtime: StorageRuntime,
   dir: string,
   opts: { retention: RetentionPolicy },
 ): Promise<GCResult> {
-  const before = repoDiskUsage(dir);
-  const refs = await listRepoRefs(dir);
+  if (await removeStaleGCTrash(runtime, dir)) {
+    await flushRuntime(runtime);
+  }
+
+  const before = await repoDiskUsage(runtime, dir);
+  const refs = await listRepoRefs(runtime, dir);
 
   if (refs.length === 0) {
     return { before, after: before, reclaimedBytes: 0, keptObjects: 0 };
@@ -204,15 +293,16 @@ export async function gcUnderLock(
   for (const { oid } of refs) {
     const reachable =
       opts.retention === "tip-only"
-        ? await collectReachableObjects(dir, oid)
-        : await collectHistoryObjects(dir, oid);
+        ? await collectReachableObjects(runtime, dir, oid)
+        : await collectHistoryObjects(runtime, dir, oid);
     for (const objectOid of reachable) keep.add(objectOid);
   }
 
-  const supersededPacks = listPackFiles(dir);
+  const supersededPacks = await listPackFiles(runtime, dir);
+  const looseObjectDirectories = await listLooseObjectDirectories(runtime, dir);
 
   const result = await git.packObjects({
-    fs,
+    fs: runtime.fs.git,
     dir,
     oids: [...keep],
     write: false,
@@ -223,14 +313,23 @@ export async function gcUnderLock(
     );
   }
   const transferId = `gc-${crypto.randomUUID().replace(/-/g, "")}`;
-  await publishPackAtomically(dir, result.packfile, transferId);
+  await publishPackAtomically(runtime, dir, result.packfile, transferId);
 
-  for (const packFile of supersededPacks) {
-    await fs.promises.rm(packFile, { force: true });
-  }
-  await removeLooseObjects(dir);
+  const trashDir = await quarantineSupersededObjects(
+    runtime,
+    dir,
+    transferId,
+    supersededPacks,
+    looseObjectDirectories,
+  );
 
-  const after = repoDiskUsage(dir);
+  // Durability commit point: deletion cannot begin until the replacement
+  // pack is published and every retired body is reachable through quarantine.
+  await flushRuntime(runtime);
+  await runtime.fs.remove(trashDir, { recursive: true, force: true });
+  await flushRuntime(runtime);
+
+  const after = await repoDiskUsage(runtime, dir);
   return {
     before,
     after,
@@ -247,10 +346,11 @@ export async function gcUnderLock(
  * while already under the lock call {@link gcUnderLock} directly.
  */
 export async function runGC(
+  runtime: StorageRuntime,
   dir: string,
   opts: { retention: RetentionPolicy },
 ): Promise<GCResult> {
-  return withRepoDirLock(dir, () => gcUnderLock(dir, opts));
+  return withRepoDirLock(runtime, dir, () => gcUnderLock(runtime, dir, opts));
 }
 
 function warnIfOverBudget(dir: string, bytes: number, warnBytes: number): void {
@@ -279,10 +379,11 @@ function warnIfOverBudget(dir: string, bytes: number, warnBytes: number): void {
  * — the case where accumulation is most likely runaway.
  */
 export async function maybeGCUnderLock(
+  runtime: StorageRuntime,
   dir: string,
   policy: GCPolicy,
 ): Promise<void> {
-  const counts = repoObjectCounts(dir);
+  const counts = await repoObjectCounts(runtime, dir);
   if (
     counts.packCount < policy.packThreshold &&
     counts.looseObjectCount < policy.looseThreshold
@@ -290,12 +391,14 @@ export async function maybeGCUnderLock(
     return;
   }
   try {
-    const result = await gcUnderLock(dir, { retention: policy.retention });
+    const result = await gcUnderLock(runtime, dir, {
+      retention: policy.retention,
+    });
     logger.info`reclaimed ${String(result.reclaimedBytes)} bytes from ${dir}: packs ${String(result.before.packCount)} to ${String(result.after.packCount)}, loose ${String(result.before.looseObjectCount)} to ${String(result.after.looseObjectCount)}`;
     warnIfOverBudget(dir, result.after.gitBytes, policy.warnBytes);
   } catch (err) {
-    logger.warn`GC of ${dir} failed; the repo is unchanged but unreclaimed — ${err instanceof Error ? err.message : String(err)}`;
-    warnIfOverBudget(dir, gitBytes(dir), policy.warnBytes);
+    logger.warn`GC of ${dir} failed; active refs remain intact, but garbage may remain quarantined — ${err instanceof Error ? err.message : String(err)}`;
+    warnIfOverBudget(dir, await gitBytes(runtime, dir), policy.warnBytes);
   }
 }
 
@@ -305,6 +408,12 @@ export async function maybeGCUnderLock(
  * substrate uses this from inside its own higher-level lock; sidecar writers
  * that already hold the per-directory lock call `maybeGCUnderLock` directly.
  */
-export async function maybeGC(dir: string, policy: GCPolicy): Promise<void> {
-  return withRepoDirLock(dir, () => maybeGCUnderLock(dir, policy));
+export async function maybeGC(
+  runtime: StorageRuntime,
+  dir: string,
+  policy: GCPolicy,
+): Promise<void> {
+  return withRepoDirLock(runtime, dir, () =>
+    maybeGCUnderLock(runtime, dir, policy),
+  );
 }

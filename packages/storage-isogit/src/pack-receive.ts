@@ -1,11 +1,8 @@
-import fs from "node:fs";
-import path from "node:path";
 import git from "isomorphic-git";
-
-import { hasCode } from "@intx/types";
-
 import { readRawObject } from "./isogit-helpers";
 import { withRepoDirLock } from "./repo-lock";
+import { flushRuntime, type StorageRuntime } from "./runtime";
+import { hasCode } from "@intx/types";
 
 /**
  * Verifies the signature embedded in a git commit object.
@@ -78,8 +75,8 @@ function stripGpgsig(raw: string): string {
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
-// Sibling of objects/pack/. Lives on the same filesystem so fs.rename
-// between staging and pack/ is an atomic metadata operation.
+// Sibling of objects/pack/. Both directories share the storage namespace in
+// which the runtime guarantees atomic rename operations.
 const STAGING_DIR_NAME = "pack-staging";
 
 /**
@@ -89,18 +86,25 @@ const STAGING_DIR_NAME = "pack-staging";
  * to unpublish without re-deriving the naming convention.
  */
 function publishedPackPaths(
+  runtime: StorageRuntime,
   dir: string,
   transferId: string,
 ): { finalPackPath: string; finalIdxPath: string } {
-  const packDir = path.join(dir, ".git", "objects", "pack");
-  const finalPackPath = path.join(packDir, `pack-recv-${transferId}.pack`);
+  const packDir = runtime.path.join(dir, ".git", "objects", "pack");
+  const finalPackPath = runtime.path.join(
+    packDir,
+    `pack-recv-${transferId}.pack`,
+  );
   const finalIdxPath = finalPackPath.replace(/\.pack$/, ".idx");
   return { finalPackPath, finalIdxPath };
 }
 
-async function pathExists(filepath: string): Promise<boolean> {
+async function pathExists(
+  runtime: StorageRuntime,
+  filepath: string,
+): Promise<boolean> {
   try {
-    await fs.promises.lstat(filepath);
+    await runtime.fs.access(filepath);
     return true;
   } catch (cause) {
     if (hasCode(cause) && cause.code === "ENOENT") return false;
@@ -108,41 +112,37 @@ async function pathExists(filepath: string): Promise<boolean> {
   }
 }
 
-function transferIdCollisionError(
-  dir: string,
-  transferId: string,
-  cause?: unknown,
-): Error {
-  return new Error(
-    `transferId "${transferId}" already published or in progress in ${dir}; callers must guarantee transferId uniqueness across all historical and concurrent receives`,
-    { cause },
-  );
-}
-
 /**
  * Remove a previously-published `.pack` + `.idx` pair from objects/pack/.
  *
  * Callers reject a published pack by calling this after their post-publish
  * validation fails (signature, tree-validator, sha mismatch, CAS
- * non-fast-forward, etc.). POSIX semantics mean unlink does not affect
- * file descriptors a concurrent reader has already opened, so a reader
- * mid-call against the rejected pack finishes its read against the
- * already-loaded bytes; subsequent calls will not see the pack at all.
- * Iso-git does not hold open file descriptors between calls (verified
- * by reading `readObjectPacked` at `index.cjs:3394-3398`), so the
- * unlink is safe against the standard pack-discovery path.
+ * non-fast-forward, etc.). A reader that already loaded the rejected pack
+ * can finish against those bytes; subsequent calls will not discover the
+ * removed pair. Iso-git does not retain pack resources between calls
+ * (verified by reading `readObjectPacked` at `index.cjs:3394-3398`).
  *
- * Wrapped in `.catch(() => undefined)` per rm so a secondary failure
+ * Wrapped in `.catch(() => undefined)` per removal so a secondary failure
  * (permissions, I/O) does not mask whatever rejection the caller is
- * about to throw. A failed unlink leaks the rejected pack on disk
+ * about to throw. A failed removal leaves the rejected pack in storage
  * until external cleanup; that is acceptable because the caller is
  * already in an error path and the alternative is hiding the real
  * cause behind a cleanup throw.
  */
-async function unpublishPack(dir: string, transferId: string): Promise<void> {
-  const { finalPackPath, finalIdxPath } = publishedPackPaths(dir, transferId);
-  await fs.promises.rm(finalPackPath, { force: true }).catch(() => undefined);
-  await fs.promises.rm(finalIdxPath, { force: true }).catch(() => undefined);
+async function unpublishPack(
+  runtime: StorageRuntime,
+  dir: string,
+  transferId: string,
+): Promise<void> {
+  const { finalPackPath, finalIdxPath } = publishedPackPaths(
+    runtime,
+    dir,
+    transferId,
+  );
+  await runtime.fs
+    .remove(finalPackPath, { force: true })
+    .catch(() => undefined);
+  await runtime.fs.remove(finalIdxPath, { force: true }).catch(() => undefined);
 }
 
 type TreeEntry = {
@@ -152,8 +152,12 @@ type TreeEntry = {
   oid: string;
 };
 
-async function topLevelNames(dir: string, oid: string): Promise<Set<string>> {
-  const { tree } = await git.readTree({ fs, dir, oid });
+async function topLevelNames(
+  runtime: StorageRuntime,
+  dir: string,
+  oid: string,
+): Promise<Set<string>> {
+  const { tree } = await git.readTree({ fs: runtime.fs.git, dir, oid });
   return new Set(tree.map((e) => e.path));
 }
 
@@ -172,54 +176,74 @@ async function topLevelNames(dir: string, oid: string): Promise<Set<string>> {
  * working tree will be stale until the next successful applyPack.
  */
 async function checkoutTree(
+  runtime: StorageRuntime,
   dir: string,
   commitSha: string,
   ref: string,
 ): Promise<void> {
-  const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
-  const { tree } = await git.readTree({ fs, dir, oid: commit.tree });
+  const { commit } = await git.readCommit({
+    fs: runtime.fs.git,
+    dir,
+    oid: commitSha,
+  });
+  const { tree } = await git.readTree({
+    fs: runtime.fs.git,
+    dir,
+    oid: commit.tree,
+  });
 
   // Collect top-level names managed by deploy trees (new + previous).
   const managed = new Set(tree.map((e) => e.path));
 
-  const prevSha = await git.resolveRef({ fs, dir, ref }).catch(() => null);
+  const prevSha = await git
+    .resolveRef({ fs: runtime.fs.git, dir, ref })
+    .catch(() => null);
   if (prevSha !== null) {
-    const { commit: prev } = await git.readCommit({ fs, dir, oid: prevSha });
-    for (const name of await topLevelNames(dir, prev.tree)) {
+    const { commit: prev } = await git.readCommit({
+      fs: runtime.fs.git,
+      dir,
+      oid: prevSha,
+    });
+    for (const name of await topLevelNames(runtime, dir, prev.tree)) {
       managed.add(name);
     }
   }
 
-  const existing = await fs.promises.readdir(dir);
+  const existing = await runtime.fs.readdir(dir);
   for (const name of existing) {
     if (!managed.has(name)) continue;
-    await fs.promises.rm(path.join(dir, name), {
+    await runtime.fs.remove(runtime.path.join(dir, name), {
       recursive: true,
       force: true,
     });
   }
 
-  await writeTreeEntries(dir, dir, tree);
+  await writeTreeEntries(runtime, dir, dir, tree);
 }
 
 async function writeTreeEntries(
+  runtime: StorageRuntime,
   repoDir: string,
   targetDir: string,
   entries: TreeEntry[],
 ): Promise<void> {
   for (const entry of entries) {
-    const entryPath = path.join(targetDir, entry.path);
+    const entryPath = runtime.path.join(targetDir, entry.path);
     if (entry.type === "tree") {
-      await fs.promises.mkdir(entryPath, { recursive: true });
-      const { tree } = await git.readTree({ fs, dir: repoDir, oid: entry.oid });
-      await writeTreeEntries(repoDir, entryPath, tree);
-    } else if (entry.type === "blob") {
-      const { blob } = await git.readBlob({
-        fs,
+      await runtime.fs.mkdir(entryPath, { recursive: true });
+      const { tree } = await git.readTree({
+        fs: runtime.fs.git,
         dir: repoDir,
         oid: entry.oid,
       });
-      await fs.promises.writeFile(entryPath, blob, {
+      await writeTreeEntries(runtime, repoDir, entryPath, tree);
+    } else if (entry.type === "blob") {
+      const { blob } = await git.readBlob({
+        fs: runtime.fs.git,
+        dir: repoDir,
+        oid: entry.oid,
+      });
+      await runtime.fs.writeFile(entryPath, blob, {
         mode: entry.mode === "100755" ? 0o755 : 0o644,
       });
     }
@@ -285,20 +309,16 @@ async function writeTreeEntries(
  * non-recursively (verified at the source line refs above), so any
  * sibling directory under `objects/` is invisible to discovery.
  *
- * We stage in `objects/pack-staging/<transferId>/`. Exclusive creation
- * of the per-transfer subdirectory reserves the transfer ID and keeps
- * concurrent receives' temp pairs isolated from each other. The kernel
- * guarantees that the staging directory and the final `objects/pack/`
- * are on the same filesystem (they share a parent), so `fs.rename`
- * between them is an atomic metadata operation.
+ * We stage in `objects/pack-staging/<transferId>/`. The per-transfer
+ * subdirectory keeps concurrent receives' temp pairs isolated from each
+ * other. It shares a storage namespace with the final `objects/pack/`
+ * directory, so the runtime's atomic rename contract applies between them.
  *
  * # Sequence (numbered for cross-reference with cleanup contract)
  *
- *   1. Reserve the transfer ID by exclusively creating
- *      `objects/pack-staging/<transferId>/`, reject any existing final
- *      path for the same ID, and write the pack bytes to `pack.pack`
- *      inside it. Readers scanning `objects/pack/` do not see this file
- *      (different directory).
+ *   1. Create `objects/pack-staging/<transferId>/` and write the pack
+ *      bytes to `pack.pack` inside it. Readers scanning
+ *      `objects/pack/` do not see this file (different directory).
  *
  *   2. Run `git.indexPack` against the staging path — iso-git derives
  *      the `.idx` filename from the `.pack` filename and writes
@@ -310,13 +330,13 @@ async function writeTreeEntries(
  *   3. Atomic publish (transitions readers from "no new pack" to "new
  *      pack visible"):
  *
- *        a. `fs.rename` staging `.pack` -> final `.pack`. The new
+ *        a. Atomically rename staging `.pack` -> final `.pack`. The new
  *           `.pack` now exists in `objects/pack/`. Readers scanning
  *           for `.idx` files still do not see the new pack (no `.idx`
  *           for it in `objects/pack/` yet). The staging `.pack`
  *           directory entry vanishes.
  *
- *        b. `fs.rename` staging `.idx` -> final `.idx`. The new `.idx`
+ *        b. Atomically rename staging `.idx` -> final `.idx`. The new `.idx`
  *           appears atomically in `objects/pack/`; readers' next
  *           directory scan finds it and resolves the `.pack` written
  *           in 3a. The staging directory's `.idx` entry vanishes;
@@ -327,25 +347,21 @@ async function writeTreeEntries(
  *        c. Remove the now-empty staging directory.
  *
  *   4. On any throw before publish completes, recursively remove the
- *      staging directory. `fs.rm({recursive: true, force: true})`
- *      tolerates partial states (e.g. throw mid-write before `.idx`
- *      exists, or throw inside `indexPack`).
+ *      staging directory. Forced recursive removal tolerates partial states
+ *      (e.g. throw mid-write before `.idx` exists, or throw inside
+ *      `indexPack`).
  *
  * # Cleanup contract
  *
  * On successful return, no staging files remain. On throw before
  * publish (steps 1-2), the staging directory and any files inside it
- * are removed. On a throw partway through publish (between 3a and 3b),
- * cleanup attempts to remove both the staging directory and the
- * unindexed `.pack` published by this call without masking the original
- * error. An abrupt process termination or a cleanup failure can still
- * leave an unindexed `.pack` in `objects/pack/` and files in the staging
- * directory. Iso-git ignores `.pack` files with no matching `.idx`
- * (verified at `index.cjs:3394-3398`), so repository reads remain
- * unaffected. The staging reservation rejects concurrent reuse, and the
- * final-path guard rejects historical reuse of that transfer ID. Callers
- * must retry with a fresh ID; orphaned files remain harmless until
- * manually removed.
+ * are removed. A throw partway through publish (between 3a and 3b)
+ * leaves an unindexed `.pack` in `objects/pack/`; this is
+ * harmless (iso-git ignores `.pack` files with no matching `.idx`,
+ * verified at `index.cjs:3394-3398`) and the recovery path on the next
+ * call would re-write the same content. The cleanup-on-throw path
+ * here attempts to remove the orphan `.pack` but does not mask the
+ * original publish error.
  *
  * # Validation timing
  *
@@ -358,11 +374,9 @@ async function writeTreeEntries(
  * Callers that reject the published pack (signature failure, tree
  * validator rejection, sha mismatch, CAS non-fast-forward) call
  * `unpublishPack` to remove the published `.pack` + `.idx` pair from
- * `objects/pack/`. POSIX semantics let a concurrent reader that
- * already opened the rejected files finish its read against the
- * cached bytes, and iso-git does not hold open descriptors between
- * calls, so the unlink does not introduce the concurrent-read race
- * that the staging strategy exists to eliminate.
+ * `objects/pack/`. A concurrent reader that already loaded the rejected
+ * pack can finish against those bytes, while subsequent calls no longer
+ * discover the pair.
  *
  * # Scope
  *
@@ -385,6 +399,7 @@ async function writeTreeEntries(
  * next reader deciding whether the dance is still needed.
  */
 export async function publishPackAtomically(
+  runtime: StorageRuntime,
   dir: string,
   pack: Uint8Array,
   transferId: string,
@@ -395,53 +410,58 @@ export async function publishPackAtomically(
     );
   }
 
-  const packDir = path.join(dir, ".git", "objects", "pack");
-  const stagingRoot = path.join(dir, ".git", "objects", STAGING_DIR_NAME);
-  const stagingDir = path.join(stagingRoot, transferId);
-  const stagingPackPath = path.join(stagingDir, "pack.pack");
-  const stagingIdxPath = stagingPackPath.replace(/\.pack$/, ".idx");
-  const { finalPackPath, finalIdxPath } = publishedPackPaths(dir, transferId);
+  const packDir = runtime.path.join(dir, ".git", "objects", "pack");
+  const stagingRoot = runtime.path.join(
+    dir,
+    ".git",
+    "objects",
+    STAGING_DIR_NAME,
+  );
+  const stagingDir = runtime.path.join(stagingRoot, transferId);
 
-  await fs.promises.mkdir(packDir, { recursive: true });
-  await fs.promises.mkdir(stagingRoot, { recursive: true });
+  const stagingPackPath = runtime.path.join(stagingDir, "pack.pack");
+  const stagingIdxPath = stagingPackPath.replace(/\.pack$/, ".idx");
+  const { finalPackPath, finalIdxPath } = publishedPackPaths(
+    runtime,
+    dir,
+    transferId,
+  );
+
+  await runtime.fs.mkdir(packDir, { recursive: true });
+  await runtime.fs.mkdir(stagingRoot, { recursive: true });
+  if (
+    (await pathExists(runtime, finalPackPath)) ||
+    (await pathExists(runtime, finalIdxPath))
+  ) {
+    throw new Error(
+      `transferId "${transferId}" already published in ${dir}; callers must guarantee transferId uniqueness across all historical receives`,
+    );
+  }
   try {
-    // mkdir without recursive is an atomic reservation for concurrent
-    // calls using the same transfer ID.
-    await fs.promises.mkdir(stagingDir);
+    await runtime.fs.mkdir(stagingDir);
   } catch (cause) {
     if (hasCode(cause) && cause.code === "EEXIST") {
-      throw transferIdCollisionError(dir, transferId, cause);
+      throw new Error(
+        `transferId "${transferId}" already published or in progress in ${dir}; callers must guarantee transferId uniqueness across all historical receives`,
+        { cause },
+      );
     }
     throw cause;
   }
-
-  try {
-    // Unlike link, rename may replace an existing destination. Check for
-    // a historical publication after acquiring the staging reservation.
-    if ((await pathExists(finalPackPath)) || (await pathExists(finalIdxPath))) {
-      throw transferIdCollisionError(dir, transferId);
-    }
-  } catch (err) {
-    await fs.promises
-      .rm(stagingDir, { recursive: true, force: true })
-      .catch(() => undefined);
-    throw err;
-  }
-
   // iso-git's indexPack takes a repo-root-relative filepath; derive it
   // from the absolute path rather than rebuilding the segment list so
   // the two stay coupled.
-  const stagingFilepath = path.relative(dir, stagingPackPath);
+  const stagingFilepath = runtime.path.relative(dir, stagingPackPath);
 
   let oids: string[];
   try {
     // Step 1: write the pack bytes to the staging directory.
-    await fs.promises.writeFile(stagingPackPath, pack);
+    await runtime.fs.writeFile(stagingPackPath, pack);
     // Step 2: index the pack. iso-git writes the .idx next to the
     // .pack — both stay inside the staging directory, invisible to
     // any reader scanning objects/pack/.
     const result = await git.indexPack({
-      fs,
+      fs: runtime.fs.git,
       dir,
       filepath: stagingFilepath,
     });
@@ -451,8 +471,8 @@ export async function publishPackAtomically(
     // partial state (write succeeded but indexPack threw, etc.). The
     // rm is wrapped so a secondary cleanup failure (permissions, I/O)
     // does not mask the original error.
-    await fs.promises
-      .rm(stagingDir, { recursive: true, force: true })
+    await runtime.fs
+      .remove(stagingDir, { recursive: true, force: true })
       .catch(() => undefined);
     throw err;
   }
@@ -463,26 +483,23 @@ export async function publishPackAtomically(
   // or absent, and the recovery rms below clear the half-published
   // pack from objects/pack/. Staging-directory cleanup is NOT part of
   // this block — see below.
-  let packPublished = false;
   try {
-    await fs.promises.rename(stagingPackPath, finalPackPath); // 3a
-    packPublished = true;
-    await fs.promises.rename(stagingIdxPath, finalIdxPath); // 3b
+    await runtime.fs.rename(stagingPackPath, finalPackPath); // 3a
+    await runtime.fs.rename(stagingIdxPath, finalIdxPath); // 3b
   } catch (err) {
     // Partial-publish recovery: if 3a succeeded and 3b failed we
-    // leave an unindexed .pack in objects/pack/. Remove it only when
-    // this call completed 3a; a failure during 3a must not remove a
-    // file another publisher may own. Each recovery rm is wrapped so
-    // a secondary failure (permissions, I/O) does not mask the
-    // original publish failure.
-    await fs.promises
-      .rm(stagingDir, { recursive: true, force: true })
+    // leave an unindexed .pack in objects/pack/. The rm of
+    // finalPackPath clears it; finalIdxPath cannot exist here (3b
+    // never completed), so no rm is needed for it. Each recovery rm
+    // is wrapped so a secondary failure (permissions, I/O) does not
+    // mask the original publish error — the caller needs to see the
+    // publish failure, not whatever the cleanup tripped on.
+    await runtime.fs
+      .remove(stagingDir, { recursive: true, force: true })
       .catch(() => undefined);
-    if (packPublished) {
-      await fs.promises
-        .rm(finalPackPath, { force: true })
-        .catch(() => undefined);
-    }
+    await runtime.fs
+      .remove(finalPackPath, { force: true })
+      .catch(() => undefined);
     throw err;
   }
 
@@ -494,17 +511,18 @@ export async function publishPackAtomically(
   // EACCES/EBUSY/EIO on the staging rm trigger the recovery rms above
   // and delete a pack that was already published and (potentially)
   // already read by concurrent observers. A leftover staging
-  // directory on rm failure leaks disk until manually removed; that is
-  // strictly preferable to retroactively destroying a successful
+  // directory on rm failure leaks disk until external cleanup; that
+  // is strictly preferable to retroactively destroying a successful
   // publish.
-  await fs.promises
-    .rm(stagingDir, { recursive: true, force: true })
+  await runtime.fs
+    .remove(stagingDir, { recursive: true, force: true })
     .catch(() => undefined);
 
   return oids;
 }
 
 export async function receivePackObjects(
+  runtime: StorageRuntime,
   dir: string,
   pack: Uint8Array,
   ref: string,
@@ -513,7 +531,8 @@ export async function receivePackObjects(
   expectedOldSha: string | null,
   validateTree?: TreeValidator,
 ): Promise<string | null> {
-  const oids = await publishPackAtomically(dir, pack, transferId);
+  const oids = await publishPackAtomically(runtime, dir, pack, transferId);
+  let currentOldSha: string | null = null;
 
   // Post-publish validation runs inside a try so any rejection path
   // (sha mismatch, CAS non-fast-forward, tree validator) unpublishes
@@ -529,8 +548,8 @@ export async function receivePackObjects(
       );
     }
 
-    const currentOldSha = await git
-      .resolveRef({ fs, dir, ref })
+    currentOldSha = await git
+      .resolveRef({ fs: runtime.fs.git, dir, ref })
       .catch(() => null);
 
     if (currentOldSha !== expectedOldSha) {
@@ -543,12 +562,12 @@ export async function receivePackObjects(
 
     if (validateTree !== undefined) {
       const { commit } = await git.readCommit({
-        fs,
+        fs: runtime.fs.git,
         dir,
         oid: expectedSha,
       });
       const { tree } = await git.readTree({
-        fs,
+        fs: runtime.fs.git,
         dir,
         oid: commit.tree,
       });
@@ -573,7 +592,11 @@ export async function receivePackObjects(
               `readBlob: path ${relPath} not found in commit ${expectedSha} tree`,
             );
           }
-          const next = await git.readTree({ fs, dir, oid: entry.oid });
+          const next = await git.readTree({
+            fs: runtime.fs.git,
+            dir,
+            oid: entry.oid,
+          });
           currentTree = next.tree;
         }
         const last = segments[segments.length - 1];
@@ -583,7 +606,11 @@ export async function receivePackObjects(
             `readBlob: path ${relPath} not found in commit ${expectedSha} tree`,
           );
         }
-        const { blob } = await git.readBlob({ fs, dir, oid: blobEntry.oid });
+        const { blob } = await git.readBlob({
+          fs: runtime.fs.git,
+          dir,
+          oid: blobEntry.oid,
+        });
         return blob;
       };
       const listDir = async (relPath: string): Promise<string[]> => {
@@ -598,7 +625,11 @@ export async function receivePackObjects(
               `listDir: path ${relPath} is not a directory in commit ${expectedSha} tree`,
             );
           }
-          const next = await git.readTree({ fs, dir, oid: entry.oid });
+          const next = await git.readTree({
+            fs: runtime.fs.git,
+            dir,
+            oid: entry.oid,
+          });
           currentTree = next.tree;
         }
         return currentTree.map((e) => e.path);
@@ -613,15 +644,25 @@ export async function receivePackObjects(
       }
     }
 
-    // Ref write happens after publish and validation so the ref never
-    // references a commit whose pack is unpublished or whose tree was
-    // rejected.
-    await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
-    return currentOldSha;
+    // The pack must be durable before ref promotion begins. Once writeRef is
+    // attempted, an I/O error cannot prove whether the ref changed, so later
+    // failures must retain the pack rather than risk creating a dangling ref.
+    await flushRuntime(runtime);
   } catch (err) {
-    await unpublishPack(dir, transferId);
+    await unpublishPack(runtime, dir, transferId);
+    await flushRuntime(runtime);
     throw err;
   }
+
+  await git.writeRef({
+    fs: runtime.fs.git,
+    dir,
+    ref,
+    value: expectedSha,
+    force: true,
+  });
+  await flushRuntime(runtime);
+  return currentOldSha;
 }
 
 /**
@@ -645,6 +686,7 @@ export async function receivePackObjects(
  * The caller is responsible for ensuring `dir` is an initialized git repo.
  */
 export async function applyPack(
+  runtime: StorageRuntime,
   dir: string,
   pack: Uint8Array,
   ref: string,
@@ -656,8 +698,8 @@ export async function applyPack(
   // reactor's context commits, the mail-audit commits, and GC. Hold the
   // per-directory lock across the publish, validation, checkout, and ref
   // write so none of them interleave with this apply.
-  await withRepoDirLock(dir, async () => {
-    const oids = await publishPackAtomically(dir, pack, transferId);
+  await withRepoDirLock(runtime, dir, async () => {
+    const oids = await publishPackAtomically(runtime, dir, pack, transferId);
 
     // Post-publish validation runs inside a try so any rejection path
     // (sha mismatch, missing signature, signature failure) unpublishes
@@ -675,7 +717,7 @@ export async function applyPack(
 
       if (verifyCommit !== undefined) {
         const { commit } = await git.readCommit({
-          fs,
+          fs: runtime.fs.git,
           dir,
           oid: expectedSha,
         });
@@ -688,7 +730,11 @@ export async function applyPack(
         // Reconstruct the signing payload from the raw object bytes.
         // readCommit().payload is unreliable for SSH signatures because
         // isogit's withoutSignature() only handles PGP armor markers.
-        const { object: rawBytes } = await readRawObject(dir, expectedSha);
+        const { object: rawBytes } = await readRawObject(
+          runtime,
+          dir,
+          expectedSha,
+        );
         const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
 
         if (!(await verifyCommit(payload, commit.gpgsig))) {
@@ -698,14 +744,29 @@ export async function applyPack(
         }
       }
 
-      // Checkout reads from the now-published pack; ref is written last
-      // so it never references a commit whose working tree is not
-      // materialized.
-      await checkoutTree(dir, expectedSha, ref);
-      await git.writeRef({ fs, dir, ref, value: expectedSha, force: true });
+      // Make the accepted pack durable before checkout and ref promotion.
+      // A later failure may leave the promotion outcome uncertain, but every
+      // possible ref value will resolve to a durable object store.
+      await flushRuntime(runtime);
+
+      // Ref is written last so it never references a commit whose working
+      // tree has not been materialized.
+      await checkoutTree(runtime, dir, expectedSha, ref);
     } catch (err) {
-      await unpublishPack(dir, transferId);
+      await unpublishPack(runtime, dir, transferId);
+      await flushRuntime(runtime);
       throw err;
     }
+
+    // Do not unpublish after promotion begins: writeRef or the final flush can
+    // fail after making the new ref observable.
+    await git.writeRef({
+      fs: runtime.fs.git,
+      dir,
+      ref,
+      value: expectedSha,
+      force: true,
+    });
+    await flushRuntime(runtime);
   });
 }
