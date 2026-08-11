@@ -229,7 +229,7 @@ async function seedAnchor(opts: {
   await h.db.insert(workflowRun).values({
     id: opts.id,
     tenantId: TENANT_ID,
-    deploymentId: opts.id,
+    anchorRunId: opts.id,
     definitionId: opts.definitionId ?? DEFINITION_ID,
     address: `ins_${opts.id}@wf.example`,
     status: opts.status ?? "running",
@@ -300,22 +300,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dep_new",
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
       });
-      // A child run of dep_old: its deployment_id is non-null but does NOT
+      // A child run of dep_old: its anchor_run_id is non-null but does NOT
       // equal its own id, so the anchor-identity predicate excludes it.
       await h.db.insert(workflowRun).values({
         id: "run_child",
         tenantId: TENANT_ID,
-        deploymentId: "dep_old",
+        anchorRunId: "dep_old",
         definitionId: DEFINITION_ID,
         status: "running",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
-      // A folded-agent run: address-bearing but deployment_id null, so it is
+      // A folded-agent run: address-bearing but anchor_run_id null, so it is
       // not a deployment anchor and the predicate excludes it.
       await h.db.insert(workflowRun).values({
         id: "run_folded",
         tenantId: TENANT_ID,
-        deploymentId: null,
+        anchorRunId: null,
         definitionId: DEFINITION_ID,
         address: "run_folded@wf.example",
         status: "running",

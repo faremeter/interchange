@@ -1243,7 +1243,7 @@ describe("deployWorkflowDefinition", () => {
   type CapturedRunRow = {
     id: string;
     tenantId: string;
-    deploymentId: string;
+    anchorRunId: string;
     address: string;
     status: string;
     definitionId?: string | null;
@@ -1518,7 +1518,7 @@ describe("deployWorkflowDefinition", () => {
     if (runRow === undefined) throw new Error("missing anchor workflow_run");
     expect(runRow.id).toBe("dep_xyz");
     expect(runRow.tenantId).toBe("tenant-1");
-    expect(runRow.deploymentId).toBe("dep_xyz");
+    expect(runRow.anchorRunId).toBe("dep_xyz");
     expect(runRow.address).toBe("ins_dep_xyz@workflow.test");
     expect(runRow.status).toBe("running");
     expect(runRow.definitionId).toBe(definitionRow.id);

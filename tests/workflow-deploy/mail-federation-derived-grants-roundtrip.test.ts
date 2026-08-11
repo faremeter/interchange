@@ -359,7 +359,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(workflowRunTable).values({
         id: opts.deploymentId,
         tenantId: TENANT_ID,
-        deploymentId: opts.deploymentId,
+        anchorRunId: opts.deploymentId,
         definitionId: `wfd_${opts.deploymentId}`,
         address,
         status: "running",
@@ -493,7 +493,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Only the deployment's seeded anchor run (id == deploymentId) exists;
       // the rejected trigger committed no child run of its own.
       const runs = await h.db.select().from(workflowRunTable);
-      const childRuns = runs.filter((r) => r.id !== r.deploymentId);
+      const childRuns = runs.filter((r) => r.id !== r.anchorRunId);
       expect(childRuns).toHaveLength(0);
 
       // The only grants present are the seeded caller manage grant; no run

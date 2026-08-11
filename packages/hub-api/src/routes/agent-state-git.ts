@@ -350,7 +350,7 @@ async function resolveAgentStateId(
   paramId: string,
 ): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
   // Only a folded launch run owns state at `agents/<runId>`: it is born with a
-  // routing address and no deployment (`deploymentId IS NULL AND address IS NOT
+  // routing address and no deployment (`anchorRunId IS NULL AND address IS NOT
   // NULL`), so its sidecar persists via the plain-address path. A deployment
   // anchor/child run keeps its state under `workflow-runs/<slug>` instead, so
   // the shape gate keeps those out of this route. Deliberately NOT gated on
@@ -360,7 +360,7 @@ async function resolveAgentStateId(
     where: and(
       eq(workflowRun.id, paramId),
       eq(workflowRun.tenantId, tenantId),
-      isNull(workflowRun.deploymentId),
+      isNull(workflowRun.anchorRunId),
       isNotNull(workflowRun.address),
     ),
   });

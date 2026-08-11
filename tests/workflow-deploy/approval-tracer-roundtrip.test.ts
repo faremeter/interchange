@@ -356,7 +356,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
       await workflowRunStore.createIfAbsent(
         {
           id: runId,
-          deploymentId,
+          anchorRunId: deploymentId,
           tenantId,
           definitionId: DEFINITION_ID,
           principalId: null,

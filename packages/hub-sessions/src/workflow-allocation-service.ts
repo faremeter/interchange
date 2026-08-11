@@ -237,7 +237,7 @@ export function createWorkflowAllocationService({
       await tx.insert(workflowRun).values({
         id: args.deploymentId,
         tenantId: args.tenantId,
-        deploymentId: args.deploymentId,
+        anchorRunId: args.deploymentId,
         definitionId,
         address: deploymentAddress,
         status: "running",

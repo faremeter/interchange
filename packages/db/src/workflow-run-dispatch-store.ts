@@ -140,11 +140,11 @@ async function insertOrReconcileDispatch(
   args: InsertOrReconcileDispatchArgs,
 ): Promise<EnqueueWorkflowRunDispatchResult> {
   const [anchor] = await executor
-    .select({ deploymentId: workflowRun.deploymentId })
+    .select({ anchorRunId: workflowRun.anchorRunId })
     .from(workflowRun)
     .where(eq(workflowRun.id, args.anchorRunId))
     .limit(1);
-  if (anchor?.deploymentId !== args.anchorRunId) {
+  if (anchor?.anchorRunId !== args.anchorRunId) {
     throw new Error(
       `workflowRunDispatchStore.${args.operation}: run ${args.anchorRunId} is not a deployment anchor`,
     );

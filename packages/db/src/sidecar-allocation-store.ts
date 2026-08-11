@@ -284,7 +284,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       .set({ status: "failed", endedAt: now })
       .where(
         and(
-          eq(workflowRun.deploymentId, anchorRunId),
+          eq(workflowRun.anchorRunId, anchorRunId),
           eq(workflowRun.status, "running"),
         ),
       )
@@ -343,7 +343,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       const [anchor] = await executor
         .select({
           tenantId: workflowRun.tenantId,
-          deploymentId: workflowRun.deploymentId,
+          anchorRunId: workflowRun.anchorRunId,
           status: workflowRun.status,
         })
         .from(workflowRun)
@@ -356,7 +356,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       }
       if (
         anchor.tenantId !== args.tenantId ||
-        anchor.deploymentId !== args.anchorRunId
+        anchor.anchorRunId !== args.anchorRunId
       ) {
         throw new Error(
           `sidecarAllocationStore.createPending: run ${args.anchorRunId} is not an anchor for tenant ${args.tenantId}`,

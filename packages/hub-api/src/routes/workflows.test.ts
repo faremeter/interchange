@@ -888,7 +888,7 @@ const GrantInsert = type({
 
 const WorkflowRunInsert = type({
   id: "string",
-  deploymentId: "string",
+  anchorRunId: "string",
   tenantId: "string",
   principalId: "string",
   status: "string",
@@ -1989,7 +1989,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     const runRow = assertBody(WorkflowRunInsert, runInserts[0]?.values);
     expect(runRow).toMatchObject({
       id: json.address,
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       tenantId: TENANT_ID,
       principalId: principalRow.id,
       status: "running",

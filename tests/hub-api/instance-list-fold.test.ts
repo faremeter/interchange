@@ -332,12 +332,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: null,
       });
       // Address present but carrying a deployment id (a self-referential
-      // deployment anchor run): the null-`deploymentId` list gate drops it.
+      // deployment anchor run): the null-`anchorRunId` list gate drops it.
       await h.db.insert(workflowRun).values({
         id: "dep_anchor",
         tenantId: TENANT_ID,
         definitionId: definitionIdFor(DEF_A),
-        deploymentId: "dep_anchor",
+        anchorRunId: "dep_anchor",
         address: "ins_dep_anchor@list.example",
         status: "running",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),

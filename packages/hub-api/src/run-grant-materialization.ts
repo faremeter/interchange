@@ -355,10 +355,7 @@ export async function lockWorkflowRunState(
     .select({ status: workflowRun.status })
     .from(workflowRun)
     .where(
-      and(
-        eq(workflowRun.id, runId),
-        eq(workflowRun.deploymentId, deploymentId),
-      ),
+      and(eq(workflowRun.id, runId), eq(workflowRun.anchorRunId, deploymentId)),
     )
     .limit(1)
     .for("update");
@@ -484,7 +481,7 @@ export async function commitRunGrants(
     await workflowRunStore.anchorWithPrincipal(
       {
         id: args.runId,
-        deploymentId: args.deploymentId,
+        anchorRunId: args.deploymentId,
         definitionId: args.definitionId,
         tenantId: args.tenantId,
         principalId: args.runPrincipalId,
@@ -555,7 +552,7 @@ export function createMailTriggeredRunGrantsMaterializer(
         topLevelRun,
         and(
           eq(topLevelRun.id, runId),
-          eq(topLevelRun.deploymentId, workflowRun.id),
+          eq(topLevelRun.anchorRunId, workflowRun.id),
         ),
       )
       .where(eq(workflowRun.address, agentAddress))

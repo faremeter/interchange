@@ -77,7 +77,7 @@ async function pushSourceUpdatesToTenants(
   // reconnect re-resolves sources.
   try {
     // The instance-shaped runs: running, addressable, and not anchored on a
-    // deployment. `deploymentId IS NULL` excludes the deployment-anchor runs
+    // deployment. `anchorRunId IS NULL` excludes the deployment-anchor runs
     // (which set it to their own id), so no workflow-derived `ins_dep_` address
     // -- the only kind an anchor carries -- can reach the address-targeted push
     // below. Mirrors the /me/workflows/runs and tenant run-list predicate.
@@ -85,7 +85,7 @@ async function pushSourceUpdatesToTenants(
       where: and(
         inArray(workflowRun.tenantId, tenantIds),
         eq(workflowRun.status, "running"),
-        isNull(workflowRun.deploymentId),
+        isNull(workflowRun.anchorRunId),
         isNotNull(workflowRun.address),
       ),
     });

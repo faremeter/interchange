@@ -364,7 +364,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(runs).toHaveLength(1);
       const run = runs[0];
       expect(run?.id).toBe("run-1");
-      expect(run?.deploymentId).toBe(DEPLOYMENT);
+      expect(run?.anchorRunId).toBe(DEPLOYMENT);
       expect(run?.tenantId).toBe(TENANT);
       expect(run?.principalId).toBeNull();
       expect(run?.status).toBe("running");
