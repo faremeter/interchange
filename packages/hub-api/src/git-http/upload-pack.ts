@@ -21,7 +21,7 @@ import { glob } from "@intx/hub-common";
 import {
   createNegotiatedPack,
   collectReachableObjects,
-} from "@intx/storage-isogit";
+} from "@intx/storage-isogit/node";
 import { readPktLine, writePktLine, writeFlush, writeErr } from "./pkt-line";
 import { chunkPackToSideBand } from "./side-band-64k";
 import type { RefEntry } from "./advertise-refs";

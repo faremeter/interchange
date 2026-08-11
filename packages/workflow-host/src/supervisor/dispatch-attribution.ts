@@ -23,7 +23,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { countLooseObjects, gitBytes } from "@intx/storage-isogit";
+import { countLooseObjects, gitBytes } from "@intx/storage-isogit/node";
 
 import type { DispatchStructuralCounters } from "./types";
 

@@ -16,7 +16,7 @@ import {
   defineAgent,
 } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 
 // `apiKey` and `model` come from the caller's env / config; pick the
 // shape that fits the deployment. The snippet below uses literals so

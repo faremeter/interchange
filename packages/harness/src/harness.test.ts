@@ -28,7 +28,7 @@ import {
   type Harness as InferenceTestHarness,
 } from "@intx/inference-testing";
 import { createInboundMessage } from "@intx/mime";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ContextStore,
   InboundMessage,

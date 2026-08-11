@@ -30,7 +30,7 @@ import {
   type BaseEnv,
 } from "@intx/agent";
 import { noopAuditStore } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ReactorCapabilities,
   ReactorDirector,

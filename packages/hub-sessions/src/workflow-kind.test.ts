@@ -5,7 +5,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { generateKeyPair } from "@intx/crypto";
-import { collectReachableObjects } from "@intx/storage-isogit";
+import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import {
   workflowKindHandler,

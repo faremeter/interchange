@@ -21,7 +21,7 @@ import {
   type BaseEnv,
 } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type { InboundMessage, InferenceSource } from "@intx/types/runtime";
 
 /**

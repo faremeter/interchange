@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import { parseArgs } from "node:util";
 
-import { IsogitStore } from "@intx/storage-isogit";
+import { IsogitStore } from "@intx/storage-isogit/node";
 import type { AuditRecord } from "@intx/types/audit";
 
 const USAGE = "Usage: audit --dir <agent-repo> --session <sessionId> [--json]";

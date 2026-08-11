@@ -17,7 +17,7 @@ import { eq } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
 import { configureSync, getConfig, resetSync } from "@intx/log";
-import { collectReachableObjects } from "@intx/storage-isogit";
+import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
 import {

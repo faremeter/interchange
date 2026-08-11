@@ -17,7 +17,7 @@ import {
 } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { createHarness, defineMailTools } from "@intx/harness";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 
 const mailFactory = defineMailTools(
   () => ({

@@ -60,7 +60,10 @@ import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { createAgent, type Agent } from "@intx/agent";
 import type { BaseEnv } from "@intx/agent";
 import { generateKeyPair, createSSHSignature } from "@intx/crypto";
-import { createIsogitStore, type CommitSigner } from "@intx/storage-isogit";
+import {
+  createIsogitStore,
+  type CommitSigner,
+} from "@intx/storage-isogit/node";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {

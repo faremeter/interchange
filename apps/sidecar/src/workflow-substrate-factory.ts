@@ -64,7 +64,7 @@ import {
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
-import { createIsogitStore } from "@intx/storage-isogit";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import {
   adaptHostScheduler,
   createCredentialsBackedAuthorize,

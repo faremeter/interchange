@@ -1,5 +1,5 @@
 import { createSSHSignature } from "@intx/crypto";
-import type { GCPolicy } from "@intx/storage-isogit";
+import type { GCPolicy } from "@intx/storage-isogit/node";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createRepoStore } from "./repo-store";
