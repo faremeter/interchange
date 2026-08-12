@@ -274,8 +274,8 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
  * The step's mail address is `resolveStepAddress(...)`, the single owner
  * of the head/step collapse: for a single-step deployment the lone step
  * IS the head (the deployment mailbox itself), so the tree is read at the
- * head; for multi-step it is `deriveStepAddress(deploymentId, stepId,
- * deploymentDomain)`. The `deploymentId`/`deploymentDomain` are recovered
+ * head; for multi-step it is `deriveStepAddress(runId, stepId,
+ * domain)`. The `deploymentId`/`deploymentDomain` are recovered
  * from the deployment mailbox address the supervisor threaded into the
  * child as `MAILBOX_ADDRESS` (`ins_<deploymentId>@<domain>`): the
  * instance-id local part minus the `ins_` prefix is the deploymentId, and
@@ -307,9 +307,9 @@ export function stepDeployTreeDir(args: {
   // `baseStepId` is the identity on an unscoped id, so a plain step is
   // unaffected.
   const stepAddress = resolveStepAddress({
-    deploymentId,
+    runId: deploymentId,
     stepId: baseStepId(args.stepId),
-    deploymentDomain: parsed.domain,
+    domain: parsed.domain,
     stepCount: args.stepCount,
   });
   return path.join(args.dataDir, sanitizeAddress(stepAddress));

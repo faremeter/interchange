@@ -133,7 +133,7 @@ import {
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -225,9 +225,9 @@ let h: TestDb;
 // stamps onto the register frame's `deploymentId`. The co-write resolves
 // tenancy by the address and cross-checks the slug, so the seeded
 // anchor run is keyed by the slug with this address.
-const deploymentMailAddress = deriveDeploymentAddress({
-  deploymentId: DEPLOYMENT_ID,
-  deploymentDomain: DEPLOYMENT_DOMAIN,
+const deploymentMailAddress = deriveRunAddress({
+  runId: DEPLOYMENT_ID,
+  domain: DEPLOYMENT_DOMAIN,
 });
 const deploymentSlug = deriveDeploymentId(deploymentMailAddress);
 

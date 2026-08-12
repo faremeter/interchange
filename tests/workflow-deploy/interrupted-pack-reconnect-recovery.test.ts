@@ -31,7 +31,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
@@ -84,9 +84,9 @@ afterAll(async () => {
 async function deploySingleStepWorkflow(
   deploymentId: string,
 ): Promise<{ deploymentMailAddress: string; workflowRunRepoId: RepoId }> {
-  const deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  const deploymentMailAddress = deriveRunAddress({
+    runId: deploymentId,
+    domain: DEPLOYMENT_DOMAIN,
   });
 
   const agent = defineAgent({

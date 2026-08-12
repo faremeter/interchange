@@ -68,7 +68,7 @@ import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -321,9 +321,9 @@ async function runUnified(opts: {
   });
 
   try {
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const agent = defineAgent({

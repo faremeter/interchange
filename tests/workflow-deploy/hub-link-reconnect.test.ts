@@ -27,7 +27,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
@@ -69,9 +69,9 @@ let env: DeployFlowEnv;
 let deploymentMailAddress: string;
 
 beforeAll(async () => {
-  deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId: DEPLOYMENT_ID,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  deploymentMailAddress = deriveRunAddress({
+    runId: DEPLOYMENT_ID,
+    domain: DEPLOYMENT_DOMAIN,
   });
   env = await startDeployFlowEnv();
 });

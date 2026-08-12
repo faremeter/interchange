@@ -19,8 +19,8 @@ import {
 import {
   CapabilityApprovalDeniedError,
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
-  deriveDeploymentAgentId,
+  deriveRunAddress,
+  deriveRunAgentId,
   deriveStepAddress,
   deriveStepAgentId,
   deriveStepInstanceId,
@@ -1166,58 +1166,56 @@ describe("per-step address derivation", () => {
   test("deriveStepAddress concatenates with the ins_ prefix and the deployment domain", () => {
     expect(
       deriveStepAddress({
-        deploymentId: "dep_abc",
+        runId: "dep_abc",
         stepId: "step1",
-        deploymentDomain: "workflow.interchange",
+        domain: "workflow.interchange",
       }),
     ).toBe("ins_dep_abc-step1@workflow.interchange");
   });
 
   test("deriveStepAgentId concatenates with the ins_ prefix", () => {
-    expect(deriveStepAgentId({ deploymentId: "dep_abc", stepId: "x" })).toBe(
+    expect(deriveStepAgentId({ runId: "dep_abc", stepId: "x" })).toBe(
       "ins_dep_abc-x",
     );
   });
 
   test("deriveStepInstanceId concatenates with the ins_ prefix", () => {
-    expect(deriveStepInstanceId({ deploymentId: "dep_abc", stepId: "x" })).toBe(
+    expect(deriveStepInstanceId({ runId: "dep_abc", stepId: "x" })).toBe(
       "ins_dep_abc-x",
     );
   });
 
   test("derivation is deterministic across calls", () => {
     const a = deriveStepAddress({
-      deploymentId: "dep_a",
+      runId: "dep_a",
       stepId: "s",
-      deploymentDomain: "d",
+      domain: "d",
     });
     const b = deriveStepAddress({
-      deploymentId: "dep_a",
+      runId: "dep_a",
       stepId: "s",
-      deploymentDomain: "d",
+      domain: "d",
     });
     expect(a).toBe(b);
   });
 
-  test("deriveDeploymentAddress drops the per-step suffix", () => {
+  test("deriveRunAddress drops the per-step suffix", () => {
     expect(
-      deriveDeploymentAddress({
-        deploymentId: "dep_abc",
-        deploymentDomain: "workflow.interchange",
+      deriveRunAddress({
+        runId: "dep_abc",
+        domain: "workflow.interchange",
       }),
     ).toBe("ins_dep_abc@workflow.interchange");
   });
 
-  test("deriveDeploymentAgentId drops the per-step suffix", () => {
-    expect(deriveDeploymentAgentId({ deploymentId: "dep_abc" })).toBe(
-      "ins_dep_abc",
-    );
+  test("deriveRunAgentId drops the per-step suffix", () => {
+    expect(deriveRunAgentId({ runId: "dep_abc" })).toBe("ins_dep_abc");
   });
 
   test("deriveWorkflowRunRepoId sanitizes the deployment address into a SAFE_REPO_ID slug", () => {
-    const address = deriveDeploymentAddress({
-      deploymentId: "dep_abc",
-      deploymentDomain: "acme.localhost",
+    const address = deriveRunAddress({
+      runId: "dep_abc",
+      domain: "acme.localhost",
     });
     expect(address).toBe("ins_dep_abc@acme.localhost");
     const repoId = deriveWorkflowRunRepoId(address);
@@ -1238,9 +1236,9 @@ describe("per-step address derivation", () => {
 describe("isWorkflowDerivedAddress", () => {
   test("recognizes a per-step address produced by deriveStepAddress", () => {
     const address = deriveStepAddress({
-      deploymentId: "dep_abc",
+      runId: "dep_abc",
       stepId: "step1",
-      deploymentDomain: "workflow.interchange",
+      domain: "workflow.interchange",
     });
     expect(isWorkflowDerivedAddress(address)).toBe(true);
   });
@@ -1248,9 +1246,9 @@ describe("isWorkflowDerivedAddress", () => {
   test("recognizes the deployment-level address", () => {
     expect(
       isWorkflowDerivedAddress(
-        deriveDeploymentAddress({
-          deploymentId: "dep_abc",
-          deploymentDomain: "workflow.interchange",
+        deriveRunAddress({
+          runId: "dep_abc",
+          domain: "workflow.interchange",
         }),
       ),
     ).toBe(true);

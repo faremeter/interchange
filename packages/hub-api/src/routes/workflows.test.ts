@@ -26,7 +26,7 @@ import {
 } from "@intx/agent";
 import { defineWorkflow } from "@intx/workflow/definition";
 import {
-  deriveDeploymentAddress,
+  deriveRunAddress,
   deriveWorkflowRunRepoId,
   walkCapabilities,
   WorkflowDefinitionInvalidError,
@@ -68,9 +68,9 @@ const DEPLOYMENT_ID = "dep_abc";
 // pre-fix behavior) would make these tests pass against the buggy
 // bare-id reader and fail against the corrected derivation.
 const WORKFLOW_RUN_REPO_ID = deriveWorkflowRunRepoId(
-  deriveDeploymentAddress({
-    deploymentId: DEPLOYMENT_ID,
-    deploymentDomain: DOMAIN,
+  deriveRunAddress({
+    runId: DEPLOYMENT_ID,
+    domain: DOMAIN,
   }),
 );
 

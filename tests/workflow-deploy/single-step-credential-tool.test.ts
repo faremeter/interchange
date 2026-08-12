@@ -33,7 +33,7 @@ import type { ToolPackagePin } from "@intx/types/tool-packages";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -188,9 +188,9 @@ async function deployProbe(
     inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
   });
 
-  const mailAddress = deriveDeploymentAddress({
-    deploymentId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  const mailAddress = deriveRunAddress({
+    runId: deploymentId,
+    domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({

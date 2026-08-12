@@ -31,7 +31,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -160,13 +160,13 @@ describe("parent -> child workflow round-trip", () => {
       },
     });
 
-    const parentMailAddress = deriveDeploymentAddress({
-      deploymentId: PARENT_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const parentMailAddress = deriveRunAddress({
+      runId: PARENT_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
-    const childMailAddress = deriveDeploymentAddress({
-      deploymentId: CHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const childMailAddress = deriveRunAddress({
+      runId: CHILD_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const childWorkflowDefinition: WorkflowDefinition = defineWorkflow({
@@ -514,17 +514,17 @@ describe("parent -> child workflow round-trip", () => {
       },
     });
 
-    const parentMailAddress = deriveDeploymentAddress({
-      deploymentId: NESTED_PARENT_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const parentMailAddress = deriveRunAddress({
+      runId: NESTED_PARENT_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
-    const childMailAddress = deriveDeploymentAddress({
-      deploymentId: NESTED_CHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const childMailAddress = deriveRunAddress({
+      runId: NESTED_CHILD_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
-    const grandchildMailAddress = deriveDeploymentAddress({
-      deploymentId: NESTED_GRANDCHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const grandchildMailAddress = deriveRunAddress({
+      runId: NESTED_GRANDCHILD_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const grandchildWorkflowDefinition: WorkflowDefinition = defineWorkflow({
@@ -867,15 +867,15 @@ describe("parent -> child workflow round-trip", () => {
       }),
     );
 
-    const parentMailAddress = deriveDeploymentAddress({
-      deploymentId: SIBLINGS_PARENT_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const parentMailAddress = deriveRunAddress({
+      runId: SIBLINGS_PARENT_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
     const siblingMailAddresses = SIBLINGS_CHILD_DEPLOYMENT_IDS.map(
       (deploymentId) =>
-        deriveDeploymentAddress({
-          deploymentId,
-          deploymentDomain: DEPLOYMENT_DOMAIN,
+        deriveRunAddress({
+          runId: deploymentId,
+          domain: DEPLOYMENT_DOMAIN,
         }),
     );
 

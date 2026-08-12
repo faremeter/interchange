@@ -91,7 +91,7 @@ import {
 import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import { defineAgent } from "@intx/agent";
-import { deriveDeploymentAddress } from "@intx/workflow-deploy";
+import { deriveRunAddress } from "@intx/workflow-deploy";
 
 const DOMAIN = "federation.example.test";
 const TENANT_ID = "tnt_mail_federation";
@@ -292,9 +292,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       deploymentId: string;
       creatorHoldsGrant: boolean;
     }): Promise<ReturnType<typeof createApp>> {
-      const address = deriveDeploymentAddress({
-        deploymentId: opts.deploymentId,
-        deploymentDomain: DOMAIN,
+      const address = deriveRunAddress({
+        runId: opts.deploymentId,
+        domain: DOMAIN,
       });
       const assetId = `ast_${opts.deploymentId}`;
 

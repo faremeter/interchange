@@ -94,7 +94,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -124,9 +124,9 @@ const STEP_ID = "act";
 
 const TOOL_PINS: readonly ToolPackagePin[] = [];
 
-const deploymentMailAddress = deriveDeploymentAddress({
-  deploymentId: DEPLOYMENT_ID,
-  deploymentDomain: DEPLOYMENT_DOMAIN,
+const deploymentMailAddress = deriveRunAddress({
+  runId: DEPLOYMENT_ID,
+  domain: DEPLOYMENT_DOMAIN,
 });
 
 // The workflow the deployment carries: a single action step whose effect

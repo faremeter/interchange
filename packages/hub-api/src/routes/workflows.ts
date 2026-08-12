@@ -53,7 +53,7 @@ import {
 } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import {
-  deriveDeploymentAddress,
+  deriveRunAddress,
   WorkflowDefinitionInvalidError,
 } from "@intx/workflow-deploy";
 
@@ -87,16 +87,16 @@ const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
 // The sidecar's deploy router keys the workflow-run repo by
 // `deriveWorkflowRunRepoId(deploymentAddress)`, where the deployment
-// address is `deriveDeploymentAddress({ deploymentId, deploymentDomain })`
+// address is `deriveRunAddress({ runId, domain })`
 // and `deploymentDomain` is the tenant's domain (see
 // `deployWorkflowDefinition` in `@intx/hub-sessions`, which passes
 // `deploymentDomain: tenant.domain`). The read side must reconstruct the
 // identical address and apply the same sanitization, or it opens a
 // different on-disk repo than the one events committed to.
 function workflowRunRepoId(deploymentId: string, tenantDomain: string): RepoId {
-  const deploymentAddress = deriveDeploymentAddress({
-    deploymentId,
-    deploymentDomain: tenantDomain,
+  const deploymentAddress = deriveRunAddress({
+    runId: deploymentId,
+    domain: tenantDomain,
   });
   return workflowRunRepoIdForAddress(deploymentAddress);
 }
@@ -299,9 +299,9 @@ export function createWorkflowRoutes({
     tenantDomain: string,
     runId: string,
   ) {
-    const deploymentAddress = deriveDeploymentAddress({
-      deploymentId,
-      deploymentDomain: tenantDomain,
+    const deploymentAddress = deriveRunAddress({
+      runId: deploymentId,
+      domain: tenantDomain,
     });
     return readDurableWorkflowRunLifecycle(repoStore, deploymentAddress, runId);
   }

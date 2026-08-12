@@ -50,7 +50,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -112,9 +112,9 @@ describe("drain round-trip", () => {
       },
     });
 
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     // The gate is `drainBehavior: "cancel"` so a mid-flight drain
@@ -367,9 +367,9 @@ describe("drain round-trip", () => {
         sources: [{ provider: "anthropic", model: "mock-model" }],
       },
     });
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: waitDeploymentId,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: waitDeploymentId,
+      domain: DEPLOYMENT_DOMAIN,
     });
     const workflow: WorkflowDefinition = defineWorkflow({
       id: `wf_${waitDeploymentId}`,

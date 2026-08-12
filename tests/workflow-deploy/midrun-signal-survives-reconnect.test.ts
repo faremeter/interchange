@@ -37,7 +37,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -102,9 +102,9 @@ describe("mid-run signal survives hub-link drop -> reconnect", () => {
       },
     });
 
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const workflow: WorkflowDefinition = defineWorkflow({

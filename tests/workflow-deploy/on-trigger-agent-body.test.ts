@@ -36,7 +36,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -126,9 +126,9 @@ describe("onTrigger body runs a real agent step through the body invoker", () =>
       },
     });
 
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const body: WorkflowDefinition = defineWorkflow({

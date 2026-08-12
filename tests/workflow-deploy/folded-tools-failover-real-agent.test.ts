@@ -25,7 +25,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -90,9 +90,9 @@ afterAll(async () => {
 
 describe("folded tools + failover real-agent round-trip", () => {
   test("an on-asset folded agent materializes its tool in-child and fails over to the healthy source", async () => {
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     // The folded artifact, produced by the real synthesizer (A4-c). Its tool

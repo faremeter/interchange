@@ -88,7 +88,7 @@ import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -139,13 +139,13 @@ const TOOL_PINS: readonly ToolPackagePin[] = [
   { name: "@intx/tools-mail", version: "0.1.2" },
 ];
 
-const receiverAddress = deriveDeploymentAddress({
-  deploymentId: RECEIVER_ID,
-  deploymentDomain: DEPLOYMENT_DOMAIN,
+const receiverAddress = deriveRunAddress({
+  runId: RECEIVER_ID,
+  domain: DEPLOYMENT_DOMAIN,
 });
-const senderAddress = deriveDeploymentAddress({
-  deploymentId: SENDER_ID,
-  deploymentDomain: DEPLOYMENT_DOMAIN,
+const senderAddress = deriveRunAddress({
+  runId: SENDER_ID,
+  domain: DEPLOYMENT_DOMAIN,
 });
 
 // The sender's grant to invoke the mail tool; hand-delivered with its

@@ -71,7 +71,7 @@ import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -101,9 +101,9 @@ const STEP_ID = "step1";
 
 const TOOL_PINS: readonly ToolPackagePin[] = [];
 
-const deploymentMailAddress = deriveDeploymentAddress({
-  deploymentId: DEPLOYMENT_ID,
-  deploymentDomain: DEPLOYMENT_DOMAIN,
+const deploymentMailAddress = deriveRunAddress({
+  runId: DEPLOYMENT_ID,
+  domain: DEPLOYMENT_DOMAIN,
 });
 
 // A single agent step with no tools: the run completes on the echo

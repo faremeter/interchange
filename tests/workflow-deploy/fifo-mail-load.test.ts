@@ -26,7 +26,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -145,9 +145,9 @@ describe("FIFO mail-trigger serialization under load", () => {
       },
     });
 
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID_LOAD,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID_LOAD,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const workflow: WorkflowDefinition = defineWorkflow({

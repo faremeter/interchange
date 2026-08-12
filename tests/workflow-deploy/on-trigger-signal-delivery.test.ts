@@ -53,7 +53,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -136,9 +136,9 @@ async function deployAndTriggerSection(
   deploymentId: string,
   body: WorkflowDefinition,
 ): Promise<{ workflowRunRepoId: RepoId; containerRunId: string }> {
-  const deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  const deploymentMailAddress = deriveRunAddress({
+    runId: deploymentId,
+    domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({
