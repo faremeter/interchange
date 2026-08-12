@@ -35,7 +35,6 @@
 | PATCH | /api/tenants/:tenantId/grants/:grantId | Update a grant |
 | DELETE | /api/tenants/:tenantId/grants/:grantId | Revoke a grant |
 | POST | /api/tenants/:tenantId/principals/:principalId/evaluate | Evaluate grants for a principal |
-| POST | /api/tenants/:tenantId/workflows/runs | Deploy an agent instance |
 | GET | /api/tenants/:tenantId/workflows/runs | List agent instances |
 | GET | /api/tenants/:tenantId/workflows/runs/blobs/:blobId | Fetch a blob by ID |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId | Get instance detail |
@@ -440,18 +439,6 @@ Body: EvaluateRequest
 404: ErrorResponse -- Principal not found
 
 ## Instances
-
-### POST /api/tenants/:tenantId/workflows/runs
-Deploy an agent instance
-
-Creates a new running instance of the specified agent definition. Resolves the definition's model requirements against the tenant catalog into an ordered inference-source list, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, and modelPreferences to reorder or restrict the resolved providers for the session.
-
-Body: CreateWorkflowRun
-
-201: WorkflowRunResponse -- Instance deployed
-404: ErrorResponse -- Agent definition not found
-409: ErrorResponse -- Agent not launchable
-502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs
 List agent instances
@@ -1373,13 +1360,6 @@ Source: packages/types/src/wallets.ts
 
 **backendType**: Settlement backend the wallet is denominated in: `crypto` (on-chain assets), `fiat` (national currency), or `credits` (internal accounting units). Determines how balances and transactions are settled.
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
-
-### CreateWorkflowRun
-`{ definitionId: string, invokerGrants?: { action: string, resource: string, conditions?: { [string]: unknown } | null, effect?: "allow" | "ask" | "deny" }[], modelPreferences?: { model: string, providers: { mode: "pin" | "prefer", order: string[] } }[] }`
-Source: packages/types/src/instances.ts
-
-**invokerGrants**: Capabilities the invoker is willing to delegate to the run, resolved against the invoker's own authority at launch. These are materialized as grants on the run principal in addition to any grants from the definition's own requirements.
-**modelPreferences**: The invoker's per-model provider preferences for this launch. Applied over the tenant-visible providers after the definition's preferences; it can only reorder or restrict, never introduce a provider the tenant catalog lacks. Persisted on the run so re-resolution reuses it.
 
 ### CredentialResponse
 `{ createdAt: string, id: string, name: string, providerId: string, status: "active" | "error" | "expired" | "revoked", tenantId: string, type: "api_key" | "certificate" | "oauth_token" | "other", updatedAt: string, description?: string | null, expiresAt?: string | null, metadata?: { [string]: unknown } | null, oauthClientId?: string | null, principalId?: string | null, scopes?: string[] | null }`
