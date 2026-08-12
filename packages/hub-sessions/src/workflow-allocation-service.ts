@@ -23,7 +23,7 @@ import {
   hashDefinition,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
-import { deriveDeploymentAddress } from "@intx/workflow-deploy";
+import { deriveRunAddress } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
 import {
@@ -225,9 +225,9 @@ export function createWorkflowAllocationService({
 
     const allocationId = createAllocationId();
     const createdAt = now();
-    const deploymentAddress = deriveDeploymentAddress({
-      deploymentId: args.deploymentId,
-      deploymentDomain: args.deploymentDomain,
+    const deploymentAddress = deriveRunAddress({
+      runId: args.deploymentId,
+      domain: args.deploymentDomain,
     });
     await db.transaction(async (tx) => {
       const { definitionId } = await ensureWorkflowDefinitionForAsset(
@@ -358,9 +358,9 @@ export function createWorkflowAllocationService({
         `Default offering ${spec.defaultSourceOfferingId} was not resolved for allocation ${allocation.id}`,
       );
     }
-    const deploymentAddress = deriveDeploymentAddress({
-      deploymentId: allocation.anchorRunId,
-      deploymentDomain: spec.deploymentDomain,
+    const deploymentAddress = deriveRunAddress({
+      runId: allocation.anchorRunId,
+      domain: spec.deploymentDomain,
     });
     const config: HarnessConfig = {
       sessionId: spec.sessionId,

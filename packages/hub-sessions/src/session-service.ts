@@ -49,7 +49,7 @@ import {
 import {
   assertChainHeadIsDefault,
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   walkCapabilities,
   wrapHarnessAsSingleStepWorkflow,
   type ApprovalSet,
@@ -1133,9 +1133,9 @@ export function createSessionService(
 
     return {
       deploymentId: params.deploymentId,
-      deploymentAddress: deriveDeploymentAddress({
-        deploymentId: params.deploymentId,
-        deploymentDomain: params.deploymentDomain,
+      deploymentAddress: deriveRunAddress({
+        runId: params.deploymentId,
+        domain: params.deploymentDomain,
       }),
       publicKey: result.publicKey,
     };
@@ -1187,7 +1187,10 @@ export function createSessionService(
         tenantId,
         anchorRunId: deploymentId,
         definitionId,
-        address: deriveDeploymentAddress({ deploymentId, deploymentDomain }),
+        address: deriveRunAddress({
+          runId: deploymentId,
+          domain: deploymentDomain,
+        }),
         publicKey: result.publicKey,
         status: "running",
         createdAt: now,
@@ -1226,9 +1229,9 @@ export function createSessionService(
       agentRepoStore,
       allocationRouter: requireAllocationRouter(),
       allocationTarget: params.allocationTarget,
-      agentAddress: deriveDeploymentAddress({
-        deploymentId: params.deploymentId,
-        deploymentDomain: params.deploymentDomain,
+      agentAddress: deriveRunAddress({
+        runId: params.deploymentId,
+        domain: params.deploymentDomain,
       }),
     });
     const result = await executeWorkflowDefinitionDeploy(params);

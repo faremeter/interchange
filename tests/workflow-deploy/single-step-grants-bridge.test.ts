@@ -50,7 +50,7 @@ import type { ToolPackagePin } from "@intx/types/tool-packages";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
@@ -142,9 +142,9 @@ afterAll(async () => {
 
 describe("single-step launched-agent grants bridge via spawned child", () => {
   test("grants resolve from the legacy agent-state repo, identity is preserved, and events carry the sessionId", async () => {
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     // (a) precondition: the deployment address is the launched-agent

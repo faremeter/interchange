@@ -30,7 +30,7 @@ export {
   isSourceApproved,
   buildSingleStepAgentDefinition,
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   deriveStepAddress,
   resolveStepAddress,
   deriveStepAgentId,

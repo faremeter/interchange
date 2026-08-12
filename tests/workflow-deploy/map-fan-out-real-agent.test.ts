@@ -47,7 +47,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -203,9 +203,9 @@ async function deployAndRunMap(opts: {
     },
   });
 
-  const deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId: opts.deploymentId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  const deploymentMailAddress = deriveRunAddress({
+    runId: opts.deploymentId,
+    domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({

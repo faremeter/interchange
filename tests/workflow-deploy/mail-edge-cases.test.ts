@@ -58,7 +58,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -480,9 +480,9 @@ async function deployEdgeWorkflow(
     },
   });
 
-  const deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  const deploymentMailAddress = deriveRunAddress({
+    runId: deploymentId,
+    domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({

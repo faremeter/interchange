@@ -38,7 +38,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   deriveStepAgentId,
   type ApprovalSet,
   type LaunchSessionFn,
@@ -107,9 +107,9 @@ describe("multi-step workflow round-trip with signal-await", () => {
       },
     });
 
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const workflow: WorkflowDefinition = defineWorkflow({
@@ -268,11 +268,11 @@ describe("multi-step workflow round-trip with signal-await", () => {
     // rejects, and the orchestrator's per-step `launchSession`
     // already provisions the repo under the safe `agentId`.
     const step1AgentId = deriveStepAgentId({
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       stepId: "step1",
     });
     const step2AgentId = deriveStepAgentId({
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       stepId: "step2",
     });
     const step1RepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({

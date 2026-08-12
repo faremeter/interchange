@@ -33,7 +33,7 @@ import { WireGrantRule } from "@intx/types/grant-wire";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -86,9 +86,9 @@ let env: DeployFlowEnv;
 let deploymentMailAddress: string;
 
 beforeAll(async () => {
-  deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId: DEPLOYMENT_ID,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  deploymentMailAddress = deriveRunAddress({
+    runId: DEPLOYMENT_ID,
+    domain: DEPLOYMENT_DOMAIN,
   });
   // The transport-backed `mail_send` bundle sends through the real outbound
   // chain and sentinels on receipt; `inferenceToolCall` drives the model to

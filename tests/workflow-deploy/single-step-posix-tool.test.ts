@@ -30,7 +30,7 @@ import type { ToolPackagePin } from "@intx/types/tool-packages";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -98,9 +98,9 @@ describe("single-step posix-tool in-child execution", () => {
       },
     });
 
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const workflow: WorkflowDefinition = defineWorkflow({
@@ -309,9 +309,9 @@ describe("single-step posix-tool in-child execution", () => {
     // on-disk source the child read for materialization. A single-step
     // workflow collapses its lone step onto the head, so the deploy tree
     // is staged at the deployment (head) address, not a per-step address.
-    const headAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const headAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
     const headDeployDir = path.join(
       env.sidecar.dataDir,

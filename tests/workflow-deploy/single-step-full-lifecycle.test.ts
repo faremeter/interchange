@@ -73,7 +73,7 @@ import { WireGrantRule } from "@intx/types/grant-wire";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
@@ -158,9 +158,9 @@ beforeAll(async () => {
   // deployment address (a local, registered recipient on the sidecar's
   // transport) so the supervisor's signed send delivers without a remote
   // leg.
-  deploymentMailAddress = deriveDeploymentAddress({
-    deploymentId: DEPLOYMENT_ID,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  deploymentMailAddress = deriveRunAddress({
+    runId: DEPLOYMENT_ID,
+    domain: DEPLOYMENT_DOMAIN,
   });
   env = await startDeployFlowEnv({
     transportBackedMailTool: true,

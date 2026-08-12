@@ -40,7 +40,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -209,9 +209,9 @@ function buildWorkflow(
   deploymentId: string,
   stepCount: number,
 ): { workflow: WorkflowDefinition; mailAddress: string } {
-  const mailAddress = deriveDeploymentAddress({
-    deploymentId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
+  const mailAddress = deriveRunAddress({
+    runId: deploymentId,
+    domain: DEPLOYMENT_DOMAIN,
   });
 
   const steps: Record<string, ReturnType<typeof step>> = {};

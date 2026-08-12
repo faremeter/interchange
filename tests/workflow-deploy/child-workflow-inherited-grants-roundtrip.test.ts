@@ -47,7 +47,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -137,13 +137,13 @@ describe("parent -> child inherited grants round-trip", () => {
       inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
     });
 
-    const parentMailAddress = deriveDeploymentAddress({
-      deploymentId: PARENT_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const parentMailAddress = deriveRunAddress({
+      runId: PARENT_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
-    const childMailAddress = deriveDeploymentAddress({
-      deploymentId: CHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const childMailAddress = deriveRunAddress({
+      runId: CHILD_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
 
     const childWorkflowDefinition: WorkflowDefinition = defineWorkflow({

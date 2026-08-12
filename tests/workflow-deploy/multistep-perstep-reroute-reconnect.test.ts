@@ -50,7 +50,7 @@ import {
 } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
-  deriveDeploymentAddress,
+  deriveRunAddress,
   deriveStepAddress,
   deriveStepAgentId,
   isWorkflowDerivedAddress,
@@ -108,9 +108,9 @@ describe("multi-step per-step re-route survival across reconnect", () => {
   });
 
   test("every per-step address re-routes and inter-step routing survives reconnect", async () => {
-    const deploymentMailAddress = deriveDeploymentAddress({
-      deploymentId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
+    const deploymentMailAddress = deriveRunAddress({
+      runId: DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
     });
     // The deployment address must be workflow-derived: that is the routing
     // family whose reconnect challenge takes the `workflowAddresses`
@@ -125,9 +125,9 @@ describe("multi-step per-step re-route survival across reconnect", () => {
     // resurrected as its own hub route.
     const stepAddresses = STEP_IDS.map((stepId) =>
       deriveStepAddress({
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         stepId,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
+        domain: DEPLOYMENT_DOMAIN,
       }),
     );
     for (const stepAddress of stepAddresses) {
@@ -290,7 +290,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
     // per-step address the orchestrator staged each step's tree under.
     for (const stepId of STEP_IDS) {
       const stepAgentId = deriveStepAgentId({
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         stepId,
       });
       const stepRepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
