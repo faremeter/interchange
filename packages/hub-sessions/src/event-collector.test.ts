@@ -88,7 +88,7 @@ describe("EventCollector", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      instanceId: "ins_test",
+      runId: "ins_test",
       tenantId: "tnt_test",
     });
   });
@@ -669,7 +669,7 @@ describe("EventCollector", () => {
       notifyCollector = createEventCollector({
         db: fakeDB.db,
         sessionId: "ses_test",
-        instanceId: "ins_test",
+        runId: "ins_test",
         tenantId: "tnt_test",
         onTurnFinalized: (turn) => notifications.push(turn),
       });
@@ -1101,7 +1101,7 @@ describe("EventCollector.getCurrentTurnId", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      instanceId: "ins_test",
+      runId: "ins_test",
       tenantId: "tnt_test",
     });
   });
@@ -1199,7 +1199,7 @@ describe("EventCollector post-finalization guard", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      instanceId: "ins_test",
+      runId: "ins_test",
       tenantId: "tnt_test",
     });
   });
@@ -1287,7 +1287,7 @@ describe("EventCollector post-finalization guard", () => {
     const tracked = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      instanceId: "ins_test",
+      runId: "ins_test",
       tenantId: "tnt_test",
       onTurnFinalized: (turn) => {
         deliveries.push(turn);
@@ -1325,7 +1325,7 @@ describe("EventCollector post-finalization guard", () => {
     const tracked = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      instanceId: "ins_test",
+      runId: "ins_test",
       tenantId: "tnt_test",
     });
 
@@ -1359,7 +1359,7 @@ describe("EventCollector.getLastTurnId", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      instanceId: "ins_test",
+      runId: "ins_test",
       tenantId: "tnt_test",
     });
   });

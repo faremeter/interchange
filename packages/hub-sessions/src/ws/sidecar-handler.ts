@@ -1893,7 +1893,7 @@ export function createSidecarRouter(
         raw,
         createdAt: result.createdAt,
         direction: result.direction,
-        instanceId: result.instanceId,
+        runId: result.runId,
         address: result.address,
       });
     }

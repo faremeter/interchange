@@ -165,7 +165,7 @@ export function createHubSessionOrchestrator(
       // re-push them over the wire.
 
       // Restore the inference-turn collector. It records turns under endpoint.id
-      // -- a folded run id -- which inference_turn.instanceId stores without a
+      // -- a folded run id -- which inference_turn.runId stores without a
       // foreign key.
       if (!eventCollectors.has(agentAddress)) {
         eventCollectors.create(

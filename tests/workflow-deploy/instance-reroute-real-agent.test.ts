@@ -99,7 +99,7 @@ describe("instance-reroute real-agent round-trip", () => {
     const { publicKey } = await env.hub.sessionService.deployInstanceAtHead({
       agentAddress,
       agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       config,
       deployContent,
     });

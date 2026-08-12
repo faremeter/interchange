@@ -44,7 +44,7 @@ export type EventCollector = {
 export type EventCollectorConfig = {
   db: DB["db"];
   sessionId: string;
-  instanceId: string;
+  runId: string;
   tenantId: string;
   onTurnFinalized?: (turn: TurnFinalized) => void;
 };
@@ -52,7 +52,7 @@ export type EventCollectorConfig = {
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, instanceId, tenantId, onTurnFinalized } = config;
+  const { db, sessionId, runId, tenantId, onTurnFinalized } = config;
 
   // Current inference turn being accumulated. A new turn is created on each
   // inference.start. Finalized on connector.reply, reactor.done,
@@ -218,7 +218,7 @@ export function createEventCollector(
     await db.insert(inferenceTurn).values({
       id: currentTurnId,
       sessionId,
-      instanceId,
+      runId,
       tenantId,
       model,
       status: "running",

@@ -34,16 +34,16 @@ type TurnListResponse = { data: InferenceTurnResponse[] };
 
 export function createInstanceSession(opts: {
   tenantId: string;
-  instanceId: string;
+  runId: string;
   transport: Transport;
   onChange: () => void;
   onSessionEnded?: () => void;
   onError?: (error: Error) => void;
 }): InstanceSession {
-  const { tenantId, instanceId, transport, onChange, onSessionEnded, onError } =
+  const { tenantId, runId, transport, onChange, onSessionEnded, onError } =
     opts;
 
-  const basePath = `/api/tenants/${tenantId}/workflows/runs/${instanceId}`;
+  const basePath = `/api/tenants/${tenantId}/workflows/runs/${runId}`;
 
   let events: InstanceEvent[] = [];
   let streaming = "";

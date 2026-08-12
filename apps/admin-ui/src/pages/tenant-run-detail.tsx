@@ -126,7 +126,7 @@ export function TenantRunDetailPage() {
 
     const session = createInstanceSession({
       tenantId,
-      instanceId: runId,
+      runId,
       transport,
       onChange: () => forceRender((n) => n + 1),
       onSessionEnded: () => {
@@ -324,7 +324,7 @@ export function TenantRunDetailPage() {
                               to="/tenants/$tenantId/workflows/runs/$runId"
                               params={{
                                 tenantId,
-                                runId: agentRecipient.instanceId,
+                                runId: agentRecipient.runId,
                               }}
                               className="font-medium text-primary underline"
                             >
@@ -341,7 +341,7 @@ export function TenantRunDetailPage() {
                               to="/tenants/$tenantId/workflows/runs/$runId"
                               params={{
                                 tenantId,
-                                runId: agentSender.instanceId,
+                                runId: agentSender.runId,
                               }}
                               className="font-medium text-primary underline"
                             >

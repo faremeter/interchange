@@ -1438,7 +1438,7 @@ Source: packages/types/src/principals.ts
 Source: packages/types/src/observability.ts
 
 ### MailResponse
-`{ attachments: { blobId: string, name: string | null, size: number, type: string }[], bodyValues: { [string]: unknown }, direction: "inbound" | "outbound", from: { email: string, name: string | null }[], headers: { [string]: string }, htmlBody: { partId: string, type: string }[], id: string, instanceId: string | null, receivedAt: string, sentAt: string | null, sessionId: string, status: "delivered" | "pending", subject: string | null, textBody: { partId: string, type: string }[], to: { email: string, name: string | null }[] }`
+`{ attachments: { blobId: string, name: string | null, size: number, type: string }[], bodyValues: { [string]: unknown }, direction: "inbound" | "outbound", from: { email: string, name: string | null }[], headers: { [string]: string }, htmlBody: { partId: string, type: string }[], id: string, receivedAt: string, runId: string | null, sentAt: string | null, sessionId: string, status: "delivered" | "pending", subject: string | null, textBody: { partId: string, type: string }[], to: { email: string, name: string | null }[] }`
 Source: packages/types/src/sessions.ts
 
 **direction**: Whether the message was sent to the agent (`inbound`) or emitted by the agent (`outbound`).

@@ -108,7 +108,7 @@ export type SessionService = {
   stageWorkflowStep(params: {
     agentAddress: string;
     agentId: string;
-    instanceId: string;
+    runId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
@@ -127,7 +127,7 @@ export type SessionService = {
   deployInstanceAtHead(params: {
     agentAddress: string;
     agentId: string;
-    instanceId: string;
+    runId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
@@ -319,7 +319,7 @@ type ResolvedAttachment = {
 };
 
 type SessionAssetRecord = {
-  instanceId: string;
+  runId: string;
   mountPath: string;
   assetPackSha: string;
   sourceCommitSha: string;
@@ -561,7 +561,7 @@ export function createSessionService(
   async function executeLaunchPhases(params: {
     agentAddress: string;
     agentId: string;
-    instanceId: string;
+    runId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
@@ -593,7 +593,7 @@ export function createSessionService(
     stageOnly?: boolean;
     allocationTarget?: AllocatedSidecarTarget;
   }): Promise<{ publicKey: string } | undefined> {
-    const { agentAddress, agentId, instanceId, config, deployContent } = params;
+    const { agentAddress, agentId, runId, config, deployContent } = params;
     const toolPackagePins = params.toolPackagePins ?? [];
     const stageOnly = params.stageOnly ?? false;
     if (params.workflowFrame !== undefined && stageOnly) {
@@ -832,7 +832,7 @@ export function createSessionService(
         for (const att of fanOut) {
           try {
             const committedRecord = await sendAttachmentPack(
-              instanceId,
+              runId,
               agentAddress,
               att,
               params.allocationTarget,
@@ -887,7 +887,7 @@ export function createSessionService(
     const result = await executeLaunchPhases({
       agentAddress: deployParams.agentAddress,
       agentId: deployParams.agentId,
-      instanceId: deployParams.instanceId,
+      runId: deployParams.instanceId,
       config: deployParams.config,
       deployContent: bridgeOrchestratorDeployContent(
         deployParams.deployContent,
@@ -938,7 +938,7 @@ export function createSessionService(
       stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        instanceId: orchestratorParams.instanceId,
+        runId: orchestratorParams.instanceId,
         config: orchestratorParams.config,
         deployContent: bridgeOrchestratorDeployContent(
           orchestratorParams.deployContent,
@@ -994,7 +994,7 @@ export function createSessionService(
   async function stageWorkflowStep(params: {
     agentAddress: string;
     agentId: string;
-    instanceId: string;
+    runId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
@@ -1003,7 +1003,7 @@ export function createSessionService(
     await executeLaunchPhases({
       agentAddress: params.agentAddress,
       agentId: params.agentId,
-      instanceId: params.instanceId,
+      runId: params.runId,
       config: params.config,
       deployContent: params.deployContent,
       stageOnly: true,
@@ -1035,13 +1035,13 @@ export function createSessionService(
   async function deployInstanceAtHead(params: {
     agentAddress: string;
     agentId: string;
-    instanceId: string;
+    runId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
     credentials?: CredentialDelivery;
   }): Promise<{ publicKey: string }> {
-    const { agentAddress, agentId, instanceId, config, deployContent } = params;
+    const { agentAddress, agentId, runId, config, deployContent } = params;
 
     const singleStepAgent = wrapHarnessAsSingleStepWorkflow({
       config,
@@ -1078,7 +1078,7 @@ export function createSessionService(
     return deploySingleStepAtHead({
       agentAddress,
       agentId,
-      instanceId,
+      instanceId: runId,
       config,
       deployContent,
       definition: workflow,
@@ -1297,20 +1297,20 @@ export function createSessionService(
           .delete(sessionAssetTable)
           .where(
             and(
-              eq(sessionAssetTable.instanceId, record.instanceId),
+              eq(sessionAssetTable.runId, record.runId),
               eq(sessionAssetTable.mountPath, record.mountPath),
               eq(sessionAssetTable.assetPackSha, record.assetPackSha),
               eq(sessionAssetTable.sourceCommitSha, record.sourceCommitSha),
             ),
           );
       } catch (err) {
-        logger.warn`session_asset rollback failed for earlier-committed instance=${record.instanceId} mountPath=${record.mountPath}: ${err instanceof Error ? err.message : String(err)}`;
+        logger.warn`session_asset rollback failed for earlier-committed instance=${record.runId} mountPath=${record.mountPath}: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
   }
 
   async function sendAttachmentPack(
-    instanceId: string,
+    runId: string,
     agentAddress: string,
     attachment: ResolvedAttachment,
     allocationTarget?: AllocatedSidecarTarget,
@@ -1326,7 +1326,7 @@ export function createSessionService(
 
     const assetPackSha = await createPackSha(pack);
     const record: SessionAssetRecord = {
-      instanceId,
+      runId,
       mountPath,
       assetPackSha,
       sourceCommitSha,
@@ -1346,13 +1346,13 @@ export function createSessionService(
         .insert(sessionAssetTable)
         .values({ ...record, materializedAt: new Date() })
         .onConflictDoNothing({
-          target: [sessionAssetTable.instanceId, sessionAssetTable.mountPath],
+          target: [sessionAssetTable.runId, sessionAssetTable.mountPath],
         })
-        .returning({ instanceId: sessionAssetTable.instanceId });
+        .returning({ runId: sessionAssetTable.runId });
       if (inserted.length === 0) {
         const existing = await db.query.sessionAsset.findFirst({
           where: and(
-            eq(sessionAssetTable.instanceId, instanceId),
+            eq(sessionAssetTable.runId, runId),
             eq(sessionAssetTable.mountPath, mountPath),
           ),
           columns: {
@@ -1362,7 +1362,7 @@ export function createSessionService(
         });
         if (existing === undefined) {
           throw new Error(
-            `session_asset ${instanceId}/${mountPath} disappeared after its insert conflicted`,
+            `session_asset ${runId}/${mountPath} disappeared after its insert conflicted`,
           );
         }
         if (
@@ -1370,7 +1370,7 @@ export function createSessionService(
           existing.sourceCommitSha !== sourceCommitSha
         ) {
           throw new Error(
-            `session_asset ${instanceId}/${mountPath} conflicts with the allocated workflow's restored asset`,
+            `session_asset ${runId}/${mountPath} conflicts with the allocated workflow's restored asset`,
           );
         }
       }
@@ -1413,7 +1413,7 @@ export function createSessionService(
             .delete(sessionAssetTable)
             .where(
               and(
-                eq(sessionAssetTable.instanceId, rollbackRecord.instanceId),
+                eq(sessionAssetTable.runId, rollbackRecord.runId),
                 eq(sessionAssetTable.mountPath, rollbackRecord.mountPath),
                 eq(sessionAssetTable.assetPackSha, rollbackRecord.assetPackSha),
                 eq(
@@ -1427,7 +1427,7 @@ export function createSessionService(
             rollbackErr instanceof Error
               ? rollbackErr.message
               : String(rollbackErr);
-          logger.warn`session_asset rollback failed for instance=${instanceId} mountPath=${mountPath}: ${msg}`;
+          logger.warn`session_asset rollback failed for instance=${runId} mountPath=${mountPath}: ${msg}`;
         }
       }
       throw err;

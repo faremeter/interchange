@@ -126,7 +126,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
     const { publicKey } = await env.hub.sessionService.deployInstanceAtHead({
       agentAddress,
       agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       config,
       deployContent,
     });
@@ -192,9 +192,9 @@ describe("instance inference-source failover real-agent round-trip", () => {
     // `RunCompleted` -- the agent synthesizes a graceful provider-error reply
     // rather than failing the run. This is why the failover test cannot lean on
     // the terminal type and instead proves failover through reply-equality.
-    const soleDeadInstanceId = `ins_${"d".repeat(32)}`;
+    const soleDeadRunId = `ins_${"d".repeat(32)}`;
     const soleDeadAgentId = "agent-instance-failover-negctl";
-    const agentAddress = `${soleDeadInstanceId}@${DEPLOYMENT_DOMAIN}`;
+    const agentAddress = `${soleDeadRunId}@${DEPLOYMENT_DOMAIN}`;
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
@@ -227,7 +227,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
     await env.hub.sessionService.deployInstanceAtHead({
       agentAddress,
       agentId: soleDeadAgentId,
-      instanceId: soleDeadInstanceId,
+      runId: soleDeadRunId,
       config,
       deployContent,
     });
@@ -237,7 +237,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
       id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
-      deploymentId: soleDeadInstanceId,
+      deploymentId: soleDeadRunId,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -255,14 +255,14 @@ describe("instance inference-source failover real-agent round-trip", () => {
 
     const terminal = await waitForWorkflowRunComplete(
       env,
-      soleDeadInstanceId,
+      soleDeadRunId,
       runId,
       { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
     // Total inference failure still completes the run.
     expect(terminal.type).toBe("RunCompleted");
 
-    const events = await readWorkflowRunEvents(env, soleDeadInstanceId, runId);
+    const events = await readWorkflowRunEvents(env, soleDeadRunId, runId);
     const stepCompleted = events.find((e) => e.type === "StepCompleted");
     if (stepCompleted === undefined) {
       throw new Error("missing StepCompleted for the sole-dead-source step");

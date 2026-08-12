@@ -30,8 +30,8 @@ import {
 
 // Exercises the blob endpoint against a real migrated schema. The blob route
 // derives its authorization subject from the mail's owning routable: an
-// instance's mail carries its indexed instanceId, while a folded run's mail
-// carries a null instanceId and keys on its session, so the run id is recovered
+// instance's mail carries its indexed runId, while a folded run's mail
+// carries a null runId and keys on its session, so the run id is recovered
 // by joining workflow_run to agent_session on the shared principal. That join
 // and the authorization it feeds only run against a real database -- the
 // mock-capture harness in instances.test.ts stubs the sessionMail writes and
@@ -242,13 +242,13 @@ async function seedFoldedRun(opts: { ended?: boolean } = {}): Promise<void> {
 async function insertMail(opts: {
   id: string;
   sessionId: string;
-  instanceId: string | null;
+  runId: string | null;
   body: string;
 }): Promise<void> {
   await h.db.insert(sessionMail).values({
     id: opts.id,
     sessionId: opts.sessionId,
-    instanceId: opts.instanceId,
+    runId: opts.runId,
     tenantId: TENANT_ID,
     direction: "inbound",
     status: "delivered",
@@ -268,7 +268,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await insertMail({
         id: "mail_folded_ok",
         sessionId: RUN_SESSION_ID,
-        instanceId: null,
+        runId: null,
         body: "folded run part body",
       });
       const app = buildApp([runReadGrant(RUN_ID)]);
@@ -284,7 +284,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await insertMail({
         id: "mail_folded_stopped",
         sessionId: RUN_SESSION_ID,
-        instanceId: null,
+        runId: null,
         body: "stopped run part body",
       });
       const app = buildApp([runReadGrant(RUN_ID)]);
@@ -302,7 +302,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await insertMail({
         id: "mail_folded_forbidden",
         sessionId: RUN_SESSION_ID,
-        instanceId: null,
+        runId: null,
         body: "secret",
       });
       // The caller holds a grant for an unrelated run, so authorization is
@@ -330,7 +330,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await insertMail({
         id: "mail_instance_ok",
         sessionId: INSTANCE_SESSION_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         body: "legacy instance part body",
       });
       const app = buildApp([runReadGrant(INSTANCE_ID)]);
@@ -345,7 +345,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("returns 404 when a null-instance mail's session names no run", async () => {
       // A session owned by a non-run principal: the mail carries a null
-      // instanceId, so the run resolution runs and must fail closed rather than
+      // runId, so the run resolution runs and must fail closed rather than
       // authorize a fabricated subject.
       await seedPrincipal(h.db, {
         id: ORPHAN_PRINCIPAL_ID,
@@ -363,7 +363,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await insertMail({
         id: "mail_orphan",
         sessionId: ORPHAN_SESSION_ID,
-        instanceId: null,
+        runId: null,
         body: "unreachable",
       });
       // Even a caller holding a broad grant cannot reach it: resolution fails

@@ -36,21 +36,21 @@ export const sessionAsset = pgTable(
   {
     // The endpoint this materialization is for: a legacy agent_instance id or a
     // folded workflow_run id, from one shared id space. A polymorphic reference
-    // carrying no foreign key (mirroring inference_turn.instanceId); the launch
+    // carrying no foreign key (mirroring inference_turn.runId); the launch
     // layer owns the invariant. NOT NULL -- a materialization always names its
     // endpoint -- and part of the (instance_id, mount_path) key. A folded run
     // writes its run id here, which the dropped agent_instance FK would reject.
-    instanceId: text("instance_id").notNull(),
+    runId: text("instance_id").notNull(),
     mountPath: text("mount_path").notNull(),
     assetPackSha: text("asset_pack_sha").notNull(),
     sourceCommitSha: text("source_commit_sha").notNull(),
     materializedAt: timestamp("materialized_at").notNull().defaultNow(),
   },
   (t) => [
-    // (instanceId, mountPath) is the natural key: every materialized
-    // asset lands at a distinct mount path inside one instance, so this
+    // (runId, mountPath) is the natural key: every materialized
+    // asset lands at a distinct mount path inside one run, so this
     // pair uniquely identifies a row.
-    primaryKey({ columns: [t.instanceId, t.mountPath] }),
+    primaryKey({ columns: [t.runId, t.mountPath] }),
     index("session_asset_pack_sha_idx").on(t.assetPackSha),
   ],
 );

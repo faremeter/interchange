@@ -99,7 +99,7 @@ export function createHubSessionLookups(
     async persistMail({ senderAddress, recipients, raw }) {
       // The sender and recipients are plain addresses backed by a folded
       // workflow_run; resolve each through the resolver. A mail record's
-      // `instanceId` is always null for a run -- it is not an instance -- and
+      // `runId` is always null for a run -- it is not an instance -- and
       // the record anchors on the run's session instead.
       const sender = await resolveRoutableAddress(db, senderAddress);
       if (sender === undefined) {
@@ -113,14 +113,14 @@ export function createHubSessionLookups(
         );
       }
       const createdAt = new Date();
-      const senderInstanceId = null;
+      const senderRunId = null;
 
       // Outbound record on the sender's session.
       const outboundId = generateId("sessionMail");
       const outboundRecord = {
         id: outboundId,
         sessionId: sender.sessionId,
-        instanceId: senderInstanceId,
+        runId: senderRunId,
         tenantId: sender.tenantId,
         direction: "outbound" as const,
         status: "delivered" as const,
@@ -150,13 +150,13 @@ export function createHubSessionLookups(
       const inboundEntries = recipientEndpoints.map(
         ({ addr, endpoint, sessionId }) => {
           const id = generateId("sessionMail");
-          // A folded run is not an instance, so its mail records no instanceId.
-          const instanceId = null;
+          // A folded run is not an instance, so its mail records no runId.
+          const runId = null;
           return {
             record: {
               id,
               sessionId,
-              instanceId,
+              runId,
               tenantId: endpoint.tenantId,
               direction: "inbound" as const,
               status: "delivered" as const,
@@ -166,7 +166,7 @@ export function createHubSessionLookups(
             result: {
               id,
               direction: "inbound" as const,
-              instanceId,
+              runId,
               address: addr,
               createdAt,
             },
@@ -182,7 +182,7 @@ export function createHubSessionLookups(
         {
           id: outboundId,
           direction: "outbound" as const,
-          instanceId: senderInstanceId,
+          runId: senderRunId,
           address: sender.address,
           createdAt,
         },

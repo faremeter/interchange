@@ -24,7 +24,7 @@ export const inferenceTurn = pgTable(
     // foreign key; the collector-creation layer owns the invariant that the id
     // names a live endpoint. It stays NOT NULL -- a turn always names its
     // producer.
-    instanceId: text("instance_id").notNull(),
+    runId: text("instance_id").notNull(),
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
@@ -36,10 +36,7 @@ export const inferenceTurn = pgTable(
     endedAt: timestamp("ended_at"),
   },
   (t) => [
-    index("inference_turn_instance_id_started_at_idx").on(
-      t.instanceId,
-      t.startedAt,
-    ),
+    index("inference_turn_instance_id_started_at_idx").on(t.runId, t.startedAt),
   ],
 );
 
@@ -81,9 +78,9 @@ export const sessionMail = pgTable(
     // The endpoint whose mail this is: null for a folded run (which keys its
     // mail on the session instead), or -- on older rows from before the fold --
     // an abandoned agent_instance id. A polymorphic reference that carries no
-    // foreign key (mirroring inference_turn.instanceId); the mail-write layer
+    // foreign key (mirroring inference_turn.runId); the mail-write layer
     // owns the invariant. Nullable -- absent for folded runs.
-    instanceId: text("instance_id"),
+    runId: text("instance_id"),
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
@@ -95,13 +92,10 @@ export const sessionMail = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
-    index("session_mail_instance_id_created_at_idx").on(
-      t.instanceId,
-      t.createdAt,
-    ),
-    // A folded run's mail carries a null instanceId, so its history and prior-
+    index("session_mail_instance_id_created_at_idx").on(t.runId, t.createdAt),
+    // A folded run's mail carries a null runId, so its history and prior-
     // mail queries key on the session instead. This index supports that scan
-    // the way the instanceId index supports a legacy instance's.
+    // the way the runId index supports a legacy instance's.
     index("session_mail_session_id_created_at_idx").on(
       t.sessionId,
       t.createdAt,

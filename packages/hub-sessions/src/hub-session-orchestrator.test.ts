@@ -502,7 +502,7 @@ describe("createHubSessionOrchestrator", () => {
         raw,
         createdAt,
         direction: "inbound",
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         address: AGENT_ADDRESS,
       });
 
