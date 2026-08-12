@@ -307,7 +307,7 @@ function createFakeRepoStore(
 }
 
 type CapturedSessionAssetRow = {
-  instanceId: string;
+  runId: string;
   mountPath: string;
   assetPackSha: string;
   sourceCommitSha: string;
@@ -352,7 +352,7 @@ describe("SessionService", () => {
     await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       config: MOCK_CONFIG,
       deployContent: MOCK_CONTENT,
     });
@@ -389,7 +389,7 @@ describe("SessionService", () => {
     await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       config: MOCK_CONFIG,
       deployContent: MOCK_CONTENT,
       allocationTarget: target,
@@ -416,7 +416,7 @@ describe("SessionService", () => {
       .stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -442,7 +442,7 @@ describe("SessionService", () => {
       .stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -468,7 +468,7 @@ describe("SessionService", () => {
       .stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
       })
@@ -744,7 +744,7 @@ describe("SessionService", () => {
                     state.insertAttempts += 1;
                     if (state.row !== undefined) return Promise.resolve([]);
                     state.row = row;
-                    return Promise.resolve([{ instanceId: row.instanceId }]);
+                    return Promise.resolve([{ runId: row.runId }]);
                   },
                 };
               },
@@ -799,7 +799,7 @@ describe("SessionService", () => {
       service.stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
         toolPackagePins: [{ name: "tools-allocated", version: "1.0.0" }],
@@ -1025,7 +1025,7 @@ describe("SessionService", () => {
     await service.stageWorkflowStep({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       config: MOCK_CONFIG,
       deployContent: MOCK_CONTENT,
       toolPackagePins: [{ name: "tools-resolved", version: "1.0.0" }],
@@ -1036,7 +1036,7 @@ describe("SessionService", () => {
     if (row === undefined) throw new Error("unreachable");
     expect(row.mountPath).toBe(`package-registries/${RESOLVED_ASSET_NAME}/`);
     expect(row.sourceCommitSha).toBe("e".repeat(40));
-    expect(row.instanceId).toBe(INSTANCE_ID);
+    expect(row.runId).toBe(INSTANCE_ID);
     expect(row.assetPackSha).toBe(
       hexEncode(
         new Uint8Array(
@@ -1211,7 +1211,7 @@ describe("SessionService", () => {
       await service.stageWorkflowStep({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
         toolPackagePins: registries.map((r) => ({
@@ -1888,7 +1888,7 @@ describe("deployInstanceAtHead inference-source pinning", () => {
     await service.deployInstanceAtHead({
       agentAddress: AGENT_ADDRESS,
       agentId: AGENT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       config: MULTI_SOURCE_CONFIG,
       deployContent: MOCK_CONTENT,
     });
@@ -1924,7 +1924,7 @@ describe("deployInstanceAtHead inference-source pinning", () => {
       service.deployInstanceAtHead({
         agentAddress: AGENT_ADDRESS,
         agentId: AGENT_ID,
-        instanceId: INSTANCE_ID,
+        runId: INSTANCE_ID,
         config: misordered,
         deployContent: MOCK_CONTENT,
       }),

@@ -163,7 +163,7 @@ describe("multi-step workflow round-trip with signal-await", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        instanceId: orchestratorParams.instanceId,
+        runId: orchestratorParams.instanceId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined

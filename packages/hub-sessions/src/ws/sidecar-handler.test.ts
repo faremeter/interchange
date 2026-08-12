@@ -1248,14 +1248,14 @@ describe("SidecarRouter", () => {
             const results: {
               id: string;
               direction: "inbound" | "outbound";
-              instanceId: string | null;
+              runId: string | null;
               address: string;
               createdAt: Date;
             }[] = [
               {
                 id: "mail_outbound",
                 direction: "outbound",
-                instanceId:
+                runId:
                   parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
                 address: senderAddress,
                 createdAt: new Date(),
@@ -1266,7 +1266,7 @@ describe("SidecarRouter", () => {
                 results.push({
                   id: `mail_in_${addr}`,
                   direction: "inbound",
-                  instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
+                  runId: parseAgentAddress(addr)?.instanceId ?? addr,
                   address: addr,
                   createdAt: new Date(),
                 });
@@ -1324,7 +1324,7 @@ describe("SidecarRouter", () => {
               {
                 id: "mail_out",
                 direction: "outbound" as const,
-                instanceId:
+                runId:
                   parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
                 address: senderAddress,
                 createdAt: new Date(),
@@ -1332,7 +1332,7 @@ describe("SidecarRouter", () => {
               ...recipients.map((addr) => ({
                 id: `mail_in_${addr}`,
                 direction: "inbound" as const,
-                instanceId: parseAgentAddress(addr)?.instanceId ?? addr,
+                runId: parseAgentAddress(addr)?.instanceId ?? addr,
                 address: addr,
                 createdAt: new Date(),
               })),

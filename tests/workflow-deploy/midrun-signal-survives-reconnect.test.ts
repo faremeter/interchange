@@ -149,7 +149,7 @@ describe("mid-run signal survives hub-link drop -> reconnect", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: p.agentAddress,
         agentId: p.agentId,
-        instanceId: p.instanceId,
+        runId: p.instanceId,
         config: p.config,
         deployContent: toLaunchDeployContent(p.deployContent),
         ...(p.toolPackagePins !== undefined

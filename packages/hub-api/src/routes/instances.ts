@@ -289,8 +289,8 @@ export function createInstanceRoutes({
         );
       }
 
-      const instanceId = generateId("instance");
-      const agentAddress = formatAgentAddress(instanceId, tenant.domain);
+      const runId = generateId("instance");
+      const agentAddress = formatAgentAddress(runId, tenant.domain);
 
       // --- Inference source resolution (catalog) ---
 
@@ -475,7 +475,7 @@ export function createInstanceRoutes({
           id: instancePrincipalId,
           tenantId: tenant.id,
           kind: "workflow",
-          refId: instanceId,
+          refId: runId,
           status: "active",
           createdAt: now,
           updatedAt: now,
@@ -515,7 +515,7 @@ export function createInstanceRoutes({
         // `anchorRunId` is null (a folded run has no deployment); the public
         // key lands later at deploy-ack.
         await tx.insert(workflowRun).values({
-          id: instanceId,
+          id: runId,
           definitionId: definition.id,
           anchorRunId: null,
           tenantId: tenant.id,
@@ -534,7 +534,7 @@ export function createInstanceRoutes({
           id: generateId("grant"),
           tenantId: tenant.id,
           principalId: creatorPrincipalId,
-          resource: `agent-state:${instanceId}`,
+          resource: `agent-state:${runId}`,
           action: "read",
           effect: "allow",
           origin: "creator",
@@ -551,9 +551,9 @@ export function createInstanceRoutes({
 
       // Open the inference-turn collector for the launched endpoint. The
       // collector records turns under this id, which is the instance id or the
-      // folded run id from the shared id space -- inference_turn.instanceId
+      // folded run id from the shared id space -- inference_turn.runId
       // carries no foreign key, so either is storable.
-      eventCollectors.create(agentAddress, tenant.id, sessionId, instanceId);
+      eventCollectors.create(agentAddress, tenant.id, sessionId, runId);
 
       try {
         // Deploy the instance as a single-step workflow at the head: it runs
@@ -565,11 +565,11 @@ export function createInstanceRoutes({
         // `agent.deploy.ack`, so the route discards it here.
         await sessionService.deployInstanceAtHead({
           agentAddress,
-          agentId: instanceId,
-          instanceId,
+          agentId: runId,
+          runId,
           config: {
             sessionId,
-            agentId: instanceId,
+            agentId: runId,
             tenantId: tenant.id,
             principalId: instancePrincipalId,
             agentAddress,
@@ -606,9 +606,9 @@ export function createInstanceRoutes({
           await db
             .update(workflowRun)
             .set({ status: "failed" })
-            .where(eq(workflowRun.id, instanceId));
+            .where(eq(workflowRun.id, runId));
         } else {
-          await db.delete(workflowRun).where(eq(workflowRun.id, instanceId));
+          await db.delete(workflowRun).where(eq(workflowRun.id, runId));
         }
 
         // Deactivate the instance principal created during this launch
@@ -636,7 +636,7 @@ export function createInstanceRoutes({
       // identically to a later GET: the run has no `updatedAt` (it mirrors
       // `createdAt`), and its public key is null until deploy-ack lands it.
       const runRecord: RoutableRecord = {
-        id: instanceId,
+        id: runId,
         tenantId: tenant.id,
         address: agentAddress,
         publicKey: null,
@@ -823,16 +823,16 @@ export function createInstanceRoutes({
       }
 
       // The authorization subject is the mail's owning routable. A folded run's
-      // mail carries a null instanceId and keys on its session, so recover the
-      // run id from the session; a legacy row's non-null instanceId is used
+      // mail carries a null runId and keys on its session, so recover the
+      // run id from the session; a legacy row's non-null runId is used
       // directly. Route the run resolution through workflow_run so the subject
       // is proven to name a real run of this tenant -- a session held by any
       // non-run principal fails closed to 404 rather than authorizing a
       // fabricated subject.
-      const resolvedInstanceId =
-        mailRow.instanceId ??
+      const resolvedRunId =
+        mailRow.runId ??
         (await resolveRunIdForSession(db, mailRow.sessionId, tenant.id));
-      if (!resolvedInstanceId) {
+      if (!resolvedRunId) {
         return c.json(
           { error: { code: "not_found", message: "Blob not found" } },
           404,
@@ -845,7 +845,7 @@ export function createInstanceRoutes({
         grantStore,
         principal.id,
         tenant.id,
-        `workflow-run:${resolvedInstanceId}`,
+        `workflow-run:${resolvedRunId}`,
         "read",
         conditionRegistry,
       );
@@ -911,11 +911,11 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
 
       // Resolve across the fold: a legacy agent instance or a folded run. The
       // origin agent supplies the display name for either kind.
-      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -978,9 +978,9 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
 
-      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1034,9 +1034,9 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
 
-      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1104,14 +1104,14 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
 
       // A folded agent runs as a workflow_run under the same id; stop it there.
       // findRoutableById resolves exactly the folded-instance runs, returning
       // undefined for a missing row, a null address, or a workflow-derived
       // (deployment-anchor) address -- a run it does not resolve is not this
       // route's to stop and reads as absent, never driven into an undeploy.
-      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1158,9 +1158,7 @@ export function createInstanceRoutes({
         await tx
           .update(workflowRun)
           .set({ status: "cancelled", endedAt })
-          .where(
-            and(eq(workflowRun.id, instanceId), isNull(workflowRun.endedAt)),
-          );
+          .where(and(eq(workflowRun.id, runId), isNull(workflowRun.endedAt)));
 
         if (record.principalId !== null) {
           // Deactivate the run's principal (refId guard scopes it to this
@@ -1172,7 +1170,7 @@ export function createInstanceRoutes({
             .where(
               and(
                 eq(principalTable.id, record.principalId),
-                eq(principalTable.refId, instanceId),
+                eq(principalTable.refId, runId),
               ),
             );
           await tx
@@ -1188,7 +1186,7 @@ export function createInstanceRoutes({
       });
 
       eventCollectors.abandon(record.address);
-      instanceKeyCache.delete(instanceId);
+      instanceKeyCache.delete(runId);
       sidecarRouter.dispatchAgentEvent(record.address, {
         type: "session.ended",
       });
@@ -1228,9 +1226,9 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
 
-      const record = await findRoutableById(db, instanceId, tenantCtx.id);
+      const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1307,13 +1305,11 @@ export function createInstanceRoutes({
   // its own crypto state and lifecycle.
   const instanceKeyCache = new Map<string, Promise<CryptoProvider>>();
 
-  function getInstanceCryptoProvider(
-    instanceId: string,
-  ): Promise<CryptoProvider> {
-    let pending = instanceKeyCache.get(instanceId);
+  function getInstanceCryptoProvider(runId: string): Promise<CryptoProvider> {
+    let pending = instanceKeyCache.get(runId);
     if (pending !== undefined) return pending;
     pending = generateKeyPair().then((kp) => createEd25519Crypto(kp));
-    instanceKeyCache.set(instanceId, pending);
+    instanceKeyCache.set(runId, pending);
     return pending;
   }
 
@@ -1382,7 +1378,7 @@ export function createInstanceRoutes({
     async (c) => {
       const tenant = c.get("tenant");
       const principal = c.get("principal");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
       const body = c.req.valid("json");
 
       // Decode and validate attachments at the boundary, emitting ordered,
@@ -1395,7 +1391,7 @@ export function createInstanceRoutes({
       }
       const messageAttachments = attachmentResult.attachments;
 
-      const record = await findRoutableById(db, instanceId, tenant.id);
+      const record = await findRoutableById(db, runId, tenant.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1442,7 +1438,7 @@ export function createInstanceRoutes({
       const mimeMessageId = `<${mailId}@${tenant.domain}>`;
 
       // Fetch recent delivered inbound mail for the MIME References chain. A
-      // run's mail carries a null instanceId, so it is keyed on the session.
+      // run's mail carries a null runId, so it is keyed on the session.
       // GET history keys the same way.
       const mailScope = eq(sessionMail.sessionId, sessionId);
       const priorMail = await db
@@ -1488,11 +1484,11 @@ export function createInstanceRoutes({
         }
       }
 
-      const cryptoProvider = await getInstanceCryptoProvider(instanceId);
+      const cryptoProvider = await getInstanceCryptoProvider(runId);
 
-      // A run's mail is not an instance's, so it records a null instanceId and
+      // A run's mail is not an instance's, so it records a null runId and
       // anchors on the session (mirroring the sidecar mail-persist path).
-      const mailInstanceId = null;
+      const mailRunId = null;
 
       let rawMIME: Uint8Array;
       try {
@@ -1533,7 +1529,7 @@ export function createInstanceRoutes({
       await db.insert(sessionMail).values({
         id: mailId,
         sessionId,
-        instanceId: mailInstanceId,
+        runId: mailRunId,
         tenantId: tenant.id,
         direction: "inbound",
         status: "delivered",
@@ -1556,7 +1552,7 @@ export function createInstanceRoutes({
         {
           id: mailId,
           sessionId,
-          instanceId: mailInstanceId,
+          runId: mailRunId,
           direction: "inbound" as const,
           status: "delivered" as const,
           receivedAt: mailCreatedAt.toISOString(),
@@ -1595,13 +1591,13 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
         limit: c.req.query("limit"),
       });
 
-      const record = await findRoutableById(db, instanceId, tenant.id);
+      const record = await findRoutableById(db, runId, tenant.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1610,7 +1606,7 @@ export function createInstanceRoutes({
       }
 
       // History must serve a terminated run. A run's mail carries a null
-      // instanceId; its principal is 1:1 with its single session, so resolve
+      // runId; its principal is 1:1 with its single session, so resolve
       // that session (ended included) and key on it.
       const runSessionId = await resolveRunSessionId(db, record.principalId, {
         includeEnded: true,
@@ -1644,7 +1640,7 @@ export function createInstanceRoutes({
         return {
           id: m.id,
           sessionId: m.sessionId,
-          instanceId: m.instanceId ?? null,
+          runId: m.runId ?? null,
           direction: m.direction,
           status: m.status,
           receivedAt: m.createdAt.toISOString(),
@@ -1684,13 +1680,13 @@ export function createInstanceRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const instanceId = c.req.param("runId");
+      const runId = c.req.param("runId");
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
         limit: c.req.query("limit"),
       });
 
-      const record = await findRoutableById(db, instanceId, tenant.id);
+      const record = await findRoutableById(db, runId, tenant.id);
       if (record === undefined) {
         return c.json(
           { error: { code: "not_found", message: "Instance not found" } },
@@ -1701,7 +1697,7 @@ export function createInstanceRoutes({
       // A turn records its producing endpoint's id: an instance id or, since the
       // turn table's foreign key to the instance was dropped, a folded run id.
       // Both equal the path id, so the filter is the same for either kind.
-      const conditions = [eq(inferenceTurn.instanceId, record.id)];
+      const conditions = [eq(inferenceTurn.runId, record.id)];
       if (cursor) {
         conditions.push(
           cursorCondition(inferenceTurn.startedAt, inferenceTurn.id, cursor),
@@ -1739,7 +1735,7 @@ export function createInstanceRoutes({
       const items = turns.map((t) => ({
         id: t.id,
         sessionId: t.sessionId,
-        instanceId: t.instanceId,
+        runId: t.runId,
         model: t.model,
         status: t.status,
         startedAt: t.startedAt.toISOString(),

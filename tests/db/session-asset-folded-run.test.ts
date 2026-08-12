@@ -65,7 +65,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("records a materialization keyed on the folded run's id", async () => {
       await h.db.insert(sessionAsset).values({
-        instanceId: RUN,
+        runId: RUN,
         mountPath: "/skills/demo",
         assetPackSha: "sha-pack",
         sourceCommitSha: "sha-commit",
@@ -76,7 +76,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(sessionAsset)
         .where(
           and(
-            eq(sessionAsset.instanceId, RUN),
+            eq(sessionAsset.runId, RUN),
             eq(sessionAsset.mountPath, "/skills/demo"),
           ),
         );

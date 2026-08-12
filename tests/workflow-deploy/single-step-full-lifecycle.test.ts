@@ -237,7 +237,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        instanceId: orchestratorParams.instanceId,
+        runId: orchestratorParams.instanceId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined

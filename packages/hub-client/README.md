@@ -20,7 +20,7 @@ const transport = createBrowserTransport();
 
 const session = createInstanceSession({
   tenantId: "tnt_1",
-  instanceId: "ins_1",
+  runId: "ins_1",
   transport,
   onChange: () => render(session.events),
 });

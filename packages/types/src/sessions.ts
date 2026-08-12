@@ -54,7 +54,7 @@ export const MailResponse = type({
   sessionId: type("string").describe(
     "Internal session channel identifier, not a user-facing session resource.",
   ),
-  instanceId: "string | null",
+  runId: "string | null",
   direction: type("'inbound' | 'outbound'").describe(
     "Whether the message was sent to the agent (`inbound`) or emitted by the agent (`outbound`).",
   ),
@@ -91,7 +91,7 @@ export const MailResponse = type({
 });
 export type MailResponse = typeof MailResponse.infer;
 
-// Structured attachment-rejection errors returned by POST /:instanceId/mail.
+// Structured attachment-rejection errors returned by POST /:runId/mail.
 // Each variant carries a machine-actionable `code` plus the fields a client
 // needs to locate and explain the rejection, alongside a human-readable
 // `message`. This is the wire contract for the route's attachment 400s; the
@@ -135,7 +135,7 @@ export const InferenceTurnResponse = type({
   sessionId: type("string").describe(
     "Internal session channel identifier, not a user-facing session resource.",
   ),
-  instanceId: "string",
+  runId: "string",
   model: "string",
   status: "'running' | 'completed' | 'failed'",
   startedAt: "string",

@@ -180,7 +180,7 @@ describe("onTrigger body runs a real agent step through the body invoker", () =>
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        instanceId: orchestratorParams.instanceId,
+        runId: orchestratorParams.instanceId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined

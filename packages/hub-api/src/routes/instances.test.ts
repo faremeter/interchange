@@ -426,8 +426,8 @@ function createTestApp(opts: TestAppOpts = {}) {
   });
 }
 
-function instanceURL(tenantId = TENANT_ID, instanceId = INSTANCE_ID): string {
-  return `/api/tenants/${tenantId}/workflows/runs/${instanceId}`;
+function instanceURL(tenantId = TENANT_ID, runId = INSTANCE_ID): string {
+  return `/api/tenants/${tenantId}/workflows/runs/${runId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,7 +452,7 @@ describe("instance route test infrastructure", () => {
 // Health endpoint tests
 // ---------------------------------------------------------------------------
 
-describe("GET /workflows/runs/:instanceId/health", () => {
+describe("GET /workflows/runs/:runId/health", () => {
   test("returns ok/ok when address is routable and collector exists", async () => {
     const app = createTestApp({
       routableAddresses: [ADDRESS],
@@ -541,7 +541,7 @@ describe("GET /workflows/runs/:instanceId/health", () => {
 // Offerings endpoint tests
 // ---------------------------------------------------------------------------
 
-describe("GET /workflows/runs/:instanceId/offerings", () => {
+describe("GET /workflows/runs/:runId/offerings", () => {
   test("returns offerings for the instance's agent definition", async () => {
     const offerings = [
       {
@@ -787,7 +787,7 @@ describe("interact routes serve a folded run", () => {
     };
   }
 
-  test("POST mail on a running run persists on the run session with a null instanceId", async () => {
+  test("POST mail on a running run persists on the run session with a null runId", async () => {
     const inserts: Record<string, unknown>[] = [];
     const app = createTestApp({
       grants: [writeGrant()],
@@ -810,11 +810,11 @@ describe("interact routes serve a folded run", () => {
     expect(res.status).toBe(201);
     const body: unknown = await res.json();
     // A run's mail anchors on its session and records no instance.
-    expect(body).toMatchObject({ sessionId: "ses_run", instanceId: null });
+    expect(body).toMatchObject({ sessionId: "ses_run", runId: null });
     const mailInsert = inserts.find((r) => r["direction"] === "inbound");
     expect(mailInsert).toMatchObject({
       sessionId: "ses_run",
-      instanceId: null,
+      runId: null,
     });
   });
 
@@ -873,7 +873,7 @@ describe("interact routes serve a folded run", () => {
           {
             id: "turn_1",
             sessionId: "ses_run",
-            instanceId: INSTANCE_ID,
+            runId: INSTANCE_ID,
             model: "test-model",
             status: "completed",
             startedAt: new Date("2025-02-01"),
@@ -888,7 +888,7 @@ describe("interact routes serve a folded run", () => {
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
     expect(body).toMatchObject({
-      data: [{ id: "turn_1", instanceId: INSTANCE_ID, model: "test-model" }],
+      data: [{ id: "turn_1", runId: INSTANCE_ID, model: "test-model" }],
     });
   });
 });
@@ -898,13 +898,13 @@ describe("interact routes serve a folded run", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /workflows/runs/blobs/:blobId", () => {
-  test("blob route is reachable and not shadowed by /:instanceId", async () => {
+  test("blob route is reachable and not shadowed by /:runId", async () => {
     const app = createTestApp();
     const url = `/api/tenants/${TENANT_ID}/workflows/runs/blobs/bad-format`;
     const res = await app.request(url);
 
     // The blob handler rejects malformed IDs with 400.
-    // If /:instanceId shadowed this route, we'd get 404 (no instance "blobs").
+    // If /:runId shadowed this route, we'd get 404 (no instance "blobs").
     expect(res.status).toBe(400);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "bad_request" } });
@@ -912,10 +912,10 @@ describe("GET /workflows/runs/blobs/:blobId", () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /:instanceId/mail — threading-header policy
+// POST /:runId/mail — threading-header policy
 // ---------------------------------------------------------------------------
 
-describe("POST /workflows/runs/:instanceId/mail", () => {
+describe("POST /workflows/runs/:runId/mail", () => {
   // The user's bare addr-spec is `${principal.refId}@${tenant.domain}`.
   const USER_ADDR = `${USER_ID}@${testTenant.domain}`;
 
@@ -1071,10 +1071,10 @@ describe("POST /workflows/runs/:instanceId/mail", () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /:instanceId/mail — attachment validation
+// POST /:runId/mail — attachment validation
 // ---------------------------------------------------------------------------
 
-describe("POST /workflows/runs/:instanceId/mail attachments", () => {
+describe("POST /workflows/runs/:runId/mail attachments", () => {
   function makeMailGrant(): GrantRule {
     return makeGrant({ resource: "workflow-run:*", action: "write" });
   }
@@ -1291,7 +1291,7 @@ describe("POST /workflows/runs/:instanceId/mail attachments", () => {
 // surface area of credential resolution (providers, credentials, ancestor
 // chain) that the launch path traverses before reaching the transaction
 // block. The single instance launched per test is the canonical fixture; we
-// assert on the grant row written for resource `agent-state:<instanceId>`.
+// assert on the grant row written for resource `agent-state:<runId>`.
 // ---------------------------------------------------------------------------
 
 describe("POST /workflows/runs seeds creator agent-state grant", () => {
@@ -1639,15 +1639,15 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
     addr: string;
     tenantId: string;
     sessionId: string;
-    instanceId: string;
+    runId: string;
   };
 
   function createCapturingEventCollectors(
     creates: CollectorCreate[] = [],
   ): EventCollectorRegistry {
     return {
-      create: (addr, tenantId, sessionId, instanceId) => {
-        creates.push({ addr, tenantId, sessionId, instanceId });
+      create: (addr, tenantId, sessionId, runId) => {
+        creates.push({ addr, tenantId, sessionId, runId });
       },
       dispatch: notImplemented("eventCollectors.dispatch"),
       abandon: () => undefined,
@@ -1716,13 +1716,13 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
     expect(runInserts).toHaveLength(1);
     const runRow = runInserts[0]?.rows[0];
     expect(runRow).toBeDefined();
-    const instanceId = runRow?.["id"];
-    if (typeof instanceId !== "string") {
+    const runId = runRow?.["id"];
+    if (typeof runId !== "string") {
       throw new Error(
         "expected captured workflow_run insert to carry a string id",
       );
     }
-    expect(stateGrant?.["resource"]).toBe(`agent-state:${instanceId}`);
+    expect(stateGrant?.["resource"]).toBe(`agent-state:${runId}`);
 
     // A folded run's principal is workflow-kind.
     const principalRow = inserts.find((i) => i.table === "principal")?.rows[0];
@@ -1786,7 +1786,7 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
     // The run opens an inference-turn collector under its own id, just as an
     // instance launch does -- the turn FK no longer forbids a run id.
     expect(collectorCreates).toHaveLength(1);
-    expect(runRow?.["id"]).toBe(collectorCreates[0]?.instanceId);
+    expect(runRow?.["id"]).toBe(collectorCreates[0]?.runId);
 
     // A folded run's principal is workflow-kind: it is a workflow run, so it
     // converges on the native run's principal shape.
@@ -2116,10 +2116,10 @@ describe("POST /workflows/runs seeds creator agent-state grant", () => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /:instanceId — folded run (workflow_run) stop path
+// DELETE /:runId — folded run (workflow_run) stop path
 // ---------------------------------------------------------------------------
 
-describe("DELETE /workflows/runs/:instanceId (folded run)", () => {
+describe("DELETE /workflows/runs/:runId (folded run)", () => {
   type Update = { table: string; set: Record<string, unknown> };
   type EndCall = { address: string; reason: string };
 

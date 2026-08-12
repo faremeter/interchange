@@ -37,7 +37,7 @@ export type SidecarMailPersistedRow = {
   id: string;
   createdAt: Date;
   direction: "inbound" | "outbound";
-  instanceId: string | null;
+  runId: string | null;
   address: string;
 };
 

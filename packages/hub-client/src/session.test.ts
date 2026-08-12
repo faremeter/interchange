@@ -61,7 +61,7 @@ function makeMail(overrides: Partial<MailResponse> = {}): MailResponse {
   return {
     id: "mail_1",
     sessionId: "sess_1",
-    instanceId: INSTANCE_ID,
+    runId: INSTANCE_ID,
     direction: "inbound",
     status: "delivered",
     receivedAt: "2024-01-01T00:00:00Z",
@@ -84,7 +84,7 @@ function makeTurn(
   return {
     id: "turn_1",
     sessionId: "sess_1",
-    instanceId: INSTANCE_ID,
+    runId: INSTANCE_ID,
     model: "gpt-4",
     status: "completed",
     startedAt: "2024-01-01T01:00:00Z",
@@ -120,7 +120,7 @@ describe("session lifecycle", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -139,7 +139,7 @@ describe("session lifecycle", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -154,7 +154,7 @@ describe("session lifecycle", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -170,7 +170,7 @@ describe("session lifecycle", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -186,7 +186,7 @@ describe("session lifecycle", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: () => {
         changes++;
@@ -207,7 +207,7 @@ describe("session lifecycle", () => {
     );
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -245,7 +245,7 @@ describe("hydration", () => {
     const mock = createMockTransport(makeHydrationHandler([mail], [turn]));
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -277,7 +277,7 @@ describe("hydration", () => {
     );
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -311,7 +311,7 @@ describe("hydration", () => {
     );
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -351,7 +351,7 @@ describe("hydration", () => {
     );
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -370,7 +370,7 @@ describe("hydration", () => {
     const mock = createMockTransport(makeHydrationHandler([makeMail()]));
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: () => {
         changeCount++;
@@ -411,7 +411,7 @@ describe("hydration", () => {
 
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -455,7 +455,7 @@ describe("SSE buffer deduplication", () => {
 
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -490,7 +490,7 @@ describe("SSE buffer deduplication", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -526,7 +526,7 @@ describe("SSE buffer deduplication", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -565,7 +565,7 @@ describe("SSE event processing", () => {
     mock = createMockTransport(makeHydrationHandler());
     session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -578,7 +578,7 @@ describe("SSE event processing", () => {
     const m2 = createMockTransport(makeHydrationHandler());
     const s2 = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: m2.transport,
       onChange: noop,
       onSessionEnded: () => {
@@ -746,7 +746,7 @@ describe("streaming buffer", () => {
     mock = createMockTransport(makeHydrationHandler());
     session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -927,7 +927,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -972,7 +972,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1017,7 +1017,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1069,7 +1069,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1120,7 +1120,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1170,7 +1170,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1213,7 +1213,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1269,7 +1269,7 @@ describe("streaming buffer", () => {
 
     const s = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1302,7 +1302,7 @@ describe("activity state machine", () => {
     mock = createMockTransport(makeHydrationHandler());
     session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -1480,7 +1480,7 @@ describe("sendMail", () => {
 
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1503,7 +1503,7 @@ describe("onChange callback", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: () => {
         changes++;
@@ -1536,7 +1536,7 @@ describe("onChange callback", () => {
     const mock = createMockTransport(makeHydrationHandler());
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: () => {
         changes++;
@@ -1574,7 +1574,7 @@ describe("agent reply lifecycle", () => {
     mock = createMockTransport(makeHydrationHandler());
     session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -1685,7 +1685,7 @@ describe("multi-turn conversation", () => {
     mock = createMockTransport(makeHydrationHandler());
     session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
@@ -1879,7 +1879,7 @@ describe("hydration edge cases", () => {
 
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
     });
@@ -1934,7 +1934,7 @@ describe("hydration edge cases", () => {
 
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: () => {
         changes++;
@@ -1974,7 +1974,7 @@ describe("hydration edge cases", () => {
 
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: () => {
         changes++;
@@ -2010,7 +2010,7 @@ describe("hydration edge cases", () => {
     let reportedError: Error | null = null;
     const session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport,
       onChange: noop,
       onError: (err) => {
@@ -2060,7 +2060,7 @@ describe("turn edge cases", () => {
     mock = createMockTransport(makeHydrationHandler());
     session = createInstanceSession({
       tenantId: TENANT_ID,
-      instanceId: INSTANCE_ID,
+      runId: INSTANCE_ID,
       transport: mock.transport,
       onChange: noop,
     });
