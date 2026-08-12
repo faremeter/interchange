@@ -3,22 +3,17 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
 import { streamSSE } from "hono/streaming";
-import { type } from "arktype";
 
 import {
-  agentRole,
   agentSession,
-  grant as grantTable,
   inferenceTurn,
   offering,
   principal as principalTable,
-  principalRole,
   sessionMail,
   turnPart,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import { buildCredentialDelivery, parseWorkflowDefinitionRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
@@ -26,37 +21,27 @@ import { parseMailToEmail, extractPartByPath } from "@intx/mime";
 
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
-  CreateWorkflowRun,
   WorkflowRunResponse,
   WorkflowRunHealth,
   OfferingDetail,
-  GrantRequirement,
   SendMessage,
   MailResponse,
   AttachmentErrorResponse,
   InferenceTurnResponse,
   ErrorResponse,
-  formatRunAddress,
   paginatedSchema,
 } from "@intx/types";
-import type { CredentialCipher, ProviderPreference } from "@intx/types";
-import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   findRoutableById,
   resolveRunIdForSession,
   resolveRunSessionId,
   runRowToRoutableRecord,
-  SessionLaunchError,
-  type AssetService,
   type EventCollectorRegistry,
   type RoutableRecord,
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
-import { extractFoldedBody } from "@intx/workflow-deploy";
-import { hydrateDefinition } from "../run-grant-materialization";
-import { resolveDefinitionSources } from "../run-source-resolution";
 import { formatOffering } from "./offerings";
 import {
   formatInstanceView,
@@ -64,10 +49,6 @@ import {
   mapRunStatusToInstanceStatus,
 } from "./instance-view";
 import { validateAttachments } from "../attachment-validation";
-import {
-  resolveGrantMaterialization,
-  makeGrantRow,
-} from "../grant-materialization";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
@@ -80,8 +61,6 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
-
-const GrantRequirements = GrantRequirement.array();
 
 // DoS guard on the mail route body. Sized above the legitimate ceiling
 // (the 30 MB per-message attachment cap is ~40 MB once base64-encoded,
@@ -159,8 +138,6 @@ export type CreateInstanceRoutesDeps = {
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
-  assetService: AssetService | null;
-  credentialCipher: CredentialCipher;
 };
 
 export function createInstanceRoutes({
@@ -171,487 +148,8 @@ export function createInstanceRoutes({
   grantStore,
   conditionRegistry,
   requireGrant,
-  assetService,
-  credentialCipher,
 }: CreateInstanceRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
-
-  app.post(
-    "/",
-    requireGrant("workflow-run:*", "create"),
-    describeRoute({
-      tags: ["Instances"],
-      summary: "Deploy an agent instance",
-      description:
-        "Creates a new running instance of the specified agent definition. Resolves the definition's model requirements against the tenant catalog into an ordered inference-source list, materializes grants on a new agent principal, provisions the agent on a sidecar, and starts it. The invoker can provide invokerGrants to delegate additional capabilities, and modelPreferences to reorder or restrict the resolved providers for the session.",
-      responses: {
-        201: {
-          description: "Instance deployed",
-          content: {
-            "application/json": { schema: resolver(WorkflowRunResponse) },
-          },
-        },
-        404: {
-          description: "Agent definition not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Agent not launchable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        502: {
-          description: "Sidecar unavailable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-      },
-    }),
-    validator("json", CreateWorkflowRun),
-    async (c) => {
-      const tenant = c.get("tenant");
-      const principal = c.get("principal");
-      const body = c.req.valid("json");
-
-      // The caller names the definition directly by its id. It is
-      // authoritative for launchability and model resolution.
-      const definitionRow = await db.query.workflowDefinition.findFirst({
-        where: and(
-          eq(workflowDefinition.id, body.definitionId),
-          eq(workflowDefinition.tenantId, tenant.id),
-        ),
-      });
-      if (definitionRow === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Definition not found" } },
-          404,
-        );
-      }
-      const definition = parseWorkflowDefinitionRow(definitionRow);
-
-      if (definition.status !== "deployed") {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: `Definition is not in a launchable state (status: ${definition.status})`,
-            },
-          },
-          409,
-        );
-      }
-
-      // Source the launch body from the definition's materialized asset (the
-      // frozen `workflow.json`), not the origin agent row. The materialization
-      // cliff runs before any launch, so a null asset id is a broken invariant,
-      // not a normal state -- reject loudly rather than launch a body-less
-      // instance.
-      if (definition.assetId === null) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "This definition has not been materialized",
-            },
-          },
-          409,
-        );
-      }
-      if (assetService === null) {
-        return c.json(
-          {
-            error: {
-              code: "unavailable",
-              message:
-                "Asset service is not configured; cannot hydrate the body",
-            },
-          },
-          503,
-        );
-      }
-      const foldedBody = extractFoldedBody(
-        await hydrateDefinition(assetService, definition.assetId),
-      );
-      if (!foldedBody.systemPrompt) {
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message:
-                "Agent cannot be launched without a system prompt configured",
-            },
-          },
-          409,
-        );
-      }
-
-      const runId = generateId("instance");
-      const agentAddress = formatRunAddress(runId, tenant.domain);
-
-      // --- Inference source resolution (catalog) ---
-
-      // The definition carries the creator the fold copied off its agent. It is
-      // a nullable column but always set for a folded definition; a null here is
-      // corruption, so fail loud rather than resolve grants against no creator.
-      const creatorPrincipalId = definition.creatorPrincipalId;
-      if (creatorPrincipalId === null) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "This definition has no creator principal",
-            },
-          },
-          409,
-        );
-      }
-
-      // The invoker's launch-time preference reorders or restricts the
-      // tenant-visible providers; it cannot introduce one the catalog lacks.
-      const invokerPreferences: Record<string, ProviderPreference> = {};
-      for (const preference of body.modelPreferences ?? []) {
-        invokerPreferences[preference.model] = preference.providers;
-      }
-
-      const resolution = await resolveDefinitionSources({
-        db,
-        tenantId: tenant.id,
-        modelRequirements: definition.modelRequirements,
-        fallbackModel: foldedBody.model,
-        invokerPreferences,
-        credentialCipher,
-      });
-      if (!resolution.ok) {
-        return c.json(
-          { error: { code: "not_launchable", message: resolution.message } },
-          409,
-        );
-      }
-      const sources = resolution.sources;
-      const defaultSource = resolution.defaultSource;
-
-      // --- Grant requirement resolution (creator/invoker delegation) ---
-
-      const instancePrincipalId = generateId("principal");
-
-      const now = new Date();
-
-      const parsedGrantReqs = GrantRequirements(foldedBody.grantRequirements);
-      if (parsedGrantReqs instanceof type.errors) {
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message: `Invalid grant requirements: ${parsedGrantReqs.summary}`,
-            },
-          },
-          409,
-        );
-      }
-
-      // Collect invoker's grants once — used for both creator and invoker resolution.
-      const invokerGrants = await grantStore.collectGrants(
-        principal.id,
-        tenant.id,
-      );
-
-      // Collect creator's grants once for all creator-sourced requirements.
-      const hasCreatorReqs = parsedGrantReqs.some(
-        (r) => r.source === "creator",
-      );
-      const creatorGrants = hasCreatorReqs
-        ? await grantStore.collectGrants(creatorPrincipalId, tenant.id)
-        : [];
-
-      const materialization = await resolveGrantMaterialization({
-        tenantId: tenant.id,
-        targetPrincipalId: instancePrincipalId,
-        grantRequirements: parsedGrantReqs,
-        adHocInvokerGrants: body.invokerGrants ?? [],
-        invokerGrants,
-        creatorGrants,
-        now,
-      });
-      if (!materialization.ok) {
-        const { status, code, message } = materialization.rejection;
-        return c.json({ error: { code, message } }, status);
-      }
-      const grantRows = materialization.grantRows;
-
-      // --- Credential binding resolution ---
-      //
-      // Resolve + decrypt the folded body's credential bindings into the
-      // material delivered to the tools and the `credential:{id}` / `use` grants
-      // stamped below. The builder's shape also anticipates a planned reconnect
-      // re-push that would re-deliver the material alone. A launch-blocking
-      // configuration failure (unresolved /
-      // no-origin / ambiguous binding) is a fail-closed 409 -- the same bucket
-      // as every other non-authority launchability failure here; a DB read fault
-      // throws from the builder and surfaces as 500, never mislabeled a terminal
-      // 409. No production `workflow.json` carries bindings yet, so this path
-      // runs only under test fixtures today.
-      const deliveryResult = await buildCredentialDelivery({
-        db,
-        tenantId: tenant.id,
-        bindings: foldedBody.credentialBindings,
-        creatorPrincipalId,
-        invokerPrincipalId: principal.id,
-        credentialCipher,
-      });
-      if (!deliveryResult.ok) {
-        return c.json(
-          {
-            error: {
-              code: "not_launchable",
-              message: deliveryResult.reason.message,
-            },
-          },
-          409,
-        );
-      }
-      const credentialDelivery: CredentialDelivery | undefined =
-        deliveryResult.delivery;
-
-      // A binding's credential is authorized by tenant ownership, already proven
-      // by buildCredentialDelivery's resolution -- there is nothing to
-      // re-authorize. Stamp each `credential:{id}` / `use` grant, scoped to its
-      // consuming tool package by the `{ tool }` condition the runtime
-      // per-consumer gate reads. origin `system`: the authority is tenant
-      // ownership, not a delegated personal grant.
-      for (const bindingGrant of deliveryResult.bindingGrants) {
-        grantRows.push(
-          makeGrantRow({
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            resource: bindingGrant.resource,
-            action: "use",
-            effect: "allow",
-            conditions: bindingGrant.conditions,
-            origin: "system",
-            expiresAt: null,
-            now,
-          }),
-        );
-      }
-
-      // An instance-kind `workflow_definition` launches as a `workflow_run`
-      // rather than an `agent_instance`: the run IS the launched instance. The
-      // plain `ins_<hex>` address, per-launch principal, grants, and deploy are
-      // identical to a legacy instance launch; only the persisted row (and how
-      // its session is keyed) differ.
-
-      // --- Resolve role assignments for the instance principal ---
-
-      // Role assignments hang off the folded definition -- agent_role.agent_id
-      // holds definition ids.
-      const agentRoleRows = await db.query.agentRole.findMany({
-        where: eq(agentRole.agentId, definition.id),
-      });
-      const agentRoleIds = agentRoleRows.map((a) => a.roleId);
-      const agentRoleAssignments =
-        agentRoleIds.length > 0
-          ? (
-              await db.query.role.findMany({
-                where: (r, { inArray, and: a }) =>
-                  a(inArray(r.id, agentRoleIds), eq(r.tenantId, tenant.id)),
-                columns: { id: true },
-              })
-            ).map((r) => ({ roleId: r.id }))
-          : [];
-
-      // --- Write all DB rows in a transaction ---
-
-      const sessionId = generateId("session");
-
-      await db.transaction(async (tx) => {
-        // Create the endpoint's principal. A folded run is a workflow run, so
-        // its principal is `workflow`-kind, converging on the native run's
-        // principal shape. The refId is the instance id.
-        await tx.insert(principalTable).values({
-          id: instancePrincipalId,
-          tenantId: tenant.id,
-          kind: "workflow",
-          refId: runId,
-          status: "active",
-          createdAt: now,
-          updatedAt: now,
-        });
-
-        // Assign the agent definition's roles to the instance principal so
-        // that grants flow through the existing RBAC path (collectGrants).
-        for (const { roleId } of agentRoleAssignments) {
-          await tx.insert(principalRole).values({
-            principalId: instancePrincipalId,
-            roleId,
-            createdAt: now,
-          });
-        }
-
-        // Materialize grants on the instance principal
-        for (const g of grantRows) {
-          await tx.insert(grantTable).values(g);
-        }
-
-        // The agentSession row is keyed to the folded definition (agent_id) and
-        // to the run's principal (`workflow_run.principalId`, which is
-        // `instancePrincipalId`), so the run <-> session bridge resolves the
-        // session by that shared principal.
-        await tx.insert(agentSession).values({
-          id: sessionId,
-          tenantId: tenant.id,
-          agentId: definition.id,
-          principalId: instancePrincipalId,
-          status: "active",
-          createdAt: now,
-          updatedAt: now,
-        });
-
-        // The folded run IS the launched instance: it owns the plain routing
-        // address and carries the runtime bindings an agent_instance would.
-        // `anchorRunId` is null (a folded run has no deployment); the public
-        // key lands later at deploy-ack.
-        await tx.insert(workflowRun).values({
-          id: runId,
-          definitionId: definition.id,
-          anchorRunId: null,
-          tenantId: tenant.id,
-          principalId: instancePrincipalId,
-          address: agentAddress,
-          status: "running",
-          modelPreferences: body.modelPreferences ?? null,
-          createdAt: now,
-        });
-
-        // Seed a creator-level read grant on the per-instance
-        // agent-state repo so the definition creator can read runtime
-        // state out of the box. The definition seed point covers the
-        // deploy-artifact repo; this covers the runtime repo.
-        await tx.insert(grantTable).values({
-          id: generateId("grant"),
-          tenantId: tenant.id,
-          principalId: creatorPrincipalId,
-          resource: `agent-state:${runId}`,
-          action: "read",
-          effect: "allow",
-          origin: "creator",
-          createdAt: now,
-          updatedAt: now,
-        });
-      });
-
-      // Collect the materialized grants for the deploy frame
-      const grants = await grantStore.collectGrants(
-        instancePrincipalId,
-        tenant.id,
-      );
-
-      // Open the inference-turn collector for the launched endpoint. The
-      // collector records turns under this id, which is the instance id or the
-      // folded run id from the shared id space -- inference_turn.runId
-      // carries no foreign key, so either is storable.
-      eventCollectors.create(agentAddress, tenant.id, sessionId, runId);
-
-      try {
-        // Deploy the instance as a single-step workflow at the head: it runs
-        // as a supervised workflow-process child. The deploy keys by the
-        // instance id -- the surviving id the address encodes and every
-        // deploy-ref reader resolves by (the child resolves its skills and
-        // pinned tool packages by mailbox address, not this id). The returned
-        // head public key is surfaced separately via the sidecar's
-        // `agent.deploy.ack`, so the route discards it here.
-        await sessionService.deployInstanceAtHead({
-          agentAddress,
-          agentId: runId,
-          runId,
-          config: {
-            sessionId,
-            agentId: runId,
-            tenantId: tenant.id,
-            principalId: instancePrincipalId,
-            agentAddress,
-            systemPrompt: foldedBody.systemPrompt,
-            tools: [],
-            grants,
-            sources,
-            defaultSource,
-          },
-          toolPackagePins: foldedBody.toolPackagePins,
-          deployContent: {
-            systemPrompt: foldedBody.systemPrompt,
-          },
-          ...(credentialDelivery !== undefined
-            ? { credentials: credentialDelivery }
-            : {}),
-        });
-      } catch (err) {
-        eventCollectors.abandon(agentAddress);
-
-        const failedAt = new Date();
-
-        await db
-          .update(agentSession)
-          .set({ status: "ended", endedAt: failedAt, updatedAt: failedAt })
-          .where(eq(agentSession.id, sessionId));
-
-        const leaked = err instanceof SessionLaunchError && err.leakedAgent;
-
-        // A leaked deploy left a running child. Mark the run failed but leave
-        // it routable (endedAt null), so the leaked child stays reachable to
-        // inspect or clean up. Otherwise roll the run back entirely.
-        if (leaked) {
-          await db
-            .update(workflowRun)
-            .set({ status: "failed" })
-            .where(eq(workflowRun.id, runId));
-        } else {
-          await db.delete(workflowRun).where(eq(workflowRun.id, runId));
-        }
-
-        // Deactivate the instance principal created during this launch
-        await db
-          .update(principalTable)
-          .set({ status: "deactivated", updatedAt: failedAt })
-          .where(eq(principalTable.id, instancePrincipalId));
-
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to dispatch agent to sidecar",
-            },
-          },
-          502,
-        );
-      }
-
-      // The folded run was inserted `running`, so there is no deployed ->
-      // running flip. Shape it through the shared instance view so it reads
-      // identically to a later GET: the run has no `updatedAt` (it mirrors
-      // `createdAt`), and its public key is null until deploy-ack lands it.
-      const runRecord: RoutableRecord = {
-        id: runId,
-        tenantId: tenant.id,
-        address: agentAddress,
-        publicKey: null,
-        status: "running",
-        createdAt: now,
-        updatedAt: now,
-        endedAt: null,
-        definitionId: definition.id,
-        principalId: instancePrincipalId,
-        kernelId: null,
-        sidecarId: null,
-      };
-      return c.json(formatInstanceView(runRecord, definition.name), 201);
-    },
-  );
 
   app.get(
     "/",
