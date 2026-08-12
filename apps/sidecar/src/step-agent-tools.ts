@@ -44,7 +44,7 @@ import { getLogger } from "@intx/log";
 import type { HostCredentialCapability } from "@intx/harness";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 import { resolveStepAddress } from "@intx/workflow-deploy";
-import { parseAgentAddress } from "@intx/types";
+import { parseRunAddress } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   layerRuntimeCapabilities,
@@ -289,18 +289,18 @@ export function stepDeployTreeDir(args: {
   stepId: string;
   stepCount: number;
 }): string {
-  const parsed = parseAgentAddress(args.mailboxAddress);
+  const parsed = parseRunAddress(args.mailboxAddress);
   if (parsed === null) {
     throw new Error(
       `sidecar workflow-child step tools: deployment mailbox address ${JSON.stringify(args.mailboxAddress)} is not a parseable agent address; cannot locate the step's deploy tree`,
     );
   }
-  if (!parsed.instanceId.startsWith(INSTANCE_PREFIX)) {
+  if (!parsed.runId.startsWith(INSTANCE_PREFIX)) {
     throw new Error(
-      `sidecar workflow-child step tools: deployment mailbox instance id ${JSON.stringify(parsed.instanceId)} does not carry the ${JSON.stringify(INSTANCE_PREFIX)} prefix; cannot derive the orchestrator deploymentId`,
+      `sidecar workflow-child step tools: deployment mailbox run id ${JSON.stringify(parsed.runId)} does not carry the ${JSON.stringify(INSTANCE_PREFIX)} prefix; cannot derive the orchestrator deploymentId`,
     );
   }
-  const deploymentId = parsed.instanceId.slice(INSTANCE_PREFIX.length);
+  const deploymentId = parsed.runId.slice(INSTANCE_PREFIX.length);
   // A `map` iteration runs under a scoped step id `<base>[<index>]`, but
   // deploy stages one deploy tree per base step, so the scoped id resolves
   // to its base address -- every iteration reads the base step's tree.

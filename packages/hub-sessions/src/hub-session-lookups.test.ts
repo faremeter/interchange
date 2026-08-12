@@ -1,5 +1,5 @@
 // parseAgentId is the @intx/hub-sessions wrapper around the @intx/types
-// parseAgentAddress parser. The wrapper exists to throw on invalid
+// parseRunAddress parser. The wrapper exists to throw on invalid
 // input rather than return null, and to preserve the raw address in
 // the error message for diagnostic context. These tests pin the
 // wrapper's behavior so a future change to the delegation (e.g.,

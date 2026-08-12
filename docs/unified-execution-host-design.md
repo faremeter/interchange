@@ -929,7 +929,7 @@ A launched agent keeps its legacy `ins_<hex>@<domain>` address and its
 as the multi-step path already does:
 
 - **Address shape.** `instances.ts` continues to mint `ins_<hex>@<domain>` via
-  `formatAgentAddress(generateId("instance"), domain)`. The address does not
+  `formatRunAddress(generateId("instance"), domain)`. The address does not
   become `ins_dep_<...>`. The deploy-ack listener's discriminator
   (`isWorkflowDerivedAddress` in `packages/workflow-deploy/src/orchestrator.ts`)
   keys on the literal `ins_dep_` segment, so it correctly returns `false` for a
@@ -1627,7 +1627,7 @@ are explicitly **not** a go-live gate for INTR-209.
 - Identity: `packages/workflow-deploy/src/orchestrator.ts`
   (`deriveWorkflowRunRepoId`, `isWorkflowDerivedAddress`,
   `wrapHarnessAsSingleStepWorkflow`); `packages/types/src/agent-address.ts`
-  (`formatAgentAddress`, `parseAgentAddress`);
+  (`formatRunAddress`, `parseRunAddress`);
   `packages/hub-sessions/src/hub-session-orchestrator.ts` (deploy-ack listener);
   `packages/hub-sessions/src/hub-session-lookups.ts`
   (`resolveRoutableAddress`, `lookupPublicKey`).

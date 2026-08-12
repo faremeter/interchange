@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   extractBodyText,
   formatAddress,
-  isAgentAddress,
+  isRunAddress,
   mailDeliveryToEvent,
   mailToEvent,
   parseFromHeader,
@@ -100,13 +100,13 @@ describe("formatAddress", () => {
   });
 });
 
-describe("isAgentAddress", () => {
+describe("isRunAddress", () => {
   test("returns true for ins_ prefixed addresses", () => {
-    expect(isAgentAddress(AGENT_ADDR)).toBe(true);
+    expect(isRunAddress(AGENT_ADDR)).toBe(true);
   });
 
-  test("returns false for non-agent addresses", () => {
-    expect(isAgentAddress(HUMAN_ADDR)).toBe(false);
+  test("returns false for non-run addresses", () => {
+    expect(isRunAddress(HUMAN_ADDR)).toBe(false);
   });
 });
 

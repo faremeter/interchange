@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { configureSync, getConfig, resetSync } from "@intx/log";
 import { generateKeyPair, signEd25519 } from "@intx/crypto";
-import { hexDecode, hexEncode, parseAgentAddress } from "@intx/types";
+import { hexDecode, hexEncode, parseRunAddress } from "@intx/types";
 import { chunkPack } from "@intx/pack-transport";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import type {
@@ -1255,8 +1255,7 @@ describe("SidecarRouter", () => {
               {
                 id: "mail_outbound",
                 direction: "outbound",
-                runId:
-                  parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
+                runId: parseRunAddress(senderAddress)?.runId ?? senderAddress,
                 address: senderAddress,
                 createdAt: new Date(),
               },
@@ -1266,7 +1265,7 @@ describe("SidecarRouter", () => {
                 results.push({
                   id: `mail_in_${addr}`,
                   direction: "inbound",
-                  runId: parseAgentAddress(addr)?.instanceId ?? addr,
+                  runId: parseRunAddress(addr)?.runId ?? addr,
                   address: addr,
                   createdAt: new Date(),
                 });
@@ -1324,15 +1323,14 @@ describe("SidecarRouter", () => {
               {
                 id: "mail_out",
                 direction: "outbound" as const,
-                runId:
-                  parseAgentAddress(senderAddress)?.instanceId ?? senderAddress,
+                runId: parseRunAddress(senderAddress)?.runId ?? senderAddress,
                 address: senderAddress,
                 createdAt: new Date(),
               },
               ...recipients.map((addr) => ({
                 id: `mail_in_${addr}`,
                 direction: "inbound" as const,
-                runId: parseAgentAddress(addr)?.instanceId ?? addr,
+                runId: parseRunAddress(addr)?.runId ?? addr,
                 address: addr,
                 createdAt: new Date(),
               })),

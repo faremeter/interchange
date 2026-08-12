@@ -36,7 +36,7 @@ import type {
 } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialDelivery } from "@intx/types/sidecar";
-import { parseAgentAddress } from "@intx/types";
+import { parseRunAddress } from "@intx/types";
 import {
   STEP_ID_PATTERN,
   type Primitive,
@@ -820,7 +820,7 @@ function pickStepInferenceSource(args: {
  * supervisor can reconstruct the same addresses at spawn time without
  * sharing storage with the orchestrator.
  *
- * The `ins_` prefix is required by `parseAgentAddress` at the substrate
+ * The `ins_` prefix is required by `parseRunAddress` at the substrate
  * boundary; the per-step local-part is concat-only because `stepId` is
  * already constrained to `[a-zA-Z0-9_-]+` by the workflow definition
  * validator.
@@ -962,11 +962,11 @@ const DEPLOYMENT_ID_PREFIX = "dep_";
  * from launched-agent instance addresses.
  */
 export function isWorkflowDerivedAddress(address: string): boolean {
-  const parsed = parseAgentAddress(address);
+  const parsed = parseRunAddress(address);
   if (parsed === null) {
     return false;
   }
-  return parsed.instanceId.startsWith(`ins_${DEPLOYMENT_ID_PREFIX}`);
+  return parsed.runId.startsWith(`ins_${DEPLOYMENT_ID_PREFIX}`);
 }
 
 /**
