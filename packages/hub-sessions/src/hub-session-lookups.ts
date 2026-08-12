@@ -22,7 +22,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import { parseAgentAddress, signalName } from "@intx/types";
+import { parseRunAddress, signalName } from "@intx/types";
 import { SignalDeliverFrame } from "@intx/types/sidecar";
 import {
   deriveWorkflowRunRepoId,
@@ -643,17 +643,17 @@ export function createHubSessionLookups(
 }
 
 /**
- * Extract the instance id from an `<instanceId>@<domain>` agent address.
- * Throws on any input the `@intx/types`-owned `parseAgentAddress`
- * rejects: missing or leading `@`, empty domain, or an instance id
+ * Extract the run id from an `<runId>@<domain>` agent address.
+ * Throws on any input the `@intx/types`-owned `parseRunAddress`
+ * rejects: missing or leading `@`, empty domain, or a run id
  * without the canonical `ins_` prefix.
  */
 export function parseAgentId(agentAddress: string): string {
-  const parsed = parseAgentAddress(agentAddress);
+  const parsed = parseRunAddress(agentAddress);
   if (parsed === null) {
     throw new Error(`Invalid agent address: "${agentAddress}"`);
   }
-  return parsed.instanceId;
+  return parsed.runId;
 }
 
 /**

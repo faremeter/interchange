@@ -13,7 +13,7 @@ export {
   parseFromHeader,
   extractBodyText,
   formatAddress,
-  isAgentAddress,
+  isRunAddress,
   resolveAgentAddress,
   resolveAgentRecipient,
   type MailDeliveryData,

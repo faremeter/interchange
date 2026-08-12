@@ -1786,10 +1786,11 @@ export async function fireMailTrigger(
   const rawMessage = assembleMessage(headers, signedContent, signature);
   const base64 = base64Encode(rawMessage);
 
-  // Deliver the run's grants before the trigger mail. The runId is the
-  // deployment's mail address (not the per-message Message-ID); derive it
-  // through the same shared helper the production route and sidecar use, so
-  // this fixture cannot mask a divergence by hand-picking the right value.
+  // Deliver the run's grants before the trigger mail. The runId is the local
+  // part of the deployment's mail address (not the per-message Message-ID);
+  // derive it through the same shared helper the production route and sidecar
+  // use, so this fixture cannot mask a divergence by hand-picking the right
+  // value.
   const runId = deriveWorkflowRunId(address);
   const grantsDelivered = env.hub.router.sendRunGrants(
     address,

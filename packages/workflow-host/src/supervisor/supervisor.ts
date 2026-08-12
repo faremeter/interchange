@@ -1934,9 +1934,9 @@ export function createWorkflowSupervisor(
 
   /**
    * Forward one dequeued inbox entry to the child as `trigger.fire`
-   * and record its runId as in-flight. The runId is the deployment's
-   * mail address (see `deriveWorkflowRunId`), identifying its one top-level
-   * run; the `messageId` rides alongside it so the child can
+   * and record its runId as in-flight. The runId is the local part of the
+   * deployment's mail address (see `deriveWorkflowRunId`), identifying its one
+   * top-level run; the `messageId` rides alongside it so the child can
    * recover the trigger's mail bytes by claim-check. The runId is the
    * same value the dispatch loop waits on via `terminalEventSource`.
    */

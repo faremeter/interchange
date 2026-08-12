@@ -36,7 +36,7 @@ import {
   AttachmentErrorResponse,
   InferenceTurnResponse,
   ErrorResponse,
-  formatAgentAddress,
+  formatRunAddress,
   paginatedSchema,
 } from "@intx/types";
 import type { CredentialCipher, ProviderPreference } from "@intx/types";
@@ -290,7 +290,7 @@ export function createInstanceRoutes({
       }
 
       const runId = generateId("instance");
-      const agentAddress = formatAgentAddress(runId, tenant.domain);
+      const agentAddress = formatRunAddress(runId, tenant.domain);
 
       // --- Inference source resolution (catalog) ---
 
