@@ -1,12 +1,16 @@
 import git from "isomorphic-git";
 import { parseHeaderSection } from "@intx/mime";
-import { hexEncode } from "@intx/types";
+import { hasCode, hexEncode } from "@intx/types";
 import { AUTHOR } from "./init";
 import type { CommitSigner } from "./signer";
-import { buildSigningArgs } from "./commit-helpers";
+import {
+  buildSigningArgs,
+  commitDurably,
+  restoreIndexAfterFailedCommit,
+  UncertainRefPublicationError,
+} from "./commit-helpers";
 import { withRepoDirLock } from "./repo-lock";
-import { flushRuntime, type StorageRuntime } from "./runtime";
-import { hasCode } from "@intx/types";
+import type { StorageRuntime } from "./runtime";
 
 const MAIL_DIR = "state/mail";
 
@@ -78,6 +82,7 @@ export async function createMailAuditStore(
   const messageIndex = new Map<string, string>();
   // thread-id -> thread state
   const threads = new Map<string, ThreadState>();
+  let reconciliationFailure: Error | undefined;
 
   await rebuildIndex(runtime, dir, messageIndex, threads);
 
@@ -121,6 +126,13 @@ export async function createMailAuditStore(
     // the commit, and the in-memory index/ordinal advance must be atomic
     // against a concurrent reactor commit or GC pass sharing this repo.
     return withRepoDirLock(runtime, dir, async () => {
+      if (reconciliationFailure !== undefined) {
+        throw new Error(
+          "Mail audit store cannot accept writes after failed ref reconciliation",
+          { cause: reconciliationFailure },
+        );
+      }
+
       const { messageId, inReplyTo, references } =
         parseThreadingHeaders(rawMessage);
 
@@ -141,7 +153,6 @@ export async function createMailAuditStore(
 
       const fullPath = runtime.path.join(dir, filepath);
       await runtime.fs.writeFile(fullPath, rawMessage);
-      await git.add({ fs: runtime.fs.git, dir, filepath });
 
       const label = direction === "in" ? "inbound" : "outbound";
       const subject = `Record ${label} mail ${messageId}`;
@@ -149,14 +160,46 @@ export async function createMailAuditStore(
         options?.checkpointHash !== undefined
           ? `${subject}\n\nCheckpoint: ${options.checkpointHash}`
           : subject;
-      await git.commit({
-        fs: runtime.fs.git,
-        dir,
-        message,
-        author: AUTHOR,
-        ...signingArgs,
-      });
-      await flushRuntime(runtime);
+      try {
+        await git.add({ fs: runtime.fs.git, dir, filepath });
+        await commitDurably(runtime, dir, {
+          message,
+          author: AUTHOR,
+          ...signingArgs,
+        });
+      } catch (cause) {
+        try {
+          await restoreIndexAfterFailedCommit(runtime, dir, [filepath]);
+        } catch (reconciliationCause) {
+          reconciliationFailure = new Error(
+            "Could not restore the mail index after commit failure",
+            {
+              cause: new AggregateError([cause, reconciliationCause]),
+            },
+          );
+          throw reconciliationFailure;
+        }
+
+        if (!(cause instanceof UncertainRefPublicationError)) throw cause;
+
+        try {
+          const actualOid = await git.resolveRef({
+            fs: runtime.fs.git,
+            dir,
+            ref: cause.ref,
+          });
+          if (actualOid === cause.oid) {
+            advanceOrdinal(threadId);
+            messageIndex.set(messageId, threadId);
+          }
+        } catch (reconciliationCause) {
+          reconciliationFailure = new Error(
+            `Could not reconcile uncertain mail commit ${cause.oid}`,
+            { cause: reconciliationCause },
+          );
+        }
+        throw cause;
+      }
 
       advanceOrdinal(threadId);
       messageIndex.set(messageId, threadId);

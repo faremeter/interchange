@@ -1,6 +1,12 @@
 import type { FsClient } from "isomorphic-git";
 import { hasCode } from "@intx/types";
 
+const textDecoder = new TextDecoder();
+
+export function decodeUTF8(bytes: Uint8Array): string {
+  return textDecoder.decode(bytes);
+}
+
 export interface IsogitPath {
   join(...parts: string[]): string;
   relative(from: string, to: string): string;
@@ -245,8 +251,7 @@ function createStorageFileSystem(runtime: IsogitRuntime): StorageFileSystem {
       await lstat(filepath);
     },
     readFile,
-    readTextFile: async (filepath) =>
-      new TextDecoder().decode(await readFile(filepath)),
+    readTextFile: async (filepath) => decodeUTF8(await readFile(filepath)),
     writeFile: async (filepath, data, options) => {
       const args =
         options === undefined ? [filepath, data] : [filepath, data, options];

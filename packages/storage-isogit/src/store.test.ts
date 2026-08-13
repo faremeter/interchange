@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import {
+  createIsogitStorage,
   createIsogitStore,
   currentBranch,
   createAndSwitchBranch,
@@ -11,6 +12,7 @@ import {
   listBranches,
   logHistory,
 } from "./node";
+import { createNodeIsogitRuntime } from "./node-runtime";
 import { base64Encode } from "@intx/types";
 import { IsogitStore } from "./node";
 import { initAgentRepo } from "./node";
@@ -594,7 +596,13 @@ describe("error store", () => {
     await store.commitErrors([record]);
     let thrown: Error | undefined;
     try {
-      await store.commitErrors([record]);
+      await store.commitErrors([
+        makeErrorRecord({
+          seq: 1,
+          category: "credential_failure",
+          message: "Different failure",
+        }),
+      ]);
     } catch (cause) {
       thrown = cause instanceof Error ? cause : new Error(String(cause));
     }
@@ -610,7 +618,11 @@ describe("error store", () => {
 
     // Second batch contains a duplicate of the first record and a new one.
     // The duplicate should be caught in pre-flight before any writes.
-    const dup = makeErrorRecord({ seq: 1, category: "first" });
+    const dup = makeErrorRecord({
+      seq: 1,
+      category: "first",
+      message: "Conflicting duplicate",
+    });
     const extra = makeErrorRecord({ seq: 2, category: "second" });
     let thrown: Error | undefined;
     try {
@@ -643,6 +655,202 @@ describe("error store", () => {
       thrown = cause instanceof Error ? cause : new Error(String(cause));
     }
     expect(thrown?.message).toContain("unsafe characters");
+  });
+
+  test("commitErrors accepts an exact retry without another commit", async () => {
+    const dir = await tempDir();
+    const store = await createAuditStore(dir);
+    const record = makeErrorRecord();
+
+    await store.commitErrors([record]);
+    await store.commitErrors([record]);
+
+    const entries = await git.log({ fs, dir });
+    expect(
+      entries.filter(
+        (entry) => entry.commit.message.trimEnd() === "Record 1 error record",
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe("audit and error durability retries", () => {
+  function withFailingFlush(
+    fail: (flushCount: number) => Promise<void> | void,
+  ): ReturnType<typeof createIsogitStorage> {
+    const runtime = createNodeIsogitRuntime();
+    let flushCount = 0;
+    return createIsogitStorage({
+      ...runtime,
+      async flush() {
+        flushCount += 1;
+        await fail(flushCount);
+      },
+    });
+  }
+
+  test("commitAudit retries when the failed ref flush left HEAD advanced", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    let failed = false;
+    const storage = withFailingFlush((flushCount) => {
+      if (!failed && flushCount === 3) {
+        failed = true;
+        throw new Error("injected post-ref flush failure");
+      }
+    });
+    const store = await storage.createIsogitStore(dir);
+    const record = makeAuditRecord();
+
+    await expect(store.commitAudit([record])).rejects.toThrow(
+      "Ref publication",
+    );
+    await store.commitAudit([record]);
+
+    expect(await store.loadAudit("session-1")).toEqual([record]);
+    const entries = await git.log({ fs, dir });
+    expect(
+      entries.filter((entry) =>
+        entry.commit.message.startsWith("Record 1 tool audit record"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("commitAudit retries when the failed ref flush left HEAD unchanged", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const initialOid = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    let failed = false;
+    const storage = withFailingFlush(async (flushCount) => {
+      if (!failed && flushCount === 3) {
+        failed = true;
+        await fs.promises.writeFile(
+          path.join(dir, ".git", "refs", "heads", "main"),
+          `${initialOid}\n`,
+        );
+        throw new Error("injected rolled-back ref flush failure");
+      }
+    });
+    const store = await storage.createIsogitStore(dir);
+    const record = makeAuditRecord();
+
+    await expect(store.commitAudit([record])).rejects.toThrow(
+      "Ref publication",
+    );
+    expect(await git.resolveRef({ fs, dir, ref: "HEAD" })).toBe(initialOid);
+
+    await store.commitAudit([record]);
+
+    expect(await git.resolveRef({ fs, dir, ref: "HEAD" })).not.toBe(initialOid);
+    expect(await store.loadAudit("session-1")).toEqual([record]);
+  });
+
+  test("commitErrors retries an advanced record with accumulated errors", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    let failed = false;
+    const storage = withFailingFlush((flushCount) => {
+      if (!failed && flushCount === 3) {
+        failed = true;
+        throw new Error("injected post-ref flush failure");
+      }
+    });
+    const store = await storage.createIsogitStore(dir);
+    const first = makeErrorRecord({ seq: 1, category: "first" });
+    const second = makeErrorRecord({ seq: 2, category: "second" });
+
+    await expect(store.commitErrors([first])).rejects.toThrow(
+      "Ref publication",
+    );
+    await store.commitErrors([first, second]);
+
+    const [entry] = await git.log({ fs, dir, depth: 1 });
+    expect(entry?.commit.message.trimEnd()).toBe("Record 1 error record");
+    expect(
+      JSON.parse(
+        await fs.promises.readFile(
+          path.join(
+            dir,
+            "state",
+            "errors",
+            "session-1",
+            "00000002-second.json",
+          ),
+          "utf8",
+        ),
+      ),
+    ).toEqual(second);
+  });
+
+  test("a failed record commit cannot leak into the next cycle commit", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    let failed = false;
+    const storage = withFailingFlush((flushCount) => {
+      if (!failed && flushCount === 2) {
+        failed = true;
+        throw new Error("injected object flush failure");
+      }
+    });
+    const store = await storage.createIsogitStore(dir);
+    const record = makeAuditRecord();
+
+    await expect(store.commitAudit([record])).rejects.toThrow(
+      "injected object flush failure",
+    );
+    await store.writeTurns([]);
+    const cycle = await store.commit({ message: "Cycle: inference" });
+
+    await expect(
+      git.readBlob({
+        fs,
+        dir,
+        oid: cycle.hash,
+        filepath: "state/audit/session-1/call-1.json",
+      }),
+    ).rejects.toMatchObject({ code: "NotFoundError" });
+
+    await store.commitAudit([record]);
+    const [entry] = await git.log({ fs, dir, depth: 1 });
+    expect(entry?.commit.message.trimEnd()).toBe("Record 1 tool audit record");
+  });
+
+  test("a failed cycle commit cannot leak into the next error commit", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    let failed = false;
+    const storage = withFailingFlush((flushCount) => {
+      if (!failed && flushCount === 2) {
+        failed = true;
+        throw new Error("injected cycle object flush failure");
+      }
+    });
+    const store = await storage.createIsogitStore(dir);
+
+    await store.writeTurns([
+      {
+        role: "user",
+        content: [{ type: "text", text: "uncommitted cycle" }],
+        timestamp: 1,
+      },
+    ]);
+    await expect(store.commit({ message: "Cycle: inference" })).rejects.toThrow(
+      "injected cycle object flush failure",
+    );
+
+    await store.commitErrors([makeErrorRecord()]);
+    const head = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    await expect(
+      git.readBlob({ fs, dir, oid: head, filepath: "turns.jsonl" }),
+    ).rejects.toMatchObject({ code: "NotFoundError" });
+    await expect(
+      git.readBlob({
+        fs,
+        dir,
+        oid: head,
+        filepath: "state/errors/session-1/00000001-credential_failure.json",
+      }),
+    ).resolves.toBeTruthy();
   });
 });
 
