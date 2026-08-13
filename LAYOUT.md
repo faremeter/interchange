@@ -52,9 +52,9 @@ Each package implements an interface defined in `@intx/types`. The harness accep
 
 **Storage** (implements `ContextStore`):
 
-| Package                | Environment                  | Implementation                                                                                 |
-| ---------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| `@intx/storage-isogit` | Constrained (Worker/browser) | isomorphic-git with object storage (R2/S3/IndexedDB) for persistence. Pure JS, no native deps. |
+| Package                | Environment      | Implementation                                                                                                                                                                                                                     |
+| ---------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@intx/storage-isogit` | Node and browser | Runtime-neutral isomorphic-git storage factory. `/node` binds the Node filesystem; `/browser` claims a disposable, single-owner LightningFS IndexedDB volume that resets on load; the root accepts an injected filesystem runtime. |
 
 **Cryptographic Identity** (implements `CryptoProvider`):
 

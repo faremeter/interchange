@@ -31,7 +31,8 @@ logger.info`Sidecar ${sidecarId} registered`;
   `configureSync`, `getConfig`, and `resetSync` for tests that need
   to drive LogTape configuration directly. Importing the package
   also installs the default console sink as a side effect so early
-  diagnostics work before `setup()` is called.
+  diagnostics work before `setup()` is called. Runtimes without a
+  Node `process` global use the development formatter by default.
 - `@intx/log/hono` — Hono middleware re-exported from
   `@logtape/hono` for HTTP request logging. Hono is an optional
   peer dependency; only import this entry point from packages that

@@ -41,6 +41,11 @@ test-e2e: build-admin-ui
 test-e2e-run: FORCE
 	cd tests/admin-ui-e2e && bunx playwright test
 
+# Real-browser smoke test for the LightningFS storage backend. Runs its own
+# static harness and does not require Postgres, the hub, or an admin build.
+test-storage-browser: FORCE
+	cd tests/admin-ui-e2e && bunx playwright test --config storage-isogit.playwright.config.ts
+
 verify-tool-load: FORCE
 	bun bin/verify-tool-load.ts
 
@@ -67,5 +72,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build build-admin-ui lint test test-load test-e2e test-e2e-run verify-tool-load format docs clean builtins publish-builtins
+.PHONY: all build build-admin-ui lint test test-load test-e2e test-e2e-run test-storage-browser verify-tool-load format docs clean builtins publish-builtins
 FORCE:

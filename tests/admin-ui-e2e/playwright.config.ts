@@ -6,6 +6,7 @@ import { defineConfig } from "@playwright/test";
 // the spec reads the URL from the environment at runtime instead.
 export default defineConfig({
   testDir: ".",
+  testIgnore: "storage-isogit/**",
   globalSetup: "./harness/global-setup.ts",
   fullyParallel: false,
   workers: 1,

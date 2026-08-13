@@ -21,7 +21,11 @@ import { IsogitStore, type DurableMirrorReads } from "./store";
 import type { CommitSigner } from "./signer";
 import { maybeGC, runGC, type GCPolicy } from "./gc";
 import { createMailAuditStore, listMail } from "./mail-store";
-import { normalizeRuntime, type IsogitRuntime } from "./runtime";
+import {
+  normalizeRuntime,
+  type IsogitRuntime,
+  type StorageRuntime,
+} from "./runtime";
 
 export type { ContextStore, AuditStore, CommitSigner };
 export type {
@@ -43,6 +47,14 @@ export type {
 } from "./mail-store";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 
+function bindRepoDir<TArgs extends readonly unknown[], TResult>(
+  runtime: StorageRuntime,
+  operation: (runtime: StorageRuntime, dir: string, ...args: TArgs) => TResult,
+): (dir: string, ...args: TArgs) => TResult {
+  return (dir, ...args) =>
+    operation(runtime, runtime.path.resolve(dir), ...args);
+}
+
 /** Bind the complete storage API to one filesystem runtime. */
 export function createIsogitStorage(runtime: IsogitRuntime) {
   const storageRuntime = normalizeRuntime(runtime);
@@ -53,53 +65,33 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
       signer?: CommitSigner,
       gcPolicy?: GCPolicy,
     ): Promise<ContextStore & AuditStore & DurableMirrorReads> => {
-      await initAgentRepo(storageRuntime, dir);
-      return new IsogitStore(storageRuntime, dir, signer, gcPolicy);
+      const resolvedDir = storageRuntime.path.resolve(dir);
+      await initAgentRepo(storageRuntime, resolvedDir);
+      return new IsogitStore(storageRuntime, resolvedDir, signer, gcPolicy);
     },
-    initRepo: (dir: string, opts?: Parameters<typeof initRepo>[2]) =>
-      initRepo(storageRuntime, dir, opts),
-    initAgentRepo: (dir: string) => initAgentRepo(storageRuntime, dir),
-    switchBranch: (dir: string, ref: string) =>
-      switchBranch(storageRuntime, dir, ref),
-    createAndSwitchBranch: (dir: string, name: string) =>
-      createAndSwitchBranch(storageRuntime, dir, name),
-    currentBranch: (dir: string) => currentBranch(storageRuntime, dir),
-    listBranches: (dir: string) => listBranches(storageRuntime, dir),
-    logHistory: (dir: string, limit?: number) =>
-      logHistory(storageRuntime, dir, limit),
-    applyPack: (...args: DropFirst<Parameters<typeof applyPack>>) =>
-      applyPack(storageRuntime, ...args),
-    receivePackObjects: (
-      ...args: DropFirst<Parameters<typeof receivePackObjects>>
-    ) => receivePackObjects(storageRuntime, ...args),
-    createDeployPack: (
-      ...args: DropFirst<Parameters<typeof createDeployPack>>
-    ) => createDeployPack(storageRuntime, ...args),
-    createNegotiatedPack: (
-      ...args: DropFirst<Parameters<typeof createNegotiatedPack>>
-    ) => createNegotiatedPack(storageRuntime, ...args),
-    collectReachableObjects: (
-      ...args: DropFirst<Parameters<typeof collectReachableObjects>>
-    ) => collectReachableObjects(storageRuntime, ...args),
-    repoDiskUsage: (dir: string) => repoDiskUsage(storageRuntime, dir),
-    countLooseObjects: (dir: string) => countLooseObjects(storageRuntime, dir),
-    countPackFiles: (dir: string) => countPackFiles(storageRuntime, dir),
-    gitBytes: (dir: string) => gitBytes(storageRuntime, dir),
-    listRepoRefs: (dir: string) => listRepoRefs(storageRuntime, dir),
-    runGC: (...args: DropFirst<Parameters<typeof runGC>>) =>
-      runGC(storageRuntime, ...args),
-    maybeGC: (...args: DropFirst<Parameters<typeof maybeGC>>) =>
-      maybeGC(storageRuntime, ...args),
-    createMailAuditStore: (
-      ...args: DropFirst<Parameters<typeof createMailAuditStore>>
-    ) => createMailAuditStore(storageRuntime, ...args),
-    listMail: (dir: string) => listMail(storageRuntime, dir),
+    initRepo: bindRepoDir(storageRuntime, initRepo),
+    initAgentRepo: bindRepoDir(storageRuntime, initAgentRepo),
+    switchBranch: bindRepoDir(storageRuntime, switchBranch),
+    createAndSwitchBranch: bindRepoDir(storageRuntime, createAndSwitchBranch),
+    currentBranch: bindRepoDir(storageRuntime, currentBranch),
+    listBranches: bindRepoDir(storageRuntime, listBranches),
+    logHistory: bindRepoDir(storageRuntime, logHistory),
+    applyPack: bindRepoDir(storageRuntime, applyPack),
+    receivePackObjects: bindRepoDir(storageRuntime, receivePackObjects),
+    createDeployPack: bindRepoDir(storageRuntime, createDeployPack),
+    createNegotiatedPack: bindRepoDir(storageRuntime, createNegotiatedPack),
+    collectReachableObjects: bindRepoDir(
+      storageRuntime,
+      collectReachableObjects,
+    ),
+    repoDiskUsage: bindRepoDir(storageRuntime, repoDiskUsage),
+    countLooseObjects: bindRepoDir(storageRuntime, countLooseObjects),
+    countPackFiles: bindRepoDir(storageRuntime, countPackFiles),
+    gitBytes: bindRepoDir(storageRuntime, gitBytes),
+    listRepoRefs: bindRepoDir(storageRuntime, listRepoRefs),
+    runGC: bindRepoDir(storageRuntime, runGC),
+    maybeGC: bindRepoDir(storageRuntime, maybeGC),
+    createMailAuditStore: bindRepoDir(storageRuntime, createMailAuditStore),
+    listMail: bindRepoDir(storageRuntime, listMail),
   };
 }
-
-type DropFirst<T extends readonly unknown[]> = T extends readonly [
-  unknown,
-  ...infer R,
-]
-  ? R
-  : never;
