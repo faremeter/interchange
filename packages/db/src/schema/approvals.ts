@@ -16,12 +16,12 @@ export const approval = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
-    deploymentId: text("deployment_id")
+    anchorRunId: text("anchor_run_id")
       .notNull()
       .references(() => workflowRun.id, { onDelete: "cascade" }),
     // References the run this approval belongs to, making "this approval is for
     // a real run of this deployment" a database invariant. Cascades on the
-    // run's delete; the `deployment_id` FK above stays as the lock and cascade
+    // run's delete; the `anchor_run_id` FK above stays as the lock and cascade
     // anchor the co-write orders against.
     runId: text("run_id")
       .notNull()
@@ -53,6 +53,6 @@ export const approval = pgTable(
   },
   (t) => [
     index("approval_tenant_status_idx").on(t.tenantId, t.status, t.createdAt),
-    index("approval_deployment_idx").on(t.deploymentId),
+    index("approval_anchor_run_idx").on(t.anchorRunId),
   ],
 );

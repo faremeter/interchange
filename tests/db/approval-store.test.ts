@@ -32,8 +32,8 @@ async function seedDeploymentDeps(h: TestDb): Promise<void> {
     name: ASSET,
   });
   // The deployment's anchor run -- the workflow_run whose id equals the
-  // deployment id. The approval/correlation `deployment_id` FK and the child
-  // runs' `deployment_id` both resolve to it.
+  // deployment id. The approval/correlation `anchor_run_id` FK and the child
+  // runs' `anchor_run_id` both resolve to it.
   await seedWorkflowRun(h.db, {
     id: DEPLOYMENT,
     deploymentId: DEPLOYMENT,
@@ -56,7 +56,7 @@ function approvalRow(correlationId: string) {
   return {
     id: `apr_${correlationId}`,
     tenantId: TENANT,
-    deploymentId: DEPLOYMENT,
+    anchorRunId: DEPLOYMENT,
     runId: `run_${correlationId}`,
     agentAddress: `addr_${correlationId}`,
     correlationId,
@@ -154,7 +154,7 @@ function correlationRow(correlationId: string) {
   return {
     correlationId,
     tenantId: TENANT,
-    deploymentId: DEPLOYMENT,
+    anchorRunId: DEPLOYMENT,
     agentAddress: "addr-1",
     runId: "run-1",
     signalName: "sig-1",

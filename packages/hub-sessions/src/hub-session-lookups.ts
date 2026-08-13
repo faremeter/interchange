@@ -208,7 +208,7 @@ export function createHubSessionLookups(
         // re-derived from `agentAddress` rather than against the row id. A
         // mismatch fails loud instead of silently writing an inconsistent pair.
         // The FK columns take the anchor run's id (= the deployment id), which
-        // is what `signal_correlation.deployment_id` and `approval.deployment_id`
+        // is what `signal_correlation.anchor_run_id` and `approval.anchor_run_id`
         // reference.
         //
         // The resolution takes a `FOR UPDATE` row lock and runs inside the
@@ -272,7 +272,7 @@ export function createHubSessionLookups(
           {
             correlationId,
             tenantId,
-            deploymentId: anchor.id,
+            anchorRunId: anchor.id,
             agentAddress,
             runId,
             signalName: signalName(correlationId),
@@ -284,7 +284,7 @@ export function createHubSessionLookups(
           {
             id: generateId("approval"),
             tenantId,
-            deploymentId: anchor.id,
+            anchorRunId: anchor.id,
             runId,
             agentAddress,
             correlationId,

@@ -319,8 +319,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(corr?.tenantId).toBe(TENANT);
       // The FK column carries the raw deployment id the row is keyed by, not the
       // workflow-run repo slug the frame's `anchorRunId` is stamped with.
-      expect(corr?.deploymentId).toBe(DEPLOYMENT);
-      expect(corr?.deploymentId).not.toBe(DEPLOYMENT_SLUG);
+      expect(corr?.anchorRunId).toBe(DEPLOYMENT);
+      expect(corr?.anchorRunId).not.toBe(DEPLOYMENT_SLUG);
       expect(corr?.agentAddress).toBe(WF_ADDR);
       expect(corr?.runId).toBe("run-1");
       expect(corr?.kind).toBe("approval");
@@ -334,8 +334,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const appr = approvals[0];
       expect(appr?.correlationId).toBe("corr-1");
       expect(appr?.tenantId).toBe(TENANT);
-      expect(appr?.deploymentId).toBe(DEPLOYMENT);
-      expect(appr?.deploymentId).not.toBe(DEPLOYMENT_SLUG);
+      expect(appr?.anchorRunId).toBe(DEPLOYMENT);
+      expect(appr?.anchorRunId).not.toBe(DEPLOYMENT_SLUG);
       expect(appr?.runId).toBe("run-1");
       expect(appr?.agentAddress).toBe(WF_ADDR);
       expect(appr?.status).toBe("pending");
@@ -447,8 +447,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(corr?.correlationId).toBe("corr-1");
       expect(corr?.tenantId).toBe(TENANT);
       // The FK column takes the raw deployment id, never the frame's slug.
-      expect(corr?.deploymentId).toBe(DEPLOYMENT);
-      expect(corr?.deploymentId).not.toBe(DEPLOYMENT_SLUG);
+      expect(corr?.anchorRunId).toBe(DEPLOYMENT);
+      expect(corr?.anchorRunId).not.toBe(DEPLOYMENT_SLUG);
       expect(corr?.agentAddress).toBe(WF_ADDR);
       expect(corr?.runId).toBe("run-1");
       expect(corr?.signalName).toBe(signalName("corr-1"));
@@ -458,8 +458,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const appr = approvals[0];
       expect(appr?.correlationId).toBe("corr-1");
       expect(appr?.tenantId).toBe(TENANT);
-      expect(appr?.deploymentId).toBe(DEPLOYMENT);
-      expect(appr?.deploymentId).not.toBe(DEPLOYMENT_SLUG);
+      expect(appr?.anchorRunId).toBe(DEPLOYMENT);
+      expect(appr?.anchorRunId).not.toBe(DEPLOYMENT_SLUG);
       expect(appr?.status).toBe("pending");
       expect(appr?.agentAddress).toBe(WF_ADDR);
     });
@@ -752,7 +752,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const correlationRow = {
         correlationId: "corr-1",
         tenantId: TENANT,
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         agentAddress: WF_ADDR,
         runId: "run-1",
         signalName: signalName("corr-1"),
@@ -771,7 +771,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const approvalRow = {
         id: generateId("approval"),
         tenantId: TENANT,
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         runId: "run-1",
         agentAddress: WF_ADDR,
         correlationId: "corr-1",
