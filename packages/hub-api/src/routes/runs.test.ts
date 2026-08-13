@@ -27,7 +27,7 @@ import type { GetSession } from "../session";
 const TENANT_ID = "tnt_test";
 const PRINCIPAL_ID = "prn_test";
 const USER_ID = "usr_test";
-const INSTANCE_ID = "run_test";
+const RUN_ID = "run_test";
 const ADDRESS = "run_test@test.example.com";
 
 const testTenant = {
@@ -58,12 +58,13 @@ const testDefinition = {
   tenantId: TENANT_ID,
 };
 
-// A `workflow_run` as `findRoutableById`'s run query projects it. Its status is
-// the run enum, which the read routes map onto the instance vocabulary.
+// A top-level `workflow_run` (self-anchored: `anchorRunId === id`, with a
+// routing address) as `findRoutableById`'s run query projects it. Its status is
+// the run enum, which the read routes map onto the run-view vocabulary.
 function makeTestRun(overrides: Record<string, unknown> = {}) {
   return {
-    id: INSTANCE_ID,
-    anchorRunId: INSTANCE_ID,
+    id: RUN_ID,
+    anchorRunId: RUN_ID,
     tenantId: TENANT_ID,
     address: ADDRESS,
     publicKey: null,
@@ -106,8 +107,7 @@ type MockDBOpts = {
   tenant?: typeof testTenant | undefined;
   principal?: typeof testPrincipal | undefined;
   definition?: typeof testDefinition | undefined;
-  /** A folded workflow_run row `findRoutableById`'s run query returns (with a
-   * `definitionKind`). */
+  /** A top-level workflow_run row `findRoutableById`'s run query returns. */
   run?: Record<string, unknown> | undefined;
   /** The session id `resolveRunSessionId` finds for a run's principal (used by
    * the mail routes). */
@@ -398,7 +398,7 @@ function createTestApp(opts: TestAppOpts = {}) {
   });
 }
 
-function instanceURL(tenantId = TENANT_ID, runId = INSTANCE_ID): string {
+function runURL(tenantId = TENANT_ID, runId = RUN_ID): string {
   return `/api/tenants/${tenantId}/workflows/runs/${runId}`;
 }
 
@@ -406,16 +406,16 @@ function instanceURL(tenantId = TENANT_ID, runId = INSTANCE_ID): string {
 // Smoke test — verifies the mock infrastructure satisfies the middleware chain
 // ---------------------------------------------------------------------------
 
-describe("instance route test infrastructure", () => {
+describe("run route test infrastructure", () => {
   test("authenticated request reaches the route handler", async () => {
     const app = createTestApp();
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(200);
   });
 
   test("missing grant returns 403", async () => {
     const app = createTestApp({ grants: [] });
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(403);
   });
 });
@@ -431,7 +431,7 @@ describe("GET /workflows/runs/:runId/health", () => {
       collectorStatuses: new Map([[ADDRESS, { status: "idle" }]]),
     });
 
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -448,7 +448,7 @@ describe("GET /workflows/runs/:runId/health", () => {
       collectorStatuses: new Map(),
     });
 
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -465,7 +465,7 @@ describe("GET /workflows/runs/:runId/health", () => {
       collectorStatuses: new Map(),
     });
 
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -482,7 +482,7 @@ describe("GET /workflows/runs/:runId/health", () => {
       collectorStatuses: new Map([[ADDRESS, { status: "busy" }]]),
     });
 
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -501,7 +501,7 @@ describe("GET /workflows/runs/:runId/health", () => {
       },
     });
 
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(404);
 
     const body: unknown = await res.json();
@@ -514,7 +514,7 @@ describe("GET /workflows/runs/:runId/health", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /workflows/runs/:runId/offerings", () => {
-  test("returns offerings for the instance's agent definition", async () => {
+  test("returns offerings for the run's workflow definition", async () => {
     const offerings = [
       {
         id: "off_1",
@@ -550,7 +550,7 @@ describe("GET /workflows/runs/:runId/offerings", () => {
       },
     });
 
-    const res = await app.request(`${instanceURL()}/offerings`);
+    const res = await app.request(`${runURL()}/offerings`);
     expect(res.status).toBe(200);
 
     const body: unknown = await res.json();
@@ -572,7 +572,7 @@ describe("GET /workflows/runs/:runId/offerings", () => {
       },
     });
 
-    const res = await app.request(`${instanceURL()}/offerings`);
+    const res = await app.request(`${runURL()}/offerings`);
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -587,7 +587,7 @@ describe("GET /workflows/runs/:runId/offerings", () => {
       },
     });
 
-    const res = await app.request(`${instanceURL()}/offerings`);
+    const res = await app.request(`${runURL()}/offerings`);
     expect(res.status).toBe(404);
 
     const body: unknown = await res.json();
@@ -622,7 +622,7 @@ describe("GET /workflows/runs/:runId/offerings", () => {
       },
     });
 
-    const res = await app.request(`${instanceURL()}/offerings`);
+    const res = await app.request(`${runURL()}/offerings`);
     expect(res.status).toBe(200);
 
     const body: unknown = await res.json();
@@ -632,12 +632,11 @@ describe("GET /workflows/runs/:runId/offerings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Folded run read routes — a workflow_run served through the instance surface
+// Read routes serve a top-level workflow run
 // ---------------------------------------------------------------------------
 
-describe("read routes serve a folded run", () => {
-  // No agent_instance row; the run backs the address instead.
-  function foldedApp(run: Record<string, unknown>) {
+describe("read routes serve a workflow run", () => {
+  function runApp(run: Record<string, unknown>) {
     return createTestApp({
       db: {
         tenant: testTenant,
@@ -648,12 +647,12 @@ describe("read routes serve a folded run", () => {
     });
   }
 
-  test("detail shapes a running run as a running instance", async () => {
-    const res = await foldedApp(makeTestRun()).request(instanceURL());
+  test("detail shapes a running run as a running run view", async () => {
+    const res = await runApp(makeTestRun()).request(runURL());
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
     expect(body).toMatchObject({
-      id: INSTANCE_ID,
+      id: RUN_ID,
       definitionId: "wfd_test",
       definitionName: "Test Agent",
       address: ADDRESS,
@@ -661,18 +660,18 @@ describe("read routes serve a folded run", () => {
     });
   });
 
-  test("detail maps a terminal run's status onto the instance vocabulary", async () => {
-    const res = await foldedApp(makeTestRun({ status: "completed" })).request(
-      instanceURL(),
+  test("detail maps a terminal run's status onto the run-view vocabulary", async () => {
+    const res = await runApp(makeTestRun({ status: "completed" })).request(
+      runURL(),
     );
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ status: "stopped" });
   });
 
-  test("health 410s a terminal run, as it would a stopped instance", async () => {
-    const res = await foldedApp(makeTestRun({ status: "cancelled" })).request(
-      `${instanceURL()}/health`,
+  test("health 410s a terminal run, as it would a stopped run", async () => {
+    const res = await runApp(makeTestRun({ status: "cancelled" })).request(
+      `${runURL()}/health`,
     );
     expect(res.status).toBe(410);
     const body: unknown = await res.json();
@@ -688,13 +687,13 @@ describe("read routes serve a folded run", () => {
       },
       routableAddresses: [ADDRESS],
     });
-    const res = await app.request(`${instanceURL()}/health`);
+    const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ liveness: "ok" });
   });
 
-  test("offerings resolve through the run's origin agent", async () => {
+  test("offerings resolve through the run's workflow definition", async () => {
     const app = createTestApp({
       db: {
         tenant: testTenant,
@@ -716,7 +715,7 @@ describe("read routes serve a folded run", () => {
         ],
       },
     });
-    const res = await app.request(`${instanceURL()}/offerings`);
+    const res = await app.request(`${runURL()}/offerings`);
     expect(res.status).toBe(200);
     const body: unknown = await res.json();
     expect(body).toMatchObject([
@@ -738,14 +737,14 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
   }
 
   // Mail send/history, turns, the event stream, and stop were built for the
-  // retired folded-launch surface. A workflow (anchor) run carries none of the
-  // per-run session, collector, or terminal machinery they read, so each route
-  // answers 501 not_implemented until its mapping lands (stop and mail history
-  // are tracked as INTR-454). The routes stay mounted, not 404, so the admin UI
-  // gets a clean answer.
+  // retired folded-launch surface and are not yet wired onto a workflow
+  // (anchor) run, so each answers 501 not_implemented. Turns, events, and mail
+  // send await their repoint onto the run's workflow-native sources; stop and
+  // mail history need genuinely new backing (INTR-454). The routes stay
+  // mounted, not 404, so the admin UI gets a clean answer.
   test("POST mail answers 501 not_implemented", async () => {
     const app = createTestApp({ grants: [writeGrant()] });
-    const res = await app.request(`${instanceURL()}/mail`, {
+    const res = await app.request(`${runURL()}/mail`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: "hello run" }),
@@ -758,7 +757,7 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
 
   test("GET mail answers 501 not_implemented", async () => {
     const app = createTestApp({ grants: [readGrant()] });
-    const res = await app.request(`${instanceURL()}/mail`);
+    const res = await app.request(`${runURL()}/mail`);
     expect(res.status).toBe(501);
     expect(await res.json()).toMatchObject({
       error: { code: "not_implemented" },
@@ -767,7 +766,7 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
 
   test("GET turns answers 501 not_implemented", async () => {
     const app = createTestApp({ grants: [readGrant()] });
-    const res = await app.request(`${instanceURL()}/turns`);
+    const res = await app.request(`${runURL()}/turns`);
     expect(res.status).toBe(501);
     expect(await res.json()).toMatchObject({
       error: { code: "not_implemented" },
@@ -776,7 +775,7 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
 
   test("GET events answers 501 not_implemented", async () => {
     const app = createTestApp({ grants: [readGrant()] });
-    const res = await app.request(`${instanceURL()}/events`);
+    const res = await app.request(`${runURL()}/events`);
     expect(res.status).toBe(501);
     expect(await res.json()).toMatchObject({
       error: { code: "not_implemented" },
@@ -787,7 +786,7 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
     const app = createTestApp({
       grants: [makeGrant({ resource: "workflow-run:*", action: "manage" })],
     });
-    const res = await app.request(instanceURL(), { method: "DELETE" });
+    const res = await app.request(runURL(), { method: "DELETE" });
     expect(res.status).toBe(501);
     expect(await res.json()).toMatchObject({
       error: { code: "not_implemented" },
@@ -806,7 +805,7 @@ describe("GET /workflows/runs/blobs/:blobId", () => {
     const res = await app.request(url);
 
     // The blob handler rejects malformed IDs with 400.
-    // If /:runId shadowed this route, we'd get 404 (no instance "blobs").
+    // If /:runId shadowed this route, we'd get 404 (no run "blobs").
     expect(res.status).toBe(400);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "bad_request" } });

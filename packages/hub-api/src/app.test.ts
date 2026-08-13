@@ -107,7 +107,7 @@ describe("app", () => {
       "Principals",
       "Roles",
       "Grants",
-      "Instances",
+      "Runs",
       "Approvals",
       "Wallets",
       "Credentials",

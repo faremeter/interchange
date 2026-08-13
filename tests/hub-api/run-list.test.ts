@@ -25,9 +25,10 @@ import {
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 
 // Exercises the GET /workflows/runs list against a real migrated schema. The
-// list surfaces the folded workflow_run rows that present as instances (a plain
-// address and no deployment id). Only a real database exercises the definition
-// join that surfaces a folded run and cursor resumption over the keyset.
+// list surfaces the tenant's top-level workflow runs -- a run that owns a
+// routing address and self-anchors (`anchorRunId === id`). Only a real database
+// exercises the definition join that surfaces a run and cursor resumption over
+// the keyset.
 
 const TENANT_ID = "tnt_list";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
@@ -147,7 +148,7 @@ beforeEach(async () => {
     kind: "user",
     refId: ACTOR_USER_ID,
   });
-  // Two definitions; many folded runs share each one.
+  // Two definitions; many runs share each one.
   await h.db.insert(workflowDefinition).values([
     {
       id: definitionIdFor(DEF_A),
@@ -181,13 +182,13 @@ function buildApp(): ReturnType<typeof createApp> {
   });
 }
 
-// A folded run owning a plain routing address and no deployment id -- the shape
-// that presents as an instance. principalId is left null -- the list never
-// reads it.
-async function insertFoldedRun(opts: {
+// A top-level run: it owns a routing address and self-anchors
+// (`anchorRunId === id`) -- the shape the list surfaces. principalId is left
+// null -- the list never reads it.
+async function insertTopLevelRun(opts: {
   id: string;
   definitionKey: string;
-  status?: "running" | "completed" | "failed" | "cancelled";
+  status?: "deployed" | "running" | "completed" | "failed" | "cancelled";
   createdAt: Date;
   address?: string | null;
   definitionId?: string;
@@ -196,6 +197,7 @@ async function insertFoldedRun(opts: {
     id: opts.id,
     tenantId: TENANT_ID,
     definitionId: opts.definitionId ?? definitionIdFor(opts.definitionKey),
+    anchorRunId: opts.id,
     address:
       opts.address === undefined ? `${opts.id}@list.example` : opts.address,
     status: opts.status ?? "running",
@@ -235,32 +237,32 @@ async function fetchList(
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "GET /workflows/runs (fold-aware list)",
+  "GET /workflows/runs (top-level run list)",
   () => {
-    test("lists folded runs newest first", async () => {
-      await insertFoldedRun({
-        id: "ins_1",
+    test("lists runs newest first", async () => {
+      await insertTopLevelRun({
+        id: "run_1",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_2",
+      await insertTopLevelRun({
+        id: "run_2",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
       const { ids } = await fetchList(buildApp());
       // Newest first: the later createdAt leads.
-      expect(ids).toEqual(["ins_2", "ins_1"]);
+      expect(ids).toEqual(["run_2", "run_1"]);
     });
 
-    test("filters folded runs by their definition", async () => {
-      await insertFoldedRun({
-        id: "ins_a",
+    test("filters runs by their definition", async () => {
+      await insertTopLevelRun({
+        id: "run_a",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_b",
+      await insertTopLevelRun({
+        id: "run_b",
         definitionKey: DEF_B,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
@@ -268,24 +270,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
         buildApp(),
         `?definitionId=${definitionIdFor(DEF_A)}`,
       );
-      expect(ids).toEqual(["ins_a"]);
+      expect(ids).toEqual(["run_a"]);
     });
 
-    test("maps a folded run's status onto the instance status filter", async () => {
-      await insertFoldedRun({
-        id: "ins_run",
+    test("maps a run's status onto the run-view status filter", async () => {
+      await insertTopLevelRun({
+        id: "run_deployed",
+        definitionKey: DEF_A,
+        status: "deployed",
+        createdAt: new Date("2025-02-28T00:00:00.000Z"),
+      });
+      await insertTopLevelRun({
+        id: "run_run",
         definitionKey: DEF_A,
         status: "running",
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_done",
+      await insertTopLevelRun({
+        id: "run_done",
         definitionKey: DEF_A,
         status: "completed",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_failed",
+      await insertTopLevelRun({
+        id: "run_failed",
         definitionKey: DEF_A,
         status: "failed",
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
@@ -294,7 +302,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const running = await fetchList(buildApp(), "?status=running");
       expect(running.rows).toEqual([
         {
-          id: "ins_run",
+          id: "run_run",
           definitionId: definitionIdFor(DEF_A),
           status: "running",
         },
@@ -303,7 +311,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const stopped = await fetchList(buildApp(), "?status=stopped");
       expect(stopped.rows).toEqual([
         {
-          id: "ins_done",
+          id: "run_done",
           definitionId: definitionIdFor(DEF_A),
           status: "stopped",
         },
@@ -312,88 +320,95 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const errored = await fetchList(buildApp(), "?status=error");
       expect(errored.rows).toEqual([
         {
-          id: "ins_failed",
+          id: "run_failed",
           definitionId: definitionIdFor(DEF_A),
           status: "error",
         },
       ]);
 
-      // No folded run ever presents as `deployed`, so the run query is skipped.
+      // A deployed anchor is a top-level run, so the `deployed` filter now
+      // returns it.
       const deployed = await fetchList(buildApp(), "?status=deployed");
-      expect(deployed.ids).toEqual([]);
+      expect(deployed.rows).toEqual([
+        {
+          id: "run_deployed",
+          definitionId: definitionIdFor(DEF_A),
+          status: "deployed",
+        },
+      ]);
     });
 
-    test("excludes an address-less run and a deployment-anchored run", async () => {
-      // Address-less: not routable, so not an instance-shaped run.
-      await insertFoldedRun({
-        id: "ins_native",
+    test("excludes an address-less child park row", async () => {
+      // A top-level anchor, listed.
+      await insertTopLevelRun({
+        id: "run_anchor",
         definitionKey: DEF_A,
-        createdAt: new Date("2025-03-01T00:00:00.000Z"),
-        address: null,
-      });
-      // Address present but carrying a deployment id (a self-referential
-      // deployment anchor run): the null-`anchorRunId` list gate drops it.
-      await h.db.insert(workflowRun).values({
-        id: "dep_anchor",
-        tenantId: TENANT_ID,
-        definitionId: definitionIdFor(DEF_A),
-        anchorRunId: "dep_anchor",
-        address: "ins_dep_anchor@list.example",
-        status: "running",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
+      // A lazy child park row: it anchors on its parent (`anchorRunId !== id`)
+      // and carries no address, so it is not a top-level run. The self-FK on
+      // `anchor_run_id` forces the parent anchor to be seeded first (above).
+      await h.db.insert(workflowRun).values({
+        id: "run_child",
+        tenantId: TENANT_ID,
+        definitionId: definitionIdFor(DEF_A),
+        anchorRunId: "run_anchor",
+        address: null,
+        status: "running",
+        createdAt: new Date("2025-03-01T00:00:00.000Z"),
+      });
       const { ids } = await fetchList(buildApp());
-      expect(ids).toEqual([]);
+      expect(ids).toEqual(["run_anchor"]);
     });
 
     test("orders a createdAt tie by id and pages it cleanly", async () => {
       const tie = new Date("2025-03-01T00:00:00.000Z");
-      // Same createdAt; id DESC breaks the tie, so `ins_z` precedes `ins_a`.
-      await insertFoldedRun({
-        id: "ins_a",
+      // Same createdAt; id DESC breaks the tie, so `run_z` precedes `run_a`.
+      await insertTopLevelRun({
+        id: "run_a",
         definitionKey: DEF_A,
         createdAt: tie,
       });
-      await insertFoldedRun({
-        id: "ins_z",
+      await insertTopLevelRun({
+        id: "run_z",
         definitionKey: DEF_A,
         createdAt: tie,
       });
 
       const first = await fetchList(buildApp(), "?limit=1");
-      expect(first.ids).toEqual(["ins_z"]);
+      expect(first.ids).toEqual(["run_z"]);
       expect(first.nextCursor).not.toBeNull();
 
       const second = await fetchList(
         buildApp(),
         `?limit=1&cursor=${encodeURIComponent(first.nextCursor ?? "")}`,
       );
-      expect(second.ids).toEqual(["ins_a"]);
+      expect(second.ids).toEqual(["run_a"]);
     });
 
     test("resumes a page across runs without drops or duplicates", async () => {
-      await insertFoldedRun({
-        id: "ins_4run",
+      await insertTopLevelRun({
+        id: "run_4run",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-04T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_3run",
+      await insertTopLevelRun({
+        id: "run_3run",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_2run",
+      await insertTopLevelRun({
+        id: "run_2run",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
       });
-      await insertFoldedRun({
-        id: "ins_1run",
+      await insertTopLevelRun({
+        id: "run_1run",
         definitionKey: DEF_A,
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
 
-      const expectedOrder = ["ins_4run", "ins_3run", "ins_2run", "ins_1run"];
+      const expectedOrder = ["run_4run", "run_3run", "run_2run", "run_1run"];
       const collected: string[] = [];
       let cursor: string | null = null;
       for (let page = 0; page < 5; page++) {
@@ -415,15 +430,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Six runs densely ordered by createdAt, walked at limit 2, so every page
       // but the last truncates the keyset and resumes it mid-run.
       const rows: { id: string; day: number }[] = [
-        { id: "ins_6run", day: 6 },
-        { id: "ins_5run", day: 5 },
-        { id: "ins_4run", day: 4 },
-        { id: "ins_3run", day: 3 },
-        { id: "ins_2run", day: 2 },
-        { id: "ins_1run", day: 1 },
+        { id: "run_6run", day: 6 },
+        { id: "run_5run", day: 5 },
+        { id: "run_4run", day: 4 },
+        { id: "run_3run", day: 3 },
+        { id: "run_2run", day: 2 },
+        { id: "run_1run", day: 1 },
       ];
       for (const r of rows) {
-        await insertFoldedRun({
+        await insertTopLevelRun({
           id: r.id,
           definitionKey: DEF_A,
           createdAt: new Date(`2025-03-0${r.day}T00:00:00.000Z`),
