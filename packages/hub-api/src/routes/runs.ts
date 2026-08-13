@@ -21,15 +21,16 @@ import {
   SendMessage,
   MailResponse,
   AttachmentErrorResponse,
-  InferenceTurnResponse,
   ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 import {
+  createWorkflowRunReader,
   findRoutableById,
   resolveRunIdForSession,
   runRowToRoutableRecord,
   type EventCollectorRegistry,
+  type RepoStore,
   type RoutableRecord,
   type SessionService,
   type SidecarRouter,
@@ -40,10 +41,12 @@ import {
   viewStatusOf,
   mapRunStatusToViewStatus,
 } from "./run-view";
+import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
+import { workflowRunRepoId, WORKFLOW_RUN_REF } from "../workflow-run-lifecycle";
 import {
   parsePageParams,
   cursorCondition,
@@ -52,14 +55,12 @@ import {
   pageParameters,
 } from "../pagination";
 
-// The interactive run operations -- stop, mail send + history, turns, and the
-// event stream -- are not yet wired onto a workflow (anchor) run. They were
-// built for the retired folded-launch surface, and repointing them onto the
-// run's workflow-native sources (the durable run-event log for turns/events,
-// the Trigger path for mail send) is a follow-on to this read repoint; stop and
-// mail history need genuinely new backing (INTR-454). Each such route returns
-// this not-implemented signal (kept mounted, not 404, so the admin UI gets a
-// clean answer) until its mapping lands.
+// Stop, mail send, and mail history are not yet wired onto a workflow (anchor)
+// run. They were built for the retired folded-launch surface: stop and mail
+// history need genuinely new backing (INTR-454), and mail send routes through
+// the run's workflow-native Trigger path (a follow-on slice). Each such route
+// returns this not-implemented signal (kept mounted, not 404, so the admin UI
+// gets a clean answer) until its mapping lands.
 function workflowRunOperationUnsupported(
   c: Context<TenantEnv>,
   operation: string,
@@ -149,6 +150,12 @@ export type CreateRunRoutesDeps = {
   sessionService: SessionService;
   sidecarRouter: SidecarRouter;
   eventCollectors: EventCollectorRegistry;
+  // The workflow-run substrate that backs the durable run-event log the
+  // turns/events routes read. Null when the hub runs without the deploy
+  // surface (the app.ts XOR keeps assetService and repoStore moving as a
+  // unit); those two routes then answer 503 rather than a fabricated empty
+  // log, since createRunRoutes mounts unconditionally.
+  repoStore: RepoStore | null;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
@@ -158,11 +165,61 @@ export function createRunRoutes({
   db,
   sidecarRouter,
   eventCollectors,
+  repoStore,
   grantStore,
   conditionRegistry,
   requireGrant,
 }: CreateRunRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+
+  // The run-event log reader is available only when the workflow-run substrate
+  // is; a null reader makes the turns/events routes answer 503, never an empty
+  // log masquerading as real state.
+  const runReader =
+    repoStore !== null ? createWorkflowRunReader(repoStore) : null;
+
+  // The turns and events routes project the same top-level run: its committed,
+  // git-backed event log, read whole and seq-ordered. `turns` presents that log
+  // as the run's step and lifecycle events (the log carries only those); the
+  // `events` stream is the same projection the admin UI polls, deduplicating on
+  // seq. Both resolve the run first (a 404 tenant-scopes the read) and 503 when
+  // the substrate is absent.
+  async function serveRunEvents(c: Context<TenantEnv>, runId: string) {
+    const tenantCtx = c.get("tenant");
+
+    const record = await findRoutableById(db, runId, tenantCtx.id);
+    if (record === undefined) {
+      return c.json(
+        { error: { code: "not_found", message: "Run not found" } },
+        404,
+      );
+    }
+
+    if (runReader === null) {
+      return c.json(
+        {
+          error: {
+            code: "unavailable",
+            message: "The run event log is not available",
+          },
+        },
+        503,
+      );
+    }
+
+    // The top-level run's own events live under `runs/<runId>/` in its
+    // deployment's event repo: the run id is the local part of the deployment
+    // address the supervisor keys the log by, so this reads exactly the run
+    // named by `:runId` and excludes its section/body child runs. A run that
+    // has not been triggered yet has no `runs/<runId>/` and reads as an empty
+    // timeline -- honestly empty, distinct from the 503 absent-substrate case.
+    const events = await runReader.readRunEvents(
+      workflowRunRepoId(runId, tenantCtx.domain),
+      WORKFLOW_RUN_REF,
+      runId,
+    );
+    return c.json({ runId, events: events.map(formatRunEvent) });
+  }
 
   app.get(
     "/",
@@ -628,14 +685,14 @@ export function createRunRoutes({
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Runs"],
-      summary: "Run event stream",
+      summary: "Read a run's event log",
       description:
-        "Streams the run's committed event log. Superseded by the run-event timeline mapping.",
+        "Returns the run's committed, seq-ordered event log (RunStarted, StepStarted, StepCompleted, SignalAwaited, RunCompleted, etc.). The full log is returned on every call; a client polling for live updates deduplicates on seq. A run that has not been triggered yet returns an empty list.",
       responses: {
         200: {
-          description: "Run event stream",
+          description: "Seq-ordered run events",
           content: {
-            "text/event-stream": {},
+            "application/json": { schema: resolver(WorkflowRunEventsResponse) },
           },
         },
         404: {
@@ -644,22 +701,15 @@ export function createRunRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
-        410: {
-          description: "Run stopped",
+        503: {
+          description: "Run event log unavailable",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
       },
     }),
-    async (c) => {
-      // The event stream is not yet wired onto a workflow (anchor) run. It must
-      // be remapped onto the run's durable, git-backed run-event log (read via
-      // the workflow-run reader), which the collector-driven inference stream
-      // this route was built for has no analog of. Gated to not-implemented
-      // until that mapping lands.
-      return workflowRunOperationUnsupported(c, "The run event stream");
-    },
+    async (c) => serveRunEvents(c, c.req.param("runId")),
   );
 
   app.post(
@@ -775,15 +825,12 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "List a run's turns",
       description:
-        "Returns the run's step and lifecycle events in order. Cursor-paginated.",
-      parameters: [...pageParameters],
+        "Returns the run's step and lifecycle events in seq order -- the same committed event log the events route serves, presented as the run's turns. A run that has not been triggered yet returns an empty list.",
       responses: {
         200: {
-          description: "List of turns",
+          description: "Seq-ordered run events",
           content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(InferenceTurnResponse)),
-            },
+            "application/json": { schema: resolver(WorkflowRunEventsResponse) },
           },
         },
         404: {
@@ -792,16 +839,15 @@ export function createRunRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
+        503: {
+          description: "Run event log unavailable",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
       },
     }),
-    async (c) => {
-      // A run's turns are not yet wired onto this surface. They must be remapped
-      // onto the run's durable, git-backed step and lifecycle events (read via
-      // the workflow-run reader), which the per-instance inference turns this
-      // route was built for have no analog of. Gated to not-implemented until
-      // that mapping lands.
-      return workflowRunOperationUnsupported(c, "Listing a run's turns");
-    },
+    async (c) => serveRunEvents(c, c.req.param("runId")),
   );
 
   return app;

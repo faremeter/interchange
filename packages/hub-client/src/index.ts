@@ -1,29 +1,12 @@
-export type {
-  InstanceEvent,
-  ToolCallEvent,
-  MailAddress,
-  AgentActivity,
-} from "./types";
+export type { AwaitingSignal } from "./types";
 export { type Transport, ApiError, createBrowserTransport } from "./transport";
 export {
-  shouldShowMail,
-  mailToEvent,
-  mailDeliveryToEvent,
-  turnToEvent,
-  parseFromHeader,
-  extractBodyText,
-  formatAddress,
-  isRunAddress,
-  resolveAgentAddress,
-  resolveAgentRecipient,
-  type MailDeliveryData,
+  TERMINAL_RUN_EVENT_TYPES,
+  isTerminalRunEvents,
+  findAwaitingSignal,
 } from "./transforms";
-export {
-  sessionEndedEvent,
-  MailDeliveredEvent,
-  TurnCommittedEvent,
-} from "./validators";
-export { createInstanceSession, type InstanceSession } from "./session";
+export { WorkflowRunEvent, WorkflowRunEvents } from "./validators";
+export { createRunSession, type RunSession } from "./session";
 export {
   listWorkflowDeployments,
   deployWorkflow,
@@ -33,8 +16,6 @@ export {
   readWorkflowRunEvents,
   WorkflowDeployment,
   WorkflowRunTrigger,
-  WorkflowRunEvent,
-  WorkflowRunEvents,
   type DeployWorkflowInput,
   type DeliverSignalInput,
   type TriggerWorkflowRunInput,

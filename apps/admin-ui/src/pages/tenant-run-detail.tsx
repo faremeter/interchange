@@ -1,9 +1,21 @@
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
+import {
+  createBrowserTransport,
+  createRunSession,
+  findAwaitingSignal,
+  type RunSession,
+  type WorkflowRunEvent,
+} from "@intx/hub-client";
 
 import { runDetailQuery } from "@/lib/queries/tenants";
 import { StatusBadge, RUN_STATUS_VARIANTS } from "@/components/status-badge";
+import { Badge } from "@/components/ui/badge";
+import { RunEventList } from "@/components/run-event-list";
+
+const transport = createBrowserTransport();
 
 function Row({
   label,
@@ -18,6 +30,75 @@ function Row({
         {label}
       </dt>
       <dd className="px-4 py-3 text-sm">{children}</dd>
+    </div>
+  );
+}
+
+// Polls the run's committed event log and renders it as a live timeline. The
+// session stops polling once the run reaches a terminal event, so a settled run
+// shows its final history without further reads.
+function RunActivity({ tenantId, runId }: { tenantId: string; runId: string }) {
+  const [, forceRender] = useState(0);
+  const [error, setError] = useState<Error | null>(null);
+  const sessionRef = useRef<RunSession | null>(null);
+
+  useEffect(() => {
+    const session = createRunSession({
+      tenantId,
+      runId,
+      transport,
+      onChange: () => {
+        setError(null);
+        forceRender((n) => n + 1);
+      },
+      onError: (err) => setError(err),
+    });
+    sessionRef.current = session;
+    const stop = session.start();
+    return () => {
+      stop();
+      session.destroy();
+      sessionRef.current = null;
+    };
+  }, [tenantId, runId]);
+
+  const session = sessionRef.current;
+  const events: WorkflowRunEvent[] = session?.events ?? [];
+  const hydrated = session?.hydrated ?? false;
+  const terminal = session?.terminal ?? false;
+  const awaiting = findAwaitingSignal(events);
+
+  return (
+    <div className="mt-6">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Activity</h3>
+        {hydrated && (
+          <Badge variant={terminal ? "outline" : "secondary"}>
+            {terminal ? "terminal" : "live"}
+          </Badge>
+        )}
+      </div>
+
+      {error && (
+        <p className="mb-2 text-xs text-destructive">
+          Could not read the run's activity: {error.message}
+        </p>
+      )}
+
+      {awaiting && (
+        <p className="mb-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+          Awaiting signal{" "}
+          <span className="font-mono">{awaiting.signalName}</span>
+        </p>
+      )}
+
+      <div className="rounded-lg border bg-background p-3">
+        {!hydrated ? (
+          <p className="text-xs text-muted-foreground">Loading activity...</p>
+        ) : (
+          <RunEventList events={events} />
+        )}
+      </div>
     </div>
   );
 }
@@ -83,6 +164,11 @@ export function TenantRunDetailPage() {
           )}
         </dl>
       </div>
+
+      {/* Key on runId so navigating between runs remounts the activity view
+          with a fresh session, rather than briefly rendering the prior run's
+          timeline from the retained session ref before the first poll. */}
+      <RunActivity key={runId} tenantId={tenantId} runId={runId} />
     </div>
   );
 }

@@ -1,224 +1,107 @@
 import { type } from "arktype";
 
-import type { InferenceTurnResponse, MailResponse } from "@intx/types";
-import { parseInferenceEvent } from "@intx/types/runtime";
-
-import {
-  mailDeliveryToEvent,
-  mailToEvent,
-  shouldShowMail,
-  turnToEvent,
-} from "./transforms";
 import type { Transport } from "./transport";
-import type { AgentActivity, InstanceEvent } from "./types";
-import {
-  InferenceTextReplayEvent,
-  MailDeliveredEvent,
-  sessionEndedEvent,
-  TurnCommittedEvent,
-} from "./validators";
+import type { WorkflowRunEvent } from "./validators";
+import { WorkflowRunEvents } from "./validators";
+import { isTerminalRunEvents } from "./transforms";
 
-export interface InstanceSession {
-  readonly events: InstanceEvent[];
-  readonly streaming: string;
-  readonly activity: AgentActivity | null;
+// How often to re-read the run's event log while it is still live. The log is
+// git-backed and settles quickly, so a few-second cadence keeps the timeline
+// fresh without hammering the substrate.
+const DEFAULT_RUN_POLL_INTERVAL_MS = 2000;
+
+// A read-only view of one workflow run's committed event log. The session
+// polls the run's `/events` endpoint, replacing its timeline with each read,
+// and stops once the run reaches a terminal event.
+export interface RunSession {
+  readonly events: WorkflowRunEvent[];
   readonly hydrated: boolean;
+  readonly terminal: boolean;
 
   start(): () => void;
-  sendMail(content: string): Promise<void>;
   destroy(): void;
 }
 
-type MailListResponse = { data: MailResponse[] };
-type TurnListResponse = { data: InferenceTurnResponse[] };
-
-export function createInstanceSession(opts: {
+export function createRunSession(opts: {
   tenantId: string;
   runId: string;
   transport: Transport;
   onChange: () => void;
-  onSessionEnded?: () => void;
   onError?: (error: Error) => void;
-}): InstanceSession {
-  const { tenantId, runId, transport, onChange, onSessionEnded, onError } =
-    opts;
+  pollIntervalMs?: number;
+}): RunSession {
+  const {
+    tenantId,
+    runId,
+    transport,
+    onChange,
+    onError,
+    pollIntervalMs = DEFAULT_RUN_POLL_INTERVAL_MS,
+  } = opts;
 
   const basePath = `/api/tenants/${tenantId}/workflows/runs/${runId}`;
 
-  let events: InstanceEvent[] = [];
-  let streaming = "";
-  let streamingFromReplay = false;
-  let replayTurnId: string | null = null;
-  let activity: AgentActivity | null = null;
+  let events: WorkflowRunEvent[] = [];
   let hydrated = false;
+  let terminal = false;
 
-  // Null means hydration is complete (or SSE buffering is not active).
-  // Non-null means we are in the hydration window and buffering SSE events.
-  let sseBuffer: InstanceEvent[] | null = null;
-
-  let destroyed = false;
+  // `stopped` halts scheduling and discards any in-flight read, so a late
+  // response cannot mutate state after start()'s cleanup or destroy().
+  let stopped = false;
   let started = false;
-  let stopSSE: (() => void) | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
-  function pushOrBuffer(event: InstanceEvent): void {
-    if (hydrated) {
-      events.push(event);
-      onChange();
-    } else if (sseBuffer !== null) {
-      sseBuffer.push(event);
+  function reportError(error: Error): void {
+    if (onError) {
+      onError(error);
     } else {
-      sseBuffer = [event];
+      throw error;
     }
   }
 
-  function handleSSEEvent(raw: unknown): void {
-    if (destroyed) return;
-
-    if (!(sessionEndedEvent(raw) instanceof type.errors)) {
-      onSessionEnded?.();
+  async function poll(): Promise<void> {
+    let raw: unknown;
+    try {
+      raw = await transport.fetch<unknown>("GET", `${basePath}/events`);
+    } catch (err) {
+      if (stopped) return;
+      reportError(new Error("Failed to read run events", { cause: err }));
       return;
     }
+    if (stopped) return;
 
-    const mailEvent = MailDeliveredEvent(raw);
-    if (!(mailEvent instanceof type.errors)) {
-      const mailId = mailEvent.data.id;
-      const alreadyInEvents = events.some(
-        (e) => e.kind === "mail" && e.id === mailId,
+    const validated = WorkflowRunEvents(raw);
+    if (validated instanceof type.errors) {
+      reportError(
+        new Error(`Invalid run events response: ${validated.summary}`),
       );
-      const alreadyInBuffer =
-        sseBuffer !== null &&
-        sseBuffer.some((e) => e.kind === "mail" && e.id === mailId);
-      if (!alreadyInEvents && !alreadyInBuffer) {
-        const d = mailEvent.data;
-        if (!shouldShowMail(d)) return;
-        pushOrBuffer(mailDeliveryToEvent(d));
-      }
       return;
     }
 
-    const turnEvent = TurnCommittedEvent(raw);
-    if (!(turnEvent instanceof type.errors)) {
-      const {
-        turnId,
-        status,
-        text,
-        hadReply: _,
-        hadError,
-        errors,
-        toolCalls,
-        toolErrors,
-      } = turnEvent.data;
+    // The endpoint returns the full seq-ordered log on every call, so the
+    // latest read replaces the timeline outright -- there is no delta to merge,
+    // and a replay of the same seqs cannot duplicate an entry.
+    events = validated.events;
+    hydrated = true;
+    terminal = isTerminalRunEvents(events);
+    onChange();
+  }
 
-      const isError = hadError || status === "failed";
-      const alreadyInEvents = events.some(
-        (e) => e.kind === "turn" && e.turnId === turnId,
-      );
-      const alreadyInBuffer =
-        sseBuffer !== null &&
-        sseBuffer.some((e) => e.kind === "turn" && e.turnId === turnId);
+  function schedule(): void {
+    if (stopped || terminal) return;
+    timer = setTimeout(() => {
+      void (async () => {
+        await poll();
+        schedule();
+      })();
+    }, pollIntervalMs);
+  }
 
-      if (!alreadyInEvents && !alreadyInBuffer) {
-        if (text || isError || toolCalls.length > 0 || toolErrors.length > 0) {
-          const newEvent: InstanceEvent = {
-            kind: "turn",
-            turnId,
-            content:
-              text || (isError ? "An error occurred during inference." : ""),
-            timestamp: new Date().toISOString(),
-            ...(isError ? { isError: true } : {}),
-            ...(errors.length > 0 ? { errors } : {}),
-            ...(toolCalls.length > 0 ? { toolCalls } : {}),
-            ...(toolErrors.length > 0 ? { toolErrors } : {}),
-          };
-          // Inline push/buffer instead of pushOrBuffer to avoid a double
-          // onChange — this handler always calls onChange at the end for
-          // streaming/activity state changes.
-          if (hydrated) {
-            events.push(newEvent);
-          } else if (sseBuffer !== null) {
-            sseBuffer.push(newEvent);
-          } else {
-            sseBuffer = [newEvent];
-          }
-        }
-      }
-
-      // Only clear streaming if it still holds text from this committed turn.
-      // In multi-step tool loops, turn.committed for turn N may arrive after
-      // deltas for turn N+1 have already started populating the buffer.
-      if (!streaming || streaming === text) {
-        streaming = "";
-        streamingFromReplay = false;
-      }
-      activity = null;
-      onChange();
-      return;
-    }
-
-    const replayEvent = InferenceTextReplayEvent(raw);
-    if (!(replayEvent instanceof type.errors)) {
-      if (streaming === "") {
-        streaming = replayEvent.data.text;
-        streamingFromReplay = true;
-        replayTurnId = replayEvent.data.turnId;
-        activity = null;
-        onChange();
-      }
-      return;
-    }
-
-    const validated = parseInferenceEvent(raw);
-    if (validated instanceof type.errors) return;
-    const event = validated;
-
-    switch (event.type) {
-      case "inference.start":
-        activity = { type: "inferring" };
-        onChange();
-        break;
-      case "inference.text.delta":
-        streaming += event.data.token;
-        streamingFromReplay = false;
-        activity = null;
-        onChange();
-        break;
-      case "inference.tool_call.start":
-        activity = { type: "tool_call", name: event.data.name };
-        onChange();
-        break;
-      case "tool.start":
-        activity = { type: "tool_running", name: event.data.call.name };
-        onChange();
-        break;
-      case "tool.done":
-        activity = null;
-        onChange();
-        break;
-      case "inference.done":
-        activity = null;
-        onChange();
-        break;
-      case "inference.error": {
-        streaming = "";
-        streamingFromReplay = false;
-        const err = event.data.error;
-        if (
-          err.category === "quota_exhausted" &&
-          err.retryAfterMs !== undefined
-        ) {
-          activity = { type: "rate_limited", retryAfterMs: err.retryAfterMs };
-        } else {
-          activity = null;
-        }
-        onChange();
-        break;
-      }
-      case "reactor.done":
-        streaming = "";
-        streamingFromReplay = false;
-        activity = null;
-        onChange();
-        break;
+  function stopPolling(): void {
+    stopped = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
     }
   }
 
@@ -226,14 +109,11 @@ export function createInstanceSession(opts: {
     get events() {
       return events;
     },
-    get streaming() {
-      return streaming;
-    },
-    get activity() {
-      return activity;
-    },
     get hydrated() {
       return hydrated;
+    },
+    get terminal() {
+      return terminal;
     },
 
     start(): () => void {
@@ -242,125 +122,18 @@ export function createInstanceSession(opts: {
       }
       started = true;
 
-      // Open SSE first to avoid losing events during hydration fetch.
-      sseBuffer = [];
-      stopSSE = transport.subscribe(`${basePath}/events`, handleSSEEvent, {
-        eventName: "agent.event",
-      });
-
-      let cancelled = false;
-
+      // Poll immediately so the timeline hydrates without waiting a full
+      // interval, then keep polling until the run settles.
       void (async () => {
-        let fetchError: unknown;
-        const all: InstanceEvent[] = [];
-        let hydratedTurns: InferenceTurnResponse[] = [];
-
-        try {
-          const [mailRes, turnsRes] = await Promise.all([
-            transport.fetch<MailListResponse>(
-              "GET",
-              `${basePath}/mail?limit=100`,
-            ),
-            transport.fetch<TurnListResponse>(
-              "GET",
-              `${basePath}/turns?limit=100`,
-            ),
-          ]);
-
-          hydratedTurns = turnsRes.data;
-          for (const m of mailRes.data) {
-            all.push(mailToEvent(m));
-          }
-          for (const t of hydratedTurns) {
-            const event = turnToEvent(t);
-            if (event) all.push(event);
-          }
-        } catch (err) {
-          fetchError = err;
-        }
-
-        if (cancelled || destroyed) return;
-
-        // Drain SSE buffer and merge with hydration results, deduplicating
-        // by mail id or turn id so events that arrived during the fetch
-        // window are not duplicated.
-        const buffered = sseBuffer;
-        sseBuffer = null;
-
-        if (buffered !== null) {
-          const seenMailIds = new Set<string>();
-          const seenTurnIds = new Set<string>();
-          for (const e of all) {
-            if (e.kind === "mail") seenMailIds.add(e.id);
-            else seenTurnIds.add(e.turnId);
-          }
-          for (const e of buffered) {
-            if (e.kind === "mail" && !seenMailIds.has(e.id)) all.push(e);
-            else if (e.kind === "turn" && !seenTurnIds.has(e.turnId))
-              all.push(e);
-          }
-        }
-
-        all.sort((a, b) =>
-          a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
-        );
-
-        // If streaming was set by replay and no live deltas have arrived
-        // since, determine whether the replay is stale or still active.
-        // A null turnId means the server lost track of the turn (e.g.
-        // collector re-created on reconnect) — the text is stale.
-        // A non-null turnId that appears in /turns with a terminal status
-        // (completed/failed) means the turn already committed and we
-        // missed turn.committed — also stale. A running turn in /turns
-        // means inference is still active and the replay is valid.
-        if (streamingFromReplay) {
-          const isActive =
-            replayTurnId !== null &&
-            !hydratedTurns.some(
-              (t) => t.id === replayTurnId && t.status !== "running",
-            );
-          if (!isActive) {
-            streaming = "";
-          }
-          streamingFromReplay = false;
-          replayTurnId = null;
-        }
-
-        events = all;
-        hydrated = true;
-        onChange();
-
-        if (fetchError) {
-          const error = new Error("Failed to hydrate chat history", {
-            cause: fetchError,
-          });
-          if (onError) {
-            onError(error);
-          } else {
-            throw error;
-          }
-        }
+        await poll();
+        schedule();
       })();
 
-      return () => {
-        cancelled = true;
-        sseBuffer = null;
-        stopSSE?.();
-        stopSSE = null;
-      };
-    },
-
-    async sendMail(content: string): Promise<void> {
-      await transport.fetch("POST", `${basePath}/mail`, { content });
+      return stopPolling;
     },
 
     destroy(): void {
-      if (destroyed) return;
-      destroyed = true;
-      stopSSE?.();
-      stopSSE = null;
-      sseBuffer = null;
-      activity = null;
+      stopPolling();
     },
   };
 }

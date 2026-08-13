@@ -1,74 +1,19 @@
 import { type } from "arktype";
 
-export const sessionEndedEvent = type({ type: "'session.ended'" });
-
-export const MailDeliveredEvent = type({
-  type: "'mail.delivered'",
-  data: {
-    id: "string",
-    direction: "'inbound' | 'outbound'",
-    "from?": type({
-      name: "string | null",
-      email: "string",
-    }).array(),
-    "to?": type({
-      name: "string | null",
-      email: "string",
-    }).array(),
-    "subject?": "string | null",
-    "sentAt?": "string | null",
-    bodyValues: "Record<string, unknown>",
-    textBody: type({
-      partId: "string",
-      type: "string",
-    }).array(),
-    "htmlBody?": type({
-      partId: "string",
-      type: "string",
-    }).array(),
-    "attachments?": type({
-      blobId: "string",
-      "name?": "string | null",
-      type: "string",
-      size: "number",
-    }).array(),
-    headers: "Record<string, string>",
-    receivedAt: "string",
-  },
+// A single committed workflow-run event as the run-event log records it.
+// `type` is the discriminator; `body` carries the full per-type payload
+// verbatim (the hub validates the shape at push time, so the client narrows
+// on the discriminator it cares about).
+export const WorkflowRunEvent = type({
+  seq: "number",
+  type: "string",
+  body: "Record<string, unknown>",
 });
-export type MailDeliveredEvent = typeof MailDeliveredEvent.infer;
+export type WorkflowRunEvent = typeof WorkflowRunEvent.infer;
 
-export const TurnCommittedEvent = type({
-  type: "'turn.committed'",
-  data: {
-    turnId: "string",
-    status: "'completed' | 'failed'",
-    text: "string",
-    hadReply: "boolean",
-    hadError: "boolean",
-    errors: type({
-      category: "string",
-      message: "string",
-    }).array(),
-    toolCalls: type({
-      name: "string",
-      arguments: "Record<string, unknown>",
-      result: "string",
-      isError: "boolean",
-    }).array(),
-    toolErrors: type({
-      name: "string",
-      content: "string",
-    }).array(),
-  },
+// The run-event log read response: the run id and its seq-ordered events.
+export const WorkflowRunEvents = type({
+  runId: "string",
+  events: WorkflowRunEvent.array(),
 });
-export type TurnCommittedEvent = typeof TurnCommittedEvent.infer;
-
-export const InferenceTextReplayEvent = type({
-  type: "'inference.text.replay'",
-  data: {
-    turnId: "string | null",
-    text: "string",
-  },
-});
-export type InferenceTextReplayEvent = typeof InferenceTextReplayEvent.infer;
+export type WorkflowRunEvents = typeof WorkflowRunEvents.infer;

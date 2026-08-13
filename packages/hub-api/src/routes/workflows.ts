@@ -43,12 +43,10 @@ import {
   ExclusiveWorkflowPlacementError,
   resolveWorkflowSidecarPlacement,
   type AssetService,
-  type RepoId,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
   type WorkflowDefinition,
-  type WorkflowRunEvent,
   type WorkflowAllocationService,
   type WorkflowDispatchService,
 } from "@intx/hub-sessions";
@@ -73,9 +71,10 @@ import {
 } from "../run-grant-materialization";
 import { ts } from "../format";
 import type { MaterializedGrantRow } from "../grant-materialization";
+import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 import {
   readDurableWorkflowRunLifecycle,
-  workflowRunRepoIdForAddress,
+  workflowRunRepoId,
   WORKFLOW_RUN_REF,
 } from "../workflow-run-lifecycle";
 
@@ -86,22 +85,6 @@ import {
 // with a structured error, while genuine garbage is rejected here
 // before the JSON parser allocates a giant string.
 const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
-
-// The sidecar's deploy router keys the workflow-run repo by
-// `deriveWorkflowRunRepoId(deploymentAddress)`, where the deployment
-// address is `deriveRunAddress({ runId, domain })`
-// and `deploymentDomain` is the tenant's domain (see
-// `deployWorkflowDefinition` in `@intx/hub-sessions`, which passes
-// `deploymentDomain: tenant.domain`). The read side must reconstruct the
-// identical address and apply the same sanitization, or it opens a
-// different on-disk repo than the one events committed to.
-function workflowRunRepoId(deploymentId: string, tenantDomain: string): RepoId {
-  const deploymentAddress = deriveRunAddress({
-    runId: deploymentId,
-    domain: tenantDomain,
-  });
-  return workflowRunRepoIdForAddress(deploymentAddress);
-}
 
 async function lockDispatchableAllocation(
   tx: DBExecutor,
@@ -169,24 +152,6 @@ const WorkflowRunTriggerResponse = type({
 const WorkflowRunListResponse = type({
   runIds: "string[]",
 });
-
-// A single committed workflow-run event. `type` is the discriminator;
-// `body` carries the full per-type payload verbatim (the workflow-run
-// kind handler validates the shape at push time).
-const WorkflowRunEventResponse = type({
-  seq: "number",
-  type: "string",
-  body: "Record<string, unknown>",
-});
-
-const WorkflowRunEventsResponse = type({
-  runId: "string",
-  events: WorkflowRunEventResponse.array(),
-});
-
-function formatRunEvent(event: WorkflowRunEvent) {
-  return { seq: event.seq, type: event.type, body: event.body };
-}
 
 // A deployment's API shape, assembled from its anchor run and the run's
 // definition. The old projection reported a constant "deployed" for every row

@@ -3,12 +3,12 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 
+import { findAwaitingSignal, isTerminalRunEvents } from "@intx/hub-client";
+
 import { MutationError } from "@/components/mutation-error";
 import {
   deliverWorkflowSignalMutation,
   deployWorkflowMutation,
-  findAwaitingSignal,
-  isTerminalRunEvents,
   triggerWorkflowRunMutation,
   workflowDeploymentsQuery,
   workflowDetailQuery,
@@ -17,6 +17,7 @@ import {
   type WorkflowDeployment,
 } from "@/lib/queries/tenants";
 import { Badge } from "@/components/ui/badge";
+import { RunEventList } from "@/components/run-event-list";
 import {
   StatusBadge,
   DEPLOYMENT_STATUS_VARIANTS,
@@ -614,32 +615,7 @@ function RunEventTimeline({
         </div>
       )}
 
-      {events.length === 0 ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          No events recorded yet.
-        </p>
-      ) : (
-        <ol className="mt-2 space-y-1">
-          {events.map((event) => (
-            <li
-              key={event.seq}
-              className="grid grid-cols-[2.5rem_1fr] gap-2 text-xs"
-            >
-              <span className="font-mono text-muted-foreground">
-                {event.seq}
-              </span>
-              <span>
-                <span className="font-medium">{event.type}</span>
-                {Object.keys(event.body).length > 0 && (
-                  <span className="ml-2 font-mono text-muted-foreground">
-                    {JSON.stringify(event.body)}
-                  </span>
-                )}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
+      <RunEventList events={events} />
     </div>
   );
 }
