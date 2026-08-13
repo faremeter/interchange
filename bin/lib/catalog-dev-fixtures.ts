@@ -43,6 +43,10 @@ export const credentialFixtures: Record<string, CredentialFixture> = {
     credentialName: "OpenCode Zen Go v1 Key",
     credentialSecret: "ocz-go-fake-key-for-seed-data",
   },
+  "xAI Direct": {
+    credentialName: "xAI Direct Key",
+    credentialSecret: "xai-fake-key-for-seed-data",
+  },
 };
 
 // Dev pricing as decimal strings, matching the API's string money fields.
@@ -79,6 +83,10 @@ export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
   },
   "OpenCode Zen Go v1": {
     "kimi-k2.7-code": { input: "0.0000006", output: "0.0000025" },
+  },
+  "xAI Direct": {
+    "grok-4.5": { input: "0.000002", output: "0.000006" },
+    "grok-4.6": { input: "0.000002", output: "0.000006" },
   },
 };
 
@@ -152,4 +160,10 @@ export const unpricedOfferings: Record<string, readonly string[]> = {
     "qwen3.8-max",
   ],
   "OpenCode Zen Go v1": ["kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash"],
+  "xAI Direct": [
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-0309-reasoning",
+    "grok-4.3",
+    "grok-build-0.1",
+  ],
 };

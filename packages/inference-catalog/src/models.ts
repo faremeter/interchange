@@ -90,4 +90,16 @@ export const catalogModels: CatalogModelSpec[] = [
   { canonicalName: "gpt-4o-mini", displayName: "GPT-4o Mini" },
   { canonicalName: "gpt-4-turbo", displayName: "GPT-4 Turbo" },
   { canonicalName: "gpt-4", displayName: "GPT-4" },
+  {
+    canonicalName: "grok-4.20-0309-non-reasoning",
+    displayName: "Grok 4.20 Non-Reasoning",
+  },
+  {
+    canonicalName: "grok-4.20-0309-reasoning",
+    displayName: "Grok 4.20 Reasoning",
+  },
+  { canonicalName: "grok-4.3", displayName: "Grok 4.3" },
+  { canonicalName: "grok-4.5", displayName: "Grok 4.5" },
+  { canonicalName: "grok-4.6", displayName: "Grok 4.6" },
+  { canonicalName: "grok-build-0.1", displayName: "Grok Build 0.1" },
 ];
