@@ -378,7 +378,7 @@ export interface WorkflowSupervisorBindings {
   workflowRunRepoId: import("@intx/hub-sessions").RepoId;
   /** Workflow-run repo ref the supervisor commits events to. */
   workflowRunRef: string;
-  /** Deployment id baked into the supervisor's principal claims. */
+  /** Anchor run id baked into the supervisor's principal claims. */
   anchorRunId: string;
   /**
    * Number of steps in the deployed `WorkflowDefinition`
