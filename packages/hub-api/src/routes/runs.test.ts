@@ -787,33 +787,49 @@ describe("read routes serve a workflow run", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Folded run interact routes — mail send/list and turns for a workflow_run
+// Run interact routes — mail send routes through the Trigger path; stop and
+// mail history stay gated (INTR-454)
 // ---------------------------------------------------------------------------
 
-describe("interactive routes are gated not-implemented for workflow runs", () => {
-  function writeGrant(): GrantRule {
-    return makeGrant({ resource: "workflow-run:*", action: "write" });
+describe("mail send delegates to the trigger; stop and mail history stay gated", () => {
+  function manageGrant(): GrantRule {
+    return makeGrant({ resource: "workflow-run:*", action: "manage" });
   }
   function readGrant(): GrantRule {
     return makeGrant({ resource: "workflow-run:*", action: "read" });
   }
 
-  // Mail send/history and stop were built for the retired folded-launch surface
-  // and are not yet wired onto a workflow (anchor) run, so each answers 501
-  // not_implemented. Mail send awaits its repoint onto the Trigger path; stop
-  // and mail history need genuinely new backing (INTR-454). The routes stay
-  // mounted, not 404, so the admin UI gets a clean answer.
-  test("POST mail answers 501 not_implemented", async () => {
-    const app = createTestApp({ grants: [writeGrant()] });
+  // Mail send is wired: it resolves the run (a tenant-scoped 404 for an unknown
+  // id) and fires it through the run's workflow-native Trigger path. When the
+  // hub runs without the workflow substrate (the default test app has no
+  // repoStore/assetService), the trigger is unavailable and the route answers
+  // 503 -- honestly unavailable, never the old 501 stub and never a silent
+  // no-op.
+  test("POST mail 404s for an unknown run", async () => {
+    const app = createTestApp({
+      grants: [manageGrant()],
+      db: { tenant: testTenant, principal: testPrincipal },
+    });
     const res = await app.request(`${runURL()}/mail`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: "hello run" }),
     });
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({
-      error: { code: "not_implemented" },
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("POST mail resolves the run and delegates to the trigger", async () => {
+    const app = createTestApp({ grants: [manageGrant()] });
+    const res = await app.request(`${runURL()}/mail`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "hello run" }),
     });
+    // No longer 501: the run resolves, and the trigger is consulted. Without the
+    // workflow substrate the default app cannot fire, so it answers 503.
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: { code: "unavailable" } });
   });
 
   test("GET mail answers 501 not_implemented", async () => {
@@ -827,7 +843,7 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
 
   test("DELETE stop answers 501 not_implemented", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ resource: "workflow-run:*", action: "manage" })],
+      grants: [manageGrant()],
     });
     const res = await app.request(runURL(), { method: "DELETE" });
     expect(res.status).toBe(501);

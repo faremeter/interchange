@@ -506,16 +506,16 @@ Returns the run's committed, seq-ordered event log (RunStarted, StepStarted, Ste
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/mail
 Send mail to a run
 
-Persists the user message as a mail record and dispatches it to the run. Returns JMAP Email-shaped response.
+Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence.
 
 Body: SendMessage
 
-201: MailResponse -- Mail sent
-400: AttachmentErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
+202: unknown -- Trigger accepted for delivery
+400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run not live
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, or the run is terminal
 413: ErrorResponse -- Request body exceeds the maximum allowed size
-502: ErrorResponse -- Sidecar unavailable
+503: ErrorResponse -- Run trigger substrate unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/mail
 List mail for a run
@@ -1255,10 +1255,6 @@ Source: packages/types/src/assets.ts
 **kind**: Category of the asset, used together with `name` to address it. The (kind, name) pair is what callers resolve against, and it is unique within a tenant.
 **origin**: Which tenant in the hierarchy this asset row came from, distinguishing locally-defined assets from inherited ones.
 
-### AttachmentErrorResponse
-`{ error: { attachmentIndex: number, byteLength: number, code: "oversize_attachment", limitBytes: number, message: string } | { attachmentIndex: number, code: "disallowed_mime_type", message: string, mimeType: string } | { attachmentIndex: number, code: "invalid_attachment_name", message: string } | { attachmentIndex: number, code: "malformed_base64", message: string } | { code: "oversize_total", limitBytes: number, message: string, totalBytes: number } }`
-Source: packages/types/src/sessions.ts
-
 ### BranchInfo
 `{ name: string, isCurrent?: boolean, lastCommitAt?: string | null, lastCommitMessage?: string | null, lastCommitRef?: string | null }`
 Source: packages/types/src/agent-data.ts
@@ -1415,14 +1411,6 @@ Source: packages/types/src/principals.ts
 ### LogEntry
 `{ level: "debug" | "error" | "info" | "warn", message: string, timestamp: string, metadata?: { [string]: unknown } | null }`
 Source: packages/types/src/observability.ts
-
-### MailResponse
-`{ attachments: { blobId: string, name: string | null, size: number, type: string }[], bodyValues: { [string]: unknown }, direction: "inbound" | "outbound", from: { email: string, name: string | null }[], headers: { [string]: string }, htmlBody: { partId: string, type: string }[], id: string, receivedAt: string, runId: string | null, sentAt: string | null, sessionId: string, status: "delivered" | "pending", subject: string | null, textBody: { partId: string, type: string }[], to: { email: string, name: string | null }[] }`
-Source: packages/types/src/sessions.ts
-
-**direction**: Whether the message was sent to the agent (`inbound`) or emitted by the agent (`outbound`).
-**sessionId**: Internal session channel identifier, not a user-facing session resource.
-**status**: Delivery state of the mail: `pending` (accepted, not yet dispatched to the running agent) or `delivered`.
 
 ### MetricsResponse
 `{ agentId: string, avgLatencyMs?: number, cost?: string, errorRate?: number, messageCount?: number, tokenUsage?: { input?: number, output?: number, total?: number } }`
