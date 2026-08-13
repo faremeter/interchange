@@ -290,6 +290,26 @@ describe("readAt", () => {
     const atFirst = await store.readAt(first.hash);
     expect(atFirst).toEqual(v1);
   });
+
+  test("surfaces corrupt object errors", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+
+    await store.writeTurns([]);
+    const commit = await store.commit({ message: "checkpoint" });
+    await fs.promises.writeFile(
+      path.join(
+        dir,
+        ".git",
+        "objects",
+        commit.hash.slice(0, 2),
+        commit.hash.slice(2),
+      ),
+      "corrupt object",
+    );
+
+    await expect(store.readAt(commit.hash)).rejects.toThrow();
+  });
 });
 
 function makeAuditRecord(overrides: Partial<AuditRecord> = {}): AuditRecord {

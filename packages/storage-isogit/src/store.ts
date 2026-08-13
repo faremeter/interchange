@@ -270,31 +270,6 @@ async function readBlobAtCommit(
     ) {
       return null;
     }
-    return null;
-  }
-}
-
-async function readBlobAtCommitStrict(
-  runtime: StorageRuntime,
-  dir: string,
-  oid: string,
-  filepath: string,
-): Promise<Uint8Array | null> {
-  try {
-    const { blob } = await git.readBlob({
-      fs: runtime.fs.git,
-      dir,
-      oid,
-      filepath,
-    });
-    return blob;
-  } catch (cause) {
-    if (
-      hasCode(cause) &&
-      (cause.code === "NotFoundError" || cause.code === "ENOENT")
-    ) {
-      return null;
-    }
     throw cause;
   }
 }
@@ -401,7 +376,7 @@ export class IsogitStore
     });
 
     for (const file of files) {
-      const committedBlob = await readBlobAtCommitStrict(
+      const committedBlob = await readBlobAtCommit(
         this.runtime,
         this.dir,
         headOid,
