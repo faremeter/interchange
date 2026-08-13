@@ -1,0 +1,9 @@
+{
+  "model": "grok-4.6",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ]
+}

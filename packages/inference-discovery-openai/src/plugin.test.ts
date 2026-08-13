@@ -173,8 +173,15 @@ const OPENAI_CAPTURED: SupportEntry[] = SUPPORT_MATRIX.filter(
   (e) => e.provider === "openai" && e.outcome === "captured",
 );
 
+const XAI_CAPTURED: SupportEntry[] = SUPPORT_MATRIX.filter(
+  (e) => e.provider === "xai" && e.outcome === "captured",
+);
+
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_CHAT_URL = `${OPENAI_BASE_URL}/chat/completions`;
+
+const XAI_BASE_URL = "https://api.x.ai/v1";
+const XAI_CHAT_URL = `${XAI_BASE_URL}/chat/completions`;
 
 function collectSteps(opts: {
   model: string;
@@ -463,6 +470,10 @@ describe("fixture oracle: every captured (model, capability) matches structure",
     expect(OPENAI_CAPTURED.length).toBeGreaterThan(0);
   });
 
+  test("there is at least one captured xai entry", () => {
+    expect(XAI_CAPTURED.length).toBeGreaterThan(0);
+  });
+
   for (const entry of OPENCODE_CAPTURED) {
     test(`opencode-zen structural match: ${entry.model} / ${entry.capability}`, () => {
       assertStructuralMatch({
@@ -479,6 +490,16 @@ describe("fixture oracle: every captured (model, capability) matches structure",
         entry,
         chatUrl: OPENAI_CHAT_URL,
         baseUrl: OPENAI_BASE_URL,
+      });
+    });
+  }
+
+  for (const entry of XAI_CAPTURED) {
+    test(`xai structural match: ${entry.model} / ${entry.capability}`, () => {
+      assertStructuralMatch({
+        entry,
+        chatUrl: XAI_CHAT_URL,
+        baseUrl: XAI_BASE_URL,
       });
     });
   }

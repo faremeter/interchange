@@ -1,0 +1,51 @@
+{
+  "model": "grok-4.5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "The user wants the weather in Boston, MA, and I must use the provided tool. I have the get_weather tool.",
+      "tool_calls": [
+        {
+          "id": "call-e45917ec-75d0-4e29-ba79-9e9a312f8b5c-0",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"location\":\"Boston, MA\"}"
+          },
+          "type": "function"
+        }
+      ],
+      "refusal": null
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call-e45917ec-75d0-4e29-ba79-9e9a312f8b5c-0",
+      "content": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Look up the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "City and optional region, e.g. 'Boston, MA'."
+            }
+          },
+          "required": [
+            "location"
+          ]
+        }
+      }
+    }
+  ]
+}

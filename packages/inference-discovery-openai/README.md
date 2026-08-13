@@ -10,8 +10,8 @@ is organised in two layers:
 - `deployments/` — concrete deployments built on the protocol
   layer. Each deployment names a provider, lists its models,
   declares its auth and redaction policy, and (where needed)
-  overrides reasoning extraction. Two deployments ship today: the
-  OpenCode Zen relay and first-party OpenAI.
+  overrides reasoning extraction. Three deployments ship today: the
+  OpenCode Zen relay, first-party OpenAI, and first-party xAI.
 
 See [`@intx/inference-discovery`](../inference-discovery/README.md)
 for the runtime, the plug-in contract, and the `discover` CLI.
@@ -87,6 +87,41 @@ limitation.
 | Variable         | Purpose                                                      |
 | ---------------- | ------------------------------------------------------------ |
 | `OPENAI_API_KEY` | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
+
+## xAI
+
+The `xai` deployment probes first-party `api.x.ai` directly, under provider
+name `xai` (distinct from `openai` and `opencode-zen`, though all three write
+sessions into this package's `sessions/` tree). The base URL is fixed to
+`https://api.x.ai/v1`; the deployment reads only `XAI_API_KEY`.
+
+```ts
+import { createXaiPlugin } from "@intx/inference-discovery-openai";
+
+const plugin = createXaiPlugin({ apiKey: process.env.XAI_API_KEY });
+// Hand off to runCapture from @intx/inference-discovery.
+```
+
+Models: `grok-4.20-0309-non-reasoning`, `grok-4.20-0309-reasoning`, `grok-4.3`,
+`grok-4.5`, `grok-4.6`, `grok-build-0.1`.
+
+Each model captures `plain-text`, `function-calling`,
+`function-calling-multi-turn`, `vision-input`, and `structured-output` (plus
+the streaming variants the OpenAI-protocol body builder emits).
+`reasoning-content` captures on every model except
+`grok-4.20-0309-non-reasoning`, xAI's explicit non-reasoning variant, which
+returns text with no `reasoning_content` field and so is marked `unsupported`.
+`structured-output-refusal-streaming` is `misled`: under a strict `json_schema`
+plus a declining prompt, the model streams schema-conformant JSON carrying a
+textual decline rather than a `delta.refusal` field. `document-input` is
+`http-error`: xAI Chat Completions rejects file content parts and directs
+callers to the Responses API, which this plug-in does not probe.
+
+### Environment
+
+| Variable      | Purpose                                                      |
+| ------------- | ------------------------------------------------------------ |
+| `XAI_API_KEY` | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
 
 ## Adding a new deployment
 

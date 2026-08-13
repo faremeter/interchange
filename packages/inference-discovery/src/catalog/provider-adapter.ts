@@ -23,11 +23,12 @@ const CATALOG_TO_ADAPTER: Record<string, string> = {
   anthropic: "anthropic",
   openai: "openai-compatible",
   "opencode-zen": "openai-compatible",
+  xai: "openai-compatible",
   "google-genai": "google-genai",
 };
 
 // Canonical base URLs, mirrored here rather than imported. `ANTHROPIC_BASE`
-// and `GEMINI_BASE` come from the discovery packages' endpoint.ts. All four
+// and `GEMINI_BASE` come from the discovery packages' endpoint.ts. All five
 // brand bases are also declared by @intx/inference-catalog's providers, a
 // zero-dependency upstream package, so those values could be imported from it —
 // but the mirror is kept deliberately, to hold @intx/inference-discovery free
@@ -47,6 +48,7 @@ const CATALOG_TO_BASE_URL: Record<string, string> = {
   "google-genai": "https://generativelanguage.googleapis.com",
   openai: "https://api.openai.com/v1",
   "opencode-zen": "https://opencode.ai/zen/v1",
+  xai: "https://api.x.ai/v1",
 };
 
 export function adapterForCatalogProvider(name: string): string | undefined {

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "grok-4.5",
+    "baseURL": "https://api.x.ai/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-08-13T20:32:52.380Z",
+  "capability": "vision-input"
+}
