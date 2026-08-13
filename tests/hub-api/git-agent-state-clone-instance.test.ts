@@ -105,7 +105,7 @@ async function seedRunRow(
     }
     const creatorPrincipalId = creatorPrincipal.id;
 
-    const runId = generateId("instance");
+    const runId = generateId("workflowRun");
 
     // Tenant domain controls the run address; lookup the row.
     const tenantRows = await sql<
