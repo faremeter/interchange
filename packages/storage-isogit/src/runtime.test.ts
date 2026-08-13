@@ -126,11 +126,67 @@ test("storage flushes after completed mutation boundaries", async () => {
   await storage.initAgentRepo(dir);
   await storage.createAndSwitchBranch(dir, "flush-test");
 
-  expect(flushes).toBe(2);
+  expect(flushes).toBe(3);
 
   await fs.promises.rm(path.join(dir, "state"), { recursive: true });
   await storage.initAgentRepo(dir);
 
-  expect(flushes).toBe(3);
+  expect(flushes).toBe(4);
   await expect(fs.promises.stat(path.join(dir, "state"))).resolves.toBeTruthy();
+});
+
+test("flushes commit objects and the published branch ref exactly once", async () => {
+  const dir = await tempDir();
+  const refPath = path.join(dir, ".git", "refs", "heads", "main");
+  const observedRefs: (string | null)[] = [];
+  const storage = createIsogitStorage({
+    ...createNodeIsogitRuntime(),
+    flush: async () => {
+      const ref = await fs.promises.readFile(refPath, "utf8").catch(() => null);
+      observedRefs.push(ref?.trim() ?? null);
+    },
+  });
+  const store = await storage.createIsogitStore(dir);
+  const initialRef = (await fs.promises.readFile(refPath, "utf8")).trim();
+  observedRefs.length = 0;
+
+  await store.writeTurns([
+    {
+      role: "user",
+      content: [{ type: "text", text: "durable before publication" }],
+      timestamp: 1,
+    },
+  ]);
+  const committed = await store.commit({ message: "durable commit" });
+
+  expect(observedRefs).toEqual([initialRef, committed.hash]);
+});
+
+test("flushes a new branch before publishing it through HEAD", async () => {
+  const dir = await tempDir();
+  const headPath = path.join(dir, ".git", "HEAD");
+  const branchPath = path.join(dir, ".git", "refs", "heads", "durable-branch");
+  const observations: { branchExists: boolean; head: string }[] = [];
+  const storage = createIsogitStorage({
+    ...createNodeIsogitRuntime(),
+    flush: async () => {
+      const [head, branchExists] = await Promise.all([
+        fs.promises.readFile(headPath, "utf8"),
+        fs.promises
+          .stat(branchPath)
+          .then(() => true)
+          .catch(() => false),
+      ]);
+      observations.push({ branchExists, head: head.trim() });
+    },
+  });
+
+  await storage.initAgentRepo(dir);
+  observations.length = 0;
+  await storage.createAndSwitchBranch(dir, "durable-branch");
+
+  expect(observations).toEqual([
+    { branchExists: true, head: "ref: refs/heads/main" },
+    { branchExists: true, head: "ref: refs/heads/durable-branch" },
+  ]);
 });

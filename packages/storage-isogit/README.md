@@ -46,6 +46,12 @@ UTF-8 text reads. `rename` remains explicit because completed packs require an
 atomic publish primitive. Persistent backends can implement `flush` to make
 completed mutations durable before the API call resolves.
 
+Audit and error record paths are append-only. Repeating a byte-identical
+record is an idempotent retry, including after an uncertain persistence
+failure; reusing the same path for different content is rejected. Mail commits
+reconcile an uncertain ref publication before the same store accepts another
+message, so a committed message cannot have its ordinal reused.
+
 The pack-send and pack-receive helpers (`createDeployPack`,
 `createNegotiatedPack`, `applyPack`, `receivePackObjects`) produce
 and consume the wire bytes that `@intx/pack-transport` chunks

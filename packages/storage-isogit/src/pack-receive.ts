@@ -1,7 +1,7 @@
 import git from "isomorphic-git";
 import { readRawObject } from "./isogit-helpers";
 import { withRepoDirLock } from "./repo-lock";
-import { flushRuntime, type StorageRuntime } from "./runtime";
+import { decodeUTF8, flushRuntime, type StorageRuntime } from "./runtime";
 import { hasCode } from "@intx/types";
 
 /**
@@ -735,7 +735,7 @@ export async function applyPack(
           dir,
           expectedSha,
         );
-        const payload = stripGpgsig(new TextDecoder().decode(rawBytes));
+        const payload = stripGpgsig(decodeUTF8(rawBytes));
 
         if (!(await verifyCommit(payload, commit.gpgsig))) {
           throw new Error(
