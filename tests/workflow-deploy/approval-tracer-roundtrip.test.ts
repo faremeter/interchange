@@ -368,7 +368,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           correlationId,
           tenantId,
-          deploymentId,
+          anchorRunId: deploymentId,
           agentAddress,
           runId,
           signalName: signalName(correlationId),
@@ -380,7 +380,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           id: generateId("approval"),
           tenantId,
-          deploymentId,
+          anchorRunId: deploymentId,
           runId,
           agentAddress,
           correlationId,
@@ -680,7 +680,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const rows = await h.db
             .select()
             .from(approval)
-            .where(eq(approval.deploymentId, deploymentSlug));
+            .where(eq(approval.anchorRunId, deploymentSlug));
           return rows.length === 1;
         },
         { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
@@ -689,7 +689,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const pendingApprovalRows = await h.db
         .select()
         .from(approval)
-        .where(eq(approval.deploymentId, deploymentSlug));
+        .where(eq(approval.anchorRunId, deploymentSlug));
       expect(pendingApprovalRows).toHaveLength(1);
       const approvalRow = pendingApprovalRows[0];
       if (approvalRow === undefined) throw new Error("unreachable");
@@ -934,13 +934,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const allApprovals = await h.db
         .select()
         .from(approval)
-        .where(eq(approval.deploymentId, deploymentSlug));
+        .where(eq(approval.anchorRunId, deploymentSlug));
       expect(allApprovals).toHaveLength(1);
 
       const allCorrelations = await h.db
         .select()
         .from(signalCorrelation)
-        .where(eq(signalCorrelation.deploymentId, deploymentSlug));
+        .where(eq(signalCorrelation.anchorRunId, deploymentSlug));
       expect(allCorrelations).toHaveLength(1);
 
       // The approval row is terminal: approved, scoped once, resolved.

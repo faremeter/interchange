@@ -337,7 +337,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           correlationId,
           tenantId,
-          deploymentId,
+          anchorRunId: deploymentId,
           agentAddress,
           runId,
           signalName: signalName(correlationId),
@@ -349,7 +349,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           id: generateId("approval"),
           tenantId,
-          deploymentId,
+          anchorRunId: deploymentId,
           runId,
           agentAddress,
           correlationId,
@@ -637,7 +637,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const rows = await h.db
             .select()
             .from(approval)
-            .where(eq(approval.deploymentId, deploymentSlug));
+            .where(eq(approval.anchorRunId, deploymentSlug));
           return rows.length === 1;
         },
         { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
@@ -646,7 +646,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const parkedApprovalRows = await h.db
         .select()
         .from(approval)
-        .where(eq(approval.deploymentId, deploymentSlug));
+        .where(eq(approval.anchorRunId, deploymentSlug));
       expect(parkedApprovalRows).toHaveLength(1);
       const parkedApproval = parkedApprovalRows[0];
       if (parkedApproval === undefined) throw new Error("unreachable");
@@ -701,20 +701,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // is dropped by the hub's ownership gate until the challenge re-routes it).
       await h.db
         .delete(approval)
-        .where(eq(approval.deploymentId, deploymentSlug));
+        .where(eq(approval.anchorRunId, deploymentSlug));
       await h.db
         .delete(signalCorrelation)
-        .where(eq(signalCorrelation.deploymentId, deploymentSlug));
+        .where(eq(signalCorrelation.anchorRunId, deploymentSlug));
 
       const approvalsWhileDown = await h.db
         .select()
         .from(approval)
-        .where(eq(approval.deploymentId, deploymentSlug));
+        .where(eq(approval.anchorRunId, deploymentSlug));
       expect(approvalsWhileDown).toHaveLength(0);
       const correlationsWhileDown = await h.db
         .select()
         .from(signalCorrelation)
-        .where(eq(signalCorrelation.deploymentId, deploymentSlug));
+        .where(eq(signalCorrelation.anchorRunId, deploymentSlug));
       expect(correlationsWhileDown).toHaveLength(0);
 
       // ---- reconnect: Trigger B re-emits the parked correlation ----

@@ -62,7 +62,7 @@ function pendingApproval(
   return {
     id: APPROVAL_ID,
     tenantId: TENANT_ID,
-    deploymentId: DEPLOYMENT_ID,
+    anchorRunId: DEPLOYMENT_ID,
     runId: RUN_ID,
     agentAddress: AGENT_ADDRESS,
     correlationId: CORRELATION_ID,
@@ -221,7 +221,7 @@ function createMockSignalCorrelationStore(
       return {
         correlationId,
         tenantId: TENANT_ID,
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         agentAddress: opts.claimResult.agentAddress,
         runId: opts.claimResult.runId,
         signalName: "sig",

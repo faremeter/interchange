@@ -42,7 +42,7 @@ function formatApproval(row: ParsedApproval) {
   return {
     id: row.id,
     tenantId: row.tenantId,
-    anchorRunId: row.deploymentId,
+    anchorRunId: row.anchorRunId,
     runId: row.runId,
     agentAddress: row.agentAddress,
     correlationId: row.correlationId,
@@ -143,7 +143,7 @@ async function resolveApproval(
     grantStore,
     args.principalId,
     args.tenantId,
-    `approval:${approval.deploymentId}`,
+    `approval:${approval.anchorRunId}`,
     "resolve",
     conditionRegistry,
   );
@@ -159,7 +159,7 @@ async function resolveApproval(
       if (
         currentApproval === null ||
         currentApproval.tenantId !== args.tenantId ||
-        currentApproval.deploymentId !== approval.deploymentId
+        currentApproval.anchorRunId !== approval.anchorRunId
       ) {
         return { kind: "not_found" } as const;
       }
@@ -175,7 +175,7 @@ async function resolveApproval(
         status: sidecarAllocation.status,
       })
       .from(sidecarAllocation)
-      .where(eq(sidecarAllocation.anchorRunId, approval.deploymentId))
+      .where(eq(sidecarAllocation.anchorRunId, approval.anchorRunId))
       .limit(1)
       .for("update");
     const allocationUnavailable =
@@ -214,15 +214,15 @@ async function resolveApproval(
 
       const anchorState = await lockWorkflowRunState(
         tx,
-        approval.deploymentId,
-        approval.deploymentId,
+        approval.anchorRunId,
+        approval.anchorRunId,
       );
       const targetState =
-        approval.runId === approval.deploymentId
+        approval.runId === approval.anchorRunId
           ? anchorState
           : await lockWorkflowRunState(
               tx,
-              approval.deploymentId,
+              approval.anchorRunId,
               approval.runId,
             );
       if (anchorState !== "running" || targetState !== "running") {
@@ -261,8 +261,8 @@ async function resolveApproval(
     if (exclusiveDispatchService !== undefined) {
       await exclusiveDispatchService.enqueueSignal(
         {
-          id: `dispatch:${approval.deploymentId}:${signalId}`,
-          anchorRunId: approval.deploymentId,
+          id: `dispatch:${approval.anchorRunId}:${signalId}`,
+          anchorRunId: approval.anchorRunId,
           signal: {
             agentAddress: claim.agentAddress,
             runId: claim.runId,
@@ -444,7 +444,7 @@ export function createApprovalRoutes(
         deps.grantStore,
         principal.id,
         tenant.id,
-        `approval:${row.deploymentId}`,
+        `approval:${row.anchorRunId}`,
         "resolve",
         deps.conditionRegistry,
       );
