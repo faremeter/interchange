@@ -304,7 +304,7 @@ export function tenantDefinitionsQuery(tenantId: string) {
 export type ApprovalResponse = {
   id: string;
   tenantId: string;
-  deploymentId: string;
+  anchorRunId: string;
   runId: string;
   agentAddress: string;
   correlationId: string;

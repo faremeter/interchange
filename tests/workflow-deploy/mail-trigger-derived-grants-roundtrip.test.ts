@@ -3,7 +3,7 @@
 // INTR-339's headline: when a workflow run is triggered, the run's
 // authorization grants are DERIVED from the deployment's definition and
 // committed to Postgres before the run dispatches. This test drives that
-// derivation through the PRODUCTION `POST /workflows/:deploymentId/mail`
+// derivation through the PRODUCTION `POST /workflows/:runId/mail`
 // route against a real migrated schema and a real sidecar subprocess:
 //
 //   - The workflow's single ACTION step declares `effect:{requires:
@@ -148,7 +148,7 @@ const workflow: WorkflowDefinition = defineWorkflow({
 // The trigger route's 202 body shape. Validated rather than cast so a
 // route response drift surfaces at the boundary.
 const TriggerResponse = type({
-  deploymentId: "string",
+  runId: "string",
   address: "string",
   messageId: "string",
 });
@@ -365,7 +365,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       const rawJson: unknown = await res.json();
       const json = TriggerResponse.assert(rawJson);
-      expect(json.deploymentId).toBe(DEPLOYMENT_ID);
+      expect(json.runId).toBe(DEPLOYMENT_ID);
       expect(json.address).toBe(deploymentMailAddress);
       // The route keys the run on the deployment's local part (the stable
       // runId), not this message's Message-ID.

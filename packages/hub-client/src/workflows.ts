@@ -16,7 +16,7 @@ export type WorkflowDeployment = typeof WorkflowDeployment.infer;
 const WorkflowDeploymentList = WorkflowDeployment.array();
 
 export const WorkflowRunTrigger = type({
-  deploymentId: "string",
+  runId: "string",
   address: "string",
   messageId: "string",
 });
@@ -108,7 +108,7 @@ export async function deployWorkflow(
 export async function deliverWorkflowSignal(
   transport: Transport,
   tenantId: string,
-  deploymentId: string,
+  runId: string,
   input: DeliverSignalInput,
 ): Promise<void> {
   const body: {
@@ -126,7 +126,7 @@ export async function deliverWorkflowSignal(
   }
   await transport.fetch(
     "POST",
-    `${workflowsBasePath(tenantId)}/${deploymentId}/signals`,
+    `${workflowsBasePath(tenantId)}/${runId}/signals`,
     body,
   );
 }
@@ -134,7 +134,7 @@ export async function deliverWorkflowSignal(
 export async function triggerWorkflowRun(
   transport: Transport,
   tenantId: string,
-  deploymentId: string,
+  runId: string,
   input: TriggerWorkflowRunInput,
 ): Promise<WorkflowRunTrigger> {
   const body: TriggerWorkflowRunInput = { content: input.content };
@@ -143,7 +143,7 @@ export async function triggerWorkflowRun(
   }
   const raw = await transport.fetch<unknown>(
     "POST",
-    `${workflowsBasePath(tenantId)}/${deploymentId}/mail`,
+    `${workflowsBasePath(tenantId)}/${runId}/mail`,
     body,
   );
   const trigger = WorkflowRunTrigger(raw);
@@ -158,11 +158,11 @@ export async function triggerWorkflowRun(
 export async function listWorkflowRuns(
   transport: Transport,
   tenantId: string,
-  deploymentId: string,
+  runId: string,
 ): Promise<string[]> {
   const raw = await transport.fetch<unknown>(
     "GET",
-    `${workflowsBasePath(tenantId)}/${deploymentId}/runs`,
+    `${workflowsBasePath(tenantId)}/${runId}/runs`,
   );
   const list = WorkflowRunList(raw);
   if (list instanceof type.errors) {
@@ -174,12 +174,12 @@ export async function listWorkflowRuns(
 export async function readWorkflowRunEvents(
   transport: Transport,
   tenantId: string,
-  deploymentId: string,
   runId: string,
+  eventRunId: string,
 ): Promise<WorkflowRunEvents> {
   const raw = await transport.fetch<unknown>(
     "GET",
-    `${workflowsBasePath(tenantId)}/${deploymentId}/runs/${runId}/events`,
+    `${workflowsBasePath(tenantId)}/${runId}/runs/${eventRunId}/events`,
   );
   const events = WorkflowRunEvents(raw);
   if (events instanceof type.errors) {

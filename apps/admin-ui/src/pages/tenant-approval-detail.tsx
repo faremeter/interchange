@@ -69,7 +69,7 @@ export function TenantApprovalDetailPage() {
         <dl className="overflow-hidden rounded-lg border">
           <Row label="Scope">{approval.scope ?? "Not yet decided"}</Row>
           <Row label="Deployment">
-            <span className="font-mono text-xs">{approval.deploymentId}</span>
+            <span className="font-mono text-xs">{approval.anchorRunId}</span>
           </Row>
           <Row label="Run">
             <span className="font-mono text-xs">{approval.runId}</span>

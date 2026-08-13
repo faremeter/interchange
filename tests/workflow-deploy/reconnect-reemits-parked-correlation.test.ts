@@ -188,7 +188,7 @@ let env: DeployFlowEnv;
 let h: TestDb;
 
 // The deployment mail address and the workflow-run repo slug the supervisor
-// stamps onto the register frame's `deploymentId`. The co-write resolves
+// stamps onto the register frame's `anchorRunId`. The co-write resolves
 // tenancy by the address and cross-checks the slug, so the seeded
 // anchor run is keyed by the slug with this address.
 const deploymentMailAddress = deriveRunAddress({
@@ -268,7 +268,7 @@ const approverGrant: GrantRule = {
  * The real hub co-write, mirroring `createHubSessionLookups`'s
  * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor run
  * -- the `workflow_run` whose id is the deployment id -- the address names,
- * cross-check the frame's `deploymentId` against it, and co-write the
+ * cross-check the frame's `anchorRunId` against it, and co-write the
  * `signal_correlation` + `approval` rows in one transaction through the real
  * stores. Wired into the fixture hub's sidecar router so both the suspend-time
  * register and the reconnect re-emit land durable rows on the same schema this

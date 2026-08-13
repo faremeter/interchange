@@ -237,7 +237,7 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
     type: "signal.correlation.register",
     correlationId: "corr-1",
     runId: "run-1",
-    deploymentId: "dep-1",
+    anchorRunId: "dep-1",
     agentAddress: "ins_dep@integration.interchange",
     kind: "approval",
   };

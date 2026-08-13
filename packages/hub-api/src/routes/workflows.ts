@@ -161,7 +161,7 @@ const WorkflowDeploymentResponse = type({
 // sidecar side and is not known synchronously here, so the caller
 // correlates the downstream RunStarted via the returned messageId.
 const WorkflowRunTriggerResponse = type({
-  deploymentId: "string",
+  runId: "string",
   address: "string",
   messageId: "string",
 });
@@ -659,8 +659,8 @@ export function createWorkflowRoutes({
   );
 
   app.post(
-    "/:deploymentId/signals",
-    requireGrant(idResource("workflow-run", "deploymentId"), "manage"),
+    "/:runId/signals",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
     describeRoute({
       tags: ["Workflows"],
       summary: "Deliver a signal to a workflow run",
@@ -697,7 +697,7 @@ export function createWorkflowRoutes({
     validator("json", DeliverSignal),
     async (c) => {
       const tenant = c.get("tenant");
-      const deploymentId = c.req.param("deploymentId");
+      const deploymentId = c.req.param("runId");
       const body = c.req.valid("json");
       const agentAddress = deriveRunAddress({
         runId: deploymentId,
@@ -949,8 +949,8 @@ export function createWorkflowRoutes({
   );
 
   app.post(
-    "/:deploymentId/mail",
-    requireGrant(idResource("workflow-run", "deploymentId"), "manage"),
+    "/:runId/mail",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
     describeRoute({
       tags: ["Workflows"],
       summary: "Trigger a workflow run",
@@ -1006,7 +1006,7 @@ export function createWorkflowRoutes({
     async (c) => {
       const tenant = c.get("tenant");
       const principal = c.get("principal");
-      const deploymentId = c.req.param("deploymentId");
+      const deploymentId = c.req.param("runId");
       const body = c.req.valid("json");
       const address = deriveRunAddress({
         runId: deploymentId,
@@ -1351,7 +1351,7 @@ export function createWorkflowRoutes({
         }
         // enqueue may wake before the transaction commits.
         workflowDispatchService.wake();
-        return c.json({ deploymentId, address, messageId }, 202);
+        return c.json({ runId: deploymentId, address, messageId }, 202);
       }
 
       const reserved = await db.transaction(async (tx) => {
@@ -1426,13 +1426,13 @@ export function createWorkflowRoutes({
         );
       }
 
-      return c.json({ deploymentId, address, messageId }, 202);
+      return c.json({ runId: deploymentId, address, messageId }, 202);
     },
   );
 
   app.get(
-    "/:deploymentId/runs",
-    requireGrant(idResource("workflow-run", "deploymentId"), "read"),
+    "/:runId/runs",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Workflows"],
       summary: "List workflow runs",
@@ -1455,7 +1455,7 @@ export function createWorkflowRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const deploymentId = c.req.param("deploymentId");
+      const deploymentId = c.req.param("runId");
 
       if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
         return c.json(
@@ -1478,8 +1478,8 @@ export function createWorkflowRoutes({
   );
 
   app.get(
-    "/:deploymentId/runs/:runId/events",
-    requireGrant(idResource("workflow-run", "deploymentId"), "read"),
+    "/:runId/runs/:eventRunId/events",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
       tags: ["Workflows"],
       summary: "Read a workflow run's event log",
@@ -1502,8 +1502,8 @@ export function createWorkflowRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const deploymentId = c.req.param("deploymentId");
-      const runId = c.req.param("runId");
+      const deploymentId = c.req.param("runId");
+      const runId = c.req.param("eventRunId");
 
       if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
         return c.json(
@@ -1517,9 +1517,9 @@ export function createWorkflowRoutes({
         );
       }
 
-      // The inner :runId is not independently tenant-checked, and does not
-      // need to be: the events repo is addressed by the tenant-verified
-      // deploymentId and the caller's own tenant.domain, so a runId only
+      // The inner :eventRunId is not independently tenant-checked, and does
+      // not need to be: the events repo is addressed by the tenant-verified
+      // run id and the caller's own tenant.domain, so an event run id only
       // selects within this tenant's deployment repo -- it cannot reach
       // another tenant's runs.
       const events = await runReader.readRunEvents(

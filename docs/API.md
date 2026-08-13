@@ -50,10 +50,10 @@
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
 | POST | /api/tenants/:tenantId/workflows/deployments | Deploy a workflow |
 | GET | /api/tenants/:tenantId/workflows/deployments | List workflow deployments |
-| POST | /api/tenants/:tenantId/workflows/:deploymentId/signals | Deliver a signal to a workflow run |
-| POST | /api/tenants/:tenantId/workflows/:deploymentId/mail | Trigger a workflow run |
-| GET | /api/tenants/:tenantId/workflows/:deploymentId/runs | List workflow runs |
-| GET | /api/tenants/:tenantId/workflows/:deploymentId/runs/:runId/events | Read a workflow run's event log |
+| POST | /api/tenants/:tenantId/workflows/:runId/signals | Deliver a signal to a workflow run |
+| POST | /api/tenants/:tenantId/workflows/:runId/mail | Trigger a workflow run |
+| GET | /api/tenants/:tenantId/workflows/:runId/runs | List workflow runs |
+| GET | /api/tenants/:tenantId/workflows/:runId/runs/:eventRunId/events | Read a workflow run's event log |
 | GET | /api/tenants/:tenantId/approvals | List pending approvals in the tenant |
 | GET | /api/tenants/:tenantId/approvals/:approvalId | Get approval details |
 | POST | /api/tenants/:tenantId/approvals/:approvalId/approve | Approve an action |
@@ -591,7 +591,7 @@ Lists the workflow deployments for the tenant, most recent first.
 
 200: unknown -- List of workflow deployments
 
-### POST /api/tenants/:tenantId/workflows/:deploymentId/signals
+### POST /api/tenants/:tenantId/workflows/:runId/signals
 Deliver a signal to a workflow run
 
 Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it.
@@ -605,7 +605,7 @@ Body: unknown
 502: ErrorResponse -- Sidecar unavailable
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
-### POST /api/tenants/:tenantId/workflows/:deploymentId/mail
+### POST /api/tenants/:tenantId/workflows/:runId/mail
 Trigger a workflow run
 
 Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence.
@@ -619,7 +619,7 @@ Body: SendMessage
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
-### GET /api/tenants/:tenantId/workflows/:deploymentId/runs
+### GET /api/tenants/:tenantId/workflows/:runId/runs
 List workflow runs
 
 Lists the run ids present in the deployment's workflow-run event log. Returns an empty list when no run has committed events yet.
@@ -627,7 +627,7 @@ Lists the run ids present in the deployment's workflow-run event log. Returns an
 200: unknown -- List of run ids
 404: ErrorResponse -- Workflow deployment not found
 
-### GET /api/tenants/:tenantId/workflows/:deploymentId/runs/:runId/events
+### GET /api/tenants/:tenantId/workflows/:runId/runs/:eventRunId/events
 Read a workflow run's event log
 
 Returns the seq-ordered event projection (RunStarted, StepStarted, StepCompleted, SignalAwaited, RunCompleted, etc.) for a single run. The full event log is returned in ascending seq order; an unknown run returns an empty list.
@@ -1225,11 +1225,11 @@ Returns the current set of tarballs under tarballs/ for the package-registry ass
 ## Type Reference
 
 ### ApprovalResponse
-`{ agentAddress: string, correlationId: string, createdAt: string, deploymentId: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown }, toolDefinition: { [string]: unknown }, updatedAt: string }`
+`{ agentAddress: string, anchorRunId: string, correlationId: string, createdAt: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown }, toolDefinition: { [string]: unknown }, updatedAt: string }`
 Source: packages/types/src/approvals.ts
 
+**anchorRunId**: The anchor run the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.
 **correlationId**: Ties the approval to the suspension it resolves. The parked run awaits the control signal keyed by this id.
-**deploymentId**: The workflow deployment the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.
 **timeoutAt**: Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.
 **toolDefinition**: The approver-facing tool snapshot (name, description, input schema) captured at suspend time.
 

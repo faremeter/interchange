@@ -3,8 +3,8 @@ import { type } from "arktype";
 export const ApprovalResponse = type({
   id: "string",
   tenantId: "string",
-  deploymentId: type("string").describe(
-    "The workflow deployment the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.",
+  anchorRunId: type("string").describe(
+    "The anchor run the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.",
   ),
   runId: "string",
   agentAddress: "string",

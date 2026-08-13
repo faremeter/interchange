@@ -198,7 +198,7 @@ describe("deliverWorkflowSignal", () => {
 describe("triggerWorkflowRun", () => {
   test("POSTs the mail body and returns the parsed trigger ack", async () => {
     const ack = {
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       address: "wf@deployments.example.com",
       messageId: "<msg_1@example.com>",
     };
@@ -232,7 +232,7 @@ describe("triggerWorkflowRun", () => {
 
   test("omits attachments from the body when the caller does not supply any", async () => {
     const ack = {
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       address: "wf@deployments.example.com",
       messageId: "<msg_1@example.com>",
     };
@@ -247,7 +247,7 @@ describe("triggerWorkflowRun", () => {
 
   test("rejects a response that does not match the trigger ack shape", async () => {
     const { transport } = createMockTransport(() => ({
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
     }));
     await expect(
       triggerWorkflowRun(transport, TENANT_ID, DEPLOYMENT_ID, {
@@ -260,10 +260,10 @@ describe("triggerWorkflowRun", () => {
   // the signal route's empty 202. Driving the call through the real browser
   // transport (rather than a mock) exercises the 202-with-body path: a
   // transport that discarded every 202 body would resolve to undefined and
-  // lose the deploymentId/address/messageId the caller needs.
+  // lose the runId/address/messageId the caller needs.
   test("returns the parsed ack from a real 202-with-body response", async () => {
     const ack = {
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       address: "wf@deployments.example.com",
       messageId: "<msg_1@example.com>",
     };

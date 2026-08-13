@@ -1677,7 +1677,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         type: "signal.correlation.register",
         correlationId: registration.correlationId,
         runId: registration.runId,
-        deploymentId: registration.deploymentId,
+        anchorRunId: registration.deploymentId,
         agentAddress: registration.agentAddress,
         kind: registration.kind,
         snapshot: registration.approvalSnapshot,

@@ -118,7 +118,7 @@ const ASSET = "asset1";
 const DEPLOYMENT = "dep_abc123";
 const WF_ADDR = "ins_dep_abc@wf.example";
 // The workflow-run repo slug the supervisor derives from the address and stamps
-// onto the register frame's `deploymentId` (address with every `@`/`.`
+// onto the register frame's `anchorRunId` (address with every `@`/`.`
 // substituted). This is what the co-write's cross-check compares against, and
 // it is distinct from the raw deployment id above.
 const DEPLOYMENT_SLUG = deriveWorkflowRunRepoId(WF_ADDR);
@@ -288,7 +288,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         runId: "run-1",
         // The supervisor stamps the workflow-run repo slug, not the raw
         // deployment id, onto the frame.
-        deploymentId: DEPLOYMENT_SLUG,
+        anchorRunId: DEPLOYMENT_SLUG,
         agentAddress: WF_ADDR,
         kind: "approval",
         snapshot: SNAPSHOT,
@@ -318,7 +318,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(corr?.correlationId).toBe("corr-1");
       expect(corr?.tenantId).toBe(TENANT);
       // The FK column carries the raw deployment id the row is keyed by, not the
-      // workflow-run repo slug the frame's `deploymentId` is stamped with.
+      // workflow-run repo slug the frame's `anchorRunId` is stamped with.
       expect(corr?.deploymentId).toBe(DEPLOYMENT);
       expect(corr?.deploymentId).not.toBe(DEPLOYMENT_SLUG);
       expect(corr?.agentAddress).toBe(WF_ADDR);
@@ -412,7 +412,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {
       // Regression: a real deployment's anchor-run id is the raw
       // `dep_...` id `deployWorkflowDefinition` stamps, while the frame's
-      // `deploymentId` is the workflow-run repo slug the supervisor derives from
+      // `anchorRunId` is the workflow-run repo slug the supervisor derives from
       // the address. seedDeployment seeds exactly that shape (raw id
       // DEPLOYMENT, address WF_ADDR), and the frame carries DEPLOYMENT_SLUG.
       // Before the co-write's slug cross-check and raw-id FK writes, this path
@@ -428,7 +428,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       // Call the co-write directly with the real-shaped frame: the raw-id
-      // deployment resolved by address, the slug on the frame's deploymentId.
+      // deployment resolved by address, the slug on the frame's anchorRunId.
       // The direct call bypasses the router's error-swallowing handler, so a
       // regression would surface here as a rejected promise rather than a
       // silently-dropped frame.
@@ -545,10 +545,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(approvals).toHaveLength(0);
     });
 
-    test("rejects a frame whose deploymentId does not match the address", async () => {
+    test("rejects a frame whose anchorRunId does not match the address", async () => {
       // WF_ADDR is owned and derives DEPLOYMENT_SLUG, but the frame claims
       // DEPLOYMENT_2_SLUG (the other deployment's workflow-run repo slug).
-      // registerSignalCorrelation cross-checks the frame's deploymentId against
+      // registerSignalCorrelation cross-checks the frame's anchorRunId against
       // the slug re-derived from the address and throws on a mismatch; the
       // handler swallows the throw, so no rows are written.
       const kp = await generateKeyPair();
@@ -566,7 +566,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           type: "signal.correlation.register",
           correlationId: "corr-1",
           runId: "run-1",
-          deploymentId: DEPLOYMENT_2_SLUG,
+          anchorRunId: DEPLOYMENT_2_SLUG,
           agentAddress: WF_ADDR,
           kind: "approval",
           // Carry a snapshot so this frame passes the parse and the test
