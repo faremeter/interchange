@@ -35,16 +35,16 @@
 | PATCH | /api/tenants/:tenantId/grants/:grantId | Update a grant |
 | DELETE | /api/tenants/:tenantId/grants/:grantId | Revoke a grant |
 | POST | /api/tenants/:tenantId/principals/:principalId/evaluate | Evaluate grants for a principal |
-| GET | /api/tenants/:tenantId/workflows/runs | List agent instances |
+| GET | /api/tenants/:tenantId/workflows/runs | List workflow runs |
 | GET | /api/tenants/:tenantId/workflows/runs/blobs/:blobId | Fetch a blob by ID |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId | Get instance detail |
-| DELETE | /api/tenants/:tenantId/workflows/runs/:runId | Stop an instance |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get instance health |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List instance offerings |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId/events | SSE event stream |
-| POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to the agent |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for an instance |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List inference turns for an instance |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId | Get run detail |
+| DELETE | /api/tenants/:tenantId/workflows/runs/:runId | Stop a run |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get run health |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List run offerings |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Run event stream |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List a run's turns |
 | GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
@@ -438,16 +438,16 @@ Body: EvaluateRequest
 200: EvaluateResult -- Evaluation result
 404: ErrorResponse -- Principal not found
 
-## Instances
+## Runs
 
 ### GET /api/tenants/:tenantId/workflows/runs
-List agent instances
+List workflow runs
 
-Lists agent instances in the tenant. Filterable by definitionId and status.
+Lists the tenant's top-level workflow runs. Filterable by definitionId and status.
 
 Query: definitionId?, status?: deployed|running|updating|error|stopped, cursor?, limit?
 
-200: unknown -- List of instances
+200: unknown -- List of runs
 
 ### GET /api/tenants/:tenantId/workflows/runs/blobs/:blobId
 Fetch a blob by ID
@@ -460,82 +460,82 @@ Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer
 404: ErrorResponse -- Blob not found
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId
-Get instance detail
+Get run detail
 
-Returns instance runtime state including status, public key, and sidecar assignment.
+Returns workflow run state including status, public key, and sidecar assignment.
 
-200: WorkflowRunResponse -- Instance detail
-404: ErrorResponse -- Instance not found
+200: WorkflowRunResponse -- Run detail
+404: ErrorResponse -- Run not found
 
 ### DELETE /api/tenants/:tenantId/workflows/runs/:runId
-Stop an instance
+Stop a run
 
-Stops the running instance and undeploys the agent from the sidecar.
+Stops a live workflow run and releases its sidecar allocation.
 
-204: (no content) -- Instance stopped
-404: ErrorResponse -- Instance not found
-409: ErrorResponse -- Instance already stopped
+204: (no content) -- Run stopped
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run already stopped
 502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/health
-Get instance health
+Get run health
 
-Returns liveness and readiness for a running instance. Liveness reflects whether the instance's sidecar connection is active. Readiness reflects whether the instance has an active event collector and can process work.
+Returns liveness and readiness for a live run. Liveness reflects whether the run's sidecar connection is active. Readiness reflects whether the run has an active event collector and can process work.
 
 200: WorkflowRunHealth -- Health status
-404: ErrorResponse -- Instance not found
-410: ErrorResponse -- Instance stopped
+404: ErrorResponse -- Run not found
+410: ErrorResponse -- Run stopped
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/offerings
-List instance offerings
+List run offerings
 
-Returns the offerings associated with the instance's agent definition. These represent the capabilities the instance can provide.
+Returns the offerings associated with the run's workflow definition. These represent the capabilities the run can provide.
 
 200: OfferingDetail[] -- List of offerings
-404: ErrorResponse -- Instance not found
+404: ErrorResponse -- Run not found
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
-SSE event stream
+Run event stream
 
-Server-Sent Events stream for agent events. Use POST .../messages for client-to-server messaging.
+Streams the run's committed event log. Superseded by the run-event timeline mapping.
 
-200: SSE stream -- SSE event stream
-404: ErrorResponse -- Instance not found
-410: ErrorResponse -- Instance stopped
+200: SSE stream -- Run event stream
+404: ErrorResponse -- Run not found
+410: ErrorResponse -- Run stopped
 
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/mail
-Send mail to the agent
+Send mail to a run
 
-Persists the user message as a mail record and dispatches it to the running agent. Returns JMAP Email-shaped response.
+Persists the user message as a mail record and dispatches it to the run. Returns JMAP Email-shaped response.
 
 Body: SendMessage
 
 201: MailResponse -- Mail sent
 400: AttachmentErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
-404: ErrorResponse -- Instance not found
-409: ErrorResponse -- Instance not running
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run not live
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/mail
-List mail for an instance
+List mail for a run
 
 Returns parsed JMAP Email objects in reverse chronological order. Cursor-paginated.
 
 Query: cursor?, limit?
 
 200: unknown -- List of mail
-404: ErrorResponse -- Instance not found
+404: ErrorResponse -- Run not found
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/turns
-List inference turns for an instance
+List a run's turns
 
-Returns inference turns with their parts in reverse chronological order. Cursor-paginated.
+Returns the run's step and lifecycle events in order. Cursor-paginated.
 
 Query: cursor?, limit?
 
-200: unknown -- List of inference turns
-404: ErrorResponse -- Instance not found
+200: unknown -- List of turns
+404: ErrorResponse -- Run not found
 
 ## Workflow Definitions
 

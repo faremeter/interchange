@@ -1,4 +1,4 @@
-import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, inArray, isNotNull } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
@@ -36,10 +36,10 @@ import {
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
 import {
-  formatInstanceView,
-  instanceStatusOf,
-  mapRunStatusToInstanceStatus,
-} from "./instance-view";
+  formatRunView,
+  viewStatusOf,
+  mapRunStatusToViewStatus,
+} from "./run-view";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
@@ -53,11 +53,13 @@ import {
 } from "../pagination";
 
 // The interactive run operations -- stop, mail send + history, turns, and the
-// event stream -- have no workflow-run backing yet: they were built for the
-// retired folded-launch surface, and a workflow (anchor) run carries none of
-// the per-run session, collector, or terminal machinery they read. Each such
-// route returns this not-implemented signal (kept mounted, not 404, so the
-// admin UI gets a clean answer) until the mapping lands.
+// event stream -- are not yet wired onto a workflow (anchor) run. They were
+// built for the retired folded-launch surface, and repointing them onto the
+// run's workflow-native sources (the durable run-event log for turns/events,
+// the Trigger path for mail send) is a follow-on to this read repoint; stop and
+// mail history need genuinely new backing (INTR-454). Each such route returns
+// this not-implemented signal (kept mounted, not 404, so the admin UI gets a
+// clean answer) until its mapping lands.
 function workflowRunOperationUnsupported(
   c: Context<TenantEnv>,
   operation: string,
@@ -80,16 +82,16 @@ function workflowRunOperationUnsupported(
 // rejected here before the JSON parser allocates a giant string.
 const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
-type InstanceStatusFilter =
+type RunStatusFilter =
   | "deployed"
   | "running"
   | "updating"
   | "error"
   | "stopped";
 
-function isInstanceStatusFilter(
+function isRunStatusFilter(
   status: string | undefined,
-): status is InstanceStatusFilter {
+): status is RunStatusFilter {
   return (
     status === "deployed" ||
     status === "running" ||
@@ -101,18 +103,18 @@ function isInstanceStatusFilter(
 
 type WorkflowRunStatus = (typeof workflowRun.$inferSelect)["status"];
 
-// The `workflow_run` statuses that present as a given instance-status filter,
-// derived as the inverse of `mapRunStatusToInstanceStatus` so the two cannot
-// drift: every run status is bucketed under the instance status it maps onto.
-// The `deployed` run status maps onto the `deployed` filter, but the run-list
-// query below excludes anchor rows (`isNull(anchorRunId)`), so the filter still
-// selects no folded runs. No run status maps onto `updating`, so that filter
-// selects no runs (empty array) and the caller skips the run query entirely.
-const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
-  InstanceStatusFilter,
+// The `workflow_run` statuses that present as a given run-view status filter,
+// derived as the inverse of `mapRunStatusToViewStatus` so the two cannot drift:
+// every run status is bucketed under the view status it maps onto. The
+// `deployed` run status maps onto the `deployed` filter, and the run-list query
+// below now selects top-level anchor runs, so that filter returns the deployed
+// anchors. No run status maps onto `updating`, so that filter selects no runs
+// (empty array) and the caller skips the run query entirely.
+const RUN_STATUSES_BY_VIEW_STATUS: Record<
+  RunStatusFilter,
   WorkflowRunStatus[]
 > = (() => {
-  const byStatus: Record<InstanceStatusFilter, WorkflowRunStatus[]> = {
+  const byStatus: Record<RunStatusFilter, WorkflowRunStatus[]> = {
     deployed: [],
     running: [],
     updating: [],
@@ -120,30 +122,29 @@ const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
     stopped: [],
   };
   for (const runStatus of workflowRun.status.enumValues) {
-    byStatus[mapRunStatusToInstanceStatus(runStatus)].push(runStatus);
+    byStatus[mapRunStatusToViewStatus(runStatus)].push(runStatus);
   }
   return byStatus;
 })();
 
-// The row shape the folded-run list sub-query projects: the run columns the
-// instance view needs, plus the definition name. The sub-query already gates on
-// an instance-kind definition, so the kind is not carried on the row.
-type FoldedRunListRow = {
+// The row shape the run-list query projects: the run columns the run view
+// needs, plus the definition name.
+type RunListRow = {
   run: typeof workflowRun.$inferSelect;
   definitionName: string;
 };
 
-// Shape a folded run into the fold-normalized record the instance view expects,
-// through the same builder `findRoutableById` uses. The sub-query filters
-// `address` non-null, so a null here is a broken invariant and surfaces loudly.
-function foldedRunToRecord(row: FoldedRunListRow): RoutableRecord {
+// Shape a listed run into the routing record the run view expects, through the
+// same builder `findRoutableById` uses. The query filters `address` non-null,
+// so a null here is a broken invariant and surfaces loudly.
+function runToRecord(row: RunListRow): RoutableRecord {
   if (row.run.address === null) {
-    throw new Error(`folded run ${row.run.id} listed with a null address`);
+    throw new Error(`run ${row.run.id} listed with a null address`);
   }
   return runRowToRoutableRecord(row.run, row.run.address);
 }
 
-export type CreateInstanceRoutesDeps = {
+export type CreateRunRoutesDeps = {
   db: DB["db"];
   sessionService: SessionService;
   sidecarRouter: SidecarRouter;
@@ -153,24 +154,24 @@ export type CreateInstanceRoutesDeps = {
   requireGrant: RequireGrant;
 };
 
-export function createInstanceRoutes({
+export function createRunRoutes({
   db,
   sidecarRouter,
   eventCollectors,
   grantStore,
   conditionRegistry,
   requireGrant,
-}: CreateInstanceRoutesDeps): Hono<TenantEnv> {
+}: CreateRunRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
   app.get(
     "/",
     requireGrant("workflow-run:*", "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "List agent instances",
+      tags: ["Runs"],
+      summary: "List workflow runs",
       description:
-        "Lists agent instances in the tenant. Filterable by definitionId and status.",
+        "Lists the tenant's top-level workflow runs. Filterable by definitionId and status.",
       parameters: [
         { name: "definitionId", in: "query", schema: { type: "string" } },
         {
@@ -185,7 +186,7 @@ export function createInstanceRoutes({
       ],
       responses: {
         200: {
-          description: "List of instances",
+          description: "List of runs",
           content: {
             "application/json": {
               schema: resolver(paginatedSchema(WorkflowRunResponse)),
@@ -203,26 +204,24 @@ export function createInstanceRoutes({
         limit: c.req.query("limit"),
       });
 
-      // A run presents as an instance when it owns a plain routing address and
-      // carries no deployment id; the two predicates enforce that, dropping a
-      // deployment-anchored run (which carries its deployment id) and an
-      // address-less child run. When a status filter selects no run statuses
-      // (`updating`), skip the query entirely. The `deployed` filter selects the
-      // `deployed` run status but still returns empty, because the
-      // `isNull(anchorRunId)` predicate below excludes every (anchor) row a
-      // deployed run can be.
-      const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
+      // A run is listed when it is a top-level run: it owns a routing address
+      // and self-anchors (`anchorRunId === id`). This is the SQL form of the
+      // shared `isTopLevelRun` predicate the detail resolver classifies on, so
+      // the list and the resolver cannot drift. It drops an address-less child
+      // park row, and now includes the deployed/live anchors. When a status
+      // filter selects no run statuses (`updating`), skip the query entirely.
+      const statusFilter = isRunStatusFilter(status) ? status : undefined;
 
       const runStatuses =
         statusFilter === undefined
           ? undefined
-          : RUN_STATUSES_BY_INSTANCE_STATUS[statusFilter];
-      let runRows: FoldedRunListRow[] = [];
+          : RUN_STATUSES_BY_VIEW_STATUS[statusFilter];
+      let runRows: RunListRow[] = [];
       if (runStatuses === undefined || runStatuses.length > 0) {
         const runConditions = [
           eq(workflowRun.tenantId, tenantCtx.id),
           isNotNull(workflowRun.address),
-          isNull(workflowRun.anchorRunId),
+          eq(workflowRun.anchorRunId, workflowRun.id),
         ];
         if (definitionId !== undefined) {
           runConditions.push(eq(workflowRun.definitionId, definitionId));
@@ -253,9 +252,7 @@ export function createInstanceRoutes({
 
       return c.json(
         paginatedResponse(
-          runRows.map((r) =>
-            formatInstanceView(foldedRunToRecord(r), r.definitionName),
-          ),
+          runRows.map((r) => formatRunView(runToRecord(r), r.definitionName)),
           runRows.map((r) => ({ createdAt: r.run.createdAt, id: r.run.id })),
           limit,
         ),
@@ -266,7 +263,7 @@ export function createInstanceRoutes({
   app.get(
     "/blobs/:blobId",
     describeRoute({
-      tags: ["Instances"],
+      tags: ["Runs"],
       summary: "Fetch a blob by ID",
       description:
         "Returns raw bytes for a MIME part. Blob IDs are issued by the mail parsing layer.",
@@ -403,19 +400,19 @@ export function createInstanceRoutes({
     "/:runId",
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "Get instance detail",
+      tags: ["Runs"],
+      summary: "Get run detail",
       description:
-        "Returns instance runtime state including status, public key, and sidecar assignment.",
+        "Returns workflow run state including status, public key, and sidecar assignment.",
       responses: {
         200: {
-          description: "Instance detail",
+          description: "Run detail",
           content: {
             "application/json": { schema: resolver(WorkflowRunResponse) },
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -426,12 +423,12 @@ export function createInstanceRoutes({
       const tenantCtx = c.get("tenant");
       const runId = c.req.param("runId");
 
-      // Resolve across the fold: a legacy agent instance or a folded run. The
-      // origin agent supplies the display name for either kind.
+      // Resolve the top-level workflow run. The run's definition supplies the
+      // display name.
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
+          { error: { code: "not_found", message: "Run not found" } },
           404,
         );
       }
@@ -446,7 +443,7 @@ export function createInstanceRoutes({
       });
       if (definitionRow === undefined) {
         return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
+          { error: { code: "not_found", message: "Run not found" } },
           404,
         );
       }
@@ -455,7 +452,7 @@ export function createInstanceRoutes({
       const runtimeStatus = eventCollectors.getStatus(record.address);
 
       return c.json(
-        formatInstanceView(record, definitionRow.name, runtimeStatus?.status),
+        formatRunView(record, definitionRow.name, runtimeStatus?.status),
       );
     },
   );
@@ -464,10 +461,10 @@ export function createInstanceRoutes({
     "/:runId/health",
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "Get instance health",
+      tags: ["Runs"],
+      summary: "Get run health",
       description:
-        "Returns liveness and readiness for a running instance. Liveness reflects whether the instance's sidecar connection is active. Readiness reflects whether the instance has an active event collector and can process work.",
+        "Returns liveness and readiness for a live run. Liveness reflects whether the run's sidecar connection is active. Readiness reflects whether the run has an active event collector and can process work.",
       responses: {
         200: {
           description: "Health status",
@@ -476,13 +473,13 @@ export function createInstanceRoutes({
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         410: {
-          description: "Instance stopped",
+          description: "Run stopped",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -496,14 +493,14 @@ export function createInstanceRoutes({
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
+          { error: { code: "not_found", message: "Run not found" } },
           404,
         );
       }
 
-      if (instanceStatusOf(record) === "stopped") {
+      if (viewStatusOf(record) === "stopped") {
         return c.json(
-          { error: { code: "gone", message: "Instance has stopped" } },
+          { error: { code: "gone", message: "Run has stopped" } },
           410,
         );
       }
@@ -524,10 +521,10 @@ export function createInstanceRoutes({
     "/:runId/offerings",
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "List instance offerings",
+      tags: ["Runs"],
+      summary: "List run offerings",
       description:
-        "Returns the offerings associated with the instance's agent definition. These represent the capabilities the instance can provide.",
+        "Returns the offerings associated with the run's workflow definition. These represent the capabilities the run can provide.",
       responses: {
         200: {
           description: "List of offerings",
@@ -538,7 +535,7 @@ export function createInstanceRoutes({
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -552,7 +549,7 @@ export function createInstanceRoutes({
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
+          { error: { code: "not_found", message: "Run not found" } },
           404,
         );
       }
@@ -565,7 +562,7 @@ export function createInstanceRoutes({
       });
       if (definitionRow === undefined) {
         return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
+          { error: { code: "not_found", message: "Run not found" } },
           404,
         );
       }
@@ -587,22 +584,22 @@ export function createInstanceRoutes({
     "/:runId",
     requireGrant(idResource("workflow-run", "runId"), "manage"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "Stop an instance",
+      tags: ["Runs"],
+      summary: "Stop a run",
       description:
-        "Stops the running instance and undeploys the agent from the sidecar.",
+        "Stops a live workflow run and releases its sidecar allocation.",
       responses: {
         204: {
-          description: "Instance stopped",
+          description: "Run stopped",
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         409: {
-          description: "Instance already stopped",
+          description: "Run already stopped",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -618,11 +615,10 @@ export function createInstanceRoutes({
     async (c) => {
       // Stopping a run is a forced early-cancel that a workflow (anchor) run
       // has no backing for yet -- it needs a hub-side CancelRequested author
-      // and a lease-free allocation-release seam. Since the folded-launch
-      // surface was retired, every run this route could resolve is a workflow
-      // run, so the stop is gated to not-implemented until that mapping lands
-      // (tracked as INTR-454). A `markTerminal`-only stop would lie -- it would
-      // desync the child and its allocation -- so no partial stop is shipped.
+      // and a lease-free allocation-release seam. The stop is gated to
+      // not-implemented until that mapping lands (tracked as INTR-454). A
+      // `markTerminal`-only stop would lie -- it would desync the child and its
+      // allocation -- so no partial stop is shipped.
       return workflowRunOperationUnsupported(c, "Stopping a run");
     },
   );
@@ -631,25 +627,25 @@ export function createInstanceRoutes({
     "/:runId/events",
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "SSE event stream",
+      tags: ["Runs"],
+      summary: "Run event stream",
       description:
-        "Server-Sent Events stream for agent events. Use POST .../messages for client-to-server messaging.",
+        "Streams the run's committed event log. Superseded by the run-event timeline mapping.",
       responses: {
         200: {
-          description: "SSE event stream",
+          description: "Run event stream",
           content: {
             "text/event-stream": {},
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         410: {
-          description: "Instance stopped",
+          description: "Run stopped",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -657,12 +653,11 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      // The live SSE event stream reads a per-run event collector that only a
-      // launched instance ever had; a workflow (anchor) run has none. Since the
-      // folded-launch surface was retired, every run this route could resolve
-      // is a workflow run, so the stream is gated to not-implemented until it
-      // is remapped onto the run's git-backed event timeline (a repurpose
-      // slice). A malformed status-only stub would misrepresent a live run.
+      // The event stream is not yet wired onto a workflow (anchor) run. It must
+      // be remapped onto the run's durable, git-backed run-event log (read via
+      // the workflow-run reader), which the collector-driven inference stream
+      // this route was built for has no analog of. Gated to not-implemented
+      // until that mapping lands.
       return workflowRunOperationUnsupported(c, "The run event stream");
     },
   );
@@ -671,10 +666,10 @@ export function createInstanceRoutes({
     "/:runId/mail",
     requireGrant(idResource("workflow-run", "runId"), "write"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "Send mail to the agent",
+      tags: ["Runs"],
+      summary: "Send mail to a run",
       description:
-        "Persists the user message as a mail record and dispatches it to the running agent. Returns JMAP Email-shaped response.",
+        "Persists the user message as a mail record and dispatches it to the run. Returns JMAP Email-shaped response.",
       responses: {
         201: {
           description: "Mail sent",
@@ -690,13 +685,13 @@ export function createInstanceRoutes({
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         409: {
-          description: "Instance not running",
+          description: "Run not live",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -730,11 +725,10 @@ export function createInstanceRoutes({
     }),
     validator("json", SendMessage),
     async (c) => {
-      // Sending mail needs a launched instance's live session, which a workflow
-      // (anchor) run does not have. Since the folded-launch surface was retired,
-      // every run this route could resolve is a workflow run, so the send is gated
-      // to not-implemented until it is remapped onto the run's Trigger route (a
-      // repurpose slice).
+      // Sending mail to a run is not yet wired onto this surface. It must route
+      // through the run's existing workflow-native Trigger path (which enqueues
+      // a workflow_run_dispatch), not the launched-agent session this route was
+      // built for. Gated to not-implemented until that mapping lands.
       return workflowRunOperationUnsupported(c, "Sending mail to a run");
     },
   );
@@ -743,8 +737,8 @@ export function createInstanceRoutes({
     "/:runId/mail",
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "List mail for an instance",
+      tags: ["Runs"],
+      summary: "List mail for a run",
       description:
         "Returns parsed JMAP Email objects in reverse chronological order. Cursor-paginated.",
       parameters: [...pageParameters],
@@ -758,7 +752,7 @@ export function createInstanceRoutes({
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -766,11 +760,10 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      // A run's mail history was keyed on a launched instance's session; a workflow
-      // (anchor) run has no durable mail archive yet. Since the folded-launch
-      // surface was retired, every run this route could resolve is a workflow run,
-      // so the history is gated to not-implemented until a workflow-run mail archive
-      // lands (tracked as INTR-454).
+      // A run's mail history was keyed on a launched instance's session; a
+      // workflow (anchor) run has no durable mail archive yet, so there is
+      // genuinely new backing to build. Gated to not-implemented until a
+      // workflow-run mail archive lands (tracked as INTR-454).
       return workflowRunOperationUnsupported(c, "Run mail history");
     },
   );
@@ -779,14 +772,14 @@ export function createInstanceRoutes({
     "/:runId/turns",
     requireGrant(idResource("workflow-run", "runId"), "read"),
     describeRoute({
-      tags: ["Instances"],
-      summary: "List inference turns for an instance",
+      tags: ["Runs"],
+      summary: "List a run's turns",
       description:
-        "Returns inference turns with their parts in reverse chronological order. Cursor-paginated.",
+        "Returns the run's step and lifecycle events in order. Cursor-paginated.",
       parameters: [...pageParameters],
       responses: {
         200: {
-          description: "List of inference turns",
+          description: "List of turns",
           content: {
             "application/json": {
               schema: resolver(paginatedSchema(InferenceTurnResponse)),
@@ -794,7 +787,7 @@ export function createInstanceRoutes({
           },
         },
         404: {
-          description: "Instance not found",
+          description: "Run not found",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -802,15 +795,12 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      // A run's inference turns were recorded per launched instance; a workflow
-      // (anchor) run has no such per-run turn stream yet. Since the folded-launch
-      // surface was retired, every run this route could resolve is a workflow run,
-      // so the listing is gated to not-implemented until it is remapped onto the
-      // run's git-backed step events (a repurpose slice).
-      return workflowRunOperationUnsupported(
-        c,
-        "Listing a run's inference turns",
-      );
+      // A run's turns are not yet wired onto this surface. They must be remapped
+      // onto the run's durable, git-backed step and lifecycle events (read via
+      // the workflow-run reader), which the per-instance inference turns this
+      // route was built for have no analog of. Gated to not-implemented until
+      // that mapping lands.
+      return workflowRunOperationUnsupported(c, "Listing a run's turns");
     },
   );
 

@@ -678,17 +678,6 @@ export function deletePrincipalMutation(
   };
 }
 
-export function stopRunMutation(tenantId: string, qc: QueryClient) {
-  return {
-    mutationFn: (runId: string) =>
-      api<undefined>(
-        "DELETE",
-        `/api/tenants/${tenantId}/workflows/runs/${runId}`,
-      ),
-    onSuccess: () => invalidate(qc, tenantId, "runs"),
-  };
-}
-
 // Workflows
 
 export function deployWorkflowMutation(tenantId: string, qc: QueryClient) {

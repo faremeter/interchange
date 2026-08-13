@@ -3,16 +3,13 @@ import { describe, test, expect } from "bun:test";
 import { workflowRun } from "@intx/db/schema";
 import type { RoutableRecord } from "@intx/hub-sessions";
 
-import {
-  formatInstanceView,
-  mapRunStatusToInstanceStatus,
-} from "./instance-view";
+import { formatRunView, mapRunStatusToViewStatus } from "./run-view";
 
 function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
   return {
-    id: "ins_1",
+    id: "run_1",
     tenantId: "tnt_1",
-    address: "ins_1@tenant.example",
+    address: "run_1@tenant.example",
     publicKey: null,
     status: "running",
     createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -26,17 +23,17 @@ function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
   };
 }
 
-describe("mapRunStatusToInstanceStatus", () => {
-  test("maps every run status onto the instance vocabulary", () => {
-    expect(mapRunStatusToInstanceStatus("deployed")).toBe("deployed");
-    expect(mapRunStatusToInstanceStatus("running")).toBe("running");
-    expect(mapRunStatusToInstanceStatus("completed")).toBe("stopped");
-    expect(mapRunStatusToInstanceStatus("cancelled")).toBe("stopped");
-    expect(mapRunStatusToInstanceStatus("failed")).toBe("error");
+describe("mapRunStatusToViewStatus", () => {
+  test("maps every run status onto the run-view vocabulary", () => {
+    expect(mapRunStatusToViewStatus("deployed")).toBe("deployed");
+    expect(mapRunStatusToViewStatus("running")).toBe("running");
+    expect(mapRunStatusToViewStatus("completed")).toBe("stopped");
+    expect(mapRunStatusToViewStatus("cancelled")).toBe("stopped");
+    expect(mapRunStatusToViewStatus("failed")).toBe("error");
   });
 
   test("throws on an unmapped status rather than leak it", () => {
-    expect(() => mapRunStatusToInstanceStatus("bogus")).toThrow(
+    expect(() => mapRunStatusToViewStatus("bogus")).toThrow(
       /unmapped workflow_run status/,
     );
   });
@@ -46,20 +43,20 @@ describe("mapRunStatusToInstanceStatus", () => {
     // map, so a new run status the map does not handle must fail here rather
     // than throw obscurely when that inverse is built.
     for (const status of workflowRun.status.enumValues) {
-      expect(() => mapRunStatusToInstanceStatus(status)).not.toThrow();
+      expect(() => mapRunStatusToViewStatus(status)).not.toThrow();
     }
   });
 });
 
-describe("formatInstanceView", () => {
-  test("shapes a running folded run as a running instance", () => {
-    const view = formatInstanceView(makeRecord(), "My Agent");
+describe("formatRunView", () => {
+  test("shapes a running run into the run view", () => {
+    const view = formatRunView(makeRecord(), "My Agent");
     expect(view).toMatchObject({
-      id: "ins_1",
+      id: "run_1",
       definitionId: "wfd_1",
       definitionName: "My Agent",
       tenantId: "tnt_1",
-      address: "ins_1@tenant.example",
+      address: "run_1@tenant.example",
       status: "running",
       publicKey: null,
       kernelId: null,
@@ -72,25 +69,30 @@ describe("formatInstanceView", () => {
     expect("runtimeStatus" in view).toBe(false);
   });
 
+  test("renders a deployed run as live", () => {
+    const view = formatRunView(makeRecord({ status: "deployed" }), "My Agent");
+    expect(view.status).toBe("deployed");
+  });
+
   test("maps a terminal run's status and formats its endedAt", () => {
     const endedAt = new Date("2026-01-03T00:00:00Z");
-    const failed = formatInstanceView(
+    const failed = formatRunView(
       makeRecord({ status: "failed", endedAt }),
       "My Agent",
     );
     expect(failed.status).toBe("error");
     expect(failed.endedAt).toBe("2026-01-03T00:00:00.000Z");
 
-    expect(
-      formatInstanceView(makeRecord({ status: "completed" }), "A").status,
-    ).toBe("stopped");
-    expect(
-      formatInstanceView(makeRecord({ status: "cancelled" }), "A").status,
-    ).toBe("stopped");
+    expect(formatRunView(makeRecord({ status: "completed" }), "A").status).toBe(
+      "stopped",
+    );
+    expect(formatRunView(makeRecord({ status: "cancelled" }), "A").status).toBe(
+      "stopped",
+    );
   });
 
   test("includes runtimeStatus only when supplied", () => {
-    const view = formatInstanceView(makeRecord(), "A", "idle");
+    const view = formatRunView(makeRecord(), "A", "idle");
     expect(view).toMatchObject({ runtimeStatus: "idle" });
   });
 });

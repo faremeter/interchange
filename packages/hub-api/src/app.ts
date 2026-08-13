@@ -38,7 +38,7 @@ import { createTenantFederationRoutes } from "./routes/tenant-federation";
 import { createPrincipalRoutes, createInviteRoutes } from "./routes/principals";
 import { createRoleRoutes, createRoleAssignRoutes } from "./routes/roles";
 import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
-import { createInstanceRoutes } from "./routes/instances";
+import { createRunRoutes } from "./routes/runs";
 import { createWorkflowRoutes } from "./routes/workflows";
 import { createWorkflowDefinitionRoutes } from "./routes/workflow-definitions";
 import {
@@ -281,7 +281,7 @@ export function mountHubRoutes(
   // deployment id.
   app.route(
     "/api/tenants/:tenantId/workflows/runs",
-    createInstanceRoutes({
+    createRunRoutes({
       db,
       sessionService,
       sidecarRouter,
