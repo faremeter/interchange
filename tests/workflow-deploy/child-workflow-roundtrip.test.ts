@@ -228,7 +228,7 @@ describe("parent -> child workflow round-trip", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -293,7 +293,7 @@ describe("parent -> child workflow round-trip", () => {
         systemPrompt: "Fallback prompt (overridden per step).",
       },
       operatorApprovals,
-      deploymentId: CHILD_DEPLOYMENT_ID,
+      runId: CHILD_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -310,7 +310,7 @@ describe("parent -> child workflow round-trip", () => {
         systemPrompt: "Fallback prompt (overridden per step).",
       },
       operatorApprovals,
-      deploymentId: PARENT_DEPLOYMENT_ID,
+      runId: PARENT_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -321,7 +321,7 @@ describe("parent -> child workflow round-trip", () => {
       id: deriveDeploymentId(parentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: PARENT_DEPLOYMENT_ID,
+      anchorRunId: PARENT_DEPLOYMENT_ID,
       workflowDefinition: parentWorkflowDefinition,
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -596,7 +596,7 @@ describe("parent -> child workflow round-trip", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -665,7 +665,7 @@ describe("parent -> child workflow round-trip", () => {
         systemPrompt: "Fallback prompt (overridden per step).",
       },
       operatorApprovals,
-      deploymentId: NESTED_GRANDCHILD_DEPLOYMENT_ID,
+      runId: NESTED_GRANDCHILD_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -682,7 +682,7 @@ describe("parent -> child workflow round-trip", () => {
         systemPrompt: "Fallback prompt (overridden per step).",
       },
       operatorApprovals,
-      deploymentId: NESTED_CHILD_DEPLOYMENT_ID,
+      runId: NESTED_CHILD_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -699,7 +699,7 @@ describe("parent -> child workflow round-trip", () => {
         systemPrompt: "Fallback prompt (overridden per step).",
       },
       operatorApprovals,
-      deploymentId: NESTED_PARENT_DEPLOYMENT_ID,
+      runId: NESTED_PARENT_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -710,7 +710,7 @@ describe("parent -> child workflow round-trip", () => {
       id: deriveDeploymentId(parentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: NESTED_PARENT_DEPLOYMENT_ID,
+      anchorRunId: NESTED_PARENT_DEPLOYMENT_ID,
       workflowDefinition: parentWorkflowDefinition,
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -873,9 +873,9 @@ describe("parent -> child workflow round-trip", () => {
       domain: DEPLOYMENT_DOMAIN,
     });
     const siblingMailAddresses = SIBLINGS_CHILD_DEPLOYMENT_IDS.map(
-      (deploymentId) =>
+      (anchorRunId) =>
         deriveRunAddress({
-          runId: deploymentId,
+          runId: anchorRunId,
           domain: DEPLOYMENT_DOMAIN,
         }),
     );
@@ -962,7 +962,7 @@ describe("parent -> child workflow round-trip", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -1034,7 +1034,7 @@ describe("parent -> child workflow round-trip", () => {
           systemPrompt: "Fallback prompt (overridden per step).",
         },
         operatorApprovals,
-        deploymentId: depId,
+        runId: depId,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
       });
@@ -1052,7 +1052,7 @@ describe("parent -> child workflow round-trip", () => {
         systemPrompt: "Fallback prompt (overridden per step).",
       },
       operatorApprovals,
-      deploymentId: SIBLINGS_PARENT_DEPLOYMENT_ID,
+      runId: SIBLINGS_PARENT_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -1063,7 +1063,7 @@ describe("parent -> child workflow round-trip", () => {
       id: deriveDeploymentId(parentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: SIBLINGS_PARENT_DEPLOYMENT_ID,
+      anchorRunId: SIBLINGS_PARENT_DEPLOYMENT_ID,
       workflowDefinition: parentWorkflowDefinition,
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

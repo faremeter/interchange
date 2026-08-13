@@ -161,7 +161,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dep_anchor",
         tenantId: "tnt_root",
         definitionId: "wfd_1",
-        deploymentId: "dep_anchor",
+        anchorRunId: "dep_anchor",
         address: "ins_dep_anchor@tnt.test",
         status: "running",
       });

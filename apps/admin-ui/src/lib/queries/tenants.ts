@@ -348,23 +348,17 @@ export function workflowDeploymentsQuery(tenantId: string) {
   });
 }
 
-export function workflowRunsQuery(tenantId: string, deploymentId: string) {
+export function workflowRunsQuery(tenantId: string, runId: string) {
   return queryOptions({
-    queryKey: [
-      "tenants",
-      tenantId,
-      "workflow-deployments",
-      deploymentId,
-      "runs",
-    ],
-    queryFn: () => listWorkflowRuns(transport, tenantId, deploymentId),
+    queryKey: ["tenants", tenantId, "workflow-deployments", runId, "runs"],
+    queryFn: () => listWorkflowRuns(transport, tenantId, runId),
     refetchInterval: 3000,
   });
 }
 
 export function workflowRunEventsQuery(
   tenantId: string,
-  deploymentId: string,
+  anchorRunId: string,
   runId: string,
 ) {
   return queryOptions({
@@ -372,13 +366,13 @@ export function workflowRunEventsQuery(
       "tenants",
       tenantId,
       "workflow-deployments",
-      deploymentId,
+      anchorRunId,
       "runs",
       runId,
       "events",
     ],
     queryFn: () =>
-      readWorkflowRunEvents(transport, tenantId, deploymentId, runId),
+      readWorkflowRunEvents(transport, tenantId, anchorRunId, runId),
     refetchInterval: (query) => {
       const data = query.state.data;
       if (data && isTerminalRunEvents(data.events)) {
@@ -638,33 +632,27 @@ export function deployWorkflowMutation(tenantId: string, qc: QueryClient) {
 
 export function triggerWorkflowRunMutation(
   tenantId: string,
-  deploymentId: string,
+  runId: string,
   qc: QueryClient,
 ) {
   return {
     mutationFn: (input: TriggerWorkflowRunInput) =>
-      triggerWorkflowRun(transport, tenantId, deploymentId, input),
+      triggerWorkflowRun(transport, tenantId, runId, input),
     onSuccess: () =>
       qc.invalidateQueries({
-        queryKey: [
-          "tenants",
-          tenantId,
-          "workflow-deployments",
-          deploymentId,
-          "runs",
-        ],
+        queryKey: ["tenants", tenantId, "workflow-deployments", runId, "runs"],
       }),
   };
 }
 
 export function deliverWorkflowSignalMutation(
   tenantId: string,
-  deploymentId: string,
+  runId: string,
   qc: QueryClient,
 ) {
   return {
     mutationFn: (input: DeliverSignalInput) =>
-      deliverWorkflowSignal(transport, tenantId, deploymentId, input),
+      deliverWorkflowSignal(transport, tenantId, runId, input),
     onSuccess: () => invalidate(qc, tenantId, "workflow-deployments"),
   };
 }

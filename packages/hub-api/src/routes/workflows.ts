@@ -159,12 +159,12 @@ function formatAllocationStatus(row: {
 }
 
 // A deployment exists iff its anchor run does -- the workflow_run whose id is
-// the deployment id, carrying its routing identity. The `deploymentId` is
+// the deployment id, carrying its routing identity. `anchorRunId` is
 // non-null on a deployment-anchored run, distinguishing it from a folded-agent
-// run (which never shares a deployment id anyway).
+// run (which never shares an anchor run anyway).
 async function deploymentAnchorRunExists(
   db: DB["db"],
-  deploymentId: string,
+  anchorRunId: string,
   tenantId: string,
 ): Promise<boolean> {
   const [row] = await db
@@ -172,7 +172,7 @@ async function deploymentAnchorRunExists(
     .from(workflowRun)
     .where(
       and(
-        eq(workflowRun.id, deploymentId),
+        eq(workflowRun.id, anchorRunId),
         eq(workflowRun.tenantId, tenantId),
         isNotNull(workflowRun.anchorRunId),
       ),
@@ -218,12 +218,12 @@ export function createWorkflowRoutes({
   });
 
   async function readRunLifecycle(
-    deploymentId: string,
+    anchorRunId: string,
     tenantDomain: string,
     runId: string,
   ) {
     const deploymentAddress = deriveRunAddress({
-      runId: deploymentId,
+      runId: anchorRunId,
       domain: tenantDomain,
     });
     return readDurableWorkflowRunLifecycle(repoStore, deploymentAddress, runId);
@@ -361,15 +361,15 @@ export function createWorkflowRoutes({
         );
       }
 
-      const deploymentId = generateId("workflowRun");
+      const anchorRunId = generateId("workflowRun");
       const sessionId = generateId("session");
       const config: HarnessConfig = {
         sessionId,
-        agentId: deriveRunAgentId({ runId: deploymentId }),
+        agentId: deriveRunAgentId({ runId: anchorRunId }),
         tenantId: tenant.id,
         principalId: c.get("principal").id,
         agentAddress: deriveRunAddress({
-          runId: deploymentId,
+          runId: anchorRunId,
           domain: tenant.domain,
         }),
         systemPrompt: "",
@@ -398,7 +398,7 @@ export function createWorkflowRoutes({
           const prepared =
             await workflowAllocationService.prepareExclusiveDeployment({
               tenantId: tenant.id,
-              deploymentId,
+              anchorRunId,
               deploymentDomain: tenant.domain,
               definition,
               definitionAssetId: assetRow.id,
@@ -412,7 +412,7 @@ export function createWorkflowRoutes({
                 ? { toolPackagePins: body.toolPackages }
                 : {}),
             });
-          deployedId = prepared.deploymentId;
+          deployedId = prepared.anchorRunId;
           deploymentStatus = prepared.status;
         } catch (err) {
           if (err instanceof ExclusiveWorkflowPlacementError) {
@@ -443,7 +443,7 @@ export function createWorkflowRoutes({
         try {
           const result = await sessionService.deployWorkflowDefinition({
             tenantId: tenant.id,
-            deploymentId,
+            anchorRunId,
             deploymentDomain: tenant.domain,
             definition,
             definitionAssetId: assetRow.id,
@@ -453,7 +453,7 @@ export function createWorkflowRoutes({
               ? { toolPackagePins: body.toolPackages }
               : {}),
           });
-          deployedId = result.deploymentId;
+          deployedId = result.anchorRunId;
         } catch (err) {
           // A single-step deploy whose source chain is invalid (head is not the
           // default source, or a chain source the operator never approved) is a
@@ -618,10 +618,10 @@ export function createWorkflowRoutes({
     validator("json", DeliverSignal),
     async (c) => {
       const tenant = c.get("tenant");
-      const deploymentId = c.req.param("runId");
+      const anchorRunId = c.req.param("runId");
       const body = c.req.valid("json");
       const agentAddress = deriveRunAddress({
-        runId: deploymentId,
+        runId: anchorRunId,
         domain: tenant.domain,
       });
       const runId = deriveWorkflowRunId(agentAddress);
@@ -648,7 +648,7 @@ export function createWorkflowRoutes({
         )
         .where(
           and(
-            eq(workflowRun.id, deploymentId),
+            eq(workflowRun.id, anchorRunId),
             eq(workflowRun.tenantId, tenant.id),
             isNotNull(workflowRun.anchorRunId),
           ),
@@ -701,7 +701,7 @@ export function createWorkflowRoutes({
       }
 
       const durableLifecycle = await readRunLifecycle(
-        deploymentId,
+        anchorRunId,
         tenant.domain,
         runId,
       );
@@ -764,11 +764,7 @@ export function createWorkflowRoutes({
         try {
           const enqueued = await db.transaction(async (tx) => {
             if (
-              !(await lockDispatchableAllocation(
-                tx,
-                allocationId,
-                deploymentId,
-              ))
+              !(await lockDispatchableAllocation(tx, allocationId, anchorRunId))
             ) {
               return "allocation-unavailable" as const;
             }
@@ -776,23 +772,22 @@ export function createWorkflowRoutes({
             // again after acquiring it so the preflight result cannot go stale
             // while this transaction waits behind a terminal pack.
             if (
-              (await readRunLifecycle(deploymentId, tenant.domain, runId)) !==
+              (await readRunLifecycle(anchorRunId, tenant.domain, runId)) !==
               "live"
             ) {
               return "run-not-running" as const;
             }
             if (
-              (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==
+              (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
                 "running" ||
-              (await lockWorkflowRunState(tx, deploymentId, runId)) !==
-                "running"
+              (await lockWorkflowRunState(tx, anchorRunId, runId)) !== "running"
             ) {
               return "run-not-running" as const;
             }
             await workflowDispatchService.enqueueSignal(
               {
-                id: `dispatch:${deploymentId}:${body.signalId}`,
-                anchorRunId: deploymentId,
+                id: `dispatch:${anchorRunId}:${body.signalId}`,
+                anchorRunId,
                 signal: {
                   agentAddress,
                   runId: body.runId,
@@ -929,7 +924,7 @@ export function createWorkflowRoutes({
         tenant: c.get("tenant"),
         principal: c.get("principal"),
         userName: c.get("user")?.name ?? null,
-        deploymentId: c.req.param("runId"),
+        anchorRunId: c.req.param("runId"),
         message: c.req.valid("json"),
       });
       return c.json(result.body, result.status);
@@ -961,9 +956,9 @@ export function createWorkflowRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const deploymentId = c.req.param("runId");
+      const anchorRunId = c.req.param("runId");
 
-      if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
+      if (!(await deploymentAnchorRunExists(db, anchorRunId, tenant.id))) {
         return c.json(
           {
             error: {
@@ -976,7 +971,7 @@ export function createWorkflowRoutes({
       }
 
       const runIds = await runReader.listRunIds(
-        workflowRunRepoId(deploymentId, tenant.domain),
+        workflowRunRepoId(anchorRunId, tenant.domain),
         WORKFLOW_RUN_REF,
       );
       return c.json({ runIds });
@@ -1008,10 +1003,10 @@ export function createWorkflowRoutes({
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const deploymentId = c.req.param("runId");
+      const anchorRunId = c.req.param("runId");
       const runId = c.req.param("eventRunId");
 
-      if (!(await deploymentAnchorRunExists(db, deploymentId, tenant.id))) {
+      if (!(await deploymentAnchorRunExists(db, anchorRunId, tenant.id))) {
         return c.json(
           {
             error: {
@@ -1029,7 +1024,7 @@ export function createWorkflowRoutes({
       // selects within this tenant's deployment repo -- it cannot reach
       // another tenant's runs.
       const events = await runReader.readRunEvents(
-        workflowRunRepoId(deploymentId, tenant.domain),
+        workflowRunRepoId(anchorRunId, tenant.domain),
         WORKFLOW_RUN_REF,
         runId,
       );

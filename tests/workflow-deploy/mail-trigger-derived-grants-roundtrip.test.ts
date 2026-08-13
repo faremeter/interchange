@@ -110,7 +110,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 // The tenant domain must equal the fixture's deploy domain so the route's
-// derived address (`ins_<deploymentId>@<tenant.domain>`) matches the
+// derived address (`ins_<anchorRunId>@<tenant.domain>`) matches the
 // address the fixture deployed the sidecar workflow under; otherwise
 // `sendRunGrants`/`routeMail` route to an unknown address and the route
 // returns 409 instead of 202.
@@ -470,7 +470,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await env.hub.sessionService.stageWorkflowStep({
           agentAddress: p.agentAddress,
           agentId: p.agentId,
-          runId: p.instanceId,
+          runId: p.runId,
           config: p.config,
           deployContent: toLaunchDeployContent(p.deployContent),
           ...(p.toolPackagePins !== undefined
@@ -522,7 +522,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
         ...(TOOL_PINS.length > 0 ? { toolPackagePins: TOOL_PINS } : {}),

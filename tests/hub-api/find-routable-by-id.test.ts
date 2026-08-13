@@ -99,7 +99,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     await seedWorkflowRun(h.db, {
       id: "run_native",
       tenantId: "tnt_root",
-      deploymentId: null,
+      anchorRunId: null,
       principalId: null,
       address: null,
       status: "running",

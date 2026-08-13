@@ -61,7 +61,7 @@ const DEPLOYMENT_ID = "run_abc";
 // sanitized deployment address, NOT the bare deployment id (see
 // `deriveDeploymentId` -> `deriveWorkflowRunRepoId` in
 // apps/sidecar/src/workflow-host-wiring.ts). The read routes must
-// reconstruct the same id from `(deploymentId, tenantDomain)`; the
+// reconstruct the same id from `(anchorRunId, tenantDomain)`; the
 // run-observe tests build their on-disk repo under this derived id so a
 // passing test proves the read side addresses the same repo the write
 // side committed to. Keying the repo by the bare DEPLOYMENT_ID (the
@@ -354,7 +354,7 @@ function createMockDB(opts: MockDBOpts) {
               {
                 id: opts.deploymentRow.id,
                 tenantId: opts.deploymentRow.tenantId,
-                deploymentId: opts.deploymentRow.id,
+                anchorRunId: opts.deploymentRow.id,
                 definitionId: `wfd_${opts.deploymentRow.id}`,
                 definitionAssetId: opts.deploymentRow.definitionAssetId,
                 allocationId: opts.allocationId ?? null,
@@ -566,7 +566,7 @@ function createMockWorkflowAllocationService(
       prepareCalls.push(args);
       if (prepareError !== undefined) throw prepareError;
       return Promise.resolve({
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
         allocationId: "sal_test",
         status: "pending",
@@ -910,7 +910,7 @@ describe("POST /workflows/deployments", () => {
       grants: [makeGrant({ action: "create" })],
       deployCalls,
       deployResult: {
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
         publicKey: "pubkey",
       },
@@ -1152,7 +1152,7 @@ describe("POST /workflows/deployments", () => {
       grants: [makeGrant({ action: "create" })],
       db: { assetRow: workflowAssetRow, deploymentRow: undefined },
       deployResult: {
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
         publicKey: "pubkey",
       },
@@ -1244,7 +1244,7 @@ describe("GET /workflows/deployments", () => {
   });
 });
 
-describe("POST /workflows/:deploymentId/signals", () => {
+describe("POST /workflows/:anchorRunId/signals", () => {
   // The deployment's one addressable run: its mail address RUN_ADDRESS, and the
   // stable run id RUN_ID that address derives -- the local part before the `@`,
   // which post-collapse equals the deployment id.
@@ -1606,7 +1606,7 @@ describe("POST /workflows/:deploymentId/signals", () => {
   });
 });
 
-describe("POST /workflows/:deploymentId/mail", () => {
+describe("POST /workflows/:anchorRunId/mail", () => {
   function manageGrant(): GrantRule {
     return makeGrant({
       resource: `workflow-run:${DEPLOYMENT_ID}`,
@@ -2287,7 +2287,7 @@ async function buildRunRepo(
   return new Map([[repoId, dir]]);
 }
 
-describe("GET /workflows/:deploymentId/runs", () => {
+describe("GET /workflows/:anchorRunId/runs", () => {
   function readGrant(): GrantRule {
     return makeGrant({
       resource: `workflow-run:${DEPLOYMENT_ID}`,
@@ -2379,7 +2379,7 @@ describe("GET /workflows/:deploymentId/runs", () => {
   });
 });
 
-describe("GET /workflows/:deploymentId/runs/:runId/events", () => {
+describe("GET /workflows/:anchorRunId/runs/:runId/events", () => {
   function readGrant(): GrantRule {
     return makeGrant({
       resource: `workflow-run:${DEPLOYMENT_ID}`,

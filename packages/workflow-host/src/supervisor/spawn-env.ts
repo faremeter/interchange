@@ -32,8 +32,8 @@ export interface ChildSpawnEnvParts {
   hmacKey: Uint8Array;
   /** Supervisor's Ed25519 public key for this spawn's control channel. */
   hostPublicKey: Uint8Array;
-  /** Deployment identity the supervisor manages. */
-  deploymentId: string;
+  /** Anchor run id the supervisor manages. */
+  anchorRunId: string;
   /** Mail address the deployment registered on the bus. */
   deploymentMailAddress: string;
   /** Step count of the deployed workflow (`stepOrder.length`). */
@@ -59,7 +59,7 @@ export function buildChildSpawnEnv(
     IPC_CHANNEL_ID: parts.channelId,
     IPC_HMAC_KEY: hexEncode(parts.hmacKey),
     HOST_PUBKEY: hexEncode(parts.hostPublicKey),
-    DEPLOYMENT_ID: parts.deploymentId,
+    DEPLOYMENT_ID: parts.anchorRunId,
     DEFINITION_HASH: parts.definitionHash,
     MAILBOX_ADDRESS: parts.deploymentMailAddress,
     STEP_COUNT: String(parts.stepCount),

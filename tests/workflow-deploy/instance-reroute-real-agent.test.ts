@@ -110,7 +110,7 @@ describe("instance-reroute real-agent round-trip", () => {
       id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
-      deploymentId: INSTANCE_ID,
+      anchorRunId: INSTANCE_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

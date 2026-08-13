@@ -74,7 +74,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "dep1",
         tenantId: "t1",
-        deploymentId: "dep1",
+        anchorRunId: "dep1",
         address: opts.address,
         publicKey: opts.publicKey,
         status: opts.runStatus,
@@ -158,7 +158,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedWorkflowRun(h.db, {
           id: d.id,
           tenantId: "t1",
-          deploymentId: d.id,
+          anchorRunId: d.id,
           address: d.address,
           publicKey: d.publicKey,
           status: "running",

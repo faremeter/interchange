@@ -73,7 +73,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // this single insert is both parent and child.
       await seedWorkflowRun(h.db, {
         id: RUN_ID,
-        deploymentId: RUN_ID,
+        anchorRunId: RUN_ID,
         tenantId: TENANT,
         definitionId: DEFINITION,
         address: ADDRESS,

@@ -58,12 +58,12 @@ export const RunGrantsFile = type({
  */
 export async function readRunGrants(args: {
   repoStore: RepoStore;
-  deploymentId: string;
+  anchorRunId: string;
   runId: string;
 }): Promise<readonly unknown[] | undefined> {
   const dir = args.repoStore.getRepoDir({
     kind: "workflow-run",
-    id: args.deploymentId,
+    id: args.anchorRunId,
   });
   const filePath = pathJoin(dir, runGrantsPath(args.runId));
   let raw: string;
@@ -78,14 +78,14 @@ export async function readRunGrants(args: {
     parsed = JSON.parse(raw);
   } catch (cause) {
     throw new Error(
-      `workflow-run/${args.deploymentId}:${runGrantsPath(args.runId)} is not valid JSON`,
+      `workflow-run/${args.anchorRunId}:${runGrantsPath(args.runId)} is not valid JSON`,
       { cause },
     );
   }
   const validated = RunGrantsFile(parsed);
   if (validated instanceof type.errors) {
     throw new Error(
-      `workflow-run/${args.deploymentId}:${runGrantsPath(args.runId)} failed validation: ${validated.summary}`,
+      `workflow-run/${args.anchorRunId}:${runGrantsPath(args.runId)} failed validation: ${validated.summary}`,
     );
   }
   return validated.grants;

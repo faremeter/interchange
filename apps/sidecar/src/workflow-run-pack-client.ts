@@ -99,7 +99,7 @@ export function createWorkflowRunPackClient(
       }
       const principal: WorkflowRunSupervisorPrincipal = {
         kind: "supervisor",
-        deploymentId: repoId.id,
+        anchorRunId: repoId.id,
       };
       // Nothing to ship when the local tip is already the last acked tip:
       // the run's commits landed on a prior push. Return without a wire send
@@ -136,28 +136,28 @@ export function createWorkflowRunPackClient(
 
 /**
  * Mapping registry the boot-edge substrate facade consults to resolve
- * `repoId.id` (the workflow-run deploymentId, which the deploy router
+ * `repoId.id` (the workflow-run runId, which the deploy router
  * derives by slugging the agent's mail address) back into the
  * agentAddress carried on every outbound pack frame. Populated by the
  * deploy router as each `agent.deploy` frame lands.
  */
 export type DeploymentAddressRegistry = {
-  record(deploymentId: string, agentAddress: string): void;
-  resolve(deploymentId: string): string | null;
-  unregister(deploymentId: string): void;
+  record(runId: string, agentAddress: string): void;
+  resolve(runId: string): string | null;
+  unregister(runId: string): void;
 };
 
 export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
   const table = new Map<string, string>();
   return {
-    record(deploymentId, agentAddress) {
-      table.set(deploymentId, agentAddress);
+    record(runId, agentAddress) {
+      table.set(runId, agentAddress);
     },
-    resolve(deploymentId) {
-      return table.get(deploymentId) ?? null;
+    resolve(runId) {
+      return table.get(runId) ?? null;
     },
-    unregister(deploymentId) {
-      table.delete(deploymentId);
+    unregister(runId) {
+      table.delete(runId);
     },
   };
 }
@@ -743,7 +743,7 @@ export function createWorkflowRunPackPushingRepoStore(
     } else {
       // The agentAddress is derived from a stable per-deployment
       // mapping; refreshing it on every call keeps the slot in sync
-      // if the registry ever re-resolves the same deploymentId to
+      // if the registry ever re-resolves the same runId to
       // a different address (today it does not, but the contract is
       // "look up at push time", not "cache forever").
       slot.agentAddress = agentAddress;

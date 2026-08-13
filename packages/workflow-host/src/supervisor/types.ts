@@ -266,7 +266,7 @@ export interface InboxPrimitives {
 /**
  * A control-plane suspension the supervisor forwards to the host after a
  * workflow-process child reports a park. The child supplies `runId`,
- * `correlationId`, and `kind`; the supervisor stamps `deploymentId` and
+ * `correlationId`, and `kind`; the supervisor stamps `anchorRunId` and
  * `agentAddress` from its own bindings before invoking the host's
  * `onSuspensionRegister`. The host (production: the sidecar) turns this into
  * a `signal.correlation.register` frame the hub co-writes the run's routing +
@@ -276,7 +276,7 @@ export interface SuspensionRegistration {
   runId: string;
   correlationId: string;
   kind: SignalKind;
-  deploymentId: string;
+  anchorRunId: string;
   agentAddress: string;
   /**
    * Approver-facing snapshot of the parked tool call, forwarded from the
@@ -303,7 +303,7 @@ export interface WorkflowSupervisorBindings {
   mailBus: MailBusBindings;
   /**
    * Optional control-plane suspension sink. Two callers invoke it, both
-   * stamping `deploymentId` and `deploymentMailAddress` (as `agentAddress`)
+   * stamping `anchorRunId` and `deploymentMailAddress` (as `agentAddress`)
    * onto the child-supplied `runId`/`correlationId`/`kind`: the upstream-control
    * pump's `park.notify` arm (the happy-path emit at suspend), and
    * `reEmitParkedCorrelations` (the re-establishment re-emit that recovers a
@@ -335,7 +335,7 @@ export interface WorkflowSupervisorBindings {
    */
   onRunStart?: (args: {
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
   }) => Promise<import("./credentials").CredentialsSnapshot>;
   /**
    * Decrypted credential material for the deployment's tools, delivered to the
@@ -379,7 +379,7 @@ export interface WorkflowSupervisorBindings {
   /** Workflow-run repo ref the supervisor commits events to. */
   workflowRunRef: string;
   /** Deployment id baked into the supervisor's principal claims. */
-  deploymentId: string;
+  anchorRunId: string;
   /**
    * Number of steps in the deployed `WorkflowDefinition`
    * (`stepOrder.length`). The supervisor threads this into the child's
@@ -411,7 +411,7 @@ export interface WorkflowSupervisorBindings {
   deriveStepAddress: import("./credentials").DeriveStepAddress;
   /**
    * Optional override for the step's agent-state repo identity. The
-   * default convention is `<deploymentId>-<stepId>`.
+   * default convention is `<anchorRunId>-<stepId>`.
    */
   deriveStepRepoId?: import("./credentials").DeriveStepRepoId;
   /**
@@ -520,11 +520,11 @@ export interface WorkflowSupervisorBindings {
   /**
    * Workflow-run substrate principal the supervisor uses to author
    * inbox/processing/consumed writes. The substrate's workflow-run
-   * kind handler accepts a `{ kind: "supervisor", deploymentId }`
+   * kind handler accepts a `{ kind: "supervisor", anchorRunId }`
    * principal for claim-check writes; the supervisor constructs this
    * value once at bindings construction and reuses it for every
    * claim-check operation. Defaults to `{ kind: "supervisor",
-   * deploymentId }` derived from `bindings.deploymentId`; tests
+   * anchorRunId }` derived from `bindings.anchorRunId`; tests
    * override it when they need to assert on a structurally distinct
    * principal shape.
    */

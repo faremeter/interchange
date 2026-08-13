@@ -459,7 +459,7 @@ describe("parseSpawnTimeEnv", () => {
     expect(env.channelId).toBe(channelId);
     expect(env.hmacKey).toEqual(hmacKey);
     expect(env.hostPublicKey).toEqual(keypair.publicKey);
-    expect(env.deploymentId).toBe("deployment-x");
+    expect(env.anchorRunId).toBe("deployment-x");
     expect(env.definitionHash).toBe("definition-hash-abc");
     expect(env.mailboxAddress).toBe("deployment-x@example.com");
     // WARM_KEEP absent -> warm-keep off (deterministic, opt-in).
@@ -1822,10 +1822,10 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
     const stepId = "step-1";
-    const deploymentId = "deployment-x";
+    const anchorRunId = "deployment-x";
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deploymentId,
+      id: anchorRunId,
     };
     const workflowDefinitionRepoId: RepoId = {
       kind: "workflow-run",
@@ -1848,8 +1848,8 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     });
     // The workflow-run kind handler accepts a `workflow-process`
     // principal scoped to the deployment as the runtime body's writer;
-    // the deploymentId satisfies `enforceWorkflowProcessPathScope`.
-    const principalShape = { kind: "workflow-process", deploymentId };
+    // the anchorRunId satisfies `enforceWorkflowProcessPathScope`.
+    const principalShape = { kind: "workflow-process", anchorRunId };
     const principal: Principal = principalShape;
 
     // Genesis the workflow-run repo so the runtime's first append has a
@@ -2038,10 +2038,10 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
     const stepId = "step-1";
-    const deploymentId = "deployment-x";
+    const anchorRunId = "deployment-x";
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deploymentId,
+      id: anchorRunId,
     };
     const workflowDefinitionRepoId: RepoId = {
       kind: "workflow-run",
@@ -2056,7 +2056,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       handlers: { "workflow-run": workflowRunKindHandler },
       authorize: allowAll,
     });
-    const principalShape = { kind: "workflow-process", deploymentId };
+    const principalShape = { kind: "workflow-process", anchorRunId };
     const principal: Principal = principalShape;
 
     await substrate.writeTree(

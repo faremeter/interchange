@@ -89,7 +89,7 @@ describe("workflow-run principal-vs-path scoping (regression)", () => {
   test("rejects workflow-process {runId: r1} writing events under runs/r2/", async () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
       runId: "r1",
     } as Principal;
     const prospective = {
@@ -105,7 +105,7 @@ describe("workflow-run principal-vs-path scoping (regression)", () => {
   test("rejects workflow-process writing inbox to any address", async () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
       runId: "r1",
     } as Principal;
     const ADDR = "other-runs-address";
@@ -128,7 +128,7 @@ describe("workflow-run principal-vs-path scoping (regression)", () => {
   test("accepts workflow-process {runId: r1} writing events under runs/r1/", async () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
       runId: "r1",
     } as Principal;
     const prospective = {
@@ -142,7 +142,7 @@ describe("workflow-run principal-vs-path scoping (regression)", () => {
   test("accepts workflow-process without runId writing events under any runs/", async () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
     } as Principal;
     const prospective = {
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",

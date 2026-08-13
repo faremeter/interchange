@@ -96,7 +96,7 @@ export type TriggerWorkflowRunArgs = {
   tenant: TenantRow;
   principal: PrincipalRow;
   userName: string | null;
-  deploymentId: string;
+  anchorRunId: string;
   message: typeof SendMessage.infer;
 };
 
@@ -131,12 +131,12 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
   } = deps;
 
   async function readRunLifecycle(
-    deploymentId: string,
+    anchorRunId: string,
     tenantDomain: string,
     runId: string,
   ) {
     const deploymentAddress = deriveRunAddress({
-      runId: deploymentId,
+      runId: anchorRunId,
       domain: tenantDomain,
     });
     return readDurableWorkflowRunLifecycle(repoStore, deploymentAddress, runId);
@@ -145,9 +145,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
   return async function triggerWorkflowRun(
     args: TriggerWorkflowRunArgs,
   ): Promise<TriggerWorkflowRunResult> {
-    const { tenant, principal, deploymentId, message: body } = args;
+    const { tenant, principal, anchorRunId, message: body } = args;
     const address = deriveRunAddress({
-      runId: deploymentId,
+      runId: anchorRunId,
       domain: tenant.domain,
     });
     const runId = deriveWorkflowRunId(address);
@@ -197,7 +197,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       )
       .where(
         and(
-          eq(workflowRun.id, deploymentId),
+          eq(workflowRun.id, anchorRunId),
           eq(workflowRun.tenantId, tenant.id),
           isNotNull(workflowRun.anchorRunId),
         ),
@@ -216,7 +216,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       };
     }
     const durableLifecycle = await readRunLifecycle(
-      deploymentId,
+      anchorRunId,
       tenant.domain,
       runId,
     );
@@ -436,22 +436,22 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       }
       const committed = await db.transaction(async (tx) => {
         if (
-          !(await lockDispatchableAllocation(tx, allocationId, deploymentId))
+          !(await lockDispatchableAllocation(tx, allocationId, anchorRunId))
         ) {
           return "allocation-unavailable" as const;
         }
         // The allocation lock serializes this read with authoritative pack
         // advancement. An absent run is still valid for its first mail.
         if (
-          (await readRunLifecycle(deploymentId, tenant.domain, runId)) ===
+          (await readRunLifecycle(anchorRunId, tenant.domain, runId)) ===
           "terminal"
         ) {
           return "run-terminal" as const;
         }
         if (
-          (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==
+          (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
             "running" ||
-          (await lockWorkflowRunState(tx, deploymentId, runId)) === "terminal"
+          (await lockWorkflowRunState(tx, anchorRunId, runId)) === "terminal"
         ) {
           return "run-terminal" as const;
         }
@@ -459,7 +459,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           {
             db,
             tenantId: tenant.id,
-            deploymentId,
+            anchorRunId,
             definitionId: anchor.definitionId,
             runId,
             runPrincipalId,
@@ -470,8 +470,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         );
         await workflowDispatchService.enqueue(
           {
-            id: `dispatch:${deploymentId}:${messageId}`,
-            anchorRunId: deploymentId,
+            id: `dispatch:${anchorRunId}:${messageId}`,
+            anchorRunId: anchorRunId,
             messageId,
             rawMessage,
             stepGrants: canonicalStepGrants,
@@ -504,15 +504,15 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       return {
         ok: true,
         status: 202,
-        body: { runId: deploymentId, address, messageId },
+        body: { runId: anchorRunId, address, messageId },
       };
     }
 
     const reserved = await db.transaction(async (tx) => {
       if (
-        (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==
+        (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
           "running" ||
-        (await lockWorkflowRunState(tx, deploymentId, runId)) === "terminal"
+        (await lockWorkflowRunState(tx, anchorRunId, runId)) === "terminal"
       ) {
         return null;
       }
@@ -520,7 +520,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         {
           db,
           tenantId: tenant.id,
-          deploymentId,
+          anchorRunId,
           definitionId: anchor.definitionId,
           runId,
           runPrincipalId,
@@ -586,7 +586,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     return {
       ok: true,
       status: 202,
-      body: { runId: deploymentId, address, messageId },
+      body: { runId: anchorRunId, address, messageId },
     };
   };
 }

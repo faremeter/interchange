@@ -76,10 +76,10 @@ import {
 const REF = "refs/heads/main";
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 
-// The workflow-run kind handler verifies `repoId.id === deploymentId`,
+// The workflow-run kind handler verifies `repoId.id === anchorRunId`,
 // so the writer principal is per-deployment.
 function principalFor(repoId: RepoId): WorkflowRunWorkflowProcessPrincipal {
-  return { kind: "workflow-process", deploymentId: repoId.id };
+  return { kind: "workflow-process", anchorRunId: repoId.id };
 }
 
 const tempDirs: string[] = [];

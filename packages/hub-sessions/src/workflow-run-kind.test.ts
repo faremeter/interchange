@@ -88,7 +88,7 @@ const HUB_PRINCIPAL: Principal = { kind: "hub" };
 const SUPERVISOR_PRINCIPAL: Principal = { kind: "supervisor" };
 const WORKFLOW_PROCESS_PRINCIPAL_SHAPE = {
   kind: "workflow-process",
-  deploymentId: "test-deployment",
+  anchorRunId: "test-deployment",
 };
 const WORKFLOW_PROCESS_PRINCIPAL: Principal = WORKFLOW_PROCESS_PRINCIPAL_SHAPE;
 const noPriorBlob = async (): Promise<Uint8Array | null> => null;
@@ -1327,7 +1327,7 @@ describe("workflowRunAuthorize — workflow-process principal", () => {
   test("allowed for full read+write on its own deployment", () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
       runId: "run-a",
     } as Principal;
     for (const action of [
@@ -1345,7 +1345,7 @@ describe("workflowRunAuthorize — workflow-process principal", () => {
   test("allowed without runId field (the per-call runId is optional)", () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
     } as Principal;
     const r = workflowRunAuthorize(principal, REPO, REF, "writeTree");
     expect(r.allowed).toBe(true);
@@ -1354,7 +1354,7 @@ describe("workflowRunAuthorize — workflow-process principal", () => {
   test("denied when targeting another deployment's repo", () => {
     const principal = {
       kind: "workflow-process",
-      deploymentId: "dep-other",
+      anchorRunId: "dep-other",
     } as Principal;
     const r = workflowRunAuthorize(principal, REPO, REF, "writeTree");
     expect(r.allowed).toBe(false);
@@ -1379,7 +1379,7 @@ describe("workflowRunKindHandler.validatePush — workflow-process path-scope fa
   // let a malformed principal reach `validatePush`; the path-scope
   // helper must fail closed there instead of silently waving the
   // principal through, since the runId scoping below depends on the
-  // parsed principal carrying a valid `deploymentId`.
+  // parsed principal carrying a valid `anchorRunId`.
   test("a malformed workflow-process principal reaching validatePush rejects with a structured reason", async () => {
     const principal: Principal = { kind: "workflow-process" };
     const events = {
@@ -1411,7 +1411,7 @@ describe("workflowRunAuthorize — supervisor principal", () => {
   test("allowed for full read+write on its own deployment", () => {
     const principal = {
       kind: "supervisor",
-      deploymentId: "dep-1",
+      anchorRunId: "dep-1",
     } as Principal;
     for (const action of [
       "init",
@@ -1428,7 +1428,7 @@ describe("workflowRunAuthorize — supervisor principal", () => {
   test("denied when targeting another deployment's repo", () => {
     const principal = {
       kind: "supervisor",
-      deploymentId: "dep-other",
+      anchorRunId: "dep-other",
     } as Principal;
     const r = workflowRunAuthorize(principal, REPO, REF, "writeTree");
     expect(r.allowed).toBe(false);

@@ -444,7 +444,7 @@ export const ControlPayload = type(
     // on a reserved `signalName(correlationId)` channel (`env.onPark`),
     // so the supervisor can register the correlation out-of-band before
     // the parked run can be resumed. The supervisor stamps the
-    // deployment identity it owns (`deploymentId` + `agentAddress`) and
+    // deployment identity it owns (`runId` + `agentAddress`) and
     // forwards a `signal.correlation.register` frame to the hub, which
     // co-writes the run's routing + approval rows. Mirrors
     // `terminal.event`: a peer-channel notification the supervisor fans

@@ -31,7 +31,7 @@ import {
  */
 export async function waitForRunsByMessageIds(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   workflowRunRepoId: RepoId,
   messageIds: readonly string[],
   opts: { timeoutMs?: number; diagnostics?: () => string } = {},
@@ -42,7 +42,7 @@ export async function waitForRunsByMessageIds(
     const runIds = await listRunIds(env, workflowRunRepoId);
     const byMessageId = new Map<string, string>();
     for (const runId of runIds) {
-      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       for (const event of events) {
         if (event.type !== "RunStarted") continue;
         const consumed = event.body["consumedMessageId"];
@@ -63,7 +63,7 @@ export async function waitForRunsByMessageIds(
       const ctx = diag ? `\n${diag}` : "";
       const observed = [...byMessageId.keys()].join(", ");
       const deploymentMailAddress =
-        env.deployments.get(deploymentId)?.mailAddress ?? "";
+        env.deployments.get(anchorRunId)?.mailAddress ?? "";
       const inbox = await readClaimCheckDir(
         env,
         workflowRunRepoId,
@@ -84,7 +84,7 @@ export async function waitForRunsByMessageIds(
       );
       const eventsByRun: string[] = [];
       for (const runId of runIds) {
-        const evs = await readWorkflowRunEvents(env, deploymentId, runId);
+        const evs = await readWorkflowRunEvents(env, anchorRunId, runId);
         eventsByRun.push(`  ${runId}: ${evs.map((e) => e.type).join(" -> ")}`);
       }
       throw new Error(

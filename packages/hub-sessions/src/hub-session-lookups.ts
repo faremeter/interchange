@@ -183,7 +183,7 @@ export function createHubSessionLookups(
     async registerSignalCorrelation({
       correlationId,
       runId,
-      deploymentId,
+      anchorRunId,
       agentAddress,
       kind,
       approvalSnapshot,
@@ -202,7 +202,7 @@ export function createHubSessionLookups(
         // address names. The anchor is the tenancy origin every approval needs
         // (an approval has no agent_instance/agent/principal referent). The
         // lookup keys off `address` (the field the wire layer's ownership gate
-        // authorized), not the frame's `deploymentId`: that is the workflow-run
+        // authorized), not the frame's `anchorRunId`: that is the workflow-run
         // repo slug the supervisor derives from the address
         // (`deriveWorkflowRunRepoId`), cross-checked below against the slug
         // re-derived from `agentAddress` rather than against the row id. A
@@ -240,9 +240,9 @@ export function createHubSessionLookups(
           );
         }
         const addressSlug = deriveWorkflowRunRepoId(agentAddress);
-        if (addressSlug !== deploymentId) {
+        if (addressSlug !== anchorRunId) {
           throw new Error(
-            `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,
+            `Anchor run id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,
           );
         }
         const tenantId = anchor.tenantId;

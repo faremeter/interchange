@@ -151,14 +151,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
           deployPreparedWorkflowDefinition: async (params) => {
             deployCalls.push(params);
             const result = {
-              deploymentId: params.deploymentId,
+              anchorRunId: params.anchorRunId,
               deploymentAddress: params.config.agentAddress,
               publicKey: "supervisor-public-key",
             };
             await h.db
               .update(workflowRun)
               .set({ publicKey: result.publicKey })
-              .where(eq(workflowRun.id, params.deploymentId));
+              .where(eq(workflowRun.id, params.anchorRunId));
             return result;
           },
         },
@@ -172,7 +172,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const prepared = await service.prepareExclusiveDeployment({
         tenantId: TENANT_ID,
-        deploymentId: "dep-workflow-allocation",
+        anchorRunId: "dep-workflow-allocation",
         deploymentDomain: `${TENANT_ID}.example.test`,
         definition,
         definitionAssetId: ASSET_ID,
@@ -186,7 +186,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(prepared.status).toBe("pending");
       const spec = await createWorkflowRunLaunchSpecStore(h.db).get(
-        prepared.deploymentId,
+        prepared.anchorRunId,
       );
       expect(spec?.sourceOfferingIds).toEqual([OFFERING_ID]);
       expect(JSON.stringify(spec)).not.toContain(CREDENTIAL_SECRET);
@@ -235,7 +235,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db
         .update(workflowRun)
         .set({ publicKey: null })
-        .where(eq(workflowRun.id, prepared.deploymentId));
+        .where(eq(workflowRun.id, prepared.anchorRunId));
       const error = await service
         .deployReadyAllocation(allocated)
         .catch((cause: unknown) => cause);

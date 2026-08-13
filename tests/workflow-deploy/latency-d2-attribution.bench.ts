@@ -406,7 +406,7 @@ async function runUnifiedD2(opts: {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -458,7 +458,7 @@ async function runUnifiedD2(opts: {
       config,
       deployContent: { systemPrompt: config.systemPrompt },
       operatorApprovals,
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -471,7 +471,7 @@ async function runUnifiedD2(opts: {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: "refs/heads/main",

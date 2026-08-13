@@ -57,7 +57,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: DEPLOYMENT,
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
       });
@@ -96,7 +96,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the same reconcile.
       await seedWorkflowRun(h.db, {
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
         principalId: null,
@@ -132,7 +132,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // running and attach a principal, resurrecting a dead run.
       await seedWorkflowRun(h.db, {
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
         principalId: null,
@@ -169,7 +169,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         definitionId: DEFINITION,
         principalId: "prn-existing",

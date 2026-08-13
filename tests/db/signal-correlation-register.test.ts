@@ -168,7 +168,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id,
         tenantId: TENANT,
-        deploymentId: id,
+        anchorRunId: id,
         address,
         publicKey: publicKeyHex,
         status: "running",
@@ -435,7 +435,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await lookups.registerSignalCorrelation({
         correlationId: "corr-1",
         runId: "run-1",
-        deploymentId: DEPLOYMENT_SLUG,
+        anchorRunId: DEPLOYMENT_SLUG,
         agentAddress: WF_ADDR,
         kind: "approval",
         approvalSnapshot: SNAPSHOT,
@@ -661,7 +661,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             .registerSignalCorrelation({
               correlationId: "corr-1",
               runId: "run-1",
-              deploymentId: DEPLOYMENT_SLUG,
+              anchorRunId: DEPLOYMENT_SLUG,
               agentAddress: WF_ADDR,
               kind: "approval",
               approvalSnapshot: SNAPSHOT,
@@ -742,7 +742,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // test bypasses it to exercise the stores directly.
       await seedWorkflowRun(h.db, {
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
       });
 

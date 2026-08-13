@@ -86,12 +86,12 @@ describe("createSidecarWorkflowSupervisor", () => {
       signingKeySeed: keyPair.privateKey,
       workflowRunRepoId: { kind: "workflow-run", id: "wire-test" },
       workflowRunRef: "refs/heads/main",
-      deploymentId: "wire-test",
+      runId: "wire-test",
       stepCount: 1,
       stepOrder: ["step1"],
       deploymentMailAddress: "wire-test@example.com",
-      deriveStepAddress: ({ deploymentId, stepId }) =>
-        `${deploymentId}-${stepId}@example.com`,
+      deriveStepAddress: ({ runId, stepId }) =>
+        `${runId}-${stepId}@example.com`,
       substrateEnv: { DATA_DIR: "/tmp/wire" },
       dynamicSpawnEnv: () => ({}),
       subprocessSpawner: spawner,
@@ -123,12 +123,12 @@ describe("createSidecarWorkflowSupervisor", () => {
       signingKeySeed: fakeSeed,
       workflowRunRepoId: { kind: "workflow-run", id: "inbound" },
       workflowRunRef: "refs/heads/main",
-      deploymentId: "inbound",
+      runId: "inbound",
       stepCount: 1,
       stepOrder: ["step1"],
       deploymentMailAddress: "inbound@example.com",
-      deriveStepAddress: ({ deploymentId, stepId }) =>
-        `${deploymentId}-${stepId}@example.com`,
+      deriveStepAddress: ({ runId, stepId }) =>
+        `${runId}-${stepId}@example.com`,
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
       subprocessSpawner: () => {
@@ -149,12 +149,12 @@ describe("createSidecarWorkflowSupervisor", () => {
     // barrier rather than started under the deploy-time grant set. An
     // unpoisoned run with a per-run grants file on disk resolves normally.
     const tempBase = await createTempBaseDir("sidecar-poison-barrier-");
-    const deploymentId = "dep-poison";
+    const anchorRunId = "dep-poison";
     const cleanRunId = "run-clean";
     const grantsDir = path.join(
       tempBase,
       "workflow-run",
-      deploymentId,
+      anchorRunId,
       "runs",
       cleanRunId,
     );
@@ -187,13 +187,13 @@ describe("createSidecarWorkflowSupervisor", () => {
       transport: createInMemoryTransport(),
       repoStore,
       signingKeySeed: new Uint8Array(32),
-      workflowRunRepoId: { kind: "workflow-run", id: deploymentId },
+      workflowRunRepoId: { kind: "workflow-run", id: anchorRunId },
       workflowRunRef: "refs/heads/main",
-      deploymentId,
+      runId: anchorRunId,
       stepCount: 1,
       stepOrder: ["step-1"],
-      deploymentMailAddress: `${deploymentId}@example.com`,
-      deriveStepAddress: ({ deploymentId: dep, stepId }) =>
+      deploymentMailAddress: `${anchorRunId}@example.com`,
+      deriveStepAddress: ({ runId: dep, stepId }) =>
         `${dep}-${stepId}@example.com`,
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
@@ -204,12 +204,12 @@ describe("createSidecarWorkflowSupervisor", () => {
     });
 
     await expect(
-      wired.onRunStart({ runId: "run-poisoned", deploymentId }),
+      wired.onRunStart({ runId: "run-poisoned", anchorRunId }),
     ).rejects.toThrow(/grants write failed/);
 
     const snapshot = await wired.onRunStart({
       runId: cleanRunId,
-      deploymentId,
+      anchorRunId,
     });
     expect(snapshot.steps).toHaveLength(1);
     expect(snapshot.steps[0]?.grants).toEqual(runGrants);
@@ -636,7 +636,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     multistepGrantsRouter?: MultistepGrantsRouter;
     multistepSourcesRouter?: MultistepSourcesRouter;
     registerDeployment?: (args: {
-      deploymentId: string;
+      runId: string;
       agentAddress: string;
     }) => void;
     assertSourceBuildable?: Parameters<
@@ -938,11 +938,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
     const frame = makeMultistepFrame({ definition, sources });
-    const deploymentId = deriveDeploymentId(frame.agentAddress);
+    const anchorRunId = deriveDeploymentId(frame.agentAddress);
     const recordFile = path.join(
       multiDataDir,
       "workflow-runs",
-      deploymentId,
+      anchorRunId,
       "deployment.json",
     );
 
@@ -1197,11 +1197,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // The write lands in the deployment's workflow-run repo at
     // `runs/<runId>/grants.json`, the run-owned sibling of `events/`.
-    const deploymentId = deriveDeploymentId(frame.agentAddress);
+    const anchorRunId = deriveDeploymentId(frame.agentAddress);
     const grantsFile = path.join(
       tempBase,
       "workflow-run",
-      deploymentId,
+      anchorRunId,
       "runs",
       runId,
       "grants.json",
@@ -1875,11 +1875,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   function recordExists(
     dataDir: string,
-    deploymentId: string,
+    anchorRunId: string,
   ): Promise<boolean> {
     return fs
       .access(
-        path.join(dataDir, "workflow-runs", deploymentId, "deployment.json"),
+        path.join(dataDir, "workflow-runs", anchorRunId, "deployment.json"),
       )
       .then(
         () => true,
@@ -1988,7 +1988,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("restore applies validateWorkflowProjection: a stepOrder entry with no matching steps is skipped", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
     const head = "run_validator@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const anchorRunId = deriveDeploymentId(head);
 
     // Hand-write a record plus a workflow.json whose `stepOrder` names a step
     // `steps` does not define. This clears the wire arktype
@@ -2003,7 +2003,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
     };
-    await writeWorkflowRunRecord(dataDir, deploymentId, record);
+    await writeWorkflowRunRecord(dataDir, anchorRunId, record);
     const workflowJsonPath = path.join(
       dataDir,
       "assets",
@@ -2065,7 +2065,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a second deploy for a live address is rejected without orphaning its restore record", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-dup-data-");
     const head = "run_dup@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const anchorRunId = deriveDeploymentId(head);
 
     const spawner = makeReadyDrivingSpawner(9700);
     const { router, transport } = await buildMultistepFixture({
@@ -2076,7 +2076,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const deployPromise = router.deploy(singleStepFrame(head, "wf-dup"));
     await spawner.driveReadyFor(0);
     await deployPromise;
-    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+    expect(await recordExists(dataDir, anchorRunId)).toBe(true);
 
     // A second deploy for the already-live address must be rejected WITHOUT
     // touching the running deployment's durable state. The reject fires
@@ -2087,7 +2087,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       router.deploy(singleStepFrame(head, "wf-dup")),
     ).rejects.toThrow(/already deployed/);
     expect(spawner.spawnCount()).toBe(1);
-    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+    expect(await recordExists(dataDir, anchorRunId)).toBe(true);
     expect(isRegistered(transport, head)).toBe(true);
   });
 
@@ -2128,7 +2128,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       "sidecar-restore-unbuildable-data-",
     );
     const head = "run_unbuildable_restore@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const anchorRunId = deriveDeploymentId(head);
 
     // First process: a permissive gate lets the deploy through, persisting
     // the record and its workflow.json.
@@ -2163,7 +2163,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, head)).toBe(false);
     // The record survives so a later boot, once the provider is buildable
     // again, can retry it.
-    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+    expect(await recordExists(dataDir, anchorRunId)).toBe(true);
   });
 
   test("restore isolates an unbuildable-provider record: it keeps the record and surfaces the failure while the healthy deployment still restores", async () => {
@@ -2280,7 +2280,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("a deploy whose child never signals ready times out and rejects", async () => {
     const dataDir = await createTempBaseDir("sidecar-ready-timeout-data-");
     const head = "run_readytimeout@example.com";
-    const deploymentId = deriveDeploymentId(head);
+    const anchorRunId = deriveDeploymentId(head);
 
     // A spawner whose child is created but never driven through the `ready`
     // handshake. With a small threaded readyTimeoutMs the supervisor times
@@ -2300,7 +2300,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // The deploy soft-failed, so its restore record was cleaned up -- a
     // wedged deploy leaves nothing for a later boot to re-spawn.
-    expect(await recordExists(dataDir, deploymentId)).toBe(false);
+    expect(await recordExists(dataDir, anchorRunId)).toBe(false);
   });
 
   test("a single-step deploy acks the agent key, not the supervisor key", async () => {
@@ -2637,9 +2637,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     release();
     await rotatePromise;
     const scanned = await scanWorkflowRunRecords(dataDir);
-    const record = scanned.find(
-      (s) => s.deploymentId === deriveDeploymentId(addr),
-    );
+    const record = scanned.find((s) => s.runId === deriveDeploymentId(addr));
     expect(record?.record.sources).toEqual({ "step-1": [rotated] });
   });
 
@@ -2969,7 +2967,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 describe("assembleRunCredentialsSnapshot", () => {
   // getRepoDir mirrors the production `<base>/<kind>/<id>` layout that
   // `createSpawnTestRepoStore` uses, so a file written at
-  // `<base>/workflow-run/<deploymentId>/runs/<runId>/grants.json` lands where
+  // `<base>/workflow-run/<anchorRunId>/runs/<runId>/grants.json` lands where
   // the sink's working-tree read looks, and a step's deploy-time grants land
   // at `<base>/agent-state/<repoId>/state/grants.json`.
   function createReadStubRepoStore(tempBase: string): RepoStore {
@@ -2992,14 +2990,14 @@ describe("assembleRunCredentialsSnapshot", () => {
     });
   }
 
-  const deploymentId = "dep-run-grants";
+  const anchorRunId = "dep-run-grants";
   const runId = "run-xyz";
   const stepOrder = ["step-1", "step-2"];
   const deriveStepAddress = ({
-    deploymentId: dep,
+    runId: dep,
     stepId,
   }: {
-    deploymentId: string;
+    runId: string;
     stepId: string;
   }) => `${dep}-${stepId}@example.com`;
 
@@ -3007,13 +3005,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     tempBase: string,
     contents: string,
   ): Promise<void> {
-    const dir = path.join(
-      tempBase,
-      "workflow-run",
-      deploymentId,
-      "runs",
-      runId,
-    );
+    const dir = path.join(tempBase, "workflow-run", anchorRunId, "runs", runId);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, "grants.json"), contents);
   }
@@ -3026,7 +3018,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     const dir = path.join(
       tempBase,
       "agent-state",
-      `${deploymentId}-${stepId}`,
+      `${anchorRunId}-${stepId}`,
       "state",
     );
     await fs.mkdir(dir, { recursive: true });
@@ -3051,7 +3043,7 @@ describe("assembleRunCredentialsSnapshot", () => {
 
     const snapshot = await assembleRunCredentialsSnapshot({
       repoStore,
-      deploymentId,
+      anchorRunId,
       runId,
       stepOrder,
       deriveStepAddress,
@@ -3062,7 +3054,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     expect(snapshot.steps).toHaveLength(2);
     for (const step of snapshot.steps) {
       expect(step.grants).toEqual(runGrants);
-      expect(step.address).toBe(`${deploymentId}-${step.stepId}@example.com`);
+      expect(step.address).toBe(`${anchorRunId}-${step.stepId}@example.com`);
     }
     expect(snapshot.steps[0]?.stepId).toBe("step-1");
     expect(snapshot.steps[1]?.stepId).toBe("step-2");
@@ -3087,7 +3079,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     await expect(
       assembleRunCredentialsSnapshot({
         repoStore,
-        deploymentId,
+        anchorRunId,
         runId,
         stepOrder,
         deriveStepAddress,
@@ -3111,7 +3103,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     await expect(
       assembleRunCredentialsSnapshot({
         repoStore,
-        deploymentId,
+        anchorRunId,
         runId,
         stepOrder,
         deriveStepAddress,
@@ -3125,7 +3117,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     await expect(
       assembleRunCredentialsSnapshot({
         repoStore,
-        deploymentId,
+        anchorRunId,
         runId,
         stepOrder,
         deriveStepAddress,
@@ -3160,7 +3152,7 @@ describe("assembleRunCredentialsSnapshot", () => {
 
     const first = await assembleRunCredentialsSnapshot({
       repoStore,
-      deploymentId,
+      anchorRunId,
       runId,
       stepOrder,
       deriveStepAddress,
@@ -3170,7 +3162,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     // the grants file in between.
     const second = await assembleRunCredentialsSnapshot({
       repoStore,
-      deploymentId,
+      anchorRunId,
       runId,
       stepOrder,
       deriveStepAddress,

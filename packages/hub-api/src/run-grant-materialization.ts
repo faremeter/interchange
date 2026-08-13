@@ -334,7 +334,7 @@ export async function collectCreatorGrants(
 export type CommitRunGrantsArgs = {
   db: DB["db"];
   tenantId: string;
-  deploymentId: string;
+  anchorRunId: string;
   /**
    * The deployment's definition, resolved by the caller off the anchor run.
    * Anchors the run on its definition. Edge resolves; this interior trusts.
@@ -359,14 +359,14 @@ export type CommittedRunGrants = {
  */
 export async function lockWorkflowRunState(
   tx: DBExecutor,
-  deploymentId: string,
+  anchorRunId: string,
   runId: string,
 ): Promise<"absent" | "running" | "terminal"> {
   const [run] = await tx
     .select({ status: workflowRun.status })
     .from(workflowRun)
     .where(
-      and(eq(workflowRun.id, runId), eq(workflowRun.anchorRunId, deploymentId)),
+      and(eq(workflowRun.id, runId), eq(workflowRun.anchorRunId, anchorRunId)),
     )
     .limit(1)
     .for("update");
@@ -520,7 +520,7 @@ export async function commitRunGrants(
     await workflowRunStore.anchorWithPrincipal(
       {
         id: args.runId,
-        anchorRunId: args.deploymentId,
+        anchorRunId: args.anchorRunId,
         definitionId: args.definitionId,
         tenantId: args.tenantId,
         principalId: args.runPrincipalId,
@@ -575,7 +575,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
       .select({
-        deploymentId: workflowRun.id,
+        anchorRunId: workflowRun.id,
         tenantId: workflowRun.tenantId,
         definitionId: workflowRun.definitionId,
         definitionAssetId: workflowDefinition.assetId,
@@ -618,7 +618,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     }
     const definitionAssetId = anchor.definitionAssetId;
     const tenantId = anchor.tenantId;
-    const deploymentId = anchor.deploymentId;
+    const anchorRunId = anchor.anchorRunId;
 
     const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
     if (committed !== null) {
@@ -682,9 +682,9 @@ export function createMailTriggeredRunGrantsMaterializer(
 
     const stepGrants = await deps.db.transaction(async (tx) => {
       if (
-        (await lockWorkflowRunState(tx, deploymentId, deploymentId)) !==
+        (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
           "running" ||
-        (await lockWorkflowRunState(tx, deploymentId, runId)) === "terminal"
+        (await lockWorkflowRunState(tx, anchorRunId, runId)) === "terminal"
       ) {
         return null;
       }
@@ -692,7 +692,7 @@ export function createMailTriggeredRunGrantsMaterializer(
         {
           db: deps.db,
           tenantId,
-          deploymentId,
+          anchorRunId,
           definitionId: anchor.definitionId,
           runId,
           runPrincipalId,

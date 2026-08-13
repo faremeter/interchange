@@ -134,7 +134,7 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       throw new Error("step ids cannot be empty");
     }
     // The workflow-deploy orchestrator derives per-step mail addresses
-    // of the form `<deploymentId>-<stepId>@<deploymentDomain>` for
+    // of the form `<runId>-<stepId>@<deploymentDomain>` for
     // multi-step deployments. Constraining `stepId` to
     // `[a-zA-Z0-9_-]+` at definition time means the derived local-part
     // never needs escaping and the address parser at the substrate

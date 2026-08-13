@@ -467,7 +467,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     };
     const principal: WorkflowRunWorkflowProcessPrincipal = {
       kind: "workflow-process",
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
     };
 
     const substrate = createRepoStore({

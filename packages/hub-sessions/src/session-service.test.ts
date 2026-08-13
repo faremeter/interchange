@@ -1461,7 +1461,7 @@ describe("deployWorkflowDefinition", () => {
 
     const result = await service.deployWorkflowDefinition({
       tenantId: "tenant-1",
-      deploymentId: "run_dep_xyz",
+      anchorRunId: "run_dep_xyz",
       deploymentDomain: "workflow.test",
       definition,
       definitionAssetId: "ast_workflow_1",
@@ -1536,7 +1536,7 @@ describe("deployWorkflowDefinition", () => {
     expect(grantRow.effect).toBe("allow");
 
     expect(result).toEqual({
-      deploymentId: "run_dep_xyz",
+      anchorRunId: "run_dep_xyz",
       deploymentAddress: "run_dep_xyz@workflow.test",
       publicKey: "ed25519-supervisor-pubkey",
     });
@@ -1649,7 +1649,7 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
     });
     const params = {
       tenantId: "tenant-1",
-      deploymentId: "dep_restore_order",
+      anchorRunId: "dep_restore_order",
       deploymentDomain: "workflow.test",
       definition,
       config: {

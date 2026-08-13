@@ -837,7 +837,7 @@ export function createRunRoutes({
         tenant: tenantCtx,
         principal: c.get("principal"),
         userName: c.get("user")?.name ?? null,
-        deploymentId: runId,
+        anchorRunId: runId,
         message: c.req.valid("json"),
       });
       return c.json(result.body, result.status);

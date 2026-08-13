@@ -151,11 +151,11 @@
 // Authz:
 //   - `hub` principal: full access.
 //   - `workflow-process` principal: read/write its own deployment's
-//     event log. The principal carries `{ deploymentId, runId? }`;
-//     this handler verifies `repoId.id === deploymentId`.
+//     event log. The principal carries `{ anchorRunId, runId? }`;
+//     this handler verifies `repoId.id === anchorRunId`.
 //   - `supervisor` principal: read/write its own deployment's event
-//     log. The principal carries `{ deploymentId }`; this handler
-//     verifies `repoId.id === deploymentId`.
+//     log. The principal carries `{ anchorRunId }`; this handler
+//     verifies `repoId.id === anchorRunId`.
 //   - `sidecar` principal: read-only (createPack, resolveRef) for
 //     resume.
 //   - `user` principal: gated by bearer-token claims and the route
@@ -196,13 +196,13 @@ export type WorkflowRunSidecarPrincipal = {
 
 export type WorkflowRunWorkflowProcessPrincipal = {
   readonly kind: "workflow-process";
-  readonly deploymentId: string;
+  readonly anchorRunId: string;
   readonly runId?: string;
 };
 
 export type WorkflowRunSupervisorPrincipal = {
   readonly kind: "supervisor";
-  readonly deploymentId: string;
+  readonly anchorRunId: string;
 };
 
 export type WorkflowRunPrincipal =
@@ -542,13 +542,13 @@ const SidecarPrincipal = type({
 
 const WorkflowProcessPrincipal = type({
   kind: "'workflow-process'",
-  deploymentId: "string",
+  anchorRunId: "string",
   "runId?": "string",
 });
 
 const SupervisorPrincipal = type({
   kind: "'supervisor'",
-  deploymentId: "string",
+  anchorRunId: "string",
 });
 
 type RunEventBlob = {
@@ -2364,10 +2364,10 @@ export const workflowRunAuthorize: AuthorizeFn = (
         reason: `workflow-process principal is malformed: ${parsed.summary}`,
       };
     }
-    if (parsed.deploymentId !== repoId.id) {
+    if (parsed.anchorRunId !== repoId.id) {
       return {
         allowed: false,
-        reason: `workflow-process deployment ${parsed.deploymentId} cannot access workflow-run ${repoId.id}`,
+        reason: `workflow-process deployment ${parsed.anchorRunId} cannot access workflow-run ${repoId.id}`,
       };
     }
     switch (action) {
@@ -2395,10 +2395,10 @@ export const workflowRunAuthorize: AuthorizeFn = (
         reason: `supervisor principal is malformed: ${parsed.summary}`,
       };
     }
-    if (parsed.deploymentId !== repoId.id) {
+    if (parsed.anchorRunId !== repoId.id) {
       return {
         allowed: false,
-        reason: `supervisor deployment ${parsed.deploymentId} cannot access workflow-run ${repoId.id}`,
+        reason: `supervisor deployment ${parsed.anchorRunId} cannot access workflow-run ${repoId.id}`,
       };
     }
     switch (action) {

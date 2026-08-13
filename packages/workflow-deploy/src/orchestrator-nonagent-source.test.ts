@@ -196,7 +196,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_nonagent",
+        runId: "dep_nonagent",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -256,7 +256,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_nonagent",
+        runId: "dep_nonagent",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -303,7 +303,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
 
     const result = await orchestrator.deployWorkflow({
       workflow,
-      deploymentId: "dep_nonagent",
+      runId: "dep_nonagent",
       deploymentDomain: "workflow.interchange",
       config,
       deployContent: DEPLOY_CONTENT_BASE,

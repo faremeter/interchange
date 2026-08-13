@@ -1073,7 +1073,7 @@ export type SidecarBodyStepInvoker = (
  * (the workflow-run pack-pushing wrap installed by the factory) so a
  * successful child write fires the same hub pack push the parent's
  * writes do. The substrate's signing principal (a workflow-process
- * principal scoped to the parent's deploymentId) is reused verbatim
+ * principal scoped to the parent's anchorRunId) is reused verbatim
  * because the child runs under the same supervisor authority.
  */
 interface SidecarRunChildDeps {
@@ -1228,7 +1228,7 @@ export function createSidecarRunChild(
   // this deployment. Run-body events keep their workflow-process attribution.
   const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
-    deploymentId: deps.workflowRunRepoId.id,
+    anchorRunId: deps.workflowRunRepoId.id,
   };
   // Created once and shared across every child this factory spawns (the
   // runtime scopes reads/subscribes by runId), so sibling and grandchild
@@ -1344,7 +1344,7 @@ export function createSidecarSpawnSuspendableChild(
   // this deployment. Run-body events keep their workflow-process attribution.
   const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
-    deploymentId: deps.workflowRunRepoId.id,
+    anchorRunId: deps.workflowRunRepoId.id,
   };
   const repoStore = createWorkflowRunRepoStore({
     substrate: deps.substrate,
@@ -1589,7 +1589,7 @@ async function buildChildRunEnv(args: {
   // legitimately holds no grants.
   const parentGrants = await readRunGrants({
     repoStore: deps.substrate,
-    deploymentId: deps.workflowRunRepoId.id,
+    anchorRunId: deps.workflowRunRepoId.id,
     runId: parentRunId,
   });
   if (parentGrants === undefined) {
@@ -1853,7 +1853,7 @@ export function createSidecarSubstrateFactory(
     };
     const principal: WorkflowRunWorkflowProcessPrincipal = {
       kind: "workflow-process",
-      deploymentId: env.spawn.deploymentId,
+      anchorRunId: env.spawn.anchorRunId,
     };
 
     // Proxy substrate: writes are forwarded over IPC into the

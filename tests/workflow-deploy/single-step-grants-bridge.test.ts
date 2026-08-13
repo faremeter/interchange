@@ -203,7 +203,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -264,7 +264,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
         toolPackagePins: TOOL_PINS,
@@ -298,7 +298,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -340,7 +340,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
       repoStore: readbackRepoStore,
       principal: { kind: "hub" },
       stepOrder: [STEP_ID],
-      deploymentId: deriveDeploymentId(deploymentMailAddress),
+      anchorRunId: deriveDeploymentId(deploymentMailAddress),
       deriveStepAddress: () => deploymentMailAddress,
       deriveStepRepoId: () => legacyAgentStateRepoId,
     });

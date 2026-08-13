@@ -63,11 +63,11 @@ const TEST_PRINCIPAL: Principal = { kind: "test" };
 
 async function makeAdapter(
   runId: string,
-  deploymentId: string,
+  anchorRunId: string,
   inlineMaxBytes?: number,
 ) {
   const dataDir = await makeTempDir("blob-substrate-adapter-");
-  const repoId: RepoId = { kind: "agent-state", id: deploymentId };
+  const repoId: RepoId = { kind: "agent-state", id: anchorRunId };
   const substrate = createRepoStore({
     dataDir,
     signingKey,

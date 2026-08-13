@@ -613,7 +613,7 @@ export function createWorkflowSupervisor(
     bindings.deriveMailAuditRef ?? defaultInProcessMailAuditRef;
   const defaultInboxWritePrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
-    deploymentId: bindings.deploymentId,
+    anchorRunId: bindings.anchorRunId,
   };
   const inboxWritePrincipal: Principal =
     bindings.inboxWritePrincipal ?? defaultInboxWritePrincipal;
@@ -1042,7 +1042,7 @@ export function createWorkflowSupervisor(
         runId: park.runId,
         correlationId: park.correlationId,
         kind: park.parkKind,
-        deploymentId: bindings.deploymentId,
+        anchorRunId: bindings.anchorRunId,
         agentAddress: bindings.deploymentMailAddress,
         ...(park.snapshot !== undefined
           ? { approvalSnapshot: park.snapshot }
@@ -1278,7 +1278,7 @@ export function createWorkflowSupervisor(
     // is which process owns the substrate write contract.
     const writePrincipal: WorkflowRunWorkflowProcessPrincipal = {
       kind: "workflow-process",
-      deploymentId: bindings.deploymentId,
+      anchorRunId: bindings.anchorRunId,
     };
     // The commit's terminal detection comes from the kind handler's
     // typed `newlyTerminalRuns` signal (returned below), not a sniff of
@@ -1396,7 +1396,7 @@ export function createWorkflowSupervisor(
           substrate: bindings.repoStore,
           repoId: validatedRepoId,
           ref: data.ref,
-          deploymentId: bindings.deploymentId,
+          anchorRunId: bindings.anchorRunId,
           runId,
         }).catch((cause) => {
           logger.warn`compaction of run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
@@ -1496,7 +1496,7 @@ export function createWorkflowSupervisor(
       channelId,
       hmacKey,
       hostPublicKey: ipcKeypair.publicKey,
-      deploymentId: bindings.deploymentId,
+      anchorRunId: bindings.anchorRunId,
       deploymentMailAddress: bindings.deploymentMailAddress,
       stepCount: bindings.stepCount,
       definitionHash: opts.definitionHash,
@@ -1578,7 +1578,7 @@ export function createWorkflowSupervisor(
         repoStore: bindings.repoStore,
         principal: bindings.readPrincipal,
         stepOrder: opts.stepOrder,
-        deploymentId: bindings.deploymentId,
+        anchorRunId: bindings.anchorRunId,
         deriveStepAddress: bindings.deriveStepAddress,
         ...(bindings.deriveStepRepoId !== undefined
           ? { deriveStepRepoId: bindings.deriveStepRepoId }
@@ -1982,7 +1982,7 @@ export function createWorkflowSupervisor(
     try {
       const snapshot = await bindings.onRunStart({
         runId,
-        deploymentId: bindings.deploymentId,
+        anchorRunId: bindings.anchorRunId,
       });
       await sender.send({
         type: "grants-updated",
@@ -2548,7 +2548,7 @@ export function createWorkflowSupervisor(
       substrate: bindings.repoStore,
       repoId: bindings.workflowRunRepoId,
       ref: bindings.workflowRunRef,
-      deploymentId: bindings.deploymentId,
+      anchorRunId: bindings.anchorRunId,
       runId: opts.runId,
       origin: opts.origin,
       reason: opts.reason,
@@ -2802,7 +2802,7 @@ export function createWorkflowSupervisor(
         substrate: bindings.repoStore,
         repoId: bindings.workflowRunRepoId,
         ref: bindings.workflowRunRef,
-        deploymentId: bindings.deploymentId,
+        anchorRunId: bindings.anchorRunId,
         runId,
         signAsPrincipal: bindings.signAsPrincipal,
         drainTimeoutMs,

@@ -1955,7 +1955,7 @@ describe("initial handshake on connect", () => {
         client.sendSignalCorrelationRegister({
           correlationId: "corr-throw",
           runId: "run-1",
-          deploymentId: "dep-1",
+          anchorRunId: "dep-1",
           agentAddress: "ins_dep@integration.interchange",
           kind: "approval",
         }),
@@ -2008,7 +2008,7 @@ describe("initial handshake on connect", () => {
       client.sendSignalCorrelationRegister({
         correlationId: "corr-1",
         runId: "run-1",
-        deploymentId: "dep-1",
+        anchorRunId: "dep-1",
         agentAddress: "ins_dep_reg2@integration.interchange",
         kind: "approval",
         approvalSnapshot: snapshot,
@@ -2092,7 +2092,7 @@ describe("initial handshake on connect", () => {
       client.sendSignalCorrelationRegister({
         correlationId: "corr-ack",
         runId: "run-1",
-        deploymentId: "dep-1",
+        anchorRunId: "dep-1",
         agentAddress: "ins_dep_reg_ack@integration.interchange",
         kind: "approval",
         approvalSnapshot: {
@@ -2159,7 +2159,7 @@ describe("initial handshake on connect", () => {
       client.sendSignalCorrelationRegister({
         correlationId: "corr-retry",
         runId: "run-1",
-        deploymentId: "dep-1",
+        anchorRunId: "dep-1",
         agentAddress: "ins_dep_reg_retry@integration.interchange",
         kind: "approval",
         approvalSnapshot: {

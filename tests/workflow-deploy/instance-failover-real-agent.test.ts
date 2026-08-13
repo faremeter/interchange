@@ -137,7 +137,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
       id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
-      deploymentId: INSTANCE_ID,
+      anchorRunId: INSTANCE_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -237,7 +237,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
       id: deriveDeploymentId(agentAddress),
     };
     env.registerDeployment({
-      deploymentId: soleDeadRunId,
+      anchorRunId: soleDeadRunId,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

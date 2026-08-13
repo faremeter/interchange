@@ -62,7 +62,7 @@
 // fixture makes an authenticated tenant call the same way `credential-routes`
 // does -- a mock betterAuth session bound to a seeded active user-principal,
 // which `resolveTenant` resolves into the tenant + principal the route reads.
-// The approver's authority is a real `approval:<deploymentId>` / `resolve`
+// The approver's authority is a real `approval:<anchorRunId>` / `resolve`
 // grant evaluated by the route's `authorize` call.
 //
 // Single-test file. The shared `deploy-flow-env` (real sidecar subprocess + its
@@ -222,7 +222,7 @@ let env: DeployFlowEnv;
 let h: TestDb;
 
 // The deployment mail address and the workflow-run repo slug the supervisor
-// stamps onto the register frame's `deploymentId`. The co-write resolves
+// stamps onto the register frame's `anchorRunId`. The co-write resolves
 // tenancy by the address and cross-checks the slug, so the seeded
 // anchor run is keyed by the slug with this address.
 const deploymentMailAddress = deriveRunAddress({
@@ -281,7 +281,7 @@ function createMockEventCollectors(): EventCollectorRegistry {
   };
 }
 
-// The `approval:<deploymentId>` / `resolve` grant for the approver. The
+// The `approval:<anchorRunId>` / `resolve` grant for the approver. The
 // resolver authorizes the exact `approval:<slug>` resource, so this is what
 // lets the approve call through; without it the route returns 403.
 const approverGrant: GrantRule = {
@@ -300,7 +300,7 @@ const approverGrant: GrantRule = {
  * The real hub co-write, mirroring `createHubSessionLookups`'s
  * `registerSignalCorrelation`: resolve tenancy from the deployment's anchor run
  * -- the `workflow_run` whose id is the deployment id -- the address names,
- * cross-check the frame's `deploymentId` against it, and co-write the
+ * cross-check the frame's `anchorRunId` against it, and co-write the
  * `signal_correlation` + `approval` rows in one transaction through the real
  * stores. Wired into the fixture hub's sidecar router so the
  * `signal.correlation.register` frame the parked run emits lands durable rows on
@@ -313,14 +313,14 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
   return async ({
     correlationId,
     runId,
-    deploymentId,
+    anchorRunId,
     agentAddress,
     kind,
     approvalSnapshot,
   }: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: "approval";
     approvalSnapshot: ApprovalSnapshot;
@@ -344,9 +344,9 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         `No running workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
       );
     }
-    if (anchor.id !== deploymentId) {
+    if (anchor.id !== anchorRunId) {
       throw new Error(
-        `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" resolves to "${anchor.id}"`,
+        `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" resolves to "${anchor.id}"`,
       );
     }
     const tenantId = anchor.tenantId;
@@ -356,7 +356,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
       await workflowRunStore.createIfAbsent(
         {
           id: runId,
-          anchorRunId: deploymentId,
+          anchorRunId: anchorRunId,
           tenantId,
           definitionId: DEFINITION_ID,
           principalId: null,
@@ -368,7 +368,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           correlationId,
           tenantId,
-          anchorRunId: deploymentId,
+          anchorRunId: anchorRunId,
           agentAddress,
           runId,
           signalName: signalName(correlationId),
@@ -380,7 +380,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           id: generateId("approval"),
           tenantId,
-          anchorRunId: deploymentId,
+          anchorRunId: anchorRunId,
           runId,
           agentAddress,
           correlationId,
@@ -469,7 +469,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: deploymentSlug,
         tenantId: TENANT_ID,
-        deploymentId: deploymentSlug,
+        anchorRunId: deploymentSlug,
         definitionId: DEFINITION_ID,
         address: deploymentMailAddress,
         publicKey: null,
@@ -536,7 +536,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await env.hub.sessionService.stageWorkflowStep({
           agentAddress: orchestratorParams.agentAddress,
           agentId: orchestratorParams.agentId,
-          runId: orchestratorParams.instanceId,
+          runId: orchestratorParams.runId,
           config: orchestratorParams.config,
           deployContent: toLaunchDeployContent(
             orchestratorParams.deployContent,
@@ -599,7 +599,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           config,
           deployContent: { systemPrompt: config.systemPrompt },
           operatorApprovals,
-          deploymentId: DEPLOYMENT_ID,
+          runId: DEPLOYMENT_ID,
           deploymentDomain: DEPLOYMENT_DOMAIN,
           hubPublicKey: "00".repeat(32),
           toolPackagePins: TOOL_PINS,
@@ -619,7 +619,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: deploymentSlug,
       };
       env.registerDeployment({
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         workflowDefinition: workflow,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,

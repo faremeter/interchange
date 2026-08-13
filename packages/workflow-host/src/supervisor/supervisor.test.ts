@@ -716,12 +716,11 @@ async function buildBindings(opts: {
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
-    deploymentId: "run_deployment-x",
+    anchorRunId: "run_deployment-x",
     stepCount: 1,
     deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ deploymentId, stepId }) =>
-      `${deploymentId}-${stepId}@example.com`,
+    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
   };
 }
@@ -766,7 +765,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-spawn-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -1071,7 +1070,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-barrier-ok-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -1079,7 +1078,7 @@ describe("createWorkflowSupervisor", () => {
     // per run rather than once per spawn. When `onRunStart` is wired the
     // spawn-time push is suppressed, so a `grants-updated` on the child
     // stream can only come from this per-run barrier.
-    const runStartCalls: { runId: string; deploymentId: string }[] = [];
+    const runStartCalls: { runId: string; anchorRunId: string }[] = [];
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async (
       args,
     ) => {
@@ -1088,9 +1087,9 @@ describe("createWorkflowSupervisor", () => {
         repoStore: createStubRepoStore({ baseDir }),
         principal: { kind: "supervisor" },
         stepOrder: ["step-1"],
-        deploymentId: "run_deployment-x",
-        deriveStepAddress: ({ deploymentId, stepId }) =>
-          `${deploymentId}-${stepId}@example.com`,
+        anchorRunId: "run_deployment-x",
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
       });
     };
 
@@ -1134,7 +1133,7 @@ describe("createWorkflowSupervisor", () => {
     // The sink was consulted once for this run with the supervisor's
     // deployment id stamped on.
     expect(runStartCalls).toEqual([
-      { runId: firedRunId, deploymentId: "run_deployment-x" },
+      { runId: firedRunId, anchorRunId: "run_deployment-x" },
     ]);
 
     await wired.childSender.send({
@@ -1148,7 +1147,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-barrier-creds-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
@@ -1156,9 +1155,9 @@ describe("createWorkflowSupervisor", () => {
         repoStore: createStubRepoStore({ baseDir }),
         principal: { kind: "supervisor" },
         stepOrder: ["step-1"],
-        deploymentId: "run_deployment-x",
-        deriveStepAddress: ({ deploymentId, stepId }) =>
-          `${deploymentId}-${stepId}@example.com`,
+        anchorRunId: "run_deployment-x",
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
       });
     const delivery = {
       bindings: [
@@ -1261,7 +1260,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-ack-present-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let mode: "enqueued" | "already-present" = "enqueued";
@@ -1298,7 +1297,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-withhold-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let onEnqueue: (args: {
@@ -1353,7 +1352,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-phase-drop-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     // enqueue would resolve if it were reached; the phase gate must reject
@@ -1517,7 +1516,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-spawn-leak-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1614,7 +1613,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-arm-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1820,7 +1819,7 @@ describe("createWorkflowSupervisor", () => {
     for (const stub of stubs) {
       expect(stub.__startCount).toBe(1);
       expect(stub.__stopCount).toBe(0);
-      expect(stub.__opts.deploymentId).toBe("run_deployment-x");
+      expect(stub.__opts.anchorRunId).toBe("run_deployment-x");
       expect(stub.__opts.repoId).toEqual({
         kind: "workflow-run",
         id: "run_deployment-x",
@@ -1852,7 +1851,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-escalate-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -2119,7 +2118,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-terminal-source-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -2277,7 +2276,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-no-term-source-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -2549,7 +2548,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-deliver-sources-running-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2673,7 +2672,7 @@ describe("createWorkflowSupervisor", () => {
     );
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2781,7 +2780,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-first-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2793,9 +2792,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -2836,7 +2835,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-approval-park-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2848,9 +2847,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -2896,7 +2895,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-signal-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2908,9 +2907,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -2995,7 +2994,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-queue-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3007,9 +3006,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3094,7 +3093,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-drain-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3112,9 +3111,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
       drainTimeoutAccumulatorFactory: factory,
@@ -3201,7 +3200,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-terminal-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3213,9 +3212,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3278,7 +3277,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-recovery-terminal-race-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3288,9 +3287,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         }),
     });
     const address = "run_deployment-x@example.com";
@@ -3338,7 +3337,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-clean-run-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3349,9 +3348,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3380,7 +3379,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-terminal-restart-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3409,9 +3408,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3440,7 +3439,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-instant-park-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3451,9 +3450,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3488,7 +3487,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-fresh-corr-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3499,9 +3498,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3579,7 +3578,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-resumed-order-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3590,9 +3589,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3646,7 +3645,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-signal-text-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3656,9 +3655,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3709,7 +3708,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-deliversignal-passthrough-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3719,9 +3718,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3748,7 +3747,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-poison-mail-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3758,9 +3757,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3828,7 +3827,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-markconsumed-fatal-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const memoryInbox = createMemoryInboxPrimitives();
@@ -3850,9 +3849,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3907,7 +3906,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-lost-wake-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const address = "run_deployment-x@example.com";
@@ -3940,9 +3939,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -3973,7 +3972,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-subscribe-before-fire-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3983,9 +3982,9 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "run_deployment-x",
-          deriveStepAddress: ({ deploymentId, stepId }) =>
-            `${deploymentId}-${stepId}@example.com`,
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -4031,12 +4030,12 @@ describe("assembleCredentialsSnapshot", () => {
     const baseDir = await makeTempDir("supervisor-creds-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "d1", stepId: "alpha" }),
+      defaultStepRepoId({ runId: "d1", stepId: "alpha" }),
       [{ resource: "alpha-thing", action: "read" }],
     );
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "d1", stepId: "beta" }),
+      defaultStepRepoId({ runId: "d1", stepId: "beta" }),
       [
         { resource: "beta-thing", action: "read" },
         { resource: "beta-thing", action: "write" },
@@ -4047,9 +4046,9 @@ describe("assembleCredentialsSnapshot", () => {
       repoStore,
       principal: { kind: "supervisor" },
       stepOrder: ["alpha", "beta"],
-      deploymentId: "d1",
-      deriveStepAddress: ({ deploymentId, stepId }) =>
-        `${deploymentId}-${stepId}@example.com`,
+      anchorRunId: "d1",
+      deriveStepAddress: ({ runId, stepId }) =>
+        `${runId}-${stepId}@example.com`,
     });
     expect(snapshot.steps).toHaveLength(2);
     expect(snapshot.steps[0]?.stepId).toBe("alpha");
@@ -4074,8 +4073,8 @@ describe("assembleCredentialsSnapshot", () => {
       repoStore,
       principal: { kind: "supervisor" },
       stepOrder: ["solo"],
-      deploymentId: "d2",
-      deriveStepAddress: ({ deploymentId }) => `${deploymentId}@example.com`,
+      anchorRunId: "d2",
+      deriveStepAddress: ({ runId }) => `${runId}@example.com`,
     });
     expect(snapshot.steps).toHaveLength(1);
     expect(snapshot.steps[0]?.grants).toEqual([]);
@@ -4084,7 +4083,7 @@ describe("assembleCredentialsSnapshot", () => {
 
   test("a malformed grants file fails loudly rather than silently treating it as empty", async () => {
     const baseDir = await makeTempDir("supervisor-creds-bad-");
-    const repoId = defaultStepRepoId({ deploymentId: "d3", stepId: "s" });
+    const repoId = defaultStepRepoId({ runId: "d3", stepId: "s" });
     const dir = path.join(baseDir, repoId.kind, repoId.id);
     await fs.mkdir(path.join(dir, "state"), { recursive: true });
     await fs.writeFile(path.join(dir, STEP_GRANTS_PATH), "not json");
@@ -4094,7 +4093,7 @@ describe("assembleCredentialsSnapshot", () => {
         repoStore,
         principal: { kind: "supervisor" },
         stepOrder: ["s"],
-        deploymentId: "d3",
+        anchorRunId: "d3",
         deriveStepAddress: () => "d3-s@example.com",
       }),
     ).rejects.toThrow(/is not valid JSON/);
@@ -4115,7 +4114,7 @@ describe("commitCancelRequested (low-level)", () => {
       substrate: repoStore,
       repoId: { kind: "workflow-run", id: "deploy" },
       ref: "refs/heads/main",
-      deploymentId: "deploy",
+      anchorRunId: "deploy",
       runId: "r1",
       origin: "self",
       reason: "tests pass",
@@ -4236,7 +4235,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     const baseDir = await makeTempDir(opts.label);
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();

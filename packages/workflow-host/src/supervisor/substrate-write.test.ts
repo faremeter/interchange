@@ -15,11 +15,11 @@
 //      writes on behalf of the child under
 //      `WorkflowRunWorkflowProcessPrincipal`; nothing in the existing
 //      tests pinned the supervisor's behaviour when the child claims
-//      a principal it shouldn't have or a deploymentId that doesn't
+//      a principal it shouldn't have or a anchorRunId that doesn't
 //      match the supervisor's. The supervisor's handler intentionally
-//      ignores any principal/deploymentId the child might smuggle in:
+//      ignores any principal/anchorRunId the child might smuggle in:
 //      the principal is constructed by the supervisor at write time
-//      from `bindings.deploymentId`. Pin that override so a future
+//      from `bindings.anchorRunId`. Pin that override so a future
 //      change does not quietly let the child influence the on-disk
 //      audit subject.
 //
@@ -187,7 +187,7 @@ function createMockMailBus(): MailBusBindings & {
 }
 
 type WriteCapture = {
-  principal: { kind: string; deploymentId?: string };
+  principal: { kind: string; anchorRunId?: string };
   repoId: RepoId;
   ref: string;
   preservePrefix: string;
@@ -259,7 +259,7 @@ function createStubRepoStore(opts: {
     },
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
       opts.onWriteAttempt?.({
-        principal: principal as { kind: string; deploymentId?: string },
+        principal: principal as { kind: string; anchorRunId?: string },
         repoId,
         ref,
         preservePrefix: args.preservePrefix,
@@ -466,7 +466,7 @@ async function bootSupervisor(opts: {
   const baseDir = await makeTempDir(opts.prefix);
   await seedStepGrants(
     baseDir,
-    defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+    defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
     [{ resource: "thing", action: "read" }],
   );
   const supervisorIpcKeyPair = await generateKeyPair();
@@ -522,12 +522,11 @@ async function bootSupervisor(opts: {
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
-    deploymentId: "deployment-x",
+    anchorRunId: "deployment-x",
     stepCount: 1,
     deploymentMailAddress: "deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ deploymentId, stepId }) =>
-      `${deploymentId}-${stepId}@example.com`,
+    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives,
   };
@@ -618,7 +617,7 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
   test("the supervisor presents its bindings-pinned workflow-process principal regardless of what the child claims", async () => {
     // The substrate.write.request wire frame does not carry a
     // principal field (the supervisor's handler constructs the
-    // workflow-process principal from `bindings.deploymentId` at write
+    // workflow-process principal from `bindings.anchorRunId` at write
     // time). Pin that override here by observing the principal the
     // supervisor presents to the substrate's writeTreePreservingPrefix.
     const writes: WriteCapture[] = [];
@@ -671,12 +670,12 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     const first = writes[0];
     if (first === undefined) throw new Error("no write captured");
     // The supervisor's handler constructs the principal as
-    // `{ kind: "workflow-process", deploymentId: bindings.deploymentId }`.
+    // `{ kind: "workflow-process", anchorRunId: bindings.anchorRunId }`.
     // The on-disk audit subject is therefore pinned to the deployment
     // the supervisor was bound to at construction; the child has no
     // way to influence it through the IPC.
     expect(first.principal.kind).toBe("workflow-process");
-    expect(first.principal.deploymentId).toBe("deployment-x");
+    expect(first.principal.anchorRunId).toBe("deployment-x");
 
     await harness.supervisor.shutdown();
   });

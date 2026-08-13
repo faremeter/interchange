@@ -521,12 +521,11 @@ async function buildBindings(opts: {
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
-    deploymentId: "run_deployment-x",
+    anchorRunId: "run_deployment-x",
     stepCount: 1,
     deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ deploymentId, stepId }) =>
-      `${deploymentId}-${stepId}@example.com`,
+    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
     ...(opts.recyclePolicy !== undefined
@@ -544,7 +543,7 @@ async function spawnSupervisor(opts: {
 }) {
   await seedStepGrants(
     opts.baseDir,
-    defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+    defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
     [{ resource: "thing", action: "read" }],
   );
   const bindings = await buildBindings({
@@ -592,7 +591,7 @@ describe("supervisor spawn: failure cleanup", () => {
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -657,7 +656,7 @@ describe("supervisor spawn: failure cleanup", () => {
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -706,7 +705,7 @@ describe("supervisor spawn: dynamic env", () => {
     const tracker = createSpawnTracker({});
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let hostRevised = "before-rotation";
@@ -917,7 +916,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const tracker = createSpawnTracker({ sigtermExits: false });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -985,7 +984,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -1208,7 +1207,7 @@ describe("supervisor recycle: policy-initiated (max-uptime trip)", () => {
     const tracker = createSpawnTracker({});
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let nowMs = 1_700_000_000_000;
@@ -1350,7 +1349,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
 
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const baseBindings = await buildBindings({
@@ -1450,7 +1449,7 @@ describe("supervisor recycle: drain-side processing replay", () => {
     };
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -1710,7 +1709,7 @@ describe("supervisor recycle: respawn credentials-read failure", () => {
     // the read that fails here.
     await corruptStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
     );
 
     let caught: unknown;

@@ -41,12 +41,12 @@ async function startSmokeEnv(): Promise<{
   const hub = await startHub(registerTempDir);
   const deployments = new Map<string, DeploymentHandle>();
   const registerDeployment = (handle: DeploymentHandle): void => {
-    if (deployments.has(handle.deploymentId)) {
+    if (deployments.has(handle.anchorRunId)) {
       throw new Error(
-        `smoke env: deployment ${handle.deploymentId} already registered`,
+        `smoke env: deployment ${handle.anchorRunId} already registered`,
       );
     }
-    deployments.set(handle.deploymentId, handle);
+    deployments.set(handle.anchorRunId, handle);
   };
   const env: DeployFlowEnv = {
     hub,
@@ -84,7 +84,7 @@ let env: DeployFlowEnv;
 beforeAll(async () => {
   ({ env } = await startSmokeEnv());
   env.registerDeployment({
-    deploymentId: DEPLOYMENT_ID,
+    anchorRunId: DEPLOYMENT_ID,
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the smoke tests do not exercise the workflow-definition shape; the helpers only consult `workflowRunRepoId`/`workflowRunRef`
     workflowDefinition: {
       id: "wf_smoke",

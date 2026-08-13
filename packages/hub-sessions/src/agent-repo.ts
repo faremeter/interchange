@@ -90,7 +90,7 @@ export type AgentRepoStore = {
    * tree.
    *
    * `repoId.kind` must be `"workflow-run"`. Stamps a
-   * `WorkflowRunSupervisorPrincipal` whose `deploymentId` equals
+   * `WorkflowRunSupervisorPrincipal` whose `anchorRunId` equals
    * `repoId.id`; the workflow-run kind handler denies sidecar-kind
    * writes by design, so the supervisor branch is the correct path for
    * sidecar-originated run-event commits (the supervisor lives on the
@@ -248,7 +248,7 @@ export function createAgentRepoStore(config: {
       }
       const principal: WorkflowRunSupervisorPrincipal = {
         kind: "supervisor",
-        deploymentId: incomingRepoId.id,
+        anchorRunId: incomingRepoId.id,
       };
       const expectedOldSha = await store.resolveRef(hub, incomingRepoId, ref);
       return store.receivePack(

@@ -76,7 +76,7 @@ describe("multistep router lifecycle: unregister", () => {
     expect(delivered).toEqual([]);
   });
 
-  test("DeploymentAddressRegistry exposes a removal API that breaks the deploymentId mapping", () => {
+  test("DeploymentAddressRegistry exposes a removal API that breaks the anchorRunId mapping", () => {
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-A", "agent-a@x.example");
 
@@ -85,7 +85,7 @@ describe("multistep router lifecycle: unregister", () => {
     expect(registry.resolve("dep-A")).toBeNull();
   });
 
-  test("DeploymentAddressRegistry.unregister of an unknown deploymentId is a no-op", () => {
+  test("DeploymentAddressRegistry.unregister of an unknown anchorRunId is a no-op", () => {
     const registry = createDeploymentAddressRegistry();
     expect(() => {
       registry.unregister("never-recorded");

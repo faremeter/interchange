@@ -60,7 +60,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: ANCHOR_RUN_ID,
-        deploymentId: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         definitionId: DEFINITION_ID,
       });
@@ -201,7 +201,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("requires a launch specification before allocating capacity", async () => {
       await seedWorkflowRun(h.db, {
         id: "anchor-without-spec",
-        deploymentId: "anchor-without-spec",
+        anchorRunId: "anchor-without-spec",
         tenantId: TENANT_ID,
         definitionId: DEFINITION_ID,
       });
@@ -564,7 +564,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: "run-terminal",
-        deploymentId: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         definitionId: DEFINITION_ID,
         principalId: "prn-terminal-run",
@@ -735,7 +735,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: "run-unrecoverable",
-        deploymentId: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         definitionId: DEFINITION_ID,
         principalId: "prn-unrecoverable-run",

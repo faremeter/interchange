@@ -55,8 +55,8 @@ export type DrainTimeoutOpts = {
   repoId: RepoId;
   /** Workflow-run repo ref the supervisor commits events to. */
   ref: string;
-  /** Deployment id baked into the supervisor's signing principal. */
-  deploymentId: string;
+  /** Anchor run id baked into the supervisor's signing principal. */
+  anchorRunId: string;
   /** Run id the drain is being escalated against. */
   runId: string;
   /**
@@ -282,7 +282,7 @@ export function createDrainTimeoutAccumulator(
       substrate: opts.substrate,
       repoId: opts.repoId,
       ref: opts.ref,
-      deploymentId: opts.deploymentId,
+      anchorRunId: opts.anchorRunId,
       runId: opts.runId,
       origin,
       reason,

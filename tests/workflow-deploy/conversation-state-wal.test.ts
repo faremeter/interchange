@@ -58,7 +58,7 @@ const CHECKPOINT_INTERVAL = 64;
 
 const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
   kind: "workflow-process",
-  deploymentId: "durability-unit",
+  anchorRunId: "durability-unit",
 };
 
 function tokenUsage(input: number): TokenUsage {

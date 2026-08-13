@@ -55,7 +55,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: DEPLOYMENT,
         tenantId: TENANT,
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         address: ADDRESS,
         status: "running",
       });
@@ -67,7 +67,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // reach the routing address the anchor carries.
       await seedWorkflowRun(h.db, {
         id: "run-1",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
       });
 
@@ -76,7 +76,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("resolves the anchor run's own refId to its address", async () => {
-      // The anchor run's deploymentId is its own id, so the self-join resolves
+      // The anchor run's anchorRunId is its own id, so the self-join resolves
       // it to itself and it names its own address.
       const names = await resolveWorkflowPrincipalNames(h.db, [DEPLOYMENT]);
       expect(names.get(DEPLOYMENT)).toBe(`Workflow (${ADDRESS})`);
@@ -95,7 +95,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run-folded",
         tenantId: TENANT,
-        deploymentId: null,
+        anchorRunId: null,
         address: "ins_folded@wf.example",
         status: "running",
       });
@@ -108,7 +108,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run-nameless",
         tenantId: TENANT,
-        deploymentId: null,
+        anchorRunId: null,
         address: null,
         status: "running",
       });
@@ -141,7 +141,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run-1",
         tenantId: TENANT,
-        deploymentId: null,
+        anchorRunId: null,
         address: "ins_run@wf.example",
         status: "running",
       });
@@ -169,7 +169,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run-1",
         tenantId: TENANT,
-        deploymentId: null,
+        anchorRunId: null,
         address: "ins_run@wf.example",
         status: "running",
       });

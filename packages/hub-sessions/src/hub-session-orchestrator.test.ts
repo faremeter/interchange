@@ -173,7 +173,7 @@ function createCollectorRegistry(
     calls,
     has,
     registry: {
-      create(addr, _tenantId, sessionId, _instanceId) {
+      create(addr, _tenantId, sessionId, _runId) {
         has.add(addr);
         calls.push({ kind: "create", addr, sessionId });
       },

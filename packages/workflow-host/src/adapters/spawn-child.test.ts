@@ -437,7 +437,7 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
 
     const workflowRunPrincipalShape = {
       kind: "workflow-process",
-      deploymentId: "test-deployment",
+      anchorRunId: "test-deployment",
     };
     const workflowRunPrincipal: Principal = workflowRunPrincipalShape;
     // First, seed the parent's RunStarted under runs/<parentRunId>/.

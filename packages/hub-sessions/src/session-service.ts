@@ -151,12 +151,12 @@ export type SessionService = {
    * deploy entry point: it is not coupled to a single agent's
    * credential/session model the way `launchSession` is. The
    * orchestrator derives every per-step address
-   * from `deploymentId` + `deploymentDomain`, provisions each step's
+   * from `anchorRunId` + `deploymentDomain`, provisions each step's
    * agent-state repo via the shared per-agent deploy phases, writes the
    * workflow repo, and fires the deployment-level `agent.deploy` frame.
    *
    * Persists the deployment's anchor run -- the `workflow_run` whose id is
-   * `deploymentId` -- carrying its routing identity and definition, so the
+   * `anchorRunId` -- carrying its routing identity and definition, so the
    * deployment is listable per tenant off its runs; the RepoStore substrate
    * has no by-kind listing API of its own.
    *
@@ -188,11 +188,11 @@ export type DeployWorkflowDefinitionParams = {
    * every derived per-step address and the deployment-level address, and
    * it is the deployment's anchor-run id. The caller owns its generation.
    */
-  deploymentId: string;
+  anchorRunId: string;
   /**
    * Mail domain the deployment's derived addresses live under. The
-   * orchestrator derives `<deploymentId>-<stepId>@<deploymentDomain>`
-   * per step and `<deploymentId>@<deploymentDomain>` for the
+   * orchestrator derives `<anchorRunId>-<stepId>@<deploymentDomain>`
+   * per step and `<anchorRunId>@<deploymentDomain>` for the
    * deployment-level supervisor address.
    */
   deploymentDomain: string;
@@ -225,7 +225,7 @@ export type DeployPreparedWorkflowDefinitionParams = Omit<
 
 export type DeployWorkflowDefinitionResult = {
   /** Echoes the deployment id recorded on the projection row. */
-  deploymentId: string;
+  anchorRunId: string;
   /** Deployment-level mail address the supervisor registers on the bus. */
   deploymentAddress: string;
   /** Supervisor principal public key from the sidecar's deploy ack. */
@@ -887,7 +887,7 @@ export function createSessionService(
     const result = await executeLaunchPhases({
       agentAddress: deployParams.agentAddress,
       agentId: deployParams.agentId,
-      runId: deployParams.instanceId,
+      runId: deployParams.runId,
       config: deployParams.config,
       deployContent: bridgeOrchestratorDeployContent(
         deployParams.deployContent,
@@ -938,7 +938,7 @@ export function createSessionService(
       stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: bridgeOrchestratorDeployContent(
           orchestratorParams.deployContent,
@@ -1078,7 +1078,7 @@ export function createSessionService(
     return deploySingleStepAtHead({
       agentAddress,
       agentId,
-      instanceId: runId,
+      runId,
       config,
       deployContent,
       definition: workflow,
@@ -1116,7 +1116,7 @@ export function createSessionService(
       directorRegistry,
       deployArgs: {
         workflow: params.definition,
-        deploymentId: params.deploymentId,
+        runId: params.anchorRunId,
         deploymentDomain: params.deploymentDomain,
         config: params.config,
         deployContent: params.deployContent,
@@ -1132,9 +1132,9 @@ export function createSessionService(
     });
 
     return {
-      deploymentId: params.deploymentId,
+      anchorRunId: params.anchorRunId,
       deploymentAddress: deriveRunAddress({
-        runId: params.deploymentId,
+        runId: params.anchorRunId,
         domain: params.deploymentDomain,
       }),
       publicKey: result.publicKey,
@@ -1146,7 +1146,7 @@ export function createSessionService(
   ): Promise<DeployWorkflowDefinitionResult> {
     const {
       tenantId,
-      deploymentId,
+      anchorRunId,
       deploymentDomain,
       definitionAssetId,
       config,
@@ -1172,7 +1172,7 @@ export function createSessionService(
 
       // The deployment's anchor run: the one workflow_run that carries the
       // deployment's routing identity, 1:1 with the deployment (id and address
-      // both derived from `deploymentId`). It is the deployment's sole
+      // both derived from `anchorRunId`). It is the deployment's sole
       // first-class record -- the row that owns the address and public key the
       // reconnect ownership challenge verifies: deploy-ack writes the key here
       // and the key lookup reads it off this row. It is born "deployed" -- live
@@ -1181,14 +1181,14 @@ export function createSessionService(
       // references itself. Child runs of this deployment are separate
       // address-less rows. `principalId` is null -- the workflow-derived key
       // path reads `publicKey` directly and never consults it, and the
-      // `workflow-run:<deploymentId>` grant seeded below already covers reads.
+      // `workflow-run:<anchorRunId>` grant seeded below already covers reads.
       await tx.insert(workflowRunTable).values({
-        id: deploymentId,
+        id: anchorRunId,
         tenantId,
-        anchorRunId: deploymentId,
+        anchorRunId,
         definitionId,
         address: deriveRunAddress({
-          runId: deploymentId,
+          runId: anchorRunId,
           domain: deploymentDomain,
         }),
         publicKey: result.publicKey,
@@ -1205,7 +1205,7 @@ export function createSessionService(
         id: generateId("grant"),
         tenantId,
         principalId: config.principalId,
-        resource: `workflow-run:${deploymentId}`,
+        resource: `workflow-run:${anchorRunId}`,
         action: "read",
         effect: "allow",
         origin: "creator",
@@ -1230,7 +1230,7 @@ export function createSessionService(
       allocationRouter: requireAllocationRouter(),
       allocationTarget: params.allocationTarget,
       agentAddress: deriveRunAddress({
-        runId: params.deploymentId,
+        runId: params.anchorRunId,
         domain: params.deploymentDomain,
       }),
     });
@@ -1254,7 +1254,7 @@ export function createSessionService(
           .for("update");
         if (
           allocation === undefined ||
-          allocation.anchorRunId !== params.deploymentId ||
+          allocation.anchorRunId !== params.anchorRunId ||
           allocation.status !== "allocated" ||
           allocation.generation !== params.allocationTarget.generation ||
           allocation.ensureAcceptedGeneration !==
@@ -1267,8 +1267,8 @@ export function createSessionService(
           .set({ publicKey: result.publicKey })
           .where(
             and(
-              eq(workflowRunTable.id, params.deploymentId),
-              eq(workflowRunTable.anchorRunId, params.deploymentId),
+              eq(workflowRunTable.id, params.anchorRunId),
+              eq(workflowRunTable.anchorRunId, params.anchorRunId),
               eq(workflowRunTable.tenantId, params.tenantId),
             ),
           )
@@ -1277,7 +1277,7 @@ export function createSessionService(
       });
       if (updated === null) {
         throw new Error(
-          `Prepared anchor run ${params.deploymentId} lost allocation ownership before initialization completed`,
+          `Prepared anchor run ${params.anchorRunId} lost allocation ownership before initialization completed`,
         );
       }
     } catch (error) {

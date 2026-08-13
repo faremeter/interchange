@@ -189,7 +189,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_fallback",
+        runId: "dep_fallback",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -242,7 +242,7 @@ describe("pickStepInferenceSource (agent step)", () => {
 
     const result = await orchestrator.deployWorkflow({
       workflow,
-      deploymentId: "dep_fallback",
+      runId: "dep_fallback",
       deploymentDomain: "workflow.interchange",
       config,
       deployContent: DEPLOY_CONTENT_BASE,
@@ -310,7 +310,7 @@ describe("pickStepInferenceSource (agent step)", () => {
 
     const result = await orchestrator.deployWorkflow({
       workflow,
-      deploymentId: "dep_fallback",
+      runId: "dep_fallback",
       deploymentDomain: "workflow.interchange",
       config,
       deployContent: DEPLOY_CONTENT_BASE,
@@ -367,7 +367,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_fallback",
+        runId: "dep_fallback",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,

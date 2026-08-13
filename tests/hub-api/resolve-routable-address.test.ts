@@ -62,7 +62,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run_folded",
         tenantId: "tnt_root",
-        deploymentId: null,
+        anchorRunId: null,
         definitionId: "wfd_folded",
         principalId: "prn_run",
         address: "ins_folded@root.example",
@@ -97,7 +97,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "dep_anchor",
         tenantId: "tnt_root",
-        deploymentId: null,
+        anchorRunId: null,
         principalId: null,
         address: "ins_dep_anchor@root.example",
         status: "running",
@@ -115,7 +115,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run_dead",
         tenantId: "tnt_root",
-        deploymentId: null,
+        anchorRunId: null,
         principalId: "prn_creator",
         address: "ins_dead@root.example",
         status: "cancelled",
@@ -131,7 +131,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run_noprincipal",
         tenantId: "tnt_root",
-        deploymentId: null,
+        anchorRunId: null,
         principalId: null,
         address: "ins_noprincipal@root.example",
         status: "running",
@@ -166,7 +166,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: "run_sessionless",
         tenantId: "tnt_root",
-        deploymentId: null,
+        anchorRunId: null,
         definitionId: "wfd_sessionless",
         principalId: "prn_sessionless",
         address: "ins_sessionless@root.example",

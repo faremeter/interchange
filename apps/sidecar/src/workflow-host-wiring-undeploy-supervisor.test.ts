@@ -351,17 +351,17 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
     }
 
     // Pre-seed the on-disk per-step scratch the child roots under
-    // `<dataDir>/workflow-step-state/<deploymentId>/` and the durable
-    // conversation under `<dataDir>/agent-conversation-state/<deploymentId>/`.
+    // `<dataDir>/workflow-step-state/<anchorRunId>/` and the durable
+    // conversation under `<dataDir>/agent-conversation-state/<anchorRunId>/`.
     // The warm subtree is the stable per-agent workspace (one dir, not
     // one-per-message); a stale cold `runs/<runId>/` subtree models a
     // multi-step leftover the per-run cleanup did not drop. An unrelated
     // deployment's step-state subtree must survive the undeploy sweep.
-    const deploymentId = deriveDeploymentId(frame.agentAddress);
+    const anchorRunId = deriveDeploymentId(frame.agentAddress);
     const stepStateRoot = path.join(dataDir, "workflow-step-state");
     const warmWorkspaceFile = path.join(
       stepStateRoot,
-      deploymentId,
+      anchorRunId,
       "warm",
       encodeURIComponent("step-1"),
       "workspace",
@@ -369,7 +369,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
     );
     const coldLeftoverFile = path.join(
       stepStateRoot,
-      deploymentId,
+      anchorRunId,
       "runs",
       "run-stale",
       "steps",
@@ -389,7 +389,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
     const durableConversationFile = path.join(
       dataDir,
       "agent-conversation-state",
-      deploymentId,
+      anchorRunId,
       encodeURIComponent("step-1"),
       "checkpoint.json",
     );
@@ -416,10 +416,10 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
     // stable workspace AND any cold leftover -- now that its supervisor
     // and child are torn down.
     await expect(
-      fs.stat(path.join(stepStateRoot, deploymentId)),
+      fs.stat(path.join(stepStateRoot, anchorRunId)),
     ).rejects.toThrow();
     // A different deployment's scratch is untouched: the sweep is scoped
-    // to this deployment's `<deploymentId>` subtree only.
+    // to this deployment's `<anchorRunId>` subtree only.
     expect(await fs.readFile(otherDeploymentFile, "utf8")).toBe("x");
     // The durable conversation lives under a DIFFERENT root and must
     // survive so a re-deploy restores the prior conversation.

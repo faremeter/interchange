@@ -80,7 +80,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 // The tenant domain must equal the fixture's deploy domain so the route's
-// derived address (`run_<deploymentId>@<tenant.domain>`) matches the address
+// derived address (`run_<anchorRunId>@<tenant.domain>`) matches the address
 // the fixture deployed the sidecar workflow under; otherwise the route's
 // sendRunGrants/routeMail target an unknown address (409).
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -340,7 +340,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The collapse: the trigger reconciles onto the deployment's single
       // self-anchored run rather than minting a second routable row. After the
       // first send exactly ONE workflow_run row exists, and it is the anchor
-      // (id == anchorRunId == deploymentId) -- the anchor IS the run.
+      // (id == anchorRunId == anchorRunId) -- the anchor IS the run.
       const runRows = await h.db.select().from(workflowRunTable);
       expect(runRows).toHaveLength(1);
       expect(runRows[0]?.id).toBe(DEPLOYMENT_ID);
@@ -400,7 +400,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await env.hub.sessionService.stageWorkflowStep({
           agentAddress: p.agentAddress,
           agentId: p.agentId,
-          runId: p.instanceId,
+          runId: p.runId,
           config: p.config,
           deployContent: toLaunchDeployContent(p.deployContent),
           ...(p.toolPackagePins !== undefined
@@ -452,7 +452,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
         ...(TOOL_PINS.length > 0 ? { toolPackagePins: TOOL_PINS } : {}),

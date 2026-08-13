@@ -20,7 +20,7 @@
 // substrate's git layout.
 //
 // Per-step address derivation (Q6.4 discovery decision):
-//   - Multi-step deployments use `<deploymentId>-<stepId>@<domain>`.
+//   - Multi-step deployments use `<runId>-<stepId>@<domain>`.
 //   - Trivial (single-step) deployments use the deployment's own
 //     mail address as the sole step's address.
 // The derivation is supplied by the caller as a `deriveStepAddress`
@@ -79,25 +79,25 @@ export type CredentialsSnapshot = {
 
 /**
  * Caller-supplied derivation of the per-step mail address from the
- * deployment id and step id. The supervisor cannot encode the
+ * run id and step id. The supervisor cannot encode the
  * deployment-domain inside library code; the wiring module supplies
  * the strategy the host owns.
  */
 export type DeriveStepAddress = (args: {
-  deploymentId: string;
+  runId: string;
   stepId: string;
 }) => string;
 
 /**
  * Caller-supplied override of the per-step `agent-state` repo identity
  * the supervisor reads grants from. Defaults to the
- * `<deploymentId>-<stepId>` convention (`defaultStepRepoId`); the
+ * `<runId>-<stepId>` convention (`defaultStepRepoId`); the
  * single-step launched-agent deploy supplies a derivation that returns
  * the legacy agent-state repo so the child reads grants from the same
  * repo the legacy agent identity already keys.
  */
 export type DeriveStepRepoId = (args: {
-  deploymentId: string;
+  runId: string;
   stepId: string;
 }) => RepoId;
 
@@ -112,33 +112,33 @@ export type AssembleCredentialsSnapshotOpts = {
    * the order the workflow asset declared.
    */
   stepOrder: readonly string[];
-  /** Deployment id used in agent-state repo identity and address derivation. */
-  deploymentId: string;
+  /** Anchor run id used in agent-state repo identity and address derivation. */
+  anchorRunId: string;
   /** Per-step mail-address derivation callback. */
   deriveStepAddress: DeriveStepAddress;
   /**
    * Optional override for the `agent-state` repo's id. Callers that
-   * follow the documented convention (`<deploymentId>-<stepId>`) can
+   * follow the documented convention (`<runId>-<stepId>`) can
    * omit this; tests and bespoke layouts can supply their own.
    */
   deriveStepRepoId?: DeriveStepRepoId;
 };
 
 /**
- * Default mapping from `(deploymentId, stepId)` to the agent-state
- * repo id: `<deploymentId>-<stepId>`, isolating each step's grants in
+ * Default mapping from `(runId, stepId)` to the agent-state
+ * repo id: `<runId>-<stepId>`, isolating each step's grants in
  * its own repo. Applied to a one-step `stepOrder` it yields a single
  * such repo. The single-step launched-agent deploy overrides this
  * default (see `DeriveStepRepoId`) to reuse the legacy agent-state
  * repo.
  */
 export function defaultStepRepoId(args: {
-  deploymentId: string;
+  runId: string;
   stepId: string;
 }): RepoId {
   return {
     kind: "agent-state",
-    id: `${args.deploymentId}-${args.stepId}`,
+    id: `${args.runId}-${args.stepId}`,
   };
 }
 
@@ -218,12 +218,12 @@ export async function assembleCredentialsSnapshot(
   const steps: CredentialsSnapshotStep[] = [];
   for (const stepId of opts.stepOrder) {
     const repoId = deriveRepoId({
-      deploymentId: opts.deploymentId,
+      runId: opts.anchorRunId,
       stepId,
     });
     const grants = await readStepGrants(opts, repoId);
     const address = opts.deriveStepAddress({
-      deploymentId: opts.deploymentId,
+      runId: opts.anchorRunId,
       stepId,
     });
     steps.push({

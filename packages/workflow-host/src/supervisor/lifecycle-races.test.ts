@@ -350,12 +350,11 @@ async function buildBindings(opts: {
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
-    deploymentId: "deployment-x",
+    anchorRunId: "deployment-x",
     stepCount: 1,
     deploymentMailAddress: "deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ deploymentId, stepId }) =>
-      `${deploymentId}-${stepId}@example.com`,
+    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: createMemoryInboxPrimitives(),
   };
@@ -377,7 +376,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     const baseDir = await makeTempDir("lifecycle-races-gap-a-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const ipcKeypair = await generateKeyPair();
@@ -537,7 +536,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     const baseDir = await makeTempDir("lifecycle-races-gap-b-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const ipcKeypair = await generateKeyPair();

@@ -49,15 +49,15 @@ const allowAll: AuthorizeFn = () => ({ allowed: true });
 
 // The kind handler does principal-vs-event-origin checks only on
 // `CancelRequested` events; this well-formed `workflow-process`
-// principal (kind + deploymentId) is enough for the
+// principal (kind + anchorRunId) is enough for the
 // RunStarted/StepStarted shapes the tests here exercise, and the
 // substrate's allow-all authorize callback gates every action. The
-// `deploymentId` matches the `enforceWorkflowProcessPathScope`
+// `anchorRunId` matches the `enforceWorkflowProcessPathScope`
 // fail-closed contract; without it the validatePush path would
 // reject the principal as malformed.
 const WORKFLOW_PROCESS_PRINCIPAL_SHAPE = {
   kind: "workflow-process",
-  deploymentId: "test-deployment",
+  anchorRunId: "test-deployment",
 };
 const WORKFLOW_PROCESS_PRINCIPAL: Principal = WORKFLOW_PROCESS_PRINCIPAL_SHAPE;
 
@@ -170,7 +170,7 @@ describe("workflow-host RepoStore adapter — happy path", () => {
       substrate,
       repoId,
       ref: REF,
-      deploymentId: repoId.id,
+      anchorRunId: repoId.id,
       runId,
     });
     expect(compacted).toBe(true);

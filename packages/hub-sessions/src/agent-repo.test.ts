@@ -313,15 +313,15 @@ describe("AgentRepoStore", () => {
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     const wfrRef = "refs/heads/events";
-    const deploymentId = "dep-wfr-happy";
+    const anchorRunId = "dep-wfr-happy";
     await store.receiveWorkflowRunPack(
-      { kind: "workflow-run", id: deploymentId },
+      { kind: "workflow-run", id: anchorRunId },
       pack,
       wfrRef,
       wfrCommit,
     );
 
-    const repoDir = path.join(dataDir, "workflow-runs", deploymentId);
+    const repoDir = path.join(dataDir, "workflow-runs", anchorRunId);
     const resolved = await git.resolveRef({
       fs,
       dir: repoDir,
