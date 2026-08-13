@@ -21,6 +21,7 @@ import {
 import {
   createOpenAIPlugin,
   createOpencodeZenPlugin,
+  createXaiPlugin,
 } from "@intx/inference-discovery-openai";
 
 // Options a caller can pass when constructing a plug-in. Empty for most
@@ -78,6 +79,14 @@ function opencodeZenCreate(env: Record<string, string>): ProviderPlugin {
   return createOpencodeZenPlugin({ apiKey, baseUrl });
 }
 
+function xaiCreate(env: Record<string, string>): ProviderPlugin {
+  const apiKey = env.XAI_API_KEY;
+  if (apiKey === undefined) {
+    throw new Error("XAI_API_KEY missing from validated env");
+  }
+  return createXaiPlugin({ apiKey });
+}
+
 export const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
   {
     name: "anthropic",
@@ -98,6 +107,11 @@ export const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
     name: "openai",
     requiredEnv: ["OPENAI_API_KEY"],
     create: openaiCreate,
+  },
+  {
+    name: "xai",
+    requiredEnv: ["XAI_API_KEY"],
+    create: xaiCreate,
   },
 ];
 

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-compatible",
+    "model": "grok-4.20-0309-non-reasoning",
+    "baseURL": "https://api.x.ai/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-08-13T20:31:06.731Z",
+  "capability": "plain-text-streaming"
+}

@@ -1,0 +1,23 @@
+{
+  "access-control-allow-origin": "*",
+  "access-control-expose-headers": "*",
+  "cache-control": "no-cache",
+  "cf-cache-status": "DYNAMIC",
+  "cf-ray": "a2aa7fe7ec206c2c-DFW",
+  "connection": "keep-alive",
+  "content-type": "text/event-stream",
+  "date": "Thu, 13 Aug 2026 20:34:17 GMT",
+  "server": "cloudflare",
+  "strict-transport-security": "max-age=31536000",
+  "traceparent": "00-523ad315609f81007a1ee078ba5606f4-1db2e48900005b88-01",
+  "transfer-encoding": "chunked",
+  "vary": "origin, access-control-request-method, access-control-request-headers",
+  "x-data-retention": "general",
+  "x-ratelimit-limit-requests": "1800",
+  "x-ratelimit-limit-tokens": "10000000",
+  "x-ratelimit-remaining-requests": "1800",
+  "x-ratelimit-remaining-tokens": "10000000",
+  "x-request-id": "<REDACTED>",
+  "x-zero-data-retention": "false",
+  "set-cookie": "<REDACTED>"
+}

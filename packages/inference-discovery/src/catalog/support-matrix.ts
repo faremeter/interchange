@@ -332,6 +332,67 @@ const OPENCODE_BASE_STRUCTURED_MODELS = [
 ] as const;
 const OPENCODE_NONVISION_STRUCTURED_MODELS = ["qwen3.7-max"] as const;
 
+const XAI_PROVIDER = "xai";
+
+// Every xAI model probed against the first-party api.x.ai Chat Completions wire.
+const XAI_MODELS = [
+  "grok-4.20-0309-non-reasoning",
+  "grok-4.20-0309-reasoning",
+  "grok-4.3",
+  "grok-4.5",
+  "grok-4.6",
+  "grok-build-0.1",
+] as const;
+
+// The five xAI models that stream real reasoning_content on the
+// reasoning-content canary. grok-4.20-0309-non-reasoning, xAI's explicit
+// non-reasoning variant, is the sole omission — it returns a normal text reply
+// with no reasoning_content, so its reasoning rows are unsupported below.
+const XAI_REASONING_MODELS = [
+  "grok-4.20-0309-reasoning",
+  "grok-4.3",
+  "grok-4.5",
+  "grok-4.6",
+  "grok-build-0.1",
+] as const;
+
+// Captured on every xAI model regardless of reasoning support.
+const XAI_BASE_CAPTURED_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
+  "vision-input",
+  "structured-output",
+  "structured-output-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
+const XAI_REASONING_CAPABILITIES = [
+  "reasoning-content",
+  "reasoning-content-streaming",
+] as const satisfies readonly SupportEntry["capability"][];
+
+const XAI_NON_REASONING_NOTE =
+  "grok-4.20-0309-non-reasoning returns an HTTP 200 text reply with no " +
+  "reasoning_content field on the reasoning-content canary (the assistant " +
+  "message carries only role, content, and refusal), and the streaming variant " +
+  "emits no reasoning_content delta. It is xAI's explicit non-reasoning model, " +
+  "so reasoning is unsupported on this wire; the other grok models probed here " +
+  "stream real reasoning_content.";
+
+const XAI_REFUSAL_STREAMING_NOTE =
+  "Under a strict json_schema plus a policy-declining prompt, the model never " +
+  "emitted a non-null delta.refusal field. It streamed schema-conformant JSON " +
+  "whose steps array carried a textual decline (content fragments; finish_reason " +
+  "stop). The fixture is retained as evidence of this wire behavior; synthetic " +
+  "SSE unit tests cover the adapter's delta.refusal parser independently.";
+
+const XAI_DOCUMENT_INPUT_NOTE =
+  "xAI Chat Completions rejects a file content part with HTTP 400 and body " +
+  "{error:'File content is not supported on /v1/chat/completions. Please use " +
+  "/v1/responses instead.'}. Document input requires the Responses API, which " +
+  "this Chat-Completions plug-in does not probe. No fixture.";
+
 const MATRIX: SupportEntry[] = [
   ...ANTHROPIC_MODELS.flatMap((model) =>
     rows(
@@ -644,6 +705,37 @@ const MATRIX: SupportEntry[] = [
     "unsupported",
     OPENAI_GPT4_MULTIMODAL_NOTE,
   ),
+  ...XAI_MODELS.flatMap((model) =>
+    rows(XAI_PROVIDER, model, XAI_BASE_CAPTURED_CAPABILITIES, "captured"),
+  ),
+  ...XAI_REASONING_MODELS.flatMap((model) =>
+    rows(XAI_PROVIDER, model, XAI_REASONING_CAPABILITIES, "captured"),
+  ),
+  ...rows(
+    XAI_PROVIDER,
+    "grok-4.20-0309-non-reasoning",
+    XAI_REASONING_CAPABILITIES,
+    "unsupported",
+    XAI_NON_REASONING_NOTE,
+  ),
+  ...XAI_MODELS.flatMap((model) =>
+    rows(
+      XAI_PROVIDER,
+      model,
+      ["structured-output-refusal-streaming"] as const,
+      "misled",
+      XAI_REFUSAL_STREAMING_NOTE,
+    ),
+  ),
+  ...XAI_MODELS.flatMap((model) =>
+    rows(
+      XAI_PROVIDER,
+      model,
+      ["document-input"] as const,
+      "http-error",
+      XAI_DOCUMENT_INPUT_NOTE,
+    ),
+  ),
 ];
 
 export const SUPPORT_MATRIX: readonly SupportEntry[] = MATRIX;
@@ -658,6 +750,7 @@ const SESSION_ROOTS: Record<string, string> = {
   "google-genai": "packages/inference-discovery-google-genai/sessions",
   "opencode-zen": "packages/inference-discovery-openai/sessions",
   openai: "packages/inference-discovery-openai/sessions",
+  xai: "packages/inference-discovery-openai/sessions",
 };
 
 const FIXTURE_BEARING_OUTCOMES = new Set<SupportEntry["outcome"]>([

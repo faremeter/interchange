@@ -20,6 +20,7 @@ const REQUIRED_ENV_BY_PROVIDER: Record<string, readonly string[]> = {
   "google-genai": ["GOOGLE_API_KEY"],
   "opencode-zen": ["OPENCODE_API_KEY", "OPENCODE_BASE_URL"],
   openai: ["OPENAI_API_KEY"],
+  xai: ["XAI_API_KEY"],
 };
 
 describe("PLUGIN_REGISTRY provider contract", () => {
@@ -30,6 +31,7 @@ describe("PLUGIN_REGISTRY provider contract", () => {
       "google-genai",
       "opencode-zen",
       "openai",
+      "xai",
     ]);
   });
 
@@ -108,6 +110,18 @@ describe("create factory env wiring", () => {
 
   test("openai raises when OPENAI_API_KEY is absent", () => {
     expect(() => requireEntry("openai").create({})).toThrow("OPENAI_API_KEY");
+  });
+
+  test("xai builds a grok-4.5 plug-in from XAI_API_KEY", () => {
+    const plugin = requireEntry("xai").create({
+      XAI_API_KEY: "test-key",
+    });
+    expect(plugin.name).toBe("xai");
+    expect(plugin.models).toContain("grok-4.5");
+  });
+
+  test("xai raises when XAI_API_KEY is absent", () => {
+    expect(() => requireEntry("xai").create({})).toThrow("XAI_API_KEY");
   });
 
   test("opencode-zen builds a plug-in from OPENCODE_API_KEY and OPENCODE_BASE_URL", () => {
