@@ -450,8 +450,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         }
         if (
           (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
-            "running" ||
-          (await lockWorkflowRunState(tx, anchorRunId, runId)) === "terminal"
+          "running"
         ) {
           return "run-terminal" as const;
         }
@@ -510,9 +509,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
 
     const reserved = await db.transaction(async (tx) => {
       if (
-        (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
-          "running" ||
-        (await lockWorkflowRunState(tx, anchorRunId, runId)) === "terminal"
+        (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !== "running"
       ) {
         return null;
       }

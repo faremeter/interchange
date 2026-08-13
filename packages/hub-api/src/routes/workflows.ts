@@ -779,8 +779,7 @@ export function createWorkflowRoutes({
             }
             if (
               (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
-                "running" ||
-              (await lockWorkflowRunState(tx, anchorRunId, runId)) !== "running"
+              "running"
             ) {
               return "run-not-running" as const;
             }
