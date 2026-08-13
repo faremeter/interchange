@@ -104,8 +104,10 @@ type WorkflowRunStatus = (typeof workflowRun.$inferSelect)["status"];
 // The `workflow_run` statuses that present as a given instance-status filter,
 // derived as the inverse of `mapRunStatusToInstanceStatus` so the two cannot
 // drift: every run status is bucketed under the instance status it maps onto.
-// No run status maps onto `deployed` or `updating`, so those filters select no
-// runs (empty array) and the caller skips the run query entirely.
+// The `deployed` run status maps onto the `deployed` filter, but the run-list
+// query below excludes anchor rows (`isNull(anchorRunId)`), so the filter still
+// selects no folded runs. No run status maps onto `updating`, so that filter
+// selects no runs (empty array) and the caller skips the run query entirely.
 const RUN_STATUSES_BY_INSTANCE_STATUS: Record<
   InstanceStatusFilter,
   WorkflowRunStatus[]
@@ -205,7 +207,10 @@ export function createInstanceRoutes({
       // carries no deployment id; the two predicates enforce that, dropping a
       // deployment-anchored run (which carries its deployment id) and an
       // address-less child run. When a status filter selects no run statuses
-      // (`deployed`/`updating`), skip the query entirely.
+      // (`updating`), skip the query entirely. The `deployed` filter selects the
+      // `deployed` run status but still returns empty, because the
+      // `isNull(anchorRunId)` predicate below excludes every (anchor) row a
+      // deployed run can be.
       const statusFilter = isInstanceStatusFilter(status) ? status : undefined;
 
       const runStatuses =

@@ -7,6 +7,7 @@ import { type } from "arktype";
 
 import {
   asset,
+  isLiveWorkflowRunStatus,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
@@ -785,8 +786,9 @@ export function createWorkflowRoutes({
       );
 
       if (
-        deployment.anchorStatus !== "running" ||
-        deployment.runStatus !== "running" ||
+        !isLiveWorkflowRunStatus(deployment.anchorStatus) ||
+        deployment.runStatus === null ||
+        !isLiveWorkflowRunStatus(deployment.runStatus) ||
         durableLifecycle !== "live"
       ) {
         return c.json(
@@ -798,7 +800,7 @@ export function createWorkflowRoutes({
                   ? durableLifecycle === "terminal"
                     ? "Workflow run is terminal"
                     : "Workflow run has not started"
-                  : deployment.anchorStatus !== "running"
+                  : !isLiveWorkflowRunStatus(deployment.anchorStatus)
                     ? `Workflow deployment is ${deployment.anchorStatus}`
                     : deployment.runStatus === null
                       ? "Workflow run has not started"
@@ -1075,9 +1077,14 @@ export function createWorkflowRoutes({
         tenant.domain,
         runId,
       );
+      // A "deployed" anchor is live: mail-triggering it IS its first trigger.
+      // The durable check here only rejects "terminal" (an absent durable log is
+      // the valid pre-start state), so the status axis must accept "deployed" or
+      // the first mail trigger of a freshly-deployed run would 409 as terminal.
       if (
-        anchor.anchorStatus !== "running" ||
-        (anchor.runStatus !== null && anchor.runStatus !== "running") ||
+        !isLiveWorkflowRunStatus(anchor.anchorStatus) ||
+        (anchor.runStatus !== null &&
+          !isLiveWorkflowRunStatus(anchor.runStatus)) ||
         durableLifecycle === "terminal"
       ) {
         return c.json(

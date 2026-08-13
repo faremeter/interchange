@@ -28,6 +28,7 @@ function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
 
 describe("mapRunStatusToInstanceStatus", () => {
   test("maps every run status onto the instance vocabulary", () => {
+    expect(mapRunStatusToInstanceStatus("deployed")).toBe("deployed");
     expect(mapRunStatusToInstanceStatus("running")).toBe("running");
     expect(mapRunStatusToInstanceStatus("completed")).toBe("stopped");
     expect(mapRunStatusToInstanceStatus("cancelled")).toBe("stopped");

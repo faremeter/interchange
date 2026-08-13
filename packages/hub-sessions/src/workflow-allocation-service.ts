@@ -240,7 +240,9 @@ export function createWorkflowAllocationService({
         anchorRunId: args.deploymentId,
         definitionId,
         address: deploymentAddress,
-        status: "running",
+        // Born "deployed": the anchor is live but pre-trigger. The first trigger
+        // flips it to "running" (see `anchorWithPrincipal`).
+        status: "deployed",
         createdAt,
       });
       await tx.insert(grant).values({

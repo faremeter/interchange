@@ -284,7 +284,7 @@ export type SeedWorkflowRun = {
   principalId?: string | null;
   address?: string | null;
   publicKey?: string | null;
-  status?: "running" | "completed" | "failed" | "cancelled";
+  status?: "deployed" | "running" | "completed" | "failed" | "cancelled";
   createdAt?: Date;
   endedAt?: Date | null;
 };

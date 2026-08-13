@@ -349,7 +349,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: RECEIVER_ID,
         definitionId: `wfd_${RECEIVER_ID}`,
         address: receiverAddress,
-        status: "running",
+        // The deploy-time birth state; the first mail trigger flips it running.
+        status: "deployed",
       });
 
       // Deploy the receiver onto sidecar 1 while it is the sole connection.

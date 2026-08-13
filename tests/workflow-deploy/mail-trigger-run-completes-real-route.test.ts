@@ -391,7 +391,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: DEPLOYMENT_ID,
         definitionId: `wfd_${DEPLOYMENT_ID}`,
         address: deploymentMailAddress,
-        status: "running",
+        // The deploy-time birth state; the first mail trigger flips it running.
+        status: "deployed",
       });
     }
 

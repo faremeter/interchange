@@ -1175,13 +1175,13 @@ export function createSessionService(
       // both derived from `deploymentId`). It is the deployment's sole
       // first-class record -- the row that owns the address and public key the
       // reconnect ownership challenge verifies: deploy-ack writes the key here
-      // and the key lookup reads it off this row. It is born running with no key
-      // yet (deploy-ack fills it), carrying its definition. Its `anchorRunId`
-      // equals its own id, so the anchor row references itself. Child runs of
-      // this deployment are separate address-less rows. `principalId` is null --
-      // the workflow-derived key path reads `publicKey` directly and never
-      // consults it, and the `workflow-run:<deploymentId>` grant seeded below
-      // already covers reads.
+      // and the key lookup reads it off this row. It is born "deployed" -- live
+      // but pre-trigger; the first trigger flips it to "running" -- carrying its
+      // definition. Its `anchorRunId` equals its own id, so the anchor row
+      // references itself. Child runs of this deployment are separate
+      // address-less rows. `principalId` is null -- the workflow-derived key
+      // path reads `publicKey` directly and never consults it, and the
+      // `workflow-run:<deploymentId>` grant seeded below already covers reads.
       await tx.insert(workflowRunTable).values({
         id: deploymentId,
         tenantId,
@@ -1192,7 +1192,7 @@ export function createSessionService(
           domain: deploymentDomain,
         }),
         publicKey: result.publicKey,
-        status: "running",
+        status: "deployed",
         createdAt: now,
       });
 
