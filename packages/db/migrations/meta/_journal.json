@@ -561,6 +561,13 @@
       "when": 1786481000000,
       "tag": "0080_rename_correlation_approval_deployment_id_to_anchor_run_id",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1786665226312,
+      "tag": "0081_workflow_definition_content_hash_and_approved_wire_hash",
+      "breakpoints": true
     }
   ]
 }
