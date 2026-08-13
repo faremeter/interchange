@@ -20,7 +20,6 @@ import {
   OfferingDetail,
   SendMessage,
   MailResponse,
-  AttachmentErrorResponse,
   ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
@@ -29,11 +28,13 @@ import {
   findRoutableById,
   resolveRunIdForSession,
   runRowToRoutableRecord,
+  type AssetService,
   type EventCollectorRegistry,
   type RepoStore,
   type RoutableRecord,
   type SessionService,
   type SidecarRouter,
+  type WorkflowDispatchService,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
 import {
@@ -48,6 +49,11 @@ import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { workflowRunRepoId, WORKFLOW_RUN_REF } from "../workflow-run-lifecycle";
 import {
+  createWorkflowRunTrigger,
+  MAX_MAIL_BODY_BYTES,
+  WorkflowRunTriggerResponse,
+} from "../workflow-run-trigger";
+import {
   parsePageParams,
   cursorCondition,
   pageOrder,
@@ -55,12 +61,13 @@ import {
   pageParameters,
 } from "../pagination";
 
-// Stop, mail send, and mail history are not yet wired onto a workflow (anchor)
-// run. They were built for the retired folded-launch surface: stop and mail
-// history need genuinely new backing (INTR-454), and mail send routes through
-// the run's workflow-native Trigger path (a follow-on slice). Each such route
-// returns this not-implemented signal (kept mounted, not 404, so the admin UI
-// gets a clean answer) until its mapping lands.
+// Stop and mail history are not yet wired onto a workflow (anchor) run. They
+// were built for the retired folded-launch surface and need genuinely new
+// backing (INTR-454): stop is a forced early-cancel with no author yet, and a
+// run has no durable mail archive. Each such route returns this not-implemented
+// signal (kept mounted, not 404, so the admin UI gets a clean answer) until its
+// mapping lands. Mail SEND is wired: it routes through the run's workflow-native
+// Trigger path.
 function workflowRunOperationUnsupported(
   c: Context<TenantEnv>,
   operation: string,
@@ -75,13 +82,6 @@ function workflowRunOperationUnsupported(
     501,
   );
 }
-
-// DoS guard on the mail route body. Sized above the legitimate ceiling
-// (the 30 MB per-message attachment cap is ~40 MB once base64-encoded,
-// plus JSON and text overhead) so over-business-cap requests are rejected
-// by the handler with a structured error, while genuine garbage is
-// rejected here before the JSON parser allocates a giant string.
-const MAX_MAIL_BODY_BYTES = 44 * 1024 * 1024;
 
 type RunStatusFilter =
   | "deployed"
@@ -151,11 +151,17 @@ export type CreateRunRoutesDeps = {
   sidecarRouter: SidecarRouter;
   eventCollectors: EventCollectorRegistry;
   // The workflow-run substrate that backs the durable run-event log the
-  // turns/events routes read. Null when the hub runs without the deploy
-  // surface (the app.ts XOR keeps assetService and repoStore moving as a
-  // unit); those two routes then answer 503 rather than a fabricated empty
-  // log, since createRunRoutes mounts unconditionally.
+  // turns/events routes read and the workflow asset the mail-send trigger
+  // hydrates grants from. Both are null when the hub runs without the deploy
+  // surface (the app.ts XOR keeps assetService and repoStore moving as a unit);
+  // the substrate-backed routes then answer 503 rather than fabricating state,
+  // since createRunRoutes mounts unconditionally.
   repoStore: RepoStore | null;
+  assetService: AssetService | null;
+  // The durable dispatch queue an exclusive deployment's trigger enqueues onto.
+  // Absent when the hub runs without durable dispatch; the trigger then 503s an
+  // exclusive send, exactly as the deployment Trigger route does.
+  workflowDispatchService?: WorkflowDispatchService;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
@@ -166,6 +172,8 @@ export function createRunRoutes({
   sidecarRouter,
   eventCollectors,
   repoStore,
+  assetService,
+  workflowDispatchService,
   grantStore,
   conditionRegistry,
   requireGrant,
@@ -177,6 +185,24 @@ export function createRunRoutes({
   // log masquerading as real state.
   const runReader =
     repoStore !== null ? createWorkflowRunReader(repoStore) : null;
+
+  // The mail-send trigger fires the run through its workflow-native Trigger
+  // path. It needs both the workflow asset (grant hydration) and the run-event
+  // substrate (terminal-state read), which the app.ts XOR moves as a unit, so a
+  // null on either leaves the trigger null and the mail-send route answers 503.
+  const triggerWorkflowRun =
+    repoStore !== null && assetService !== null
+      ? createWorkflowRunTrigger({
+          db,
+          assetService,
+          grantStore,
+          sidecarRouter,
+          ...(workflowDispatchService !== undefined
+            ? { workflowDispatchService }
+            : {}),
+          repoStore,
+        })
+      : null;
 
   // The turns and events routes project the same top-level run: its committed,
   // git-backed event log, read whole and seq-ordered. `turns` presents that log
@@ -714,24 +740,26 @@ export function createRunRoutes({
 
   app.post(
     "/:runId/mail",
-    requireGrant(idResource("workflow-run", "runId"), "write"),
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
     describeRoute({
       tags: ["Runs"],
       summary: "Send mail to a run",
       description:
-        "Persists the user message as a mail record and dispatches it to the run. Returns JMAP Email-shaped response.",
+        "Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence.",
       responses: {
-        201: {
-          description: "Mail sent",
+        202: {
+          description: "Trigger accepted for delivery",
           content: {
-            "application/json": { schema: resolver(MailResponse) },
+            "application/json": {
+              schema: resolver(WorkflowRunTriggerResponse),
+            },
           },
         },
         400: {
           description:
             "Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
           content: {
-            "application/json": { schema: resolver(AttachmentErrorResponse) },
+            "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         404: {
@@ -741,7 +769,8 @@ export function createRunRoutes({
           },
         },
         409: {
-          description: "Run not live",
+          description:
+            "Run address is not routable, its allocation is no longer active, or the run is terminal",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -752,8 +781,8 @@ export function createRunRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
-        502: {
-          description: "Sidecar unavailable",
+        503: {
+          description: "Run trigger substrate unavailable",
           content: {
             "application/json": { schema: resolver(ErrorResponse) },
           },
@@ -775,11 +804,43 @@ export function createRunRoutes({
     }),
     validator("json", SendMessage),
     async (c) => {
-      // Sending mail to a run is not yet wired onto this surface. It must route
-      // through the run's existing workflow-native Trigger path (which enqueues
-      // a workflow_run_dispatch), not the launched-agent session this route was
-      // built for. Gated to not-implemented until that mapping lands.
-      return workflowRunOperationUnsupported(c, "Sending mail to a run");
+      const tenantCtx = c.get("tenant");
+      const runId = c.req.param("runId");
+
+      // Resolve the top-level run first so an unknown id tenant-scopes to a 404,
+      // exactly as the turns/events routes do, before the trigger runs.
+      const record = await findRoutableById(db, runId, tenantCtx.id);
+      if (record === undefined) {
+        return c.json(
+          { error: { code: "not_found", message: "Run not found" } },
+          404,
+        );
+      }
+
+      // Mail send fires the run through its workflow-native Trigger path. That
+      // path needs the workflow asset and the run-event substrate; when the hub
+      // runs without the deploy surface the trigger is null, so answer 503
+      // rather than silently dropping the send.
+      if (triggerWorkflowRun === null) {
+        return c.json(
+          {
+            error: {
+              code: "unavailable",
+              message: "The run trigger substrate is not available",
+            },
+          },
+          503,
+        );
+      }
+
+      const result = await triggerWorkflowRun({
+        tenant: tenantCtx,
+        principal: c.get("principal"),
+        userName: c.get("user")?.name ?? null,
+        deploymentId: runId,
+        message: c.req.valid("json"),
+      });
+      return c.json(result.body, result.status);
     },
   );
 

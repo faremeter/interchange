@@ -23,13 +23,18 @@ import {
   grant as grantTable,
   isLiveWorkflowRunStatus,
   principal as principalTable,
+  sidecarAllocation,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, DBExecutor } from "@intx/db";
 import { createWorkflowRunStore } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
-import { GrantRequirement, type GrantEffect } from "@intx/types";
+import {
+  GrantRequirement,
+  isSidecarAllocationDispatchable,
+  type GrantEffect,
+} from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import {
   workflowDefinitionEnvelopeSchema,
@@ -367,6 +372,34 @@ export async function lockWorkflowRunState(
     .for("update");
   if (run === undefined) return "absent";
   return isLiveWorkflowRunStatus(run.status) ? "running" : "terminal";
+}
+
+/**
+ * Lock a deployment's sidecar allocation `FOR UPDATE` and report whether it is
+ * still dispatchable. Serializes an exclusive trigger's commit with concurrent
+ * allocation transitions so a durable dispatch is never enqueued against an
+ * allocation that has moved to a non-dispatchable state.
+ */
+export async function lockDispatchableAllocation(
+  tx: DBExecutor,
+  allocationId: string,
+  anchorRunId: string,
+): Promise<boolean> {
+  const [allocation] = await tx
+    .select({ status: sidecarAllocation.status })
+    .from(sidecarAllocation)
+    .where(
+      and(
+        eq(sidecarAllocation.id, allocationId),
+        eq(sidecarAllocation.anchorRunId, anchorRunId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  return (
+    allocation !== undefined &&
+    isSidecarAllocationDispatchable(allocation.status)
+  );
 }
 
 async function loadCommittedRunGrantsFromExecutor(

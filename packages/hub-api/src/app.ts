@@ -287,6 +287,10 @@ export function mountHubRoutes(
       sidecarRouter,
       eventCollectors,
       repoStore,
+      assetService,
+      ...(workflowDispatchService !== undefined
+        ? { workflowDispatchService }
+        : {}),
       grantStore,
       conditionRegistry,
       requireGrant,
