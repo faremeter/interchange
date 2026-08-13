@@ -231,7 +231,7 @@ async function seedAnchor(opts: {
     tenantId: TENANT_ID,
     anchorRunId: opts.id,
     definitionId: opts.definitionId ?? DEFINITION_ID,
-    address: `ins_${opts.id}@wf.example`,
+    address: `${opts.id}@wf.example`,
     status: opts.status ?? "running",
     createdAt: opts.createdAt,
   });
@@ -276,13 +276,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
   () => {
     test("lists an anchor run as a deployed deployment", async () => {
       await seedAnchor({
-        id: "dep_a",
+        id: "run_a",
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       const { rows } = await fetchList(buildApp());
       expect(rows).toEqual([
         {
-          id: "dep_a",
+          id: "run_a",
           tenantId: TENANT_ID,
           definitionAssetId: ASSET_ID,
           status: "deployed",
@@ -293,19 +293,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("orders most recent first and excludes non-anchor runs", async () => {
       await seedAnchor({
-        id: "dep_old",
+        id: "run_old",
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       await seedAnchor({
-        id: "dep_new",
+        id: "run_new",
         createdAt: new Date("2025-03-03T00:00:00.000Z"),
       });
-      // A child run of dep_old: its anchor_run_id is non-null but does NOT
+      // A child run of run_old: its anchor_run_id is non-null but does NOT
       // equal its own id, so the anchor-identity predicate excludes it.
       await h.db.insert(workflowRun).values({
         id: "run_child",
         tenantId: TENANT_ID,
-        anchorRunId: "dep_old",
+        anchorRunId: "run_old",
         definitionId: DEFINITION_ID,
         status: "running",
         createdAt: new Date("2025-03-02T00:00:00.000Z"),
@@ -323,7 +323,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const { rows } = await fetchList(buildApp());
-      expect(rows.map((r) => r.id)).toEqual(["dep_new", "dep_old"]);
+      expect(rows.map((r) => r.id)).toEqual(["run_new", "run_old"]);
     });
 
     test("lists a torn-down deployment as still deployed", async () => {
@@ -331,14 +331,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // never tracked teardown, so the list applies no run-status filter and
       // still reports the deployment as "deployed".
       await seedAnchor({
-        id: "dep_gone",
+        id: "run_gone",
         status: "cancelled",
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });
       const { rows } = await fetchList(buildApp());
       expect(rows).toEqual([
         {
-          id: "dep_gone",
+          id: "run_gone",
           tenantId: TENANT_ID,
           definitionAssetId: ASSET_ID,
           status: "deployed",
@@ -358,7 +358,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         assetId: null,
       });
       await seedAnchor({
-        id: "dep_corrupt",
+        id: "run_corrupt",
         definitionId: "wfd_null",
         createdAt: new Date("2025-03-01T00:00:00.000Z"),
       });

@@ -26,7 +26,7 @@ import {
 const TENANT = "tnt";
 const ASSET = "ast";
 const DEPLOYMENT = "dep";
-const ADDRESS = "ins_dep@wf.example";
+const ADDRESS = "run_dep@wf.example";
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "resolveWorkflowPrincipalNames (real DB)",
@@ -96,12 +96,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-folded",
         tenantId: TENANT,
         anchorRunId: null,
-        address: "ins_folded@wf.example",
+        address: "run_folded@wf.example",
         status: "running",
       });
 
       const names = await resolveWorkflowPrincipalNames(h.db, ["run-folded"]);
-      expect(names.get("run-folded")).toBe("Workflow (ins_folded@wf.example)");
+      expect(names.get("run-folded")).toBe("Workflow (run_folded@wf.example)");
     });
 
     test("omits a run with neither a deployment nor its own address", async () => {
@@ -142,12 +142,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         tenantId: TENANT,
         anchorRunId: null,
-        address: "ins_run@wf.example",
+        address: "run_@wf.example",
         status: "running",
       });
 
       const labels = await resolveWorkflowPrincipalLabels(h.db, ["run-1"]);
-      expect(labels.get("run-1")).toBe("Workflow (ins_run@wf.example)");
+      expect(labels.get("run-1")).toBe("Workflow (run_@wf.example)");
     });
 
     test("falls a definition refId through to the definition name", async () => {
@@ -170,7 +170,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "run-1",
         tenantId: TENANT,
         anchorRunId: null,
-        address: "ins_run@wf.example",
+        address: "run_@wf.example",
         status: "running",
       });
       await h.db.insert(workflowDefinition).values({
@@ -183,7 +183,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "run-1",
         "wfd-1",
       ]);
-      expect(labels.get("run-1")).toBe("Workflow (ins_run@wf.example)");
+      expect(labels.get("run-1")).toBe("Workflow (run_@wf.example)");
       expect(labels.get("wfd-1")).toBe("my-workflow");
     });
 

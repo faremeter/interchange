@@ -10,10 +10,10 @@
 // The lifecycle stages, each asserting a prior sub-step composes with the
 // rest:
 //
-//   1. DEPLOY (4.1): a single launched agent (`ins_<hex>` identity) with
+//   1. DEPLOY (4.1): a single agent (a `run_<hex>` run identity) with
 //      grants + a mail-send tool, through the spawned workflow-process
 //      child (the single-step `deployMultiStep` path). Identity preserved
-//      (deploy-ack for the legacy `ins_<hex>` address); grants enforced
+//      (deploy-ack for the run's `run_<hex>` address); grants enforced
 //      (the granted tool runs in-child).
 //   2. MAIL IN (4.2): an inbound mail with a KNOWN body reaches the warm
 //      agent's `agent.send` as the step input -- proven by the
@@ -108,9 +108,9 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A launched-agent instance id: `ins_` + a hex-shaped local part. The
-// deployment address `ins_<id>@<domain>` is the legacy `ins_<hex>`
-// identity, NOT a workflow-derived `ins_dep_<...>` address.
+// A single-agent run id: `run_` + a hex-shaped local part. The
+// deploy address `run_<id>@<domain>` is the run's own top-level
+// address, not a per-step derived address.
 const INSTANCE_LOCAL = "run_cafef00dba5eba11cafef00dba5eba11";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -318,8 +318,8 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
     }
     expect(result.publicKey).toBeTruthy();
 
-    // 4.1 identity preserved: the deploy-ack fired for the legacy
-    // `ins_<hex>` address and persisted a public key.
+    // 4.1 identity preserved: the deploy-ack fired for the run's
+    // `run_<hex>` address and persisted a public key.
     await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
       timeoutMs: 20_000,
       diagnostics: env.sidecarDiagnostics,

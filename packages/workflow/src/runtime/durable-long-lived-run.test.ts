@@ -159,7 +159,7 @@ function buildEnv(args: {
 function chatWorkflow(triggers: number | "unbounded"): WorkflowDefinition {
   return defineWorkflow({
     id: "durable-chat",
-    trigger: { type: "mail", to: "ins_chat@t.example" },
+    trigger: { type: "mail", to: "run_chat@t.example" },
     steps: { s: step({ agent, triggers }) },
   });
 }

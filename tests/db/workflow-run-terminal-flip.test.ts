@@ -46,7 +46,7 @@ import {
 const TENANT = "tnt";
 const ASSET = "ast";
 const DEPLOYMENT = "dep";
-const DEPLOYMENT_ADDRESS = "ins_dep@tnt.example";
+const DEPLOYMENT_ADDRESS = "run_dep@tnt.example";
 const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
 const WFR_REF = "refs/heads/events";
 

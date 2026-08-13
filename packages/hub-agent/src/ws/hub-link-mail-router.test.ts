@@ -249,7 +249,7 @@ describe("hub-link mail.inbound throwing router", () => {
   test("a throwing mailInboundRouter does not wedge subsequent frames", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_wedge1@integration.interchange";
+    const deploymentAddress = "run_wedge1@integration.interchange";
     sessions.addresses.push(deploymentAddress);
 
     let calls = 0;

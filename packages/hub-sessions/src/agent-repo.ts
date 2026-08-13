@@ -73,7 +73,7 @@ export type AgentRepoStore = {
    * tree.
    *
    * `repoId.kind` must be `"agent-state"`. The `repoId.id` is used as
-   * the agent address internally. Stamps an
+   * the run address internally. Stamps an
    * `AgentStateSidecarPrincipal` so the agent-state kind handler
    * authorizes the receivePack as a per-agent sidecar write.
    */

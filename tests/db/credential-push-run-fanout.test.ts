@@ -122,10 +122,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("pushes to a running folded run's address", async () => {
       await seedWorkflowRun(h.db, {
-        id: "ins_run1",
+        id: "run1",
         tenantId: "tnt_root",
         definitionId: "wfd_1",
-        address: "ins_run1@tnt.test",
+        address: "run1@tnt.test",
         status: "running",
       });
 
@@ -133,7 +133,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await pushSourceUpdates(h.db, recordingRouter(pushed), "tnt_root");
 
       expect(pushed).toHaveLength(1);
-      expect(pushed[0]?.address).toBe("ins_run1@tnt.test");
+      expect(pushed[0]?.address).toBe("run1@tnt.test");
       expect(pushed[0]?.default).toBe("mof_a");
       expect(pushed[0]?.sources.map((s) => s.apiKey)).toEqual(["sk-anthropic"]);
     });
@@ -141,15 +141,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("skips the terminal, address-less, and deployment-anchored runs", async () => {
       // Terminal folded run: right shape but no longer running.
       await seedWorkflowRun(h.db, {
-        id: "ins_done",
+        id: "run_done",
         tenantId: "tnt_root",
         definitionId: "wfd_1",
-        address: "ins_done@tnt.test",
+        address: "run_done@tnt.test",
         status: "completed",
       });
       // Address-less child run: routes via its deployment, not a per-run push.
       await seedWorkflowRun(h.db, {
-        id: "ins_child",
+        id: "run_child",
         tenantId: "tnt_root",
         definitionId: "wfd_1",
         address: null,
@@ -158,11 +158,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Deployment-anchor run: owns a deployment id (self) and a
       // workflow-derived address, so it must never be pushed at here.
       await seedWorkflowRun(h.db, {
-        id: "dep_anchor",
+        id: "run_anchor",
         tenantId: "tnt_root",
         definitionId: "wfd_1",
-        anchorRunId: "dep_anchor",
-        address: "ins_dep_anchor@tnt.test",
+        anchorRunId: "run_anchor",
+        address: "run_anchor@tnt.test",
         status: "running",
       });
 

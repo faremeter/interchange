@@ -5,7 +5,7 @@
 // pins on the definition (`toolPackagePins`), with nothing passed via the
 // deploy call's `toolPackagePins`. The pins reach the child only because they
 // ride on the agent (the A3b-2 threading); the sidecar loads them and its tool
-// floor authorizes the tool at runtime, exactly as an agent instance does.
+// floor authorizes the tool at runtime, exactly as a step agent does.
 //
 // It also folds in the failover-through-the-fold check: the deploy's source
 // chain is a dead head (HTTP 500) followed by the healthy mock, both

@@ -38,7 +38,7 @@ import {
   type FrameReader,
 } from "../ipc/index";
 
-const AGENT_ADDRESS = "ins_reemit-agent@integration.example";
+const AGENT_ADDRESS = "run_reemit-agent@integration.example";
 const DEPLOYMENT_ID = "reemit-dep";
 
 const SNAPSHOT: ApprovalSnapshot = {

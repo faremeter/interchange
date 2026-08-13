@@ -47,7 +47,7 @@ const RUN_ID = "run_blob";
 const RUN_SESSION_ID = "ses_run";
 
 const INSTANCE_PRINCIPAL_ID = "prn_instance";
-const INSTANCE_ID = "ins_blob";
+const INSTANCE_ID = "run_blob";
 const INSTANCE_SESSION_ID = "ses_instance";
 
 const ORPHAN_PRINCIPAL_ID = "prn_orphan";

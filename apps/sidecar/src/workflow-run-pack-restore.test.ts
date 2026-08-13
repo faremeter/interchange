@@ -30,7 +30,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
       dataDir: path.join(root, "replacement"),
       signingKey: targetKey,
     });
-    const agentAddress = "ins_dep_restore@workflow.test";
+    const agentAddress = "run_restore@workflow.test";
     const repoId: RepoId = {
       kind: "workflow-run",
       id: deriveWorkflowRunRepoId(agentAddress),

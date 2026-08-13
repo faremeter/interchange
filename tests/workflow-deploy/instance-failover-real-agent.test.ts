@@ -2,7 +2,7 @@
 //
 // The proof that the per-step inference-source failover chain is HONORED at
 // runtime by a REAL spawned workflow-process child -- not merely threaded
-// through the wire. A single-agent instance is deployed with a two-element
+// through the wire. A single-agent workflow is deployed with a two-element
 // source chain whose head is a dead provider (HTTP 500) and whose tail is the
 // healthy mock inference server. The child's reactor exhausts its mechanical
 // retries against the head, fails over forward to the tail, and returns the
@@ -92,7 +92,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
       tenantId: "tenant-1",
       principalId: "prin_integration-failover-1",
       agentAddress,
-      systemPrompt: "You are the failover single-agent instance.",
+      systemPrompt: "You are the failover single-agent run.",
       tools: [],
       grants: [],
       sources: [

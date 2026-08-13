@@ -20,7 +20,7 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
         steps: [
           {
             stepId: "summarize",
-            address: "ins_dep-summarize@example.com",
+            address: "run_dep-summarize@example.com",
             grants: [summarizeGrant],
             contentHash: "hash",
           },

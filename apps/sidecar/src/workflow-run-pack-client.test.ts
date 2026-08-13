@@ -412,7 +412,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     expect(pushed).toEqual([]);
   });
 
-  test("workflow-run write surfaces a structured error when no agent address is registered", async () => {
+  test("workflow-run write surfaces a structured error when no run address is registered", async () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     const facade = createWorkflowRunPackPushingRepoStore({
@@ -434,7 +434,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
           message: "append",
         },
       ),
-    ).rejects.toThrow(/no agent address registered/);
+    ).rejects.toThrow(/no run address registered/);
   });
 
   test("markAddressUnroutable holds a push until notifyAddressRoutable resumes it", async () => {

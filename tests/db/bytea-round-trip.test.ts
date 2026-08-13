@@ -71,7 +71,7 @@ describe.skipIf(!harnessDbEnvAvailable())("bytea round-trip (real DB)", () => {
           name: "laptop",
           kind: "pat",
           tokenHashSha256: c.bytes,
-          resource: "agent-state:ins_1",
+          resource: "agent-state:run_1",
           refPattern: "*",
           actions: ["resolveRef"],
           expiresAt: new Date(Date.now() + 3_600_000),

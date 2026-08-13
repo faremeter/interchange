@@ -8,7 +8,7 @@ import { createWorkflowRunReader } from "./workflow-run-reader";
 import type { RepoId, RepoStore } from "./repo-store/types";
 
 const REF = "refs/heads/main";
-const REPO_ID: RepoId = { kind: "workflow-run", id: "dep_test" };
+const REPO_ID: RepoId = { kind: "workflow-run", id: "run_test" };
 
 // The reader only consults `getRepoDir`; the remaining RepoStore methods
 // throw so any drift onto a substrate method this read path does not own

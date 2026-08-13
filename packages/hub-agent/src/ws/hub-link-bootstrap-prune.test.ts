@@ -11,7 +11,7 @@
 //      marks the `(workflow-run, <address-derived-repo-id>, ref)` key as
 //      bootstrapped.
 //   2. Undeploy agent A. The fix prunes the bootstrap entry whose
-//      sender ownership was recorded under that agent address.
+//      sender ownership was recorded under that run address.
 //   3. Re-deploy agent A. Push another workflow-run pack to the same
 //      `(repoId, ref)`; the hub rejects the first attempt again.
 //   4. The push only succeeds because the link's bootstrap-retry arm

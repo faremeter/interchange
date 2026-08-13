@@ -4,7 +4,7 @@
 // (so it re-announces its deployment address on reconnect) but the hub has
 // not yet recorded the deployment's public key. A reconnect that lands in
 // that window fails the ownership challenge: the hub answers
-// `challenge.failed` "Unknown agent address", and the sidecar's
+// `challenge.failed` "Unknown run address", and the sidecar's
 // `handleChallengeFailed` calls `keyStore.forgetAgent`, wiping the
 // in-memory signing key.
 //
@@ -66,9 +66,9 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// An `ins_` + hex-shaped local part, so the deployment address is the
-// legacy `ins_<hex>` identity rather than a workflow-derived
-// `ins_dep_<...>` address, matching the reconnect-survival fixture.
+// A `run_` + hex-shaped local part, so the deploy address is the run's
+// own top-level `run_<hex>@<domain>` address rather than a per-step
+// derived address, matching the reconnect-survival fixture.
 const DEPLOYMENT_ID = "run_dep10ec0ffee0ec0ffee0ec0ffee0ec0";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
@@ -240,7 +240,7 @@ describe("deploy-window reconnect recovers cleanly", () => {
 
     // The sidecar reconnects (~3s) and re-announces the address. The hub's
     // `lookupPublicKey` returns null, so it answers `challenge.failed`
-    // "Unknown agent address"; the sidecar's `handleChallengeFailed` wipes
+    // "Unknown run address"; the sidecar's `handleChallengeFailed` wipes
     // the in-memory signing key via `forgetAgent`. Wait past several 3s
     // reconnect cycles and confirm the address stays out of routing: with
     // the key still gated, the challenge cannot pass.

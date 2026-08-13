@@ -1,8 +1,8 @@
-// Registry of active event collectors, keyed by agent address.
+// Registry of active event collectors, keyed by run address.
 //
 // The hub creates a collector when an instance starts and removes it when the
 // instance ends or the sidecar disconnects. The hub session orchestrator's
-// `agent.event` listener looks up the collector by agent address and
+// `agent.event` listener looks up the collector by run address and
 // dispatches the event.
 
 import type { DB } from "@intx/db";

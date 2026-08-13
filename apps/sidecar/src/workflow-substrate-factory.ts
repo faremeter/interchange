@@ -651,9 +651,9 @@ export interface SidecarStepBuildEnvDeps {
    * for tool materialization (see `stepDeployTreeDir`) AND as the step
    * agent's outbound mail `address`: the supervisor signs the agent's
    * outbound mail as this address through the host transport (OUTBOUND
-   * half of mailbox ownership, §3a). For the single-step launched-agent
-   * deploy this is the legacy `ins_<hex>` identity the host registered
-   * the agent's `CryptoProvider` against.
+   * half of mailbox ownership, §3a). For the single-agent deploy this is
+   * the run address the host registered the agent's `CryptoProvider`
+   * against.
    */
   mailboxAddress: string;
   /**

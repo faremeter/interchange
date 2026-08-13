@@ -638,7 +638,7 @@ export function createHubSessionLookups(
 }
 
 /**
- * Extract the run id from an `<runId>@<domain>` agent address.
+ * Extract the run id from an `<runId>@<domain>` run address.
  * Throws on any input the `@intx/types`-owned `parseRunAddress`
  * rejects: missing or leading `@`, empty domain, or a run id
  * without the canonical `run_` prefix.
@@ -646,7 +646,7 @@ export function createHubSessionLookups(
 export function parseAgentId(agentAddress: string): string {
   const parsed = parseRunAddress(agentAddress);
   if (parsed === null) {
-    throw new Error(`Invalid agent address: "${agentAddress}"`);
+    throw new Error(`Invalid run address: "${agentAddress}"`);
   }
   return parsed.runId;
 }

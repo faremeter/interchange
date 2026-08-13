@@ -27,11 +27,11 @@ const OTHER_TENANT_ID = "tnt_other";
 const PRINCIPAL_ID = "prn_test";
 const USER_ID = "usr_test";
 const DOMAIN = "test.example.com";
-const DEPLOYMENT_ID = "dep_abc";
+const DEPLOYMENT_ID = "run_abc";
 const APPROVAL_ID = "apr_1";
 const CORRELATION_ID = "corr_1";
 const RUN_ID = "run_1";
-const AGENT_ADDRESS = `ins_${DEPLOYMENT_ID}@${DOMAIN}`;
+const AGENT_ADDRESS = `${DEPLOYMENT_ID}@${DOMAIN}`;
 
 const testTenant = {
   id: TENANT_ID,

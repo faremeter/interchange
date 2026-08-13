@@ -9,7 +9,7 @@
 // the agent's address, with full parity to the in-process path
 // (`@intx/mail-memory`'s `executeSend`). The recipient's `fetchFull`
 // verifies the signature as `valid` against the agent's key and reports
-// `from = <agent address>`.
+// `from = <run address>`.
 //
 // Against the absence of an outbound path (the pre-4.3 supervisor mail
 // bus is INBOUND-ONLY -- register / unregister / subscribe /
@@ -42,7 +42,7 @@ import {
   type NdjsonWriter,
 } from "../ipc/index";
 
-const AGENT_ADDRESS = "ins_outbound-agent@integration.example";
+const AGENT_ADDRESS = "run_outbound-agent@integration.example";
 const RECIPIENT_ADDRESS = "recipient@integration.example";
 
 function createMemoryNdjsonStream() {

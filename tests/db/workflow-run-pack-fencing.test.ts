@@ -33,7 +33,7 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 const TENANT_ID = "tnt-pack-fence";
 const ANCHOR_RUN_ID = "dep-pack-fence";
-const ANCHOR_ADDRESS = "ins_pack_fence@tenant.example";
+const ANCHOR_ADDRESS = "run_pack_fence@tenant.example";
 const ALLOCATION_ID = "alloc-pack-fence";
 const WORKFLOW_RUN_REPO_ID = deriveWorkflowRunRepoId(ANCHOR_ADDRESS);
 const WORKFLOW_RUN_REF = "refs/heads/events";

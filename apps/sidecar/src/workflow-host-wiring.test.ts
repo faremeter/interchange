@@ -259,12 +259,12 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       unregisterDeployment: () => undefined,
     });
 
-    const STEP_ADDR = "run_dep_abc-step1@example.com";
+    const STEP_ADDR = "run_abc-step1@example.com";
     const HUB_KEY = "aa".repeat(32);
     const result = await router.deploy({
       type: "agent.deploy",
       agentAddress: STEP_ADDR,
-      agentId: "run_dep_abc-step1",
+      agentId: "run_abc-step1",
       hubPublicKey: HUB_KEY,
       provisionStep: true,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep never inspects config
@@ -2826,7 +2826,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     await deployPromise;
 
-    // `activeSupervisors` is keyed by the frame's agent address; the router
+    // `activeSupervisors` is keyed by the frame's run address; the router
     // routes the re-emit through that same key.
     expect(router.activeAddresses()).toEqual([frame.agentAddress]);
 
@@ -2937,7 +2937,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     await deployPromise;
 
-    const missAddress = "run_dep_nonexistent@wf.example";
+    const missAddress = "run_nonexistent@wf.example";
     expect(router.activeAddresses()).not.toContain(missAddress);
 
     // The deployed supervisor emits its own `parked-correlations.request` on

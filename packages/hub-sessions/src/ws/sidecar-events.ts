@@ -323,7 +323,7 @@ export type SidecarLookups = {
 
   /** Ingests a received agent-state pack and returns whether the wire
    * layer should ack or reject the pack to the sidecar. `repoId.kind`
-   * is `"agent-state"` and `repoId.id` is the agent address. The wire
+   * is `"agent-state"` and `repoId.id` is the run address. The wire
    * layer dispatches on `repoId.kind` against the receive lookups
    * before calling either; this lookup must reject any pack whose
    * `repoId.kind` is not `"agent-state"`. */

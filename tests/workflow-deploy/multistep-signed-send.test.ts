@@ -4,7 +4,7 @@
 // signing identity for its deployment mail address on the host transport,
 // exactly as a single-step deployment does. Every step of a multi-step
 // deployment signs its outbound mail as the ONE deployment-wide address
-// (`ins_<anchorRunId>@<domain>`), so if that address is not registered a
+// (`<anchorRunId>@<domain>`), so if that address is not registered a
 // step's `env.transport.send` rejects with "not registered", the step
 // fails, and the run fails.
 //

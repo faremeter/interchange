@@ -1439,10 +1439,10 @@ describe("deployWorkflowDefinition", () => {
     ];
     const config: HarnessConfig = {
       sessionId: "ses-deploy",
-      agentId: "run_dep_xyz",
+      agentId: "run_xyz",
       tenantId: "tenant-1",
       principalId: "prin-deploy",
-      agentAddress: "run_dep_xyz@workflow.test",
+      agentAddress: "run_xyz@workflow.test",
       systemPrompt: "deployment-level",
       tools: [],
       grants: [],
@@ -1461,7 +1461,7 @@ describe("deployWorkflowDefinition", () => {
 
     const result = await service.deployWorkflowDefinition({
       tenantId: "tenant-1",
-      anchorRunId: "run_dep_xyz",
+      anchorRunId: "run_xyz",
       deploymentDomain: "workflow.test",
       definition,
       definitionAssetId: "ast_workflow_1",
@@ -1517,10 +1517,10 @@ describe("deployWorkflowDefinition", () => {
     expect(runRows).toHaveLength(1);
     const runRow = runRows[0];
     if (runRow === undefined) throw new Error("missing anchor workflow_run");
-    expect(runRow.id).toBe("run_dep_xyz");
+    expect(runRow.id).toBe("run_xyz");
     expect(runRow.tenantId).toBe("tenant-1");
-    expect(runRow.anchorRunId).toBe("run_dep_xyz");
-    expect(runRow.address).toBe("run_dep_xyz@workflow.test");
+    expect(runRow.anchorRunId).toBe("run_xyz");
+    expect(runRow.address).toBe("run_xyz@workflow.test");
     expect(runRow.status).toBe("deployed");
     expect(runRow.definitionId).toBe(definitionRow.id);
     expect(runRow.principalId ?? null).toBeNull();
@@ -1531,13 +1531,13 @@ describe("deployWorkflowDefinition", () => {
     const grantRow = grantRows[0];
     if (grantRow === undefined) throw new Error("missing workflow-run grant");
     expect(grantRow.principalId).toBe("prin-deploy");
-    expect(grantRow.resource).toBe("workflow-run:run_dep_xyz");
+    expect(grantRow.resource).toBe("workflow-run:run_xyz");
     expect(grantRow.action).toBe("read");
     expect(grantRow.effect).toBe("allow");
 
     expect(result).toEqual({
-      anchorRunId: "run_dep_xyz",
-      deploymentAddress: "run_dep_xyz@workflow.test",
+      anchorRunId: "run_xyz",
+      deploymentAddress: "run_xyz@workflow.test",
       publicKey: "ed25519-supervisor-pubkey",
     });
   });
@@ -1577,7 +1577,7 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
 
     const allocationState = {
       id: "alloc-restore",
-      anchorRunId: "dep_restore_order",
+      anchorRunId: "run_restore_order",
       status: "allocated",
       generation: 3,
       ensureAcceptedGeneration: 3,
@@ -1610,7 +1610,7 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
               where(_predicate: unknown) {
                 return {
                   returning() {
-                    return Promise.resolve([{ id: "dep_restore_order" }]);
+                    return Promise.resolve([{ id: "run_restore_order" }]);
                   },
                 };
               },
@@ -1649,15 +1649,15 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
     });
     const params = {
       tenantId: "tenant-1",
-      anchorRunId: "dep_restore_order",
+      anchorRunId: "run_restore_order",
       deploymentDomain: "workflow.test",
       definition,
       config: {
         sessionId: "ses-restore-order",
-        agentId: "run_dep_restore_order",
+        agentId: "run_restore_order",
         tenantId: "tenant-1",
         principalId: "principal-1",
-        agentAddress: "run_dep_restore_order@workflow.test",
+        agentAddress: "run_restore_order@workflow.test",
         systemPrompt: "continue the recovered run",
         tools: [],
         grants: [],
@@ -1810,10 +1810,10 @@ describe("sendMultiStepDeployFrame", () => {
     };
     const config: HarnessConfig = {
       sessionId: "ses-multi",
-      agentId: "run_dep_abc",
+      agentId: "run_abc",
       tenantId: "tenant-1",
       principalId: "prin-multi",
-      agentAddress: "run_dep_abc@workflow.interchange",
+      agentAddress: "run_abc@workflow.interchange",
       systemPrompt: "deployment-level",
       tools: [],
       grants: [],
@@ -1823,7 +1823,7 @@ describe("sendMultiStepDeployFrame", () => {
 
     const result = await sendMultiStepDeployFrame({
       sidecarRouter: mockRouter,
-      agentAddress: "run_dep_abc@workflow.interchange",
+      agentAddress: "run_abc@workflow.interchange",
       config,
       definition,
       sources,

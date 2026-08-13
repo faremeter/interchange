@@ -18,36 +18,30 @@ describe("parseAgentId", () => {
 
   test("throws when the @ is missing", () => {
     expect(() => parseAgentId("run_abc123")).toThrow(
-      'Invalid agent address: "run_abc123"',
+      'Invalid run address: "run_abc123"',
     );
   });
 
   test("throws when the local part lacks the run_ prefix", () => {
     expect(() => parseAgentId("usr_alice@tenant.example")).toThrow(
-      'Invalid agent address: "usr_alice@tenant.example"',
-    );
-  });
-
-  test("throws for the retired ins_ prefix", () => {
-    expect(() => parseAgentId("ins_abc123@tenant.example")).toThrow(
-      'Invalid agent address: "ins_abc123@tenant.example"',
+      'Invalid run address: "usr_alice@tenant.example"',
     );
   });
 
   test("throws when the domain part is empty", () => {
     expect(() => parseAgentId("run_abc123@")).toThrow(
-      'Invalid agent address: "run_abc123@"',
+      'Invalid run address: "run_abc123@"',
     );
   });
 
   test("throws when the local part is empty", () => {
     expect(() => parseAgentId("@tenant.example")).toThrow(
-      'Invalid agent address: "@tenant.example"',
+      'Invalid run address: "@tenant.example"',
     );
   });
 
   test("throws on empty string", () => {
-    expect(() => parseAgentId("")).toThrow('Invalid agent address: ""');
+    expect(() => parseAgentId("")).toThrow('Invalid run address: ""');
   });
 
   test("preserves the raw address in the error message for diagnostics", () => {
