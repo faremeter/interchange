@@ -22,9 +22,9 @@ import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 // public key resolved by `lookupPublicKey`. These tests pin the workflow-
 // derived side of that lookup: the key now lives on the deployment's anchor
 // workflow_run row (the deployment projection is only the FK parent), keyed by
-// address, gated on a live ("running") run, fail-closed on a missing/null key,
-// and routed by address space so a launched-agent address never resolves
-// against the anchor run.
+// address, gated on a live run ("deployed" in its pre-trigger window or
+// "running"), fail-closed on a missing/null key, and routed by address space so
+// a launched-agent address never resolves against the anchor run.
 describe.skipIf(!harnessDbEnvAvailable())(
   "lookupPublicKey workflow-derived key routing (real DB)",
   () => {
@@ -63,12 +63,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     // Seed a deployment's anchor run -- the workflow_run whose id equals its
     // deployment id. The key and liveness gate live on the run. `runStatus`
-    // "running" is a live deployment; a terminal status is the decommissioned
-    // case the read gate excludes.
+    // "deployed" (pre-trigger) and "running" are both live deployments; a
+    // terminal status is the decommissioned case the read gate excludes.
     async function seedAnchor(opts: {
       address: string;
       publicKey: string | null;
-      runStatus: "running" | "cancelled";
+      runStatus: "deployed" | "running" | "cancelled";
     }): Promise<void> {
       await seedTenants(h.db, [{ id: "t1" }]);
       await seedWorkflowRun(h.db, {
@@ -86,6 +86,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: "ins_dep_abc@wf.example",
         publicKey: "pk1",
         runStatus: "running",
+      });
+      expect(await lookupPublicKey("ins_dep_abc@wf.example")).toBe("pk1");
+    });
+
+    test("resolves a deployed (pre-trigger) anchor run's key by address", async () => {
+      // The reconnect challenge fires in the deploy->first-trigger window, when
+      // the anchor is still "deployed". A "running"-only gate would fail the
+      // challenge closed here; the live gate must resolve the key.
+      await seedAnchor({
+        address: "ins_dep_abc@wf.example",
+        publicKey: "pk1",
+        runStatus: "deployed",
       });
       expect(await lookupPublicKey("ins_dep_abc@wf.example")).toBe("pk1");
     });

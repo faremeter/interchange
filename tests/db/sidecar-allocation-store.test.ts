@@ -671,6 +671,60 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeNull();
     });
 
+    test("allocates and settles a deployed anchor torn down before its first trigger", async () => {
+      // The whole deploy->first-trigger window before a run is ever triggered:
+      // the anchor is born "deployed". `createPending` must accept it (allocation
+      // happens at deploy), and a terminal allocation failure in that window must
+      // settle the still-"deployed" anchor rather than leave it live forever.
+      await h.db
+        .update(workflowRun)
+        .set({ status: "deployed" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+
+      const store = createSidecarAllocationStore(h.db);
+      const pending = await store.createPending({
+        id: "alloc-deployed",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      expect(pending.status).toBe("pending");
+
+      await store.bindInitialSidecar({
+        allocationId: "alloc-deployed",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-deployed",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(0),
+      });
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: "lease-deployed",
+          leaseDurationMs: 60_000,
+        }),
+      ).not.toBeNull();
+
+      const endedAt = new Date("2026-08-04T12:00:00.000Z");
+      const failed = await store.failWithoutInfrastructure({
+        allocationId: "alloc-deployed",
+        expectedStatus: "provisioning",
+        expectedGeneration: 1,
+        expectedLeaseId: "lease-deployed",
+        code: "quota_disabled",
+        message: "Provisioning is disabled for this account",
+        now: endedAt,
+      });
+      expect(failed?.status).toBe("failed");
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+          columns: { status: true, endedAt: true },
+        }),
+      ).toEqual({ status: "failed", endedAt });
+    });
+
     test("fails active runs when replacement recovery is disabled", async () => {
       await seedPrincipal(h.db, {
         id: "prn-unrecoverable-run",

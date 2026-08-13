@@ -10,6 +10,8 @@ import {
 import type { DB, DBExecutor } from "./client";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import {
+  isLiveWorkflowRunStatus,
+  liveWorkflowRunStatuses,
   principal,
   sidecar,
   sidecarAllocation,
@@ -279,13 +281,15 @@ export function createSidecarAllocationStore(db: DBHandle) {
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
   ): Promise<void> {
+    // Fail every live run anchored here -- both "running" runs and a "deployed"
+    // anchor torn down before its first trigger -- so a release settles them.
     const failedRuns = await tx
       .update(workflowRun)
       .set({ status: "failed", endedAt: now })
       .where(
         and(
           eq(workflowRun.anchorRunId, anchorRunId),
-          eq(workflowRun.status, "running"),
+          inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
         ),
       )
       .returning({ principalId: workflowRun.principalId });
@@ -362,9 +366,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
           `sidecarAllocationStore.createPending: run ${args.anchorRunId} is not an anchor for tenant ${args.tenantId}`,
         );
       }
-      if (anchor.status !== "running") {
+      if (!isLiveWorkflowRunStatus(anchor.status)) {
         throw new Error(
-          `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} is ${anchor.status}, expected running`,
+          `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} is ${anchor.status}, expected a live run`,
         );
       }
       const launchSpec = await executor.query.workflowRunLaunchSpec.findFirst({

@@ -6,7 +6,7 @@
 // single struct that the hub app passes to `createSidecarRouter` as
 // `lookups`.
 
-import { eq, and, asc, isNull } from "drizzle-orm";
+import { eq, and, asc, inArray, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
 import {
   createApprovalStore,
@@ -16,6 +16,7 @@ import {
 } from "@intx/db";
 import {
   agentSession,
+  liveWorkflowRunStatuses,
   principal,
   sessionMail,
   sidecarAllocation,
@@ -56,21 +57,21 @@ export function createHubSessionLookups(
     async lookupPublicKey(agentAddress) {
       // Every routable address names one workflow run, whose key lives on its
       // single self-anchored workflow_run row, keyed by address. Read the key
-      // off that row, gated on a live ("running") run so a decommissioned
-      // deployment's key can no longer satisfy a challenge. The anchor run is
-      // born running and no path flips it terminal today: the gate is the
-      // read-side invariant a future undeploy/teardown feature will satisfy --
-      // mirroring the deployment's dormant `status='error'` contract -- not
-      // dead code. A missing row or a null publicKey (running but not yet
-      // acked) returns null so the reconnect challenge fails closed and the
-      // address stays unrouted rather than routing without ownership proof.
+      // off that row, gated on a live run (born "deployed", "running" after its
+      // first trigger) so a decommissioned deployment's key can no longer
+      // satisfy a challenge. The "deployed" arm is load-bearing: the reconnect
+      // ownership challenge fires in the deploy->first-trigger window, so a
+      // "running"-only gate would fail every such challenge closed. A missing
+      // row or a null publicKey (live but not yet acked) returns null so the
+      // reconnect challenge fails closed and the address stays unrouted rather
+      // than routing without ownership proof.
       const row = await db
         .select({ publicKey: workflowRun.publicKey })
         .from(workflowRun)
         .where(
           and(
             eq(workflowRun.address, agentAddress),
-            eq(workflowRun.status, "running"),
+            inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
           ),
         )
         .limit(1)
@@ -211,12 +212,12 @@ export function createHubSessionLookups(
         // reference.
         //
         // The resolution takes a `FOR UPDATE` row lock and runs inside the
-        // co-write transaction, gated on a live "running" anchor run, so the
-        // liveness check and the inserts are atomic against a concurrent
-        // teardown that flips the anchor run terminal. The lock order is
-        // workflow_run before signal_correlation and approval; a teardown path
-        // must take the anchor-run lock before touching those rows to keep the
-        // ordering acyclic.
+        // co-write transaction, gated on a live anchor run ("deployed" or
+        // "running"), so the liveness check and the inserts are atomic against a
+        // concurrent teardown that flips the anchor run terminal. The lock order
+        // is workflow_run before signal_correlation and approval; a teardown
+        // path must take the anchor-run lock before touching those rows to keep
+        // the ordering acyclic.
         const anchor = await tx
           .select({
             id: workflowRun.id,
@@ -227,7 +228,7 @@ export function createHubSessionLookups(
           .where(
             and(
               eq(workflowRun.address, agentAddress),
-              eq(workflowRun.status, "running"),
+              inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
             ),
           )
           .for("update")
@@ -235,7 +236,7 @@ export function createHubSessionLookups(
           .then((rows) => rows[0]);
         if (anchor === undefined) {
           throw new Error(
-            `No running workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
+            `No live workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
           );
         }
         const addressSlug = deriveWorkflowRunRepoId(agentAddress);
@@ -364,7 +365,7 @@ export function createHubSessionLookups(
         .where(
           and(
             eq(workflowRun.address, source.agentAddress),
-            eq(workflowRun.status, "running"),
+            inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
           ),
         )
         .limit(1);
@@ -373,7 +374,7 @@ export function createHubSessionLookups(
         anchor.anchorRunId !== anchor.id ||
         anchor.address === null
       ) {
-        logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no running deployment anchor`;
+        logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no live deployment anchor`;
         return { accepted: false, reason: "path_violation" as const };
       }
       const anchorAddress = anchor.address;

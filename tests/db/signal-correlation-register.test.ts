@@ -696,11 +696,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await registerPromise;
 
         // The register waited on the teardown rather than racing past it, then
-        // threw once the anchor run was no longer running.
+        // threw once the anchor run was no longer live.
         expect(sawBlock).toBe(true);
         expect(outcome).toBeInstanceOf(Error);
         if (outcome instanceof Error) {
-          expect(outcome.message).toContain("No running workflow run");
+          expect(outcome.message).toContain("No live workflow run");
         }
 
         // The invariant: no orphaned pair pointing at the torn-down deployment.

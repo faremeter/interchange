@@ -475,6 +475,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(afterSecond?.endedAt ?? null).toEqual(settledEndedAt);
     });
 
+    test("markTerminal settles a deployed run torn down before its first trigger", async () => {
+      // A deployment can be torn down while still in its "deployed" (pre-
+      // trigger) window. The live-status guard must accept "deployed" so the
+      // teardown settles the anchor instead of leaving it live forever.
+      await seedWorkflowRun(h.db, {
+        id: "run-deployed",
+        deploymentId: DEPLOYMENT,
+        tenantId: TENANT,
+        status: "deployed",
+      });
+      const store = createWorkflowRunStore(h.db);
+
+      const endedAt = new Date();
+      const won = await store.markTerminal(
+        "run-deployed",
+        "cancelled",
+        endedAt,
+      );
+      expect(won).not.toBeNull();
+      expect(won?.status).toBe("cancelled");
+      expect(won?.endedAt).toEqual(endedAt);
+    });
+
     test("a failed flip for one run does not block the batch or the ack", async () => {
       // The regression that proves the withdrawn crash-window is closed: with
       // two newly-terminal runs in one pack, if ONE run's DB flip throws,

@@ -1510,9 +1510,10 @@ describe("deployWorkflowDefinition", () => {
 
     // The deployment's anchor run is recorded in the same transaction: one
     // workflow_run 1:1 with the deployment, its id and routing address both
-    // derived from the deployment, born running with no key yet (deploy-ack
-    // fills it). It carries the just-projected definition so the run anchors on
-    // a first-class definition; principalId is left unset.
+    // derived from the deployment, born "deployed" in its pre-trigger window
+    // (the first trigger flips it to "running"). It carries the just-projected
+    // definition so the run anchors on a first-class definition; principalId is
+    // left unset.
     expect(runRows).toHaveLength(1);
     const runRow = runRows[0];
     if (runRow === undefined) throw new Error("missing anchor workflow_run");
@@ -1520,7 +1521,7 @@ describe("deployWorkflowDefinition", () => {
     expect(runRow.tenantId).toBe("tenant-1");
     expect(runRow.anchorRunId).toBe("run_dep_xyz");
     expect(runRow.address).toBe("run_dep_xyz@workflow.test");
-    expect(runRow.status).toBe("running");
+    expect(runRow.status).toBe("deployed");
     expect(runRow.definitionId).toBe(definitionRow.id);
     expect(runRow.principalId ?? null).toBeNull();
 

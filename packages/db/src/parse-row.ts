@@ -65,6 +65,7 @@ const ApprovalStatusValidator = type.enumerated(...approvalStatuses);
 const SignalKindValidator = type.enumerated(...signalKinds);
 
 const workflowRunStatuses = [
+  "deployed",
   "running",
   "completed",
   "failed",

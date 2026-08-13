@@ -21,6 +21,7 @@ import { type } from "arktype";
 import {
   asset,
   grant as grantTable,
+  isLiveWorkflowRunStatus,
   principal as principalTable,
   workflowDefinition,
   workflowRun,
@@ -345,7 +346,12 @@ export type CommittedRunGrants = {
   stepGrants: RunGrantsFrame["stepGrants"];
 };
 
-/** Lock and classify one run row owned by a deployment. */
+/**
+ * Lock and classify one run row owned by a deployment. A live run -- a
+ * "deployed" anchor in its pre-trigger window or a "running" run -- classifies
+ * as "running"; the started-vs-not distinction is owned by the durable
+ * lifecycle, not this status axis.
+ */
 export async function lockWorkflowRunState(
   tx: DBExecutor,
   deploymentId: string,
@@ -360,7 +366,7 @@ export async function lockWorkflowRunState(
     .limit(1)
     .for("update");
   if (run === undefined) return "absent";
-  return run.status === "running" ? "running" : "terminal";
+  return isLiveWorkflowRunStatus(run.status) ? "running" : "terminal";
 }
 
 async function loadCommittedRunGrantsFromExecutor(
@@ -558,10 +564,12 @@ export function createMailTriggeredRunGrantsMaterializer(
       .where(eq(workflowRun.address, agentAddress))
       .limit(1);
     if (anchor === undefined) return { outcome: "skip" };
+    // A "deployed" anchor is live: mail-triggering it IS its first trigger, so
+    // it must not be rejected as terminal here.
     if (
-      anchor.anchorStatus !== "running" ||
+      !isLiveWorkflowRunStatus(anchor.anchorStatus) ||
       (anchor.topLevelRunStatus !== null &&
-        anchor.topLevelRunStatus !== "running")
+        !isLiveWorkflowRunStatus(anchor.topLevelRunStatus))
     ) {
       return {
         outcome: "rejected",

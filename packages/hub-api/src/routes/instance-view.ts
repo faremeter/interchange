@@ -8,13 +8,16 @@ import type { RoutableRecord } from "@intx/hub-sessions";
 import { ts } from "../format";
 
 // A workflow run's lifecycle enum differs from the run-view enum the wire
-// contract speaks. A run is `running` while live; its terminal states map onto
-// the view vocabulary: a clean finish or an operator stop both read as
-// `stopped`, a failure as `error`.
+// contract speaks. A `deployed` (pre-trigger) or `running` run is live and maps
+// to the wire status of the same name; its terminal states map onto the view
+// vocabulary: a clean finish or an operator stop both read as `stopped`, a
+// failure as `error`.
 export function mapRunStatusToInstanceStatus(
   status: string,
 ): WorkflowRunStatus {
   switch (status) {
+    case "deployed":
+      return "deployed";
     case "running":
       return "running";
     case "completed":

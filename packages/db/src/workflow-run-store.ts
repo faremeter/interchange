@@ -1,7 +1,7 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import type { DB, DBExecutor } from "./client";
-import { workflowRun } from "./schema/workflow-run";
+import { liveWorkflowRunStatuses, workflowRun } from "./schema/workflow-run";
 import { parseWorkflowRunRow } from "./parse-row";
 
 type DBHandle = DB["db"];
@@ -53,16 +53,17 @@ export function createWorkflowRunStore(db: DBHandle) {
     },
 
     /**
-     * Anchor an externally-triggered run whose row may already exist. The run
-     * row has two co-writers keyed on the same id: the trigger route (which
-     * mints a principal) and the lazy anchor in signal-correlation
-     * registration (which inserts with a null principal when the run parks
-     * before the trigger commits). This insert is conflict-tolerant, and on a
-     * prior null-principal insert it reconciles by attaching `principalId`
-     * without disturbing the row's status. The `principalId IS NULL` guard
-     * keeps the attach single-shot, so it never overwrites a principal a
-     * concurrent winner already set. `principalId` must be non-null: only the
-     * externally-triggered path anchors through here, and it always mints one.
+     * Anchor an externally-triggered run onto its deploy-time anchor row. The
+     * anchor is created at deploy (born "deployed" with a null principal); the
+     * first trigger reconciles it here, attaching `principalId` and flipping
+     * "deployed" -> "running" in one UPDATE. The insert is a conflict-tolerant
+     * safety net: the anchor provably exists by the time a trigger runs, so it
+     * normally no-ops. The three-part guard makes the reconcile single-shot and
+     * safe: `principalId IS NULL` never overwrites a principal a concurrent
+     * winner already set, and `status = 'deployed'` never resurrects a run a
+     * concurrent teardown already settled terminal (the null-principal guard
+     * alone would). `principalId` must be non-null: only the externally-
+     * triggered path anchors through here, and it always mints one.
      */
     async anchorWithPrincipal(
       row: WorkflowRunInsert & { principalId: string },
@@ -77,21 +78,27 @@ export function createWorkflowRunStore(db: DBHandle) {
       if (inserted !== undefined) return;
       await executor
         .update(workflowRun)
-        .set({ principalId: row.principalId })
+        .set({ principalId: row.principalId, status: "running" })
         .where(
-          and(eq(workflowRun.id, row.id), isNull(workflowRun.principalId)),
+          and(
+            eq(workflowRun.id, row.id),
+            isNull(workflowRun.principalId),
+            eq(workflowRun.status, "deployed"),
+          ),
         );
     },
 
     /**
-     * Atomically settle a running run into a terminal state. The
-     * `status = 'running'` guard makes the flip single-shot: the first caller
-     * stamps the terminal status and `endedAt` and gets the row back; any later
-     * caller matches no row and receives null, so the run is not re-terminated
-     * and its `endedAt` is not overwritten. This is a safety property, not a
-     * recovery path -- it makes a second call (a manual replay against an
-     * already-settled run) a harmless no-op; it does not by itself re-drive a
-     * flip that failed. Returns the parsed row only on the winning flip.
+     * Atomically settle a live run into a terminal state. The live-status guard
+     * (`status IN ('deployed','running')`) makes the flip single-shot: the first
+     * caller stamps the terminal status and `endedAt` and gets the row back; any
+     * later caller matches no row and receives null, so the run is not
+     * re-terminated and its `endedAt` is not overwritten. Accepting "deployed"
+     * settles a deployment torn down before its first trigger. This is a safety
+     * property, not a recovery path -- it makes a second call (a manual replay
+     * against an already-settled run) a harmless no-op; it does not by itself
+     * re-drive a flip that failed. Returns the parsed row only on the winning
+     * flip.
      */
     async markTerminal(
       runId: string,
@@ -103,7 +110,10 @@ export function createWorkflowRunStore(db: DBHandle) {
         .update(workflowRun)
         .set({ status, endedAt })
         .where(
-          and(eq(workflowRun.id, runId), eq(workflowRun.status, "running")),
+          and(
+            eq(workflowRun.id, runId),
+            inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+          ),
         )
         .returning();
       return updated === undefined ? null : parseWorkflowRunRow(updated);

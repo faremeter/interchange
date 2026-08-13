@@ -362,7 +362,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: opts.deploymentId,
         definitionId: `wfd_${opts.deploymentId}`,
         address,
-        status: "running",
+        // The deploy-time birth state; the first mail trigger flips it running.
+        status: "deployed",
       });
 
       await repoStore.initRepo({ kind: "workflow", id: assetId });
