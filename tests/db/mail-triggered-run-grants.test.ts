@@ -33,8 +33,8 @@ import {
 const TENANT = "tnt";
 const ASSET = "ast";
 const DEFINITION = "wfd_real";
-const DEPLOYMENT = "dep_real";
-const WORKFLOW_ADDRESS = "ins_dep_real@tenant.example";
+const DEPLOYMENT = "run_real";
+const WORKFLOW_ADDRESS = "run_real@tenant.example";
 const CREATOR = "prn_creator";
 const RUN_ID = "<mail-run-1@tenant.example>";
 

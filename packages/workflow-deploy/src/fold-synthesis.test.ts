@@ -8,7 +8,7 @@ import { synthesizeFoldedWorkflow, type FoldedWorkflowInput } from "./testing";
 
 const BASE: FoldedWorkflowInput = {
   workflowId: "wf_agt_1",
-  mailAddress: "ins_agt_1@tenant.interchange",
+  mailAddress: "run_agt_1@tenant.interchange",
   systemPrompt: "You are the folded agent.",
   description: "A folded agent.",
   inferencePreferences: [{ provider: "anthropic", model: "opus" }],
@@ -29,7 +29,7 @@ describe("synthesizeFoldedWorkflow", () => {
     expect(wf.id).toBe("wf_agt_1");
     expect(wf.stepOrder).toHaveLength(1);
     expect(wf.triggers).toEqual([
-      { type: "mail", to: "ins_agt_1@tenant.interchange" },
+      { type: "mail", to: "run_agt_1@tenant.interchange" },
     ]);
   });
 

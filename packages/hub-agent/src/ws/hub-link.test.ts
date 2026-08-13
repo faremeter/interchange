@@ -441,7 +441,7 @@ describe("sidecar↔hub integration", () => {
   test("disconnect cleans up routing table", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_disc1@integration.interchange";
+    const deploymentAddress = "run_disc1@integration.interchange";
 
     const bindings = withTestDeployBindings();
     await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
@@ -871,10 +871,10 @@ describe("sidecar↔hub integration", () => {
       deployCalls.push(address);
       return Promise.resolve();
     };
-    const address = "ins_dep_restore@workflow.test";
+    const address = "run_restore@workflow.test";
     const repoId: RepoId = {
       kind: "workflow-run",
-      id: "ins_dep_restore-workflow-test",
+      id: "run_restore-workflow-test",
     };
 
     const client = createHubLink({
@@ -1031,7 +1031,7 @@ describe("sidecar↔hub integration", () => {
     // mail.inbound for it goes through the link's switch case, which
     // must consult mailInboundRouter first and -- on a non-null return
     // -- skip transport.deliver and sessions.commitInboundMail.
-    const deploymentAddress = "ins_dep_mail1@integration.interchange";
+    const deploymentAddress = "run_mail1@integration.interchange";
 
     const routed: { address: string; bytes: Uint8Array }[] = [];
     const mailInboundRouter = {
@@ -1080,7 +1080,7 @@ describe("sidecar↔hub integration", () => {
   test("drainInboundRouter dispatches an inbound drain.deliver frame", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_drain1@integration.interchange";
+    const deploymentAddress = "run_drain1@integration.interchange";
 
     const routed: { agentAddress: string; deadlineMs: number }[] = [];
     const drainInboundRouter = {
@@ -1144,7 +1144,7 @@ describe("sidecar↔hub integration", () => {
   test("sourcesInboundRouter acks an inbound sources.update round-trip", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_srcack@integration.interchange";
+    const deploymentAddress = "run_srcack@integration.interchange";
 
     const routed: { agentAddress: string }[] = [];
     const sourcesInboundRouter = {
@@ -1193,7 +1193,7 @@ describe("sidecar↔hub integration", () => {
   test("an unrouted sources.update is answered with session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_srcunrouted@integration.interchange";
+    const deploymentAddress = "run_srcunrouted@integration.interchange";
 
     const sourcesInboundRouter = {
       async tryRoute(): Promise<boolean> {
@@ -1238,7 +1238,7 @@ describe("sidecar↔hub integration", () => {
   test("a rejected sources.update surfaces the reason as session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_srcreject@integration.interchange";
+    const deploymentAddress = "run_srcreject@integration.interchange";
 
     const sourcesInboundRouter = {
       async tryRoute(): Promise<boolean> {
@@ -1282,7 +1282,7 @@ describe("sidecar↔hub integration", () => {
   test("a sources.update with no router wired is answered with session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "ins_dep_srcnorouter@integration.interchange";
+    const deploymentAddress = "run_srcnorouter@integration.interchange";
 
     const bindings = withTestDeployBindings();
     await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
@@ -1956,7 +1956,7 @@ describe("initial handshake on connect", () => {
           correlationId: "corr-throw",
           runId: "run-1",
           anchorRunId: "dep-1",
-          agentAddress: "ins_dep@integration.interchange",
+          agentAddress: "run_dep@integration.interchange",
           kind: "approval",
         }),
       ).toThrow(/corr-throw/);
@@ -2009,7 +2009,7 @@ describe("initial handshake on connect", () => {
         correlationId: "corr-1",
         runId: "run-1",
         anchorRunId: "dep-1",
-        agentAddress: "ins_dep_reg2@integration.interchange",
+        agentAddress: "run_reg2@integration.interchange",
         kind: "approval",
         approvalSnapshot: snapshot,
       });
@@ -2050,7 +2050,7 @@ describe("initial handshake on connect", () => {
             ws.send(
               JSON.stringify({
                 type: "signal.correlation.register.ack",
-                agentAddress: "ins_dep_reg_ack@integration.interchange",
+                agentAddress: "run_reg_ack@integration.interchange",
                 correlationId: frame.correlationId,
               }),
             );
@@ -2093,7 +2093,7 @@ describe("initial handshake on connect", () => {
         correlationId: "corr-ack",
         runId: "run-1",
         anchorRunId: "dep-1",
-        agentAddress: "ins_dep_reg_ack@integration.interchange",
+        agentAddress: "run_reg_ack@integration.interchange",
         kind: "approval",
         approvalSnapshot: {
           name: "charge_card",
@@ -2160,7 +2160,7 @@ describe("initial handshake on connect", () => {
         correlationId: "corr-retry",
         runId: "run-1",
         anchorRunId: "dep-1",
-        agentAddress: "ins_dep_reg_retry@integration.interchange",
+        agentAddress: "run_reg_retry@integration.interchange",
         kind: "approval",
         approvalSnapshot: {
           name: "charge_card",
@@ -2189,7 +2189,7 @@ describe("answerMalformedRequestFrame", () => {
       {
         type: "sources.update",
         requestId: "req-1",
-        agentAddress: "ins_x@example.com",
+        agentAddress: "run_x@example.com",
         sources: [{}],
         defaultSource: "x",
       },
@@ -2210,7 +2210,7 @@ describe("answerMalformedRequestFrame", () => {
     const answered = answerMalformedRequestFrame(
       {
         type: "agent.deploy",
-        agentAddress: "ins_deploy@example.com",
+        agentAddress: "run_deploy@example.com",
         agentId: "x",
       },
       "config must be an object",
@@ -2220,7 +2220,7 @@ describe("answerMalformedRequestFrame", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       type: "agent.error",
-      agentAddress: "ins_deploy@example.com",
+      agentAddress: "run_deploy@example.com",
       error: expect.stringMatching(/malformed agent.deploy frame/),
     });
   });
@@ -2236,7 +2236,7 @@ describe("answerMalformedRequestFrame", () => {
         {
           type: frameType,
           requestId: "req-2",
-          agentAddress: "ins_x@example.com",
+          agentAddress: "run_x@example.com",
         },
         "payload must be valid",
         (frame) => sent.push(frame),
@@ -2249,14 +2249,14 @@ describe("answerMalformedRequestFrame", () => {
   test("answers a malformed agent.undeploy with agent.error", () => {
     const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
     const answered = answerMalformedRequestFrame(
-      { type: "agent.undeploy", agentAddress: "ins_undeploy@example.com" },
+      { type: "agent.undeploy", agentAddress: "run_undeploy@example.com" },
       "reason must be a string",
       (frame) => sent.push(frame),
     );
     expect(answered).toBe(true);
     expect(sent[0]).toMatchObject({
       type: "agent.error",
-      agentAddress: "ins_undeploy@example.com",
+      agentAddress: "run_undeploy@example.com",
       error: expect.stringMatching(/malformed agent.undeploy frame/),
     });
   });
@@ -2268,7 +2268,7 @@ describe("answerMalformedRequestFrame", () => {
       const answered = answerMalformedRequestFrame(
         {
           type: frameType,
-          agentAddress: "ins_pack@example.com",
+          agentAddress: "run_pack@example.com",
           repoId: { kind: "workflow-run", id: "dep-1" },
           transferId: "xfer-1",
           seq: "not-a-number",
@@ -2290,7 +2290,7 @@ describe("answerMalformedRequestFrame", () => {
     const answered = answerMalformedRequestFrame(
       {
         type: "repo.pack.push",
-        agentAddress: "ins_pack@example.com",
+        agentAddress: "run_pack@example.com",
         repoId: { kind: "workflow-run", id: "dep-1" },
       },
       "bad",
@@ -2305,7 +2305,7 @@ describe("answerMalformedRequestFrame", () => {
     const answered = answerMalformedRequestFrame(
       {
         type: "repo.pack.push",
-        agentAddress: "ins_pack@example.com",
+        agentAddress: "run_pack@example.com",
         transferId: "xfer-3",
         repoId: { kind: "not-a-real-kind" },
       },

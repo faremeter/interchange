@@ -20,7 +20,7 @@ test("sends the Hub's main and events refs sequentially to the exact allocation"
       dataDir: root,
       signingKey,
     });
-    const agentAddress = "ins_dep_hub_restore@workflow.test";
+    const agentAddress = "run_hub_restore@workflow.test";
     const repoId: RepoId = {
       kind: "workflow-run",
       id: deriveWorkflowRunRepoId(agentAddress),
@@ -117,7 +117,7 @@ test("does not send anything for a prepared deployment with no prior run refs", 
       agentRepoStore,
       allocationRouter,
       allocationTarget: { allocationId: "alloc-new", generation: 1 },
-      agentAddress: "ins_dep_new@workflow.test",
+      agentAddress: "run_new@workflow.test",
     });
 
     expect(sends).toBe(0);

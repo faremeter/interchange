@@ -288,7 +288,7 @@ export function stepDeployTreeDir(args: {
   const parsed = parseRunAddress(args.mailboxAddress);
   if (parsed === null) {
     throw new Error(
-      `sidecar workflow-child step tools: deployment mailbox address ${JSON.stringify(args.mailboxAddress)} is not a parseable agent address; cannot locate the step's deploy tree`,
+      `sidecar workflow-child step tools: deployment mailbox address ${JSON.stringify(args.mailboxAddress)} is not a parseable run address; cannot locate the step's deploy tree`,
     );
   }
   // A `map` iteration runs under a scoped step id `<base>[<index>]`, but

@@ -31,7 +31,7 @@ async function fileExists(p: string): Promise<boolean> {
 
 const SINGLE_STEP: WorkflowRunRecord = {
   version: 1,
-  agentAddress: "ins_abc123@tenant.example",
+  agentAddress: "run_abc123@tenant.example",
   definitionId: "wf_abc123",
   sources: {
     "step-1": [
@@ -52,7 +52,7 @@ const SINGLE_STEP: WorkflowRunRecord = {
 // id -- both optional fields absent.
 const MULTI_STEP: WorkflowRunRecord = {
   version: 1,
-  agentAddress: "ins_dep_xyz@tenant.example",
+  agentAddress: "run_xyz@tenant.example",
   definitionId: "wf_xyz",
   sources: {
     plan: [
@@ -99,7 +99,7 @@ describe("workflow run record store", () => {
 
   test("round-trips a record with the optional fields absent (multi-step)", async () => {
     const dataDir = await makeDataDir();
-    const anchorRunId = "dep_xyz-tenant-example";
+    const anchorRunId = "run_xyz-tenant-example";
     await writeWorkflowRunRecord(dataDir, anchorRunId, MULTI_STEP);
 
     const raw = await fs.readFile(recordPath(dataDir, anchorRunId), "utf8");

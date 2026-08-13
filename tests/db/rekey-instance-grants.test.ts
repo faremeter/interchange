@@ -65,7 +65,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "g_id",
           tenantId: "tnt_root",
           principalId: "prn_x",
-          resource: "instance:ins_abc",
+          resource: "instance:run_abc",
           action: "read",
           effect: "allow",
           origin: "creator",
@@ -74,7 +74,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "g_state",
           tenantId: "tnt_root",
           principalId: "prn_x",
-          resource: "agent-state:ins_abc",
+          resource: "agent-state:run_abc",
           action: "read",
           effect: "allow",
           origin: "creator",
@@ -83,7 +83,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "g_run",
           tenantId: "tnt_root",
           principalId: "prn_x",
-          resource: "workflow-run:dep_1",
+          resource: "workflow-run:run_1",
           action: "read",
           effect: "allow",
           origin: "creator",
@@ -105,11 +105,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // instance: -> workflow-run:, id after the colon unchanged.
       expect(await resourceOf("g_wild")).toBe("workflow-run:*");
-      expect(await resourceOf("g_id")).toBe("workflow-run:ins_abc");
+      expect(await resourceOf("g_id")).toBe("workflow-run:run_abc");
       // Colon-exact match never touches the agent-state sibling.
-      expect(await resourceOf("g_state")).toBe("agent-state:ins_abc");
+      expect(await resourceOf("g_state")).toBe("agent-state:run_abc");
       // An already-migrated workflow-run grant is untouched.
-      expect(await resourceOf("g_run")).toBe("workflow-run:dep_1");
+      expect(await resourceOf("g_run")).toBe("workflow-run:run_1");
     });
 
     test("is idempotent: a second run changes nothing", async () => {
@@ -118,8 +118,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.execute(REKEY);
 
       expect(await resourceOf("g_wild")).toBe("workflow-run:*");
-      expect(await resourceOf("g_id")).toBe("workflow-run:ins_abc");
-      expect(await resourceOf("g_state")).toBe("agent-state:ins_abc");
+      expect(await resourceOf("g_id")).toBe("workflow-run:run_abc");
+      expect(await resourceOf("g_state")).toBe("agent-state:run_abc");
     });
   },
 );

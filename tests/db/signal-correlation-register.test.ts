@@ -110,13 +110,13 @@ async function backendPid(
 
 const TENANT = "t1";
 const ASSET = "asset1";
-// The raw `dep_...` id `deployWorkflowDefinition` stamps onto the deployment's
+// The raw `run_...` id `deployWorkflowDefinition` stamps onto the deployment's
 // anchor run -- NOT the workflow-run repo slug. The
 // `signal_correlation.deployment_id` and `approval.deployment_id` FKs both
 // reference `workflow_run.id`, so this raw id is what the co-write writes into
 // those columns.
-const DEPLOYMENT = "dep_abc123";
-const WF_ADDR = "ins_dep_abc@wf.example";
+const DEPLOYMENT = "run_abc123";
+const WF_ADDR = "run_abc@wf.example";
 // The workflow-run repo slug the supervisor derives from the address and stamps
 // onto the register frame's `anchorRunId` (address with every `@`/`.`
 // substituted). This is what the co-write's cross-check compares against, and
@@ -135,8 +135,8 @@ const SNAPSHOT = {
 
 // A second live deployment on the same tenant, so a connection can own an
 // address OTHER than WF_ADDR for the ownership-gate rejection case.
-const DEPLOYMENT_2 = "dep_xyz456";
-const WF_ADDR_2 = "ins_dep_xyz@wf.example";
+const DEPLOYMENT_2 = "run_xyz456";
+const WF_ADDR_2 = "run_xyz@wf.example";
 const DEPLOYMENT_2_SLUG = deriveWorkflowRunRepoId(WF_ADDR_2);
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -411,7 +411,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {
       // Regression: a real deployment's anchor-run id is the raw
-      // `dep_...` id `deployWorkflowDefinition` stamps, while the frame's
+      // `run_...` id `deployWorkflowDefinition` stamps, while the frame's
       // `anchorRunId` is the workflow-run repo slug the supervisor derives from
       // the address. seedDeployment seeds exactly that shape (raw id
       // DEPLOYMENT, address WF_ADDR), and the frame carries DEPLOYMENT_SLUG.

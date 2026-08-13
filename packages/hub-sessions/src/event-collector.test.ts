@@ -88,7 +88,7 @@ describe("EventCollector", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      runId: "ins_test",
+      runId: "run_test",
       tenantId: "tnt_test",
     });
   });
@@ -669,7 +669,7 @@ describe("EventCollector", () => {
       notifyCollector = createEventCollector({
         db: fakeDB.db,
         sessionId: "ses_test",
-        runId: "ins_test",
+        runId: "run_test",
         tenantId: "tnt_test",
         onTurnFinalized: (turn) => notifications.push(turn),
       });
@@ -1058,7 +1058,7 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
     return { db: db as never };
   }
 
-  test("returns undefined for unknown agent address", () => {
+  test("returns undefined for unknown run address", () => {
     const { db } = createFakeDBForRegistry();
     const registry = createEventCollectorRegistry({ db });
     expect(registry.getAccumulatedText("agent://unknown")).toBeUndefined();
@@ -1069,7 +1069,7 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
     const registry = createEventCollectorRegistry({ db });
     const address = "agent://test-instance";
 
-    registry.create(address, "tnt_test", "ses_test", "ins_test");
+    registry.create(address, "tnt_test", "ses_test", "run_test");
 
     registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
     // dispatch is fire-and-forget; wait for the microtask queue to flush
@@ -1101,7 +1101,7 @@ describe("EventCollector.getCurrentTurnId", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      runId: "ins_test",
+      runId: "run_test",
       tenantId: "tnt_test",
     });
   });
@@ -1199,7 +1199,7 @@ describe("EventCollector post-finalization guard", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      runId: "ins_test",
+      runId: "run_test",
       tenantId: "tnt_test",
     });
   });
@@ -1287,7 +1287,7 @@ describe("EventCollector post-finalization guard", () => {
     const tracked = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      runId: "ins_test",
+      runId: "run_test",
       tenantId: "tnt_test",
       onTurnFinalized: (turn) => {
         deliveries.push(turn);
@@ -1325,7 +1325,7 @@ describe("EventCollector post-finalization guard", () => {
     const tracked = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      runId: "ins_test",
+      runId: "run_test",
       tenantId: "tnt_test",
     });
 
@@ -1359,7 +1359,7 @@ describe("EventCollector.getLastTurnId", () => {
     collector = createEventCollector({
       db: fakeDB.db,
       sessionId: "ses_test",
-      runId: "ins_test",
+      runId: "run_test",
       tenantId: "tnt_test",
     });
   });

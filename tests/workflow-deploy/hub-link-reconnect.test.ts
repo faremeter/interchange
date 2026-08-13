@@ -58,9 +58,9 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A launched-agent instance id: `ins_` + a hex-shaped local part, so the
-// deployment address is the legacy `ins_<hex>` identity rather than a
-// workflow-derived `ins_dep_<...>` address.
+// A single-agent run id: `run_` + a hex-shaped local part, so the
+// deploy address is the run's own top-level `run_<hex>` address rather
+// than a per-step derived address.
 const DEPLOYMENT_ID = "run_d15c0nnec7ed0d0d15c0nnec7ed0d0d0";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";

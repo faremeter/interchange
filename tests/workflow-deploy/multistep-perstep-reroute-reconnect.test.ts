@@ -21,7 +21,7 @@
 // address enters the keyless `workflowAddresses` set through the reconnect
 // challenge's early-continue path in `handleChallengeResponse` (no
 // `agent.reconnected` session reaction, because a workflow-derived address
-// carries no `agent_instance` row); a legacy launched-agent address would
+// carries no `agent_instance` row); a plain challenged address would
 // instead land on the challenged `agentAddresses` set with a disconnect
 // queue. The `deployAcks`-backed `lookupPublicKey` answers the reconnect
 // challenge for the deployment address because every deploy acks its own
@@ -84,7 +84,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A substrate-safe deployment id whose run address and every per-step derived
 // address are run addresses (`isRunAddress` true). This is what routes the
 // reconnect challenge through the `workflowAddresses` early-continue path.
-const DEPLOYMENT_ID = "run_dep_multistep_reroute_1";
+const DEPLOYMENT_ID = "run_multistep_reroute_1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_IDS = ["step1", "step2"] as const;
 

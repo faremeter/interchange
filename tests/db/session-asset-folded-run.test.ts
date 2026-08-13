@@ -58,7 +58,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: RUN,
         tenantId: TENANT,
         definitionId: DEFINITION,
-        address: "ins_run_folded@wf.example",
+        address: "run_folded@wf.example",
         status: "running",
       });
     });

@@ -155,11 +155,11 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A launched-agent instance id: `ins_` + a hex-shaped local part, mirroring
-// the single-step grants-bridge shape. The deployment mail address is the
-// legacy `ins_<hex>@<domain>` identity the agent-launch path mints, and the
-// sidecar's deploy router recognizes the single-step projection and applies the
-// launched-agent identity strategy.
+// A single-agent run id: `run_` + a hex-shaped local part, mirroring
+// the single-step grants-bridge shape. The deploy mail address is the
+// run's own top-level `run_<hex>@<domain>` address, and the sidecar's
+// deploy router recognizes the single-step projection and applies the
+// single-agent identity strategy.
 const INSTANCE_LOCAL = "run_feedface0001feedface0002feedface";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";

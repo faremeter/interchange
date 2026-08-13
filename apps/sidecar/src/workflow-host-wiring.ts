@@ -84,7 +84,7 @@ import { readRunGrants, runGrantsPath } from "./run-grants";
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
 /**
- * Project an agent address into the substrate-safe id of its
+ * Project an run address into the substrate-safe id of its
  * workflow-run repo. Both deploy branches key `{ kind: "workflow-run",
  * id }` by this slug, and the supervisor principal's `anchorRunId`
  * must equal that id for the workflow-run kind handler's authz check to
@@ -130,14 +130,12 @@ type StepStrategy = {
  * Decide the per-step address/repo strategy from the projection's step
  * count.
  *
- * `stepOrder.length === 1` is the agent-launch identity deploy: the sole
- * step IS the legacy launched agent, so its grants live in the legacy
- * agent-state repo keyed by `parseAgentId(legacyAddress)`. This is
- * exactly the repo the legacy agent identity keys, so the spawned child
- * reads the agent's grants from where the agent's identity already
- * lives, and the deployment frame's `ins_<hex>` address is preserved
- * (the deploy-ack listener finds the `agent_instance` row, the
- * workflow-run repo stays keyed by `deriveWorkflowRunRepoId(legacy)`).
+ * `stepOrder.length === 1` is the single-agent deploy: the sole
+ * step keeps the deploy's own mail address, so its grants live in the
+ * agent-state repo keyed by `parseAgentId(address)`. The spawned child
+ * reads the agent's grants from where the run's identity already
+ * lives, and the deploy frame's run address is preserved (the
+ * workflow-run repo stays keyed by `deriveWorkflowRunRepoId(address)`).
  *
  * Any other step count is a derived multi-step deploy: each step gets a
  * derived `<runId>-<stepId>` mail address (via the router's
@@ -920,7 +918,7 @@ export function createSidecarDeployRouter(deps: {
   /**
    * Callback the supervisor invokes for every verified InferenceEvent
    * the workflow-process child publishes. The router threads the
-   * deployment's agent address plus the deploy's session id through to
+   * deployment's run address plus the deploy's session id through to
    * the callback so a downstream fan-out can route each event to the
    * hub timeline keyed to the right session. The `InferenceEvent` itself
    * is sessionless; the session id rides alongside it, sourced from the
@@ -955,7 +953,7 @@ export function createSidecarDeployRouter(deps: {
   /**
    * Optional override for the multi-step branch's per-step mail-address
    * derivation. Defaults to `${runId}-${stepId}@<deploymentDomain>`
-   * derived from the frame's agent address. Tests inject a deterministic
+   * derived from the frame's run address. Tests inject a deterministic
    * factory.
    */
   multistepDeriveStepAddress?: DeriveStepAddress;
@@ -1162,7 +1160,7 @@ export function createSidecarDeployRouter(deps: {
 
   // Slug-collision tracking. `deriveDeploymentId` substitutes
   // disallowed characters with `-`, which is deterministic but lossy:
-  // two distinct agent addresses can collapse to the same slug, and
+  // two distinct run addresses can collapse to the same slug, and
   // a collision would let the second deploy silently overwrite the
   // first deploy's workflow-run repo state (the slug IS the repoId).
   // This map records the first-claimer; a subsequent deploy that
@@ -1174,7 +1172,7 @@ export function createSidecarDeployRouter(deps: {
     const existing = slugClaims.get(runId);
     if (existing !== undefined && existing !== agentAddress) {
       throw new Error(
-        `deriveDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to runId ${JSON.stringify(runId)}`,
+        `deriveDeploymentId collision: run addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to runId ${JSON.stringify(runId)}`,
       );
     }
     // A same-address re-claim is a defensive no-op: the `activeSupervisors`
@@ -1599,7 +1597,7 @@ export function createSidecarDeployRouter(deps: {
       // substrate write routes through the boot-edge pack-pushing facade and
       // resolves this mapping to address the outbound pack frame. Recording
       // it after `spawn` (as the other registrations below are) loses the
-      // race: the replay's write throws "no agent address registered" (a
+      // race: the replay's write throws "no run address registered" (a
       // real defect masked as a swallowed best-effort warning in the
       // supervisor's replay catch). Constraint ownership: the registry owns
       // "address is resolvable"; the spawn path must satisfy that contract
@@ -1903,15 +1901,14 @@ export function createSidecarDeployRouter(deps: {
 
     const runId = deriveDeploymentId(frame.agentAddress);
 
-    // Single-step launched-agent deploy vs. derived multi-step deploy.
+    // Single-agent deploy vs. derived multi-step deploy.
     //
-    // A one-step projection is the agent-launch identity path: the sole
-    // step keeps the deployment's own (legacy) mail address, and its
-    // grants live in the legacy agent-state repo keyed by the legacy
-    // instance id (`parseAgentId(frame.agentAddress)`). This preserves
-    // the identity the legacy agent-deploy path established -- the
-    // workflow-run repo stays keyed by `deriveWorkflowRunRepoId(legacy)`
-    // and `agent_instance.address` remains the `ins_<hex>` legacy shape.
+    // A one-step projection is the single-agent path: the sole
+    // step keeps the deploy's own mail address, and its
+    // grants live in the agent-state repo keyed by the run id
+    // (`parseAgentId(frame.agentAddress)`). This preserves the run's
+    // identity -- the workflow-run repo stays keyed by
+    // `deriveWorkflowRunRepoId(frame.agentAddress)`.
     //
     // A multi-step projection derives `<runId>-<stepId>` per step
     // for both the mail address and the agent-state repo id, isolating
@@ -2226,7 +2223,7 @@ export function createSidecarDeployRouter(deps: {
       }
     },
     activeAddresses(): string[] {
-      // `activeSupervisors` is keyed by deployment agent address and holds
+      // `activeSupervisors` is keyed by deployment run address and holds
       // exactly the deployments with a live supervisor (deploy and restore
       // add; undeploy and spawn-unwind remove), so its keys are the addresses
       // this sidecar can currently route mail to.

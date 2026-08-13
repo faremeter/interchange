@@ -1,6 +1,6 @@
-// Phase 4.1 lock: a single-step launched agent routed through the
-// spawned workflow-process child resolves its GRANTS from the legacy
-// agent-state repo, preserves its `ins_<hex>` identity, and threads its
+// Phase 4.1 lock: a single-step agent routed through the
+// spawned workflow-process child resolves its GRANTS from the
+// agent-state repo, preserves its `run_<hex>` identity, and threads its
 // inference events to the hub timeline keyed to the deploy's session.
 //
 // This is the foundation sub-step every later Phase 4 step keys off: if
@@ -10,12 +10,12 @@
 // granted tool's authorize would deny, the run would not complete, and
 // the credentials snapshot would read back empty).
 //
-// The deploy is a one-step workflow whose deployment mail address is a
-// legacy launched-agent address (`ins_<id>@<domain>`). The sidecar's
+// The deploy is a one-step workflow whose deploy mail address is the
+// run's own top-level `run_<id>@<domain>` address. The sidecar's
 // deploy router recognizes the single-step projection
-// (`stepOrder.length === 1`) and applies the launched-agent identity
-// strategy: the sole step's grants live in the legacy agent-state repo
-// keyed by `parseAgentId(legacyAddress)`, and the grants bridge writes
+// (`stepOrder.length === 1`) and applies the single-agent identity
+// strategy: the sole step's grants live in the agent-state repo
+// keyed by `parseAgentId(address)`, and the grants bridge writes
 // `config.grants` there before the child spawns.
 //
 // Assertions:
@@ -85,10 +85,10 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A launched-agent instance id: `ins_` + a hex-shaped local part. The
-// deployment address `ins_<id>@<domain>` is the legacy `ins_<hex>`
-// identity the agent-launch path mints; it is NOT a workflow-derived
-// `ins_dep_<...>` address, so identity preservation is exercised.
+// A single-agent run id: `run_` + a hex-shaped local part. The
+// deploy address `run_<id>@<domain>` is the run's own top-level
+// address, not a per-step derived address, so identity preservation
+// is exercised.
 const INSTANCE_LOCAL = "run_deadbeefcafe0001deadbeefcafe0002";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -279,9 +279,9 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
     }
     expect(result.publicKey).toBeTruthy();
 
-    // (a) identity: the deploy-ack fired for the legacy `ins_<hex>`
+    // (a) identity: the deploy-ack fired for the run's `run_<hex>`
     // address and persisted a public key. The ack listener keys on the
-    // legacy address (workflow-derived addresses are a no-op), so a
+    // top-level run address (per-step derived addresses are a no-op), so a
     // captured ack for this address proves the identity survived the
     // child re-route.
     await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {

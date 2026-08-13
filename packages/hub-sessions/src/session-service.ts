@@ -116,10 +116,10 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
-   * Deploy a single-agent instance through the single-step-at-head path,
+   * Deploy a single agent through the single-step-at-head path,
    * wrapping the harness as a one-step workflow and routing it through the
-   * deploy core with the instance's real identity. Replaces `launchSession`
-   * as the production instance-deploy entry point: the instance runs as a
+   * deploy core with the run's real identity. Replaces `launchSession`
+   * as the production single-agent deploy entry point: the run executes as a
    * supervised workflow-process child. Records no deployment anchor run.
    * Returns the head's agent-key ack (the key the head signs its
    * reconnect challenges with).
@@ -1017,9 +1017,9 @@ export function createSessionService(
   }
 
   /**
-   * Deploy a single-agent instance through the single-step-at-head path: wrap
+   * Deploy a single agent through the single-step-at-head path: wrap
    * the harness as a one-step workflow (the same wrap `launchSession` uses) and
-   * route it through `deploySingleStepAtHead` with the instance's REAL identity
+   * route it through `deploySingleStepAtHead` with the run's REAL identity
    * -- so the head address IS the instance address and the deploy runs as a
    * supervised workflow-process child.
    *

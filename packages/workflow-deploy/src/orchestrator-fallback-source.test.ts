@@ -102,7 +102,7 @@ function makeConfig(args: {
     agentId: "ag_fallback",
     tenantId: "tenant-1",
     principalId: "prin-1",
-    agentAddress: "ins_fallback@workflow.interchange",
+    agentAddress: "run_fallback@workflow.interchange",
     systemPrompt: "shared-prompt",
     tools: [],
     grants: [],
@@ -189,7 +189,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_fallback",
+        runId: "run_fallback",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -242,7 +242,7 @@ describe("pickStepInferenceSource (agent step)", () => {
 
     const result = await orchestrator.deployWorkflow({
       workflow,
-      runId: "dep_fallback",
+      runId: "run_fallback",
       deploymentDomain: "workflow.interchange",
       config,
       deployContent: DEPLOY_CONTENT_BASE,
@@ -310,7 +310,7 @@ describe("pickStepInferenceSource (agent step)", () => {
 
     const result = await orchestrator.deployWorkflow({
       workflow,
-      runId: "dep_fallback",
+      runId: "run_fallback",
       deploymentDomain: "workflow.interchange",
       config,
       deployContent: DEPLOY_CONTENT_BASE,
@@ -367,7 +367,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_fallback",
+        runId: "run_fallback",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,

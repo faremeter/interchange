@@ -9,7 +9,7 @@
 // `agent.deploy` frame collapse onto one head deploy, with no per-step
 // provisioning loop.
 //
-// A workflow with more than one step derives per-step agent addresses of
+// A workflow with more than one step derives per-step run addresses of
 // the form `<runId>-<stepId>@<domain>`, instantiates
 // one agent-state repo per step keyed by the derived address, and writes
 // each step's deploy tree onto its own repo. The derivation is a pure
@@ -813,7 +813,7 @@ function pickStepInferenceSource(args: {
 }
 
 /**
- * Pure function: derive a step's agent address from
+ * Pure function: derive a step's run address from
  * `(runId, stepId, domain)`. Exported so the supervisor can reconstruct
  * the same addresses at spawn time without sharing storage with the
  * orchestrator.
@@ -908,16 +908,16 @@ export function deriveRunAgentId(args: { runId: string }): string {
 }
 
 /**
- * Project a workflow-deployment agent address into the substrate-safe
+ * Project a workflow-deployment run address into the substrate-safe
  * id of its workflow-run repo (`{ kind: "workflow-run", id }`). Pure
- * function of the deployment's agent address.
+ * function of the deployment's run address.
  *
  * The workflow-run repo's `repoId.id` must match `SAFE_REPO_ID`
  * (`/^[a-zA-Z0-9_-]+$/`, the substrate's repo-path-safety contract in
  * `packages/hub-sessions/src/repo-store/types.ts`), and the supervisor
  * principal's `runId` must equal `workflowRunRepoId.id` for the
  * workflow-run kind handler's authz check to pass. That regex rejects
- * `@` and `.`, both of which appear in every agent address, so the
+ * `@` and `.`, both of which appear in every run address, so the
  * address is sanitized by substituting every disallowed character with
  * `-`.
  *
@@ -1162,7 +1162,7 @@ function serializeWalk(walk: CapabilityWalkResult): unknown {
 /**
  * Build an `AgentDefinition` from a `HarnessConfig` and a
  * `DeployContent`. `SessionService.deployInstanceAtHead` uses it to wrap
- * a single-agent instance's harness as a one-step workflow and deploy it
+ * a single agent's harness as a one-step workflow and deploy it
  * at the head. The deploy tree itself (`deployContent.systemPrompt`, the
  * harness's `tools` and `grants` arrays) is the source of truth for
  * runtime behaviour; the wrap synthesizes only the surfaces the

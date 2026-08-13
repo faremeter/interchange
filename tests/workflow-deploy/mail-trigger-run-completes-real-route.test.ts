@@ -88,7 +88,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 // The tenant domain must equal the fixture's deploy domain so the route's
-// derived address (`ins_<anchorRunId>@<tenant.domain>`) matches the
+// derived address (`<anchorRunId>@<tenant.domain>`) matches the
 // address the fixture deployed the sidecar workflow under; otherwise the
 // route's sendRunGrants/routeMail target an unknown address (409).
 const DEPLOYMENT_DOMAIN = "integration.interchange";

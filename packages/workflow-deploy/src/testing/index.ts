@@ -11,7 +11,7 @@
 //
 // Tools ride as `toolPackagePins` on the step agent (pins-only: the sidecar
 // materializes them and its tool floor authorizes them at runtime, exactly as
-// an agent instance does). The step agent's `toolFactories` is the empty array
+// a deployed step agent does). The step agent's `toolFactories` is the empty array
 // by construction -- a folded definition has no live factories, and the
 // capability walk falls back to the (empty) factories to emit no tool grants.
 

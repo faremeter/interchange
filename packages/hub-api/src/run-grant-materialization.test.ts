@@ -10,7 +10,7 @@ import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materializ
 const TENANT_ID = "tenant-1";
 const ASSET_ID = "asset-wf";
 const CREATOR_PRINCIPAL_ID = "prn_creator";
-const WORKFLOW_ADDRESS = "ins_dep_wf1@tenant.example";
+const WORKFLOW_ADDRESS = "run_wf1@tenant.example";
 
 // A one-step workflow whose agent declares one tool, plus a creator-sourced
 // and an invoker-sourced grant requirement. The walk yields a `tool:` runtime

@@ -22,8 +22,8 @@ import {
 
 import fs from "node:fs";
 
-const DEPLOYMENT_ID = "ins_smoke-test";
-const MAIL_ADDRESS = "ins_smoke-test@integration.interchange";
+const DEPLOYMENT_ID = "run_smoke-test";
+const MAIL_ADDRESS = "run_smoke-test@integration.interchange";
 
 // `startHub` is the slice of `startDeployFlowEnv` that owns just the
 // hub-substrate + WS server. The helpers we smoke-test here operate
@@ -140,7 +140,7 @@ describe("deploy-flow-env helpers smoke tests", () => {
   });
 
   test("simulateProcessingCrash composes enqueueInbox + dequeueToProcessing", async () => {
-    const address = "ins_smoke-test@integration.interchange";
+    const address = "run_smoke-test@integration.interchange";
     const messageId = "<smoke-crash-1@integration.interchange>";
     const receivedAt = 1_700_000_000_000;
     await simulateProcessingCrash(

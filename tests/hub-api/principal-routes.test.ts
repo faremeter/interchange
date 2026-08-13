@@ -38,10 +38,10 @@ const TENANT_ID = "tnt_principals";
 const ACTOR_PRINCIPAL_ID = "prn_actor";
 const ACTOR_USER_ID = "usr_actor";
 const ASSET_ID = "ast_wf";
-const DEPLOYMENT_ID = "dep_wf";
-const RUN_ID = "run_wf";
+const DEPLOYMENT_ID = "run_wf";
+const RUN_ID = "run_wf_child";
 const WORKFLOW_PRINCIPAL_ID = "prn_workflow";
-const DEPLOYMENT_ADDRESS = "ins_dep_wf@principals.test";
+const DEPLOYMENT_ADDRESS = "run_wf@principals.test";
 
 function createMockGetSession(userId: string): GetSession {
   const now = new Date("2025-01-01");

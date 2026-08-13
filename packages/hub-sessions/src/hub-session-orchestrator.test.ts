@@ -362,7 +362,7 @@ describe("createHubSessionOrchestrator", () => {
     test("persists the public key for a workflow-derived deployment address", async () => {
       harness = setup({});
       await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "run_dep_abc@workflow.interchange",
+        agentAddress: "run_abc@workflow.interchange",
         publicKey: "deadbeef",
       });
       // A workflow-derived deployment address has no agent_instance row; its
@@ -376,11 +376,11 @@ describe("createHubSessionOrchestrator", () => {
 
     test("defers an allocated deployment key until initialization completes", async () => {
       await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "run_dep_abc@workflow.interchange",
+        agentAddress: "run_abc@workflow.interchange",
         publicKey: "deadbeef",
         allocated: {
           allocationId: "alloc-1",
-          anchorRunId: "dep_abc",
+          anchorRunId: "run_abc",
           generation: 3,
         },
       });

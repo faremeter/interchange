@@ -6,7 +6,7 @@
 // `@intx/pack-transport`. A few consumers need only the small filesystem
 // helpers for an agent's on-disk deploy state -- reading the deploy tree
 // under an agent's directory and deriving that directory's name from the
-// agent address. For the spawned workflow-child loading the orchestrator to
+// run address. For the spawned workflow-child loading the orchestrator to
 // get them is both wasted module-evaluation and a backwards dependency on the
 // very component that launches it. Neither helper's module imports the
 // orchestrator graph, so this entry exposes them without it.

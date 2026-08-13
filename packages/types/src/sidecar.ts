@@ -52,7 +52,7 @@ export const ReconnectFrame = type({
 export type ReconnectFrame = typeof ReconnectFrame.infer;
 
 /**
- * Response to a challenge frame. Contains a signature per agent address
+ * Response to a challenge frame. Contains a signature per run address
  * proving the sidecar holds the private key. Each signature is computed
  * over `nonce || utf8(agentAddress)`.
  */
@@ -107,7 +107,7 @@ export type MailOutboundFrame = typeof MailOutboundFrame.infer;
 
 /**
  * An InferenceEvent from the reactor, forwarded for UI consumption. Tagged
- * with the agent address so the hub can route to the correct UI client.
+ * with the run address so the hub can route to the correct UI client.
  */
 export const AgentEventFrame = type({
   type: "'agent.event'",
@@ -364,7 +364,7 @@ export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
  * failover chain: element 0 is the active source (its id is the step's
  * `defaultSource`), and the reactor fails over forward through the tail on a
  * transient inference error. A workflow step pins a single-element list (no
- * per-step failover); a single-agent instance pins the instance's full
+ * per-step failover); a single-agent workflow pins its full
  * ordered source chain. Every `stepOrder` entry must have a matching
  * `sources` entry; the validator rejects frames that violate this at the
  * boundary.
@@ -584,7 +584,7 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 //
 //   - `repoId` identifies the source repo at the hub. The hub maps `repoId`
 //     to the originating entry in its kind-keyed RepoStore. For
-//     `repoId.kind === "agent-state"`, `repoId.id` is the agent address
+//     `repoId.kind === "agent-state"`, `repoId.id` is the run address
 //     (the deploy/state repo and the destination agent are the same), so
 //     the two fields carry the same value. Future kinds (e.g. assets) use
 //     `repoId` to name a non-agent source while `agentAddress` continues

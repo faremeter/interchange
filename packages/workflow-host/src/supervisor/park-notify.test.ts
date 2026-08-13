@@ -32,7 +32,7 @@ import {
   type FrameReader,
 } from "../ipc/index";
 
-const AGENT_ADDRESS = "ins_park-agent@integration.example";
+const AGENT_ADDRESS = "run_park-agent@integration.example";
 const DEPLOYMENT_ID = "park-dep";
 
 function createMemoryNdjsonStream() {

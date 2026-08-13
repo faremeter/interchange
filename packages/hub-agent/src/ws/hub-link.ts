@@ -1527,9 +1527,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         });
       } else {
         // The active-address inventory includes both workflow-derived and
-        // current plain-agent addresses. The Hub skips deploy-ref freshness
-        // for workflow-derived addresses, but plain agents still require
-        // their refs to avoid an unnecessary full deploy-pack catch-up.
+        // plain run addresses. The Hub skips deploy-ref freshness for
+        // workflow-derived addresses; the rest still require their refs to
+        // avoid an unnecessary full deploy-pack catch-up.
         void (async () => {
           try {
             const deployRefs: Record<string, string> = {};

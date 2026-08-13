@@ -1464,7 +1464,7 @@ export function createSidecarRouter(
         conn.send({
           type: "challenge.failed",
           address,
-          reason: "Unknown agent address",
+          reason: "Unknown run address",
         });
         continue;
       }

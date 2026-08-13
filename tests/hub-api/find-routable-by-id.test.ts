@@ -147,7 +147,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
   test("returns undefined for an unknown id", async () => {
     await seedBase();
     expect(
-      await findRoutableById(h.db, "ins_missing", "tnt_root"),
+      await findRoutableById(h.db, "run_missing", "tnt_root"),
     ).toBeUndefined();
   });
 

@@ -138,8 +138,8 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A legacy `ins_<hex>` deployment identity (not a workflow-derived
-// `ins_dep_<...>` address), matching the reconnect-survival fixtures. The
+// A top-level `run_<hex>` deploy run identity (not a per-step derived
+// address), matching the reconnect-survival fixtures. The
 // reconnect ownership challenge re-routes it and fires
 // `onWorkflowAddressesRoutable`, which is what drives Trigger B.
 const INSTANCE_LOCAL = "run_dep0ec0ffee0ec0ffee0ec0ffee0ec0f";

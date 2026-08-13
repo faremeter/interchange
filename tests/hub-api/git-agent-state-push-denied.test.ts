@@ -95,7 +95,7 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     // bearer middleware and the resolver, so an unauthenticated probe
     // on a bogus instance id still yields the locked 403 body verbatim.
     const res = await fetch(
-      `${runStateGitUrl(hub.url, tenant.tenantId, "ins_doesnotexist")}/info/refs?service=git-receive-pack`,
+      `${runStateGitUrl(hub.url, tenant.tenantId, "run_doesnotexist")}/info/refs?service=git-receive-pack`,
     );
     expect(res.status).toBe(403);
     const body = await res.text();
@@ -115,7 +115,7 @@ describe.skipIf(!harnessHubEnvAvailable())("agent-state push denied", () => {
     const workDir = await mkTemp("agent-state-push-ins-");
     await prepareLocalPushSource(workDir);
 
-    const remote = runStateGitUrl(hub.url, tenant.tenantId, "ins_fakefakefake");
+    const remote = runStateGitUrl(hub.url, tenant.tenantId, "run_fakefakefake");
     const push = await runGit(
       [
         "-c",

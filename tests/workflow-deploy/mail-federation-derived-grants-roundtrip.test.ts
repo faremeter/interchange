@@ -257,7 +257,7 @@ async function createWorkflowRepoStore(): Promise<RepoStore> {
 }
 
 // The trigger route derives the deployment address as
-// `ins_<anchorRunId>@<tenant.domain>`; the routing router accepts any
+// `<anchorRunId>@<tenant.domain>`; the routing router accepts any
 // address, so the derived value only needs to be well-formed.
 
 describe.skipIf(!harnessDbEnvAvailable())(

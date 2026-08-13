@@ -854,7 +854,7 @@ export function createWorkflowRunPackPushingRepoStore(
       const agentAddress = registry.resolve(repoId.id);
       if (agentAddress === null) {
         throw new Error(
-          `workflow-run pack push: no agent address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
+          `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
         );
       }
       schedulePush(agentAddress, repoId, ref);
@@ -879,7 +879,7 @@ export function createWorkflowRunPackPushingRepoStore(
       const agentAddress = registry.resolve(repoId.id);
       if (agentAddress === null) {
         throw new Error(
-          `workflow-run pack push: no agent address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
+          `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
         );
       }
       schedulePush(agentAddress, repoId, ref);

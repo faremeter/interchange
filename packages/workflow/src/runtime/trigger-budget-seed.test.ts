@@ -115,7 +115,7 @@ function buildEnv(args: {
 function chatWorkflow(triggers: number | "unbounded"): WorkflowDefinition {
   return defineWorkflow({
     id: "budget-seed",
-    trigger: { type: "mail", to: "ins_seed@t.example" },
+    trigger: { type: "mail", to: "run_seed@t.example" },
     steps: { s: step({ agent, triggers }) },
   });
 }

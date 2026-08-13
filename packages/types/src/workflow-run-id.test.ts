@@ -20,7 +20,7 @@ describe("deriveWorkflowRunId", () => {
   });
 
   test("throws when the local part lacks the run_ prefix", () => {
-    expect(() => deriveWorkflowRunId("ins_abc123@tenant.example")).toThrow(
+    expect(() => deriveWorkflowRunId("usr_abc123@tenant.example")).toThrow(
       "Invalid run address",
     );
   });

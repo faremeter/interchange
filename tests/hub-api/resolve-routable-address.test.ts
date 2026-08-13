@@ -65,14 +65,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: null,
         definitionId: "wfd_folded",
         principalId: "prn_run",
-        address: "ins_folded@root.example",
+        address: "run_folded@root.example",
         status: "running",
         publicKey: "pk-run",
       });
 
       const endpoint = await resolveRoutableAddress(
         h.db,
-        "ins_folded@root.example",
+        "run_folded@root.example",
       );
       expect(endpoint?.id).toBe("run_folded");
       expect(endpoint?.tenantId).toBe("tnt_root");
@@ -83,7 +83,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("returns undefined for an unknown address", async () => {
       await seedBase();
       expect(
-        await resolveRoutableAddress(h.db, "ins_missing@root.example"),
+        await resolveRoutableAddress(h.db, "run_missing@root.example"),
       ).toBeUndefined();
     });
 
@@ -95,18 +95,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // anchor carries no own principal, so the resolved endpoint has no
       // session.
       await seedWorkflowRun(h.db, {
-        id: "dep_anchor",
+        id: "run_anchor",
         tenantId: "tnt_root",
         anchorRunId: null,
         principalId: null,
-        address: "ins_dep_anchor@root.example",
+        address: "run_anchor@root.example",
         status: "running",
       });
       const endpoint = await resolveRoutableAddress(
         h.db,
-        "ins_dep_anchor@root.example",
+        "run_anchor@root.example",
       );
-      expect(endpoint?.id).toBe("dep_anchor");
+      expect(endpoint?.id).toBe("run_anchor");
       expect(endpoint?.sessionId).toBeNull();
     });
 
@@ -117,12 +117,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: "tnt_root",
         anchorRunId: null,
         principalId: "prn_creator",
-        address: "ins_dead@root.example",
+        address: "run_dead@root.example",
         status: "cancelled",
         endedAt: new Date(0),
       });
       expect(
-        await resolveRoutableAddress(h.db, "ins_dead@root.example"),
+        await resolveRoutableAddress(h.db, "run_dead@root.example"),
       ).toBeUndefined();
     });
 
@@ -133,12 +133,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: "tnt_root",
         anchorRunId: null,
         principalId: null,
-        address: "ins_noprincipal@root.example",
+        address: "run_noprincipal@root.example",
         status: "running",
       });
       const endpoint = await resolveRoutableAddress(
         h.db,
-        "ins_noprincipal@root.example",
+        "run_noprincipal@root.example",
       );
       expect(endpoint?.sessionId).toBeNull();
     });
@@ -169,12 +169,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: null,
         definitionId: "wfd_sessionless",
         principalId: "prn_sessionless",
-        address: "ins_sessionless@root.example",
+        address: "run_sessionless@root.example",
         status: "running",
       });
       const endpoint = await resolveRoutableAddress(
         h.db,
-        "ins_sessionless@root.example",
+        "run_sessionless@root.example",
       );
       expect(endpoint?.sessionId).toBeNull();
     });

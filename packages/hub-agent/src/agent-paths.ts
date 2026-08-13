@@ -1,7 +1,7 @@
 // Per-agent on-disk layout helpers.
 //
 // The sanitization scheme is an internal implementation detail: it gives
-// each agent address a stable filesystem-safe directory name, but the
+// each run address a stable filesystem-safe directory name, but the
 // mapping is lossy and the directory name cannot be reversed. Callers
 // that need to find an agent's directory must go through this module
 // (or through AgentRepoStore.getAgentDir) rather than computing the

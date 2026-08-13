@@ -29,7 +29,7 @@ const HARNESS_CONFIG_WITH_TOOLS: HarnessConfig = {
   agentId: "legacy-agent",
   tenantId: "tenant-1",
   principalId: "prin-1",
-  agentAddress: "ins_legacy@integration.interchange",
+  agentAddress: "run_legacy@integration.interchange",
   systemPrompt: "legacy",
   tools: [
     {

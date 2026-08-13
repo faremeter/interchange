@@ -60,7 +60,7 @@ function makeFactory(
 
 function makeTrivialAgent(): AgentDefinition<BaseEnv> {
   return defineAgent({
-    id: "ins_test-agent",
+    id: "run_test-agent",
     systemPrompt: "You are an integration test agent.",
     tools: [makeMailFactory()],
     capabilities: [],
@@ -76,7 +76,7 @@ function makeSingleStepWorkflow(
   return defineWorkflow({
     id: "wf_integration",
     agent,
-    trigger: { type: "mail", to: "ins_test-agent@integration.interchange" },
+    trigger: { type: "mail", to: "run_test-agent@integration.interchange" },
   });
 }
 

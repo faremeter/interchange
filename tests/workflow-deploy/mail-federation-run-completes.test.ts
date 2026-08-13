@@ -123,12 +123,12 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 // NO materialization -- and the test still goes GREEN while exercising nothing,
 // because the receiver never starts and the RunCompleted assertion is only ever
 // reached on the real path. Keep the `run_` prefix.
-const RECEIVER_ID = "run_dep_fed-mail-receiver-1";
+const RECEIVER_ID = "run_fed-mail-receiver-1";
 const RECEIVER_TENANT_ID = "tnt_fed_mail_receiver";
 const RECEIVER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_receiver_creator";
 const RECEIVER_ASSET_ID = "ast_fed_mail_receiver_wf";
 // The SENDER, triggered by the fixture to mail the receiver.
-const SENDER_ID = "run_dep_fed-mail-sender-1";
+const SENDER_ID = "run_fed-mail-sender-1";
 
 const RECEIVER_STEP_ID = "receive";
 const SENDER_STEP_ID = "send";

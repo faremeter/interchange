@@ -37,9 +37,9 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A real instance identity: `ins_` + 32 hex, NOT a `dep_`-prefixed deployment
-// id. The head address IS the instance address; the reroute keeps that
-// identity rather than deriving a synthetic deployment agent id.
+// A single-agent run identity: `run_` + 32 hex. The head address IS the
+// run address; the reroute keeps that identity rather than deriving a
+// synthetic per-step agent id.
 const INSTANCE_ID = `run_${"b".repeat(32)}`;
 const AGENT_ID = "agent-instance-reroute";
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -71,7 +71,7 @@ describe("instance-reroute real-agent round-trip", () => {
       tenantId: "tenant-1",
       principalId: "prin_integration-reroute-1",
       agentAddress,
-      systemPrompt: "You are the rerouted single-agent instance.",
+      systemPrompt: "You are the rerouted single-agent run.",
       tools: [],
       grants: [],
       sources: [

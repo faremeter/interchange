@@ -192,7 +192,7 @@ function sectionWorkflow(): WorkflowDefinition {
   const section: Primitive = {
     kind: "onTrigger",
     id: "",
-    on: { type: "mail", to: "ins_sec@t.example" },
+    on: { type: "mail", to: "run_sec@t.example" },
     body: { ref: "body-ref" },
     drainBehavior: "wait",
   };
@@ -712,7 +712,7 @@ describe("runOnTrigger", () => {
     const section: Primitive = {
       kind: "onTrigger",
       id: "",
-      on: { type: "mail", to: "ins_sec@t.example" },
+      on: { type: "mail", to: "run_sec@t.example" },
       body: { ref: "body-ref" },
       drainBehavior: "wait",
     };

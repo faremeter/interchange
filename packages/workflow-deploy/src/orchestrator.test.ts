@@ -254,7 +254,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_pins",
+        runId: "run_pins",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -303,7 +303,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_order",
+        runId: "run_order",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -341,7 +341,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       const result = await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_abc123",
+        runId: "run_abc123",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -355,28 +355,28 @@ describe("createWorkflowDeployOrchestrator", () => {
         throw new Error("missing launches");
       }
       expect(planLaunch.agentAddress).toBe(
-        "dep_abc123-plan@workflow.interchange",
+        "run_abc123-plan@workflow.interchange",
       );
-      expect(planLaunch.agentId).toBe("dep_abc123-plan");
-      expect(planLaunch.runId).toBe("dep_abc123-plan");
+      expect(planLaunch.agentId).toBe("run_abc123-plan");
+      expect(planLaunch.runId).toBe("run_abc123-plan");
       expect(planLaunch.config.agentAddress).toBe(planLaunch.agentAddress);
       expect(planLaunch.config.agentId).toBe(planLaunch.agentId);
       expect(planLaunch.config.systemPrompt).toBe("you plan");
       expect(planLaunch.deployContent.systemPrompt).toBe("you plan");
 
       expect(executeLaunch.agentAddress).toBe(
-        "dep_abc123-execute@workflow.interchange",
+        "run_abc123-execute@workflow.interchange",
       );
-      expect(executeLaunch.agentId).toBe("dep_abc123-execute");
-      expect(executeLaunch.runId).toBe("dep_abc123-execute");
+      expect(executeLaunch.agentId).toBe("run_abc123-execute");
+      expect(executeLaunch.runId).toBe("run_abc123-execute");
       expect(executeLaunch.config.systemPrompt).toBe("you execute");
       expect(executeLaunch.deployContent.systemPrompt).toBe("you execute");
 
       expect(multiStep.calls).toHaveLength(1);
       const handoff = multiStep.calls[0];
       if (handoff === undefined) throw new Error("missing handoff");
-      expect(handoff.agentAddress).toBe("dep_abc123@workflow.interchange");
-      expect(handoff.agentId).toBe("dep_abc123");
+      expect(handoff.agentAddress).toBe("run_abc123@workflow.interchange");
+      expect(handoff.agentId).toBe("run_abc123");
       expect(handoff.hubPublicKey).toBe("00".repeat(32));
       expect(handoff.definition).toBe(workflow);
       expect(Object.keys(handoff.sources).sort()).toEqual(["execute", "plan"]);
@@ -421,7 +421,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_xy",
+        runId: "run_xy",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -432,8 +432,8 @@ describe("createWorkflowDeployOrchestrator", () => {
       // The hand-off fires exactly once and only after the per-step
       // provisioning loop has finished.
       expect(order).toEqual([
-        "launch:dep_xy-plan",
-        "launch:dep_xy-execute",
+        "launch:run_xy-plan",
+        "launch:run_xy-execute",
         "sendMultiStepDeploy",
       ]);
     });
@@ -463,7 +463,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_abc123",
+          runId: "run_abc123",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -495,7 +495,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_abc123",
+          runId: "run_abc123",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -521,7 +521,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_xyz",
+          runId: "run_xyz",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -585,7 +585,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_abc123",
+          runId: "run_abc123",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
           operatorApprovals: approvals,
@@ -612,7 +612,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       const result = await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_xyz",
+        runId: "run_xyz",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -628,9 +628,9 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(singleStep.calls).toHaveLength(1);
       const call = singleStep.calls[0];
       if (call === undefined) throw new Error("missing single-step deploy");
-      expect(call.agentAddress).toBe("dep_xyz@workflow.interchange");
-      expect(call.agentId).toBe("dep_xyz");
-      expect(call.runId).toBe("dep_xyz");
+      expect(call.agentAddress).toBe("run_xyz@workflow.interchange");
+      expect(call.agentId).toBe("run_xyz");
+      expect(call.runId).toBe("run_xyz");
       const expectedStepId = workflow.stepOrder[0];
       if (expectedStepId === undefined) {
         throw new Error("missing step id");
@@ -682,7 +682,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_chain",
+        runId: "run_chain",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -743,7 +743,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_rogue",
+          runId: "run_rogue",
           deploymentDomain: "workflow.interchange",
           config,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -808,7 +808,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_inverted",
+          runId: "run_inverted",
           deploymentDomain: "workflow.interchange",
           config,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -858,7 +858,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_pinned",
+        runId: "run_pinned",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -908,7 +908,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_pinfail",
+          runId: "run_pinfail",
           deploymentDomain: "workflow.interchange",
           config: configMissingSource,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -956,7 +956,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_legacy",
+          runId: "run_legacy",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -991,7 +991,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_legacy",
+          runId: "run_legacy",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -1047,7 +1047,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          runId: "dep_legacy",
+          runId: "run_legacy",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -1084,7 +1084,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow: bogus,
-          runId: "dep_x",
+          runId: "run_x",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -1167,33 +1167,33 @@ describe("per-step address derivation", () => {
   test("deriveStepAddress concatenates the run id, step, and deployment domain", () => {
     expect(
       deriveStepAddress({
-        runId: "dep_abc",
+        runId: "run_abc",
         stepId: "step1",
         domain: "workflow.interchange",
       }),
-    ).toBe("dep_abc-step1@workflow.interchange");
+    ).toBe("run_abc-step1@workflow.interchange");
   });
 
   test("deriveStepAgentId concatenates the run id and step", () => {
-    expect(deriveStepAgentId({ runId: "dep_abc", stepId: "x" })).toBe(
-      "dep_abc-x",
+    expect(deriveStepAgentId({ runId: "run_abc", stepId: "x" })).toBe(
+      "run_abc-x",
     );
   });
 
   test("deriveStepRunId concatenates the run id and step", () => {
-    expect(deriveStepRunId({ runId: "dep_abc", stepId: "x" })).toBe(
-      "dep_abc-x",
+    expect(deriveStepRunId({ runId: "run_abc", stepId: "x" })).toBe(
+      "run_abc-x",
     );
   });
 
   test("derivation is deterministic across calls", () => {
     const a = deriveStepAddress({
-      runId: "dep_a",
+      runId: "run_a",
       stepId: "s",
       domain: "d",
     });
     const b = deriveStepAddress({
-      runId: "dep_a",
+      runId: "run_a",
       stepId: "s",
       domain: "d",
     });
@@ -1203,32 +1203,32 @@ describe("per-step address derivation", () => {
   test("deriveRunAddress drops the per-step suffix", () => {
     expect(
       deriveRunAddress({
-        runId: "dep_abc",
+        runId: "run_abc",
         domain: "workflow.interchange",
       }),
-    ).toBe("dep_abc@workflow.interchange");
+    ).toBe("run_abc@workflow.interchange");
   });
 
   test("deriveRunAgentId drops the per-step suffix", () => {
-    expect(deriveRunAgentId({ runId: "dep_abc" })).toBe("dep_abc");
+    expect(deriveRunAgentId({ runId: "run_abc" })).toBe("run_abc");
   });
 
   test("deriveWorkflowRunRepoId sanitizes the deployment address into a SAFE_REPO_ID slug", () => {
     const address = deriveRunAddress({
-      runId: "dep_abc",
+      runId: "run_abc",
       domain: "acme.localhost",
     });
-    expect(address).toBe("dep_abc@acme.localhost");
+    expect(address).toBe("run_abc@acme.localhost");
     const repoId = deriveWorkflowRunRepoId(address);
-    expect(repoId).toBe("dep_abc-acme-localhost");
+    expect(repoId).toBe("run_abc-acme-localhost");
     expect(repoId).toMatch(/^[a-zA-Z0-9_-]+$/);
   });
 
   test("deriveWorkflowRunRepoId substitutes every @ and . that SAFE_REPO_ID rejects", () => {
-    expect(deriveWorkflowRunRepoId("dep_x@a.b.c")).toBe("dep_x-a-b-c");
+    expect(deriveWorkflowRunRepoId("run_x@a.b.c")).toBe("run_x-a-b-c");
     // Already-safe slugs are passed through unchanged so a repo id that
     // never crossed an address boundary is stable.
-    expect(deriveWorkflowRunRepoId("dep_safe-slug_1")).toBe("dep_safe-slug_1");
+    expect(deriveWorkflowRunRepoId("run_safe-slug_1")).toBe("run_safe-slug_1");
   });
 });
 
@@ -1251,7 +1251,7 @@ describe("deriveRunAddress / deriveWorkflowRunId round-trip", () => {
   });
 
   test("throws on an address whose local part is not a run id", () => {
-    expect(() => deriveWorkflowRunId("ins_abc@workflow.interchange")).toThrow(
+    expect(() => deriveWorkflowRunId("usr_abc@workflow.interchange")).toThrow(
       "Invalid run address",
     );
   });

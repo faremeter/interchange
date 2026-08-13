@@ -98,7 +98,7 @@ function makeConfig(args: {
     agentId: "ag_nonagent",
     tenantId: "tenant-1",
     principalId: "prin-1",
-    agentAddress: "ins_nonagent@workflow.interchange",
+    agentAddress: "run_nonagent@workflow.interchange",
     systemPrompt: "shared-prompt",
     tools: [],
     grants: [],
@@ -196,7 +196,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_nonagent",
+        runId: "run_nonagent",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -256,7 +256,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     await expect(
       orchestrator.deployWorkflow({
         workflow,
-        runId: "dep_nonagent",
+        runId: "run_nonagent",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -303,7 +303,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
 
     const result = await orchestrator.deployWorkflow({
       workflow,
-      runId: "dep_nonagent",
+      runId: "run_nonagent",
       deploymentDomain: "workflow.interchange",
       config,
       deployContent: DEPLOY_CONTENT_BASE,

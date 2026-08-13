@@ -64,7 +64,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("aborts before dropping when agent_instance holds rows", async () => {
       await recreateAgentInstance(h);
       await h.db.execute(
-        sql.raw(`INSERT INTO "agent_instance" (id) VALUES ('ins_live')`),
+        sql.raw(`INSERT INTO "agent_instance" (id) VALUES ('run_live')`),
       );
 
       await expect(applyMigration0068(h)).rejects.toThrow(

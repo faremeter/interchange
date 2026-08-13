@@ -26,10 +26,6 @@ describe("parseRunAddress", () => {
     expect(parseRunAddress("usr_alice@tenant.example")).toBeNull();
   });
 
-  test("returns null for the retired ins_ prefix", () => {
-    expect(parseRunAddress("ins_abc123@tenant.example")).toBeNull();
-  });
-
   test("returns null when the @ is missing", () => {
     expect(parseRunAddress("run_abc123")).toBeNull();
   });
@@ -64,10 +60,6 @@ describe("isRunAddress", () => {
 
   test("false for non-run local parts", () => {
     expect(isRunAddress("usr_alice@tenant.example")).toBe(false);
-  });
-
-  test("false for the retired ins_ prefix", () => {
-    expect(isRunAddress("ins_abc123@tenant.example")).toBe(false);
   });
 
   test("false for bare run IDs without a domain", () => {

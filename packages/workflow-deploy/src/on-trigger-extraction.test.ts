@@ -74,7 +74,7 @@ const CONFIG: HarnessConfig = {
   agentId: "ag_extract",
   tenantId: "tenant-1",
   principalId: "prin-1",
-  agentAddress: "ins_extract@workflow.interchange",
+  agentAddress: "run_extract@workflow.interchange",
   systemPrompt: "s",
   tools: [],
   grants: [],
