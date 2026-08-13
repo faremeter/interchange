@@ -172,11 +172,11 @@ git push origin main
 /api/tenants/:tenantId/workflows/runs/:runId/state.git/...
 ```
 
-- `:runId` is the folded run's `ins_*` ID.
+- `:runId` is the run's `run_*` ID.
 - Read-only over HTTP. The run's runtime state is written by the sidecar through a separate path; HTTP is for inspection.
 
 ```
-git clone https://hub.example/api/tenants/tnt_abc/workflows/runs/ins_xyz/state.git
+git clone https://hub.example/api/tenants/tnt_abc/workflows/runs/run_xyz/state.git
 ```
 
 ### Agent state — per definition

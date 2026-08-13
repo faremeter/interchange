@@ -34,7 +34,7 @@ principal
   id              text PK        -- prn_...
   tenant_id       text FK -> tenant
   kind            text NOT NULL  -- 'user' | 'agent'
-  ref_id          text NOT NULL  -- user.id or agent id (ins_...)
+  ref_id          text NOT NULL  -- user.id or agent id (run_...)
   status          text NOT NULL  -- 'active' | 'suspended' | 'invited' | 'deactivated'
   created_at      timestamptz
   updated_at      timestamptz
@@ -60,7 +60,7 @@ Request to /api/me/...
   -> aggregate results across tenants, each tagged with tenantId
 ```
 
-Agent requests follow the same flow. The principal is resolved by `(ins_id, tenant_id)` rather than `(user_id, tenant_id)`. The agent's materialized grants are evaluated against the requested operation.
+Agent requests follow the same flow. The principal is resolved by `(run_id, tenant_id)` rather than `(user_id, tenant_id)`. The agent's materialized grants are evaluated against the requested operation.
 
 ## Roles
 
@@ -237,7 +237,7 @@ git_token
   name                  text NOT NULL
   kind                  text NOT NULL   -- 'pat' | 'svc'
   token_hash_sha256     bytea NOT NULL UNIQUE
-  resource              text NOT NULL   -- 'asset:*', 'asset:def_xxx', 'agent-state:ins_xxx', ...
+  resource              text NOT NULL   -- 'asset:*', 'asset:def_xxx', 'agent-state:run_xxx', ...
   ref_pattern           text NOT NULL   -- simple-glob
   actions               text[] NOT NULL -- RepoActions
   expires_at            timestamptz NOT NULL
@@ -252,7 +252,7 @@ The partial unique on `(user_id, name)` filtered by `revoked_at IS NULL` lets a 
 
 Three columns bound a token's authority:
 
-- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:def_xxx`, `agent-state:ins_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
+- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:def_xxx`, `agent-state:run_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
 - `ref_pattern` — a glob restricting which refs within the resource the token may read or write. Grammar: `*` matches within a `/`-segment, `**` crosses segments. Worked examples appear in `docs/GIT_ACCESS.md`.
 - `actions` — the `RepoAction` vocabulary the token is allowed to invoke (`receivePack`, `createPack`, `resolveRef`, ...). The mint API accepts the user-facing aliases `can_read` (expands to `["createPack", "resolveRef"]`) and `can_push` (expands to `["receivePack"]`), and stores the canonical names so the lookup path never re-runs the alias table.
 - `expires_at` — required, server-enforced floor of one minute. The bearer middleware checks `expires_at > now()` on every request.

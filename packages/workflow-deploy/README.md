@@ -11,11 +11,11 @@ count:
 
 - **Single-step workflow**: the lone step has no distinct address --
   it IS the deployment head. Deploy once at the head
-  (`ins_<deploymentId>@<deploymentDomain>`) through the single-step
+  (`<runId>@<domain>`) through the single-step
   hand-off, staging the head's deploy tree and firing the
   `agent.deploy` frame in one call.
-- **Multi-step workflow**: derive per-step agent addresses as
-  `ins_<deploymentId>-<stepId>@<deploymentDomain>`, instantiate one
+- **Multi-step workflow**: derive per-step run addresses as
+  `<runId>-<stepId>@<domain>`, instantiate one
   `agent-state` repo per step, and write per-step deploy trees.
 
 Public surface:

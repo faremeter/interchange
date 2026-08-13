@@ -101,26 +101,26 @@ SIDECAR_DATA_DIR/
       id_ed25519                 # agent private key (raw 32 bytes, mode 0600)
       id_ed25519.pub             # agent public key (raw 32 bytes)
   workflow-runs/
-    <deploymentId>/              # workflow-run substrate for one deployment
-      deployment.json            # per-deployment restore record (mode 0600); see below
+    <runId>/                     # workflow-run substrate for one run
+      deployment.json            # per-run restore record (mode 0600); see below
   workflow-step-state/
-    <deploymentId>/              # ephemeral per-step scratch, reclaimed on undeploy
+    <runId>/                     # ephemeral per-step scratch, reclaimed on undeploy
   agent-conversation-state/      # durable per-agent conversation, survives undeploy
 ```
 
-The per-agent key directory is keyed by the sanitized agent address; the workflow subtrees are keyed by the derived deployment id.
+The per-agent key directory is keyed by the sanitized run address; the workflow subtrees are keyed by the derived run id.
 
 The `deployment.json` record stores only what a restart cannot otherwise recover: the deployment's `agentAddress`, the `definitionId` naming its workflow definition on disk, each step's ordered inference-**sources** failover chain (`sources`), the optional inference `sessionId`, and — for a single-step deployment — the `hubPublicKey`. A `version` field guards the schema so a stale record can be rejected rather than parsed blindly. The record deliberately does **not** duplicate the workflow definition (kept on disk under its `definitionId` and re-read at restore) or the step grants (kept in each step's agent-state repo). Because each source embeds its API key, the record is written owner-only (mode 0600).
 
 A live source rotation for a single-step deployment overwrites this record's `sources` before it takes effect. Persistence is what makes a rotation durable: a rotation whose write fails is not durable, and the deployment falls back to the last durably-recorded source list on the next recycle or restart.
 
-The directory name is the agent address with `@` replaced by `_at_` and non-alphanumeric characters (except `-` and `_`) replaced by `_`.
+The directory name is the run address with `@` replaced by `_at_` and non-alphanumeric characters (except `-` and `_`) replaced by `_`.
 
 ## Agent Deployment vs User Sessions
 
 The sidecar manages agents, not user sessions. When the hub deploys an agent to a sidecar, the sidecar spawns a supervised **workflow-process child** for that deployment. The child runs continuously, receiving messages from any source — other agents, users, system signals — and builds the agent harness inside its own process. User sessions are a hub-side concept: the hub tracks which users are interacting with which agents and routes user messages to the agent's address accordingly, but the sidecar does not know or care about individual user sessions.
 
-The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given agent address. When a sidecar disconnects, the hub knows which agents are affected and queues messages for them until the sidecar reconnects.
+The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given run address. When a sidecar disconnects, the hub knows which agents are affected and queues messages for them until the sidecar reconnects.
 
 ### Connector threads and user sessions
 
@@ -169,7 +169,7 @@ At boot, **before** opening the WebSocket connection to the hub, the sidecar sca
 
 ### Challenge/Response Verification
 
-After self-restoration, the sidecar connects to the hub and proves ownership of each agent address:
+After self-restoration, the sidecar connects to the hub and proves ownership of each run address:
 
 1. Sidecar sends a `reconnect` frame listing the addresses it restored and their current deploy commit SHAs (`deployRefs`)
 2. Hub generates a 32-byte random nonce per address and sends a `challenge` frame
@@ -209,7 +209,7 @@ Verification is per-address. If a sidecar presents three addresses and one fails
 
 ## Hub Message Queuing
 
-While a sidecar is disconnected, the hub queues messages in memory. These messages are flushed to the sidecar immediately after successful challenge verification. The queue has a configurable TTL (default 5 minutes) and maximum size (default 100 frames per agent address). Messages that exceed the TTL or queue size are dropped.
+While a sidecar is disconnected, the hub queues messages in memory. These messages are flushed to the sidecar immediately after successful challenge verification. The queue has a configurable TTL (default 5 minutes) and maximum size (default 100 frames per run address). Messages that exceed the TTL or queue size are dropped.
 
 When a sidecar sends a `register` frame (first connection, no prior state), any existing disconnect queue for addresses on that sidecar is discarded — `register` bypasses challenge verification, so queued messages cannot be delivered without ownership proof.
 
@@ -233,7 +233,7 @@ If the sidecar discovers agent repositories but has no key pairs for them (e.g.,
 
 ## Mail and Event Flow
 
-Mail is the first-class communication primitive. The sidecar persists outbound mail from agents via `mail.outbound` frames sent to the hub. The hub persists inbound mail sent by users via `POST .../instances/:instanceId/mail` and dispatches it to the sidecar as a `mail.delivered` agent event.
+Mail is the first-class communication primitive. The sidecar persists outbound mail from agents via `mail.outbound` frames sent to the hub. The hub persists inbound mail sent by users via `POST .../workflows/runs/:runId/mail` and dispatches it to the sidecar as a `mail.delivered` agent event.
 
 The composition-layer harness exposes the agent's reactor event stream as `harness.stream()`, an `AsyncIterable<ReactorEmittedEvent>`. The sidecar's `HarnessBuilder` drains that stream and adapts each event into an `onEvent(event)` callback for the hub session channel. The stream carries inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor director and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
 

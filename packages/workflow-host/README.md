@@ -95,7 +95,7 @@ The constructor argument shape:
   `require.resolve` / `import.meta.resolve` against the host's own
   package, `@intx/<host>`).
 - `substrateEnv`, `workflowRunRepoId`, `workflowRunRef`,
-  `deploymentId`, `deploymentMailAddress`, `readPrincipal`,
+  `anchorRunId`, `deploymentMailAddress`, `readPrincipal`,
   `deriveStepAddress`, `deriveStepRepoId?`, `ipcKeyPairFactory?` —
   per-deployment configuration the supervisor needs in its closure
   state.

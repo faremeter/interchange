@@ -97,9 +97,9 @@ capability ceiling.
   not-yet-shipped Phase 5; today it survives, reduced to a thin repo-ops
   layer over the agent repo store. Their tool/inference/reactor
   _composition_ moves into the child and is reused.
-- **Identity is preserved.** A launched agent keeps its legacy
-  `ins_<hex>@<domain>` address and its `agent_instance` row; the deploy-ack
-  listener, mail routing, grants, and reconnect continue to find it.
+- **Identity is preserved.** A deploy keeps its run's
+  `run_<hex>@<domain>` address; the deploy-ack listener, mail routing,
+  grants, and reconnect continue to find it.
 
 ## 2. Target architecture
 
@@ -176,26 +176,27 @@ threads up through every rung to the hub timeline.
 
 ### How each workload flows through it
 
-**A single launched agent** (`ins_<hex>@<domain>`):
+**A single-agent deploy** (`run_<hex>@<domain>`):
 
-1. Hub `POST instance` -> `instances.ts` mints the legacy address + row, ships
+1. Hub deploy -> the deploy path mints the run address, ships
    grants on disk (the 8a grants-bridge, see §3g).
-2. The deploy carries a one-step workflow whose single step's agent is the
-   launched agent. The DeployRouter routes it to the supervisor for the
+2. The deploy carries a one-step workflow whose single step is the
+   deployed agent. The DeployRouter routes it to the supervisor for the
    address's isolation-domain.
-3. The supervisor registers the legacy address on the mail bus, assembles the
+3. The supervisor registers the run address on the mail bus, assembles the
    step's credentials snapshot from the on-disk grants, spawns (or reuses) the
    child, and pushes `grants-updated`.
 4. Inbound mail lands at the supervisor, enters the inbox claim-check, and the
    dispatch loop emits `trigger.fired`. The child opens a `runtimeRun` for the
    one-step workflow; the **real step-invoker** instantiates the agent with
    tools + inference, delivers the message as the step input, and runs a real
-   turn. The agent instance is **kept warm** across triggers (§3b).
+   turn. The agent is **kept warm** across triggers (§3b).
 5. Inference events flow up the event channel -> supervisor -> hub timeline.
    Conversation state is committed to the workflow-run substrate (§3a, §3c),
    so kill+respawn resumes via `discoverInFlightRuns`.
 
-**A multi-step workflow** (`ins_dep_<...>`): identical machinery. The
+**A multi-step workflow** (`run_<hex>`, with per-step derived addresses):
+identical machinery. The
 supervisor owns mail at the deployment address; the dispatch loop drives
 `runtimeRun` over the multi-step definition; each step uses the same real
 step-invoker; per-step addresses/grants come from the credentials snapshot.
@@ -258,8 +259,8 @@ transport subscription.**
   supervisor and enters the durable inbox claim-check. The supervisor's
   dispatch loop is the only thing that pulls a message and turns it into a
   `trigger.fired`.
-- For a single launched agent, each `trigger.fired` delivers the inbound
-  message as the step input to the warm agent instance via the step path
+- For a single-agent deploy, each `trigger.fired` delivers the inbound
+  message as the step input to the warm agent via the step path
   (`agent.send`-shaped delivery inside the real step-invoker), not via the
   agent's own transport.
 - **Multi-turn conversation state** is no longer the harness's in-memory
@@ -924,34 +925,32 @@ mailbox/durability work.
 
 ### 3g. Identity preservation
 
-A launched agent keeps its legacy `ins_<hex>@<domain>` address and its
-`agent_instance` row. This coexists with the child/workflow-run model exactly
-as the multi-step path already does:
+A single-agent deploy keeps its run's `run_<hex>@<domain>` address. It uses the
+same child/workflow-run model as the multi-step path:
 
-- **Address shape.** `instances.ts` continues to mint `ins_<hex>@<domain>` via
-  `formatRunAddress(generateId("instance"), domain)`. The address does not
-  become `ins_dep_<...>`. The deploy-ack listener's discriminator
-  (`isWorkflowDerivedAddress` in `packages/workflow-deploy/src/orchestrator.ts`)
-  keys on the literal `ins_dep_` segment, so it correctly returns `false` for a
-  launched agent — the key persists, reconnect works, nothing in the listener
-  changes (`packages/hub-sessions/src/hub-session-orchestrator.ts`).
-- **Workflow-run repo id.** The child's workflow-run repo for a launched agent
-  is keyed by `deriveWorkflowRunRepoId(legacyAddress)`
-  (`packages/workflow-deploy/src/orchestrator.ts`), which sanitizes the legacy
-  address into a substrate-safe slug. This is already how the trivial branch
+- **Address shape.** A deploy mints one run address, `run_<hex>@<domain>` via
+  `formatRunAddress(generateId("workflowRun"), domain)`. Single-agent and
+  multi-step deploys share the one address shape; there is no separate
+  launched-agent form and no address-space discriminator. The deploy-ack
+  listener persists the key against that address, and reconnect works
+  (`packages/hub-sessions/src/hub-session-orchestrator.ts`).
+- **Workflow-run repo id.** The child's workflow-run repo for a single-agent
+  deploy is keyed by `deriveWorkflowRunRepoId(address)`
+  (`packages/workflow-deploy/src/orchestrator.ts`), which sanitizes the run
+  address into a substrate-safe slug. This is how the single-step branch
   keys its workflow-run repo today
   (`apps/sidecar/src/workflow-host-wiring.ts`). The read/write repo-id
   invariant (hub reconstructs the same slug for reads) is preserved.
 - **Grants placement.** The supervisor's credentials assembly reads each step's
   grants from `state/grants.json` in the step's `agent-state` repo
   (`packages/workflow-host/src/supervisor/credentials.ts`, `STEP_GRANTS_PATH`).
-  The launched agent's grants must land there. **This is exactly the
+  The single-agent deploy's grants must land there. **This is exactly the
   grants-on-disk bridge already built and proven** during the Commit-1
   exploration, saved as
   `dispatch/workflow-launch-and-converge/8a-route_single_step_via_child/8a-groundwork.patch`.
   It is reusable here verbatim: the single-step deploy writes `state/grants.json`
   from `config.grants` before spawn, and the per-step `deriveStepAddress` /
-  `deriveStepRepoId` return the legacy address and the legacy agent-state repo
+  `deriveStepRepoId` return the run address and the agent-state repo
   id. Reuse this patch as the identity/grants foundation.
 
 ### 3h. Trigger budget: how long a step lives
@@ -1512,8 +1511,7 @@ The unified host is proven by four classes of check:
    - Multi-turn conversation produces a durable, resumable workflow-run log.
    - Kill + respawn mid-conversation: `discoverInFlightRuns` resumes and
      conversation state is restored from the substrate.
-   - Identity: the agent's `agent_instance` row stays at `ins_<hex>`;
-     `isWorkflowDerivedAddress` returns `false`; the deploy-ack listener
+   - Identity: the run keeps its `run_<hex>` address; the deploy-ack listener
      persists the public key; grants resolve from `state/grants.json` and an
      authorize call that depends on a granted resource succeeds while an
      ungranted one fails closed.
