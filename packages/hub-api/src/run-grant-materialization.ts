@@ -599,6 +599,15 @@ export function createMailTriggeredRunGrantsMaterializer(
     if (anchor === undefined) return { outcome: "skip" };
     // A "deployed" anchor is live: mail-triggering it IS its first trigger, so
     // it must not be rejected as terminal here.
+    //
+    // This preflight inspects only the workflow_run.status column and omits the
+    // durable-lifecycle terminal check that the HTTP trigger route in
+    // workflow-run-trigger.ts applies. The supervisor's durable run-ref guard
+    // (rejectTerminalRun / readWorkflowRunLifecycle in supervisor.ts) is the
+    // fired/not-fired authority and never re-fires a durably-settled run, so
+    // this status check is a lagging fast-fail only. The two preflights diverge
+    // inside the status-flip lag window; that asymmetry is tolerable and is
+    // tracked for unification in INTR-456.
     if (
       !isLiveWorkflowRunStatus(anchor.anchorStatus) ||
       (anchor.topLevelRunStatus !== null &&
