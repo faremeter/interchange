@@ -42,7 +42,7 @@ function formatApproval(row: ParsedApproval) {
   return {
     id: row.id,
     tenantId: row.tenantId,
-    deploymentId: row.deploymentId,
+    anchorRunId: row.deploymentId,
     runId: row.runId,
     agentAddress: row.agentAddress,
     correlationId: row.correlationId,

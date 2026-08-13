@@ -853,7 +853,7 @@ async function errorCode(res: Response): Promise<string> {
 }
 
 const TriggerBody = type({
-  deploymentId: "string",
+  runId: "string",
   address: "string",
   messageId: "string",
 });
@@ -1628,7 +1628,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
 
     expect(res.status).toBe(202);
     const json = assertBody(TriggerBody, await res.json());
-    expect(json.deploymentId).toBe(DEPLOYMENT_ID);
+    expect(json.runId).toBe(DEPLOYMENT_ID);
     expect(json.address).toBe(`${DEPLOYMENT_ID}@${DOMAIN}`);
     expect(json.messageId.length).toBeGreaterThan(0);
 
@@ -1940,8 +1940,8 @@ describe("POST /workflows/:deploymentId/mail", () => {
     expect(res.status).toBe(202);
     const json = assertBody(TriggerBody, await res.json());
     // The route keys the run on the deployment's local part, returned as the
-    // response `deploymentId`.
-    expect(json.deploymentId).toBe(DEPLOYMENT_ID);
+    // response `runId`.
+    expect(json.runId).toBe(DEPLOYMENT_ID);
 
     // The grants ride the wire ahead of the trigger mail, so FIFO ordering
     // lands them at the sidecar before the run dispatches.

@@ -6,7 +6,7 @@
 // is absent at that path. So a producer that stages the run's grants under
 // any OTHER id leaves the supervisor's path empty and the run fails closed.
 //
-// This test drives the PRODUCTION `POST /workflows/:deploymentId/mail`
+// This test drives the PRODUCTION `POST /workflows/:runId/mail`
 // route against a real migrated schema and a real sidecar subprocess, and
 // asserts the dispatched run reaches `RunCompleted` -- not just that DB
 // rows were committed. A completing single-step agent workflow (echo
@@ -130,7 +130,7 @@ const workflow: WorkflowDefinition = defineWorkflow({
 // The trigger route's 202 body shape. Validated rather than cast so a
 // route response drift surfaces at the boundary.
 const TriggerResponse = type({
-  deploymentId: "string",
+  runId: "string",
   address: "string",
   messageId: "string",
 });

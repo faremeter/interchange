@@ -183,14 +183,14 @@ export type AgentUndeployAckFrame = typeof AgentUndeployAckFrame.infer;
  * `signalName` is deliberately NOT on the wire: it is a pure function of
  * `correlationId` (`signalName(correlationId)` in `./signals`), so the hub
  * computes it rather than trusting a value the sidecar could disagree on.
- * `deploymentId` is the workflow deployment the run belongs to; `agentAddress`
- * is the deployment's routable address the hub resolves tenancy from.
+ * `anchorRunId` is the anchor run the parked run belongs to; `agentAddress`
+ * is the anchor run's routable address the hub resolves tenancy from.
  */
 export const SignalCorrelationRegisterFrame = type({
   type: "'signal.correlation.register'",
   correlationId: "string",
   runId: "string",
-  deploymentId: "string",
+  anchorRunId: "string",
   agentAddress: "string",
   kind: SignalKind,
   // Approver-facing snapshot of the suspended tool call, size-capped at this

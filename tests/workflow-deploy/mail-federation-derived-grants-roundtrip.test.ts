@@ -5,7 +5,7 @@
 // workflow ASSET's creator, not the triggerer. The run gets the grant only
 // if the creator actually holds it; otherwise the trigger is rejected
 // fail-closed. This test drives that resolution through the production
-// `POST /workflows/:deploymentId/mail` route against a real migrated schema
+// `POST /workflows/:runId/mail` route against a real migrated schema
 // and a real DB-backed grant store:
 //
 //   - POSITIVE: the workflow declares `grantRequirements: [{ source:
@@ -130,7 +130,7 @@ function bWorkflow(id: string, address: string): WorkflowDefinition {
 }
 
 const TriggerResponse = type({
-  deploymentId: "string",
+  runId: "string",
   address: "string",
   messageId: "string",
 });
@@ -415,8 +415,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       const json = TriggerResponse.assert(await res.json());
       // The run is keyed on the deployment's local part (the stable runId the
-      // route returns as `deploymentId`), not this message's Message-ID.
-      const runId = json.deploymentId;
+      // route returns as `runId`), not this message's Message-ID.
+      const runId = json.runId;
 
       // The run principal and run row committed.
       const principals = await h.db

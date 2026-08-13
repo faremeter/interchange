@@ -9,7 +9,7 @@ function frameFor(correlationId: string): SignalCorrelationRegisterFrame {
     type: "signal.correlation.register",
     correlationId,
     runId: "run-1",
-    deploymentId: "dep-1",
+    anchorRunId: "dep-1",
     agentAddress: "addr-1",
     kind: "approval",
     snapshot: {

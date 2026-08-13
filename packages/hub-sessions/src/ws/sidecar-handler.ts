@@ -1934,7 +1934,7 @@ export function createSidecarRouter(
       await register({
         correlationId: frame.correlationId,
         runId: frame.runId,
-        deploymentId: frame.deploymentId,
+        deploymentId: frame.anchorRunId,
         agentAddress: frame.agentAddress,
         kind: frame.kind,
         approvalSnapshot: frame.snapshot,
