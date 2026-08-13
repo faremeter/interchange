@@ -566,14 +566,14 @@ export type HubLink = {
    * `signal.correlation.register` frame so the hub co-writes the parked run's
    * routing + approval rows. Fired by the sidecar's supervisor when a workflow
    * agent step parks on a reserved correlation channel; the fields converge at
-   * this seam (`correlationId`/`runId`/`kind` from the child, `deploymentId`/
+   * this seam (`correlationId`/`runId`/`kind` from the child, `anchorRunId`/
    * `agentAddress` stamped by the supervisor). Mirrors `sendEvent`: a
    * fire-and-forget hub-bound send that queues while disconnected.
    */
   sendSignalCorrelationRegister: (registration: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
@@ -1067,8 +1067,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // deployment so a future workflow-run-repo reset for the same
   // `(kind, id, ref)` triple re-runs the bootstrap-retry arm instead of
   // skipping it on the stale flag and failing with `non_fast_forward`.
-  // Indexed by `agentAddress` (not `deploymentId`) because the link
-  // does not own the address->deploymentId derivation -- the sidecar's
+  // Indexed by `agentAddress` (not `anchorRunId`) because the link
+  // does not own the address->anchorRunId derivation -- the sidecar's
   // deploy router does. Every workflow-run push the link sees carries
   // the originating address explicitly, so the index closes the gap
   // structurally without leaking the derivation across the package
@@ -1677,7 +1677,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         type: "signal.correlation.register",
         correlationId: registration.correlationId,
         runId: registration.runId,
-        anchorRunId: registration.deploymentId,
+        anchorRunId: registration.anchorRunId,
         agentAddress: registration.agentAddress,
         kind: registration.kind,
         snapshot: registration.approvalSnapshot,

@@ -55,7 +55,7 @@ const WORKFLOW_RUN_REPO_ID: RepoId = {
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
   kind: "workflow-process",
-  deploymentId: DEPLOYMENT_ID,
+  anchorRunId: DEPLOYMENT_ID,
 };
 
 const tempDirs: string[] = [];
@@ -245,7 +245,7 @@ describe("createSidecarRunChild grant inheritance", () => {
     // The child persisted its own inherited grants file for a grandchild.
     const childGrants = await readRunGrants({
       repoStore: substrate,
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       runId: childRunId,
     });
     expect(childGrants).toBeDefined();
@@ -357,7 +357,7 @@ describe("createSidecarRunChild grant inheritance", () => {
     ]);
     const grandchildGrants = await readRunGrants({
       repoStore: substrate,
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       runId: grandchildRunId,
     });
     expect(grandchildGrants).toEqual([

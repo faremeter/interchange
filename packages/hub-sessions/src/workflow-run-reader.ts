@@ -36,7 +36,7 @@ export type WorkflowRunEvent = {
  * path computation) with direct `isomorphic-git` tree/blob reads. It
  * never writes, so it carries no authorize gate of its own; callers
  * gate access at their own boundary (the REST routes use a
- * `workflow-run:<deploymentId>` grant check).
+ * `workflow-run:<runId>` grant check).
  */
 export interface WorkflowRunReader {
   /**

@@ -72,7 +72,7 @@ export interface DeployContent {
 export type LaunchSessionFn = (params: {
   agentAddress: string;
   agentId: string;
-  instanceId: string;
+  runId: string;
   config: HarnessConfig;
   deployContent: DeployContent;
   toolPackagePins?: readonly ToolPackagePin[];
@@ -150,7 +150,7 @@ export type SendMultiStepDeployFn = (params: {
 export type DeploySingleStepFn = (params: {
   agentAddress: string;
   agentId: string;
-  instanceId: string;
+  runId: string;
   config: HarnessConfig;
   deployContent: DeployContent;
   definition: WorkflowDefinition;
@@ -251,12 +251,12 @@ export interface DeployWorkflowArgs {
    * Stable identifier the branch concatenates into derived agent
    * addresses. Required.
    */
-  readonly deploymentId?: string;
+  readonly runId?: string;
   /**
    * Mail-domain for the deployment. Required. The multi-step branch
    * derives per-step addresses as
-   * `<deploymentId>-<stepId>@<deploymentDomain>`; the single-step
-   * branch deploys the lone step at `<deploymentId>@<deploymentDomain>`.
+   * `<runId>-<stepId>@<deploymentDomain>`; the single-step
+   * branch deploys the lone step at `<runId>@<deploymentDomain>`.
    */
   readonly deploymentDomain?: string;
   /**
@@ -310,13 +310,11 @@ export class WorkflowDefinitionInvalidError extends Error {
 
 /**
  * Error thrown when the orchestrator must derive a per-step address but
- * the caller did not supply both `deploymentId` and `deploymentDomain`.
+ * the caller did not supply both `runId` and `deploymentDomain`.
  */
 export class MultiStepDeploymentArgsMissingError extends Error {
   constructor(missing: string) {
-    super(
-      `deploy requires ${missing}; supply both deploymentId and deploymentDomain`,
-    );
+    super(`deploy requires ${missing}; supply both runId and deploymentDomain`);
     this.name = "MultiStepDeploymentArgsMissingError";
   }
 }
@@ -489,10 +487,10 @@ async function runSingleStepAtHead(args: {
   referencedDefinitions: readonly ReferencedBodyDefinition[];
 }): Promise<MultiStepDeployResult> {
   const { args: deploy, deploySingleStepAtHead, referencedDefinitions } = args;
-  const deploymentId = deploy.deploymentId;
+  const runId = deploy.runId;
   const deploymentDomain = deploy.deploymentDomain;
-  if (deploymentId === undefined) {
-    throw new MultiStepDeploymentArgsMissingError("deploymentId");
+  if (runId === undefined) {
+    throw new MultiStepDeploymentArgsMissingError("runId");
   }
   if (deploymentDomain === undefined) {
     throw new MultiStepDeploymentArgsMissingError("deploymentDomain");
@@ -545,13 +543,13 @@ async function runSingleStepAtHead(args: {
   }
 
   // The lone step IS the head: one deploy at the deployment address, no
-  // per-step derivation. The head's agentId and instanceId are the same
-  // `<deploymentId>` (the minted run id) identity.
+  // per-step derivation. The head's agentId and runId are the same
+  // `<runId>` (the minted run id) identity.
   const headAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId,
     domain: deploymentDomain,
   });
-  const headId = deriveRunAgentId({ runId: deploymentId });
+  const headId = deriveRunAgentId({ runId });
   const headConfig: HarnessConfig = {
     ...deploy.config,
     agentAddress: headAddress,
@@ -574,7 +572,7 @@ async function runSingleStepAtHead(args: {
   return deploySingleStepAtHead({
     agentAddress: headAddress,
     agentId: headId,
-    instanceId: headId,
+    runId: headId,
     config: headConfig,
     deployContent: headDeployContent,
     definition: deploy.workflow,
@@ -601,10 +599,10 @@ async function runMultiStepBranch(args: {
     sendMultiStepDeploy,
     referencedDefinitions,
   } = args;
-  const deploymentId = deploy.deploymentId;
+  const runId = deploy.runId;
   const deploymentDomain = deploy.deploymentDomain;
-  if (deploymentId === undefined) {
-    throw new MultiStepDeploymentArgsMissingError("deploymentId");
+  if (runId === undefined) {
+    throw new MultiStepDeploymentArgsMissingError("runId");
   }
   if (deploymentDomain === undefined) {
     throw new MultiStepDeploymentArgsMissingError("deploymentDomain");
@@ -626,7 +624,7 @@ async function runMultiStepBranch(args: {
     stepId: string;
     agentAddress: string;
     agentId: string;
-    instanceId: string;
+    stepRunId: string;
     config: HarnessConfig;
     deployContent: DeployContent;
   };
@@ -654,12 +652,12 @@ async function runMultiStepBranch(args: {
       }),
     ];
     const agentAddress = deriveStepAddress({
-      runId: deploymentId,
+      runId,
       stepId,
       domain: deploymentDomain,
     });
-    const agentId = deriveStepAgentId({ runId: deploymentId, stepId });
-    const instanceId = deriveStepInstanceId({ runId: deploymentId, stepId });
+    const agentId = deriveStepAgentId({ runId, stepId });
+    const stepRunId = deriveStepRunId({ runId, stepId });
     const stepConfig: HarnessConfig = {
       ...deploy.config,
       agentAddress,
@@ -674,7 +672,7 @@ async function runMultiStepBranch(args: {
       stepId,
       agentAddress,
       agentId,
-      instanceId,
+      stepRunId,
       config: stepConfig,
       deployContent: stepDeployContent,
     });
@@ -683,7 +681,7 @@ async function runMultiStepBranch(args: {
     await launchSession({
       agentAddress: step.agentAddress,
       agentId: step.agentId,
-      instanceId: step.instanceId,
+      runId: step.stepRunId,
       config: step.config,
       deployContent: step.deployContent,
       ...(deploy.toolPackagePins !== undefined
@@ -693,10 +691,10 @@ async function runMultiStepBranch(args: {
   }
 
   const deploymentAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId,
     domain: deploymentDomain,
   });
-  const deploymentAgentId = deriveRunAgentId({ runId: deploymentId });
+  const deploymentAgentId = deriveRunAgentId({ runId });
   const deploymentConfig: HarnessConfig = {
     ...deploy.config,
     agentAddress: deploymentAddress,
@@ -846,10 +844,9 @@ export function deriveStepAgentId(args: {
 }
 
 /**
- * Derive the per-step session instance id. Pure function of
- * `(runId, stepId)`.
+ * Derive the per-step run id. Pure function of `(runId, stepId)`.
  */
-export function deriveStepInstanceId(args: {
+export function deriveStepRunId(args: {
   runId: string;
   stepId: string;
 }): string {
@@ -918,7 +915,7 @@ export function deriveRunAgentId(args: { runId: string }): string {
  * The workflow-run repo's `repoId.id` must match `SAFE_REPO_ID`
  * (`/^[a-zA-Z0-9_-]+$/`, the substrate's repo-path-safety contract in
  * `packages/hub-sessions/src/repo-store/types.ts`), and the supervisor
- * principal's `deploymentId` must equal `workflowRunRepoId.id` for the
+ * principal's `runId` must equal `workflowRunRepoId.id` for the
  * workflow-run kind handler's authz check to pass. That regex rejects
  * `@` and `.`, both of which appear in every agent address, so the
  * address is sanitized by substituting every disallowed character with

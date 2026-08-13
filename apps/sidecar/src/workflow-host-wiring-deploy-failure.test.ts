@@ -4,7 +4,7 @@
 // materialization, `supervisor.spawn`) has succeeded. The link's
 // `handleAgentDeploy` catches a rejection and sends `agent.error`
 // without invoking `deployRouter.undeploy(frame)`, so a premature
-// registration would retain a `(deploymentId -> agentAddress)` mapping
+// registration would retain a `(anchorRunId -> agentAddress)` mapping
 // for a deployment that does not exist. The multi-step test drives that
 // failure through a subprocess spawner that throws synchronously.
 //
@@ -99,11 +99,11 @@ describe("deploy-failure registry leak", () => {
       signingKeySeed: new Uint8Array(32),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ deploymentId, agentAddress }) => {
-        registry.record(deploymentId, agentAddress);
+      registerDeployment: ({ runId, agentAddress }) => {
+        registry.record(runId, agentAddress);
       },
-      unregisterDeployment: ({ deploymentId }) => {
-        registry.unregister(deploymentId);
+      unregisterDeployment: ({ runId }) => {
+        registry.unregister(runId);
       },
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
@@ -179,11 +179,11 @@ describe("deploy-failure registry leak", () => {
       signingKeySeed: new Uint8Array(32),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ deploymentId, agentAddress }) => {
-        registry.record(deploymentId, agentAddress);
+      registerDeployment: ({ runId, agentAddress }) => {
+        registry.record(runId, agentAddress);
       },
-      unregisterDeployment: ({ deploymentId }) => {
-        registry.unregister(deploymentId);
+      unregisterDeployment: ({ runId }) => {
+        registry.unregister(runId);
       },
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
@@ -325,11 +325,11 @@ describe("deploy-failure registry leak", () => {
       signingKeySeed: new Uint8Array(32),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ deploymentId, agentAddress }) => {
-        registry.record(deploymentId, agentAddress);
+      registerDeployment: ({ runId, agentAddress }) => {
+        registry.record(runId, agentAddress);
       },
-      unregisterDeployment: ({ deploymentId }) => {
-        registry.unregister(deploymentId);
+      unregisterDeployment: ({ runId }) => {
+        registry.unregister(runId);
       },
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,

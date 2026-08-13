@@ -5,7 +5,7 @@
 // and drops the per-event files. This shrinks the workflow-run repo's
 // file count -- and every per-commit cost that scales with it --
 // without losing any event. The fold writes under the substrate's
-// per-repo lock as the `supervisor` principal, whose `deploymentId`
+// per-repo lock as the `supervisor` principal, whose `anchorRunId`
 // the workflow-run kind handler checks against `repoId.id`.
 
 import type {
@@ -36,8 +36,8 @@ export type CompactRunEventsOpts = {
   repoId: RepoId;
   /** Events ref the workflow-run repo writes to. */
   ref: string;
-  /** Deployment id used to construct the supervisor principal. */
-  deploymentId: string;
+  /** Anchor run id used to construct the supervisor principal. */
+  anchorRunId: string;
   /** Run to seal. */
   runId: string;
 };
@@ -108,7 +108,7 @@ export async function compactRunEvents(
   const combinedPath = `${RUNS_PREFIX}/${opts.runId}/${WORKFLOW_RUN_EVENTS_FILE}`;
   const principal: WorkflowRunSupervisorPrincipal = {
     kind: SUPERVISOR_PRINCIPAL_KIND,
-    deploymentId: opts.deploymentId,
+    anchorRunId: opts.anchorRunId,
   };
   let sealed = false;
   await opts.substrate.writeTreePreservingPrefix(

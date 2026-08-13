@@ -279,7 +279,7 @@ export async function seedModelOffering(
 export type SeedWorkflowRun = {
   id: string;
   tenantId: string;
-  deploymentId?: string | null;
+  anchorRunId?: string | null;
   definitionId?: string;
   principalId?: string | null;
   address?: string | null;
@@ -310,7 +310,7 @@ export async function seedWorkflowRun(
   await db.insert(workflowRun).values({
     id: r.id,
     tenantId: r.tenantId,
-    anchorRunId: r.deploymentId ?? null,
+    anchorRunId: r.anchorRunId ?? null,
     definitionId,
     principalId: r.principalId ?? null,
     address: r.address ?? null,

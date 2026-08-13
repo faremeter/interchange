@@ -297,7 +297,7 @@ export type SidecarLookups = {
   registerSignalCorrelation?: (args: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: SignalKind;
     approvalSnapshot: ApprovalSnapshot;

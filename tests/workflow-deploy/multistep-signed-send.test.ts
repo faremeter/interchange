@@ -4,7 +4,7 @@
 // signing identity for its deployment mail address on the host transport,
 // exactly as a single-step deployment does. Every step of a multi-step
 // deployment signs its outbound mail as the ONE deployment-wide address
-// (`ins_<deploymentId>@<domain>`), so if that address is not registered a
+// (`ins_<anchorRunId>@<domain>`), so if that address is not registered a
 // step's `env.transport.send` rejects with "not registered", the step
 // fails, and the run fails.
 //
@@ -174,7 +174,7 @@ describe("multi-step signed outbound send", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -231,7 +231,7 @@ describe("multi-step signed outbound send", () => {
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
         toolPackagePins: TOOL_PINS,
@@ -251,7 +251,7 @@ describe("multi-step signed outbound send", () => {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

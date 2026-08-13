@@ -189,7 +189,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: p.agentAddress,
         agentId: p.agentId,
-        runId: p.instanceId,
+        runId: p.runId,
         config: p.config,
         deployContent: toLaunchDeployContent(p.deployContent),
         ...(p.toolPackagePins !== undefined
@@ -244,7 +244,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
       });
@@ -271,7 +271,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -306,7 +306,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
     await runInterStepChainToCompletion(
       env,
       {
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         deploymentMailAddress,
         messageId: "<multistep-reroute-1@integration.interchange>",
       },
@@ -349,13 +349,13 @@ describe("multi-step per-step re-route survival across reconnect", () => {
 async function runInterStepChainToCompletion(
   env: DeployFlowEnv,
   args: {
-    deploymentId: string;
+    anchorRunId: string;
     deploymentMailAddress: string;
     messageId: string;
   },
   afterPark?: () => Promise<void>,
 ): Promise<string> {
-  const { deploymentId, deploymentMailAddress, messageId } = args;
+  const { anchorRunId, deploymentMailAddress, messageId } = args;
 
   const { messageId: firedMessageId } = await fireMailTrigger(
     env,
@@ -369,7 +369,7 @@ async function runInterStepChainToCompletion(
   const runId = deriveWorkflowRunId(deploymentMailAddress);
   await waitFor(
     async () => {
-      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       return events.some(
         (e) =>
           e.type === "RunStarted" &&
@@ -383,7 +383,7 @@ async function runInterStepChainToCompletion(
   // StepCompleted{step1} -> SignalAwaited{name:"go"}.
   await waitFor(
     async () => {
-      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       return events.some(
         (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
       );
@@ -393,7 +393,7 @@ async function runInterStepChainToCompletion(
 
   const eventsBeforeSignal = await readWorkflowRunEvents(
     env,
-    deploymentId,
+    anchorRunId,
     runId,
   );
   const typesBeforeSignal = eventsBeforeSignal.map((e) => e.type);
@@ -424,19 +424,19 @@ async function runInterStepChainToCompletion(
   await afterPark?.();
 
   // Inject the `go` signal through the production signal-channel path.
-  const injected = await injectSignal(env, deploymentId, runId, "go", {
+  const injected = await injectSignal(env, anchorRunId, runId, "go", {
     resumed: true,
   });
 
   // Second-half chain: SignalReceived{name:"go"} -> StepStarted{step2} ->
   // StepCompleted{step2} -> RunCompleted.
-  const terminal = await waitForWorkflowRunComplete(env, deploymentId, runId, {
+  const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
     timeoutMs: 20_000,
     diagnostics: env.sidecarDiagnostics,
   });
   expect(terminal.type).toBe("RunCompleted");
 
-  const events = await readWorkflowRunEvents(env, deploymentId, runId);
+  const events = await readWorkflowRunEvents(env, anchorRunId, runId);
   const types = events.map((e) => e.type);
   const signalReceivedIdx = types.indexOf("SignalReceived");
   const step2StartedIdx = types.findIndex(

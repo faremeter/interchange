@@ -59,7 +59,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedTenants(h.db, [{ id: TENANT_ID }]);
       await seedWorkflowRun(h.db, {
         id: ANCHOR_RUN_ID,
-        deploymentId: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         address: ANCHOR_ADDRESS,
       });

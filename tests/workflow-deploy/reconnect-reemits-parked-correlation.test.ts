@@ -282,14 +282,14 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
   return async ({
     correlationId,
     runId,
-    deploymentId,
+    anchorRunId,
     agentAddress,
     kind,
     approvalSnapshot,
   }: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: "approval";
     approvalSnapshot: ApprovalSnapshot;
@@ -313,9 +313,9 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         `No running workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
       );
     }
-    if (anchor.id !== deploymentId) {
+    if (anchor.id !== anchorRunId) {
       throw new Error(
-        `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${deploymentId}" but address "${agentAddress}" resolves to "${anchor.id}"`,
+        `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" resolves to "${anchor.id}"`,
       );
     }
     const tenantId = anchor.tenantId;
@@ -325,7 +325,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
       await workflowRunStore.createIfAbsent(
         {
           id: runId,
-          anchorRunId: deploymentId,
+          anchorRunId: anchorRunId,
           tenantId,
           definitionId: DEFINITION_ID,
           principalId: null,
@@ -337,7 +337,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           correlationId,
           tenantId,
-          anchorRunId: deploymentId,
+          anchorRunId: anchorRunId,
           agentAddress,
           runId,
           signalName: signalName(correlationId),
@@ -349,7 +349,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           id: generateId("approval"),
           tenantId,
-          anchorRunId: deploymentId,
+          anchorRunId: anchorRunId,
           runId,
           agentAddress,
           correlationId,
@@ -444,7 +444,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, {
         id: deploymentSlug,
         tenantId: TENANT_ID,
-        deploymentId: deploymentSlug,
+        anchorRunId: deploymentSlug,
         definitionId: DEFINITION_ID,
         address: deploymentMailAddress,
         publicKey: null,
@@ -511,7 +511,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await env.hub.sessionService.stageWorkflowStep({
           agentAddress: orchestratorParams.agentAddress,
           agentId: orchestratorParams.agentId,
-          runId: orchestratorParams.instanceId,
+          runId: orchestratorParams.runId,
           config: orchestratorParams.config,
           deployContent: toLaunchDeployContent(
             orchestratorParams.deployContent,
@@ -574,7 +574,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           config,
           deployContent: { systemPrompt: config.systemPrompt },
           operatorApprovals,
-          deploymentId: DEPLOYMENT_ID,
+          runId: DEPLOYMENT_ID,
           deploymentDomain: DEPLOYMENT_DOMAIN,
           hubPublicKey: "00".repeat(32),
           toolPackagePins: TOOL_PINS,
@@ -594,7 +594,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: deploymentSlug,
       };
       env.registerDeployment({
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
         workflowDefinition: workflow,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,

@@ -922,7 +922,7 @@ describe("createMultistepDrainRouter", () => {
 
   test("drain.deliver for a never-registered deployment id drops cleanly without throwing", async () => {
     // Pins the defensive contract for an inbound drain.deliver frame
-    // that names a deploymentId the sidecar's supervisor never spawned
+    // that names a anchorRunId the sidecar's supervisor never spawned
     // (e.g. an in-flight frame outracing the deploy ack, or a hub-side
     // stale-state retry). The router must not throw; the hub-link's
     // handleDrainDeliver then logs and drops, leaving sibling
@@ -1070,7 +1070,7 @@ describe("createMultistepSignalRouter", () => {
 
   test("signal.deliver for a never-registered deployment id drops cleanly without throwing", async () => {
     // Pins the defensive contract for an inbound signal.deliver frame
-    // that names a deploymentId the sidecar's supervisor never spawned
+    // that names a anchorRunId the sidecar's supervisor never spawned
     // (e.g. an in-flight frame outracing the deploy ack, or a hub-side
     // stale-state retry). The router must not throw; the hub-link's
     // handleSignalDeliver then logs and drops, leaving sibling

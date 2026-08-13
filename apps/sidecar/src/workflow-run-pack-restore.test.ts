@@ -38,7 +38,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
     const hubPrincipal: Principal = { kind: "hub" };
     const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
       kind: "supervisor",
-      deploymentId: repoId.id,
+      anchorRunId: repoId.id,
     };
 
     await source.repoStore.writeTree(hubPrincipal, repoId, "refs/heads/main", {

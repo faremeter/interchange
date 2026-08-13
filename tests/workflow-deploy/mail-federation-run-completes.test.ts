@@ -455,7 +455,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function deployWorkflow(
       workflow: WorkflowDefinition,
-      deploymentId: string,
+      anchorRunId: string,
       address: string,
       extras: {
         toolPins: readonly ToolPackagePin[];
@@ -465,7 +465,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ): Promise<void> {
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `${deploymentId}`,
+        agentId: `${anchorRunId}`,
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: address,
@@ -494,7 +494,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await env.hub.sessionService.stageWorkflowStep({
           agentAddress: p.agentAddress,
           agentId: p.agentId,
-          runId: p.instanceId,
+          runId: p.runId,
           config: p.config,
           deployContent: toLaunchDeployContent(p.deployContent),
           ...(p.toolPackagePins !== undefined
@@ -543,7 +543,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId,
+        runId: anchorRunId,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
         ...(extras.toolPins.length > 0
@@ -552,11 +552,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       if (!result.publicKey) {
         throw new Error(
-          `deployWorkflow(${deploymentId}) returned no publicKey\n${env.sidecarDiagnostics()}`,
+          `deployWorkflow(${anchorRunId}) returned no publicKey\n${env.sidecarDiagnostics()}`,
         );
       }
       env.registerDeployment({
-        deploymentId,
+        anchorRunId,
         workflowDefinition: workflow,
         workflowRunRepoId: {
           kind: "workflow-run",

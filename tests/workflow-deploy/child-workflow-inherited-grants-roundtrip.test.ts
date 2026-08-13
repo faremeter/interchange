@@ -196,7 +196,7 @@ describe("parent -> child inherited grants round-trip", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: p.agentAddress,
         agentId: p.agentId,
-        runId: p.instanceId,
+        runId: p.runId,
         config: p.config,
         deployContent: toLaunchDeployContent(p.deployContent),
         ...(p.toolPackagePins !== undefined
@@ -247,7 +247,7 @@ describe("parent -> child inherited grants round-trip", () => {
       config: baseConfig(childMailAddress, `${CHILD_DEPLOYMENT_ID}`),
       deployContent: { systemPrompt: "Fallback prompt (overridden per step)." },
       operatorApprovals,
-      deploymentId: CHILD_DEPLOYMENT_ID,
+      runId: CHILD_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -258,7 +258,7 @@ describe("parent -> child inherited grants round-trip", () => {
       config: baseConfig(parentMailAddress, `${PARENT_DEPLOYMENT_ID}`),
       deployContent: { systemPrompt: "Fallback prompt (overridden per step)." },
       operatorApprovals,
-      deploymentId: PARENT_DEPLOYMENT_ID,
+      runId: PARENT_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -270,7 +270,7 @@ describe("parent -> child inherited grants round-trip", () => {
       id: parentRepoId,
     };
     env.registerDeployment({
-      deploymentId: PARENT_DEPLOYMENT_ID,
+      anchorRunId: PARENT_DEPLOYMENT_ID,
       workflowDefinition: parentWorkflowDefinition,
       workflowRunRepoId: parentWorkflowRunRepoId,
       workflowRunRef: "refs/heads/main",

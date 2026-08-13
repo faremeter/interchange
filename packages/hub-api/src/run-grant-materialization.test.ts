@@ -75,7 +75,7 @@ function mockDb(opts: {
                   ? joined
                     ? [
                         {
-                          deploymentId: opts.deploymentRow.id,
+                          anchorRunId: opts.deploymentRow.id,
                           tenantId: opts.deploymentRow.tenantId,
                           definitionId: `wfd_${opts.deploymentRow.id}`,
                           definitionAssetId:

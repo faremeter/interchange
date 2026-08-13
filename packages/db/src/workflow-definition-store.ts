@@ -17,7 +17,7 @@ type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
  * `definitionAssetId`); the run backfill and the native-run insert sites both
  * resolve through it. Null on a miss is deliberate, not an error: a deployment
  * whose asset the run-once fold never covered has no definition yet, and its
- * runs anchor on `deploymentId` until that gap closes.
+ * runs anchor on `runId` until that gap closes.
  */
 export async function resolveDefinitionIdForAsset(
   db: DBExecutor,

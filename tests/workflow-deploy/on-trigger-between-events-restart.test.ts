@@ -238,7 +238,7 @@ describe("onTrigger section crash + restart -> restore re-includes the container
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -297,7 +297,7 @@ describe("onTrigger section crash + restart -> restore re-includes the container
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
       });
@@ -316,7 +316,7 @@ describe("onTrigger section crash + restart -> restore re-includes the container
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

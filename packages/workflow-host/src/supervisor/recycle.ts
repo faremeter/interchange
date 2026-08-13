@@ -335,7 +335,7 @@ export async function triggerRecycle(
     channelId,
     hmacKey,
     hostPublicKey: ipcKeypair.publicKey,
-    deploymentId: ctx.bindings.deploymentId,
+    anchorRunId: ctx.bindings.anchorRunId,
     deploymentMailAddress: ctx.bindings.deploymentMailAddress,
     stepCount: ctx.bindings.stepCount,
     definitionHash: ctx.definitionHash,
@@ -405,7 +405,7 @@ export async function triggerRecycle(
       repoStore: ctx.bindings.repoStore,
       principal: ctx.bindings.readPrincipal,
       stepOrder: ctx.stepOrder,
-      deploymentId: ctx.bindings.deploymentId,
+      anchorRunId: ctx.bindings.anchorRunId,
       deriveStepAddress: ctx.bindings.deriveStepAddress,
       ...(ctx.bindings.deriveStepRepoId !== undefined
         ? { deriveStepRepoId: ctx.bindings.deriveStepRepoId }

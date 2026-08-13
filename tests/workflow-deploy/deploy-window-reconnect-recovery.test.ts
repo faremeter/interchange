@@ -140,7 +140,7 @@ describe("deploy-window reconnect recovers cleanly", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: p.agentAddress,
         agentId: p.agentId,
-        runId: p.instanceId,
+        runId: p.runId,
         config: p.config,
         deployContent: toLaunchDeployContent(p.deployContent),
         ...(p.toolPackagePins !== undefined
@@ -190,7 +190,7 @@ describe("deploy-window reconnect recovers cleanly", () => {
       config,
       deployContent: { systemPrompt: config.systemPrompt },
       operatorApprovals,
-      deploymentId: DEPLOYMENT_ID,
+      runId: DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -207,7 +207,7 @@ describe("deploy-window reconnect recovers cleanly", () => {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

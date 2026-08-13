@@ -1192,7 +1192,7 @@ export async function startSidecarSubprocess(opts: {
  * thread the workflow-run repo identity themselves.
  */
 export type DeploymentHandle = {
-  deploymentId: string;
+  anchorRunId: string;
   workflowDefinition: WorkflowDefinition;
   workflowRunRepoId: RepoId;
   workflowRunRef: string;
@@ -1210,7 +1210,7 @@ export type DeployFlowEnv = {
    * Register an externally-constructed deployment handle on the env.
    * Tests call this when the deployment was driven outside
    * `deployWorkflow` (e.g. a pre-staged repo state) so the env's
-   * helpers can resolve the handle by `deploymentId`.
+   * helpers can resolve the handle by `anchorRunId`.
    */
   registerDeployment(handle: DeploymentHandle): void;
   teardown: () => Promise<void>;
@@ -1387,12 +1387,12 @@ export async function startDeployFlowEnv(
 
   const deployments = new Map<string, DeploymentHandle>();
   const registerDeployment = (handle: DeploymentHandle): void => {
-    if (deployments.has(handle.deploymentId)) {
+    if (deployments.has(handle.anchorRunId)) {
       throw new Error(
-        `deploy-flow env: deployment ${handle.deploymentId} is already registered`,
+        `deploy-flow env: deployment ${handle.anchorRunId} is already registered`,
       );
     }
-    deployments.set(handle.deploymentId, handle);
+    deployments.set(handle.anchorRunId, handle);
   };
 
   const teardown = async (): Promise<void> => {
@@ -1475,7 +1475,7 @@ export type DeployWorkflowOpts = {
    * Stable identifier the branch concatenates into derived agent
    * addresses. Required.
    */
-  deploymentId: string;
+  anchorRunId: string;
   /**
    * Mail-domain for the deployment. Defaults to the integration test's
    * canonical domain so callers do not have to thread the domain through.
@@ -1496,7 +1496,7 @@ export type DeployWorkflowOpts = {
   workflowRunRef?: string;
   /**
    * Optional override for the deployment's mail address. Defaults to
-   * `<deploymentId>@<deploymentDomain>`.
+   * `<anchorRunId>@<deploymentDomain>`.
    */
   deploymentMailAddress?: string;
 };
@@ -1507,7 +1507,7 @@ export type DeployWorkflowOpts = {
  * other helpers consult.
  */
 export type DeployWorkflowHandle = {
-  deploymentId: string;
+  anchorRunId: string;
   workflowRunRepoId: RepoId;
   workflowRunRef: string;
   mailAddress: string;
@@ -1530,16 +1530,16 @@ export async function deployWorkflow(
 ): Promise<DeployWorkflowHandle> {
   const workflowRunRef = opts.workflowRunRef ?? DEFAULT_WORKFLOW_RUN_REF;
 
-  const deploymentId = opts.deploymentId;
+  const anchorRunId = opts.anchorRunId;
   const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
   const mailAddress =
-    opts.deploymentMailAddress ?? `${deploymentId}@${deploymentDomain}`;
+    opts.deploymentMailAddress ?? `${anchorRunId}@${deploymentDomain}`;
 
-  // The deployment supplies its own substrate-safe `deploymentId`, which
+  // The deployment supplies its own substrate-safe `anchorRunId`, which
   // is the workflow-run repo slug the supervisor commits under.
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
-    id: deploymentId,
+    id: anchorRunId,
   };
 
   // Route every per-step launch through the session service, mirroring
@@ -1553,7 +1553,7 @@ export async function deployWorkflow(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: bridgeOrchestratorDeployContent(
         orchestratorParams.deployContent,
@@ -1592,7 +1592,7 @@ export async function deployWorkflow(
 
   await orchestrator.deployWorkflow({
     workflow,
-    deploymentId,
+    runId: anchorRunId,
     deploymentDomain,
     config: opts.config,
     deployContent: opts.deployContent,
@@ -1603,7 +1603,7 @@ export async function deployWorkflow(
   });
 
   const handle: DeploymentHandle = {
-    deploymentId,
+    anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef,
@@ -1612,7 +1612,7 @@ export async function deployWorkflow(
   env.registerDeployment(handle);
 
   return {
-    deploymentId,
+    anchorRunId,
     workflowRunRepoId,
     workflowRunRef,
     mailAddress,
@@ -1626,12 +1626,12 @@ export async function deployWorkflow(
  */
 function requireDeployment(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
 ): DeploymentHandle {
-  const handle = env.deployments.get(deploymentId);
+  const handle = env.deployments.get(anchorRunId);
   if (handle === undefined) {
     throw new Error(
-      `deploy-flow env: no deployment registered for ${deploymentId}; call deployWorkflow or registerDeployment first`,
+      `deploy-flow env: no deployment registered for ${anchorRunId}; call deployWorkflow or registerDeployment first`,
     );
   }
   return handle;
@@ -1650,10 +1650,10 @@ export type { WorkflowRunEvent };
  */
 export async function readWorkflowRunEvents(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   runId: string,
 ): Promise<WorkflowRunEvent[]> {
-  const handle = requireDeployment(env, deploymentId);
+  const handle = requireDeployment(env, anchorRunId);
   const reader = createWorkflowRunReader(env.hub.agentRepoStore.repoStore);
   return reader.readRunEvents(
     handle.workflowRunRepoId,
@@ -1684,14 +1684,14 @@ export const WORKFLOW_RUN_TERMINAL_TYPES: ReadonlySet<string> = new Set([
  */
 export async function waitForWorkflowRunComplete(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   runId: string,
   opts: WaitForWorkflowRunCompleteOpts = {},
 ): Promise<WorkflowRunEvent> {
   const { timeoutMs = 10_000, diagnostics } = opts;
   const start = Date.now();
   for (;;) {
-    const events = await readWorkflowRunEvents(env, deploymentId, runId);
+    const events = await readWorkflowRunEvents(env, anchorRunId, runId);
     const terminal = events.find((e) =>
       WORKFLOW_RUN_TERMINAL_TYPES.has(e.type),
     );
@@ -1700,7 +1700,7 @@ export async function waitForWorkflowRunComplete(
       const diag = diagnostics?.();
       const ctx = diag ? `\n${diag}` : "";
       throw new Error(
-        `waitForWorkflowRunComplete timed out after ${String(timeoutMs)}ms for ${deploymentId}/${runId}${ctx}`,
+        `waitForWorkflowRunComplete timed out after ${String(timeoutMs)}ms for ${anchorRunId}/${runId}${ctx}`,
       );
     }
     await new Promise((r) => setTimeout(r, 50));
@@ -1833,12 +1833,12 @@ export async function fireMailTrigger(
  */
 export async function injectSignal(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   runId: string,
   signalName: string,
   payload: unknown,
 ): Promise<{ signalId: string }> {
-  const handle = requireDeployment(env, deploymentId);
+  const handle = requireDeployment(env, anchorRunId);
   const signalId = `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   env.hub.router.sendSignalDeliver({
     agentAddress: handle.mailAddress,
@@ -1875,10 +1875,10 @@ export type InitiateDrainOpts = {
  */
 export function initiateDrain(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   opts: InitiateDrainOpts = {},
 ): void {
-  const handle = requireDeployment(env, deploymentId);
+  const handle = requireDeployment(env, anchorRunId);
   const deadlineMs = opts.deadlineMs ?? 5_000;
   env.hub.router.sendDrain({
     agentAddress: handle.mailAddress,
@@ -1902,12 +1902,12 @@ export function initiateDrain(
  */
 export async function simulateProcessingCrash(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   address: string,
   messageId: string,
   receivedAt: number,
 ): Promise<void> {
-  const handle = requireDeployment(env, deploymentId);
+  const handle = requireDeployment(env, anchorRunId);
   const principal: WorkflowRunHubPrincipal = { kind: "hub" };
   await enqueueInbox(
     env.hub.agentRepoStore.repoStore,

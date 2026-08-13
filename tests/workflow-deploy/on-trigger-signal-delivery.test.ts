@@ -109,12 +109,12 @@ async function findContainerRunId(
 }
 
 async function readContainerEvents(
-  deploymentId: string,
+  anchorRunId: string,
   workflowRunRepoId: RepoId,
 ): Promise<{ type: string; body: Record<string, unknown> }[]> {
   const containerRunId = await findContainerRunId(env, workflowRunRepoId);
   if (containerRunId === undefined) return [];
-  return readWorkflowRunEvents(env, deploymentId, containerRunId);
+  return readWorkflowRunEvents(env, anchorRunId, containerRunId);
 }
 
 const hasChildCompleted = (
@@ -133,16 +133,16 @@ const hasChildCompleted = (
  * timeout scenarios, which diverge only in what becomes of the proxied await.
  */
 async function deployAndTriggerSection(
-  deploymentId: string,
+  anchorRunId: string,
   body: WorkflowDefinition,
 ): Promise<{ workflowRunRepoId: RepoId; containerRunId: string }> {
   const deploymentMailAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${deploymentId}`,
+    id: `wf_${anchorRunId}`,
     trigger: { type: "mail", to: deploymentMailAddress },
     steps: {
       [SECTION_ID]: onTrigger({
@@ -154,9 +154,9 @@ async function deployAndTriggerSection(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${deploymentId}`,
+    agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
-    principalId: `prin_${deploymentId}`,
+    principalId: `prin_${anchorRunId}`,
     agentAddress: deploymentMailAddress,
     systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
     tools: [],
@@ -184,7 +184,7 @@ async function deployAndTriggerSection(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
       ...(orchestratorParams.toolPackagePins !== undefined
@@ -243,7 +243,7 @@ async function deployAndTriggerSection(
       config,
       deployContent: { systemPrompt: config.systemPrompt },
       operatorApprovals,
-      deploymentId,
+      runId: anchorRunId,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
     });
@@ -262,7 +262,7 @@ async function deployAndTriggerSection(
     id: deriveDeploymentId(deploymentMailAddress),
   };
   env.registerDeployment({
-    deploymentId,
+    anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
@@ -275,12 +275,12 @@ async function deployAndTriggerSection(
   // Fire the first event; the body parks on its author gate and the section
   // proxies it up as a signal-relay await on the container.
   await fireMailTrigger(env, deploymentMailAddress, {
-    messageId: `<${deploymentId}@integration.interchange>`,
+    messageId: `<${anchorRunId}@integration.interchange>`,
     content: "trigger the section",
   });
   await waitFor(
     async () => {
-      const events = await readContainerEvents(deploymentId, workflowRunRepoId);
+      const events = await readContainerEvents(anchorRunId, workflowRunRepoId);
       return events.some(
         (e) =>
           e.type === "SignalAwaited" &&

@@ -257,7 +257,7 @@ async function createWorkflowRepoStore(): Promise<RepoStore> {
 }
 
 // The trigger route derives the deployment address as
-// `ins_<deploymentId>@<tenant.domain>`; the routing router accepts any
+// `ins_<anchorRunId>@<tenant.domain>`; the routing router accepts any
 // address, so the derived value only needs to be well-formed.
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -289,14 +289,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
     // decides whether the creator holds the backing `secret:vault`/`use`
     // grant.
     async function setup(opts: {
-      deploymentId: string;
+      anchorRunId: string;
       creatorHoldsGrant: boolean;
     }): Promise<ReturnType<typeof createApp>> {
       const address = deriveRunAddress({
-        runId: opts.deploymentId,
+        runId: opts.anchorRunId,
         domain: DOMAIN,
       });
-      const assetId = `ast_${opts.deploymentId}`;
+      const assetId = `ast_${opts.anchorRunId}`;
 
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
@@ -323,14 +323,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: assetId,
         tenantId: TENANT_ID,
         kind: "workflow",
-        name: `federation-wf-${opts.deploymentId}`,
+        name: `federation-wf-${opts.anchorRunId}`,
         creatorPrincipalId: CREATOR_PRINCIPAL_ID,
       });
       // The caller's grant to invoke the trigger route.
       await seedGrant(h.db, {
-        id: `grant-caller-manage-${opts.deploymentId}`,
+        id: `grant-caller-manage-${opts.anchorRunId}`,
         tenantId: TENANT_ID,
-        resource: `workflow-run:${opts.deploymentId}`,
+        resource: `workflow-run:${opts.anchorRunId}`,
         action: "manage",
         effect: "allow",
         origin: "system",
@@ -339,7 +339,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The creator's backing grant, present only in the positive case.
       if (opts.creatorHoldsGrant) {
         await seedGrant(h.db, {
-          id: `grant-creator-vault-${opts.deploymentId}`,
+          id: `grant-creator-vault-${opts.anchorRunId}`,
           tenantId: TENANT_ID,
           resource: CREATOR_CAP_RESOURCE,
           action: CREATOR_CAP_ACTION,
@@ -351,16 +351,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The deployment's first-class definition and its anchor run: the trigger
       // route reads the workflow asset and the run's definition off the anchor.
       await h.db.insert(workflowDefinitionTable).values({
-        id: `wfd_${opts.deploymentId}`,
+        id: `wfd_${opts.anchorRunId}`,
         tenantId: TENANT_ID,
-        name: opts.deploymentId,
+        name: opts.anchorRunId,
         assetId,
       });
       await h.db.insert(workflowRunTable).values({
-        id: opts.deploymentId,
+        id: opts.anchorRunId,
         tenantId: TENANT_ID,
-        anchorRunId: opts.deploymentId,
-        definitionId: `wfd_${opts.deploymentId}`,
+        anchorRunId: opts.anchorRunId,
+        definitionId: `wfd_${opts.anchorRunId}`,
         address,
         // The deploy-time birth state; the first mail trigger flips it running.
         status: "deployed",
@@ -374,7 +374,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tree: {
           files: {
             [WORKFLOW_JSON_PATH]: JSON.stringify(
-              bWorkflow(`wf_${opts.deploymentId}`, address),
+              bWorkflow(`wf_${opts.anchorRunId}`, address),
             ),
           },
           message: "seed workflow.json",
@@ -396,11 +396,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     test("materializes the creator grant when the creator holds it", async () => {
-      const deploymentId = "run_federation-b-positive-1";
-      const app = await setup({ deploymentId, creatorHoldsGrant: true });
+      const anchorRunId = "run_federation-b-positive-1";
+      const app = await setup({ anchorRunId, creatorHoldsGrant: true });
 
       const res = await app.request(
-        `/api/tenants/${TENANT_ID}/workflows/${deploymentId}/mail`,
+        `/api/tenants/${TENANT_ID}/workflows/${anchorRunId}/mail`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -462,11 +462,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("rejects 403 and commits nothing when the creator lacks the grant", async () => {
-      const deploymentId = "run_federation-b-negative-1";
-      const app = await setup({ deploymentId, creatorHoldsGrant: false });
+      const anchorRunId = "run_federation-b-negative-1";
+      const app = await setup({ anchorRunId, creatorHoldsGrant: false });
 
       const res = await app.request(
-        `/api/tenants/${TENANT_ID}/workflows/${deploymentId}/mail`,
+        `/api/tenants/${TENANT_ID}/workflows/${anchorRunId}/mail`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -490,7 +490,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       expect(runPrincipals).toHaveLength(0);
 
-      // Only the deployment's seeded anchor run (id == deploymentId) exists;
+      // Only the deployment's seeded anchor run (id == anchorRunId) exists;
       // the rejected trigger committed no child run of its own.
       const runs = await h.db.select().from(workflowRunTable);
       const childRuns = runs.filter((r) => r.id !== r.anchorRunId);

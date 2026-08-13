@@ -295,7 +295,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
         () => !env.router.getRoutableAddresses().includes(agentAddress),
       );
 
-      // Re-deploy with the same address so the deploymentId is
+      // Re-deploy with the same address so the anchorRunId is
       // identical -- mirrors the disaster-recovery scenario where the
       // hub's workflow-run repo for `(kind, id, ref)` is reset.
       await env.router.sendAgentDeploy(agentAddress, TEST_CONFIG);

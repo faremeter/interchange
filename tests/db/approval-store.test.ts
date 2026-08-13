@@ -36,7 +36,7 @@ async function seedDeploymentDeps(h: TestDb): Promise<void> {
   // runs' `anchor_run_id` both resolve to it.
   await seedWorkflowRun(h.db, {
     id: DEPLOYMENT,
-    deploymentId: DEPLOYMENT,
+    anchorRunId: DEPLOYMENT,
     tenantId: TENANT,
   });
 }
@@ -47,7 +47,7 @@ async function seedDeploymentDeps(h: TestDb): Promise<void> {
 async function seedRun(h: TestDb, runId: string): Promise<void> {
   await seedWorkflowRun(h.db, {
     id: runId,
-    deploymentId: DEPLOYMENT,
+    anchorRunId: DEPLOYMENT,
     tenantId: TENANT,
   });
 }

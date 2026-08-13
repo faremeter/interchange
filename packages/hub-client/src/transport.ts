@@ -51,7 +51,7 @@ export function createBrowserTransport(): Transport {
       // 204 (No Content) always carries an empty body. 202 (Accepted) may
       // be either empty (e.g. a fire-and-forget signal delivered via
       // c.body(null, 202)) or carry a JSON acknowledgement body (e.g. a run
-      // trigger returning { deploymentId, address, messageId }). Reading the
+      // trigger returning { runId, address, messageId }). Reading the
       // raw text first lets us distinguish the two: an empty body resolves
       // to undefined, while a present body is JSON-parsed. Calling
       // res.json() unconditionally on an empty body would throw "Unexpected

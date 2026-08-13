@@ -102,17 +102,17 @@ type DeployedWorkflow = {
 // Deploy a one-step workflow whose single source uses `provider`. Models the
 // single-step-message-input integration test's orchestrator wiring.
 async function deployCustomProviderWorkflow(
-  deploymentId: string,
+  anchorRunId: string,
   provider: string,
 ): Promise<DeployedWorkflow> {
   const deploymentMailAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
   const sourceId = `${provider}:mock-model`;
   const agent = defineAgent({
-    id: `agent-${deploymentId}`,
+    id: `agent-${anchorRunId}`,
     systemPrompt: "You are the cross-process custom-adapter test agent.",
     tools: [],
     capabilities: [],
@@ -122,7 +122,7 @@ async function deployCustomProviderWorkflow(
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${deploymentId}`,
+    id: `wf_${anchorRunId}`,
     trigger: { type: "mail", to: deploymentMailAddress },
     steps: {
       [STEP_ID]: step({ agent }),
@@ -131,7 +131,7 @@ async function deployCustomProviderWorkflow(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${deploymentId}`,
+    agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
@@ -161,7 +161,7 @@ async function deployCustomProviderWorkflow(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
       ...(orchestratorParams.toolPackagePins !== undefined
@@ -220,7 +220,7 @@ async function deployCustomProviderWorkflow(
     config,
     deployContent: { systemPrompt: config.systemPrompt },
     operatorApprovals,
-    deploymentId,
+    runId: anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     hubPublicKey: "00".repeat(32),
   });
@@ -231,7 +231,7 @@ async function deployCustomProviderWorkflow(
     id: deriveDeploymentId(deploymentMailAddress),
   };
   env.registerDeployment({
-    deploymentId,
+    anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef: "refs/heads/main",
@@ -247,10 +247,10 @@ describe("cross-process custom inference adapter (INTR-233)", () => {
   });
 
   test("a manifest custom adapter resolves in the forked child", async () => {
-    const deploymentId = "run_cross-process-custom-positive";
+    const anchorRunId = "run_cross-process-custom-positive";
     const body = "Cross-process custom adapter body sentinel-7731.";
     const { deploymentMailAddress, workflowRunRepoId } =
-      await deployCustomProviderWorkflow(deploymentId, CUSTOM_PROVIDER);
+      await deployCustomProviderWorkflow(anchorRunId, CUSTOM_PROVIDER);
 
     const mail = await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<cross-process-custom-positive@integration.interchange>",
@@ -262,14 +262,12 @@ describe("cross-process custom inference adapter (INTR-233)", () => {
       timeoutMs: 20_000,
     });
 
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      deploymentId,
-      runId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
+    const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
+      timeoutMs: 20_000,
+      diagnostics: env.sidecarDiagnostics,
+    });
     if (terminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       const failed = events.find(
         (e) => e.type === "StepFailed" || e.type === "RunFailed",
       );
@@ -278,7 +276,7 @@ describe("cross-process custom inference adapter (INTR-233)", () => {
       );
     }
 
-    const events = await readWorkflowRunEvents(env, deploymentId, runId);
+    const events = await readWorkflowRunEvents(env, anchorRunId, runId);
     const startedBody = events.find((e) => e.type === "RunStarted")?.body;
     if (startedBody === undefined) throw new Error("missing RunStarted");
     expect(startedBody["consumedMessageId"]).toBe(mail.messageId);

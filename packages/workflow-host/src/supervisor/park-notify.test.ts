@@ -3,7 +3,7 @@
 // A workflow-process child that parks a step on a reserved control-plane
 // channel forwards a `park.notify` frame up the control channel. The
 // supervisor's upstream-control pump stamps the deployment identity it owns
-// (`deploymentId` + the deployment's mail address as `agentAddress`) onto the
+// (`anchorRunId` + the deployment's mail address as `agentAddress`) onto the
 // child-supplied `runId`/`correlationId`/`kind` and hands the stamped
 // registration to the host's `onSuspensionRegister` sink -- the seam the
 // sidecar wires to the hub's `signal.correlation.register` frame.
@@ -213,7 +213,7 @@ describe("supervisor park.notify arm", () => {
       dynamicSpawnEnv: () => ({}),
       workflowRunRepoId: { kind: "workflow-run", id: DEPLOYMENT_ID },
       workflowRunRef: "refs/heads/main",
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       stepCount: 1,
       deploymentMailAddress: AGENT_ADDRESS,
       readPrincipal: { kind: "supervisor" },
@@ -285,7 +285,7 @@ describe("supervisor park.notify arm", () => {
       runId: "run-parked",
       correlationId: "corr-99",
       kind: "approval",
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       agentAddress: AGENT_ADDRESS,
     });
 
@@ -320,7 +320,7 @@ describe("supervisor park.notify arm", () => {
       runId: "run-parked-2",
       correlationId: "corr-100",
       kind: "approval",
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       agentAddress: AGENT_ADDRESS,
       approvalSnapshot: snapshot,
     });

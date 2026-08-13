@@ -65,8 +65,8 @@ export type CommitCancelRequestedOpts = {
   repoId: RepoId;
   /** Events ref the workflow-run repo writes to. */
   ref: string;
-  /** Deployment id used to construct the supervisor principal. */
-  deploymentId: string;
+  /** Anchor run id used to construct the supervisor principal. */
+  anchorRunId: string;
   /** Run id whose event log receives the CancelRequested entry. */
   runId: string;
   /** Cancellation origin from the Q3 map. */
@@ -152,7 +152,7 @@ export async function commitCancelRequested(
   const prefix = `${RUNS_PREFIX}/${opts.runId}/${EVENTS_DIR}/`;
   const principal: WorkflowRunSupervisorPrincipal = {
     kind: SUPERVISOR_PRINCIPAL_KIND,
-    deploymentId: opts.deploymentId,
+    anchorRunId: opts.anchorRunId,
   };
   let resolved: { seq: number; signature: SignedPayload } | null = null;
   const { commitSha } = await opts.substrate.writeTreePreservingPrefix(

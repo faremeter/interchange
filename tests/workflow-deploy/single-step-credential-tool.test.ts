@@ -177,7 +177,7 @@ const CREDENTIAL_USE_GRANT: WireGrantRule = {
  * supervisor delivers it to the child before the first run's trigger fires.
  */
 async function deployProbe(
-  deploymentId: string,
+  anchorRunId: string,
   delivery: CredentialDelivery | undefined,
 ): Promise<{ mailAddress: string; workflowRunRepoId: RepoId }> {
   const agent = defineAgent({
@@ -189,19 +189,19 @@ async function deployProbe(
   });
 
   const mailAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${deploymentId}`,
+    id: `wf_${anchorRunId}`,
     trigger: { type: "mail", to: mailAddress },
     steps: { [STEP_ID]: step({ agent }) },
   });
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${deploymentId}`,
+    agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: mailAddress,
@@ -234,7 +234,7 @@ async function deployProbe(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
       ...(orchestratorParams.toolPackagePins !== undefined
@@ -300,7 +300,7 @@ async function deployProbe(
       config,
       deployContent: { systemPrompt: config.systemPrompt },
       operatorApprovals,
-      deploymentId,
+      runId: anchorRunId,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
       toolPackagePins: TOOL_PINS,
@@ -319,7 +319,7 @@ async function deployProbe(
     id: deriveDeploymentId(mailAddress),
   };
   env.registerDeployment({
-    deploymentId,
+    anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
@@ -331,7 +331,7 @@ async function deployProbe(
 
 /** Fire a run and wait for it to complete, returning its id and terminal. */
 async function runOnce(
-  deploymentId: string,
+  anchorRunId: string,
   mailAddress: string,
   workflowRunRepoId: RepoId,
   grants: WireGrantRule[],
@@ -345,7 +345,7 @@ async function runOnce(
     diagnostics: env.sidecarDiagnostics,
     timeoutMs: 20_000,
   });
-  const terminal = await waitForWorkflowRunComplete(env, deploymentId, runId, {
+  const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
     timeoutMs: 20_000,
     diagnostics: env.sidecarDiagnostics,
   });
@@ -354,22 +354,22 @@ async function runOnce(
 
 describe("single-step credential-consuming tool end-to-end", () => {
   test("delivers the credential and authenticates to its pinned origin", async () => {
-    const deploymentId = "run_single-step-credential-tool-pos";
+    const anchorRunId = "run_single-step-credential-tool-pos";
     const { mailAddress, workflowRunRepoId } = await deployProbe(
-      deploymentId,
+      anchorRunId,
       deliveryWithSecret(SECRET_INITIAL),
     );
 
     const before = originRequests.length;
     const { runId, terminal } = await runOnce(
-      deploymentId,
+      anchorRunId,
       mailAddress,
       workflowRunRepoId,
       [CREDENTIAL_USE_GRANT],
       "<credential-tool-pos-1@integration.interchange>",
     );
     if (terminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       throw new Error(
         `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(events.find((e) => e.type === "StepFailed" || e.type === "RunFailed")?.body)}\n${env.sidecarDiagnostics()}`,
       );
@@ -385,12 +385,12 @@ describe("single-step credential-consuming tool end-to-end", () => {
   });
 
   test("delivers over the live credentials.update channel to a running child", async () => {
-    const deploymentId = "run_single-step-credential-tool-chan";
+    const anchorRunId = "run_single-step-credential-tool-chan";
     // Deploy with NO deploy-frame delivery: the credential reaches the child
     // ONLY over the live credentials.update channel. Push it and wait for the
     // child to ack, so the material is resident before the run's agent builds.
     const { mailAddress, workflowRunRepoId } = await deployProbe(
-      deploymentId,
+      anchorRunId,
       undefined,
     );
     await env.hub.router.sendCredentialsUpdate(
@@ -400,14 +400,14 @@ describe("single-step credential-consuming tool end-to-end", () => {
 
     const before = originRequests.length;
     const { runId, terminal } = await runOnce(
-      deploymentId,
+      anchorRunId,
       mailAddress,
       workflowRunRepoId,
       [CREDENTIAL_USE_GRANT],
       "<credential-tool-chan-1@integration.interchange>",
     );
     if (terminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(env, deploymentId, runId);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       throw new Error(
         `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(events.find((e) => e.type === "StepFailed" || e.type === "RunFailed")?.body)}\n${env.sidecarDiagnostics()}`,
       );
@@ -422,9 +422,9 @@ describe("single-step credential-consuming tool end-to-end", () => {
   });
 
   test("fails closed when no grant authorizes the credential's use", async () => {
-    const deploymentId = "run_single-step-credential-tool-neg";
+    const anchorRunId = "run_single-step-credential-tool-neg";
     const { mailAddress, workflowRunRepoId } = await deployProbe(
-      deploymentId,
+      anchorRunId,
       deliveryWithSecret(SECRET_INITIAL),
     );
 
@@ -433,7 +433,7 @@ describe("single-step credential-consuming tool end-to-end", () => {
     // Fire the run WITHOUT the credential-use grant: Gate 2 denies the resolve
     // inside the tool, which throws before any request is shaped.
     const { terminal } = await runOnce(
-      deploymentId,
+      anchorRunId,
       mailAddress,
       workflowRunRepoId,
       [],

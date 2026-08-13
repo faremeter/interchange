@@ -86,7 +86,7 @@ export type CreateDeployRouter = (deps: {
   publishWorkflowSuspension: (registration: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
@@ -255,7 +255,7 @@ export function createSidecarOrchestrator(
   let dispatchSuspension: (registration: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;

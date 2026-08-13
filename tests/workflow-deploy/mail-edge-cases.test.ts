@@ -465,14 +465,14 @@ describe("mail-handling edge cases", () => {
  */
 async function deployEdgeWorkflow(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
 ): Promise<{
   deploymentMailAddress: string;
   workflowRunRepoId: RepoId;
 }> {
   const stepAgent = defineAgent({
-    id: `agent-${deploymentId}-step`,
-    systemPrompt: `Edge-case agent for ${deploymentId}.`,
+    id: `agent-${anchorRunId}-step`,
+    systemPrompt: `Edge-case agent for ${anchorRunId}.`,
     tools: [],
     capabilities: [],
     inference: {
@@ -481,12 +481,12 @@ async function deployEdgeWorkflow(
   });
 
   const deploymentMailAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${deploymentId}`,
+    id: `wf_${anchorRunId}`,
     trigger: { type: "mail", to: deploymentMailAddress },
     steps: {
       edgeStep: step({ agent: stepAgent }),
@@ -495,7 +495,7 @@ async function deployEdgeWorkflow(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${deploymentId}`,
+    agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
@@ -526,7 +526,7 @@ async function deployEdgeWorkflow(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: toLaunchDeployContent(deployContent),
       ...(orchestratorParams.toolPackagePins !== undefined
@@ -585,7 +585,7 @@ async function deployEdgeWorkflow(
     config,
     deployContent: { systemPrompt: config.systemPrompt },
     operatorApprovals,
-    deploymentId,
+    runId: anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     hubPublicKey: "00".repeat(32),
   });
@@ -596,7 +596,7 @@ async function deployEdgeWorkflow(
     id: deriveDeploymentId(deploymentMailAddress),
   };
   env.registerDeployment({
-    deploymentId,
+    anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
@@ -605,7 +605,7 @@ async function deployEdgeWorkflow(
 
   if (!env.hub.router.getRoutableAddresses().includes(deploymentMailAddress)) {
     throw new Error(
-      `mail-edge-cases: deployment ${deploymentId} did not register address ${deploymentMailAddress}`,
+      `mail-edge-cases: deployment ${anchorRunId} did not register address ${deploymentMailAddress}`,
     );
   }
 

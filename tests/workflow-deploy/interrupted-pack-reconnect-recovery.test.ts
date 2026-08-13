@@ -82,30 +82,30 @@ afterAll(async () => {
  * deployment's mail address and workflow-run repo id.
  */
 async function deploySingleStepWorkflow(
-  deploymentId: string,
+  anchorRunId: string,
 ): Promise<{ deploymentMailAddress: string; workflowRunRepoId: RepoId }> {
   const deploymentMailAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
   const agent = defineAgent({
-    id: `agent-${deploymentId}`,
+    id: `agent-${anchorRunId}`,
     systemPrompt: "You are the interrupted-pack recovery test agent.",
     tools: [],
     capabilities: [],
     inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
   });
   const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${deploymentId}`,
+    id: `wf_${anchorRunId}`,
     trigger: { type: "mail", to: deploymentMailAddress },
     steps: { [STEP_ID]: step({ agent }) },
   });
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${deploymentId}`,
+    agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
-    principalId: `prin_${deploymentId}`,
+    principalId: `prin_${anchorRunId}`,
     agentAddress: deploymentMailAddress,
     systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
     tools: [],
@@ -132,7 +132,7 @@ async function deploySingleStepWorkflow(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: p.agentAddress,
       agentId: p.agentId,
-      runId: p.instanceId,
+      runId: p.runId,
       config: p.config,
       deployContent: toLaunchDeployContent(p.deployContent),
       ...(p.toolPackagePins !== undefined
@@ -182,7 +182,7 @@ async function deploySingleStepWorkflow(
     config,
     deployContent: { systemPrompt: config.systemPrompt },
     operatorApprovals,
-    deploymentId,
+    runId: anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     hubPublicKey: "00".repeat(32),
   });
@@ -198,7 +198,7 @@ async function deploySingleStepWorkflow(
     id: deriveDeploymentId(deploymentMailAddress),
   };
   env.registerDeployment({
-    deploymentId,
+    anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
@@ -218,7 +218,7 @@ async function deploySingleStepWorkflow(
  * is the absence of a throw.
  */
 async function waitForAnyRunCompleted(
-  deploymentId: string,
+  anchorRunId: string,
   workflowRunRepoId: RepoId,
   timeoutMs: number,
 ): Promise<void> {
@@ -226,12 +226,12 @@ async function waitForAnyRunCompleted(
   for (;;) {
     const ids = await listRunIds(env, workflowRunRepoId);
     for (const id of ids) {
-      const events = await readWorkflowRunEvents(env, deploymentId, id);
+      const events = await readWorkflowRunEvents(env, anchorRunId, id);
       if (events.some((e) => e.type === "RunCompleted")) return;
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(
-        `no run reached RunCompleted for ${deploymentId} within ${String(timeoutMs)}ms; runIds=${JSON.stringify(ids)}\n${env.sidecarDiagnostics()}`,
+        `no run reached RunCompleted for ${anchorRunId} within ${String(timeoutMs)}ms; runIds=${JSON.stringify(ids)}\n${env.sidecarDiagnostics()}`,
       );
     }
     await new Promise((r) => setTimeout(r, 100));
@@ -244,9 +244,9 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
   });
 
   test("armed mid-pack drop: run completes after reconnect with no fresh trigger", async () => {
-    const deploymentId = "run_dep1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
+    const anchorRunId = "run_dep1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
     const { deploymentMailAddress, workflowRunRepoId } =
-      await deploySingleStepWorkflow(deploymentId);
+      await deploySingleStepWorkflow(anchorRunId);
     expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
     // Arm the interrupt so the FIRST run-events pack of this run is applied
@@ -281,7 +281,7 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
     // The liveness contract: the run reaches RunCompleted on its own, with
     // NO fresh mail trigger to re-drive it. Capture the run-id count so the
     // assertion below can also confirm no second run was minted.
-    await waitForAnyRunCompleted(deploymentId, workflowRunRepoId, 60_000);
+    await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
 
     // Exactly one run exists: the recovery re-shipped the SAME run's events,
     // it did not mint a fresh run. A second run would mean the recovery
@@ -291,9 +291,9 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
   }, 180_000);
 
   test("settled drop control: a fresh trigger runs to completion after reconnect", async () => {
-    const deploymentId = "run_dep2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
+    const anchorRunId = "run_dep2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
     const { deploymentMailAddress, workflowRunRepoId } =
-      await deploySingleStepWorkflow(deploymentId);
+      await deploySingleStepWorkflow(anchorRunId);
 
     // Drive a first run to completion so the pack stream has something to
     // go quiet after -- settleThenDrop waits for a no-new-pack quiet window.
@@ -301,7 +301,7 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
       messageId: "<settled-control-1@integration.interchange>",
       content: "first",
     });
-    await waitForAnyRunCompleted(deploymentId, workflowRunRepoId, 60_000);
+    await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
 
     // Drop the link only after the pack stream has drained (no push
     // mid-flight), then wait for the sidecar to reconnect and re-route.
@@ -355,12 +355,10 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
         );
       }
     }
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      deploymentId,
-      runId,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
-    );
+    const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
+      timeoutMs: 30_000,
+      diagnostics: env.sidecarDiagnostics,
+    });
     expect(terminal.type).toBe("RunCompleted");
   }, 180_000);
 });

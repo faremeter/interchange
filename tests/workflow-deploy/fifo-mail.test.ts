@@ -182,7 +182,7 @@ describe("FIFO mail-trigger serialization", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: orchestratorParams.agentAddress,
         agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.instanceId,
+        runId: orchestratorParams.runId,
         config: orchestratorParams.config,
         deployContent: toLaunchDeployContent(deployContent),
         ...(orchestratorParams.toolPackagePins !== undefined
@@ -239,7 +239,7 @@ describe("FIFO mail-trigger serialization", () => {
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
       });
@@ -258,7 +258,7 @@ describe("FIFO mail-trigger serialization", () => {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,

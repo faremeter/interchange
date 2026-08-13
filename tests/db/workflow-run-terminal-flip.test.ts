@@ -112,7 +112,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: DEPLOYMENT,
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         address: DEPLOYMENT_ADDRESS,
       });
@@ -255,7 +255,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: "run-ext",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         principalId: "prn-run",
       });
@@ -279,7 +279,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("maps RunFailed and RunCancelled to their statuses", async () => {
       await seedWorkflowRun(h.db, {
         id: "run-failed",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
       });
       await buildAndReceive("run-failed", "RunFailed");
@@ -291,7 +291,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await seedWorkflowRun(h.db, {
         id: "run-cancelled",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
       });
       await buildAndReceive("run-cancelled", "RunCancelled");
@@ -325,7 +325,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: "run-scoped",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         principalId: "prn-owner",
       });
@@ -357,7 +357,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await seedWorkflowRun(h.db, {
         id: "run-internal",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         principalId: null,
       });
@@ -439,7 +439,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // match nothing and mutate nothing.
       await seedWorkflowRun(h.db, {
         id: "run-guard",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
       });
       const store = createWorkflowRunStore(h.db);
@@ -481,7 +481,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // teardown settles the anchor instead of leaving it live forever.
       await seedWorkflowRun(h.db, {
         id: "run-deployed",
-        deploymentId: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         status: "deployed",
       });
@@ -519,7 +519,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
         await seedWorkflowRun(h.db, {
           id: runId,
-          deploymentId: DEPLOYMENT,
+          anchorRunId: DEPLOYMENT,
           tenantId: TENANT,
           principalId: `prn-${runId}`,
         });

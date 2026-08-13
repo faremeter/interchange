@@ -83,8 +83,8 @@ export interface SpawnTimeEnv {
   hmacKey: Uint8Array;
   /** Supervisor's 32-byte Ed25519 public key for control-frame verification. */
   hostPublicKey: Uint8Array;
-  /** Deployment identity the supervisor manages. */
-  deploymentId: string;
+  /** Anchor run id the supervisor manages. */
+  anchorRunId: string;
   /** Content hash of the deployed `WorkflowDefinition`. */
   definitionHash: string;
   /** Mail address the deployment registered on the bus. */
@@ -159,7 +159,7 @@ export function parseSpawnTimeEnv(
     channelId: validated.IPC_CHANNEL_ID,
     hmacKey,
     hostPublicKey,
-    deploymentId: validated.DEPLOYMENT_ID,
+    anchorRunId: validated.DEPLOYMENT_ID,
     definitionHash: validated.DEFINITION_HASH,
     mailboxAddress: validated.MAILBOX_ADDRESS,
     stepCount,

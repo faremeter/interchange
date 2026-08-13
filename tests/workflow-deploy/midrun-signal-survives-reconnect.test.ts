@@ -149,7 +149,7 @@ describe("mid-run signal survives hub-link drop -> reconnect", () => {
       await env.hub.sessionService.stageWorkflowStep({
         agentAddress: p.agentAddress,
         agentId: p.agentId,
-        runId: p.instanceId,
+        runId: p.runId,
         config: p.config,
         deployContent: toLaunchDeployContent(p.deployContent),
         ...(p.toolPackagePins !== undefined
@@ -204,7 +204,7 @@ describe("mid-run signal survives hub-link drop -> reconnect", () => {
         config,
         deployContent: { systemPrompt: config.systemPrompt },
         operatorApprovals,
-        deploymentId: DEPLOYMENT_ID,
+        runId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         hubPublicKey: "00".repeat(32),
       });
@@ -223,7 +223,7 @@ describe("mid-run signal survives hub-link drop -> reconnect", () => {
       id: deriveDeploymentId(deploymentMailAddress),
     };
     env.registerDeployment({
-      deploymentId: DEPLOYMENT_ID,
+      anchorRunId: DEPLOYMENT_ID,
       workflowDefinition: workflow,
       workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
@@ -417,14 +417,14 @@ describe("mid-run signal survives hub-link drop -> reconnect", () => {
  */
 async function readWorkflowRunEventsForAnyRun(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   workflowRunRepoId: RepoId,
 ): Promise<{ runId: string; type: string; body: Record<string, unknown> }[]> {
   const runIds = await listRunIds(env, workflowRunRepoId);
   const out: { runId: string; type: string; body: Record<string, unknown> }[] =
     [];
   for (const runId of runIds) {
-    const events = await readWorkflowRunEvents(env, deploymentId, runId);
+    const events = await readWorkflowRunEvents(env, anchorRunId, runId);
     for (const e of events) {
       out.push({ runId, type: e.type, body: e.body });
     }

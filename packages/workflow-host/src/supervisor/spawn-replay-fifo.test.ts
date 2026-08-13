@@ -509,7 +509,7 @@ async function boot(opts: { prefix: string }): Promise<
   const baseDir = await makeTempDir(opts.prefix);
   await seedStepGrants(
     baseDir,
-    defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+    defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
     [{ resource: "thing", action: "read" }],
   );
   const supervisorIpcKeyPair = await generateKeyPair();
@@ -562,12 +562,11 @@ async function boot(opts: { prefix: string }): Promise<
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId,
     workflowRunRef: "refs/heads/main",
-    deploymentId: "run_deployment-x",
+    anchorRunId: "run_deployment-x",
     stepCount: 1,
     deploymentMailAddress,
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ deploymentId, stepId }) =>
-      `${deploymentId}-${stepId}@example.com`,
+    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives: gatedInbox.primitives,
   };

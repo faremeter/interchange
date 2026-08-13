@@ -1,7 +1,7 @@
 // Sidecar-local persistence of the per-run record needed to re-establish a
 // workflow run across a sidecar PROCESS restart. The record is co-located
 // with the run's workflow-run substrate at
-// `${dataDir}/workflow-runs/<deploymentId>/deployment.json`, so a single
+// `${dataDir}/workflow-runs/<runId>/deployment.json`, so a single
 // teardown reclaims both and a boot scan can enumerate the active runs
 // beside the run state they resume.
 //
@@ -55,8 +55,8 @@ export const WorkflowRunRecord = type({
 });
 export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 
-function recordPath(dataDir: string, deploymentId: string): string {
-  return pathJoin(dataDir, "workflow-runs", deploymentId, RECORD_FILENAME);
+function recordPath(dataDir: string, runId: string): string {
+  return pathJoin(dataDir, "workflow-runs", runId, RECORD_FILENAME);
 }
 
 /**
@@ -66,10 +66,10 @@ function recordPath(dataDir: string, deploymentId: string): string {
  */
 export async function writeWorkflowRunRecord(
   dataDir: string,
-  deploymentId: string,
+  runId: string,
   record: WorkflowRunRecord,
 ): Promise<void> {
-  const path = recordPath(dataDir, deploymentId);
+  const path = recordPath(dataDir, runId);
   await mkdir(dirname(path), { recursive: true });
   // Atomic + durable: this is the sole restore source for the
   // run's `sources`/`hubPublicKey`, and a rotation overwrites the
@@ -90,15 +90,15 @@ export async function writeWorkflowRunRecord(
  */
 export async function deleteWorkflowRunRecord(
   dataDir: string,
-  deploymentId: string,
+  runId: string,
 ): Promise<void> {
-  await rm(recordPath(dataDir, deploymentId), { force: true });
+  await rm(recordPath(dataDir, runId), { force: true });
 }
 
 /** A restorable run: its directory-derived id plus the validated record. */
 export interface ScannedWorkflowRun {
-  /** The `workflow-runs/<deploymentId>` directory name the record was found under. */
-  deploymentId: string;
+  /** The `workflow-runs/<runId>` directory name the record was found under. */
+  runId: string;
   record: WorkflowRunRecord;
 }
 
@@ -111,7 +111,7 @@ export interface ScannedWorkflowRun {
  * directory is the legitimate first-boot case and yields an empty list, not
  * an error.
  *
- * The returned `deploymentId` is the directory name; the caller cross-checks it
+ * The returned `runId` is the directory name; the caller cross-checks it
  * against the record's own address before trusting it.
  */
 export async function scanWorkflowRunRecords(
@@ -129,8 +129,8 @@ export async function scanWorkflowRunRecords(
   const scanned: ScannedWorkflowRun[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const deploymentId = entry.name;
-    const path = recordPath(dataDir, deploymentId);
+    const runId = entry.name;
+    const path = recordPath(dataDir, runId);
 
     let raw: string;
     try {
@@ -140,7 +140,7 @@ export async function scanWorkflowRunRecords(
       // write, or a run whose record was already reclaimed. Nothing to
       // restore from -- skip.
       if (isENOENT(cause)) {
-        logger.warn`skipping workflow-runs/${deploymentId}: no ${RECORD_FILENAME} to restore from`;
+        logger.warn`skipping workflow-runs/${runId}: no ${RECORD_FILENAME} to restore from`;
         continue;
       }
       throw cause;
@@ -151,16 +151,16 @@ export async function scanWorkflowRunRecords(
       parsed = JSON.parse(raw);
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`skipping workflow-runs/${deploymentId}: ${RECORD_FILENAME} is not valid JSON: ${reason}`;
+      logger.warn`skipping workflow-runs/${runId}: ${RECORD_FILENAME} is not valid JSON: ${reason}`;
       continue;
     }
 
     const record = WorkflowRunRecord(parsed);
     if (record instanceof type.errors) {
-      logger.warn`skipping workflow-runs/${deploymentId}: ${RECORD_FILENAME} failed validation: ${record.summary}`;
+      logger.warn`skipping workflow-runs/${runId}: ${RECORD_FILENAME} failed validation: ${record.summary}`;
       continue;
     }
-    scanned.push({ deploymentId, record });
+    scanned.push({ runId, record });
   }
   return scanned;
 }

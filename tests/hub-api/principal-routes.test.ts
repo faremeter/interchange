@@ -181,13 +181,13 @@ async function setup() {
   await seedWorkflowRun(h.db, {
     id: DEPLOYMENT_ID,
     tenantId: TENANT_ID,
-    deploymentId: DEPLOYMENT_ID,
+    anchorRunId: DEPLOYMENT_ID,
     address: DEPLOYMENT_ADDRESS,
     status: "running",
   });
   await seedWorkflowRun(h.db, {
     id: RUN_ID,
-    deploymentId: DEPLOYMENT_ID,
+    anchorRunId: DEPLOYMENT_ID,
     tenantId: TENANT_ID,
   });
 

@@ -217,7 +217,7 @@ const agentRepoStore = createAgentRepoStore({
   signingKey: sidecarSigningKey,
 });
 
-// The deploy router records `(deploymentId -> agentAddress)` here on
+// The deploy router records `(runId -> agentAddress)` here on
 // every inbound `agent.deploy`; the facade resolves the mapping when
 // firing the pack push so the outbound frames carry the right
 // agentAddress for hub-side routing.
@@ -476,11 +476,11 @@ const orchestrator = createSidecarOrchestrator({
       signingKeySeed: sidecarSigningKey.privateKey,
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: buildHarness.canBuildSource,
-      registerDeployment: ({ deploymentId, agentAddress }) => {
-        deploymentAddressRegistry.record(deploymentId, agentAddress);
+      registerDeployment: ({ runId, agentAddress }) => {
+        deploymentAddressRegistry.record(runId, agentAddress);
       },
-      unregisterDeployment: ({ deploymentId }) => {
-        deploymentAddressRegistry.unregister(deploymentId);
+      unregisterDeployment: ({ runId }) => {
+        deploymentAddressRegistry.unregister(runId);
       },
       multistepMailRouter,
       multistepSignalRouter,

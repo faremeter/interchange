@@ -422,7 +422,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -448,12 +448,12 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       dynamicSpawnEnv: () => ({}),
       workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
       workflowRunRef: "refs/heads/main",
-      deploymentId: "run_deployment-x",
+      anchorRunId: "run_deployment-x",
       stepCount: 1,
       deploymentMailAddress: "run_deployment-x@example.com",
       readPrincipal: { kind: "supervisor" },
-      deriveStepAddress: ({ deploymentId, stepId }) =>
-        `${deploymentId}-${stepId}@example.com`,
+      deriveStepAddress: ({ runId, stepId }) =>
+        `${runId}-${stepId}@example.com`,
       ipcKeyPairFactory: () => Promise.resolve(ipcKp),
       inboxPrimitives: wrappedInbox,
     };
@@ -524,7 +524,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     await senderA.send({
       type: "terminal.event",
       data: {
-        runId: bindings.deploymentId,
+        runId: bindings.anchorRunId,
         kind: "RunCompleted",
         seq: 0,
         at: "stale-from-cohort-A",
@@ -546,7 +546,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     await senderB.send({
       type: "terminal.event",
       data: {
-        runId: bindings.deploymentId,
+        runId: bindings.anchorRunId,
         kind: "RunCompleted",
         seq: 0,
         at: "real-from-cohort-B",

@@ -45,9 +45,9 @@ function ev(seq: number, type: string): string {
   return JSON.stringify({ seq, type, runId: "run-1" });
 }
 
-async function setup(deploymentId: string) {
+async function setup(anchorRunId: string) {
   const dataDir = await makeTempDir("compact-");
-  const repoId: RepoId = { kind: "workflow-run", id: deploymentId };
+  const repoId: RepoId = { kind: "workflow-run", id: anchorRunId };
   const substrate = createRepoStore({
     dataDir,
     signingKey,
@@ -60,16 +60,16 @@ async function setup(deploymentId: string) {
   });
   const supervisor: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
-    deploymentId,
+    anchorRunId,
   };
   const eventsDir = () =>
     path.join(substrate.getRepoDir(repoId), "runs", "run-1", "events");
-  return { repoId, substrate, supervisor, deploymentId, eventsDir };
+  return { repoId, substrate, supervisor, anchorRunId, eventsDir };
 }
 
 describe("compactRunEvents", () => {
   test("folds a terminated run's events into one combined file", async () => {
-    const { repoId, substrate, supervisor, deploymentId, eventsDir } =
+    const { repoId, substrate, supervisor, anchorRunId, eventsDir } =
       await setup("dep-1");
     await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
       preservePrefix: "runs/run-1/events/",
@@ -88,7 +88,7 @@ describe("compactRunEvents", () => {
       substrate,
       repoId,
       ref: REF,
-      deploymentId,
+      anchorRunId,
       runId: "run-1",
     });
     expect(result.compacted).toBe(true);
@@ -115,14 +115,14 @@ describe("compactRunEvents", () => {
       substrate,
       repoId,
       ref: REF,
-      deploymentId,
+      anchorRunId,
       runId: "run-1",
     });
     expect(again.compacted).toBe(false);
   });
 
   test("leaves an in-flight (non-terminal) run untouched", async () => {
-    const { repoId, substrate, supervisor, deploymentId, eventsDir } =
+    const { repoId, substrate, supervisor, anchorRunId, eventsDir } =
       await setup("dep-2");
     await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
       preservePrefix: "runs/run-1/events/",
@@ -134,7 +134,7 @@ describe("compactRunEvents", () => {
       substrate,
       repoId,
       ref: REF,
-      deploymentId,
+      anchorRunId,
       runId: "run-1",
     });
     expect(result.compacted).toBe(false);
@@ -142,7 +142,7 @@ describe("compactRunEvents", () => {
   });
 
   test("two concurrent seals do not destroy the combined file", async () => {
-    const { repoId, substrate, supervisor, deploymentId } =
+    const { repoId, substrate, supervisor, anchorRunId } =
       await setup("dep-concurrent");
     await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
       preservePrefix: "runs/run-1/events/",
@@ -157,7 +157,7 @@ describe("compactRunEvents", () => {
       substrate,
       repoId,
       ref: REF,
-      deploymentId,
+      anchorRunId,
       runId: "run-1",
     };
     const [a, b] = await Promise.all([
@@ -179,7 +179,7 @@ describe("compactRunEvents", () => {
   });
 
   test("a sibling blobs/ subtree survives a seal", async () => {
-    const { repoId, substrate, supervisor, deploymentId } =
+    const { repoId, substrate, supervisor, anchorRunId } =
       await setup("dep-blobs");
     await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
       preservePrefix: "runs/run-1/events/",
@@ -197,7 +197,7 @@ describe("compactRunEvents", () => {
           substrate,
           repoId,
           ref: REF,
-          deploymentId,
+          anchorRunId,
           runId: "run-1",
         })
       ).compacted,
@@ -225,7 +225,7 @@ describe("compactRunEvents", () => {
     // `events.jsonl`. The `runs/<runId>/` subtree is never pruned, so
     // grants.json lives and is reclaimed on exactly the same schedule as the
     // run's own retained event log.
-    const { repoId, substrate, supervisor, deploymentId } =
+    const { repoId, substrate, supervisor, anchorRunId } =
       await setup("dep-grants");
     const grantsContents = JSON.stringify({
       grants: [
@@ -248,7 +248,7 @@ describe("compactRunEvents", () => {
           substrate,
           repoId,
           ref: REF,
-          deploymentId,
+          anchorRunId,
           runId: "run-1",
         })
       ).compacted,
@@ -268,7 +268,7 @@ describe("compactRunEvents", () => {
   });
 
   test("folds multi-digit seqs in numeric, not lexical, order", async () => {
-    const { repoId, substrate, supervisor, deploymentId } =
+    const { repoId, substrate, supervisor, anchorRunId } =
       await setup("dep-multidigit");
     const seqs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
     const typeAt = (s: number) => (s === 11 ? "RunCompleted" : "StepStarted");
@@ -289,7 +289,7 @@ describe("compactRunEvents", () => {
           substrate,
           repoId,
           ref: REF,
-          deploymentId,
+          anchorRunId,
           runId: "run-1",
         })
       ).compacted,
@@ -303,13 +303,13 @@ describe("compactRunEvents", () => {
   });
 
   test("a run skipped while in-flight is sealed once it reaches a terminal event", async () => {
-    const { repoId, substrate, supervisor, deploymentId, eventsDir } =
+    const { repoId, substrate, supervisor, anchorRunId, eventsDir } =
       await setup("dep-becomes-terminal");
     const calls = {
       substrate,
       repoId,
       ref: REF,
-      deploymentId,
+      anchorRunId,
       runId: "run-1",
     };
     await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {

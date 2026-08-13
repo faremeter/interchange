@@ -175,7 +175,7 @@ function iterationReply(
  * staged into every step's deploy tree.
  */
 async function deployAndRunMap(opts: {
-  deploymentId: string;
+  anchorRunId: string;
   toolPackagePins?: readonly ToolPackagePin[];
 }): Promise<{
   events: readonly WorkflowRunEvent[];
@@ -204,12 +204,12 @@ async function deployAndRunMap(opts: {
   });
 
   const deploymentMailAddress = deriveRunAddress({
-    runId: opts.deploymentId,
+    runId: opts.anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
   const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${opts.deploymentId}`,
+    id: `wf_${opts.anchorRunId}`,
     trigger: { type: "mail", to: deploymentMailAddress },
     steps: {
       [SEED_STEP_ID]: step({ agent: seedAgent }),
@@ -223,7 +223,7 @@ async function deployAndRunMap(opts: {
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${opts.deploymentId}`,
+    agentId: `${opts.anchorRunId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
@@ -253,7 +253,7 @@ async function deployAndRunMap(opts: {
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
       ...(orchestratorParams.toolPackagePins !== undefined
@@ -313,7 +313,7 @@ async function deployAndRunMap(opts: {
       config,
       deployContent: { systemPrompt: config.systemPrompt },
       operatorApprovals,
-      deploymentId: opts.deploymentId,
+      runId: opts.anchorRunId,
       deploymentDomain: DEPLOYMENT_DOMAIN,
       hubPublicKey: "00".repeat(32),
       ...(opts.toolPackagePins !== undefined
@@ -334,7 +334,7 @@ async function deployAndRunMap(opts: {
     id: deriveDeploymentId(deploymentMailAddress),
   };
   env.registerDeployment({
-    deploymentId: opts.deploymentId,
+    anchorRunId: opts.anchorRunId,
     workflowDefinition: workflow,
     workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
@@ -346,7 +346,7 @@ async function deployAndRunMap(opts: {
   );
 
   await fireMailTrigger(env, deploymentMailAddress, {
-    messageId: `<${opts.deploymentId}@integration.interchange>`,
+    messageId: `<${opts.anchorRunId}@integration.interchange>`,
   });
 
   const runId = await waitForFirstRunId(env, workflowRunRepoId, {
@@ -359,7 +359,7 @@ async function deployAndRunMap(opts: {
   // iteration resolved its base step's staged assets and ran.
   const terminal = await waitForWorkflowRunComplete(
     env,
-    opts.deploymentId,
+    opts.anchorRunId,
     runId,
     {
       diagnostics: env.sidecarDiagnostics,
@@ -368,7 +368,7 @@ async function deployAndRunMap(opts: {
   );
   expect(terminal.type).toBe("RunCompleted");
 
-  const events = await readWorkflowRunEvents(env, opts.deploymentId, runId);
+  const events = await readWorkflowRunEvents(env, opts.anchorRunId, runId);
   return {
     events,
     mapAgentId: mapAgent.id,
@@ -384,7 +384,7 @@ describe("map fan-out real-agent round-trip", () => {
   test("a top-level map runs a real agent per item and commits real output", async () => {
     const { events, mapAgentId, inferenceRequestCount } = await deployAndRunMap(
       {
-        deploymentId: DEPLOYMENT_ID,
+        anchorRunId: DEPLOYMENT_ID,
       },
     );
 
@@ -435,7 +435,7 @@ describe("map fan-out real-agent round-trip", () => {
     // iteration reads the unstaged scoped address, materializes no tools, and
     // the reply omits the tool name.
     const { events, inferenceRequestCount } = await deployAndRunMap({
-      deploymentId: TOOL_DEPLOYMENT_ID,
+      anchorRunId: TOOL_DEPLOYMENT_ID,
       toolPackagePins: TOOL_PINS,
     });
 

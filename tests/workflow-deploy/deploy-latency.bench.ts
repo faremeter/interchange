@@ -14,7 +14,7 @@
 // stack is the real deploy stack stood up by `startDeployFlowEnv` (real
 // hub WebSocket server, real sidecar subprocess, mock echo inference so
 // inference cost is ~0 and does not confound the deploy timing). Each
-// measured deploy uses a fresh deploymentId so per-step `agent-state`
+// measured deploy uses a fresh anchorRunId so per-step `agent-state`
 // repos and derived mail addresses never collide across iterations.
 //
 // For each step count the FIRST (cold) iteration is discarded: the first
@@ -206,11 +206,11 @@ const OPERATOR_APPROVALS: ApprovalSet = new Set<string>([
  * head deploy path; two or more yields the multi-step branch.
  */
 function buildWorkflow(
-  deploymentId: string,
+  anchorRunId: string,
   stepCount: number,
 ): { workflow: WorkflowDefinition; mailAddress: string } {
   const mailAddress = deriveRunAddress({
-    runId: deploymentId,
+    runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
@@ -218,7 +218,7 @@ function buildWorkflow(
   for (let k = 0; k < stepCount; k += 1) {
     const stepId = `step${String(k)}`;
     const agent = defineAgent({
-      id: `agent-${deploymentId}-${stepId}`,
+      id: `agent-${anchorRunId}-${stepId}`,
       systemPrompt: `You are step ${String(k)} of the deploy-latency bench.`,
       tools: [],
       capabilities: [],
@@ -231,7 +231,7 @@ function buildWorkflow(
   }
 
   const workflow = defineWorkflow({
-    id: `wf_${deploymentId}`,
+    id: `wf_${anchorRunId}`,
     trigger: { type: "mail", to: mailAddress },
     steps,
   });
@@ -247,14 +247,14 @@ function buildWorkflow(
  */
 async function measureOneDeploy(
   env: DeployFlowEnv,
-  deploymentId: string,
+  anchorRunId: string,
   stepCount: number,
 ): Promise<number> {
-  const { workflow, mailAddress } = buildWorkflow(deploymentId, stepCount);
+  const { workflow, mailAddress } = buildWorkflow(anchorRunId, stepCount);
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${deploymentId}`,
+    agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: mailAddress,
@@ -283,7 +283,7 @@ async function measureOneDeploy(
     await env.hub.sessionService.stageWorkflowStep({
       agentAddress: orchestratorParams.agentAddress,
       agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.instanceId,
+      runId: orchestratorParams.runId,
       config: orchestratorParams.config,
       deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
       ...(orchestratorParams.toolPackagePins !== undefined
@@ -340,7 +340,7 @@ async function measureOneDeploy(
     config,
     deployContent: { systemPrompt: config.systemPrompt },
     operatorApprovals,
-    deploymentId,
+    runId: anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     hubPublicKey: "00".repeat(32),
   });
@@ -348,7 +348,7 @@ async function measureOneDeploy(
 
   if (!result.publicKey) {
     throw new Error(
-      `deploy-latency bench: deploy of ${deploymentId} (${String(stepCount)} steps) did not return a public key`,
+      `deploy-latency bench: deploy of ${anchorRunId} (${String(stepCount)} steps) did not return a public key`,
     );
   }
   return elapsed;
@@ -384,7 +384,7 @@ async function main(): Promise<void> {
   // deploy. A fresh env per iteration would fold sidecar spawn cost into
   // the samples; the deploy path under measurement does not spawn a
   // sidecar, so reusing the env keeps the measured interval to the deploy
-  // itself. Each deploy gets a unique deploymentId so nothing collides.
+  // itself. Each deploy gets a unique anchorRunId so nothing collides.
   const env: DeployFlowEnv = await startDeployFlowEnv({
     inferenceEchoUserMessage: true,
   });
@@ -395,8 +395,8 @@ async function main(): Promise<void> {
       const samples: number[] = [];
       // iterations + 1 deploys; the first (cold) sample is discarded.
       for (let i = 0; i < opts.iterations + 1; i += 1) {
-        const deploymentId = `deploy-latency-s${String(stepCount)}-i${String(i)}`;
-        const elapsed = await measureOneDeploy(env, deploymentId, stepCount);
+        const anchorRunId = `deploy-latency-s${String(stepCount)}-i${String(i)}`;
+        const elapsed = await measureOneDeploy(env, anchorRunId, stepCount);
         if (i > 0) samples.push(elapsed);
       }
       if (samples.length === 0) {
@@ -429,7 +429,7 @@ async function main(): Promise<void> {
     iterationsPerCount: opts.iterations,
     stepCounts: opts.stepCounts,
     sampleNote:
-      "first (cold) deploy per step count discarded; each measured deploy uses a fresh deploymentId on one shared hub+sidecar env",
+      "first (cold) deploy per step count discarded; each measured deploy uses a fresh anchorRunId on one shared hub+sidecar env",
     inference: "HTTP mock (echo mode); inference cost fixed/~0 (deploy path)",
     machine: {
       platform: `${os.type()} ${os.release()} ${os.arch()}`,

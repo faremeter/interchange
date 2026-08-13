@@ -86,12 +86,16 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 /**
  * Project an agent address into the substrate-safe id of its
  * workflow-run repo. Both deploy branches key `{ kind: "workflow-run",
- * id }` by this slug, and the supervisor principal's `deploymentId`
+ * id }` by this slug, and the supervisor principal's `anchorRunId`
  * must equal that id for the workflow-run kind handler's authz check to
  * pass. The derivation is owned by `@intx/workflow-deploy` so the hub's
  * read routes reconstruct the identical id; this thin delegator keeps
  * the sidecar's call sites readable while the rationale and the
  * substrate `SAFE_REPO_ID` contract live with the shared function.
+ *
+ * The name keeps "Deployment" deliberately: it derives the deploy-phase
+ * routing slug (the workflow-run repo id an address projects to), not a
+ * run identity, so it survives the run-first identity sweep.
  */
 export function deriveDeploymentId(agentAddress: string): string {
   return deriveWorkflowRunRepoId(agentAddress);
@@ -136,9 +140,9 @@ type StepStrategy = {
  * workflow-run repo stays keyed by `deriveWorkflowRunRepoId(legacy)`).
  *
  * Any other step count is a derived multi-step deploy: each step gets a
- * derived `<deploymentId>-<stepId>` mail address (via the router's
+ * derived `<runId>-<stepId>` mail address (via the router's
  * `multistepDeriveStepAddress`) and a derived agent-state repo under the
- * default `<deploymentId>-<stepId>` convention.
+ * default `<runId>-<stepId>` convention.
  *
  * NOTE: the supervisor's `deriveStepAddress` feeds the credentials
  * snapshot's per-step mail `address` and the grants-repo derivation. It
@@ -170,9 +174,9 @@ function createStepStrategy(args: {
   }
   return {
     deriveStepAddress: args.multistepDeriveStepAddress,
-    deriveStepRepoId: ({ deploymentId, stepId }) => ({
+    deriveStepRepoId: ({ runId, stepId }) => ({
       kind: "agent-state",
-      id: `${deploymentId}-${stepId}`,
+      id: `${runId}-${stepId}`,
     }),
   };
 }
@@ -198,7 +202,7 @@ function createStepStrategy(args: {
  *     repo, sibling to that run's `runs/<runId>/events/` subtree. The
  *     `stepOrder` / `deriveStepRepoId` fields are unused in this mode --
  *     the destination is the one workflow-run repo keyed by
- *     `deploymentId`, not a per-step fan-out.
+ *     `runId`, not a per-step fan-out.
  *
  * Both destinations use the same hub principal and `refs/heads/main`
  * ref: the agent-state kind handler gates `writeTree` as hub-only, and
@@ -206,7 +210,7 @@ function createStepStrategy(args: {
  */
 async function writeStepGrants(args: {
   repoStore: RepoStore;
-  deploymentId: string;
+  anchorRunId: string;
   stepOrder: readonly string[];
   deriveStepRepoId: DeriveStepRepoId;
   grants: readonly unknown[] | undefined;
@@ -222,7 +226,7 @@ async function writeStepGrants(args: {
   if (args.runId !== undefined) {
     await args.repoStore.writeTree(
       GRANTS_WRITE_PRINCIPAL,
-      { kind: "workflow-run", id: args.deploymentId },
+      { kind: "workflow-run", id: args.anchorRunId },
       STEP_GRANTS_REF,
       {
         files: { [runGrantsPath(args.runId)]: serialized },
@@ -233,7 +237,7 @@ async function writeStepGrants(args: {
   }
   for (const stepId of args.stepOrder) {
     const repoId = args.deriveStepRepoId({
-      deploymentId: args.deploymentId,
+      runId: args.anchorRunId,
       stepId,
     });
     await args.repoStore.writeTree(
@@ -251,8 +255,8 @@ async function writeStepGrants(args: {
 export type AssembleRunCredentialsSnapshotOpts = {
   /** Substrate handle the sink reads the per-run grants file from. */
   repoStore: RepoStore;
-  /** Deployment id keying the workflow-run repo the grants file lives in. */
-  deploymentId: string;
+  /** Anchor run id keying the workflow-run repo the grants file lives in. */
+  anchorRunId: string;
   /** Run whose per-run grants file is read. */
   runId: string;
   /** Step ids in `stepOrder`; the per-run grants apply uniformly across them. */
@@ -285,7 +289,7 @@ export async function assembleRunCredentialsSnapshot(
 ): Promise<CredentialsSnapshot> {
   const runGrants = await readRunGrants({
     repoStore: opts.repoStore,
-    deploymentId: opts.deploymentId,
+    anchorRunId: opts.anchorRunId,
     runId: opts.runId,
   });
   if (runGrants === undefined) {
@@ -297,7 +301,7 @@ export async function assembleRunCredentialsSnapshot(
   const steps: CredentialsSnapshotStep[] = opts.stepOrder.map((stepId) => ({
     stepId,
     address: opts.deriveStepAddress({
-      deploymentId: opts.deploymentId,
+      runId: opts.anchorRunId,
       stepId,
     }),
     grants: runGrants,
@@ -499,7 +503,7 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /** Workflow-run repo ref the supervisor commits events to. */
   workflowRunRef: string;
   /** Deployment id baked into principal claims and address derivation. */
-  deploymentId: string;
+  runId: string;
   /**
    * Decrypted credential material for the deployment's tools (from the deploy
    * frame). Delivered to the child on the pre-trigger barrier. Absent when the
@@ -526,7 +530,7 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   /**
    * Optional override of the per-step `agent-state` repo identity the
    * supervisor reads grants from while assembling the
-   * credentialsSnapshot. Defaults to the `<deploymentId>-<stepId>`
+   * credentialsSnapshot. Defaults to the `<runId>-<stepId>`
    * convention; the single-step launched-agent deploy supplies a
    * derivation that returns the legacy agent-state repo so the spawned
    * child reads grants from the same repo the legacy agent identity
@@ -580,7 +584,7 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   readyTimeoutMs?: number;
   /**
    * Control-plane suspension sink forwarded to the supervisor's
-   * `onSuspensionRegister` binding. The supervisor stamps `deploymentId` +
+   * `onSuspensionRegister` binding. The supervisor stamps `runId` +
    * `agentAddress` and invokes this when a workflow-process child reports a
    * `park.notify`; production wiring routes it to the hub link so a
    * `signal.correlation.register` frame reaches the hub. Absent means the
@@ -621,7 +625,7 @@ export type SidecarWorkflowSupervisor = {
    */
   onRunStart(args: {
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
   }): Promise<CredentialsSnapshot>;
 };
 
@@ -869,17 +873,14 @@ export function createSidecarDeployRouter(deps: {
    */
   assertSourceBuildable: (source: InferenceSource) => void;
   /**
-   * Record a `(deploymentId -> agentAddress)` mapping the boot edge's
+   * Record a `(runId -> agentAddress)` mapping the boot edge's
    * workflow-run pack push facade consults when it must address an
    * outbound pack frame. Fires once per inbound `agent.deploy` frame
    * before the deployment's supervisor spawns, so the first pack push
    * the child triggers sees the mapping. Tests that do not exercise
    * the pack push path may pass a no-op.
    */
-  registerDeployment: (entry: {
-    deploymentId: string;
-    agentAddress: string;
-  }) => void;
+  registerDeployment: (entry: { runId: string; agentAddress: string }) => void;
   /**
    * Symmetric removal hook for `registerDeployment`. Fires from the
    * link's `agent.undeploy` path so the boot edge's
@@ -891,7 +892,7 @@ export function createSidecarDeployRouter(deps: {
    * exercise the pack push path may pass a no-op.
    */
   unregisterDeployment: (entry: {
-    deploymentId: string;
+    runId: string;
     agentAddress: string;
   }) => void;
   /**
@@ -939,21 +940,21 @@ export function createSidecarDeployRouter(deps: {
    * workflow-process child reports (`park.notify`). The multi-step branch
    * threads it into the supervisor's `onSuspensionRegister` binding so a
    * parked run's correlation is registered at the hub (routing + approval
-   * rows). The supervisor stamps `deploymentId` + `agentAddress` before
+   * rows). The supervisor stamps `runId` + `agentAddress` before
    * invoking it. Defaults to a no-op; production wiring supplies the
    * hub-link-backed publisher.
    */
   publishWorkflowSuspension?: (registration: {
     correlationId: string;
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
     agentAddress: string;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
   /**
    * Optional override for the multi-step branch's per-step mail-address
-   * derivation. Defaults to `${deploymentId}-${stepId}@<deploymentDomain>`
+   * derivation. Defaults to `${runId}-${stepId}@<deploymentDomain>`
    * derived from the frame's agent address. Tests inject a deterministic
    * factory.
    */
@@ -1113,7 +1114,7 @@ export function createSidecarDeployRouter(deps: {
     ((_registration: {
       correlationId: string;
       runId: string;
-      deploymentId: string;
+      anchorRunId: string;
       agentAddress: string;
       kind: SignalKind;
       approvalSnapshot?: ApprovalSnapshot;
@@ -1123,7 +1124,7 @@ export function createSidecarDeployRouter(deps: {
     });
   const multistepSubstrateEnv = deps.multistepSubstrateEnv ?? {};
   // Sidecar data dir the deployment's per-step scratch is rooted under
-  // (`<dataDir>/workflow-step-state/<deploymentId>/...`). Resolved once
+  // (`<dataDir>/workflow-step-state/<runId>/...`). Resolved once
   // from the boot-edge substrate env so the undeploy hook can reclaim
   // the whole subtree. Absent only when the router is wired without
   // substrate config (a test that never spawns a child), in which case
@@ -1136,7 +1137,7 @@ export function createSidecarDeployRouter(deps: {
     deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
   const multistepDeriveStepAddress: DeriveStepAddress =
     deps.multistepDeriveStepAddress ??
-    (({ deploymentId, stepId }) => `${deploymentId}-${stepId}`);
+    (({ runId, stepId }) => `${runId}-${stepId}`);
 
   // Per-deployment supervisor tracking. The multi-step branch
   // constructs one `SidecarWorkflowSupervisor` per `agent.deploy`
@@ -1169,23 +1170,23 @@ export function createSidecarDeployRouter(deps: {
   // the router before any supervisor or repo state is touched.
   const slugClaims = new Map<string, string>();
 
-  function claimSlug(deploymentId: string, agentAddress: string): void {
-    const existing = slugClaims.get(deploymentId);
+  function claimSlug(runId: string, agentAddress: string): void {
+    const existing = slugClaims.get(runId);
     if (existing !== undefined && existing !== agentAddress) {
       throw new Error(
-        `deriveDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to deploymentId ${JSON.stringify(deploymentId)}`,
+        `deriveDeploymentId collision: agent addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to runId ${JSON.stringify(runId)}`,
       );
     }
     // A same-address re-claim is a defensive no-op: the `activeSupervisors`
     // guard rejects a live re-deploy before claimSlug is re-invoked, and a
     // failed or undeployed deploy releases the slug first, so in practice
     // `existing` is only ever undefined or a different address here.
-    slugClaims.set(deploymentId, agentAddress);
+    slugClaims.set(runId, agentAddress);
   }
 
-  function releaseSlug(deploymentId: string, agentAddress: string): void {
-    const existing = slugClaims.get(deploymentId);
-    if (existing === agentAddress) slugClaims.delete(deploymentId);
+  function releaseSlug(runId: string, agentAddress: string): void {
+    const existing = slugClaims.get(runId);
+    if (existing === agentAddress) slugClaims.delete(runId);
   }
 
   /**
@@ -1408,12 +1409,12 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
       );
     }
-    const deploymentId = deriveDeploymentId(spec.agentAddress);
+    const runId = deriveDeploymentId(spec.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy. A
     // one-step deployment keeps the deployment's own (legacy) mail address
     // and its grants in the legacy agent-state repo keyed by the legacy
-    // instance id. A multi-step deployment derives `<deploymentId>-<stepId>`
+    // instance id. A multi-step deployment derives `<runId>-<stepId>`
     // per step for both the mail address and the agent-state repo id.
     const stepStrategy = createStepStrategy({
       legacyAddress: spec.agentAddress,
@@ -1448,7 +1449,7 @@ export function createSidecarDeployRouter(deps: {
         ...multistepSubstrateEnv,
         WORKFLOW_DEFINITION_REPO_ID: spec.definition.id,
         WORKFLOW_DEFINITION_REF: "refs/heads/main",
-        WORKFLOW_RUN_REPO_ID: deploymentId,
+        WORKFLOW_RUN_REPO_ID: runId,
         WORKFLOW_RUN_REF: "refs/heads/main",
       };
       // Live-rotatable per-step inference sources. Seeded from the deploy
@@ -1473,10 +1474,10 @@ export function createSidecarDeployRouter(deps: {
         signingKeySeed: deps.signingKeySeed,
         workflowRunRepoId: {
           kind: "workflow-run",
-          id: deploymentId,
+          id: runId,
         },
         workflowRunRef: "refs/heads/main",
-        deploymentId,
+        runId,
         stepCount: spec.definition.stepOrder.length,
         stepOrder: spec.definition.stepOrder,
         deploymentMailAddress: spec.agentAddress,
@@ -1484,7 +1485,7 @@ export function createSidecarDeployRouter(deps: {
         deriveStepAddress: stepStrategy.deriveStepAddress,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
         isRunPoisoned: (runId) => poisonedRunIds.has(runId),
-        // The supervisor stamps `deploymentId` + `agentAddress` before
+        // The supervisor stamps `runId` + `agentAddress` before
         // invoking this; forward the fully-stamped registration to the
         // hub-link-backed publisher so a `signal.correlation.register` frame
         // reaches the hub for the parked run.
@@ -1605,7 +1606,7 @@ export function createSidecarDeployRouter(deps: {
       // before the replay writes. The finally unwinds it on any failure
       // between here and the end of the try.
       deps.registerDeployment({
-        deploymentId,
+        runId,
         agentAddress: spec.agentAddress,
       });
       deploymentRegistered = true;
@@ -1652,7 +1653,7 @@ export function createSidecarDeployRouter(deps: {
         try {
           await writeStepGrants({
             repoStore: deps.repoStore,
-            deploymentId,
+            anchorRunId: runId,
             stepOrder: spec.definition.stepOrder,
             deriveStepRepoId: stepStrategy.deriveStepRepoId,
             grants: args.stepGrants,
@@ -1719,7 +1720,7 @@ export function createSidecarDeployRouter(deps: {
               try {
                 await persistWorkflowRunRecord(
                   stepStateDataDir,
-                  deploymentId,
+                  runId,
                   buildWorkflowRunRecord(spec, rotated),
                 );
               } catch (cause) {
@@ -1817,7 +1818,7 @@ export function createSidecarDeployRouter(deps: {
           // surfaces structurally (`registry.resolve` returns null) rather
           // than resolving to the address of a deployment that never came up.
           deps.unregisterDeployment({
-            deploymentId,
+            runId,
             agentAddress: spec.agentAddress,
           });
         }
@@ -1900,7 +1901,7 @@ export function createSidecarDeployRouter(deps: {
       );
     }
 
-    const deploymentId = deriveDeploymentId(frame.agentAddress);
+    const runId = deriveDeploymentId(frame.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy.
     //
@@ -1912,7 +1913,7 @@ export function createSidecarDeployRouter(deps: {
     // workflow-run repo stays keyed by `deriveWorkflowRunRepoId(legacy)`
     // and `agent_instance.address` remains the `ins_<hex>` legacy shape.
     //
-    // A multi-step projection derives `<deploymentId>-<stepId>` per step
+    // A multi-step projection derives `<runId>-<stepId>` per step
     // for both the mail address and the agent-state repo id, isolating
     // each step's grants in its own repo.
     const stepStrategy = createStepStrategy({
@@ -1922,7 +1923,7 @@ export function createSidecarDeployRouter(deps: {
     });
 
     // Claim the deployment slug BEFORE any durable write so a colliding
-    // deploymentId (two distinct addresses projecting to the same slug) is
+    // runId (two distinct addresses projecting to the same slug) is
     // rejected before `workflow.json`, the step grants, or the supervisor
     // touch disk -- the router's "no repo state touched before rejection"
     // guarantee. The claim is released on any failure below; a successful
@@ -1955,12 +1956,12 @@ export function createSidecarDeployRouter(deps: {
     };
     const record = buildWorkflowRunRecord(spec, spec.sources);
 
-    claimSlug(deploymentId, frame.agentAddress);
+    claimSlug(runId, frame.agentAddress);
     // Hold the single-flight reservation across the async body below and clear
     // it in the finally. Everything above is synchronous and throws before any
     // durable write, so the reservation is only needed from the first await
     // here onward; the top-of-method guard already consults this set for a
-    // concurrent frame, and claimSlug/deploymentId derivation above cannot
+    // concurrent frame, and claimSlug/runId derivation above cannot
     // yield control before this point.
     reservingDeployAddresses.add(frame.agentAddress);
     try {
@@ -1968,7 +1969,7 @@ export function createSidecarDeployRouter(deps: {
       // leaves a record the boot scan re-drives (an idempotent re-spawn; the
       // child's in-flight-run discovery resumes any run). A soft-failed deploy
       // deletes it below, so only a crash-interrupted deploy leaves one.
-      await persistWorkflowRunRecord(dataDir, deploymentId, record);
+      await persistWorkflowRunRecord(dataDir, runId, record);
 
       // Materialize the deploy-only durable state the spawned child and the
       // supervisor read from disk: the workflow definition (`workflow.json`)
@@ -2001,7 +2002,7 @@ export function createSidecarDeployRouter(deps: {
       // `deriveStepRepoId`, before the spawn core, so the read sees them.
       await writeStepGrants({
         repoStore: deps.repoStore,
-        deploymentId,
+        anchorRunId: runId,
         stepOrder: projection.definition.stepOrder,
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
         grants: frame.config.grants,
@@ -2017,15 +2018,15 @@ export function createSidecarDeployRouter(deps: {
       // orphaned record is a durable-state leak the next boot scan re-drives)
       // but `cause` is still what propagates and the slug is still released.
       try {
-        await deleteWorkflowRunRecord(dataDir, deploymentId);
+        await deleteWorkflowRunRecord(dataDir, runId);
       } catch (cleanupError) {
         const message =
           cleanupError instanceof Error
             ? cleanupError.message
             : String(cleanupError);
-        logger.error`deploy cleanup: deleteWorkflowRunRecord failed for ${deploymentId}: ${message}`;
+        logger.error`deploy cleanup: deleteWorkflowRunRecord failed for ${runId}: ${message}`;
       }
-      releaseSlug(deploymentId, frame.agentAddress);
+      releaseSlug(runId, frame.agentAddress);
       throw cause;
     } finally {
       // Release the single-flight reservation whether the deploy succeeded or
@@ -2064,7 +2065,7 @@ export function createSidecarDeployRouter(deps: {
       // boundary rather than dispatched into a supervisor that is in
       // the middle of tearing its child down. The pattern is: drop
       // racing frames first, then unwind the underlying resource.
-      const deploymentId = deriveDeploymentId(frame.agentAddress);
+      const runId = deriveDeploymentId(frame.agentAddress);
       deps.multistepMailRouter?.unregister(frame.agentAddress);
       deps.multistepSignalRouter?.unregister(frame.agentAddress);
       deps.multistepDrainRouter?.unregister(frame.agentAddress);
@@ -2093,7 +2094,7 @@ export function createSidecarDeployRouter(deps: {
         deps.transport.unregister(frame.agentAddress);
         // Reclaim the deployment's per-step local-disk scratch now that
         // its supervisor + workflow-process child are torn down. The
-        // whole `workflow-step-state/<deploymentId>/` subtree goes: the
+        // whole `workflow-step-state/<runId>/` subtree goes: the
         // warm single-step agent's stable workspace under `warm/` (the
         // dir bounded keying parks per agent) AND any cold `runs/<runId>/`
         // subtrees a multi-step deploy's per-run cleanup did not already
@@ -2103,10 +2104,10 @@ export function createSidecarDeployRouter(deps: {
         // root and is deliberately NOT touched here -- a re-deploy on the
         // same address must restore the prior conversation from it.
         if (stepStateDataDir !== undefined) {
-          await rm(
-            pathJoin(stepStateDataDir, "workflow-step-state", deploymentId),
-            { recursive: true, force: true },
-          );
+          await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
+            recursive: true,
+            force: true,
+          });
         }
       }
       // Drop the run record so a boot-time restore does not re-spawn a
@@ -2114,11 +2115,11 @@ export function createSidecarDeployRouter(deps: {
       // supervisor was active -- so a record left behind by a
       // crash-interrupted deploy is reclaimed too.
       if (stepStateDataDir !== undefined) {
-        await deleteWorkflowRunRecord(stepStateDataDir, deploymentId);
+        await deleteWorkflowRunRecord(stepStateDataDir, runId);
       }
-      releaseSlug(deploymentId, frame.agentAddress);
+      releaseSlug(runId, frame.agentAddress);
       deps.unregisterDeployment({
-        deploymentId,
+        runId,
         agentAddress: frame.agentAddress,
       });
     },
@@ -2138,14 +2139,14 @@ export function createSidecarDeployRouter(deps: {
       // `hubLink.connect()`, so there are no concurrent deploys to contend
       // with. Each record's failure is caught so one bad deployment cannot
       // strand the rest.
-      for (const { deploymentId, record } of scanned) {
+      for (const { runId, record } of scanned) {
         try {
           // Integrity: the stored address must re-derive to its own directory
           // name. A mismatch means a corrupt or misplaced record; skip it
           // rather than restore a deployment under the wrong slug.
           const derived = deriveDeploymentId(record.agentAddress);
-          if (derived !== deploymentId) {
-            logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${deploymentId}`;
+          if (derived !== runId) {
+            logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
             continue;
           }
 
@@ -2204,23 +2205,23 @@ export function createSidecarDeployRouter(deps: {
           // already live (its slug still held by the running deployment), the
           // core's double-spawn guard throws, and freeing the slug then would
           // strand a live deployment's collision guard. `claimSlug` is a
-          // no-op for an already-held (deploymentId, address) pair, so the
+          // no-op for an already-held (runId, address) pair, so the
           // pre-claim check distinguishes the two.
           const slugNewlyClaimed =
-            slugClaims.get(deploymentId) !== record.agentAddress;
-          claimSlug(deploymentId, record.agentAddress);
+            slugClaims.get(runId) !== record.agentAddress;
+          claimSlug(runId, record.agentAddress);
           try {
             await spawnWorkflowRun(spec);
             logger.info`Restored workflow deployment for ${record.agentAddress}`;
           } catch (cause) {
             if (slugNewlyClaimed) {
-              releaseSlug(deploymentId, record.agentAddress);
+              releaseSlug(runId, record.agentAddress);
             }
             throw cause;
           }
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
-          logger.warn`Failed to restore workflow deployment ${deploymentId}: ${reason}`;
+          logger.warn`Failed to restore workflow deployment ${runId}: ${reason}`;
         }
       }
     },
@@ -2264,7 +2265,7 @@ export function createSidecarDeployRouter(deps: {
  * message and stable across the FIFO pipeline's
  * enqueue/dequeue/markConsumed transitions.
  */
-export function deriveSidecarMailAuditRef(deploymentId: string): (
+export function deriveSidecarMailAuditRef(runId: string): (
   messageId: string,
   rawMessage: Uint8Array,
 ) => {
@@ -2273,7 +2274,7 @@ export function deriveSidecarMailAuditRef(deploymentId: string): (
 } {
   return (messageId, _rawMessage) => ({
     store: "sidecar-mail-audit",
-    path: `${deploymentId}/${messageId}`,
+    path: `${runId}/${messageId}`,
   });
 }
 
@@ -2291,7 +2292,7 @@ export function createSidecarWorkflowSupervisor(
   );
   const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
-    deploymentId: opts.deploymentId,
+    anchorRunId: opts.runId,
   };
   // Per-run grants sink. The supervisor awaits this and pushes the
   // resulting snapshot to the child before the run's `trigger.fire`; a
@@ -2301,7 +2302,7 @@ export function createSidecarWorkflowSupervisor(
   // before dispatch (see `assembleRunCredentialsSnapshot`).
   const onRunStart = (args: {
     runId: string;
-    deploymentId: string;
+    anchorRunId: string;
   }): Promise<CredentialsSnapshot> => {
     // Fail closed on a run whose `run.grants` write was recorded as failed:
     // its per-run grants file never landed. This is the known-failed-write
@@ -2318,7 +2319,7 @@ export function createSidecarWorkflowSupervisor(
     }
     return assembleRunCredentialsSnapshot({
       repoStore: opts.repoStore,
-      deploymentId: args.deploymentId,
+      anchorRunId: args.anchorRunId,
       runId: args.runId,
       stepOrder: opts.stepOrder,
       deriveStepAddress: opts.deriveStepAddress,
@@ -2337,7 +2338,7 @@ export function createSidecarWorkflowSupervisor(
     dynamicSpawnEnv: opts.dynamicSpawnEnv,
     workflowRunRepoId: opts.workflowRunRepoId,
     workflowRunRef: opts.workflowRunRef,
-    deploymentId: opts.deploymentId,
+    anchorRunId: opts.runId,
     stepCount: opts.stepCount,
     deploymentMailAddress: opts.deploymentMailAddress,
     readPrincipal: supervisorPrincipal,
@@ -2352,7 +2353,7 @@ export function createSidecarWorkflowSupervisor(
     ...(opts.deriveStepRepoId !== undefined
       ? { deriveStepRepoId: opts.deriveStepRepoId }
       : {}),
-    deriveMailAuditRef: deriveSidecarMailAuditRef(opts.deploymentId),
+    deriveMailAuditRef: deriveSidecarMailAuditRef(opts.runId),
     ...(opts.onDispatchTiming !== undefined
       ? { onDispatchTiming: opts.onDispatchTiming }
       : {}),

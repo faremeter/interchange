@@ -277,7 +277,7 @@ export function mountHubRoutes(
   // The run management surface -- list, observe, stop, mail a single run.
   // Mounted as `/workflows/runs` (tenant-wide runs) before the `/workflows`
   // deploy router below, and its literal `runs` segment out-prioritizes that
-  // router's `:deploymentId`, so `/workflows/runs` never resolves as a
+  // router's `:runId`, so `/workflows/runs` never resolves as a
   // deployment id.
   app.route(
     "/api/tenants/:tenantId/workflows/runs",
@@ -302,7 +302,7 @@ export function mountHubRoutes(
   // stays available even when the gated `/workflows` deploy surface is off.
   // Registered before that surface as a defensive measure: the concrete
   // `/workflows/definitions/...` paths do not overlap the deploy router's
-  // `/:deploymentId` patterns, so this ordering is belt-and-suspenders.
+  // `/:runId` patterns, so this ordering is belt-and-suspenders.
   app.route(
     "/api/tenants/:tenantId/workflows/definitions",
     createWorkflowDefinitionRoutes({ db, requireGrant }),
@@ -476,7 +476,7 @@ export function mountHubRoutes(
     // The folded run's agent-state clone surface. Mounts at `/workflows/runs`
     // alongside the run-management routes; the git sub-paths (`:runId/state.git`)
     // are disjoint from the run routes, and the literal `runs` segment
-    // out-ranks the `/workflows/:deploymentId` deploy router.
+    // out-ranks the `/workflows/:runId` deploy router.
     app.route(
       "/api/tenants/:tenantId/workflows/runs",
       createAgentStateRunGitRoutes({

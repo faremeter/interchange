@@ -130,7 +130,7 @@ describe("unresolvable-director deploy rejection", () => {
       await deployWorkflow(env, workflow, {
         config,
         deployContent: { systemPrompt: "You are an integration test agent." },
-        deploymentId: AGENT_ID,
+        anchorRunId: AGENT_ID,
         operatorApprovals,
       });
     } catch (err) {

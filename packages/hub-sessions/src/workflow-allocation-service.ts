@@ -51,7 +51,7 @@ export class ExclusiveWorkflowPlacementError extends Error {
 
 export type PrepareExclusiveWorkflowDeploymentArgs = {
   readonly tenantId: string;
-  readonly deploymentId: string;
+  readonly anchorRunId: string;
   readonly deploymentDomain: string;
   readonly definition: WorkflowDefinition;
   readonly definitionAssetId: string;
@@ -67,7 +67,7 @@ export type PrepareExclusiveWorkflowDeploymentArgs = {
 };
 
 export type PreparedExclusiveWorkflowDeployment = {
-  readonly deploymentId: string;
+  readonly anchorRunId: string;
   readonly deploymentAddress: string;
   readonly allocationId: string;
   readonly status: "pending";
@@ -226,7 +226,7 @@ export function createWorkflowAllocationService({
     const allocationId = createAllocationId();
     const createdAt = now();
     const deploymentAddress = deriveRunAddress({
-      runId: args.deploymentId,
+      runId: args.anchorRunId,
       domain: args.deploymentDomain,
     });
     await db.transaction(async (tx) => {
@@ -235,9 +235,9 @@ export function createWorkflowAllocationService({
         args.definitionAssetId,
       );
       await tx.insert(workflowRun).values({
-        id: args.deploymentId,
+        id: args.anchorRunId,
         tenantId: args.tenantId,
-        anchorRunId: args.deploymentId,
+        anchorRunId: args.anchorRunId,
         definitionId,
         address: deploymentAddress,
         // Born "deployed": the anchor is live but pre-trigger. The first trigger
@@ -249,7 +249,7 @@ export function createWorkflowAllocationService({
         id: generateId("grant"),
         tenantId: args.tenantId,
         principalId: args.sourceAuthorityPrincipalId,
-        resource: `workflow-run:${args.deploymentId}`,
+        resource: `workflow-run:${args.anchorRunId}`,
         action: "read",
         effect: "allow",
         origin: "creator",
@@ -258,7 +258,7 @@ export function createWorkflowAllocationService({
       });
       await launchSpecStore.create(
         {
-          anchorRunId: args.deploymentId,
+          anchorRunId: args.anchorRunId,
           sessionId: args.sessionId,
           deploymentDomain: args.deploymentDomain,
           sourceAuthorityPrincipalId: args.sourceAuthorityPrincipalId,
@@ -277,7 +277,7 @@ export function createWorkflowAllocationService({
       await allocationStore.createPending(
         {
           id: allocationId,
-          anchorRunId: args.deploymentId,
+          anchorRunId: args.anchorRunId,
           tenantId: args.tenantId,
           provisionerId: provisioner.id,
           provisionerApiVersion: provisioner.apiVersion,
@@ -290,7 +290,7 @@ export function createWorkflowAllocationService({
     });
 
     return {
-      deploymentId: args.deploymentId,
+      anchorRunId: args.anchorRunId,
       deploymentAddress,
       allocationId,
       status: "pending",
@@ -381,7 +381,7 @@ export function createWorkflowAllocationService({
 
     return preparedDeployer.deployPreparedWorkflowDefinition({
       tenantId: allocation.tenantId,
-      deploymentId: allocation.anchorRunId,
+      anchorRunId: allocation.anchorRunId,
       deploymentDomain: spec.deploymentDomain,
       definition,
       config,

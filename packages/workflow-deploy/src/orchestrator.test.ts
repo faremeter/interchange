@@ -25,7 +25,7 @@ import {
   deriveRunAgentId,
   deriveStepAddress,
   deriveStepAgentId,
-  deriveStepInstanceId,
+  deriveStepRunId,
   deriveWorkflowRunRepoId,
   MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
@@ -173,7 +173,7 @@ function createRecordingWorkflowRepoWriter(): WorkflowRepoWriter & {
 type RecordedLaunch = {
   agentAddress: string;
   agentId: string;
-  instanceId: string;
+  runId: string;
   config: HarnessConfig;
   deployContent: DeployContent;
   toolPackagePins?: readonly unknown[];
@@ -188,7 +188,7 @@ function createRecordingLaunch(): {
     launches.push({
       agentAddress: params.agentAddress,
       agentId: params.agentId,
-      instanceId: params.instanceId,
+      runId: params.runId,
       config: params.config,
       deployContent: params.deployContent,
       ...(params.toolPackagePins !== undefined
@@ -254,7 +254,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_pins",
+        runId: "dep_pins",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -303,7 +303,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_order",
+        runId: "dep_order",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -341,7 +341,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       const result = await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_abc123",
+        runId: "dep_abc123",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -358,7 +358,7 @@ describe("createWorkflowDeployOrchestrator", () => {
         "dep_abc123-plan@workflow.interchange",
       );
       expect(planLaunch.agentId).toBe("dep_abc123-plan");
-      expect(planLaunch.instanceId).toBe("dep_abc123-plan");
+      expect(planLaunch.runId).toBe("dep_abc123-plan");
       expect(planLaunch.config.agentAddress).toBe(planLaunch.agentAddress);
       expect(planLaunch.config.agentId).toBe(planLaunch.agentId);
       expect(planLaunch.config.systemPrompt).toBe("you plan");
@@ -368,7 +368,7 @@ describe("createWorkflowDeployOrchestrator", () => {
         "dep_abc123-execute@workflow.interchange",
       );
       expect(executeLaunch.agentId).toBe("dep_abc123-execute");
-      expect(executeLaunch.instanceId).toBe("dep_abc123-execute");
+      expect(executeLaunch.runId).toBe("dep_abc123-execute");
       expect(executeLaunch.config.systemPrompt).toBe("you execute");
       expect(executeLaunch.deployContent.systemPrompt).toBe("you execute");
 
@@ -421,7 +421,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_xy",
+        runId: "dep_xy",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -463,7 +463,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_abc123",
+          runId: "dep_abc123",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -495,7 +495,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_abc123",
+          runId: "dep_abc123",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -521,7 +521,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_xyz",
+          runId: "dep_xyz",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -531,7 +531,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       ).rejects.toBeInstanceOf(SingleStepDeployHandoffMissingError);
     });
 
-    test("throws when deploymentId is missing", async () => {
+    test("throws when anchorRunId is missing", async () => {
       const workflow = makeMultiStepWorkflow();
       const planAgent = workflow.steps.plan;
       const executeAgent = workflow.steps.execute;
@@ -585,7 +585,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_abc123",
+          runId: "dep_abc123",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
           operatorApprovals: approvals,
@@ -612,7 +612,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       const result = await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_xyz",
+        runId: "dep_xyz",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -630,7 +630,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       if (call === undefined) throw new Error("missing single-step deploy");
       expect(call.agentAddress).toBe("dep_xyz@workflow.interchange");
       expect(call.agentId).toBe("dep_xyz");
-      expect(call.instanceId).toBe("dep_xyz");
+      expect(call.runId).toBe("dep_xyz");
       const expectedStepId = workflow.stepOrder[0];
       if (expectedStepId === undefined) {
         throw new Error("missing step id");
@@ -682,7 +682,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_chain",
+        runId: "dep_chain",
         deploymentDomain: "workflow.interchange",
         config,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -743,7 +743,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_rogue",
+          runId: "dep_rogue",
           deploymentDomain: "workflow.interchange",
           config,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -808,7 +808,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_inverted",
+          runId: "dep_inverted",
           deploymentDomain: "workflow.interchange",
           config,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -858,7 +858,7 @@ describe("createWorkflowDeployOrchestrator", () => {
 
       await orchestrator.deployWorkflow({
         workflow,
-        deploymentId: "dep_pinned",
+        runId: "dep_pinned",
         deploymentDomain: "workflow.interchange",
         config: HARNESS_CONFIG_BASE,
         deployContent: DEPLOY_CONTENT_BASE,
@@ -908,7 +908,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_pinfail",
+          runId: "dep_pinfail",
           deploymentDomain: "workflow.interchange",
           config: configMissingSource,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -956,7 +956,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_legacy",
+          runId: "dep_legacy",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -991,7 +991,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_legacy",
+          runId: "dep_legacy",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -1047,7 +1047,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       try {
         await orchestrator.deployWorkflow({
           workflow,
-          deploymentId: "dep_legacy",
+          runId: "dep_legacy",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -1084,7 +1084,7 @@ describe("createWorkflowDeployOrchestrator", () => {
       await expect(
         orchestrator.deployWorkflow({
           workflow: bogus,
-          deploymentId: "dep_x",
+          runId: "dep_x",
           deploymentDomain: "workflow.interchange",
           config: HARNESS_CONFIG_BASE,
           deployContent: DEPLOY_CONTENT_BASE,
@@ -1180,8 +1180,8 @@ describe("per-step address derivation", () => {
     );
   });
 
-  test("deriveStepInstanceId concatenates the run id and step", () => {
-    expect(deriveStepInstanceId({ runId: "dep_abc", stepId: "x" })).toBe(
+  test("deriveStepRunId concatenates the run id and step", () => {
+    expect(deriveStepRunId({ runId: "dep_abc", stepId: "x" })).toBe(
       "dep_abc-x",
     );
   });
