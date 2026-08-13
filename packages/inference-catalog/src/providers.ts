@@ -57,7 +57,10 @@ export type CatalogProviderSpec = {
 // serves gpt-5.x, which rejects `max_tokens`, so it carries
 // OPENAI_FIRSTPARTY_QUIRKS. The openai-compatible relay offerings that advertise
 // reasoning carry OPENAI_REASONING_QUIRKS; gpt-5.4-mini, which advertises only
-// structured output, ships an empty bag.
+// structured output, ships an empty bag. xAI Direct serves the grok models on
+// the same openai-compatible wire: its reasoning offerings carry
+// OPENAI_REASONING_QUIRKS, and grok-4.20-0309-non-reasoning, which surfaces no
+// reasoning, ships an empty bag.
 export const catalogProviders: CatalogProviderSpec[] = [
   {
     name: "Anthropic Direct",
@@ -1495,6 +1498,131 @@ export const catalogProviders: CatalogProviderSpec[] = [
           "function-calling-multi-turn",
           "reasoning-content",
           "reasoning-content-streaming",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "xAI Direct",
+    plugin: "openai-compatible",
+    baseURL: "https://api.x.ai/v1",
+    offerings: [
+      {
+        model: "grok-4.20-0309-non-reasoning",
+        priority: 0,
+        discoverySource: {
+          provider: "xai",
+          model: "grok-4.20-0309-non-reasoning",
+        },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: {},
+      },
+      {
+        model: "grok-4.20-0309-reasoning",
+        priority: 5,
+        discoverySource: {
+          provider: "xai",
+          model: "grok-4.20-0309-reasoning",
+        },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "grok-4.3",
+        priority: 10,
+        discoverySource: { provider: "xai", model: "grok-4.3" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "grok-4.5",
+        priority: 15,
+        discoverySource: { provider: "xai", model: "grok-4.5" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "grok-4.6",
+        priority: 20,
+        discoverySource: { provider: "xai", model: "grok-4.6" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
+        ],
+        quirks: OPENAI_REASONING_QUIRKS,
+      },
+      {
+        model: "grok-build-0.1",
+        priority: 25,
+        discoverySource: { provider: "xai", model: "grok-build-0.1" },
+        curatedCapabilities: ["long-context"],
+        capabilities: [
+          "plain-text",
+          "plain-text-streaming",
+          "function-calling",
+          "function-calling-multi-turn",
+          "vision-input",
+          "reasoning-content",
+          "reasoning-content-streaming",
+          "structured-output",
+          "structured-output-streaming",
+          "long-context",
         ],
         quirks: OPENAI_REASONING_QUIRKS,
       },
