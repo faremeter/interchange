@@ -57,7 +57,7 @@ When an agent is launched from a definition, the control plane creates a new run
 An agent gains at launch:
 
 - **Principal** — A new principal is created for the agent. All grants are materialized on this principal.
-- **Address** — An SMTP address (`ins_xxxxx@tenant.interchange.network`) for receiving messages.
+- **Address** — An SMTP address (`run_xxxxx@tenant.interchange.network`) for receiving messages.
 - **Key pair** — An Ed25519 key pair for cryptographic identity and content signing.
 - **Materialized grants** — The control plane resolves the definition's grant requirements against the appropriate sources (tenant policies, creator's grants, invoker's grants) and materializes the effective grant set on the agent's principal.
 - **Resolved credentials** — The control plane resolves the definition's credential requirements and provisions the agent with the credentials it needs.
@@ -252,14 +252,14 @@ The control plane maintains a key validity history per agent — a list of `(pub
 
 ### Agent Continuity
 
-Agents survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each agent address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state. Continuity refers to a single agent surviving its own harness restart, not portability across agents from the same definition.
+Agents survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each run address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state. Continuity refers to a single agent surviving its own harness restart, not portability across agents from the same definition.
 
 The authority model for agent continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
 - **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol requires the harness to prove it holds the private key for each agent address it claims to manage. This prevents a rogue harness from hijacking agents.
+The reconnection protocol requires the harness to prove it holds the private key for each run address it claims to manage. This prevents a rogue harness from hijacking agents.
 
 Signatures are attached to:
 
@@ -341,7 +341,7 @@ The control plane manages agent definitions — creating, versioning, and retiri
 The control plane launches agents from definitions onto harnesses. When an agent is launched, the control plane selects an appropriate harness, resolves the definition's grant, credential, and model requirements, transfers the agent package with materialized grants and resolved model providers, and instructs the harness to initialize the agent. The control plane tracks which agents are running on which harnesses, handles redeployment when harnesses fail, and coordinates graceful shutdown during updates or retirement.
 
 **Discovery**
-The control plane is the source of truth for discovery. It maintains a two-tier registry within each tenant: agent definitions as catalog entries (potential offerings that can be launched on demand) and running agents as live providers (immediately invocable with agent address and health status). The offerings endpoint returns both tiers, tagged with availability. The control plane also handles federation — publishing selected definitions and agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
+The control plane is the source of truth for discovery. It maintains a two-tier registry within each tenant: agent definitions as catalog entries (potential offerings that can be launched on demand) and running agents as live providers (immediately invocable with run address and health status). The offerings endpoint returns both tiers, tagged with availability. The control plane also handles federation — publishing selected definitions and agents to other tenants and incorporating federated entries from trusted tenants into local discovery results.
 
 **Health Monitoring**
 The control plane continuously monitors harness and agent health. It polls health endpoints, processes heartbeat messages, and maintains the operational status of all components. Unhealthy agents are removed from discovery. Unhealthy harnesses trigger agent migration to healthy harnesses. Health data feeds into the observability layer for dashboards and alerting.
@@ -368,10 +368,10 @@ Session channels are optional. Agents that do not require real-time streaming (b
 
 Agent launch and channel attachment flow:
 
-1. Client authenticates with the control plane and launches an agent from a definition via `POST /agents/instances`
-2. Control plane validates the client's identity and authorization, resolves grant and credential requirements, and deploys the agent to a sidecar
+1. Client authenticates with the control plane and deploys a workflow from a definition via `POST /workflows/deployments`
+2. Control plane validates the client's identity and authorization, resolves grant and credential requirements, and deploys the run to a sidecar
 3. Control plane returns the running agent with its address and public key
-4. Client opens a session channel to the agent's SSE endpoint (`GET /agents/instances/:instanceId/events`)
+4. Client opens a session channel to the run's SSE endpoint (`GET /workflows/runs/:runId/events`)
 5. Control plane routes the channel to the harness hosting the agent
 6. Harness enforces the materialized grants for the agent's lifetime
 

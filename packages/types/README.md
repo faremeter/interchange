@@ -21,7 +21,7 @@ pull in the shapes they need:
   (models, model providers, offerings, and append-only pricing, plus
   the model-requirement and invoker-preference shapes and the model
   discovery view), observability, sidecar status enums (distinct from
-  the wire frames under `@intx/types/sidecar` below), agent addresses,
+  the wire frames under `@intx/types/sidecar` below), run addresses,
   hex and base64 helpers, and the `hasCode` error guard.
 - `@intx/types/authz` — grant rules, condition contexts, and
   authorization result shapes shared between `@intx/authz` and the

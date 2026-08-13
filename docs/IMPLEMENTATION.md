@@ -26,7 +26,7 @@ The choice of SMTP/IMAP is pragmatic: we get a global, federated message bus wit
 Each agent has an SMTP address that serves as its network identifier:
 
 ```
-ins_xxxxx@domain.interchange.network
+run_xxxxx@domain.interchange.network
 ```
 
 The local part identifies the agent; the domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. Multiple agents launched from the same definition each receive their own address.
@@ -238,13 +238,13 @@ The IMAP inbox is the source of truth for conversation history. Session channels
 
 **Prototype (hub-mediated sidecar transport):**
 
-1. Sidecar reconnects to the hub and proves ownership of agent addresses via signed challenge (see HARNESS_DESIGN.md)
+1. Sidecar reconnects to the hub and proves ownership of run addresses via signed challenge (see HARNESS_DESIGN.md)
 2. Hub flushes queued undelivered messages as `message.send` frames for verified agents
 3. Sidecar loads agent context from isogit and resumes operation
 
 A supervised deployment carries its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle, so reconnect does not refresh grants over the wire.
 
-In the prototype, the hub's database serves as the delivery queue for messages sent while the sidecar is disconnected. The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given agent address. See HARNESS_DESIGN.md for the reconnection wire protocol.
+In the prototype, the hub's database serves as the delivery queue for messages sent while the sidecar is disconnected. The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given run address. See HARNESS_DESIGN.md for the reconnection wire protocol.
 
 ### Sidecar Agent Lifecycle Frames
 
@@ -266,12 +266,12 @@ Undeploy is an acknowledged operation. The sidecar shuts the deployment's superv
 
 **Reconnection:**
 
-| Direction     | Frame                | Purpose                                          |
-| ------------- | -------------------- | ------------------------------------------------ |
-| Sidecar → Hub | `reconnect`          | Announce agent addresses after WebSocket connect |
-| Hub → Sidecar | `challenge`          | Per-address nonces to sign                       |
-| Sidecar → Hub | `challenge.response` | Signed proofs of key ownership                   |
-| Hub → Sidecar | `challenge.failed`   | Verification failure for a specific address      |
+| Direction     | Frame                | Purpose                                        |
+| ------------- | -------------------- | ---------------------------------------------- |
+| Sidecar → Hub | `reconnect`          | Announce run addresses after WebSocket connect |
+| Hub → Sidecar | `challenge`          | Per-address nonces to sign                     |
+| Sidecar → Hub | `challenge.response` | Signed proofs of key ownership                 |
+| Hub → Sidecar | `challenge.failed`   | Verification failure for a specific address    |
 
 **Grant management:**
 
@@ -403,7 +403,7 @@ object whose shape is:
   package-owned `packages/workflow-host/bin/workflow-child` script.
   Production wires it against `Bun.spawn`; tests inject a mock.
 - Per-deployment configuration: `binaryPath`, `substrateEnv`,
-  `workflowRunRepoId`, `workflowRunRef`, `deploymentId`,
+  `workflowRunRepoId`, `workflowRunRef`, `anchorRunId`,
   `deploymentMailAddress`, `readPrincipal`, `deriveStepAddress`.
 
 The supervisor's `spawn(opts)` method:
@@ -831,11 +831,11 @@ into one combined log
 The workflow-run repo's substrate `repoId.id` is constrained to
 `/^[a-zA-Z0-9_-]+$/` (`SAFE_REPO_ID` in
 `packages/hub-sessions/src/repo-store/types.ts`), which the
-agent-address shape (`ins_<id>@<domain>`) does not satisfy. The sidecar
-wiring derives the deployment id by substituting disallowed characters
-with `-`; see `deriveDeploymentId` in
+run-address shape (`run_<id>@<domain>`) does not satisfy. The sidecar
+wiring derives the deploy-phase repo slug by substituting disallowed
+characters with `-`; see `deriveDeploymentId` in
 `apps/sidecar/src/workflow-host-wiring.ts`. The supervisor principal's
-`deploymentId` and the workflow-run `repoId.id` are kept equal so the
+`anchorRunId` and the workflow-run `repoId.id` are kept equal so the
 workflow-run kind handler's principal-vs-repo authz check holds for
 every supervisor-authored event commit.
 
@@ -852,9 +852,9 @@ definition's `stepOrder` at spawn time to assemble a per-step grant
 snapshot. The implementation lives in
 `packages/workflow-host/src/supervisor/credentials.ts`:
 
-- `defaultStepRepoId({ deploymentId, stepId })` returns the
+- `defaultStepRepoId({ runId, stepId })` returns the
   `agent-state` repo identity for the step. The default convention
-  is `<deploymentId>-<stepId>`.
+  is `<runId>-<stepId>`.
 - The grants file for a step rides at `state/grants.json` under the
   step's repo working tree (the substrate's `getRepoDir` is a pure
   path computation, mirroring the sibling production adapters'
@@ -1115,10 +1115,10 @@ Each deploy commit represents an immutable version. The control plane tracks whi
 
 ### Health Protocol
 
-The hub derives an instance's health rather than polling a harness-exposed endpoint. `GET /api/tenants/:tenantId/agents/instances/:instanceId/health` returns:
+The hub derives a run's health rather than polling a harness-exposed endpoint. `GET /api/tenants/:tenantId/workflows/runs/:runId/health` returns:
 
-- **Liveness** — `ok` when the instance's address is in the hub's routable set, `unhealthy` otherwise.
-- **Readiness** — `ok` when the instance has a recorded status, `not_ready` otherwise.
+- **Liveness** — `ok` when the run's address is in the hub's routable set, `unhealthy` otherwise.
+- **Readiness** — `ok` when the run has a recorded status, `not_ready` otherwise.
 
 The response's `lastCheckedAt` is currently always `null`: this is a derived read of hub-side state, not an active probe. Automated liveness-restart, readiness-gating, and heartbeat-driven failure handling are not yet wired — the deployment procedure's health gate and the health-triggered rollback below describe the intended flow, not an automated control loop that exists today.
 
@@ -1214,7 +1214,7 @@ The following frames are additions to the hub-sidecar protocol:
 
 Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation. Multiple transfers for different agents can be in flight concurrently.
 
-Additionally, `ReconnectFrame` gains an optional `deployRefs` field: a mapping of agent addresses to their current deploy commit SHA. This allows the hub to determine whether a pack transfer is needed on reconnect.
+Additionally, `ReconnectFrame` gains an optional `deployRefs` field: a mapping of run addresses to their current deploy commit SHA. This allows the hub to determine whether a pack transfer is needed on reconnect.
 
 ### Encoding and Flow Control
 

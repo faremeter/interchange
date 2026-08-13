@@ -13,7 +13,7 @@ This document specifies the message format, the IMAP inbox model, and the transp
 Every agent has an SMTP address as its network identity:
 
 ```
-ins_xxxxx@tenant.interchange.network
+run_xxxxx@tenant.interchange.network
 ```
 
 The local part identifies the agent within a tenant. The domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. DNS MX records route messages to the correct infrastructure. Each agent launched from a definition receives its own address, allowing multiple concurrent agents from the same definition.
@@ -88,7 +88,7 @@ Every message carries standard RFC 5322 headers plus Interchange-specific header
 
 | Header         | Usage                                                                                         |
 | -------------- | --------------------------------------------------------------------------------------------- |
-| `From`         | Sender's agent address                                                                        |
+| `From`         | Sender's run address                                                                          |
 | `To`           | Recipient address(es). Multiple recipients for 1:N broadcast.                                 |
 | `Cc`           | Additional recipients (visible to all)                                                        |
 | `Date`         | Origination timestamp (RFC 5322 date-time format)                                             |
@@ -342,7 +342,7 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 
 Agent public keys are published through the control plane and included in agent discovery metadata. For cross-tenant messages, public keys can additionally be published via DNS DANE/OPENPGPKEY records, providing a federated key distribution mechanism that does not require the receiving tenant to trust the sending tenant's control plane.
 
-The control plane also stores agent public keys for session management. When a harness reconnects after a restart, it proves ownership of agent addresses by signing a challenge with the agent's private key. The control plane verifies the signature against the stored public key before re-establishing the agent's sessions.
+The control plane also stores agent public keys for session management. When a harness reconnects after a restart, it proves ownership of run addresses by signing a challenge with the agent's private key. The control plane verifies the signature against the stored public key before re-establishing the agent's sessions.
 
 ## Inbox Management (IMAP Semantics)
 
@@ -751,7 +751,7 @@ Offering tools are convenience wrappers over the message transport for the commo
 
 Parameters:
 
-- `to`: target agent address
+- `to`: target run address
 - `offeringId`: the offering to invoke
 - `parameters`: offering-specific parameters (object)
 
@@ -767,7 +767,7 @@ Returns on error: `{ error: string, code: string }`. Error codes: `invalid_addre
 
 Parameters:
 
-- `to`: target agent address
+- `to`: target run address
 
 Sends an `offering.discover` message. Returns a pending marker; the catalog arrives as a correlated `offering.catalog` response.
 
@@ -795,7 +795,7 @@ For development, testing, and the initial prototype, an in-memory transport impl
 
 The in-memory transport maintains:
 
-- A map of agent addresses to mailbox stores (each store is a map of mailbox name to message array)
+- A map of run addresses to mailbox stores (each store is a map of mailbox name to message array)
 - A UID counter per mailbox
 - A MODSEQ counter per mailbox
 - A set of watch callbacks per mailbox

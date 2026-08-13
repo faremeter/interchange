@@ -33,11 +33,11 @@ The tradeoff is longer URLs. `/api/tenants/tnt_abc/agents/agt_xyz` is more verbo
 
 ### Why running agents and definitions are separate route groups
 
-Running agents live under `/agents/instances`; workflow definitions — the first-class blueprint model — are managed under `/workflows/definitions`. They are separate route groups because they are different resource types: an agent is a live running entity with state, an address, a principal, and offerings, while a definition is a catalog blueprint carrying versioning and rollback.
+Workflow runs live under `/workflows/runs`; workflow definitions — the first-class blueprint model — are managed under `/workflows/definitions`. They are separate route groups because they are different resource types: a run is a live executing entity with state, an address, a principal, and offerings, while a definition is a catalog blueprint carrying versioning and rollback.
 
-Keeping them separate means listing a tenant's running agents does not require knowing definition IDs, and a definition can be retired while its historical agents stay queryable. Agents are first-class tenant resources alongside wallets, credentials, and approvals.
+Keeping them separate means listing a tenant's runs does not require knowing definition IDs, and a definition can be retired while its historical runs stay queryable. Runs are first-class tenant resources alongside wallets, credentials, and approvals.
 
-Runtime state — data, history, branches, health, logs, metrics — lives on agent paths (`/agents/instances/:instanceId/...`), not on definition paths. This follows from the model: runtime state belongs to the running agent, not the blueprint. Most of these runtime-state routes are defined but not yet implemented: the data, history, and branches handlers (`agent-data.ts`) and the logs, metrics, and traces handlers (`observability.ts`) currently return `501`. Only the health read is wired, and it is a derived read of hub-side state rather than an active probe (see the Health Protocol in IMPLEMENTATION.md).
+Runtime state — data, history, branches, health, logs, metrics — lives on run paths (`/workflows/runs/:runId/...`), not on definition paths. This follows from the model: runtime state belongs to the run, not the blueprint. Most of these runtime-state routes are defined but not yet implemented: the data, history, and branches handlers (`agent-data.ts`) and the logs, metrics, and traces handlers (`observability.ts`) currently return `501`. Only the health read is wired, and it is a derived read of hub-side state rather than an active probe (see the Health Protocol in IMPLEMENTATION.md).
 
 ### Why cross-tenant reads are separate endpoints
 
@@ -66,7 +66,7 @@ All IDs are globally unique with typed prefixes:
 - `agt_` -- agent definition
 - `rol_` -- role
 - `ofr_` -- offering
-- `ins_` -- agent
+- `run_` -- workflow run
 - `ses_` -- session (internal, not exposed in the API)
 - `mail_` -- session mail record
 - `turn_` -- inference turn
@@ -135,8 +135,8 @@ Three route groups expose the wire:
 
 Every smart-HTTP URL the hub exposes terminates the repo segment with `.git`. The suffix is what distinguishes a smart-HTTP request from an arbitrary tenant or instance sub-path:
 
-- `/api/tenants/tnt_abc/workflows/runs/ins_xyz/state.git/info/refs` — smart-HTTP.
-- `/api/tenants/tnt_abc/workflows/runs/ins_xyz/events` — SSE, not git.
+- `/api/tenants/tnt_abc/workflows/runs/run_xyz/state.git/info/refs` — smart-HTTP.
+- `/api/tenants/tnt_abc/workflows/runs/run_xyz/events` — SSE, not git.
 
 This matches stock git's convention: `git clone` URLs end in `.git`, and the URL is the primary key by which it lives in `.git/config`.
 
@@ -161,8 +161,8 @@ When a user approves with `scope: "always"`, the system creates a persistent cap
 The workflow-process model (see LAYOUT.md and ARCHITECTURE.md) is driven through a tenant-scoped route group at `/api/tenants/:tenantId/workflows`, a notable group in the same sense as the git and mail surfaces. It exposes a deployment resource with members for launching, driving, and observing workflow runs:
 
 - Deploy a workflow and list a tenant's workflow deployments (`POST` and `GET .../workflows/deployments`).
-- Drive a running deployment by delivering a signal or inbound mail (`POST .../workflows/:deploymentId/signals`, `POST .../workflows/:deploymentId/mail`).
-- Observe a deployment's runs and per-run events (`GET .../workflows/:deploymentId/runs`, `GET .../workflows/:deploymentId/runs/:runId/events`).
+- Drive a running deployment by delivering a signal or inbound mail (`POST .../workflows/:runId/signals`, `POST .../workflows/:runId/mail`).
+- Observe a deployment's runs and per-run events (`GET .../workflows/:runId/runs`, `GET .../workflows/:runId/runs/:eventRunId/events`).
 
 As with the other groups, the exhaustive per-endpoint request and response shapes live in the generated route reference (`docs/API.md`); this section describes the group's shape and role, not each endpoint.
 
@@ -170,13 +170,13 @@ As with the other groups, the exhaustive per-endpoint request and response shape
 
 Mail is the first-class communication primitive. The hub stores raw MIME bytes at routing time and serves parsed views following the JMAP Email object model (RFC 8621).
 
-`POST .../agents/instances/:instanceId/mail` persists the user's message as a mail record and dispatches it to the running agent. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
+`POST .../workflows/runs/:runId/mail` persists the user's message as a mail record and dispatches it to the running agent. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
 
-`GET .../agents/instances/:instanceId/mail` returns cursor-paginated JMAP Email objects for the instance, in reverse chronological order.
+`GET .../workflows/runs/:runId/mail` returns cursor-paginated JMAP Email objects for the run, in reverse chronological order.
 
-`GET .../agents/instances/:instanceId/turns` returns cursor-paginated inference turns with their parts. One turn per inference cycle. Turns capture the agent's internal reasoning trace separately from the mail record.
+`GET .../workflows/runs/:runId/turns` returns cursor-paginated inference turns with their parts. One turn per inference cycle. Turns capture the agent's internal reasoning trace separately from the mail record.
 
-`GET .../blobs/:blobId` returns raw bytes for a MIME attachment part. Blob IDs are embedded in JMAP Email responses by the mail parsing layer, using the format `blob_<mailId>_<partPath>` where `partPath` is an IMAP-style section specifier (e.g. `1.3`). The caller must hold `read` access on the containing instance.
+`GET .../blobs/:blobId` returns raw bytes for a MIME attachment part. Blob IDs are embedded in JMAP Email responses by the mail parsing layer, using the format `blob_<mailId>_<partPath>` where `partPath` is an IMAP-style section specifier (e.g. `1.3`). The caller must hold `read` access on the containing run.
 
 This "fire-and-forget via REST, stream via channel" pattern matches the architecture's "persist first, stream second" principle. The durable record (mail in the database) is always ahead of or equal to the stream. If the client disconnects, nothing is lost -- they catch up by fetching mail via the REST endpoint.
 
@@ -186,7 +186,7 @@ The agent channel is a real-time overlay for interactive use cases. It is not fu
 
 ### SSE Event Stream
 
-The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/agents/instances/:instanceId/events`. Client-to-server messages use the REST `POST .../mail` endpoint.
+The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/workflows/runs/:runId/events`. Client-to-server messages use the REST `POST .../mail` endpoint.
 
 Event format: JSON objects with a `type` field and `data` payload.
 
@@ -207,7 +207,7 @@ Reconnection: Agent channels are ephemeral. On disconnect, the client reconnects
 
 ### WebSocket Agent Channel (Future)
 
-The architecture specifies a WebSocket agent channel at `wss://.../api/tenants/:tenantId/agents/instances/:instanceId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
+The architecture specifies a WebSocket agent channel at `wss://.../api/tenants/:tenantId/workflows/runs/:runId/stream` with JWT authentication. This is not yet implemented. The SSE endpoint serves all current user-facing streaming needs.
 
 ### Debug and Telemetry Streams
 
