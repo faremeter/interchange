@@ -14,13 +14,20 @@
       "intx-src": "./src/node.ts",
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./browser": {
+      "intx-src": "./src/browser.ts",
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
     }
   },
   "dependencies": {
     "@intx/log": "workspace:*",
     "@intx/mime": "workspace:*",
     "@intx/types": "workspace:*",
+    "@isomorphic-git/lightning-fs": "4.7.0",
     "arktype": "catalog:",
+    "buffer": "^6.0.3",
     "isomorphic-git": "catalog:"
   },
   "devDependencies": {

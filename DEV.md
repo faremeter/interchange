@@ -185,6 +185,7 @@ make lint           # Prettier + ESLint + API docs freshness
 make format         # Prettier auto-fix
 make test           # All tests
 make test-e2e       # Admin UI browser end-to-end suite (excluded from all)
+make test-storage-browser # Storage IndexedDB browser suite (excluded from all)
 make docs           # Regenerate API documentation
 make clean          # Remove tsbuildinfo, dist directories, env stamp
 ```
@@ -214,6 +215,16 @@ Local prerequisites:
 The harness sets `ADMIN_UI_HUB_ORIGIN` for the run; the vite preview
 proxy reads it to point the admin UI's `/api` calls at that run's hub.
 You do not set it by hand.
+
+The storage browser suite is independent of Postgres and the admin UI. It
+bundles `@intx/storage-isogit/browser`, serves a small harness, and verifies
+single-owner IndexedDB storage plus clean reset on reload in Chromium:
+
+```bash
+make test-storage-browser
+```
+
+It requires the same one-time Chromium installation as the admin UI suite.
 
 ## Bin Scripts
 

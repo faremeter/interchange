@@ -1,7 +1,7 @@
 # @intx/storage-isogit
 
 Isomorphic-git backed implementation of `ContextStore` and
-`AuditStore`. Each agent gets its own git repository on disk;
+`AuditStore`. Each agent gets its own git repository in the host filesystem;
 inference state lives on a working branch, the tool-authorization
 audit log lives on its own branch, and mail history lives in a
 dedicated audit store that commits each inbound and outbound
@@ -51,6 +51,32 @@ record is an idempotent retry, including after an uncertain persistence
 failure; reusing the same path for different content is rejected. Mail commits
 reconcile an uncertain ref publication before the same store accepts another
 message, so a committed message cannot have its ordinal reused.
+
+Browsers can use the included LightningFS IndexedDB adapter:
+
+```ts
+import { createBrowserIsogitStorage } from "@intx/storage-isogit/browser";
+
+const storage = createBrowserIsogitStorage("agent-storage");
+const store = await storage.createIsogitStore("/agents/example");
+```
+
+The browser adapter supplies isomorphic-git's Buffer compatibility, atomic
+rename, POSIX path operations, and IndexedDB-backed file storage. Each call to
+`createBrowserIsogitStorage(name)` claims a fresh volume and clears any prior
+contents for that name. Call it exactly once per name during a page or worker
+lifetime, then pass the returned storage object to every consumer. Reusing the
+same name from another factory call, bundle, tab, or worker is unsupported and
+may clear active data.
+
+Browser storage is intentionally disposable: a page reload, tab close, or
+worker restart ends the logical session, and the next owner starts from an
+empty volume instead of attempting recovery. `flush()` writes the current
+filesystem state to IndexedDB, but does not promise that state will survive a
+new owner. IndexedDB is the storage medium, not a restart-persistence
+guarantee. Use absolute repository paths; relative browser paths resolve from
+`/`. Applications that require restart persistence must inject a durable
+runtime through the package root and own that runtime's recovery guarantees.
 
 The pack-send and pack-receive helpers (`createDeployPack`,
 `createNegotiatedPack`, `applyPack`, `receivePackObjects`) produce

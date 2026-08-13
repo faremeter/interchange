@@ -16,10 +16,10 @@ import {
  * in Node and Bun and on the devtools console in browsers, until `setup()`
  * replaces the configuration.
  *
- * Formatter selection follows the same dev/prod heuristic as `setup()`,
- * but only reads `process.env["NODE_ENV"]`; the caller-facing `dev`/`prod`
- * options on `setup()` cannot influence this default because no options are
- * passed at module load.
+ * Formatter selection follows the same dev/prod heuristic as `setup()`. A
+ * runtime without Node's `process` global uses development formatting; the
+ * caller-facing `dev`/`prod` options on `setup()` cannot influence this
+ * default because no options are passed at module load.
  *
  * This is normally invoked once at module load (see the bottom of this
  * file). It is also exported so tests can reinstall the default sink after
@@ -33,7 +33,8 @@ import {
 export function installDefaultConsoleSink(): void {
   if (getConfig() !== null) return;
 
-  const isDev = process.env["NODE_ENV"] !== "production";
+  const isDev =
+    typeof process === "undefined" || process.env["NODE_ENV"] !== "production";
   const formatter: TextFormatter = isDev
     ? ansiColorFormatter
     : getJsonLinesFormatter();

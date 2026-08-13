@@ -1,9 +1,11 @@
 {
   "name": "@intx/admin-ui-e2e",
-  "description": "Playwright browser end-to-end suite that drives the served admin UI against a hermetically provisioned hub",
+  "description": "Playwright browser integration suites for the admin UI and browser-backed storage",
   "private": true,
   "type": "module",
   "devDependencies": {
+    "@intx/storage-isogit": "workspace:*",
+    "@intx/types": "workspace:*",
     "@playwright/test": "^1.50.0",
     "arktype": "catalog:",
     "zx": "^8.8.5"
