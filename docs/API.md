@@ -41,7 +41,7 @@
 | DELETE | /api/tenants/:tenantId/workflows/runs/:runId | Stop a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get run health |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List run offerings |
-| GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Run event stream |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List a run's turns |
@@ -495,13 +495,13 @@ Returns the offerings associated with the run's workflow definition. These repre
 404: ErrorResponse -- Run not found
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
-Run event stream
+Read a run's event log
 
-Streams the run's committed event log. Superseded by the run-event timeline mapping.
+Returns the run's committed, seq-ordered event log (RunStarted, StepStarted, StepCompleted, SignalAwaited, RunCompleted, etc.). The full log is returned on every call; a client polling for live updates deduplicates on seq. A run that has not been triggered yet returns an empty list.
 
-200: SSE stream -- Run event stream
+200: unknown -- Seq-ordered run events
 404: ErrorResponse -- Run not found
-410: ErrorResponse -- Run stopped
+503: ErrorResponse -- Run event log unavailable
 
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/mail
 Send mail to a run
@@ -530,12 +530,11 @@ Query: cursor?, limit?
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/turns
 List a run's turns
 
-Returns the run's step and lifecycle events in order. Cursor-paginated.
+Returns the run's step and lifecycle events in seq order -- the same committed event log the events route serves, presented as the run's turns. A run that has not been triggered yet returns an empty list.
 
-Query: cursor?, limit?
-
-200: unknown -- List of turns
+200: unknown -- Seq-ordered run events
 404: ErrorResponse -- Run not found
+503: ErrorResponse -- Run event log unavailable
 
 ## Workflow Definitions
 

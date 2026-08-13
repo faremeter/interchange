@@ -1,397 +1,101 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  extractBodyText,
-  formatAddress,
-  isRunAddress,
-  mailDeliveryToEvent,
-  mailToEvent,
-  parseFromHeader,
-  resolveAgentAddress,
-  resolveAgentRecipient,
-  shouldShowMail,
-  turnToEvent,
+  TERMINAL_RUN_EVENT_TYPES,
+  findAwaitingSignal,
+  isTerminalRunEvents,
 } from "./transforms";
+import type { WorkflowRunEvent } from "./validators";
 
-const AGENT_ADDR = "run_abc123@tenant.example";
-const HUMAN_ADDR = "usr_alice@tenant.example";
+function event(
+  seq: number,
+  type: string,
+  body: Record<string, unknown> = {},
+): WorkflowRunEvent {
+  return { seq, type, body };
+}
 
-describe("shouldShowMail", () => {
-  test("inbound mail is always shown", () => {
+describe("isTerminalRunEvents", () => {
+  test("false for a live run", () => {
     expect(
-      shouldShowMail({
-        direction: "inbound",
-        headers: {},
-      }),
-    ).toBe(true);
-    expect(
-      shouldShowMail({
-        direction: "inbound",
-        headers: { "interchange-type": "conversation.message" },
-      }),
-    ).toBe(true);
-  });
-
-  test("outbound connector reply is suppressed", () => {
-    expect(
-      shouldShowMail({
-        direction: "outbound",
-        headers: { "interchange-type": "conversation.message" },
-      }),
+      isTerminalRunEvents([event(0, "RunStarted"), event(1, "StepStarted")]),
     ).toBe(false);
   });
 
-  test("outbound mail to agent is shown", () => {
+  test("false for an empty log", () => {
+    expect(isTerminalRunEvents([])).toBe(false);
+  });
+
+  test.each([...TERMINAL_RUN_EVENT_TYPES])(
+    "true once %s is committed",
+    (terminalType) => {
+      expect(
+        isTerminalRunEvents([event(0, "RunStarted"), event(1, terminalType)]),
+      ).toBe(true);
+    },
+  );
+});
+
+describe("findAwaitingSignal", () => {
+  test("returns null when the run never awaits", () => {
     expect(
-      shouldShowMail({
-        direction: "outbound",
-        headers: {},
-      }),
-    ).toBe(true);
-  });
-
-  test("outbound mail to human without connector type is shown", () => {
-    expect(
-      shouldShowMail({
-        direction: "outbound",
-        headers: { "interchange-type": "offering.request" },
-      }),
-    ).toBe(true);
-  });
-});
-
-describe("parseFromHeader", () => {
-  test("extracts display name from RFC format", () => {
-    expect(parseFromHeader('"Alice Smith" <alice@example.com>')).toBe(
-      "Alice Smith",
-    );
-  });
-
-  test("falls back to local part when no display name", () => {
-    expect(parseFromHeader("alice@example.com")).toBe("alice");
-  });
-});
-
-describe("extractBodyText", () => {
-  test("extracts text from bodyValues using textBody reference", () => {
-    const bodyValues = { "part-1": { value: "Hello world" } };
-    const textBody = [{ partId: "part-1" }];
-    expect(extractBodyText(bodyValues, textBody)).toBe("Hello world");
-  });
-
-  test("returns empty string when textBody is empty", () => {
-    expect(extractBodyText({}, [])).toBe("");
-  });
-
-  test("returns empty string when bodyValue has no value field", () => {
-    const bodyValues = { "part-1": { other: "stuff" } };
-    const textBody = [{ partId: "part-1" }];
-    expect(extractBodyText(bodyValues, textBody)).toBe("");
-  });
-});
-
-describe("formatAddress", () => {
-  test("returns name when present", () => {
-    expect(formatAddress({ name: "Alice", email: "a@b.com" })).toBe("Alice");
-  });
-
-  test("falls back to email when name is null", () => {
-    expect(formatAddress({ name: null, email: "a@b.com" })).toBe("a@b.com");
-  });
-});
-
-describe("isRunAddress", () => {
-  test("returns true for run_ prefixed addresses", () => {
-    expect(isRunAddress(AGENT_ADDR)).toBe(true);
-  });
-
-  test("returns false for non-run addresses", () => {
-    expect(isRunAddress(HUMAN_ADDR)).toBe(false);
-  });
-});
-
-describe("resolveAgentAddress", () => {
-  test("resolves agent address to runId and label", () => {
-    const result = resolveAgentAddress({ name: "Bot", email: AGENT_ADDR });
-    expect(result).toEqual({ runId: "run_abc123", label: "Bot" });
-  });
-
-  test("returns null for non-agent address", () => {
-    expect(
-      resolveAgentAddress({ name: "Alice", email: HUMAN_ADDR }),
+      findAwaitingSignal([event(0, "RunStarted"), event(1, "StepStarted")]),
     ).toBeNull();
   });
-});
 
-describe("resolveAgentRecipient", () => {
-  test("resolves first recipient", () => {
-    const result = resolveAgentRecipient([{ name: "Bot", email: AGENT_ADDR }]);
-    expect(result).toEqual({ runId: "run_abc123", label: "Bot" });
-  });
-
-  test("returns null for empty recipients", () => {
-    expect(resolveAgentRecipient([])).toBeNull();
-  });
-});
-
-describe("mailToEvent", () => {
-  const baseMail = {
-    id: "mail_1",
-    sessionId: "sess_1",
-    runId: "run_abc123",
-    status: "delivered" as const,
-    receivedAt: "2024-01-01T00:00:00Z",
-    from: [{ name: "Alice", email: HUMAN_ADDR }],
-    to: [{ name: null, email: AGENT_ADDR }],
-    subject: "Hello",
-    sentAt: null,
-    bodyValues: { p1: { value: "Hi there" } },
-    textBody: [{ partId: "p1", type: "text/plain" }],
-    htmlBody: [],
-    attachments: [],
-    headers: {},
-  };
-
-  test("inbound mail maps to user role", () => {
-    const event = mailToEvent({ ...baseMail, direction: "inbound" });
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.role).toBe("user");
-    expect(event.id).toBe("mail_1");
-    expect(event.content).toBe("Hi there");
-    expect(event.timestamp).toBe("2024-01-01T00:00:00Z");
-  });
-
-  test("outbound mail maps to assistant role", () => {
-    const event = mailToEvent({
-      ...baseMail,
-      direction: "outbound",
-      from: [{ name: null, email: AGENT_ADDR }],
-      to: [{ name: "Alice", email: HUMAN_ADDR }],
+  test("returns the awaited signal while unresolved", () => {
+    const events = [
+      event(0, "RunStarted"),
+      event(1, "SignalAwaited", { signalName: "approve" }),
+    ];
+    expect(findAwaitingSignal(events)).toEqual({
+      seq: 1,
+      signalName: "approve",
     });
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.role).toBe("assistant");
   });
 
-  test("uses unknown sender when from is empty", () => {
-    const event = mailToEvent({ ...baseMail, direction: "inbound", from: [] });
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.sender).toEqual({ name: null, email: "unknown" });
+  test("a matching SignalReceived clears the await", () => {
+    const events = [
+      event(1, "SignalAwaited", { signalName: "approve" }),
+      event(2, "SignalReceived", { signalName: "approve" }),
+    ];
+    expect(findAwaitingSignal(events)).toBeNull();
   });
 
-  test("passes through attachments", () => {
-    const attachment = {
-      blobId: "blob_1",
-      name: "file.txt",
-      type: "text/plain",
-      size: 100,
-    };
-    const event = mailToEvent({
-      ...baseMail,
-      direction: "inbound",
-      attachments: [attachment],
+  test("a different SignalReceived does not clear the await", () => {
+    const events = [
+      event(1, "SignalAwaited", { signalName: "approve" }),
+      event(2, "SignalReceived", { signalName: "other" }),
+    ];
+    expect(findAwaitingSignal(events)).toEqual({
+      seq: 1,
+      signalName: "approve",
     });
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.attachments).toEqual([attachment]);
-  });
-});
-
-describe("mailDeliveryToEvent", () => {
-  const baseDelivery = {
-    id: "mail_2",
-    direction: "inbound" as const,
-    from: [{ name: "Bob", email: HUMAN_ADDR }],
-    to: [{ name: null, email: AGENT_ADDR }],
-    bodyValues: { p1: { value: "SSE body" } },
-    textBody: [{ partId: "p1", type: "text/plain" }],
-    headers: {} as Record<string, string>,
-    receivedAt: "2024-01-02T00:00:00Z",
-  };
-
-  test("inbound delivery maps to user role", () => {
-    const event = mailDeliveryToEvent(baseDelivery);
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.role).toBe("user");
-    expect(event.content).toBe("SSE body");
-    expect(event.id).toBe("mail_2");
-    expect(event.timestamp).toBe("2024-01-02T00:00:00Z");
   });
 
-  test("outbound delivery maps to assistant role", () => {
-    const event = mailDeliveryToEvent({
-      ...baseDelivery,
-      direction: "outbound",
+  test("a terminal event clears the await", () => {
+    const events = [
+      event(1, "SignalAwaited", { signalName: "approve" }),
+      event(2, "RunCompleted"),
+    ];
+    expect(findAwaitingSignal(events)).toBeNull();
+  });
+
+  test("tracks the latest await when a run parks twice", () => {
+    const events = [
+      event(1, "SignalAwaited", { signalName: "first" }),
+      event(2, "SignalReceived", { signalName: "first" }),
+      event(3, "SignalAwaited", { signalName: "second" }),
+    ];
+    expect(findAwaitingSignal(events)).toEqual({
+      seq: 3,
+      signalName: "second",
     });
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.role).toBe("assistant");
   });
 
-  test("uses unknown sender when from is absent", () => {
-    const { from: _from, ...withoutFrom } = baseDelivery;
-    const event = mailDeliveryToEvent(withoutFrom);
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.sender).toEqual({ name: null, email: "unknown" });
-  });
-
-  test("maps optional attachments", () => {
-    const event = mailDeliveryToEvent({
-      ...baseDelivery,
-      attachments: [
-        {
-          blobId: "blob_2",
-          name: "doc.pdf",
-          type: "application/pdf",
-          size: 512,
-        },
-      ],
-    });
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.attachments).toEqual([
-      { blobId: "blob_2", name: "doc.pdf", type: "application/pdf", size: 512 },
-    ]);
-  });
-
-  test("produces empty attachments when none provided", () => {
-    const event = mailDeliveryToEvent(baseDelivery);
-    expect(event.kind).toBe("mail");
-    if (event.kind !== "mail") return;
-    expect(event.attachments).toEqual([]);
-  });
-});
-
-describe("turnToEvent", () => {
-  const baseTurn = {
-    id: "turn_1",
-    sessionId: "sess_1",
-    runId: "run_abc123",
-    model: "gpt-4",
-    status: "completed" as const,
-    startedAt: "2024-01-03T00:00:00Z",
-    endedAt: "2024-01-03T00:00:01Z",
-    parts: [
-      {
-        id: "part_1",
-        type: "text" as const,
-        content: "Hello from assistant",
-        metadata: null,
-        ordinal: 0,
-      },
-    ],
-  };
-
-  test("text-only turns return null (represented by outbound mail)", () => {
-    expect(turnToEvent(baseTurn)).toBeNull();
-  });
-
-  test("returns null for turns with no displayable parts", () => {
-    const event = turnToEvent({
-      ...baseTurn,
-      parts: [
-        {
-          id: "part_1",
-          type: "reasoning" as const,
-          content: "some internal reasoning",
-          metadata: null,
-          ordinal: 0,
-        },
-      ],
-    });
-    expect(event).toBeNull();
-  });
-
-  test("sets isError and fallback content for failed turns", () => {
-    const event = turnToEvent({
-      ...baseTurn,
-      status: "failed",
-      parts: [
-        {
-          id: "part_1",
-          type: "error" as const,
-          content: "Something went wrong",
-          metadata: { category: "timeout" },
-          ordinal: 0,
-        },
-      ],
-    });
-    expect(event).not.toBeNull();
-    if (!event) return;
-    expect(event.kind).toBe("turn");
-    if (event.kind !== "turn") return;
-    expect(event.isError).toBe(true);
-    expect(event.errors).toEqual([
-      { category: "timeout", message: "Something went wrong" },
-    ]);
-  });
-
-  test("collects tool errors with resolved call names", () => {
-    const event = turnToEvent({
-      ...baseTurn,
-      parts: [
-        {
-          id: "part_call",
-          type: "tool" as const,
-          content: null,
-          metadata: { kind: "call", callId: "call_1", name: "search" },
-          ordinal: 0,
-        },
-        {
-          id: "part_result",
-          type: "tool" as const,
-          content: null,
-          metadata: {
-            kind: "result",
-            callId: "call_1",
-            isError: true,
-            content: "Tool failure",
-          },
-          ordinal: 1,
-        },
-        {
-          id: "part_text",
-          type: "text" as const,
-          content: "I had an error",
-          metadata: null,
-          ordinal: 2,
-        },
-      ],
-    });
-    expect(event).not.toBeNull();
-    if (!event) return;
-    expect(event.kind).toBe("turn");
-    if (event.kind !== "turn") return;
-    expect(event.toolErrors).toEqual([
-      { name: "search", content: "Tool failure" },
-    ]);
-  });
-
-  test("text-only turns with multiple parts still return null", () => {
-    expect(
-      turnToEvent({
-        ...baseTurn,
-        parts: [
-          {
-            id: "p1",
-            type: "text" as const,
-            content: "Hello",
-            metadata: null,
-            ordinal: 0,
-          },
-          {
-            id: "p2",
-            type: "text" as const,
-            content: " world",
-            metadata: null,
-            ordinal: 1,
-          },
-        ],
-      }),
-    ).toBeNull();
+  test("throws when SignalAwaited lacks a string signalName", () => {
+    expect(() =>
+      findAwaitingSignal([event(1, "SignalAwaited", { signalName: 42 })]),
+    ).toThrow(/missing a string signalName/);
   });
 });

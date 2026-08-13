@@ -286,6 +286,7 @@ export function mountHubRoutes(
       sessionService,
       sidecarRouter,
       eventCollectors,
+      repoStore,
       grantStore,
       conditionRegistry,
       requireGrant,

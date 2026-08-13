@@ -1,4 +1,8 @@
 import { describe, test, expect } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import git from "isomorphic-git";
 
 import { createInMemoryGrantStore } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
@@ -6,15 +10,12 @@ import type { SessionStatus } from "@intx/types";
 import type { ConnectorThreadState } from "@intx/types/runtime";
 
 import { createApp } from "../app";
-import {
-  agentSession,
-  inferenceTurn,
-  turnPart,
-  workflowRun,
-} from "@intx/db/schema";
+import { agentSession, workflowRun } from "@intx/db/schema";
 import {
   createSidecarEmitter,
+  type AssetService,
   type EventCollectorRegistry,
+  type RepoStore,
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
@@ -112,10 +113,6 @@ type MockDBOpts = {
   /** The session id `resolveRunSessionId` finds for a run's principal (used by
    * the mail routes). */
   runSessionId?: string | undefined;
-  /** inference_turn rows the turns route returns for a run. */
-  turns?: Record<string, unknown>[] | undefined;
-  /** turn_part rows joined to those turns. */
-  turnParts?: Record<string, unknown>[] | undefined;
   offerings?: Record<string, unknown>[] | undefined;
   /** Rows returned for the priorMail query used by POST /mail.
    * Defaults to `[]` (no prior session mail). */
@@ -158,25 +155,6 @@ function createMockDB(opts: MockDBOpts) {
               orderBy: (..._args: unknown[]) => ({
                 limit: () => Promise.resolve(sessionRows),
               }),
-            }),
-          };
-        }
-        if (t === inferenceTurn) {
-          // turns route: .where().orderBy().limit()
-          return {
-            where: () => ({
-              orderBy: (..._args: unknown[]) => ({
-                limit: () => Promise.resolve(opts.turns ?? []),
-              }),
-            }),
-          };
-        }
-        if (t === turnPart) {
-          // turns route: .where().orderBy() (no limit)
-          return {
-            where: () => ({
-              orderBy: (..._args: unknown[]) =>
-                Promise.resolve(opts.turnParts ?? []),
             }),
           };
         }
@@ -361,6 +339,82 @@ function createMockEventCollectors(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Run-event log fixtures
+//
+// The turns/events routes read the durable, git-backed run-event log through
+// the workflow-run reader, which consults only `RepoStore.getRepoDir`. These
+// helpers seed a temp git repo with a run's committed events and a RepoStore
+// stub that points the reader at it; every other RepoStore method throws so a
+// read path that drifts onto an unwired method fails loudly.
+// ---------------------------------------------------------------------------
+
+async function seedRunEventsRepo(
+  runId: string,
+  events: { seq: number; type: string; body?: Record<string, unknown> }[],
+): Promise<string> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "runs-route-"));
+  // The reader resolves refs/heads/main, so the seed must commit on main;
+  // isomorphic-git otherwise initializes on master and the reader reads nothing.
+  await git.init({ fs, dir, defaultBranch: "main" });
+  for (const e of events) {
+    const rel = `runs/${runId}/events/${e.seq}.json`;
+    const full = path.join(dir, rel);
+    await fs.promises.mkdir(path.dirname(full), { recursive: true });
+    await fs.promises.writeFile(
+      full,
+      JSON.stringify({ seq: e.seq, type: e.type, ...(e.body ?? {}) }),
+    );
+    await git.add({ fs, dir, filepath: rel });
+  }
+  await git.commit({
+    fs,
+    dir,
+    message: "seed run events",
+    author: { name: "test", email: "test@example.com" },
+  });
+  return dir;
+}
+
+function createReaderRepoStore(dir: string): RepoStore {
+  const unused = () =>
+    Promise.reject(new Error("runs route test: RepoStore method not wired"));
+  return {
+    initRepo: unused,
+    writeTree: unused,
+    writeTreePreservingPrefix: unused,
+    writeTreeDelta: unused,
+    receivePack: unused,
+    createPack: unused,
+    commitPackedTip: () => {
+      throw new Error("runs route test: RepoStore method not wired");
+    },
+    resolveRef: unused,
+    listRefs: unused,
+    resolveHead: unused,
+    getRepoDir: () => dir,
+    openCommittedReads: unused,
+    openCommittedReadsAtCommit: unused,
+    subscribe: () => {
+      throw new Error("runs route test: RepoStore.subscribe not wired");
+    },
+  };
+}
+
+// The turns/events routes never call the asset service; it exists only to
+// satisfy the app.ts XOR that keeps assetService and repoStore a unit.
+function createThrowingAssetService(): AssetService {
+  const notWired = (name: string) => (): never => {
+    throw new Error(`runs route test: AssetService.${name} not wired`);
+  };
+  return {
+    createAsset: notWired("createAsset"),
+    populateAsset: notWired("populateAsset"),
+    readAssetBlob: notWired("readAssetBlob"),
+    listAssetBlobs: notWired("listAssetBlobs"),
+  };
+}
+
 type TestAppOpts = {
   db?: MockDBOpts;
   grants?: GrantRule[];
@@ -368,6 +422,9 @@ type TestAppOpts = {
   connectorStates?: Map<string, ConnectorThreadState | null>;
   sessionService?: SessionService;
   collectorStatuses?: Map<string, SessionStatus>;
+  /** When set, the run routes read the durable run-event log through this
+   * store; app.ts also gets a throwing asset service to satisfy its XOR. */
+  repoStore?: RepoStore;
 };
 
 function createTestApp(opts: TestAppOpts = {}) {
@@ -381,6 +438,11 @@ function createTestApp(opts: TestAppOpts = {}) {
     },
   );
 
+  const repoStore = opts.repoStore ?? null;
+  // The app.ts XOR keeps assetService and repoStore moving as a unit, so a
+  // seeded run-event store comes with a throwing asset service.
+  const assetService = repoStore !== null ? createThrowingAssetService() : null;
+
   return createApp({
     getSession: createMockGetSession(USER_ID),
     authHandler: () => new Response("", { status: 404 }),
@@ -392,8 +454,8 @@ function createTestApp(opts: TestAppOpts = {}) {
     ),
     sessionService: opts.sessionService ?? createMockSessionService(),
     eventCollectors: createMockEventCollectors(opts.collectorStatuses),
-    assetService: null,
-    repoStore: null,
+    assetService,
+    repoStore,
     maxTarballBytes: 10_000_000,
   });
 }
@@ -736,11 +798,10 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
     return makeGrant({ resource: "workflow-run:*", action: "read" });
   }
 
-  // Mail send/history, turns, the event stream, and stop were built for the
-  // retired folded-launch surface and are not yet wired onto a workflow
-  // (anchor) run, so each answers 501 not_implemented. Turns, events, and mail
-  // send await their repoint onto the run's workflow-native sources; stop and
-  // mail history need genuinely new backing (INTR-454). The routes stay
+  // Mail send/history and stop were built for the retired folded-launch surface
+  // and are not yet wired onto a workflow (anchor) run, so each answers 501
+  // not_implemented. Mail send awaits its repoint onto the Trigger path; stop
+  // and mail history need genuinely new backing (INTR-454). The routes stay
   // mounted, not 404, so the admin UI gets a clean answer.
   test("POST mail answers 501 not_implemented", async () => {
     const app = createTestApp({ grants: [writeGrant()] });
@@ -764,24 +825,6 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
     });
   });
 
-  test("GET turns answers 501 not_implemented", async () => {
-    const app = createTestApp({ grants: [readGrant()] });
-    const res = await app.request(`${runURL()}/turns`);
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({
-      error: { code: "not_implemented" },
-    });
-  });
-
-  test("GET events answers 501 not_implemented", async () => {
-    const app = createTestApp({ grants: [readGrant()] });
-    const res = await app.request(`${runURL()}/events`);
-    expect(res.status).toBe(501);
-    expect(await res.json()).toMatchObject({
-      error: { code: "not_implemented" },
-    });
-  });
-
   test("DELETE stop answers 501 not_implemented", async () => {
     const app = createTestApp({
       grants: [makeGrant({ resource: "workflow-run:*", action: "manage" })],
@@ -791,6 +834,114 @@ describe("interactive routes are gated not-implemented for workflow runs", () =>
     expect(await res.json()).toMatchObject({
       error: { code: "not_implemented" },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Turns + events serve the run's durable event log
+// ---------------------------------------------------------------------------
+
+describe("turns and events serve the run's committed event log", () => {
+  function readGrant(): GrantRule {
+    return makeGrant({ resource: "workflow-run:*", action: "read" });
+  }
+
+  const seededEvents = [
+    { seq: 0, type: "RunStarted", body: { consumedMessageId: "m1" } },
+    { seq: 1, type: "StepStarted", body: { stepId: "step1" } },
+    { seq: 2, type: "RunCompleted" as const, body: {} },
+  ];
+
+  async function seededApp() {
+    const dir = await seedRunEventsRepo(RUN_ID, seededEvents);
+    return createTestApp({
+      grants: [readGrant()],
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        definition: testDefinition,
+        run: makeTestRun(),
+      },
+      repoStore: createReaderRepoStore(dir),
+    });
+  }
+
+  test("GET events returns the seq-ordered run event log", async () => {
+    const app = await seededApp();
+    const res = await app.request(`${runURL()}/events`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({
+      runId: RUN_ID,
+      events: [
+        { seq: 0, type: "RunStarted", body: { consumedMessageId: "m1" } },
+        { seq: 1, type: "StepStarted", body: { stepId: "step1" } },
+        { seq: 2, type: "RunCompleted" },
+      ],
+    });
+  });
+
+  test("GET turns returns the same committed event log", async () => {
+    const app = await seededApp();
+    const res = await app.request(`${runURL()}/turns`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    expect(body).toMatchObject({
+      runId: RUN_ID,
+      events: [
+        { seq: 0, type: "RunStarted" },
+        { seq: 1, type: "StepStarted" },
+        { seq: 2, type: "RunCompleted" },
+      ],
+    });
+  });
+
+  test("GET events returns an empty log for a not-yet-triggered run", async () => {
+    // The run exists but has committed no events, so the reader finds no
+    // runs/<runId>/ tree -- an honestly empty timeline, not a 404 or 503.
+    const dir = await seedRunEventsRepo("run_other", seededEvents);
+    const app = createTestApp({
+      grants: [readGrant()],
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        definition: testDefinition,
+        run: makeTestRun(),
+      },
+      repoStore: createReaderRepoStore(dir),
+    });
+    const res = await app.request(`${runURL()}/events`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ runId: RUN_ID, events: [] });
+  });
+
+  test("GET events 404s an unknown run", async () => {
+    const dir = await seedRunEventsRepo(RUN_ID, seededEvents);
+    const app = createTestApp({
+      grants: [readGrant()],
+      db: { tenant: testTenant, principal: testPrincipal },
+      repoStore: createReaderRepoStore(dir),
+    });
+    const res = await app.request(`${runURL()}/events`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("GET events 503s when the run-event substrate is absent", async () => {
+    // createTestApp defaults repoStore to null (no deploy surface), so the
+    // reader is unavailable and the route errors clearly rather than serving an
+    // empty log as if it were real state.
+    const app = createTestApp({ grants: [readGrant()] });
+    const res = await app.request(`${runURL()}/events`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: { code: "unavailable" } });
+  });
+
+  test("GET turns 503s when the run-event substrate is absent", async () => {
+    const app = createTestApp({ grants: [readGrant()] });
+    const res = await app.request(`${runURL()}/turns`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: { code: "unavailable" } });
   });
 });
 

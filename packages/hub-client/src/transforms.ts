@@ -1,226 +1,52 @@
-import { parseRunAddress } from "@intx/types";
-import type { InferenceTurnResponse, MailResponse } from "@intx/types";
+import type { WorkflowRunEvent } from "./validators";
+import type { AwaitingSignal } from "./types";
 
-import type { InstanceEvent, MailAddress, ToolCallEvent } from "./types";
+// The run-event types that seal a run: once one of these is committed the run
+// has settled and its event log will not grow.
+export const TERMINAL_RUN_EVENT_TYPES: readonly string[] = [
+  "RunCompleted",
+  "RunFailed",
+  "RunCancelled",
+];
 
-export { isRunAddress } from "@intx/types";
-
-export function parseFromHeader(from: string): string {
-  const match = from.match(/^"(.+)"\s+<.+>$/);
-  if (match && match[1]) return match[1];
-  const local = from.split("@")[0];
-  return local ?? from;
+export function isTerminalRunEvents(events: WorkflowRunEvent[]): boolean {
+  return events.some((e) => TERMINAL_RUN_EVENT_TYPES.includes(e.type));
 }
 
-export function extractBodyText(
-  bodyValues: Record<string, unknown>,
-  textBody: { partId: string }[],
-): string {
-  const firstTextPart = textBody[0];
-  if (!firstTextPart) return "";
-  const bodyValue = bodyValues[firstTextPart.partId];
-  if (
-    typeof bodyValue === "object" &&
-    bodyValue !== null &&
-    "value" in bodyValue
-  ) {
-    const v = (bodyValue as { value?: unknown }).value;
-    if (typeof v === "string") return v;
-  }
-  return "";
-}
-
-export function formatAddress(addr: {
-  name: string | null;
-  email: string;
-}): string {
-  return addr.name ?? addr.email;
-}
-
-// Inbound mail is always shown. Outbound mail is shown unless it is a
-// connector thread reply (interchange-type: conversation.message), which is
-// already represented as streaming text → committed turn in the timeline.
-export function shouldShowMail(data: {
-  direction: "inbound" | "outbound";
-  headers: Record<string, string>;
-}): boolean {
-  if (data.direction === "inbound") return true;
-  return data.headers["interchange-type"] !== "conversation.message";
-}
-
-// Run addresses are "<runId>@<domain>" where runId is always prefixed with
-// "run_".
-export function resolveAgentAddress(
-  addr: MailAddress,
-): { runId: string; label: string } | null {
-  const parsed = parseRunAddress(addr.email);
-  if (!parsed) return null;
-  return { runId: parsed.runId, label: formatAddress(addr) };
-}
-
-export function resolveAgentRecipient(
-  recipients: MailAddress[],
-): { runId: string; label: string } | null {
-  const first = recipients[0];
-  if (!first) return null;
-  return resolveAgentAddress(first);
-}
-
-export function mailToEvent(mail: MailResponse): InstanceEvent {
-  const isFromAgent = mail.direction === "outbound";
-  const role: "user" | "assistant" = isFromAgent ? "assistant" : "user";
-  const firstSender = mail.from[0];
-  const sender: MailAddress = firstSender ?? { name: null, email: "unknown" };
-  const content = extractBodyText(mail.bodyValues, mail.textBody);
-
-  return {
-    kind: "mail",
-    id: mail.id,
-    role,
-    content,
-    sender,
-    recipients: mail.to,
-    timestamp: mail.receivedAt,
-    attachments: mail.attachments,
-  };
-}
-
-// SSE mail.delivered event data shape (differs from REST MailResponse).
-export interface MailDeliveryData {
-  id: string;
-  direction: "inbound" | "outbound";
-  from?: { name: string | null; email: string }[];
-  to?: { name: string | null; email: string }[];
-  bodyValues: Record<string, unknown>;
-  textBody: { partId: string; type: string }[];
-  attachments?: {
-    blobId: string;
-    name?: string | null;
-    type: string;
-    size: number;
-  }[];
-  headers: Record<string, string>;
-  receivedAt: string;
-}
-
-export function mailDeliveryToEvent(data: MailDeliveryData): InstanceEvent {
-  const isOutbound = data.direction === "outbound";
-  const role: "user" | "assistant" = isOutbound ? "assistant" : "user";
-  const firstSender = data.from?.[0];
-  const sender: MailAddress = firstSender
-    ? { name: firstSender.name ?? null, email: firstSender.email }
-    : { name: null, email: "unknown" };
-  const content = extractBodyText(data.bodyValues, data.textBody);
-  const recipients: MailAddress[] = (data.to ?? []).map((r) => ({
-    name: r.name ?? null,
-    email: r.email,
-  }));
-
-  return {
-    kind: "mail",
-    id: data.id,
-    role,
-    content,
-    sender,
-    recipients,
-    timestamp: data.receivedAt,
-    attachments: (data.attachments ?? []).map((att) => ({
-      blobId: att.blobId,
-      name: att.name ?? null,
-      type: att.type,
-      size: att.size,
-    })),
-  };
-}
-
-export function turnToEvent(turn: InferenceTurnResponse): InstanceEvent | null {
-  const textParts = turn.parts.filter(
-    (p): p is typeof p & { content: string } =>
-      p.type === "text" &&
-      typeof p.content === "string" &&
-      p.content.length > 0,
-  );
-
-  const errors: { category: string; message: string }[] = turn.parts
-    .filter(
-      (p): p is typeof p & { content: string } =>
-        p.type === "error" &&
-        typeof p.content === "string" &&
-        p.content.length > 0,
-    )
-    .map((p) => ({
-      category:
-        typeof p.metadata?.category === "string"
-          ? p.metadata.category
-          : "unknown",
-      message: p.content,
-    }));
-
-  const calls = new Map<
-    string,
-    { name: string; arguments: Record<string, unknown> }
-  >();
-  for (const p of turn.parts) {
-    if (
-      p.type === "tool" &&
-      p.metadata?.kind === "call" &&
-      typeof p.metadata.callId === "string" &&
-      typeof p.metadata.name === "string"
-    ) {
-      const rawArgs = p.metadata.arguments;
-      const args =
-        typeof rawArgs === "object" && rawArgs !== null
-          ? // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- metadata.arguments is always a JSON object from the DB
-            (rawArgs as Record<string, unknown>)
-          : {};
-      calls.set(p.metadata.callId, { name: p.metadata.name, arguments: args });
-    }
-  }
-
-  const toolCalls: ToolCallEvent[] = [];
-  const toolErrors: { name: string; content: string }[] = [];
-
-  for (const p of turn.parts) {
-    if (p.type === "tool" && p.metadata?.kind === "result") {
-      const callId =
-        typeof p.metadata.callId === "string" ? p.metadata.callId : "";
-      const call = calls.get(callId);
-      const name = call?.name ?? callId;
-      const raw = p.metadata.content;
-      const content = typeof raw === "string" ? raw : JSON.stringify(raw);
-      const isError = p.metadata.isError === true;
-
-      toolCalls.push({
-        name,
-        arguments: call?.arguments ?? {},
-        result: content,
-        isError,
-      });
-
-      if (isError) {
-        toolErrors.push({ name, content });
+/**
+ * Returns the awaited signal from the latest unresolved `SignalAwaited`
+ * event, or null when the run is not currently parked on a signal. A later
+ * `SignalReceived` carrying the same `signalName`, or a terminal event, clears
+ * the await.
+ */
+export function findAwaitingSignal(
+  events: WorkflowRunEvent[],
+): AwaitingSignal | null {
+  let awaiting: AwaitingSignal | null = null;
+  for (const event of events) {
+    if (event.type === "SignalAwaited") {
+      const signalName = event.body["signalName"];
+      if (typeof signalName !== "string") {
+        throw new Error(
+          `SignalAwaited event at seq ${String(event.seq)} is missing a string signalName`,
+        );
       }
+      awaiting = { seq: event.seq, signalName };
+      continue;
+    }
+    if (awaiting === null) {
+      continue;
+    }
+    if (
+      event.type === "SignalReceived" &&
+      event.body["signalName"] === awaiting.signalName
+    ) {
+      awaiting = null;
+      continue;
+    }
+    if (TERMINAL_RUN_EVENT_TYPES.includes(event.type)) {
+      awaiting = null;
     }
   }
-
-  const rawContent = textParts.map((p) => p.content).join("");
-  const isError = turn.status === "failed";
-
-  if (errors.length === 0 && toolCalls.length === 0) {
-    return null;
-  }
-
-  const content =
-    rawContent || (isError ? "An error occurred during inference." : "");
-
-  return {
-    kind: "turn",
-    turnId: turn.id,
-    content,
-    timestamp: turn.startedAt,
-    ...(isError ? { isError: true } : {}),
-    ...(errors.length > 0 ? { errors } : {}),
-    ...(toolCalls.length > 0 ? { toolCalls } : {}),
-    ...(toolErrors.length > 0 ? { toolErrors } : {}),
-  };
+  return awaiting;
 }

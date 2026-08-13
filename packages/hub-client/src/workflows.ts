@@ -3,6 +3,7 @@ import { type } from "arktype";
 import { InferenceSource } from "@intx/types/runtime";
 
 import type { Transport } from "./transport";
+import { WorkflowRunEvents } from "./validators";
 
 export const WorkflowDeployment = type({
   id: "string",
@@ -25,19 +26,6 @@ export type WorkflowRunTrigger = typeof WorkflowRunTrigger.infer;
 const WorkflowRunList = type({
   runIds: "string[]",
 });
-
-export const WorkflowRunEvent = type({
-  seq: "number",
-  type: "string",
-  body: "Record<string, unknown>",
-});
-export type WorkflowRunEvent = typeof WorkflowRunEvent.infer;
-
-export const WorkflowRunEvents = type({
-  runId: "string",
-  events: WorkflowRunEvent.array(),
-});
-export type WorkflowRunEvents = typeof WorkflowRunEvents.infer;
 
 export type TriggerRunAttachment = {
   mimeType: string;
