@@ -55,7 +55,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "single-step-per-run-grants-1";
+const DEPLOYMENT_ID = "run_single-step-per-run-grants-1";
 const STEP_ID = "step1";
 
 const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
@@ -123,7 +123,7 @@ describe("single-step per-run grants barrier", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

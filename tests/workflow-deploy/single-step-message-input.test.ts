@@ -50,7 +50,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "single-step-message-input-1";
+const DEPLOYMENT_ID = "run_single-step-message-input-1";
 const STEP_ID = "step1";
 
 const FIRST_BODY = "First inbound body alpha-7391.";
@@ -96,7 +96,7 @@ describe("single-step message-input round-trip", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

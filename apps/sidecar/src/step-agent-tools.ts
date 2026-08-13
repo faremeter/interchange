@@ -63,8 +63,6 @@ import {
 
 const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
 
-const INSTANCE_PREFIX = "ins_";
-
 /**
  * Cache and registry caps the per-step tool loader needs. Resolved at
  * the sidecar boot edge from the existing `SIDECAR_CACHE_*` /
@@ -275,13 +273,11 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
  * of the head/step collapse: for a single-step deployment the lone step
  * IS the head (the deployment mailbox itself), so the tree is read at the
  * head; for multi-step it is `deriveStepAddress(runId, stepId,
- * domain)`. The `deploymentId`/`deploymentDomain` are recovered
- * from the deployment mailbox address the supervisor threaded into the
- * child as `MAILBOX_ADDRESS` (`ins_<deploymentId>@<domain>`): the
- * instance-id local part minus the `ins_` prefix is the deploymentId, and
- * the address domain is the deploymentDomain. `stepCount` is sourced from
- * the host (via `substrateEnv`) so producer and consumer never derive
- * divergent addresses.
+ * domain)`. The `runId`/`domain` are recovered from the deployment mailbox
+ * address the supervisor threaded into the child as `MAILBOX_ADDRESS`
+ * (`<runId>@<domain>`): the local part is the run id and the address domain
+ * is the deployment domain. `stepCount` is sourced from the host (via
+ * `substrateEnv`) so producer and consumer never derive divergent addresses.
  */
 export function stepDeployTreeDir(args: {
   dataDir: string;
@@ -295,19 +291,13 @@ export function stepDeployTreeDir(args: {
       `sidecar workflow-child step tools: deployment mailbox address ${JSON.stringify(args.mailboxAddress)} is not a parseable agent address; cannot locate the step's deploy tree`,
     );
   }
-  if (!parsed.runId.startsWith(INSTANCE_PREFIX)) {
-    throw new Error(
-      `sidecar workflow-child step tools: deployment mailbox run id ${JSON.stringify(parsed.runId)} does not carry the ${JSON.stringify(INSTANCE_PREFIX)} prefix; cannot derive the orchestrator deploymentId`,
-    );
-  }
-  const deploymentId = parsed.runId.slice(INSTANCE_PREFIX.length);
   // A `map` iteration runs under a scoped step id `<base>[<index>]`, but
   // deploy stages one deploy tree per base step, so the scoped id resolves
   // to its base address -- every iteration reads the base step's tree.
   // `baseStepId` is the identity on an unscoped id, so a plain step is
   // unaffected.
   const stepAddress = resolveStepAddress({
-    runId: deploymentId,
+    runId: parsed.runId,
     stepId: baseStepId(args.stepId),
     domain: parsed.domain,
     stepCount: args.stepCount,

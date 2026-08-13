@@ -89,7 +89,7 @@ import {
   reconstructDurableConversation,
 } from "@intx/sidecar-app/src/conversation-state";
 
-const DEPLOYMENT_ID = "durability-deployment";
+const DEPLOYMENT_ID = "run_durability-deployment";
 const STEP_ID = "step-1";
 const MAILBOX = "durability-deployment@example.com";
 const WORKFLOW_RUN_REF = "refs/heads/main";

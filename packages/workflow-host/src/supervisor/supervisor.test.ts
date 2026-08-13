@@ -714,11 +714,11 @@ async function buildBindings(opts: {
     binaryPath: "/fake/bin/workflow-child",
     substrateEnv: { DATA_DIR: opts.baseDir },
     dynamicSpawnEnv: () => ({}),
-    workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
+    workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
-    deploymentId: "deployment-x",
+    deploymentId: "run_deployment-x",
     stepCount: 1,
-    deploymentMailAddress: "deployment-x@example.com",
+    deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>
       `${deploymentId}-${stepId}@example.com`,
@@ -766,7 +766,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-spawn-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -861,13 +861,19 @@ describe("createWorkflowSupervisor", () => {
     // bus so the delivers below land inside the supervisor's
     // subscription handler -- a deliver before subscription is a
     // no-op against the mock bus.
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     // Deliver mail while the supervisor is still in `starting`; the
     // supervisor buffers it and replays it after `ready` lands.
-    mailBus.deliver("deployment-x@example.com", new TextEncoder().encode("m1"));
-    mailBus.deliver("deployment-x@example.com", new TextEncoder().encode("m2"));
+    mailBus.deliver(
+      "run_deployment-x@example.com",
+      new TextEncoder().encode("m1"),
+    );
+    mailBus.deliver(
+      "run_deployment-x@example.com",
+      new TextEncoder().encode("m2"),
+    );
     await childSender.send({
       type: "ready",
       data: {
@@ -880,9 +886,9 @@ describe("createWorkflowSupervisor", () => {
     expect(observedBinary).toBe("/fake/bin/workflow-child");
     expect(observedEnv).toMatchObject({
       DATA_DIR: baseDir,
-      DEPLOYMENT_ID: "deployment-x",
+      DEPLOYMENT_ID: "run_deployment-x",
       DEFINITION_HASH: "def-hash-abc",
-      MAILBOX_ADDRESS: "deployment-x@example.com",
+      MAILBOX_ADDRESS: "run_deployment-x@example.com",
     });
     expect(observedEnv.IPC_CHANNEL_ID).toMatch(/^[0-9a-f]{32}$/);
     expect(observedEnv.IPC_HMAC_KEY).toMatch(/^[0-9a-f]{64}$/);
@@ -892,9 +898,9 @@ describe("createWorkflowSupervisor", () => {
     expect(result.channelId).toBe(channelId);
     expect(result.credentialsSnapshot.steps).toHaveLength(1);
     expect(result.credentialsSnapshot.steps[0]?.address).toBe(
-      "deployment-x-step-1@example.com",
+      "run_deployment-x-step-1@example.com",
     );
-    expect(mailBus.registered()).toContain("deployment-x@example.com");
+    expect(mailBus.registered()).toContain("run_deployment-x@example.com");
     expect(supervisor.getCredentialsSnapshot()).not.toBeNull();
 
     // The first buffered mail fires the stable top-level run. The FIFO
@@ -924,7 +930,8 @@ describe("createWorkflowSupervisor", () => {
     });
     const consumedDeadline = Date.now() + 500;
     while (Date.now() < consumedDeadline) {
-      if (inbox.snapshot("deployment-x@example.com").consumed.size >= 2) break;
+      if (inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2)
+        break;
       await new Promise((r) => setTimeout(r, 1));
     }
     expect(parseTriggerFireRunIds(supervisorToChild.flushed())).toEqual([
@@ -933,7 +940,7 @@ describe("createWorkflowSupervisor", () => {
 
     await supervisor.shutdown();
     expect(killed).toBe(true);
-    expect(mailBus.registered()).not.toContain("deployment-x@example.com");
+    expect(mailBus.registered()).not.toContain("run_deployment-x@example.com");
   });
 
   // Stand up a spawned supervisor against a synthetic child, drive the
@@ -1040,7 +1047,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     await childSender.send({
@@ -1064,7 +1071,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-barrier-ok-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -1081,7 +1088,7 @@ describe("createWorkflowSupervisor", () => {
         repoStore: createStubRepoStore({ baseDir }),
         principal: { kind: "supervisor" },
         stepOrder: ["step-1"],
-        deploymentId: "deployment-x",
+        deploymentId: "run_deployment-x",
         deriveStepAddress: ({ deploymentId, stepId }) =>
           `${deploymentId}-${stepId}@example.com`,
       });
@@ -1095,7 +1102,7 @@ describe("createWorkflowSupervisor", () => {
     ).not.toContain("grants-updated");
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("barrier-m1"),
     );
 
@@ -1127,7 +1134,7 @@ describe("createWorkflowSupervisor", () => {
     // The sink was consulted once for this run with the supervisor's
     // deployment id stamped on.
     expect(runStartCalls).toEqual([
-      { runId: firedRunId, deploymentId: "deployment-x" },
+      { runId: firedRunId, deploymentId: "run_deployment-x" },
     ]);
 
     await wired.childSender.send({
@@ -1141,7 +1148,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-barrier-creds-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
@@ -1149,7 +1156,7 @@ describe("createWorkflowSupervisor", () => {
         repoStore: createStubRepoStore({ baseDir }),
         principal: { kind: "supervisor" },
         stepOrder: ["step-1"],
-        deploymentId: "deployment-x",
+        deploymentId: "run_deployment-x",
         deriveStepAddress: ({ deploymentId, stepId }) =>
           `${deploymentId}-${stepId}@example.com`,
       });
@@ -1174,7 +1181,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("barrier-creds-m1"),
     );
 
@@ -1221,13 +1228,13 @@ describe("createWorkflowSupervisor", () => {
     const wired = await spawnWithRunStart({ baseDir, onRunStart });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("barrier-fail-m1"),
     );
 
     // The failed run is settled through the claim-check pipeline: the
     // message moves to `consumed`. Wait on that observable settle.
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
@@ -1254,7 +1261,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-ack-present-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let mode: "enqueued" | "already-present" = "enqueued";
@@ -1270,7 +1277,7 @@ describe("createWorkflowSupervisor", () => {
       inboxPrimitives,
       mailBus,
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // A fresh enqueue is durably accepted -> the receipt resolves (ack).
     await expect(
@@ -1291,7 +1298,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-withhold-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let onEnqueue: (args: {
@@ -1311,7 +1318,7 @@ describe("createWorkflowSupervisor", () => {
       inboxPrimitives,
       mailBus,
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // (a) A transient failure -> the receipt rejects, so no ack is sent and the
     // hub redelivers.
@@ -1346,7 +1353,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-phase-drop-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     // enqueue would resolve if it were reached; the phase gate must reject
@@ -1367,7 +1374,7 @@ describe("createWorkflowSupervisor", () => {
     // ack is withheld and the hub redelivers into a live generation later.
     await expect(
       mailBus.settle(
-        "deployment-x@example.com",
+        "run_deployment-x@example.com",
         new TextEncoder().encode("m-late"),
       ),
     ).rejects.toThrow(/not accepted: supervisor phase/);
@@ -1510,7 +1517,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-spawn-leak-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1607,7 +1614,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-arm-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1725,7 +1732,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     // Two pre-ready messages. The supervisor's FIFO inbox queue
@@ -1734,11 +1741,11 @@ describe("createWorkflowSupervisor", () => {
     // still be mid-dispatch behind the first's `markConsumed`. The
     // accumulator count reflects whichever in-flight runIds remain.
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("drain-msg-A"),
     );
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("drain-msg-B"),
     );
     await childSender.send({
@@ -1813,10 +1820,10 @@ describe("createWorkflowSupervisor", () => {
     for (const stub of stubs) {
       expect(stub.__startCount).toBe(1);
       expect(stub.__stopCount).toBe(0);
-      expect(stub.__opts.deploymentId).toBe("deployment-x");
+      expect(stub.__opts.deploymentId).toBe("run_deployment-x");
       expect(stub.__opts.repoId).toEqual({
         kind: "workflow-run",
-        id: "deployment-x",
+        id: "run_deployment-x",
       });
       expect(stub.__opts.ref).toBe("refs/heads/main");
       expect(stub.__opts.drainTimeoutMs).toBe(7_500);
@@ -1845,7 +1852,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-escalate-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1944,11 +1951,11 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("escalate-msg"),
     );
     await childSender.send({
@@ -2003,7 +2010,7 @@ describe("createWorkflowSupervisor", () => {
     expect(write.principal.kind).toBe("supervisor");
     expect(write.repoId).toEqual({
       kind: "workflow-run",
-      id: "deployment-x",
+      id: "run_deployment-x",
     });
     const eventEntry = Object.entries(write.files).find(([k]) =>
       k.includes("/events/"),
@@ -2085,7 +2092,7 @@ describe("createWorkflowSupervisor", () => {
       expect(write.principal.kind).toBe("supervisor");
       expect(write.repoId).toEqual({
         kind: "workflow-run",
-        id: "deployment-x",
+        id: "run_deployment-x",
       });
     }
     const firstWrite = observedWrites[0];
@@ -2112,7 +2119,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-terminal-source-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -2215,11 +2222,11 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("term-msg-A"),
     );
     await childSender.send({
@@ -2270,7 +2277,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-drain-no-term-source-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -2373,11 +2380,11 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("no-term-msg"),
     );
     await childSender.send({
@@ -2542,7 +2549,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-deliver-sources-running-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2666,7 +2673,7 @@ describe("createWorkflowSupervisor", () => {
     );
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2774,7 +2781,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-first-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2786,7 +2793,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -2794,7 +2801,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -2805,14 +2812,14 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: new Date().toISOString(),
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
@@ -2821,7 +2828,7 @@ describe("createWorkflowSupervisor", () => {
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    expect(runIds).toEqual(["deployment-x@example.com"]);
+    expect(runIds).toEqual(["run_deployment-x"]);
     await wired.supervisor.shutdown();
   });
 
@@ -2829,7 +2836,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-approval-park-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2841,7 +2848,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -2849,7 +2856,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -2864,13 +2871,13 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         correlationId: "corr-approval-1",
         parkKind: "approval",
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
@@ -2881,7 +2888,7 @@ describe("createWorkflowSupervisor", () => {
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    expect(runIds).toEqual(["deployment-x@example.com"]);
+    expect(runIds).toEqual(["run_deployment-x"]);
     await wired.supervisor.shutdown();
   });
 
@@ -2889,7 +2896,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-signal-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -2901,7 +2908,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -2909,7 +2916,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -2917,13 +2924,13 @@ describe("createWorkflowSupervisor", () => {
     // so the unified-dispatch path can complete markConsumed.
     await new Promise((r) => setTimeout(r, 10));
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // Child parks on input signal.
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -2937,7 +2944,7 @@ describe("createWorkflowSupervisor", () => {
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-2"),
     );
 
@@ -2961,7 +2968,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: "test",
@@ -2988,7 +2995,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-queue-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3000,7 +3007,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -3008,7 +3015,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -3016,12 +3023,12 @@ describe("createWorkflowSupervisor", () => {
     // park or reach terminal.  Nothing is consumed yet.
     await new Promise((r) => setTimeout(r, 50));
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
 
     // Deliver second message BEFORE child parks.
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-2"),
     );
 
@@ -3038,7 +3045,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -3066,7 +3073,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: "test",
@@ -3087,7 +3094,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-drain-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3105,7 +3112,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -3114,7 +3121,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -3124,13 +3131,13 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
@@ -3159,7 +3166,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -3170,14 +3177,14 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: new Date().toISOString(),
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
@@ -3194,7 +3201,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-long-lived-terminal-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3206,7 +3213,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -3215,7 +3222,7 @@ describe("createWorkflowSupervisor", () => {
 
     // First message triggers the run.
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -3224,14 +3231,14 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: "test",
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     let deadline = Date.now() + 1000;
     while (Date.now() < deadline) {
       if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
@@ -3242,7 +3249,7 @@ describe("createWorkflowSupervisor", () => {
     // Second message arrives after the deployment's one top-level run
     // terminated. It must be durably rejected, not treated as a new run.
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-2"),
     );
 
@@ -3253,7 +3260,7 @@ describe("createWorkflowSupervisor", () => {
     }
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    expect(runIds).toEqual(["deployment-x@example.com"]);
+    expect(runIds).toEqual(["run_deployment-x"]);
     expect(
       [...wired.inboxPrimitives.snapshot(address).consumed.values()].some(
         (entry) => entry.rejection?.code === "workflow_run_terminal",
@@ -3271,7 +3278,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-recovery-terminal-race-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3281,18 +3288,18 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         }),
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // Model restart recovery: the child owns the durable live run, but has not
     // yet re-emitted an input park/correlation for it.
     await wired.childSender.send({
       type: "resumed.runs",
-      data: { runIds: [address] },
+      data: { runIds: ["run_deployment-x"] },
     });
     wired.mailBus.deliver(address, new TextEncoder().encode("waiting mail"));
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -3304,7 +3311,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         seq: 1,
         kind: "RunCompleted",
         at: "test",
@@ -3331,7 +3338,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-clean-run-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3342,7 +3349,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -3352,7 +3359,7 @@ describe("createWorkflowSupervisor", () => {
     // `grants.json` may be staged before delivery, but without an event log
     // this is still the deployment's one allowed first fire.
     wired.mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("msg-1"),
     );
 
@@ -3365,7 +3372,7 @@ describe("createWorkflowSupervisor", () => {
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(runIds.length).toBe(1);
-    expect(runIds[0]).toBe("deployment-x@example.com");
+    expect(runIds[0]).toBe("run_deployment-x");
     await wired.supervisor.shutdown();
   });
 
@@ -3373,16 +3380,16 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-terminal-restart-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
     const runEventsDir = path.join(
       baseDir,
       "workflow-run",
-      "deployment-x",
+      "run_deployment-x",
       "runs",
-      "deployment-x@example.com",
+      "run_deployment-x",
       "events",
     );
     await fs.mkdir(runEventsDir, { recursive: true });
@@ -3402,14 +3409,14 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
     const deadline = Date.now() + 1000;
@@ -3433,7 +3440,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-instant-park-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3444,14 +3451,14 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
 
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
     // Park immediately; the generation check must handle either side of the
@@ -3460,7 +3467,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -3481,7 +3488,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-fresh-corr-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3492,13 +3499,13 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const waitConsumed = async (n: number) => {
       const deadline = Date.now() + 2000;
       while (Date.now() < deadline) {
@@ -3521,7 +3528,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -3540,7 +3547,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         correlationId: "corr-input-2",
         parkKind: "input",
       },
@@ -3551,7 +3558,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "terminal.event",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: "test",
@@ -3572,7 +3579,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-resumed-order-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -3583,13 +3590,13 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // Register the run's input channel via park.notify with NO prior local
     // trigger.fire -- the shape the reconnect/resumed path produces, where
@@ -3600,7 +3607,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -3625,7 +3632,12 @@ describe("createWorkflowSupervisor", () => {
     // Release the durable-consume wait so shutdown is clean.
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
     await wired.supervisor.shutdown();
   });
@@ -3634,7 +3646,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-signal-text-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3644,19 +3656,19 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // Park the run so the next mail routes as signal.deliver.
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -3683,7 +3695,12 @@ describe("createWorkflowSupervisor", () => {
 
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
     await wired.supervisor.shutdown();
   });
@@ -3692,7 +3709,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-deliversignal-passthrough-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3702,7 +3719,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -3714,7 +3731,7 @@ describe("createWorkflowSupervisor", () => {
     // dispatch loop's concern only, and this contract split is what the
     // signal.deliver frame's uniform "final-form payload" contract guarantees.
     await wired.supervisor.deliverSignal({
-      runId: "deployment-x@example.com",
+      runId: "run_deployment-x",
       signalName: "go",
       signalId: "sig-1",
       payload: { resumed: true, n: 7 },
@@ -3731,7 +3748,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-poison-mail-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3741,19 +3758,19 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // Park the run so a mail routes as signal.deliver.
     await wired.childSender.send({
       type: "park.notify",
       data: {
-        runId: address,
+        runId: "run_deployment-x",
         correlationId: "corr-input-1",
         parkKind: "input",
       },
@@ -3797,7 +3814,12 @@ describe("createWorkflowSupervisor", () => {
 
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
     await wired.supervisor.shutdown();
   });
@@ -3806,7 +3828,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-markconsumed-fatal-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const memoryInbox = createMemoryInboxPrimitives();
@@ -3828,20 +3850,25 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
 
     // Drive a run to terminal so dispatch reaches markConsumed, which throws.
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
     await new Promise((r) => setTimeout(r, 10));
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
 
     // The failure propagates into the dispatch fault handler rather than being
@@ -3857,7 +3884,12 @@ describe("createWorkflowSupervisor", () => {
     await new Promise((r) => setTimeout(r, 10));
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 1, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 1,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -3875,10 +3907,10 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-lost-wake-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     const mailBus = createMockMailBus();
     const memoryInbox = createMemoryInboxPrimitives();
     let armed = true;
@@ -3908,7 +3940,7 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
@@ -3920,7 +3952,12 @@ describe("createWorkflowSupervisor", () => {
     await new Promise((r) => setTimeout(r, 120));
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
@@ -3936,7 +3973,7 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir("supervisor-subscribe-before-fire-");
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const wired = await spawnWithRunStart({
@@ -3946,13 +3983,13 @@ describe("createWorkflowSupervisor", () => {
           repoStore: createStubRepoStore({ baseDir }),
           principal: { kind: "supervisor" },
           stepOrder: ["step-1"],
-          deploymentId: "deployment-x",
+          deploymentId: "run_deployment-x",
           deriveStepAddress: ({ deploymentId, stepId }) =>
             `${deploymentId}-${stepId}@example.com`,
         });
       },
     });
-    const address = "deployment-x@example.com";
+    const address = "run_deployment-x@example.com";
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
     const triggerDeadline = Date.now() + 1000;
@@ -3968,7 +4005,12 @@ describe("createWorkflowSupervisor", () => {
     // frame cannot be lost between forwarding the trigger and entering wait.
     await wired.childSender.send({
       type: "terminal.event",
-      data: { runId: address, seq: 0, kind: "RunCompleted", at: "test" },
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
     });
 
     // The wait releases and the mail is consumed WITHOUT the (minutes-long)
@@ -4194,7 +4236,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     const baseDir = await makeTempDir(opts.label);
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -4262,7 +4304,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("deployment-x@example.com")) {
+    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
       await new Promise((r) => setTimeout(r, 1));
     }
     await childSender.send({
@@ -4288,7 +4330,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       inbox,
     });
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("audit-default-1"),
     );
     // Wait for the enqueue to land in the in-memory inbox. The
@@ -4298,7 +4340,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     // every claim-check substate.
     const deadline = Date.now() + 500;
     while (Date.now() < deadline) {
-      const snap = inbox.snapshot("deployment-x@example.com");
+      const snap = inbox.snapshot("run_deployment-x@example.com");
       if (
         snap.inbox.size > 0 ||
         snap.processing.size > 0 ||
@@ -4308,7 +4350,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       }
       await new Promise((r) => setTimeout(r, 1));
     }
-    const snapshot = inbox.snapshot("deployment-x@example.com");
+    const snapshot = inbox.snapshot("run_deployment-x@example.com");
     const all = [
       ...snapshot.consumed.values(),
       ...snapshot.processing.values(),
@@ -4337,7 +4379,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       },
     });
     const payload = new TextEncoder().encode("audit-override-1");
-    mailBus.deliver("deployment-x@example.com", payload);
+    mailBus.deliver("run_deployment-x@example.com", payload);
     const deadline = Date.now() + 500;
     while (Date.now() < deadline && observed.length === 0) {
       await new Promise((r) => setTimeout(r, 1));
@@ -4347,7 +4389,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     if (observedEntry === undefined) throw new Error("unreachable");
     expect(observedEntry.len).toBe(payload.byteLength);
     expect(observedEntry.messageId.length).toBeGreaterThan(0);
-    const overrideSnapshot = inbox.snapshot("deployment-x@example.com");
+    const overrideSnapshot = inbox.snapshot("run_deployment-x@example.com");
     const allEntries = [
       ...overrideSnapshot.inbox.values(),
       ...overrideSnapshot.processing.values(),
@@ -4378,11 +4420,11 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     // Two messages. The first fires the run; the second waits behind its
     // terminal gate and is then rejected.
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("serial-msg-A"),
     );
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("serial-msg-B"),
     );
     // Helper that pulls the runId carried on the first/next
@@ -4413,12 +4455,13 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     });
     const deadlineTwo = Date.now() + 500;
     while (Date.now() < deadlineTwo) {
-      if (inbox.snapshot("deployment-x@example.com").consumed.size >= 2) break;
+      if (inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2)
+        break;
       await new Promise((r) => setTimeout(r, 1));
     }
     firedIds = triggerRunIds();
     expect(firedIds).toEqual([firstRunId]);
-    const consumed = inbox.snapshot("deployment-x@example.com").consumed;
+    const consumed = inbox.snapshot("run_deployment-x@example.com").consumed;
     expect(consumed.size).toBe(2);
     expect(
       [...consumed.values()].some(
@@ -4432,7 +4475,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     const inbox = createMemoryInboxPrimitives();
     // Seed a `processing/` entry before the supervisor spawns. The
     // entry should be moved back to `inbox/` during `spawn()`.
-    const state = inbox.snapshot("deployment-x@example.com");
+    const state = inbox.snapshot("run_deployment-x@example.com");
     state.processing.set("1000-msg-orphan", {
       messageId: "msg-orphan",
       receivedAt: 1000,
@@ -4464,7 +4507,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     await childSender.send({
       type: "terminal.event",
       data: {
-        runId: "deployment-x@example.com",
+        runId: "run_deployment-x",
         seq: 0,
         kind: "RunCompleted",
         at: "test",
@@ -4476,11 +4519,11 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     // After the child reaches terminal, markConsumed moves it to consumed.
     const consumedDeadline = Date.now() + 1000;
     while (Date.now() < consumedDeadline) {
-      const snapshot = inbox.snapshot("deployment-x@example.com");
+      const snapshot = inbox.snapshot("run_deployment-x@example.com");
       if (snapshot.consumed.size >= 1) break;
       await new Promise((r) => setTimeout(r, 1));
     }
-    const snapshot = inbox.snapshot("deployment-x@example.com");
+    const snapshot = inbox.snapshot("run_deployment-x@example.com");
     expect(snapshot.consumed.size).toBe(1);
     const consumedEntry = [...snapshot.consumed.values()][0];
     if (consumedEntry === undefined) throw new Error("unreachable");

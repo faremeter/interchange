@@ -40,7 +40,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A real instance identity: `ins_` + 32 hex, NOT a `dep_`-prefixed deployment
 // id. The head address IS the instance address; the reroute keeps that
 // identity rather than deriving a synthetic deployment agent id.
-const INSTANCE_ID = `ins_${"b".repeat(32)}`;
+const INSTANCE_ID = `run_${"b".repeat(32)}`;
 const AGENT_ID = "agent-instance-reroute";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 

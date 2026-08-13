@@ -13,11 +13,9 @@ import {
   deriveWorkflowRunId,
   hexDecode,
   hexEncode,
+  isRunAddress,
 } from "@intx/types";
-import {
-  deriveWorkflowRunRepoId,
-  isWorkflowDerivedAddress,
-} from "@intx/workflow-deploy";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
   SidecarFrame,
@@ -52,8 +50,9 @@ export type SidecarConnection = {
   sidecarId: string;
   identity: SidecarAuthIdentity;
   agentAddresses: Set<string>;
-  // Workflow-substrate deployment addresses (ins_dep_...) this connection
-  // hosts. Kept separate from `agentAddresses`: these are hub-minted and
+  // Workflow-substrate deployment run addresses (`run_<hex>@domain`) this
+  // connection hosts. Kept separate from `agentAddresses`: these are hub-minted
+  // and
   // registered for routing WITHOUT the per-address challenge, so they must
   // not be dragged through the challenge/re-add dance the session addresses
   // take. `handleClose` cleans both sets out of `addressIndex`.
@@ -1603,14 +1602,17 @@ export function createSidecarRouter(
           prevConn.agentAddresses.delete(addr);
         }
       }
-      // Track the address on the set that matches its lifecycle so
-      // handleClose reclaims it correctly: a workflow-derived deployment
-      // address goes on the workflow set (no disconnect queue -- its
-      // in-flight state is reconstructed sidecar-locally on the next
-      // reconnect), a launched agent on the session set (queued for
-      // reconnect). The routing pointer is the same either way; only now
-      // it is written behind a passed challenge.
-      if (isWorkflowDerivedAddress(addr)) {
+      // A run address goes on the workflow set (no disconnect queue -- its
+      // in-flight state is reconstructed sidecar-locally on the next reconnect),
+      // so handleClose reclaims it correctly. The routing pointer is the same
+      // either way; only now it is written behind a passed challenge.
+      //
+      // The `else` (session set, queued for reconnect) is the retired
+      // launched-agent path: launched agents no longer exist (the folded-launch
+      // route was removed), so no current producer reaches it. It is left in
+      // place for the reconnect-subsystem teardown to remove as its own
+      // reviewable change, not folded into this collapse.
+      if (isRunAddress(addr)) {
         conn.workflowAddresses.add(addr);
       } else {
         conn.agentAddresses.add(addr);
@@ -1622,16 +1624,17 @@ export function createSidecarRouter(
     const failed: string[] = [];
 
     for (const addr of verified) {
-      // The `agent.reconnected` reaction is session lifecycle -- status flip
-      // and event-collector restore -- for a routable endpoint, either a
-      // launched agent_instance or a folded workflow_run, both of which
-      // resolve through `resolveRoutableAddress`. A workflow-derived
-      // deployment address resolves to neither (it routes via its deployment,
-      // not an instance or run row), so the reaction would throw and roll the
-      // just-verified address back out of routing. It needs routing + queue
-      // flush only, which the passed challenge has now made safe; skip the
-      // session reaction for it.
-      if (isWorkflowDerivedAddress(addr)) {
+      // A workflow run needs routing + queue flush only, which the passed
+      // challenge has now made safe: its in-flight state is reconstructed
+      // sidecar-locally, so it does not enrol in the `agent.reconnected` session
+      // reaction (event-collector restore). Skip the reaction for it.
+      //
+      // The reaction below was the retired launched-agent path (restore a
+      // launched agent's collector). Launched agents no longer exist, so no
+      // current producer reaches it; the `agent.reconnected` listener is gone,
+      // so `listenerCount` is 0 and the emit is inert. Left for the
+      // reconnect-subsystem teardown to remove.
+      if (isRunAddress(addr)) {
         ready.push(addr);
         continue;
       }
@@ -1685,15 +1688,17 @@ export function createSidecarRouter(
       for (const addr of ready) {
         // Workflow deployments are pinned-forever: a deployment keeps its
         // deploy-time definition until an explicit undeploy/redeploy, so the
-        // deploy-ref freshness catch-up is deliberately NOT run for a
-        // workflow-derived address. A definition edited on the hub while the
-        // sidecar was disconnected does not reconcile on reconnect; it affects
-        // only newly created deployments. The deployment's in-flight run state
-        // is reconstructed sidecar-locally at restore, not re-fetched here. Do
-        // NOT add a reconcile path for these addresses -- see the "Workflow
+        // deploy-ref freshness catch-up is deliberately NOT run for a run
+        // address. A definition edited on the hub while the sidecar was
+        // disconnected does not reconcile on reconnect; it affects only newly
+        // created deployments. The deployment's in-flight run state is
+        // reconstructed sidecar-locally at restore, not re-fetched here. Do NOT
+        // add a reconcile path for these addresses -- see the "Workflow
         // Definition Versioning: Pinned-Forever" note under "Reconnect
-        // Sequencing" in docs/IMPLEMENTATION.md.
-        if (isWorkflowDerivedAddress(addr)) continue;
+        // Sequencing" in docs/IMPLEMENTATION.md. (Every routable address is a
+        // run address now; the fall-through was the retired launched-agent
+        // catch-up path.)
+        if (isRunAddress(addr)) continue;
         void (async () => {
           try {
             const hubRef = await checkDeployRef(addr);
@@ -1758,7 +1763,10 @@ export function createSidecarRouter(
     // materializer is wired -- absent one, no run is born from the mail, so
     // there is nothing to restrict.
     if (lookups.materializeMailTriggeredRunGrants !== undefined) {
-      const workflowRecipients = recipients.filter(isWorkflowDerivedAddress);
+      // A workflow recipient is one this hub owns: its address parses as a run
+      // address. An external/federated address does not, and is not ours to
+      // materialize a run for.
+      const workflowRecipients = recipients.filter(isRunAddress);
       if (workflowRecipients.length > 1) {
         throw new Error(
           `mail addressed to multiple workflow-derived recipients (${workflowRecipients.join(", ")}); materializing a run for more than one workflow deployment from a single mail is unsupported`,
@@ -1815,7 +1823,7 @@ export function createSidecarRouter(
   ): Promise<"routed" | "unrouted" | "failed-closed"> {
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
-      isWorkflowDerivedAddress(recipient)
+      isRunAddress(recipient)
     ) {
       const runId = deriveWorkflowRunId(recipient);
       const result = await lookups.materializeMailTriggeredRunGrants({

@@ -395,7 +395,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     test("materializes the creator grant when the creator holds it", async () => {
-      const deploymentId = "federation-b-positive-1";
+      const deploymentId = "run_federation-b-positive-1";
       const app = await setup({ deploymentId, creatorHoldsGrant: true });
 
       const res = await app.request(
@@ -413,10 +413,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       const json = TriggerResponse.assert(await res.json());
-      // The run is keyed on the deployment's mail address (the stable
-      // runId the route returns as `address`), not this message's
-      // Message-ID.
-      const runId = json.address;
+      // The run is keyed on the deployment's local part (the stable runId the
+      // route returns as `deploymentId`), not this message's Message-ID.
+      const runId = json.deploymentId;
 
       // The run principal and run row committed.
       const principals = await h.db
@@ -462,7 +461,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("rejects 403 and commits nothing when the creator lacks the grant", async () => {
-      const deploymentId = "federation-b-negative-1";
+      const deploymentId = "run_federation-b-negative-1";
       const app = await setup({ deploymentId, creatorHoldsGrant: false });
 
       const res = await app.request(

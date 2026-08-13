@@ -254,7 +254,7 @@ async function measureOneDeploy(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${deploymentId}`,
+    agentId: `${deploymentId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: mailAddress,

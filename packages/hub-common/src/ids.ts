@@ -24,6 +24,7 @@ const PREFIXES = {
   asset: "ast_",
   gitToken: "gtk_",
   deployment: "dep_",
+  workflowRun: "run_",
   approval: "apr_",
   signal: "sig_",
   workflowDefinition: "wfd_",

@@ -72,8 +72,8 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "map-fan-out-real-agent-1";
-const TOOL_DEPLOYMENT_ID = "map-fan-out-real-agent-tool-1";
+const DEPLOYMENT_ID = "run_map-fan-out-real-agent-1";
+const TOOL_DEPLOYMENT_ID = "run_map-fan-out-real-agent-tool-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const SEED_STEP_ID = "seed";
 const MAP_STEP_ID = "fanout";
@@ -223,7 +223,7 @@ async function deployAndRunMap(opts: {
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${opts.deploymentId}`,
+    agentId: `${opts.deploymentId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,

@@ -201,7 +201,7 @@ async function deployProbe(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${deploymentId}`,
+    agentId: `${deploymentId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: mailAddress,
@@ -354,7 +354,7 @@ async function runOnce(
 
 describe("single-step credential-consuming tool end-to-end", () => {
   test("delivers the credential and authenticates to its pinned origin", async () => {
-    const deploymentId = "single-step-credential-tool-pos";
+    const deploymentId = "run_single-step-credential-tool-pos";
     const { mailAddress, workflowRunRepoId } = await deployProbe(
       deploymentId,
       deliveryWithSecret(SECRET_INITIAL),
@@ -385,7 +385,7 @@ describe("single-step credential-consuming tool end-to-end", () => {
   });
 
   test("delivers over the live credentials.update channel to a running child", async () => {
-    const deploymentId = "single-step-credential-tool-chan";
+    const deploymentId = "run_single-step-credential-tool-chan";
     // Deploy with NO deploy-frame delivery: the credential reaches the child
     // ONLY over the live credentials.update channel. Push it and wait for the
     // child to ack, so the material is resident before the run's agent builds.
@@ -422,7 +422,7 @@ describe("single-step credential-consuming tool end-to-end", () => {
   });
 
   test("fails closed when no grant authorizes the credential's use", async () => {
-    const deploymentId = "single-step-credential-tool-neg";
+    const deploymentId = "run_single-step-credential-tool-neg";
     const { mailAddress, workflowRunRepoId } = await deployProbe(
       deploymentId,
       deliveryWithSecret(SECRET_INITIAL),

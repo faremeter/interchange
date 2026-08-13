@@ -278,7 +278,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
 
 describe("stepDeployTreeDir base-step resolution", () => {
   const dataDir = "/data";
-  const mailboxAddress = "ins_dep-map@example.com";
+  const mailboxAddress = "run_dep-map@example.com";
 
   test("a map iteration resolves the base step's deploy tree", () => {
     // Deploy stages one deploy tree per base step; every map iteration

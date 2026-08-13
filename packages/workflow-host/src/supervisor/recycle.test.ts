@@ -519,11 +519,11 @@ async function buildBindings(opts: {
     binaryPath: "/fake/bin/workflow-child",
     substrateEnv: { DATA_DIR: opts.baseDir },
     dynamicSpawnEnv: () => ({}),
-    workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
+    workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
-    deploymentId: "deployment-x",
+    deploymentId: "run_deployment-x",
     stepCount: 1,
-    deploymentMailAddress: "deployment-x@example.com",
+    deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ deploymentId, stepId }) =>
       `${deploymentId}-${stepId}@example.com`,
@@ -544,7 +544,7 @@ async function spawnSupervisor(opts: {
 }) {
   await seedStepGrants(
     opts.baseDir,
-    defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+    defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
     [{ resource: "thing", action: "read" }],
   );
   const bindings = await buildBindings({
@@ -592,7 +592,7 @@ describe("supervisor spawn: failure cleanup", () => {
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -620,12 +620,12 @@ describe("supervisor spawn: failure cleanup", () => {
 
     // The address must not remain registered, and the history must carry
     // both the register and its matching unregister.
-    expect(mailBus.registered()).not.toContain("deployment-x@example.com");
+    expect(mailBus.registered()).not.toContain("run_deployment-x@example.com");
     expect(mailBus.registrationHistory()).toContain(
-      "register:deployment-x@example.com",
+      "register:run_deployment-x@example.com",
     );
     expect(mailBus.registrationHistory()).toContain(
-      "unregister:deployment-x@example.com",
+      "unregister:run_deployment-x@example.com",
     );
   });
 
@@ -657,7 +657,7 @@ describe("supervisor spawn: failure cleanup", () => {
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -706,7 +706,7 @@ describe("supervisor spawn: dynamic env", () => {
     const tracker = createSpawnTracker({});
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let hostRevised = "before-rotation";
@@ -917,7 +917,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const tracker = createSpawnTracker({ sigtermExits: false });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -985,7 +985,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const tracker = createSpawnTracker({ sigtermExits: true });
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -1131,11 +1131,11 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
       await new Promise((r) => setTimeout(r, 1));
     }
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("gap-1"),
     );
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("gap-2"),
     );
 
@@ -1208,7 +1208,7 @@ describe("supervisor recycle: policy-initiated (max-uptime trip)", () => {
     const tracker = createSpawnTracker({});
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     let nowMs = 1_700_000_000_000;
@@ -1295,7 +1295,7 @@ describe("supervisor recycle: child self-initiated via recycle.request", () => {
     expect(secondChild.channelId).not.toBe(firstChild.channelId);
     expect(secondChild.channelId).toMatch(/^[0-9a-f]{32}$/);
     // The mail-bus registration is held across the recycle.
-    expect(mailBus.registered()).toContain("deployment-x@example.com");
+    expect(mailBus.registered()).toContain("run_deployment-x@example.com");
 
     await supervisor.shutdown();
   });
@@ -1350,7 +1350,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
 
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const baseBindings = await buildBindings({
@@ -1382,7 +1382,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     // supervisor arms an accumulator. Each accumulator subscribes to
     // the cohort's terminal broadcaster for its tracked runId.
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("cohort-pre-recycle"),
     );
     await new Promise((r) => setTimeout(r, 5));
@@ -1412,7 +1412,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     // left the dispatch loop blocked on the disposed broadcaster
     // and the trigger.fire would never reach the new child's stream.
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode("cohort-post-recycle"),
     );
     const deadline = Date.now() + 1_000;
@@ -1450,7 +1450,7 @@ describe("supervisor recycle: drain-side processing replay", () => {
     };
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
     const bindings = await buildBindings({
@@ -1710,7 +1710,7 @@ describe("supervisor recycle: respawn credentials-read failure", () => {
     // the read that fails here.
     await corruptStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
     );
 
     let caught: unknown;

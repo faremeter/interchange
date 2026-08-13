@@ -95,7 +95,7 @@ import {
   type SessionService,
   type WorkflowRunHubPrincipal,
 } from "@intx/hub-sessions";
-import { signalName } from "@intx/types";
+import { isRunAddress, signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ApprovalSnapshot, HarnessConfig } from "@intx/types/runtime";
 import { WireGrantRule } from "@intx/types/grant-wire";
@@ -115,7 +115,6 @@ import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
-  isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -143,7 +142,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // `ins_dep_<...>` address), matching the reconnect-survival fixtures. The
 // reconnect ownership challenge re-routes it and fires
 // `onWorkflowAddressesRoutable`, which is what drives Trigger B.
-const INSTANCE_LOCAL = "dep0ec0ffee0ec0ffee0ec0ffee0ec0f";
+const INSTANCE_LOCAL = "run_dep0ec0ffee0ec0ffee0ec0ffee0ec0f";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
@@ -419,9 +418,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       hasRun = true;
 
-      // A legacy `ins_<hex>` deployment address routes through the challenged
-      // reconnect path (the source of Trigger B), not the keyless workflow set.
-      expect(isWorkflowDerivedAddress(deploymentMailAddress)).toBe(false);
+      // The deployment mail address is a run address: it names the single
+      // self-anchored run that Trigger B re-challenges on reconnect.
+      expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // Seed the tenancy the co-write resolves against: a tenant, the workflow
       // definition asset the deployment references, the deployment's anchor run
@@ -479,7 +478,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `ins_${DEPLOYMENT_ID}`,
+        agentId: `${DEPLOYMENT_ID}`,
         tenantId: "tenant-1",
         principalId: "prin_reconnect-reemit-1",
         agentAddress: deploymentMailAddress,

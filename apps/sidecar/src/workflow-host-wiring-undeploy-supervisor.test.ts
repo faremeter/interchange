@@ -282,8 +282,8 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       type: "agent.deploy",
       // Single-step projection: the deploy router derives the sole
       // step's agent-state repo from `parseAgentId(agentAddress)`, which
-      // requires the canonical `ins_<id>@<domain>` instance shape.
-      agentAddress: "ins_undeploy-supervisor@example.com",
+      // requires the canonical `run_<id>@<domain>` instance shape.
+      agentAddress: "run_undeploy-supervisor@example.com",
       agentId: "undeploy-supervisor-agent",
       hubPublicKey: "hub-pk",
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config

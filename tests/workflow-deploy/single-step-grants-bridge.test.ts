@@ -19,9 +19,9 @@
 // `config.grants` there before the child spawns.
 //
 // Assertions:
-//   (a) identity: the deploy-ack persisted the public key for the legacy
-//       `ins_<hex>` address, and `isWorkflowDerivedAddress(legacy)` is
-//       false (the address never collapses to the `ins_dep_` family).
+//   (a) identity: the deploy-ack persisted the public key for the run
+//       mail address, and `isRunAddress` recognizes it -- every routable
+//       address now names one self-anchored run.
 //   (b) grants resolve: `assembleCredentialsSnapshot` (the exact call the
 //       supervisor runs) reads the granted rule back from the legacy
 //       agent-state repo's `state/grants.json`.
@@ -43,6 +43,7 @@ import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { type } from "arktype";
 
 import { evaluateGrants } from "@intx/authz";
+import { isRunAddress } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import { WireGrantRule } from "@intx/types/grant-wire";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -51,7 +52,6 @@ import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
-  isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -89,7 +89,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // deployment address `ins_<id>@<domain>` is the legacy `ins_<hex>`
 // identity the agent-launch path mints; it is NOT a workflow-derived
 // `ins_dep_<...>` address, so identity preservation is exercised.
-const INSTANCE_LOCAL = "deadbeefcafe0001deadbeefcafe0002";
+const INSTANCE_LOCAL = "run_deadbeefcafe0001deadbeefcafe0002";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
@@ -149,7 +149,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
 
     // (a) precondition: the deployment address is the launched-agent
     // identity shape, not a workflow-derived address.
-    expect(isWorkflowDerivedAddress(deploymentMailAddress)).toBe(false);
+    expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
     const agent = defineAgent({
       id: "agent-launched-grants",
@@ -171,7 +171,7 @@ describe("single-step launched-agent grants bridge via spawned child", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

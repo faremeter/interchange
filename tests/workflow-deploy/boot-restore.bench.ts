@@ -394,7 +394,7 @@ async function measureRestore(n: number): Promise<number> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "boot-restore-data-"));
   const addresses: string[] = [];
   for (let i = 0; i < n; i += 1) {
-    addresses.push(`ins_boot_${String(i)}@example.com`);
+    addresses.push(`run_boot_${String(i)}@example.com`);
   }
 
   // SETUP: deploy each address through the first router so its restore record,

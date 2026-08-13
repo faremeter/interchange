@@ -810,7 +810,7 @@ export interface SidecarDeployRouter extends DeployRouter {
    */
   restoreWorkflowRuns(): Promise<void>;
   /**
-   * The workflow-substrate deployment addresses (`ins_dep_...`) this router
+   * The workflow-substrate deployment addresses (`run_<hex>@domain`) this router
    * currently hosts a live supervisor for -- the set of addresses this
    * sidecar can route mail to. The boot edge announces these to the hub on
    * (re)connect so the hub re-registers them for routing: they are hub-minted

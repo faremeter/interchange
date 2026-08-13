@@ -92,7 +92,7 @@ import { toLaunchDeployContent } from "./launch-session-bridge";
 // address the fixture deployed the sidecar workflow under; otherwise the
 // route's sendRunGrants/routeMail target an unknown address (409).
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "mail-trigger-run-completes-1";
+const DEPLOYMENT_ID = "run_mail-trigger-run-completes-1";
 const TENANT_ID = "tnt_mail_trigger_completes";
 const CALLER_USER_ID = "usr_mail_trigger_completes_caller";
 const CALLER_PRINCIPAL_ID = "prn_mail_trigger_completes_caller";
@@ -355,7 +355,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
-        deploymentMailAddress,
+        DEPLOYMENT_ID,
         { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
@@ -364,6 +364,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       expect(terminal.type).toBe("RunCompleted");
+
+      // The collapse: the trigger reconciles onto the deployment's single
+      // self-anchored run rather than minting a second routable row. After the
+      // first trigger exactly ONE workflow_run row exists, and it is the anchor
+      // (id == anchorRunId == deploymentId) -- the anchor IS the run.
+      const runRows = await h.db.select().from(workflowRunTable);
+      expect(runRows).toHaveLength(1);
+      expect(runRows[0]?.id).toBe(DEPLOYMENT_ID);
+      expect(runRows[0]?.anchorRunId).toBe(DEPLOYMENT_ID);
     });
 
     // Seed the deployment's first-class definition and its anchor run at the
@@ -389,7 +398,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function deployWorkflowToSidecar(): Promise<void> {
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `ins_${DEPLOYMENT_ID}`,
+        agentId: `${DEPLOYMENT_ID}`,
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: deploymentMailAddress,

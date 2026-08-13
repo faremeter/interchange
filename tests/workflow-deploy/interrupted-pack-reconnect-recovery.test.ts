@@ -27,12 +27,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
-  isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -103,7 +103,7 @@ async function deploySingleStepWorkflow(
   });
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${deploymentId}`,
+    agentId: `${deploymentId}`,
     tenantId: "tenant-1",
     principalId: `prin_${deploymentId}`,
     agentAddress: deploymentMailAddress,
@@ -244,10 +244,10 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
   });
 
   test("armed mid-pack drop: run completes after reconnect with no fresh trigger", async () => {
-    const deploymentId = "dep1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
+    const deploymentId = "run_dep1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
     const { deploymentMailAddress, workflowRunRepoId } =
       await deploySingleStepWorkflow(deploymentId);
-    expect(isWorkflowDerivedAddress(deploymentMailAddress)).toBe(false);
+    expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
     // Arm the interrupt so the FIRST run-events pack of this run is applied
     // on the hub, then every live link is dropped before the ack. The
@@ -291,7 +291,7 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
   }, 180_000);
 
   test("settled drop control: a fresh trigger runs to completion after reconnect", async () => {
-    const deploymentId = "dep2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
+    const deploymentId = "run_dep2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
     const { deploymentMailAddress, workflowRunRepoId } =
       await deploySingleStepWorkflow(deploymentId);
 
@@ -323,7 +323,7 @@ describe("interrupted workflow-run pack recovers on reconnect", () => {
     // Under the stable-runId model every trigger shares the same runId.
     // Fire triggers until one lands in consumed/ (meaning the dispatch
     // loop processed it and the run reached terminal).
-    const runId = deploymentMailAddress;
+    const runId = deriveWorkflowRunId(deploymentMailAddress);
     let attempt = 0;
     let consumedMessageId = "";
     const start = Date.now();

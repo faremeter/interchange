@@ -86,7 +86,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "latency-gate-bench";
+const DEPLOYMENT_ID = "run_latency-gate-bench";
 const STEP_ID = "step1";
 
 // One steady-state message body. The echo provider reflects it; content
@@ -339,7 +339,7 @@ async function runUnified(opts: {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

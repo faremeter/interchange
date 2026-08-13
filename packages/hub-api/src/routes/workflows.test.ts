@@ -55,7 +55,7 @@ const PRINCIPAL_ID = "prn_test";
 const USER_ID = "usr_test";
 const DOMAIN = "test.example.com";
 const ASSET_ID = "ast_workflow";
-const DEPLOYMENT_ID = "dep_abc";
+const DEPLOYMENT_ID = "run_abc";
 
 // The sidecar's deploy router keys the workflow-run repo by the
 // sanitized deployment address, NOT the bare deployment id (see
@@ -567,7 +567,7 @@ function createMockWorkflowAllocationService(
       if (prepareError !== undefined) throw prepareError;
       return Promise.resolve({
         deploymentId: DEPLOYMENT_ID,
-        deploymentAddress: `ins_${DEPLOYMENT_ID}@${DOMAIN}`,
+        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
         allocationId: "sal_test",
         status: "pending",
       });
@@ -702,7 +702,7 @@ function createStubRepoStore(
         typeof runLifecycle === "function" ? runLifecycle() : runLifecycle;
       return {
         async listDir(dirPath) {
-          const runPath = `runs/ins_${DEPLOYMENT_ID}@${DOMAIN}`;
+          const runPath = `runs/${DEPLOYMENT_ID}`;
           if (dirPath === runPath) {
             return lifecycle === "absent"
               ? []
@@ -911,7 +911,7 @@ describe("POST /workflows/deployments", () => {
       deployCalls,
       deployResult: {
         deploymentId: DEPLOYMENT_ID,
-        deploymentAddress: `ins_${DEPLOYMENT_ID}@${DOMAIN}`,
+        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
         publicKey: "pubkey",
       },
     });
@@ -1153,7 +1153,7 @@ describe("POST /workflows/deployments", () => {
       db: { assetRow: workflowAssetRow, deploymentRow: undefined },
       deployResult: {
         deploymentId: DEPLOYMENT_ID,
-        deploymentAddress: `ins_${DEPLOYMENT_ID}@${DOMAIN}`,
+        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
         publicKey: "pubkey",
       },
     });
@@ -1245,9 +1245,11 @@ describe("GET /workflows/deployments", () => {
 });
 
 describe("POST /workflows/:deploymentId/signals", () => {
-  // The single addressable run of a deployment is its stable run id, the
-  // deployment mail address (deriveWorkflowRunId returns the address verbatim).
-  const RUN_ID = `ins_${DEPLOYMENT_ID}@${DOMAIN}`;
+  // The deployment's one addressable run: its mail address RUN_ADDRESS, and the
+  // stable run id RUN_ID that address derives -- the local part before the `@`,
+  // which post-collapse equals the deployment id.
+  const RUN_ADDRESS = `${DEPLOYMENT_ID}@${DOMAIN}`;
+  const RUN_ID = DEPLOYMENT_ID;
 
   function manageGrant(): GrantRule {
     return makeGrant({
@@ -1277,7 +1279,7 @@ describe("POST /workflows/:deploymentId/signals", () => {
     expect(signalCalls).toHaveLength(1);
     const call = signalCalls[0];
     if (call === undefined) throw new Error("missing signal call");
-    expect(call.agentAddress).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
+    expect(call.agentAddress).toBe(`${DEPLOYMENT_ID}@${DOMAIN}`);
     expect(call.runId).toBe(RUN_ID);
     expect(call.signalName).toBe("go");
     // The signalId is the caller-supplied stable id, never server-minted.
@@ -1311,7 +1313,7 @@ describe("POST /workflows/:deploymentId/signals", () => {
         id: `dispatch:${DEPLOYMENT_ID}:sig-durable-1`,
         anchorRunId: DEPLOYMENT_ID,
         signal: {
-          agentAddress: RUN_ID,
+          agentAddress: RUN_ADDRESS,
           runId: RUN_ID,
           signalName: "go",
           signalId: "sig-durable-1",
@@ -1627,13 +1629,13 @@ describe("POST /workflows/:deploymentId/mail", () => {
     expect(res.status).toBe(202);
     const json = assertBody(TriggerBody, await res.json());
     expect(json.deploymentId).toBe(DEPLOYMENT_ID);
-    expect(json.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
+    expect(json.address).toBe(`${DEPLOYMENT_ID}@${DOMAIN}`);
     expect(json.messageId.length).toBeGreaterThan(0);
 
     expect(routeMailCalls).toHaveLength(1);
     const call = routeMailCalls[0];
     if (call === undefined) throw new Error("missing routeMail call");
-    expect(call.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
+    expect(call.address).toBe(`${DEPLOYMENT_ID}@${DOMAIN}`);
     // The wire payload is base64-encoded MIME carrying the body text.
     const decoded = new TextDecoder().decode(base64Decode(call.rawMessage));
     expect(decoded).toContain("kick off");
@@ -1937,18 +1939,22 @@ describe("POST /workflows/:deploymentId/mail", () => {
 
     expect(res.status).toBe(202);
     const json = assertBody(TriggerBody, await res.json());
+    // The route keys the run on the deployment's local part, returned as the
+    // response `deploymentId`.
+    expect(json.deploymentId).toBe(DEPLOYMENT_ID);
 
     // The grants ride the wire ahead of the trigger mail, so FIFO ordering
     // lands them at the sidecar before the run dispatches.
     expect(sendOrder.map((s) => s.kind)).toEqual(["run.grants", "mail"]);
 
-    // The run.grants frame carries the run id (= the deployment's mail
-    // address) and the definition-pure tool grants the capability walk lifted.
+    // The run.grants frame carries the run id (the local part of the
+    // deployment's mail address) and the definition-pure tool grants the
+    // capability walk lifted.
     expect(runGrantsCalls).toHaveLength(1);
     const grantsCall = runGrantsCalls[0];
     if (grantsCall === undefined) throw new Error("missing run.grants call");
-    expect(grantsCall.address).toBe(`ins_${DEPLOYMENT_ID}@${DOMAIN}`);
-    expect(grantsCall.runId).toBe(json.address);
+    expect(grantsCall.address).toBe(`${DEPLOYMENT_ID}@${DOMAIN}`);
+    expect(grantsCall.runId).toBe(DEPLOYMENT_ID);
 
     const byResource = new Map(
       grantsCall.stepGrants.map((g) => [g.resource, g]),
@@ -1977,7 +1983,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     );
     expect(principalRow).toMatchObject({
       kind: "workflow",
-      refId: json.address,
+      refId: DEPLOYMENT_ID,
       tenantId: TENANT_ID,
       status: "active",
     });
@@ -1988,7 +1994,7 @@ describe("POST /workflows/:deploymentId/mail", () => {
     expect(runInserts).toHaveLength(1);
     const runRow = assertBody(WorkflowRunInsert, runInserts[0]?.values);
     expect(runRow).toMatchObject({
-      id: json.address,
+      id: DEPLOYMENT_ID,
       anchorRunId: DEPLOYMENT_ID,
       tenantId: TENANT_ID,
       principalId: principalRow.id,

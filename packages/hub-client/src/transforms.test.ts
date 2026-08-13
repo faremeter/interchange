@@ -13,7 +13,7 @@ import {
   turnToEvent,
 } from "./transforms";
 
-const AGENT_ADDR = "ins_abc123@tenant.example";
+const AGENT_ADDR = "run_abc123@tenant.example";
 const HUMAN_ADDR = "usr_alice@tenant.example";
 
 describe("shouldShowMail", () => {
@@ -101,7 +101,7 @@ describe("formatAddress", () => {
 });
 
 describe("isRunAddress", () => {
-  test("returns true for ins_ prefixed addresses", () => {
+  test("returns true for run_ prefixed addresses", () => {
     expect(isRunAddress(AGENT_ADDR)).toBe(true);
   });
 
@@ -113,7 +113,7 @@ describe("isRunAddress", () => {
 describe("resolveAgentAddress", () => {
   test("resolves agent address to runId and label", () => {
     const result = resolveAgentAddress({ name: "Bot", email: AGENT_ADDR });
-    expect(result).toEqual({ runId: "ins_abc123", label: "Bot" });
+    expect(result).toEqual({ runId: "run_abc123", label: "Bot" });
   });
 
   test("returns null for non-agent address", () => {
@@ -126,7 +126,7 @@ describe("resolveAgentAddress", () => {
 describe("resolveAgentRecipient", () => {
   test("resolves first recipient", () => {
     const result = resolveAgentRecipient([{ name: "Bot", email: AGENT_ADDR }]);
-    expect(result).toEqual({ runId: "ins_abc123", label: "Bot" });
+    expect(result).toEqual({ runId: "run_abc123", label: "Bot" });
   });
 
   test("returns null for empty recipients", () => {
@@ -138,7 +138,7 @@ describe("mailToEvent", () => {
   const baseMail = {
     id: "mail_1",
     sessionId: "sess_1",
-    runId: "ins_abc123",
+    runId: "run_abc123",
     status: "delivered" as const,
     receivedAt: "2024-01-01T00:00:00Z",
     from: [{ name: "Alice", email: HUMAN_ADDR }],
@@ -270,7 +270,7 @@ describe("turnToEvent", () => {
   const baseTurn = {
     id: "turn_1",
     sessionId: "sess_1",
-    runId: "ins_abc123",
+    runId: "run_abc123",
     model: "gpt-4",
     status: "completed" as const,
     startedAt: "2024-01-03T00:00:00Z",

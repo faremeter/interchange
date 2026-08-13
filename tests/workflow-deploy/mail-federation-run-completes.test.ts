@@ -115,21 +115,20 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // The RECEIVER, whose grants come only from the sidecar materializer. The
-// `dep_` prefix is load-bearing and MUST NOT be simplified to a bare id: the
-// deployment address SHAPE selects the materialization path. deliverMailToRecipient
-// only materializes a run for a recipient whose address `isWorkflowDerivedAddress`
-// recognizes, and that predicate keys on the `ins_dep_` instance prefix a real
-// deployment id produces. A bare id (e.g. `fed-mail-receiver-1` ->
-// `ins_fed-mail-receiver-1@...`) fails that predicate, so the mail is routed
-// with NO materialization -- and the test still goes GREEN while exercising
-// nothing, because the receiver never starts and the RunCompleted assertion is
-// only ever reached on the real path. Keep the `dep_` prefix.
-const RECEIVER_ID = "dep_fed-mail-receiver-1";
+// `run_` prefix is load-bearing and MUST NOT be dropped: the address SHAPE
+// selects the materialization path. deliverMailToRecipient only materializes a
+// run for a recipient whose address `isRunAddress` recognizes, and that
+// predicate keys on the `run_` prefix. A bare id (e.g. `fed-mail-receiver-1` ->
+// `fed-mail-receiver-1@...`) fails that predicate, so the mail is routed with
+// NO materialization -- and the test still goes GREEN while exercising nothing,
+// because the receiver never starts and the RunCompleted assertion is only ever
+// reached on the real path. Keep the `run_` prefix.
+const RECEIVER_ID = "run_dep_fed-mail-receiver-1";
 const RECEIVER_TENANT_ID = "tnt_fed_mail_receiver";
 const RECEIVER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_receiver_creator";
 const RECEIVER_ASSET_ID = "ast_fed_mail_receiver_wf";
 // The SENDER, triggered by the fixture to mail the receiver.
-const SENDER_ID = "dep_fed-mail-sender-1";
+const SENDER_ID = "run_dep_fed-mail-sender-1";
 
 const RECEIVER_STEP_ID = "receive";
 const SENDER_STEP_ID = "send";
@@ -442,7 +441,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const terminal = await waitForWorkflowRunComplete(
         env,
         RECEIVER_ID,
-        receiverAddress,
+        RECEIVER_ID,
         { timeoutMs: 40_000, diagnostics: dumpDiag },
       );
       if (terminal.type !== "RunCompleted") {
@@ -465,7 +464,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ): Promise<void> {
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `ins_${deploymentId}`,
+        agentId: `${deploymentId}`,
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: address,

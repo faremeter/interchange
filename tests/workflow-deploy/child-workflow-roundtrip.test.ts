@@ -84,8 +84,8 @@ function expectChildStepNotImplemented(
 }
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const PARENT_DEPLOYMENT_ID = "child-workflow-parent-1";
-const CHILD_DEPLOYMENT_ID = "child-workflow-child-1";
+const PARENT_DEPLOYMENT_ID = "run_child-workflow-parent-1";
+const CHILD_DEPLOYMENT_ID = "run_child-workflow-child-1";
 const CHILD_WORKFLOW_ID = `wf_${CHILD_DEPLOYMENT_ID}`;
 const PARENT_WORKFLOW_ID = `wf_${PARENT_DEPLOYMENT_ID}`;
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -96,9 +96,10 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 // turn references the grandchild. The sub-namespace scoping under
 // `runs/<runId>/` should isolate every rung in the parent's
 // workflow-run repo without leakage.
-const NESTED_PARENT_DEPLOYMENT_ID = "child-workflow-nested-parent-1";
-const NESTED_CHILD_DEPLOYMENT_ID = "child-workflow-nested-child-1";
-const NESTED_GRANDCHILD_DEPLOYMENT_ID = "child-workflow-nested-grandchild-1";
+const NESTED_PARENT_DEPLOYMENT_ID = "run_child-workflow-nested-parent-1";
+const NESTED_CHILD_DEPLOYMENT_ID = "run_child-workflow-nested-child-1";
+const NESTED_GRANDCHILD_DEPLOYMENT_ID =
+  "run_child-workflow-nested-grandchild-1";
 const NESTED_PARENT_WORKFLOW_ID = `wf_${NESTED_PARENT_DEPLOYMENT_ID}`;
 const NESTED_CHILD_WORKFLOW_ID = `wf_${NESTED_CHILD_DEPLOYMENT_ID}`;
 const NESTED_GRANDCHILD_WORKFLOW_ID = `wf_${NESTED_GRANDCHILD_DEPLOYMENT_ID}`;
@@ -106,11 +107,11 @@ const NESTED_GRANDCHILD_WORKFLOW_ID = `wf_${NESTED_GRANDCHILD_DEPLOYMENT_ID}`;
 // Siblings-fanout deployment ids. The parent deploys 5
 // `childWorkflow` primitives in `stepOrder`, each pointing at one of
 // 5 distinct definitionRefs (deployed as 5 separate workflow assets).
-const SIBLINGS_PARENT_DEPLOYMENT_ID = "child-workflow-siblings-parent-1";
+const SIBLINGS_PARENT_DEPLOYMENT_ID = "run_child-workflow-siblings-parent-1";
 const SIBLINGS_CHILD_COUNT = 5;
 const SIBLINGS_CHILD_DEPLOYMENT_IDS: readonly string[] = Array.from(
   { length: SIBLINGS_CHILD_COUNT },
-  (_unused, i) => `child-workflow-sibling-${(i + 1).toString()}`,
+  (_unused, i) => `run_child-workflow-sibling-${(i + 1).toString()}`,
 );
 const SIBLINGS_PARENT_WORKFLOW_ID = `wf_${SIBLINGS_PARENT_DEPLOYMENT_ID}`;
 const SIBLINGS_CHILD_WORKFLOW_IDS: readonly string[] =
@@ -285,7 +286,7 @@ describe("parent -> child workflow round-trip", () => {
       workflow: childWorkflowDefinition,
       config: baseConfig(
         childMailAddress,
-        `ins_${CHILD_DEPLOYMENT_ID}`,
+        `${CHILD_DEPLOYMENT_ID}`,
         "Fallback prompt (overridden per step).",
       ),
       deployContent: {
@@ -302,7 +303,7 @@ describe("parent -> child workflow round-trip", () => {
       workflow: parentWorkflowDefinition,
       config: baseConfig(
         parentMailAddress,
-        `ins_${PARENT_DEPLOYMENT_ID}`,
+        `${PARENT_DEPLOYMENT_ID}`,
         "Fallback prompt (overridden per step).",
       ),
       deployContent: {
@@ -657,7 +658,7 @@ describe("parent -> child workflow round-trip", () => {
       workflow: grandchildWorkflowDefinition,
       config: baseConfig(
         grandchildMailAddress,
-        `ins_${NESTED_GRANDCHILD_DEPLOYMENT_ID}`,
+        `${NESTED_GRANDCHILD_DEPLOYMENT_ID}`,
         "Fallback prompt (overridden per step).",
       ),
       deployContent: {
@@ -674,7 +675,7 @@ describe("parent -> child workflow round-trip", () => {
       workflow: childWorkflowDefinition,
       config: baseConfig(
         childMailAddress,
-        `ins_${NESTED_CHILD_DEPLOYMENT_ID}`,
+        `${NESTED_CHILD_DEPLOYMENT_ID}`,
         "Fallback prompt (overridden per step).",
       ),
       deployContent: {
@@ -691,7 +692,7 @@ describe("parent -> child workflow round-trip", () => {
       workflow: parentWorkflowDefinition,
       config: baseConfig(
         parentMailAddress,
-        `ins_${NESTED_PARENT_DEPLOYMENT_ID}`,
+        `${NESTED_PARENT_DEPLOYMENT_ID}`,
         "Fallback prompt (overridden per step).",
       ),
       deployContent: {
@@ -1026,7 +1027,7 @@ describe("parent -> child workflow round-trip", () => {
         workflow: def,
         config: baseConfig(
           address,
-          `ins_${depId}`,
+          `${depId}`,
           "Fallback prompt (overridden per step).",
         ),
         deployContent: {
@@ -1044,7 +1045,7 @@ describe("parent -> child workflow round-trip", () => {
       workflow: parentWorkflowDefinition,
       config: baseConfig(
         parentMailAddress,
-        `ins_${SIBLINGS_PARENT_DEPLOYMENT_ID}`,
+        `${SIBLINGS_PARENT_DEPLOYMENT_ID}`,
         "Fallback prompt (overridden per step).",
       ),
       deployContent: {

@@ -1439,10 +1439,10 @@ describe("deployWorkflowDefinition", () => {
     ];
     const config: HarnessConfig = {
       sessionId: "ses-deploy",
-      agentId: "ins_dep_xyz",
+      agentId: "run_dep_xyz",
       tenantId: "tenant-1",
       principalId: "prin-deploy",
-      agentAddress: "ins_dep_xyz@workflow.test",
+      agentAddress: "run_dep_xyz@workflow.test",
       systemPrompt: "deployment-level",
       tools: [],
       grants: [],
@@ -1461,7 +1461,7 @@ describe("deployWorkflowDefinition", () => {
 
     const result = await service.deployWorkflowDefinition({
       tenantId: "tenant-1",
-      deploymentId: "dep_xyz",
+      deploymentId: "run_dep_xyz",
       deploymentDomain: "workflow.test",
       definition,
       definitionAssetId: "ast_workflow_1",
@@ -1516,10 +1516,10 @@ describe("deployWorkflowDefinition", () => {
     expect(runRows).toHaveLength(1);
     const runRow = runRows[0];
     if (runRow === undefined) throw new Error("missing anchor workflow_run");
-    expect(runRow.id).toBe("dep_xyz");
+    expect(runRow.id).toBe("run_dep_xyz");
     expect(runRow.tenantId).toBe("tenant-1");
-    expect(runRow.anchorRunId).toBe("dep_xyz");
-    expect(runRow.address).toBe("ins_dep_xyz@workflow.test");
+    expect(runRow.anchorRunId).toBe("run_dep_xyz");
+    expect(runRow.address).toBe("run_dep_xyz@workflow.test");
     expect(runRow.status).toBe("running");
     expect(runRow.definitionId).toBe(definitionRow.id);
     expect(runRow.principalId ?? null).toBeNull();
@@ -1530,13 +1530,13 @@ describe("deployWorkflowDefinition", () => {
     const grantRow = grantRows[0];
     if (grantRow === undefined) throw new Error("missing workflow-run grant");
     expect(grantRow.principalId).toBe("prin-deploy");
-    expect(grantRow.resource).toBe("workflow-run:dep_xyz");
+    expect(grantRow.resource).toBe("workflow-run:run_dep_xyz");
     expect(grantRow.action).toBe("read");
     expect(grantRow.effect).toBe("allow");
 
     expect(result).toEqual({
-      deploymentId: "dep_xyz",
-      deploymentAddress: "ins_dep_xyz@workflow.test",
+      deploymentId: "run_dep_xyz",
+      deploymentAddress: "run_dep_xyz@workflow.test",
       publicKey: "ed25519-supervisor-pubkey",
     });
   });
@@ -1653,10 +1653,10 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
       definition,
       config: {
         sessionId: "ses-restore-order",
-        agentId: "ins_dep_restore_order",
+        agentId: "run_dep_restore_order",
         tenantId: "tenant-1",
         principalId: "principal-1",
-        agentAddress: "ins_dep_restore_order@workflow.test",
+        agentAddress: "run_dep_restore_order@workflow.test",
         systemPrompt: "continue the recovered run",
         tools: [],
         grants: [],
@@ -1809,10 +1809,10 @@ describe("sendMultiStepDeployFrame", () => {
     };
     const config: HarnessConfig = {
       sessionId: "ses-multi",
-      agentId: "ins_dep_abc",
+      agentId: "run_dep_abc",
       tenantId: "tenant-1",
       principalId: "prin-multi",
-      agentAddress: "ins_dep_abc@workflow.interchange",
+      agentAddress: "run_dep_abc@workflow.interchange",
       systemPrompt: "deployment-level",
       tools: [],
       grants: [],
@@ -1822,7 +1822,7 @@ describe("sendMultiStepDeployFrame", () => {
 
     const result = await sendMultiStepDeployFrame({
       sidecarRouter: mockRouter,
-      agentAddress: "ins_dep_abc@workflow.interchange",
+      agentAddress: "run_dep_abc@workflow.interchange",
       config,
       definition,
       sources,

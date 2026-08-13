@@ -78,8 +78,8 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "on-trigger-signal-delivery-1";
-const DEPLOYMENT_ID_TIMED = "on-trigger-timed-abandon-1";
+const DEPLOYMENT_ID = "run_on-trigger-signal-delivery-1";
+const DEPLOYMENT_ID_TIMED = "run_on-trigger-timed-abandon-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const SECTION_ID = "section";
 const SIGNAL_NAME = "proceed";
@@ -154,7 +154,7 @@ async function deployAndTriggerSection(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${deploymentId}`,
+    agentId: `${deploymentId}`,
     tenantId: "tenant-1",
     principalId: `prin_${deploymentId}`,
     agentAddress: deploymentMailAddress,

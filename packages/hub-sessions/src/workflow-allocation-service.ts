@@ -23,7 +23,7 @@ import {
   hashDefinition,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
-import { deriveRunAddress } from "@intx/workflow-deploy";
+import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
 import {
@@ -364,7 +364,7 @@ export function createWorkflowAllocationService({
     });
     const config: HarnessConfig = {
       sessionId: spec.sessionId,
-      agentId: `ins_${allocation.anchorRunId}`,
+      agentId: deriveRunAgentId({ runId: allocation.anchorRunId }),
       tenantId: allocation.tenantId,
       principalId: spec.sourceAuthorityPrincipalId,
       agentAddress: deploymentAddress,
