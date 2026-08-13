@@ -204,13 +204,13 @@ describe("deploy-failure registry leak", () => {
       type: "agent.deploy",
       // Single-step projection: the deploy router parses the frame
       // address into the legacy agent-state repo id, so it must carry the
-      // canonical `ins_<id>@<domain>` shape.
-      agentAddress: "ins_mstep@x.example",
+      // canonical `run_<id>@<domain>` shape.
+      agentAddress: "run_mstep@x.example",
       agentId: "mstep",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not consult config before failing
       config: {
-        agentAddress: "ins_mstep@x.example",
+        agentAddress: "run_mstep@x.example",
         agentId: "mstep",
         sessionId: "s",
         sources: [],
@@ -246,7 +246,7 @@ describe("deploy-failure registry leak", () => {
     }
     expect(threw).toBe(true);
 
-    const slug = "ins_mstep-x-example";
+    const slug = "run_mstep-x-example";
     expect(registry.resolve(slug)).toBeNull();
   });
 
@@ -348,12 +348,12 @@ describe("deploy-failure registry leak", () => {
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
-      agentAddress: "ins_single@x.example",
+      agentAddress: "run_single@x.example",
       agentId: "single",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- single-step branch does not consult config before failing at spawn
       config: {
-        agentAddress: "ins_single@x.example",
+        agentAddress: "run_single@x.example",
         agentId: "single",
         sessionId: "s",
         sources: [],
@@ -385,14 +385,14 @@ describe("deploy-failure registry leak", () => {
 
     // The single-step head initialized its repo and recorded the hub key
     // before the spawn failed.
-    expect(initedRepos).toEqual(["ins_single@x.example"]);
-    expect(recordedHubKeys).toEqual(["ins_single@x.example"]);
+    expect(initedRepos).toEqual(["run_single@x.example"]);
+    expect(recordedHubKeys).toEqual(["run_single@x.example"]);
     // The unwind reversed the in-memory hub key...
-    expect(forgottenAgents).toEqual(["ins_single@x.example"]);
+    expect(forgottenAgents).toEqual(["run_single@x.example"]);
     // ...but did NOT remove the head repo directory (it holds the durable
     // identity keypair a rerouted head must keep across a failed redeploy).
     expect(removedRepos).toEqual([]);
     // Registry untouched.
-    expect(registry.resolve("ins_single-x-example")).toBeNull();
+    expect(registry.resolve("run_single-x-example")).toBeNull();
   });
 });

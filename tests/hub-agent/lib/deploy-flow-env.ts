@@ -80,8 +80,8 @@ import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
 import { stopServerBounded } from "@intx/test-harness/bun-server";
 
-export const AGENT_ADDRESS = "ins_test-agent@integration.interchange";
-export const AGENT_ID = "ins_test-agent";
+export const AGENT_ADDRESS = "run_test-agent@integration.interchange";
+export const AGENT_ID = "run_test-agent";
 export const SESSION_ID = "ses_integration-1";
 export const SIDECAR_ID = "sc-integration-1";
 export const TOKEN = "test-token";
@@ -1496,7 +1496,7 @@ export type DeployWorkflowOpts = {
   workflowRunRef?: string;
   /**
    * Optional override for the deployment's mail address. Defaults to
-   * `ins_<deploymentId>@<deploymentDomain>`.
+   * `<deploymentId>@<deploymentDomain>`.
    */
   deploymentMailAddress?: string;
 };
@@ -1533,7 +1533,7 @@ export async function deployWorkflow(
   const deploymentId = opts.deploymentId;
   const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
   const mailAddress =
-    opts.deploymentMailAddress ?? `ins_${deploymentId}@${deploymentDomain}`;
+    opts.deploymentMailAddress ?? `${deploymentId}@${deploymentDomain}`;
 
   // The deployment supplies its own substrate-safe `deploymentId`, which
   // is the workflow-run repo slug the supervisor commits under.

@@ -64,7 +64,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "multistep-signal-1";
+const DEPLOYMENT_ID = "run_multistep-signal-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 let env: DeployFlowEnv;
@@ -124,7 +124,7 @@ describe("multi-step workflow round-trip with signal-await", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

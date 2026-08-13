@@ -53,7 +53,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import { base64Encode, hexEncode } from "@intx/types";
+import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
@@ -87,10 +87,10 @@ import { toLaunchDeployContent } from "./launch-session-bridge";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
-const NO_HEADER_DEPLOYMENT_ID = "mail-edge-no-header-1";
-const MALFORMED_DEPLOYMENT_ID = "mail-edge-malformed-1";
-const DUPLICATE_DEPLOYMENT_ID = "mail-edge-duplicate-1";
-const CONNECTED_WINDOW_DEPLOYMENT_ID = "mail-edge-connected-window-1";
+const NO_HEADER_DEPLOYMENT_ID = "run_mail-edge-no-header-1";
+const MALFORMED_DEPLOYMENT_ID = "run_mail-edge-malformed-1";
+const DUPLICATE_DEPLOYMENT_ID = "run_mail-edge-duplicate-1";
+const CONNECTED_WINDOW_DEPLOYMENT_ID = "run_mail-edge-connected-window-1";
 
 let env: DeployFlowEnv;
 
@@ -124,7 +124,7 @@ describe("mail-handling edge cases", () => {
     });
 
     const messageId = await sha256Hex(raw);
-    const runId = ctx.deploymentMailAddress;
+    const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
 
     // Fire the first mail; the supervisor should start a run with
     // runId === deployment address. Wait for `RunStarted` to land.
@@ -226,7 +226,7 @@ describe("mail-handling edge cases", () => {
       body: "malformed message-id edge case body",
     });
 
-    const runId = ctx.deploymentMailAddress;
+    const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
 
     await routeRaw(env, ctx.deploymentMailAddress, raw);
 
@@ -272,7 +272,7 @@ describe("mail-handling edge cases", () => {
       body: "duplicate edge case body — second send (different body)",
     });
 
-    const runId = ctx.deploymentMailAddress;
+    const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
 
     await routeRaw(env, ctx.deploymentMailAddress, raw1);
     await waitForWorkflowRunComplete(env, DUPLICATE_DEPLOYMENT_ID, runId, {
@@ -393,7 +393,7 @@ describe("mail-handling edge cases", () => {
       messageId,
       body: "connected-window edge case body",
     });
-    const runId = ctx.deploymentMailAddress;
+    const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
 
     // Deliver the run's grants and let them land durably on the sidecar before
     // the drop (there is no run.grants ack to wait on, so allow a generous
@@ -495,7 +495,7 @@ async function deployEdgeWorkflow(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${deploymentId}`,
+    agentId: `${deploymentId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
@@ -660,7 +660,7 @@ async function routeRaw(
   // Under the stable-runId model the supervisor expects grants at
   // runs/<deploymentAddress>/grants.json, regardless of the message's
   // derived messageId.
-  const runId = address;
+  const runId = deriveWorkflowRunId(address);
   const grantsDelivered = env.hub.router.sendRunGrants(address, runId, []);
   if (!grantsDelivered) {
     throw new Error(

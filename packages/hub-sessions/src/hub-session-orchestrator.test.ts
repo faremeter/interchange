@@ -20,8 +20,8 @@ import {
 // ---------------------------------------------------------------------------
 
 const TENANT_ID = "tnt_1";
-const INSTANCE_ID = "ins_1";
-const AGENT_ADDRESS = "ins_1@tenant.local";
+const INSTANCE_ID = "run_1";
+const AGENT_ADDRESS = "run_1@tenant.local";
 const SESSION_ID = "ses_1";
 
 const RUN_PRINCIPAL_ID = "prn_run";
@@ -362,7 +362,7 @@ describe("createHubSessionOrchestrator", () => {
     test("persists the public key for a workflow-derived deployment address", async () => {
       harness = setup({});
       await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "ins_dep_abc@workflow.interchange",
+        agentAddress: "run_dep_abc@workflow.interchange",
         publicKey: "deadbeef",
       });
       // A workflow-derived deployment address has no agent_instance row; its
@@ -376,7 +376,7 @@ describe("createHubSessionOrchestrator", () => {
 
     test("defers an allocated deployment key until initialization completes", async () => {
       await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "ins_dep_abc@workflow.interchange",
+        agentAddress: "run_dep_abc@workflow.interchange",
         publicKey: "deadbeef",
         allocated: {
           allocationId: "alloc-1",
@@ -387,81 +387,6 @@ describe("createHubSessionOrchestrator", () => {
 
       expect(harness.updates).toEqual([]);
     });
-
-    test("throws when a plain address resolves to no endpoint", async () => {
-      harness = setup({});
-      await expect(
-        harness.events.emitAndAwait("agent.deploy.ack", {
-          agentAddress: AGENT_ADDRESS,
-          publicKey: "deadbeef",
-        }),
-      ).rejects.toThrow(/No active endpoint found for deploy ack/);
-    });
-  });
-
-  describe("agent.reconnected", () => {
-    test("throws when the endpoint has no active session", async () => {
-      harness = setup({ run: makeRun(), runSessionId: null });
-
-      await expect(
-        harness.events.emitAndAwait("agent.reconnected", {
-          agentAddress: AGENT_ADDRESS,
-        }),
-      ).rejects.toThrow(/no active session/);
-    });
-
-    test("throws when the address resolves to no endpoint", async () => {
-      harness = setup({});
-
-      await expect(
-        harness.events.emitAndAwait("agent.reconnected", {
-          agentAddress: AGENT_ADDRESS,
-        }),
-      ).rejects.toThrow(/No active endpoint found for reconnect/);
-    });
-
-    test("a folded run restores its collector without a status write", async () => {
-      harness = setup({
-        run: makeRun(),
-        runSessionId: RUN_SESSION_ID,
-      });
-
-      await harness.events.emitAndAwait("agent.reconnected", {
-        agentAddress: AGENT_ADDRESS,
-      });
-
-      // A run is born running, so reconnect writes no status. Its inference-turn
-      // collector is restored, keyed by the run's session.
-      expect(harness.updates).toHaveLength(0);
-      const created = harness.collectors.calls.find((c) => c.kind === "create");
-      expect(created).toBeDefined();
-      if (created?.kind === "create") {
-        expect(created.addr).toBe(AGENT_ADDRESS);
-        expect(created.sessionId).toBe(RUN_SESSION_ID);
-      }
-    });
-
-    test("keeps a leaked terminal run routable without a collector or status write", async () => {
-      // A failed launch leaves a run `failed` with a null `endedAt` so it stays
-      // routable, and it ends the run's session. On reconnect the run resolves
-      // session-less: the reaction keeps the address routable by returning
-      // rather than throwing (a throw would roll the just-verified address back
-      // out of routing, the opposite of the keep-inspectable intent) and
-      // restores no collector -- there is no live session to collect into --
-      // and writes no status.
-      harness = setup({
-        run: makeRun({ status: "failed" }),
-        runSessionId: null,
-      });
-
-      await harness.events.emitAndAwait("agent.reconnected", {
-        agentAddress: AGENT_ADDRESS,
-      });
-
-      expect(harness.updates).toHaveLength(0);
-      const created = harness.collectors.calls.find((c) => c.kind === "create");
-      expect(created).toBeUndefined();
-    });
   });
 
   describe("deploy.ref.stale", () => {
@@ -471,7 +396,7 @@ describe("createHubSessionOrchestrator", () => {
       });
 
       expect(harness.repo.calls).toEqual([
-        { kind: "createDeployPack", agentId: "ins_1" },
+        { kind: "createDeployPack", agentId: "run_1" },
       ]);
 
       const sendPack = harness.router.calls.find((c) => c.kind === "sendPack");

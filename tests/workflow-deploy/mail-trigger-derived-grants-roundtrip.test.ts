@@ -115,7 +115,7 @@ import { toLaunchDeployContent } from "./launch-session-bridge";
 // `sendRunGrants`/`routeMail` route to an unknown address and the route
 // returns 409 instead of 202.
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "mail-trigger-derived-grants-1";
+const DEPLOYMENT_ID = "run_mail-trigger-derived-grants-1";
 const TENANT_ID = "tnt_mail_trigger_derived";
 const CALLER_USER_ID = "usr_mail_trigger_caller";
 const CALLER_PRINCIPAL_ID = "prn_mail_trigger_caller";
@@ -367,9 +367,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const json = TriggerResponse.assert(rawJson);
       expect(json.deploymentId).toBe(DEPLOYMENT_ID);
       expect(json.address).toBe(deploymentMailAddress);
-      // The route keys the run on the deployment's mail address (the stable
+      // The route keys the run on the deployment's local part (the stable
       // runId), not this message's Message-ID.
-      const runId = deploymentMailAddress;
+      const runId = DEPLOYMENT_ID;
 
       // ---- The run principal committed (kind workflow, refId = runId) ----
       const principals = await h.db
@@ -439,7 +439,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function deployWorkflowToSidecar(): Promise<void> {
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `ins_${DEPLOYMENT_ID}`,
+        agentId: `${DEPLOYMENT_ID}`,
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: deploymentMailAddress,

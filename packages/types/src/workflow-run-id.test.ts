@@ -4,20 +4,30 @@ import { deriveWorkflowRunId } from "./workflow-run-id";
 
 describe("deriveWorkflowRunId", () => {
   test("returns the local part before the @", () => {
-    expect(deriveWorkflowRunId("ins_abc123@tenant.example")).toBe("ins_abc123");
+    expect(deriveWorkflowRunId("run_abc123@tenant.example")).toBe("run_abc123");
   });
 
-  test("returns the whole input when there is no @", () => {
-    expect(deriveWorkflowRunId("ins_abc123")).toBe("ins_abc123");
+  test("throws when there is no @", () => {
+    expect(() => deriveWorkflowRunId("run_abc123")).toThrow(
+      "Invalid run address",
+    );
   });
 
-  test("returns the local part when the address ends with @", () => {
-    expect(deriveWorkflowRunId("ins_abc123@")).toBe("ins_abc123");
+  test("throws when the domain is empty", () => {
+    expect(() => deriveWorkflowRunId("run_abc123@")).toThrow(
+      "Invalid run address",
+    );
   });
 
-  test("splits on the last @ when the address carries several", () => {
-    expect(deriveWorkflowRunId("ins_abc123@foo@tenant.example")).toBe(
-      "ins_abc123@foo",
+  test("throws when the local part lacks the run_ prefix", () => {
+    expect(() => deriveWorkflowRunId("ins_abc123@tenant.example")).toThrow(
+      "Invalid run address",
+    );
+  });
+
+  test("splits on the first @ when the address carries several", () => {
+    expect(deriveWorkflowRunId("run_abc123@foo@tenant.example")).toBe(
+      "run_abc123",
     );
   });
 });

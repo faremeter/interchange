@@ -83,7 +83,7 @@ import { waitForConsumedEntries } from "./fifo-mail-helpers";
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "fifo-mail-1";
+const DEPLOYMENT_ID = "run_fifo-mail-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 const MESSAGE_IDS: readonly string[] = [
@@ -151,7 +151,7 @@ describe("FIFO mail-trigger serialization", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
@@ -286,10 +286,10 @@ describe("FIFO mail-trigger serialization", () => {
     }
     expect(firedMessageIds).toEqual([...MESSAGE_IDS]);
 
-    // The stable runId is the deployment address. Its event history is never
-    // cleared: the first mail owns RunStarted and later queued mails become
-    // terminal rejections in the claim-check index.
-    const runId = deploymentMailAddress;
+    // The stable runId is the deployment's local part. Its event history is
+    // never cleared: the first mail owns RunStarted and later queued mails
+    // become terminal rejections in the claim-check index.
+    const runId = DEPLOYMENT_ID;
 
     const consumedEntries = await waitForConsumedEntries(
       env,

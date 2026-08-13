@@ -836,14 +836,14 @@ describe("SidecarRouter", () => {
   });
 
   describe("workflow-address reconnect (challenged, at parity with launched agents)", () => {
-    // A workflow-substrate deployment address (ins_dep_...) proves ownership
+    // A workflow-substrate deployment address (run_dep_...) proves ownership
     // through the SAME Ed25519 challenge as a launched agent: the hub resolves
     // the deployment's public key, issues a nonce, and routes the address only
     // after a valid signature. These tests pin that parity -- there is no
     // keyless register-field shortcut for a workflow address anymore, so a
     // token-holding sidecar cannot reclaim a deployment's route without the
     // deployment's own key.
-    const WF_ADDR = "ins_dep_abc@local";
+    const WF_ADDR = "run_dep_abc@local";
 
     // Router whose key lookup resolves WF_ADDR to `publicKeyHex` (a live
     // deployment) or to null (unknown / torn-down), mirroring the
@@ -983,8 +983,8 @@ describe("SidecarRouter", () => {
   });
 
   describe("per-step route bind/unbind", () => {
-    const DEPLOYMENT_ADDR = "ins_dep_multi@local";
-    const STEP_ADDR = "ins_dep_multi-step1@local";
+    const DEPLOYMENT_ADDR = "run_dep_multi@local";
+    const STEP_ADDR = "run_dep_multi-step1@local";
     const ZERO_SHA = "0".repeat(40);
 
     async function registerDeploymentSidecar(): Promise<
@@ -1243,8 +1243,7 @@ describe("SidecarRouter", () => {
           persistMail: async ({ senderAddress, recipients }) => {
             // Mirrors the fixed persistMail: always create the
             // outbound record for the sender, and only create
-            // inbound records for recipients that are agent
-            // instances (ins_ prefix).
+            // inbound records for recipients that are runs (run_ prefix).
             const results: {
               id: string;
               direction: "inbound" | "outbound";
@@ -1261,7 +1260,7 @@ describe("SidecarRouter", () => {
               },
             ];
             for (const addr of recipients) {
-              if (addr.startsWith("ins_")) {
+              if (addr.startsWith("run_")) {
                 results.push({
                   id: `mail_in_${addr}`,
                   direction: "inbound",
@@ -1287,7 +1286,7 @@ describe("SidecarRouter", () => {
           type: "register",
           sidecarId: "sc-1",
           token: "tok",
-          agentAddresses: ["ins_sender@tenant.example"],
+          agentAddresses: ["run_sender@tenant.example"],
         }),
       );
 
@@ -1297,7 +1296,7 @@ describe("SidecarRouter", () => {
         JSON.stringify({
           type: "mail.outbound",
           delivered: true,
-          senderAddress: "ins_sender@tenant.example",
+          senderAddress: "run_sender@tenant.example",
           rawMessage: btoa("test message"),
           recipients: ["usr_human@tenant.example"],
         }),
@@ -1310,7 +1309,7 @@ describe("SidecarRouter", () => {
       // regardless of whether recipients are agent instances. No inbound
       // record should be created for the non-agent recipient.
       expect(persisted).toHaveLength(1);
-      expect(persisted[0]?.address).toBe("ins_sender@tenant.example");
+      expect(persisted[0]?.address).toBe("run_sender@tenant.example");
     });
 
     test("persistMail lookup result fans out as mail.persisted events", async () => {
@@ -1350,7 +1349,7 @@ describe("SidecarRouter", () => {
           type: "register",
           sidecarId: "sc-1",
           token: "tok",
-          agentAddresses: ["ins_sender@tenant.example"],
+          agentAddresses: ["run_sender@tenant.example"],
         }),
       );
 
@@ -1360,9 +1359,9 @@ describe("SidecarRouter", () => {
         JSON.stringify({
           type: "mail.outbound",
           delivered: true,
-          senderAddress: "ins_sender@tenant.example",
+          senderAddress: "run_sender@tenant.example",
           rawMessage: btoa("test message"),
-          recipients: ["ins_receiver@tenant.example"],
+          recipients: ["run_receiver@tenant.example"],
         }),
       );
 
@@ -1370,14 +1369,19 @@ describe("SidecarRouter", () => {
 
       // Both outbound (sender) and inbound (receiver) records persisted.
       expect(persisted).toHaveLength(2);
-      expect(persisted[0]?.address).toBe("ins_sender@tenant.example");
-      expect(persisted[1]?.address).toBe("ins_receiver@tenant.example");
+      expect(persisted[0]?.address).toBe("run_sender@tenant.example");
+      expect(persisted[1]?.address).toBe("run_receiver@tenant.example");
     });
   });
 
   describe("mail-triggered run grants", () => {
-    const WORKFLOW_ADDR = "ins_dep_wf1@tenant.example";
-    const AGENT_ADDR = "ins_agent1@tenant.example";
+    const WORKFLOW_ADDR = "run_dep_wf1@tenant.example";
+    // The run id is the address local part; the mail-triggered-run path keys
+    // the run on it, not on the full address.
+    const WORKFLOW_RUN_ID = "run_dep_wf1";
+    // A non-run recipient (an external human address): mail to it never
+    // materializes a run.
+    const AGENT_ADDR = "human@tenant.example";
 
     function mailWithMessageId(messageId: string): string {
       const raw = [
@@ -1436,7 +1440,7 @@ describe("SidecarRouter", () => {
           type: "register",
           sidecarId: "sc-outbound",
           token: "tok",
-          agentAddresses: ["ins_dep_sender@tenant.example"],
+          agentAddresses: ["run_dep_sender@tenant.example"],
         }),
       );
       await tick();
@@ -1469,15 +1473,16 @@ describe("SidecarRouter", () => {
         [WORKFLOW_ADDR],
       );
 
-      // The lookup was invoked with the derived runId: the deployment's mail
-      // address (the stable runId), not this mail's Message-ID.
+      // The lookup was invoked with the derived runId: the local part of the
+      // deployment's mail address (the stable runId), not this mail's
+      // Message-ID and not the full address.
       expect(calls).toEqual([
-        { agentAddress: WORKFLOW_ADDR, runId: WORKFLOW_ADDR },
+        { agentAddress: WORKFLOW_ADDR, runId: WORKFLOW_RUN_ID },
       ]);
       // The recipient received the run.grants frame BEFORE the mail.inbound.
       const frames = ws.sent.map((s) => JSON.parse(s));
       expect(frames[0]?.type).toBe("run.grants");
-      expect(frames[0]?.runId).toBe(WORKFLOW_ADDR);
+      expect(frames[0]?.runId).toBe(WORKFLOW_RUN_ID);
       expect(frames[0]?.stepGrants).toEqual(SAMPLE_GRANTS);
       expect(frames[1]?.type).toBe("mail.inbound");
       // The run-committing mail goes through the messageId handshake (routeMail),
@@ -1555,10 +1560,10 @@ describe("SidecarRouter", () => {
     });
 
     test("isolates a rejected recipient from a co-recipient's delivery", async () => {
-      // One workflow recipient is rejected; a co-recipient agent address must
-      // still receive its mail. (A mail with more than one workflow-derived
-      // recipient is separately rejected wholesale, so the co-recipient here
-      // is a non-workflow address.)
+      // One workflow recipient is rejected; a co-recipient must still receive
+      // its mail. (A mail with more than one run recipient is separately
+      // rejected wholesale, so the co-recipient here is an external non-run
+      // address.)
       const router = createTestRouter({
         lookups: {
           lookupPublicKey: async () => null,
@@ -1601,7 +1606,7 @@ describe("SidecarRouter", () => {
         },
       });
       const wfWs = await connectRecipient(router, WORKFLOW_ADDR);
-      const otherWfAddr = "ins_dep_wf2@tenant.example";
+      const otherWfAddr = "run_dep_wf2@tenant.example";
       const otherWs = await connectRecipient(router, otherWfAddr);
 
       await sendOutbound(
@@ -1768,7 +1773,7 @@ describe("SidecarRouter", () => {
       );
       const frames = ws2.sent.map((s) => JSON.parse(s));
       const grantsIdx = frames.findIndex(
-        (f) => f.type === "run.grants" && f.runId === WORKFLOW_ADDR,
+        (f) => f.type === "run.grants" && f.runId === WORKFLOW_RUN_ID,
       );
       const mailIdx = frames.findIndex(
         (f) =>
@@ -3552,15 +3557,15 @@ describe("SidecarRouter", () => {
     // Pins the pinned-forever workflow-definition decision at the wire layer:
     // a workflow deployment keeps its deploy-time definition until an explicit
     // undeploy/redeploy, so the reconnect deploy-ref freshness catch-up must
-    // fire for a launched-agent address whose ref went stale but must NOT fire
-    // for a workflow-derived (ins_dep_...) address on the same stale-ref
-    // reconnect. A definition change on the hub during the disconnect does not
-    // reconcile onto the reconnected deployment.
-    test("reconnect fires deploy.ref.stale for a launched agent but not a workflow-derived address", async () => {
+    // NOT fire for a run (`run_...`) address on a stale-ref reconnect. A
+    // definition change on the hub during the disconnect does not reconcile
+    // onto the reconnected deployment. A non-run address (the retired
+    // launched-agent branch) still takes the catch-up.
+    test("reconnect skips deploy.ref.stale for a run address but not a non-run address", async () => {
       const kp = await generateKeyPair();
       const publicKeyHex = hexEncode(kp.publicKey);
       const launchedAddr = "agent@local";
-      const workflowAddr = "ins_dep_abc@local";
+      const workflowAddr = "run_dep_abc@local";
       const staleAddresses: string[] = [];
 
       const router = createTestRouter({
@@ -3777,7 +3782,7 @@ describe("SidecarRouter", () => {
         },
       });
 
-      const WF_ADDR = "ins_dep_phase1@local";
+      const WF_ADDR = "run_dep_phase1@local";
 
       // First deploy: register the keyless workflow address onto agentAddresses.
       const ws1 = createMockWs();
@@ -4561,7 +4566,7 @@ describe("SidecarRouter", () => {
     test("workflow-run pack frames invoke receiveWorkflowRunPack and ack the sidecar", async () => {
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
-      const addr = "ins_dep-wfr-1@local";
+      const addr = "run_dep-wfr-1@local";
       await registerAddr(r, ws, "sc-wfr", addr);
 
       const transferId = "t-wfr-1";
@@ -4611,7 +4616,7 @@ describe("SidecarRouter", () => {
       // the address is registered directly to keep the test on pack routing.
       const { router: r, calls } = buildPackRouter();
       const ws = createMockWs();
-      const addr = "ins_dep_wfr@local";
+      const addr = "run_dep_wfr@local";
       await registerAddr(r, ws, "sc-wfr", addr);
 
       const repoId: RepoId = {
@@ -4643,7 +4648,7 @@ describe("SidecarRouter", () => {
       // ghost cleanup on the fresh register evicts the address from the stale
       // connection so its close leaves the new owner alone.
       const { router: r, calls } = buildPackRouter();
-      const addr = "ins_dep_reclaim@local";
+      const addr = "run_dep_reclaim@local";
       const repoId: RepoId = {
         kind: "workflow-run",
         id: deriveWorkflowRunRepoId(addr),
@@ -4714,7 +4719,7 @@ describe("SidecarRouter", () => {
           },
         },
       });
-      const addr = "ins_dep_reclaim_rc@local";
+      const addr = "run_dep_reclaim_rc@local";
       const repoId: RepoId = {
         kind: "workflow-run",
         id: deriveWorkflowRunRepoId(addr),
@@ -4895,7 +4900,7 @@ describe("SidecarRouter", () => {
     });
 
     test("an allocated connection can push only its authenticated workflow repository", async () => {
-      const addr = "ins_dep-exclusive-pack@tenant.example";
+      const addr = "run_dep-exclusive-pack@tenant.example";
       const identity = {
         kind: "allocated" as const,
         sidecarId: "sc-exclusive-pack",
@@ -4980,7 +4985,7 @@ describe("SidecarRouter", () => {
         workflowRun: { accepted: false, reason: "path_violation" },
       });
       const ws = createMockWs();
-      const addr = "ins_dep-wfr-rej@local";
+      const addr = "run_dep-wfr-rej@local";
       await registerAddr(r, ws, "sc-wfr-rej", addr);
 
       const transferId = "t-wfr-rej";

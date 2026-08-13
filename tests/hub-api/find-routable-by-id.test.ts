@@ -40,7 +40,7 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     await seedPrincipal(h.db, { id: "prn_creator", tenantId: "tnt_root" });
   }
 
-  test("resolves a folded run by id via its own definition", async () => {
+  test("resolves a top-level run by id via its own definition", async () => {
     await seedBase();
     await h.db.insert(workflowDefinition).values({
       id: "wfd_folded",
@@ -48,22 +48,23 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       name: "folded",
     });
     await seedPrincipal(h.db, { id: "prn_run", tenantId: "tnt_root" });
+    // A top-level run self-anchors (anchorRunId === id) and owns an address.
     await h.db.insert(workflowRun).values({
-      id: "ins_folded",
+      id: "run_folded",
       tenantId: "tnt_root",
       definitionId: "wfd_folded",
-      anchorRunId: null,
+      anchorRunId: "run_folded",
       principalId: "prn_run",
-      address: "ins_folded@root.example",
+      address: "run_folded@root.example",
       status: "running",
       createdAt: new Date("2026-01-01T00:00:00Z"),
     });
 
-    const record = await findRoutableById(h.db, "ins_folded", "tnt_root");
-    expect(record?.id).toBe("ins_folded");
+    const record = await findRoutableById(h.db, "run_folded", "tnt_root");
+    expect(record?.id).toBe("run_folded");
     // definitionId is the run's own definition.
     expect(record?.definitionId).toBe("wfd_folded");
-    expect(record?.address).toBe("ins_folded@root.example");
+    expect(record?.address).toBe("run_folded@root.example");
     expect(record?.status).toBe("running");
     // A run has no updatedAt column; a live run reports createdAt.
     expect(record?.updatedAt).toEqual(new Date("2026-01-01T00:00:00Z"));
@@ -77,18 +78,18 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
       name: "done",
     });
     await h.db.insert(workflowRun).values({
-      id: "ins_done",
+      id: "run_done",
       tenantId: "tnt_root",
       definitionId: "wfd_done",
-      anchorRunId: null,
+      anchorRunId: "run_done",
       principalId: null,
-      address: "ins_done@root.example",
+      address: "run_done@root.example",
       status: "completed",
       createdAt: new Date("2026-01-01T00:00:00Z"),
       endedAt: new Date("2026-01-05T00:00:00Z"),
     });
 
-    const record = await findRoutableById(h.db, "ins_done", "tnt_root");
+    const record = await findRoutableById(h.db, "run_done", "tnt_root");
     expect(record?.status).toBe("completed");
     expect(record?.updatedAt).toEqual(new Date("2026-01-05T00:00:00Z"));
   });
@@ -108,28 +109,38 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     ).toBeUndefined();
   });
 
-  test("returns undefined for a deployment anchor run (workflow-derived address)", async () => {
+  test("returns undefined for a child run (anchored on another run)", async () => {
     await seedBase();
-    // The deployment's anchor run owns a workflow-derived address and its id is
-    // the deployment id. It is a routing/key anchor, not a folded instance, so
-    // the read surface never serves it: the workflow-derived address family
-    // excludes it even though it owns an address.
+    // A child park row anchors on its parent (anchorRunId !== id). Even if it
+    // owned an address it is not a top-level run, so the read surface never
+    // serves it.
     await h.db.insert(workflowDefinition).values({
-      id: "wfd_anchor",
+      id: "wfd_child",
       tenantId: "tnt_root",
-      name: "anchor-def",
+      name: "child-def",
+    });
+    // The parent anchor the child references must exist: `anchor_run_id`
+    // carries a self-referential foreign key onto `workflow_run.id`.
+    await h.db.insert(workflowRun).values({
+      id: "run_parent",
+      tenantId: "tnt_root",
+      definitionId: "wfd_child",
+      anchorRunId: "run_parent",
+      principalId: null,
+      address: "run_parent@root.example",
+      status: "running",
     });
     await h.db.insert(workflowRun).values({
-      id: "dep_anchor",
+      id: "run_child",
       tenantId: "tnt_root",
-      definitionId: "wfd_anchor",
-      anchorRunId: null,
+      definitionId: "wfd_child",
+      anchorRunId: "run_parent",
       principalId: null,
-      address: "ins_dep_anchor@root.example",
+      address: "run_child@root.example",
       status: "running",
     });
     expect(
-      await findRoutableById(h.db, "dep_anchor", "tnt_root"),
+      await findRoutableById(h.db, "run_child", "tnt_root"),
     ).toBeUndefined();
   });
 

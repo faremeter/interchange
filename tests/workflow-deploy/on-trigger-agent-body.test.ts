@@ -60,7 +60,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "on-trigger-agent-body-1";
+const DEPLOYMENT_ID = "run_on-trigger-agent-body-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const SECTION_ID = "section";
 const BODY_STEP_ID = "work";
@@ -150,7 +150,7 @@ describe("onTrigger body runs a real agent step through the body invoker", () =>
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: `prin_${DEPLOYMENT_ID}`,
       agentAddress: deploymentMailAddress,

@@ -54,6 +54,7 @@ import {
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import {
   deriveRunAddress,
+  deriveRunAgentId,
   WorkflowDefinitionInvalidError,
 } from "@intx/workflow-deploy";
 
@@ -438,14 +439,17 @@ export function createWorkflowRoutes({
         );
       }
 
-      const deploymentId = generateId("deployment");
+      const deploymentId = generateId("workflowRun");
       const sessionId = generateId("session");
       const config: HarnessConfig = {
         sessionId,
-        agentId: `ins_${deploymentId}`,
+        agentId: deriveRunAgentId({ runId: deploymentId }),
         tenantId: tenant.id,
         principalId: c.get("principal").id,
-        agentAddress: `ins_${deploymentId}@${tenant.domain}`,
+        agentAddress: deriveRunAddress({
+          runId: deploymentId,
+          domain: tenant.domain,
+        }),
         systemPrompt: "",
         tools: [],
         grants: [],
@@ -694,7 +698,10 @@ export function createWorkflowRoutes({
       const tenant = c.get("tenant");
       const deploymentId = c.req.param("deploymentId");
       const body = c.req.valid("json");
-      const agentAddress = `ins_${deploymentId}@${tenant.domain}`;
+      const agentAddress = deriveRunAddress({
+        runId: deploymentId,
+        domain: tenant.domain,
+      });
       const runId = deriveWorkflowRunId(agentAddress);
       const signalRun = alias(workflowRun, "signal_top_level_run");
 
@@ -999,7 +1006,10 @@ export function createWorkflowRoutes({
       const principal = c.get("principal");
       const deploymentId = c.req.param("deploymentId");
       const body = c.req.valid("json");
-      const address = `ins_${deploymentId}@${tenant.domain}`;
+      const address = deriveRunAddress({
+        runId: deploymentId,
+        domain: tenant.domain,
+      });
       const runId = deriveWorkflowRunId(address);
       const topLevelRun = alias(workflowRun, "mail_top_level_run");
 

@@ -75,7 +75,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "drain-roundtrip-1";
+const DEPLOYMENT_ID = "run_drain-roundtrip-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // Wire `deadlineMs` carried on the drain.deliver frame. The child
@@ -139,7 +139,7 @@ describe("drain round-trip", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
@@ -357,7 +357,7 @@ describe("drain round-trip", () => {
     // regression that escalated wait-mode the moment drain fired (or
     // never escalated at all) would slip through the cancel-mode
     // assertion suite.
-    const waitDeploymentId = "drain-roundtrip-wait-1";
+    const waitDeploymentId = "run_drain-roundtrip-wait-1";
     const agent1 = defineAgent({
       id: "agent-wait-step1",
       systemPrompt: "You are the first step agent in the wait companion.",
@@ -385,7 +385,7 @@ describe("drain round-trip", () => {
     });
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${waitDeploymentId}`,
+      agentId: `${waitDeploymentId}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

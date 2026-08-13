@@ -56,7 +56,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "multistep-signed-send-1";
+const DEPLOYMENT_ID = "run_multistep-signed-send-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 // The first step in `stepOrder`; the mock drives its inference to call the
 // mail tool, so it is the step that performs the signed send.
@@ -144,7 +144,7 @@ describe("multi-step signed outbound send", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

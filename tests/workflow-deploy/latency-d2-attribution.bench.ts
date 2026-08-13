@@ -77,7 +77,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "latency-d2-bench";
+const DEPLOYMENT_ID = "run_latency-d2-bench";
 const STEP_ID = "step1";
 const BODY = "Latency-d2 per-leg attribution probe body 0xD2D2D2.";
 
@@ -376,7 +376,7 @@ async function runUnifiedD2(opts: {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

@@ -131,7 +131,7 @@ async function deployCustomProviderWorkflow(
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `ins_${deploymentId}`,
+    agentId: `${deploymentId}`,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
@@ -247,7 +247,7 @@ describe("cross-process custom inference adapter (INTR-233)", () => {
   });
 
   test("a manifest custom adapter resolves in the forked child", async () => {
-    const deploymentId = "cross-process-custom-positive";
+    const deploymentId = "run_cross-process-custom-positive";
     const body = "Cross-process custom adapter body sentinel-7731.";
     const { deploymentMailAddress, workflowRunRepoId } =
       await deployCustomProviderWorkflow(deploymentId, CUSTOM_PROVIDER);

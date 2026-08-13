@@ -191,8 +191,8 @@ export type DeployWorkflowDefinitionParams = {
   deploymentId: string;
   /**
    * Mail domain the deployment's derived addresses live under. The
-   * orchestrator derives `ins_<deploymentId>-<stepId>@<deploymentDomain>`
-   * per step and `ins_<deploymentId>@<deploymentDomain>` for the
+   * orchestrator derives `<deploymentId>-<stepId>@<deploymentDomain>`
+   * per step and `<deploymentId>@<deploymentDomain>` for the
    * deployment-level supervisor address.
    */
   deploymentDomain: string;

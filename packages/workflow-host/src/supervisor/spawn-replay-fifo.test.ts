@@ -509,7 +509,7 @@ async function boot(opts: { prefix: string }): Promise<
   const baseDir = await makeTempDir(opts.prefix);
   await seedStepGrants(
     baseDir,
-    defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+    defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
     [{ resource: "thing", action: "read" }],
   );
   const supervisorIpcKeyPair = await generateKeyPair();
@@ -545,9 +545,9 @@ async function boot(opts: { prefix: string }): Promise<
   const repoStore = createStubRepoStore(baseDir);
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
-    id: "deployment-x",
+    id: "run_deployment-x",
   };
-  const deploymentMailAddress = "deployment-x@example.com";
+  const deploymentMailAddress = "run_deployment-x@example.com";
 
   const bindings: WorkflowSupervisorBindings = {
     repoStore,
@@ -562,7 +562,7 @@ async function boot(opts: { prefix: string }): Promise<
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId,
     workflowRunRef: "refs/heads/main",
-    deploymentId: "deployment-x",
+    deploymentId: "run_deployment-x",
     stepCount: 1,
     deploymentMailAddress,
     readPrincipal: { kind: "supervisor" },
@@ -740,7 +740,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     expect(triggers).toHaveLength(1);
     const firstTrigger = triggers[0];
     if (firstTrigger === undefined) throw new Error("first trigger missing");
-    expect(firstTrigger.data.runId).toBe(harness.deploymentMailAddress);
+    expect(firstTrigger.data.runId).toBe("run_deployment-x");
     expect(firstTrigger.data.messageId).toBe(ORPHAN_ID);
 
     // Keep the stable run live and park it on its next input. This releases the
@@ -750,7 +750,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     await harness.childSender.send({
       type: "park.notify",
       data: {
-        runId: harness.deploymentMailAddress,
+        runId: "run_deployment-x",
         correlationId: "corr-fifo-input-1",
         parkKind: "input",
       },
@@ -771,7 +771,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     expect(signals).toHaveLength(1);
     const freshSignal = signals[0];
     if (freshSignal === undefined) throw new Error("fresh signal missing");
-    expect(freshSignal.data.runId).toBe(harness.deploymentMailAddress);
+    expect(freshSignal.data.runId).toBe("run_deployment-x");
     expect(freshSignal.data.signalId).toBe(freshId);
     expect(
       readPayloadsOfType(harness.supervisorToChild.flushed(), "trigger.fire"),
@@ -782,7 +782,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     await harness.childSender.send({
       type: "terminal.event",
       data: {
-        runId: harness.deploymentMailAddress,
+        runId: "run_deployment-x",
         kind: "RunCompleted",
         seq: 0,
         at: "test",

@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
+import { deriveWorkflowRunId } from "@intx/types";
+
 import {
   createDefaultDirectorRegistry,
   createDirectorRegistry,
@@ -25,7 +27,6 @@ import {
   deriveStepAgentId,
   deriveStepInstanceId,
   deriveWorkflowRunRepoId,
-  isWorkflowDerivedAddress,
   MultiStepDeployHandoffMissingError,
   MultiStepDeploymentArgsMissingError,
   SingleStepDeployHandoffMissingError,
@@ -75,7 +76,7 @@ function makeSingleStepWorkflow(
   return defineWorkflow({
     id: "wf_trivial",
     agent,
-    trigger: { type: "mail", to: "ins_legacy-agent@integration.interchange" },
+    trigger: { type: "mail", to: "run_legacy-agent@integration.interchange" },
   });
 }
 
@@ -98,7 +99,7 @@ const HARNESS_CONFIG_BASE: HarnessConfig = {
   agentId: "legacy-agent",
   tenantId: "tenant-1",
   principalId: "prin-1",
-  agentAddress: "ins_legacy-agent@integration.interchange",
+  agentAddress: "run_legacy-agent@integration.interchange",
   systemPrompt: "legacy-prompt",
   tools: [],
   grants: [],
@@ -354,28 +355,28 @@ describe("createWorkflowDeployOrchestrator", () => {
         throw new Error("missing launches");
       }
       expect(planLaunch.agentAddress).toBe(
-        "ins_dep_abc123-plan@workflow.interchange",
+        "dep_abc123-plan@workflow.interchange",
       );
-      expect(planLaunch.agentId).toBe("ins_dep_abc123-plan");
-      expect(planLaunch.instanceId).toBe("ins_dep_abc123-plan");
+      expect(planLaunch.agentId).toBe("dep_abc123-plan");
+      expect(planLaunch.instanceId).toBe("dep_abc123-plan");
       expect(planLaunch.config.agentAddress).toBe(planLaunch.agentAddress);
       expect(planLaunch.config.agentId).toBe(planLaunch.agentId);
       expect(planLaunch.config.systemPrompt).toBe("you plan");
       expect(planLaunch.deployContent.systemPrompt).toBe("you plan");
 
       expect(executeLaunch.agentAddress).toBe(
-        "ins_dep_abc123-execute@workflow.interchange",
+        "dep_abc123-execute@workflow.interchange",
       );
-      expect(executeLaunch.agentId).toBe("ins_dep_abc123-execute");
-      expect(executeLaunch.instanceId).toBe("ins_dep_abc123-execute");
+      expect(executeLaunch.agentId).toBe("dep_abc123-execute");
+      expect(executeLaunch.instanceId).toBe("dep_abc123-execute");
       expect(executeLaunch.config.systemPrompt).toBe("you execute");
       expect(executeLaunch.deployContent.systemPrompt).toBe("you execute");
 
       expect(multiStep.calls).toHaveLength(1);
       const handoff = multiStep.calls[0];
       if (handoff === undefined) throw new Error("missing handoff");
-      expect(handoff.agentAddress).toBe("ins_dep_abc123@workflow.interchange");
-      expect(handoff.agentId).toBe("ins_dep_abc123");
+      expect(handoff.agentAddress).toBe("dep_abc123@workflow.interchange");
+      expect(handoff.agentId).toBe("dep_abc123");
       expect(handoff.hubPublicKey).toBe("00".repeat(32));
       expect(handoff.definition).toBe(workflow);
       expect(Object.keys(handoff.sources).sort()).toEqual(["execute", "plan"]);
@@ -431,8 +432,8 @@ describe("createWorkflowDeployOrchestrator", () => {
       // The hand-off fires exactly once and only after the per-step
       // provisioning loop has finished.
       expect(order).toEqual([
-        "launch:ins_dep_xy-plan",
-        "launch:ins_dep_xy-execute",
+        "launch:dep_xy-plan",
+        "launch:dep_xy-execute",
         "sendMultiStepDeploy",
       ]);
     });
@@ -627,9 +628,9 @@ describe("createWorkflowDeployOrchestrator", () => {
       expect(singleStep.calls).toHaveLength(1);
       const call = singleStep.calls[0];
       if (call === undefined) throw new Error("missing single-step deploy");
-      expect(call.agentAddress).toBe("ins_dep_xyz@workflow.interchange");
-      expect(call.agentId).toBe("ins_dep_xyz");
-      expect(call.instanceId).toBe("ins_dep_xyz");
+      expect(call.agentAddress).toBe("dep_xyz@workflow.interchange");
+      expect(call.agentId).toBe("dep_xyz");
+      expect(call.instanceId).toBe("dep_xyz");
       const expectedStepId = workflow.stepOrder[0];
       if (expectedStepId === undefined) {
         throw new Error("missing step id");
@@ -1163,25 +1164,25 @@ describe("wrapHarnessAsSingleStepWorkflow", () => {
 });
 
 describe("per-step address derivation", () => {
-  test("deriveStepAddress concatenates with the ins_ prefix and the deployment domain", () => {
+  test("deriveStepAddress concatenates the run id, step, and deployment domain", () => {
     expect(
       deriveStepAddress({
         runId: "dep_abc",
         stepId: "step1",
         domain: "workflow.interchange",
       }),
-    ).toBe("ins_dep_abc-step1@workflow.interchange");
+    ).toBe("dep_abc-step1@workflow.interchange");
   });
 
-  test("deriveStepAgentId concatenates with the ins_ prefix", () => {
+  test("deriveStepAgentId concatenates the run id and step", () => {
     expect(deriveStepAgentId({ runId: "dep_abc", stepId: "x" })).toBe(
-      "ins_dep_abc-x",
+      "dep_abc-x",
     );
   });
 
-  test("deriveStepInstanceId concatenates with the ins_ prefix", () => {
+  test("deriveStepInstanceId concatenates the run id and step", () => {
     expect(deriveStepInstanceId({ runId: "dep_abc", stepId: "x" })).toBe(
-      "ins_dep_abc-x",
+      "dep_abc-x",
     );
   });
 
@@ -1205,11 +1206,11 @@ describe("per-step address derivation", () => {
         runId: "dep_abc",
         domain: "workflow.interchange",
       }),
-    ).toBe("ins_dep_abc@workflow.interchange");
+    ).toBe("dep_abc@workflow.interchange");
   });
 
   test("deriveRunAgentId drops the per-step suffix", () => {
-    expect(deriveRunAgentId({ runId: "dep_abc" })).toBe("ins_dep_abc");
+    expect(deriveRunAgentId({ runId: "dep_abc" })).toBe("dep_abc");
   });
 
   test("deriveWorkflowRunRepoId sanitizes the deployment address into a SAFE_REPO_ID slug", () => {
@@ -1217,48 +1218,41 @@ describe("per-step address derivation", () => {
       runId: "dep_abc",
       domain: "acme.localhost",
     });
-    expect(address).toBe("ins_dep_abc@acme.localhost");
+    expect(address).toBe("dep_abc@acme.localhost");
     const repoId = deriveWorkflowRunRepoId(address);
-    expect(repoId).toBe("ins_dep_abc-acme-localhost");
+    expect(repoId).toBe("dep_abc-acme-localhost");
     expect(repoId).toMatch(/^[a-zA-Z0-9_-]+$/);
   });
 
   test("deriveWorkflowRunRepoId substitutes every @ and . that SAFE_REPO_ID rejects", () => {
-    expect(deriveWorkflowRunRepoId("ins_dep_x@a.b.c")).toBe("ins_dep_x-a-b-c");
+    expect(deriveWorkflowRunRepoId("dep_x@a.b.c")).toBe("dep_x-a-b-c");
     // Already-safe slugs are passed through unchanged so a repo id that
     // never crossed an address boundary is stable.
-    expect(deriveWorkflowRunRepoId("ins_dep_safe-slug_1")).toBe(
-      "ins_dep_safe-slug_1",
-    );
+    expect(deriveWorkflowRunRepoId("dep_safe-slug_1")).toBe("dep_safe-slug_1");
   });
 });
 
-describe("isWorkflowDerivedAddress", () => {
-  test("recognizes a per-step address produced by deriveStepAddress", () => {
-    const address = deriveStepAddress({
-      runId: "dep_abc",
-      stepId: "step1",
-      domain: "workflow.interchange",
-    });
-    expect(isWorkflowDerivedAddress(address)).toBe(true);
-  });
+describe("deriveRunAddress / deriveWorkflowRunId round-trip", () => {
+  const domain = "workflow.interchange";
 
-  test("recognizes the deployment-level address", () => {
+  test("deriveWorkflowRunId recovers the runId from deriveRunAddress", () => {
     expect(
-      isWorkflowDerivedAddress(
-        deriveRunAddress({
-          runId: "dep_abc",
-          domain: "workflow.interchange",
-        }),
-      ),
-    ).toBe(true);
+      deriveWorkflowRunId(deriveRunAddress({ runId: "run_abc", domain })),
+    ).toBe("run_abc");
   });
 
-  test("rejects a launched-agent instance address", () => {
-    expect(isWorkflowDerivedAddress("ins_0123abcd@tenant.local")).toBe(false);
+  test("round-trips a per-step address to its step-suffixed run id", () => {
+    const stepAddress = deriveStepAddress({
+      runId: "run_abc",
+      stepId: "plan",
+      domain,
+    });
+    expect(deriveWorkflowRunId(stepAddress)).toBe("run_abc-plan");
   });
 
-  test("rejects a malformed address", () => {
-    expect(isWorkflowDerivedAddress("not-an-address")).toBe(false);
+  test("throws on an address whose local part is not a run id", () => {
+    expect(() => deriveWorkflowRunId("ins_abc@workflow.interchange")).toThrow(
+      "Invalid run address",
+    );
   });
 });

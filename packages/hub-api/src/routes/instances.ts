@@ -1,25 +1,19 @@
-import { eq, and, inArray, asc, isNull, isNotNull } from "drizzle-orm";
-import { Hono } from "hono";
+import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
+import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { describeRoute, resolver, validator } from "hono-openapi";
-import { streamSSE } from "hono/streaming";
 
 import {
-  agentSession,
-  inferenceTurn,
   offering,
-  principal as principalTable,
   sessionMail,
-  turnPart,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
-import { parseMailToEmail, extractPartByPath } from "@intx/mime";
+import { extractPartByPath } from "@intx/mime";
 
-import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   WorkflowRunResponse,
   WorkflowRunHealth,
@@ -31,11 +25,9 @@ import {
   ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
-import type { CryptoProvider } from "@intx/types/runtime";
 import {
   findRoutableById,
   resolveRunIdForSession,
-  resolveRunSessionId,
   runRowToRoutableRecord,
   type EventCollectorRegistry,
   type RoutableRecord,
@@ -48,12 +40,10 @@ import {
   instanceStatusOf,
   mapRunStatusToInstanceStatus,
 } from "./instance-view";
-import { validateAttachments } from "../attachment-validation";
 
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
-import { generateId } from "@intx/hub-common";
 import {
   parsePageParams,
   cursorCondition,
@@ -61,6 +51,27 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+
+// The interactive run operations -- stop, mail send + history, turns, and the
+// event stream -- have no workflow-run backing yet: they were built for the
+// retired folded-launch surface, and a workflow (anchor) run carries none of
+// the per-run session, collector, or terminal machinery they read. Each such
+// route returns this not-implemented signal (kept mounted, not 404, so the
+// admin UI gets a clean answer) until the mapping lands.
+function workflowRunOperationUnsupported(
+  c: Context<TenantEnv>,
+  operation: string,
+) {
+  return c.json(
+    {
+      error: {
+        code: "not_implemented",
+        message: `${operation} is not yet supported for workflow runs`,
+      },
+    },
+    501,
+  );
+}
 
 // DoS guard on the mail route body. Sized above the legitimate ceiling
 // (the 30 MB per-message attachment cap is ~40 MB once base64-encoded,
@@ -142,7 +153,6 @@ export type CreateInstanceRoutesDeps = {
 
 export function createInstanceRoutes({
   db,
-  sessionService,
   sidecarRouter,
   eventCollectors,
   grantStore,
@@ -601,95 +611,14 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      const tenantCtx = c.get("tenant");
-      const runId = c.req.param("runId");
-
-      // A folded agent runs as a workflow_run under the same id; stop it there.
-      // findRoutableById resolves exactly the folded-instance runs, returning
-      // undefined for a missing row, a null address, or a workflow-derived
-      // (deployment-anchor) address -- a run it does not resolve is not this
-      // route's to stop and reads as absent, never driven into an undeploy.
-      const record = await findRoutableById(db, runId, tenantCtx.id);
-      if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      if (record.endedAt !== null) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Instance is already stopped",
-            },
-          },
-          409,
-        );
-      }
-      try {
-        await sessionService.endSession(record.address, "instance_stopped");
-      } catch (err) {
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to reach sidecar for instance teardown",
-            },
-          },
-          502,
-        );
-      }
-
-      const endedAt = new Date();
-      // Settle the run and its principal/session atomically. The terminal
-      // flip guards on `endedAt` rather than reusing the workflow-run store's
-      // markTerminal `status = 'running'` guard on purpose: a launch that
-      // leaked a folded run leaves it `failed` with a null `endedAt` so it
-      // stays routable, and this stop must still settle that non-terminal row
-      // — a `status = 'running'` guard would skip it.
-      await db.transaction(async (tx) => {
-        await tx
-          .update(workflowRun)
-          .set({ status: "cancelled", endedAt })
-          .where(and(eq(workflowRun.id, runId), isNull(workflowRun.endedAt)));
-
-        if (record.principalId !== null) {
-          // Deactivate the run's principal (refId guard scopes it to this
-          // run), then end its transitional session, which is keyed by that
-          // principal.
-          await tx
-            .update(principalTable)
-            .set({ status: "deactivated", updatedAt: endedAt })
-            .where(
-              and(
-                eq(principalTable.id, record.principalId),
-                eq(principalTable.refId, runId),
-              ),
-            );
-          await tx
-            .update(agentSession)
-            .set({ status: "ended", endedAt, updatedAt: endedAt })
-            .where(
-              and(
-                eq(agentSession.principalId, record.principalId),
-                isNull(agentSession.endedAt),
-              ),
-            );
-        }
-      });
-
-      eventCollectors.abandon(record.address);
-      instanceKeyCache.delete(runId);
-      sidecarRouter.dispatchAgentEvent(record.address, {
-        type: "session.ended",
-      });
-
-      return c.body(null, 204);
+      // Stopping a run is a forced early-cancel that a workflow (anchor) run
+      // has no backing for yet -- it needs a hub-side CancelRequested author
+      // and a lease-free allocation-release seam. Since the folded-launch
+      // surface was retired, every run this route could resolve is a workflow
+      // run, so the stop is gated to not-implemented until that mapping lands
+      // (tracked as INTR-454). A `markTerminal`-only stop would lie -- it would
+      // desync the child and its allocation -- so no partial stop is shipped.
+      return workflowRunOperationUnsupported(c, "Stopping a run");
     },
   );
 
@@ -723,93 +652,15 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      const tenantCtx = c.get("tenant");
-      const runId = c.req.param("runId");
-
-      const record = await findRoutableById(db, runId, tenantCtx.id);
-      if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      if (instanceStatusOf(record) === "stopped") {
-        return c.json(
-          { error: { code: "gone", message: "Instance has stopped" } },
-          410,
-        );
-      }
-
-      const address = record.address;
-
-      return streamSSE(c, async (stream) => {
-        const noop = () => undefined;
-
-        // Emit the replay before subscribing to live events so that a
-        // delta arriving between subscribe() and the replay write cannot
-        // beat the catch-up text onto the stream.
-        const status = eventCollectors.getStatus(address);
-        if (status?.status === "busy") {
-          await stream.writeSSE({
-            event: "agent.event",
-            data: JSON.stringify({
-              type: "inference.start",
-              seq: 0,
-              data: { model: "unknown" },
-            }),
-          });
-        }
-        const accumulatedText = eventCollectors.getAccumulatedText(address);
-        if (accumulatedText !== undefined && accumulatedText !== "") {
-          const turnId = eventCollectors.getLastTurnId(address);
-          await stream.writeSSE({
-            event: "agent.event",
-            data: JSON.stringify({
-              type: "inference.text.replay",
-              data: { turnId, text: accumulatedText },
-            }),
-          });
-        }
-
-        const unsubscribe = sidecarRouter.subscribeAgent(address, (event) => {
-          stream
-            .writeSSE({
-              event: "agent.event",
-              data: JSON.stringify(event),
-            })
-            .catch(noop);
-        });
-
-        const keepalive = setInterval(() => {
-          stream.write(": keepalive\n\n").catch(noop);
-        }, 30_000);
-
-        stream.onAbort(() => {
-          clearInterval(keepalive);
-          unsubscribe();
-        });
-
-        // Keep the stream open until the client disconnects.
-        await new Promise<void>(noop);
-      });
+      // The live SSE event stream reads a per-run event collector that only a
+      // launched instance ever had; a workflow (anchor) run has none. Since the
+      // folded-launch surface was retired, every run this route could resolve
+      // is a workflow run, so the stream is gated to not-implemented until it
+      // is remapped onto the run's git-backed event timeline (a repurpose
+      // slice). A malformed status-only stub would misrepresent a live run.
+      return workflowRunOperationUnsupported(c, "The run event stream");
     },
   );
-
-  // Crypto providers for signing outbound messages, keyed by instance ID.
-  // Evicted when an instance is stopped. The cache is per-factory call,
-  // not per-process; two createInstanceRoutes() calls in the same process
-  // do not share signing keys, which is intentional — each router owns
-  // its own crypto state and lifecycle.
-  const instanceKeyCache = new Map<string, Promise<CryptoProvider>>();
-
-  function getInstanceCryptoProvider(runId: string): Promise<CryptoProvider> {
-    let pending = instanceKeyCache.get(runId);
-    if (pending !== undefined) return pending;
-    pending = generateKeyPair().then((kp) => createEd25519Crypto(kp));
-    instanceKeyCache.set(runId, pending);
-    return pending;
-  }
 
   app.post(
     "/:runId/mail",
@@ -874,190 +725,12 @@ export function createInstanceRoutes({
     }),
     validator("json", SendMessage),
     async (c) => {
-      const tenant = c.get("tenant");
-      const principal = c.get("principal");
-      const runId = c.req.param("runId");
-      const body = c.req.valid("json");
-
-      // Decode and validate attachments at the boundary, emitting ordered,
-      // per-index structured errors. The effective policy defaults to the
-      // system-level allowlist and limits; a future per-agent/per-workflow
-      // lookup substitutes a narrowed policy here.
-      const attachmentResult = validateAttachments(body.attachments ?? []);
-      if (!attachmentResult.ok) {
-        return c.json({ error: attachmentResult.error }, 400);
-      }
-      const messageAttachments = attachmentResult.attachments;
-
-      const record = await findRoutableById(db, runId, tenant.id);
-      if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      const mappedStatus = instanceStatusOf(record);
-      if (mappedStatus !== "running") {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: `Instance is not running (status: ${mappedStatus})`,
-            },
-          },
-          409,
-        );
-      }
-
-      // A send needs the run's live session. The running gate above guarantees
-      // one exists; resolve it here (live-only) rather than have the id lookup
-      // fetch a session for every caller when only this route reads it. The
-      // GET-history read below resolves the same way, with ended sessions.
-      const sessionId = await resolveRunSessionId(db, record.principalId);
-      if (sessionId === null) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Instance has no active session",
-            },
-          },
-          409,
-        );
-      }
-
-      const mailId = generateId("sessionMail");
-      const now = new Date();
-
-      const user = c.get("user");
-      const fromAddr = `${principal.refId}@${tenant.domain}`;
-      const from = user?.name ? `"${user.name}" <${fromAddr}>` : fromAddr;
-      const mimeMessageId = `<${mailId}@${tenant.domain}>`;
-
-      // Fetch recent delivered inbound mail for the MIME References chain. A
-      // run's mail carries a null runId, so it is keyed on the session.
-      // GET history keys the same way.
-      const mailScope = eq(sessionMail.sessionId, sessionId);
-      const priorMail = await db
-        .select({ id: sessionMail.id })
-        .from(sessionMail)
-        .where(
-          and(
-            mailScope,
-            eq(sessionMail.direction, "inbound"),
-            eq(sessionMail.status, "delivered"),
-          ),
-        )
-        .orderBy(asc(sessionMail.createdAt), asc(sessionMail.id))
-        .limit(100);
-
-      const priorIds = priorMail.map((m) => `<${m.id}@${tenant.domain}>`);
-      const lastIdFromSession = priorIds[priorIds.length - 1];
-
-      // Threading-header policy:
-      //   1. Session history (the user's prior mail to this instance)
-      //      wins whenever it exists. inReplyTo points at the user's
-      //      most recent message, references lists the chain.
-      //   2. With no session history, fall back to the agent's active
-      //      connector thread. The connector is one durable shared
-      //      thread per agent — anyone with a session joins whatever
-      //      thread is active. Stamp inReplyTo and references from the
-      //      cached state so the harness routes the message as
-      //      `continue` and adds the user to the participant set.
-      //   3. With no session history and no active connector, send
-      //      threading-less mail. The harness routes it as `start`,
-      //      establishing this user as the first participant on a new
-      //      thread.
-      let inReplyTo: string | undefined;
-      let references: string[] | undefined;
-      if (lastIdFromSession !== undefined) {
-        inReplyTo = lastIdFromSession;
-        references = priorIds;
-      } else {
-        const connectorState = sidecarRouter.getConnectorState(record.address);
-        if (connectorState !== null) {
-          inReplyTo = connectorState.lastMessageId;
-          references = [connectorState.threadRoot];
-        }
-      }
-
-      const cryptoProvider = await getInstanceCryptoProvider(runId);
-
-      // A run's mail is not an instance's, so it records a null runId and
-      // anchors on the session (mirroring the sidecar mail-persist path).
-      const mailRunId = null;
-
-      let rawMIME: Uint8Array;
-      try {
-        rawMIME = await sessionService.sendUserMessage({
-          agentAddress: record.address,
-          from,
-          messageId: mimeMessageId,
-          date: now,
-          content: body.content,
-          ...(messageAttachments.length > 0
-            ? { attachments: messageAttachments }
-            : {}),
-          ...(inReplyTo !== undefined ? { inReplyTo } : {}),
-          ...(references !== undefined && references.length > 0
-            ? { references }
-            : {}),
-          sessionId,
-          tenantId: tenant.id,
-          cryptoProvider,
-        });
-      } catch (err) {
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to deliver message to sidecar",
-            },
-          },
-          502,
-        );
-      }
-
-      const mailCreatedAt = new Date();
-
-      await db.insert(sessionMail).values({
-        id: mailId,
-        sessionId,
-        runId: mailRunId,
-        tenantId: tenant.id,
-        direction: "inbound",
-        status: "delivered",
-        raw: rawMIME,
-        createdAt: mailCreatedAt,
-      });
-
-      const parsed = parseMailToEmail(rawMIME, mailId);
-      sidecarRouter.dispatchAgentEvent(record.address, {
-        type: "mail.delivered",
-        data: {
-          ...parsed,
-          id: mailId,
-          direction: "inbound" as const,
-          receivedAt: mailCreatedAt.toISOString(),
-        },
-      });
-
-      return c.json(
-        {
-          id: mailId,
-          sessionId,
-          runId: mailRunId,
-          direction: "inbound" as const,
-          status: "delivered" as const,
-          receivedAt: mailCreatedAt.toISOString(),
-          ...parsed,
-        },
-        201,
-      );
+      // Sending mail needs a launched instance's live session, which a workflow
+      // (anchor) run does not have. Since the folded-launch surface was retired,
+      // every run this route could resolve is a workflow run, so the send is gated
+      // to not-implemented until it is remapped onto the run's Trigger route (a
+      // repurpose slice).
+      return workflowRunOperationUnsupported(c, "Sending mail to a run");
     },
   );
 
@@ -1088,65 +761,12 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      const tenant = c.get("tenant");
-      const runId = c.req.param("runId");
-      const { limit, cursor } = parsePageParams({
-        cursor: c.req.query("cursor"),
-        limit: c.req.query("limit"),
-      });
-
-      const record = await findRoutableById(db, runId, tenant.id);
-      if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      // History must serve a terminated run. A run's mail carries a null
-      // runId; its principal is 1:1 with its single session, so resolve
-      // that session (ended included) and key on it.
-      const runSessionId = await resolveRunSessionId(db, record.principalId, {
-        includeEnded: true,
-      });
-      if (runSessionId === null) {
-        return c.json(paginatedResponse([], [], limit));
-      }
-      // Bind the read to the caller's tenant directly, not only through the
-      // session the run's principal owns: the sessionId scope borrows the
-      // principal-session 1:1 invariant, so an explicit tenantId filter keeps
-      // the mail tenant-safe even if that invariant is ever violated.
-      const conditions = [
-        eq(sessionMail.tenantId, tenant.id),
-        eq(sessionMail.sessionId, runSessionId),
-      ];
-      if (cursor) {
-        conditions.push(
-          cursorCondition(sessionMail.createdAt, sessionMail.id, cursor),
-        );
-      }
-
-      const rows = await db
-        .select()
-        .from(sessionMail)
-        .where(and(...conditions))
-        .orderBy(...pageOrder(sessionMail.createdAt, sessionMail.id))
-        .limit(limit);
-
-      const items = rows.map((m) => {
-        const parsed = parseMailToEmail(m.raw, m.id);
-        return {
-          id: m.id,
-          sessionId: m.sessionId,
-          runId: m.runId ?? null,
-          direction: m.direction,
-          status: m.status,
-          receivedAt: m.createdAt.toISOString(),
-          ...parsed,
-        };
-      });
-
-      return c.json(paginatedResponse(items, rows, limit));
+      // A run's mail history was keyed on a launched instance's session; a workflow
+      // (anchor) run has no durable mail archive yet. Since the folded-launch
+      // surface was retired, every run this route could resolve is a workflow run,
+      // so the history is gated to not-implemented until a workflow-run mail archive
+      // lands (tracked as INTR-454).
+      return workflowRunOperationUnsupported(c, "Run mail history");
     },
   );
 
@@ -1177,82 +797,14 @@ export function createInstanceRoutes({
       },
     }),
     async (c) => {
-      const tenant = c.get("tenant");
-      const runId = c.req.param("runId");
-      const { limit, cursor } = parsePageParams({
-        cursor: c.req.query("cursor"),
-        limit: c.req.query("limit"),
-      });
-
-      const record = await findRoutableById(db, runId, tenant.id);
-      if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Instance not found" } },
-          404,
-        );
-      }
-
-      // A turn records its producing endpoint's id: an instance id or, since the
-      // turn table's foreign key to the instance was dropped, a folded run id.
-      // Both equal the path id, so the filter is the same for either kind.
-      const conditions = [eq(inferenceTurn.runId, record.id)];
-      if (cursor) {
-        conditions.push(
-          cursorCondition(inferenceTurn.startedAt, inferenceTurn.id, cursor),
-        );
-      }
-
-      const turns = await db
-        .select()
-        .from(inferenceTurn)
-        .where(and(...conditions))
-        .orderBy(...pageOrder(inferenceTurn.startedAt, inferenceTurn.id))
-        .limit(limit);
-
-      const turnIds = turns.map((t) => t.id);
-
-      const parts =
-        turnIds.length > 0
-          ? await db
-              .select()
-              .from(turnPart)
-              .where(inArray(turnPart.turnId, turnIds))
-              .orderBy(asc(turnPart.ordinal))
-          : [];
-
-      const partsByTurn = new Map<string, typeof parts>();
-      for (const part of parts) {
-        let list = partsByTurn.get(part.turnId);
-        if (list === undefined) {
-          list = [];
-          partsByTurn.set(part.turnId, list);
-        }
-        list.push(part);
-      }
-
-      const items = turns.map((t) => ({
-        id: t.id,
-        sessionId: t.sessionId,
-        runId: t.runId,
-        model: t.model,
-        status: t.status,
-        startedAt: t.startedAt.toISOString(),
-        endedAt: t.endedAt ? t.endedAt.toISOString() : null,
-        parts: (partsByTurn.get(t.id) ?? []).map((p) => ({
-          id: p.id,
-          type: p.type,
-          content: p.content ?? null,
-          metadata: p.metadata ?? null,
-          ordinal: p.ordinal,
-        })),
-      }));
-
-      return c.json(
-        paginatedResponse(
-          items,
-          turns.map((t) => ({ createdAt: t.startedAt, id: t.id })),
-          limit,
-        ),
+      // A run's inference turns were recorded per launched instance; a workflow
+      // (anchor) run has no such per-run turn stream yet. Since the folded-launch
+      // surface was retired, every run this route could resolve is a workflow run,
+      // so the listing is gated to not-implemented until it is remapped onto the
+      // run's git-backed step events (a repurpose slice).
+      return workflowRunOperationUnsupported(
+        c,
+        "Listing a run's inference turns",
       );
     },
   );

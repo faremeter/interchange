@@ -157,7 +157,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
   });
 }
 
-const AGENT_ADDRESS = "ins_keylifecycle@example.com";
+const AGENT_ADDRESS = "run_keylifecycle@example.com";
 
 function isRegistered(
   transport: ReturnType<typeof createInMemoryTransport>,

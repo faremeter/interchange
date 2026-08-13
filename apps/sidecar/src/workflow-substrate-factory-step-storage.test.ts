@@ -95,7 +95,7 @@ function buildDeps(opts: {
     dataDir: opts.dataDir,
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
     signer: (payload: string) => Promise.resolve(`sig:${payload.length}`),
-    mailboxAddress: "ins_deployment-keying@example.com",
+    mailboxAddress: "run_deployment-keying@example.com",
     stepCount: 1,
     outboundMailBridge: stubOutboundMailBridge(),
     cache: { cacheMaxBytes: 1_000_000, registryMaxTarballBytes: 1_000_000 },

@@ -259,12 +259,12 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       unregisterDeployment: () => undefined,
     });
 
-    const STEP_ADDR = "ins_dep_abc-step1@example.com";
+    const STEP_ADDR = "run_dep_abc-step1@example.com";
     const HUB_KEY = "aa".repeat(32);
     const result = await router.deploy({
       type: "agent.deploy",
       agentAddress: STEP_ADDR,
-      agentId: "ins_dep_abc-step1",
+      agentId: "run_dep_abc-step1",
       hubPublicKey: HUB_KEY,
       provisionStep: true,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep never inspects config
@@ -483,7 +483,7 @@ type MultistepDeployArgs = {
    * Override the deploy frame's `agentAddress`. Single-step projections
    * are the agent-launch identity path: the deploy router derives the
    * sole step's agent-state repo from `parseAgentId(agentAddress)`, which
-   * requires the canonical `ins_<id>@<domain>` shape. Tests that drive a
+   * requires the canonical `run_<id>@<domain>` shape. Tests that drive a
    * single-step projection supply a valid instance address here; the
    * default keeps the historical multi-step address for the multi-step
    * tests (whose derived per-step repos do not parse the frame address).
@@ -1224,7 +1224,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const frame = makeMultistepFrame({
-      agentAddress: "ins_crash-noreg@example.com",
+      agentAddress: "run_crash-noreg@example.com",
       definition: {
         id: "wf-crash-noreg",
         triggers: [{ type: "manual" }],
@@ -1250,7 +1250,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const { router, substrateEnv } = await buildMultistepFixture({
       spawner: crashSpawner,
     });
-    const agentAddress = "ins_softfail@example.com";
+    const agentAddress = "run_softfail@example.com";
     const frame = makeMultistepFrame({
       agentAddress,
       definition: {
@@ -1308,7 +1308,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const frame = makeMultistepFrame({
-      agentAddress: "ins_unbuildable@example.com",
+      agentAddress: "run_unbuildable@example.com",
       definition: {
         id: "wf-unbuildable",
         triggers: [{ type: "manual" }],
@@ -1342,7 +1342,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const { router } = await buildMultistepFixture({ spawner: crashSpawner });
 
     const frame = makeMultistepFrame({
-      agentAddress: "ins_crash@example.com",
+      agentAddress: "run_crash@example.com",
       definition: {
         id: "wf-crash",
         triggers: [{ type: "manual" }],
@@ -1905,7 +1905,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("restore re-spawns a persisted single-step deployment and re-registers its head on a fresh transport", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-restart-data-");
-    const head = "ins_restart@example.com";
+    const head = "run_restart@example.com";
 
     // First process: deploy a single-step workflow. The deploy persists a
     // restore record under `dataDir` and materializes its `workflow.json`.
@@ -1943,8 +1943,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("restore soft-fails a record whose workflow.json is missing and restores the rest", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-softfail-data-");
-    const goodHead = "ins_good@example.com";
-    const badHead = "ins_bad@example.com";
+    const goodHead = "run_good@example.com";
+    const badHead = "run_bad@example.com";
 
     const first = makeReadyDrivingSpawner(9300);
     const { router: routerA } = await buildMultistepFixture({
@@ -1987,7 +1987,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("restore applies validateWorkflowProjection: a stepOrder entry with no matching steps is skipped", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
-    const head = "ins_validator@example.com";
+    const head = "run_validator@example.com";
     const deploymentId = deriveDeploymentId(head);
 
     // Hand-write a record plus a workflow.json whose `stepOrder` names a step
@@ -2039,7 +2039,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("restore is a no-op for a deployment already live in this process", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-guard-data-");
-    const head = "ins_guard@example.com";
+    const head = "run_guard@example.com";
 
     const spawner = makeReadyDrivingSpawner(9600);
     const { router, transport } = await buildMultistepFixture({
@@ -2064,7 +2064,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("a second deploy for a live address is rejected without orphaning its restore record", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-dup-data-");
-    const head = "ins_dup@example.com";
+    const head = "run_dup@example.com";
     const deploymentId = deriveDeploymentId(head);
 
     const spawner = makeReadyDrivingSpawner(9700);
@@ -2093,7 +2093,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("restore skips a record whose address does not derive its directory name", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-mismatch-data-");
-    const head = "ins_mismatch@example.com";
+    const head = "run_mismatch@example.com";
     // A record filed under a directory that is NOT its own derived slug --
     // a corrupt or misplaced record that must not be restored under the
     // wrong slug.
@@ -2127,7 +2127,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const dataDir = await createTempBaseDir(
       "sidecar-restore-unbuildable-data-",
     );
-    const head = "ins_unbuildable_restore@example.com";
+    const head = "run_unbuildable_restore@example.com";
     const deploymentId = deriveDeploymentId(head);
 
     // First process: a permissive gate lets the deploy through, persisting
@@ -2170,8 +2170,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const dataDir = await createTempBaseDir(
       "sidecar-restore-unbuildable-isolate-data-",
     );
-    const healthyHead = "ins_healthy_isolate@example.com";
-    const unbuildableHead = "ins_unbuildable_isolate@example.com";
+    const healthyHead = "run_healthy_isolate@example.com";
+    const unbuildableHead = "run_unbuildable_isolate@example.com";
     const healthyId = deriveDeploymentId(healthyHead);
     const unbuildableId = deriveDeploymentId(unbuildableHead);
 
@@ -2279,7 +2279,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("a deploy whose child never signals ready times out and rejects", async () => {
     const dataDir = await createTempBaseDir("sidecar-ready-timeout-data-");
-    const head = "ins_readytimeout@example.com";
+    const head = "run_readytimeout@example.com";
     const deploymentId = deriveDeploymentId(head);
 
     // A spawner whose child is created but never driven through the `ready`
@@ -2320,7 +2320,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const deployPromise = router.deploy(
-      singleStepFrame("ins_bkey@example.com", "wf-bkey"),
+      singleStepFrame("run_bkey@example.com", "wf-bkey"),
     );
     await spawner.driveReadyFor(0);
     const result = await deployPromise;
@@ -2347,7 +2347,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     const deployPromise = router.deploy(
-      singleStepFrame("ins_srcsingle@example.com", "wf-srcsingle"),
+      singleStepFrame("run_srcsingle@example.com", "wf-srcsingle"),
     );
     await spawner.driveReadyFor(0);
     await deployPromise;
@@ -2357,7 +2357,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(
       await sourcesRouter.tryRoute({
         type: "sources.update",
-        agentAddress: "ins_srcsingle@example.com",
+        agentAddress: "run_srcsingle@example.com",
         sources: [makeInferenceSource("primary")],
         defaultSource: "primary",
       }),
@@ -2418,7 +2418,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    const addr = "ins_rotsurvive@example.com";
+    const addr = "run_rotsurvive@example.com";
     const deployPromise = router.deploy(singleStepFrame(addr, "wf-rotsurvive"));
     await spawner.driveReadyFor(0);
     await deployPromise;
@@ -2463,7 +2463,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // so a fresh sidecar process (a restore over the same data dir) respawns
     // the deployment on the ROTATED sources, not the deploy-time ones.
     const dataDir = await createTempBaseDir("sidecar-rot-restart-");
-    const addr = "ins_rotrestart@example.com";
+    const addr = "run_rotrestart@example.com";
 
     // First process: deploy a single-step deployment and rotate its sources.
     const sourcesRouter = createMultistepSourcesRouter();
@@ -2521,7 +2521,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // hint back keeps currentSources and the record in agreement in this
     // no-interleaved-recycle failure case.
     const dataDir = await createTempBaseDir("sidecar-rot-failatomic-");
-    const addr = "ins_rotfailatomic@example.com";
+    const addr = "run_rotfailatomic@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
     const spawner = makeReadyDrivingSpawner(11100);
     const { router } = await buildMultistepFixture({
@@ -2578,7 +2578,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // window respawns the child on the ROTATED sources -- consistent with
     // what is being persisted -- rather than the stale deploy-time table.
     const dataDir = await createTempBaseDir("sidecar-rot-interleave-ok-");
-    const addr = "ins_rotinterok@example.com";
+    const addr = "run_rotinterok@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
     const spawner = makeReadyDrivingSpawner(11200);
 
@@ -2650,7 +2650,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // currentSources rolls back to the deploy-time table so the NEXT recycle
     // reverts the child to durable truth.
     const dataDir = await createTempBaseDir("sidecar-rot-interleave-fail-");
-    const addr = "ins_rotinterfail@example.com";
+    const addr = "run_rotinterfail@example.com";
     const sourcesRouter = createMultistepSourcesRouter();
     const spawner = makeReadyDrivingSpawner(11300);
 
@@ -2737,16 +2737,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    // `ins_col.a@example.com` and `ins_col-a@example.com` both project to
-    // `ins_col-a-example-com` under the slug derivation.
+    // `run_col.a@example.com` and `run_col-a@example.com` both project to
+    // `run_col-a-example-com` under the slug derivation.
     const deployPromise = router.deploy(
-      singleStepFrame("ins_col.a@example.com", "wf-collide"),
+      singleStepFrame("run_col.a@example.com", "wf-collide"),
     );
     await spawner.driveReadyFor(0);
     await deployPromise;
 
     await expect(
-      router.deploy(singleStepFrame("ins_col-a@example.com", "wf-collide")),
+      router.deploy(singleStepFrame("run_col-a@example.com", "wf-collide")),
     ).rejects.toThrow(/deriveDeploymentId collision/);
     expect(spawner.spawnCount()).toBe(1);
   });
@@ -2939,7 +2939,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     await deployPromise;
 
-    const missAddress = "ins_dep_nonexistent@wf.example";
+    const missAddress = "run_dep_nonexistent@wf.example";
     expect(router.activeAddresses()).not.toContain(missAddress);
 
     // The deployed supervisor emits its own `parked-correlations.request` on

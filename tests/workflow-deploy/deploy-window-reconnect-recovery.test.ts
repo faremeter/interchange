@@ -32,12 +32,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { isRunAddress } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
-  isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -69,7 +69,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // An `ins_` + hex-shaped local part, so the deployment address is the
 // legacy `ins_<hex>` identity rather than a workflow-derived
 // `ins_dep_<...>` address, matching the reconnect-survival fixture.
-const DEPLOYMENT_ID = "dep10ec0ffee0ec0ffee0ec0ffee0ec0";
+const DEPLOYMENT_ID = "run_dep10ec0ffee0ec0ffee0ec0ffee0ec0";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
 
@@ -94,7 +94,7 @@ describe("deploy-window reconnect recovers cleanly", () => {
   });
 
   test("a reconnect that fails in the deploy window recovers once the key lands", async () => {
-    expect(isWorkflowDerivedAddress(deploymentMailAddress)).toBe(false);
+    expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
     // ---- deploy a single-step workflow ----
     const agent = defineAgent({
@@ -111,7 +111,7 @@ describe("deploy-window reconnect recovers cleanly", () => {
     });
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_deploy-window-recovery-1",
       agentAddress: deploymentMailAddress,

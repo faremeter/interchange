@@ -51,7 +51,7 @@ import { waitForConsumedEntries } from "./fifo-mail-helpers";
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID_LOAD = "fifo-mail-load-1";
+const DEPLOYMENT_ID_LOAD = "run_fifo-mail-load-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // Sustained-load FIFO assertion. The 3-mail case in
@@ -160,7 +160,7 @@ describe("FIFO mail-trigger serialization under load", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID_LOAD}`,
+      agentId: `${DEPLOYMENT_ID_LOAD}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
@@ -364,7 +364,7 @@ describe("FIFO mail-trigger serialization under load", () => {
     // Under the stable-runId model all 50 messages target the deployment
     // address, but only the first fires it. The immutable event history remains
     // that one run; every later message is represented by its rejection receipt.
-    const runId = deploymentMailAddress;
+    const runId = DEPLOYMENT_ID_LOAD;
     const terminal = await waitForWorkflowRunComplete(
       env,
       DEPLOYMENT_ID_LOAD,

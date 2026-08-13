@@ -54,7 +54,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "single-step-posix-tool-1";
+const DEPLOYMENT_ID = "run_single-step-posix-tool-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
 
@@ -113,7 +113,7 @@ describe("single-step posix-tool in-child execution", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

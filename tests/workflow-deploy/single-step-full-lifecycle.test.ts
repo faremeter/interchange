@@ -67,6 +67,7 @@ import { type } from "arktype";
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { generateKeyPair } from "@intx/crypto";
 import { createSSHSignature } from "@intx/crypto";
+import { isRunAddress } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import { WireGrantRule } from "@intx/types/grant-wire";
@@ -74,7 +75,6 @@ import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
-  isWorkflowDerivedAddress,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -111,7 +111,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A launched-agent instance id: `ins_` + a hex-shaped local part. The
 // deployment address `ins_<id>@<domain>` is the legacy `ins_<hex>`
 // identity, NOT a workflow-derived `ins_dep_<...>` address.
-const INSTANCE_LOCAL = "cafef00dba5eba11cafef00dba5eba11";
+const INSTANCE_LOCAL = "run_cafef00dba5eba11cafef00dba5eba11";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
@@ -185,7 +185,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
 
     // Precondition: the deployment address is the launched-agent identity
     // shape, not a workflow-derived address.
-    expect(isWorkflowDerivedAddress(deploymentMailAddress)).toBe(false);
+    expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
     const agent = defineAgent({
       id: "agent-lifecycle",
@@ -207,7 +207,7 @@ describe("single-step full lifecycle on the unified child path (Phase 4.6)", () 
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,

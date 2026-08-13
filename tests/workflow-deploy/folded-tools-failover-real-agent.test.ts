@@ -49,7 +49,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "folded-tools-failover-1";
+const DEPLOYMENT_ID = "run_folded-tools-failover-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // The namespaced tool name the model calls and the walk grants on.
@@ -120,7 +120,7 @@ describe("folded tools + failover real-agent round-trip", () => {
     // model), so the one inference-source approval covers both.
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_folded-1",
       agentAddress: deploymentMailAddress,

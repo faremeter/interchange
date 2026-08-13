@@ -69,8 +69,8 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const PARENT_DEPLOYMENT_ID = "child-inherited-grants-parent-1";
-const CHILD_DEPLOYMENT_ID = "child-inherited-grants-child-1";
+const PARENT_DEPLOYMENT_ID = "run_child-inherited-grants-parent-1";
+const CHILD_DEPLOYMENT_ID = "run_child-inherited-grants-child-1";
 const PARENT_WORKFLOW_ID = `wf_${PARENT_DEPLOYMENT_ID}`;
 const CHILD_WORKFLOW_ID = `wf_${CHILD_DEPLOYMENT_ID}`;
 
@@ -244,7 +244,7 @@ describe("parent -> child inherited grants round-trip", () => {
     // Deploy the child (as its own asset) then the parent.
     const childResult = await orchestrator.deployWorkflow({
       workflow: childWorkflowDefinition,
-      config: baseConfig(childMailAddress, `ins_${CHILD_DEPLOYMENT_ID}`),
+      config: baseConfig(childMailAddress, `${CHILD_DEPLOYMENT_ID}`),
       deployContent: { systemPrompt: "Fallback prompt (overridden per step)." },
       operatorApprovals,
       deploymentId: CHILD_DEPLOYMENT_ID,
@@ -255,7 +255,7 @@ describe("parent -> child inherited grants round-trip", () => {
 
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
-      config: baseConfig(parentMailAddress, `ins_${PARENT_DEPLOYMENT_ID}`),
+      config: baseConfig(parentMailAddress, `${PARENT_DEPLOYMENT_ID}`),
       deployContent: { systemPrompt: "Fallback prompt (overridden per step)." },
       operatorApprovals,
       deploymentId: PARENT_DEPLOYMENT_ID,

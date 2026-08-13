@@ -49,7 +49,7 @@ export function shouldShowMail(data: {
 }
 
 // Run addresses are "<runId>@<domain>" where runId is always prefixed with
-// "ins_".
+// "run_".
 export function resolveAgentAddress(
   addr: MailAddress,
 ): { runId: string; label: string } | null {

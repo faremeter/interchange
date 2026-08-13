@@ -422,7 +422,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
     await seedStepGrants(
       baseDir,
-      defaultStepRepoId({ deploymentId: "deployment-x", stepId: "step-1" }),
+      defaultStepRepoId({ deploymentId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
 
@@ -446,11 +446,11 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       binaryPath: "/fake/bin",
       substrateEnv: { DATA_DIR: baseDir },
       dynamicSpawnEnv: () => ({}),
-      workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
+      workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
       workflowRunRef: "refs/heads/main",
-      deploymentId: "deployment-x",
+      deploymentId: "run_deployment-x",
       stepCount: 1,
-      deploymentMailAddress: "deployment-x@example.com",
+      deploymentMailAddress: "run_deployment-x@example.com",
       readPrincipal: { kind: "supervisor" },
       deriveStepAddress: ({ deploymentId, stepId }) =>
         `${deploymentId}-${stepId}@example.com`,
@@ -500,7 +500,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       "Message-ID: <stale-routing-probe@example.com>\r\n\r\nbody";
     const TEST_MESSAGE_ID = "<stale-routing-probe@example.com>";
     mailBus.deliver(
-      "deployment-x@example.com",
+      "run_deployment-x@example.com",
       new TextEncoder().encode(TEST_MESSAGE),
     );
 
@@ -524,7 +524,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     await senderA.send({
       type: "terminal.event",
       data: {
-        runId: bindings.deploymentMailAddress,
+        runId: bindings.deploymentId,
         kind: "RunCompleted",
         seq: 0,
         at: "stale-from-cohort-A",
@@ -546,7 +546,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     await senderB.send({
       type: "terminal.event",
       data: {
-        runId: bindings.deploymentMailAddress,
+        runId: bindings.deploymentId,
         kind: "RunCompleted",
         seq: 0,
         at: "real-from-cohort-B",

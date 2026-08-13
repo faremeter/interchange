@@ -16,14 +16,25 @@
 // trigger occurrence. Internal section/body runs still receive their own
 // synthetic run ids and are not externally addressable.
 
+import { parseRunAddress } from "./agent-address";
+
 /**
  * The stable runId for a workflow deployment's one addressable top-level run:
  * the local part of its mail address, before the `@`. Callers hold the
  * deployment mail address in different forms -- a routing recipient, a
  * supervisor binding, a route-derived address -- and route it through this one
  * function so the runId contract is stated in exactly one place.
+ *
+ * Delegates to `parseRunAddress` so a single function owns the `@`-split: the
+ * runId is the parsed local part. A malformed address (no `run_` marker, no
+ * `@`, or an empty domain) is a caller bug, not a value to key state under, so
+ * this throws rather than returning a fabricated id that would land run state
+ * under an id the supervisor never looks up.
  */
 export function deriveWorkflowRunId(address: string): string {
-  const at = address.lastIndexOf("@");
-  return at === -1 ? address : address.slice(0, at);
+  const parsed = parseRunAddress(address);
+  if (parsed === null) {
+    throw new Error(`Invalid run address: ${JSON.stringify(address)}`);
+  }
+  return parsed.runId;
 }

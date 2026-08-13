@@ -87,12 +87,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeUndefined();
     });
 
-    test("excludes a deployment anchor run (workflow-derived address)", async () => {
+    test("resolves a deployment anchor run to the unified run", async () => {
       await seedBase();
-      // The anchor run owns a workflow-derived address in the run table. A
-      // plain-resolution caller (mail persist, reconnect reaction) must not
-      // match it -- the workflow-derived key path owns it -- so the guard
-      // returns undefined before the address query runs.
+      // The collapse folds the deployment onto one self-anchored run that owns
+      // its routing address, so resolving that address returns the run: there
+      // is no longer a separate workflow-derived key path that hides it. This
+      // anchor carries no own principal, so the resolved endpoint has no
+      // session.
       await seedWorkflowRun(h.db, {
         id: "dep_anchor",
         tenantId: "tnt_root",
@@ -101,9 +102,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: "ins_dep_anchor@root.example",
         status: "running",
       });
-      expect(
-        await resolveRoutableAddress(h.db, "ins_dep_anchor@root.example"),
-      ).toBeUndefined();
+      const endpoint = await resolveRoutableAddress(
+        h.db,
+        "ins_dep_anchor@root.example",
+      );
+      expect(endpoint?.id).toBe("dep_anchor");
+      expect(endpoint?.sessionId).toBeNull();
     });
 
     test("skips a terminated run (endedAt set)", async () => {

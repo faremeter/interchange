@@ -86,7 +86,7 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "on-trigger-between-events-restart-1";
+const DEPLOYMENT_ID = "run_on-trigger-between-events-restart-1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const SECTION_ID = "section";
 
@@ -208,7 +208,7 @@ describe("onTrigger section crash + restart -> restore re-includes the container
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_on-trigger-between-events-1",
       agentAddress: deploymentMailAddress,

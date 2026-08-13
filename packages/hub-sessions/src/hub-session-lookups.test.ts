@@ -12,25 +12,31 @@ import { describe, test, expect } from "bun:test";
 import { parseAgentId } from "./hub-session-lookups";
 
 describe("parseAgentId", () => {
-  test("returns the instance id from a canonical address", () => {
-    expect(parseAgentId("ins_abc123@tenant.example")).toBe("ins_abc123");
+  test("returns the run id from a canonical address", () => {
+    expect(parseAgentId("run_abc123@tenant.example")).toBe("run_abc123");
   });
 
   test("throws when the @ is missing", () => {
-    expect(() => parseAgentId("ins_abc123")).toThrow(
-      'Invalid agent address: "ins_abc123"',
+    expect(() => parseAgentId("run_abc123")).toThrow(
+      'Invalid agent address: "run_abc123"',
     );
   });
 
-  test("throws when the local part lacks the ins_ prefix", () => {
+  test("throws when the local part lacks the run_ prefix", () => {
     expect(() => parseAgentId("usr_alice@tenant.example")).toThrow(
       'Invalid agent address: "usr_alice@tenant.example"',
     );
   });
 
+  test("throws for the retired ins_ prefix", () => {
+    expect(() => parseAgentId("ins_abc123@tenant.example")).toThrow(
+      'Invalid agent address: "ins_abc123@tenant.example"',
+    );
+  });
+
   test("throws when the domain part is empty", () => {
-    expect(() => parseAgentId("ins_abc123@")).toThrow(
-      'Invalid agent address: "ins_abc123@"',
+    expect(() => parseAgentId("run_abc123@")).toThrow(
+      'Invalid agent address: "run_abc123@"',
     );
   });
 
@@ -49,6 +55,6 @@ describe("parseAgentId", () => {
   });
 
   test("splits on the first @ — multi-@ addresses keep the rest as domain", () => {
-    expect(parseAgentId("ins_abc@foo@bar")).toBe("ins_abc");
+    expect(parseAgentId("run_abc@foo@bar")).toBe("run_abc");
   });
 });

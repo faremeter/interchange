@@ -1,18 +1,9 @@
 import { describe, test, expect } from "bun:test";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import {
-  assembleSignedContent,
-  assembleMessage,
-  type MessageHeaders,
-} from "@intx/mime";
 import type { GrantRule } from "@intx/types/authz";
-import { base64Encode } from "@intx/types";
 import type { SessionStatus } from "@intx/types";
-import type {
-  ConnectorThreadState,
-  MessageAttachment,
-} from "@intx/types/runtime";
+import type { ConnectorThreadState } from "@intx/types/runtime";
 
 import { createApp } from "../app";
 import {
@@ -36,8 +27,8 @@ import type { GetSession } from "../session";
 const TENANT_ID = "tnt_test";
 const PRINCIPAL_ID = "prn_test";
 const USER_ID = "usr_test";
-const INSTANCE_ID = "ins_test";
-const ADDRESS = "ins_test@test.example.com";
+const INSTANCE_ID = "run_test";
+const ADDRESS = "run_test@test.example.com";
 
 const testTenant = {
   id: TENANT_ID,
@@ -72,6 +63,7 @@ const testDefinition = {
 function makeTestRun(overrides: Record<string, unknown> = {}) {
   return {
     id: INSTANCE_ID,
+    anchorRunId: INSTANCE_ID,
     tenantId: TENANT_ID,
     address: ADDRESS,
     publicKey: null,
@@ -136,23 +128,6 @@ function notImplemented(path: string) {
   return () => {
     throw new Error(`mock: ${path} not implemented`);
   };
-}
-
-// Recovers the SQL table name a mock's `.from(table)` / `.update(table)` was
-// called with, so a mock db can branch on which table a query targets. Drizzle
-// stores the name under a documented symbol; there is no plain `.name`.
-function drizzleTableName(table: unknown): string {
-  if (table && typeof table === "object") {
-    const sym = Object.getOwnPropertySymbols(table).find(
-      (s) => s.description === "drizzle:Name",
-    );
-    if (sym) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle stores the table name keyed by a documented symbol
-      const value = (table as Record<symbol, unknown>)[sym];
-      if (typeof value === "string") return value;
-    }
-  }
-  return "unknown";
 }
 
 function createMockDB(opts: MockDBOpts) {
@@ -754,138 +729,68 @@ describe("read routes serve a folded run", () => {
 // Folded run interact routes — mail send/list and turns for a workflow_run
 // ---------------------------------------------------------------------------
 
-describe("interact routes serve a folded run", () => {
+describe("interactive routes are gated not-implemented for workflow runs", () => {
   function writeGrant(): GrantRule {
     return makeGrant({ resource: "workflow-run:*", action: "write" });
   }
   function readGrant(): GrantRule {
     return makeGrant({ resource: "workflow-run:*", action: "read" });
   }
-  function sendingService(): SessionService {
-    return {
-      stageWorkflowStep() {
-        throw new Error("not implemented");
-      },
-      deployInstanceAtHead() {
-        throw new Error("not implemented");
-      },
-      deployWorkflowDefinition() {
-        throw new Error("not implemented");
-      },
-      deploySingleStepAtHead() {
-        throw new Error("not implemented");
-      },
-      endSession() {
-        throw new Error("not implemented");
-      },
-      sendUserMessage() {
-        return Promise.resolve(new Uint8Array([1, 2, 3]));
-      },
-    };
-  }
 
-  test("POST mail on a running run persists on the run session with a null runId", async () => {
-    const inserts: Record<string, unknown>[] = [];
-    const app = createTestApp({
-      grants: [writeGrant()],
-      sessionService: sendingService(),
-      db: {
-        tenant: testTenant,
-        principal: testPrincipal,
-        run: makeTestRun({ principalId: "prn_run" }),
-        runSessionId: "ses_run",
-        inserts,
-      },
-    });
-
+  // Mail send/history, turns, the event stream, and stop were built for the
+  // retired folded-launch surface. A workflow (anchor) run carries none of the
+  // per-run session, collector, or terminal machinery they read, so each route
+  // answers 501 not_implemented until its mapping lands (stop and mail history
+  // are tracked as INTR-454). The routes stay mounted, not 404, so the admin UI
+  // gets a clean answer.
+  test("POST mail answers 501 not_implemented", async () => {
+    const app = createTestApp({ grants: [writeGrant()] });
     const res = await app.request(`${instanceURL()}/mail`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: "hello run" }),
     });
-
-    expect(res.status).toBe(201);
-    const body: unknown = await res.json();
-    // A run's mail anchors on its session and records no instance.
-    expect(body).toMatchObject({ sessionId: "ses_run", runId: null });
-    const mailInsert = inserts.find((r) => r["direction"] === "inbound");
-    expect(mailInsert).toMatchObject({
-      sessionId: "ses_run",
-      runId: null,
+    expect(res.status).toBe(501);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_implemented" },
     });
   });
 
-  test("POST mail 409s a terminal run", async () => {
-    const app = createTestApp({
-      grants: [writeGrant()],
-      sessionService: sendingService(),
-      db: {
-        tenant: testTenant,
-        principal: testPrincipal,
-        run: makeTestRun({ status: "completed", principalId: "prn_run" }),
-        runSessionId: "ses_run",
-      },
-    });
-
-    const res = await app.request(`${instanceURL()}/mail`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: "too late" }),
-    });
-    expect(res.status).toBe(409);
-  });
-
-  test("GET mail serves a terminated run's history via its ended session", async () => {
-    const app = createTestApp({
-      grants: [readGrant()],
-      db: {
-        tenant: testTenant,
-        principal: testPrincipal,
-        run: makeTestRun({
-          status: "cancelled",
-          endedAt: new Date("2025-02-01"),
-          principalId: "prn_run",
-        }),
-        // The ended session is still resolvable by the run's principal.
-        runSessionId: "ses_run",
-      },
-    });
-
-    // A terminal run is served (not 404); with no seeded mail the page is empty
-    // -- the point is that it resolves the ended session rather than 404ing.
+  test("GET mail answers 501 not_implemented", async () => {
+    const app = createTestApp({ grants: [readGrant()] });
     const res = await app.request(`${instanceURL()}/mail`);
-    expect(res.status).toBe(200);
-    const body: unknown = await res.json();
-    expect(body).toMatchObject({ data: [] });
+    expect(res.status).toBe(501);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_implemented" },
+    });
   });
 
-  test("GET turns returns a run's inference turns keyed by the run id", async () => {
-    const app = createTestApp({
-      grants: [readGrant()],
-      db: {
-        tenant: testTenant,
-        principal: testPrincipal,
-        run: makeTestRun({ principalId: "prn_run" }),
-        turns: [
-          {
-            id: "turn_1",
-            sessionId: "ses_run",
-            runId: INSTANCE_ID,
-            model: "test-model",
-            status: "completed",
-            startedAt: new Date("2025-02-01"),
-            endedAt: new Date("2025-02-01"),
-          },
-        ],
-        turnParts: [],
-      },
-    });
-
+  test("GET turns answers 501 not_implemented", async () => {
+    const app = createTestApp({ grants: [readGrant()] });
     const res = await app.request(`${instanceURL()}/turns`);
-    expect(res.status).toBe(200);
-    const body: unknown = await res.json();
-    expect(body).toMatchObject({
-      data: [{ id: "turn_1", runId: INSTANCE_ID, model: "test-model" }],
+    expect(res.status).toBe(501);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_implemented" },
+    });
+  });
+
+  test("GET events answers 501 not_implemented", async () => {
+    const app = createTestApp({ grants: [readGrant()] });
+    const res = await app.request(`${instanceURL()}/events`);
+    expect(res.status).toBe(501);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_implemented" },
+    });
+  });
+
+  test("DELETE stop answers 501 not_implemented", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "workflow-run:*", action: "manage" })],
+    });
+    const res = await app.request(instanceURL(), { method: "DELETE" });
+    expect(res.status).toBe(501);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_implemented" },
     });
   });
 });
@@ -905,673 +810,5 @@ describe("GET /workflows/runs/blobs/:blobId", () => {
     expect(res.status).toBe(400);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "bad_request" } });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /:runId/mail — threading-header policy
-// ---------------------------------------------------------------------------
-
-describe("POST /workflows/runs/:runId/mail", () => {
-  // The user's bare addr-spec is `${principal.refId}@${tenant.domain}`.
-  const USER_ADDR = `${USER_ID}@${testTenant.domain}`;
-
-  function makeMailGrant(): GrantRule {
-    return makeGrant({ resource: "workflow-run:*", action: "write" });
-  }
-
-  type CapturedSendArgs = {
-    inReplyTo?: string;
-    references?: string[];
-  };
-
-  function captureSendUserMessage(): {
-    service: SessionService;
-    captured: CapturedSendArgs[];
-  } {
-    const captured: CapturedSendArgs[] = [];
-    const service: SessionService = {
-      stageWorkflowStep() {
-        throw new Error("not implemented");
-      },
-      deployInstanceAtHead() {
-        throw new Error("not implemented");
-      },
-      deployWorkflowDefinition() {
-        throw new Error("not implemented");
-      },
-      deploySingleStepAtHead() {
-        throw new Error("not implemented");
-      },
-      endSession() {
-        throw new Error("not implemented");
-      },
-      sendUserMessage(params) {
-        captured.push({
-          ...(params.inReplyTo !== undefined
-            ? { inReplyTo: params.inReplyTo }
-            : {}),
-          ...(params.references !== undefined
-            ? { references: params.references }
-            : {}),
-        });
-        return Promise.resolve(new Uint8Array([1, 2, 3]));
-      },
-    };
-    return { service, captured };
-  }
-
-  async function postMail(app: ReturnType<typeof createTestApp>) {
-    return app.request(`${instanceURL()}/mail`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: "hello agent" }),
-    });
-  }
-
-  test("no active connector → no threading headers", async () => {
-    const { service, captured } = captureSendUserMessage();
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-      // connectorStates default empty → getConnectorState returns null
-    });
-
-    const res = await postMail(app);
-    expect(res.status).toBe(201);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]?.inReplyTo).toBeUndefined();
-    expect(captured[0]?.references).toBeUndefined();
-  });
-
-  test("active connector started by the same user → user continues the thread", async () => {
-    const { service, captured } = captureSendUserMessage();
-    const connectorStates = new Map<string, ConnectorThreadState | null>();
-    connectorStates.set(ADDRESS, {
-      threadRoot: "<root@example.com>",
-      lastMessageId: "<last@example.com>",
-      replyTo: USER_ADDR,
-      cc: [],
-    });
-
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-      connectorStates,
-    });
-
-    const res = await postMail(app);
-    expect(res.status).toBe(201);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]?.inReplyTo).toBe("<last@example.com>");
-    expect(captured[0]?.references).toEqual(["<root@example.com>"]);
-  });
-
-  test("active connector started by another peer → user joins the same thread", async () => {
-    // The connector is one durable shared thread per agent. A user
-    // opening a session against an agent whose active thread was
-    // started by another peer (a parent agent that launched this one,
-    // a peer agent, a prior session by anyone else) joins that thread
-    // — the agent's next connector.reply will then CC the prior
-    // speaker alongside the user.
-    const { service, captured } = captureSendUserMessage();
-    const connectorStates = new Map<string, ConnectorThreadState | null>();
-    connectorStates.set(ADDRESS, {
-      threadRoot: "<root@example.com>",
-      lastMessageId: "<last@example.com>",
-      replyTo: "someone-else@example.com",
-      cc: [],
-    });
-
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-      connectorStates,
-    });
-
-    const res = await postMail(app);
-    expect(res.status).toBe(201);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]?.inReplyTo).toBe("<last@example.com>");
-    expect(captured[0]?.references).toEqual(["<root@example.com>"]);
-  });
-
-  test("session history takes precedence over the connector cache", async () => {
-    const { service, captured } = captureSendUserMessage();
-    const connectorStates = new Map<string, ConnectorThreadState | null>();
-    connectorStates.set(ADDRESS, {
-      threadRoot: "<root@example.com>",
-      lastMessageId: "<connector-last@example.com>",
-      replyTo: USER_ADDR,
-      cc: [],
-    });
-
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-      connectorStates,
-      db: {
-        tenant: testTenant,
-        principal: testPrincipal,
-        run: makeTestRun({ principalId: "prn_agent" }),
-        runSessionId: "ses_test",
-        sessionMail: [{ id: "prior-1" }],
-      },
-    });
-
-    const res = await postMail(app);
-    expect(res.status).toBe(201);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]?.inReplyTo).toBe(`<prior-1@${testTenant.domain}>`);
-    expect(captured[0]?.references).toEqual([`<prior-1@${testTenant.domain}>`]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /:runId/mail — attachment validation
-// ---------------------------------------------------------------------------
-
-describe("POST /workflows/runs/:runId/mail attachments", () => {
-  function makeMailGrant(): GrantRule {
-    return makeGrant({ resource: "workflow-run:*", action: "write" });
-  }
-
-  // A session service whose sendUserMessage assembles a real conversation
-  // MIME from the params, so the route's response echoes the parsed
-  // attachment metadata exactly as production does.
-  function captureAttachmentSend(): {
-    service: SessionService;
-    captured: (MessageAttachment[] | undefined)[];
-  } {
-    const captured: (MessageAttachment[] | undefined)[] = [];
-    const service: SessionService = {
-      stageWorkflowStep() {
-        throw new Error("not implemented");
-      },
-      deployInstanceAtHead() {
-        throw new Error("not implemented");
-      },
-      deployWorkflowDefinition() {
-        throw new Error("not implemented");
-      },
-      deploySingleStepAtHead() {
-        throw new Error("not implemented");
-      },
-      endSession() {
-        throw new Error("not implemented");
-      },
-      sendUserMessage(params) {
-        captured.push(params.attachments);
-        const content = assembleSignedContent({
-          kind: "conversation",
-          text: params.content,
-          ...(params.attachments !== undefined
-            ? { attachments: params.attachments }
-            : {}),
-        });
-        const headers: MessageHeaders = {
-          from: params.from,
-          to: [params.agentAddress],
-          cc: undefined,
-          date: params.date,
-          messageId: params.messageId,
-          subject: undefined,
-          inReplyTo: params.inReplyTo,
-          references: params.references,
-          mimeVersion: "1.0",
-          interchangeType: "conversation.message",
-          interchangeCorrelationId: undefined,
-          interchangeTenantId: params.tenantId,
-          interchangeAgentId: undefined,
-          interchangeSessionId: params.sessionId,
-          interchangeOfferingId: undefined,
-          interchangeSchemaVersion: undefined,
-          traceparent: undefined,
-          tracestate: undefined,
-        };
-        const raw = assembleMessage(
-          headers,
-          content,
-          new TextEncoder().encode("FAKE-SIG"),
-        );
-        return Promise.resolve(raw);
-      },
-    };
-    return { service, captured };
-  }
-
-  function postMailWith(
-    app: ReturnType<typeof createTestApp>,
-    attachments: unknown[],
-  ) {
-    return app.request(`${instanceURL()}/mail`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: "hello agent", attachments }),
-    });
-  }
-
-  test("valid attachment is decoded, forwarded, and echoed in the response", async () => {
-    const { service, captured } = captureAttachmentSend();
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-    });
-
-    const data = base64Encode(
-      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
-    );
-    const res = await postMailWith(app, [
-      { mimeType: "image/png", data, name: "shot.png" },
-    ]);
-
-    expect(res.status).toBe(201);
-    expect(captured).toEqual([
-      [
-        {
-          name: "shot.png",
-          contentType: "image/png",
-          data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
-        },
-      ],
-    ]);
-
-    const json = await res.json();
-    expect(json).toMatchObject({
-      attachments: [{ name: "shot.png", type: "image/png" }],
-    });
-  });
-
-  test("disallowed mimeType yields structured disallowed_mime_type", async () => {
-    const { service } = captureAttachmentSend();
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-    });
-
-    const data = base64Encode(new Uint8Array([1, 2, 3]));
-    const res = await postMailWith(app, [{ mimeType: "image/tiff", data }]);
-
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({
-      error: {
-        code: "disallowed_mime_type",
-        attachmentIndex: 0,
-        mimeType: "image/tiff",
-      },
-    });
-  });
-
-  test("malformed base64 yields structured malformed_base64", async () => {
-    const { service } = captureAttachmentSend();
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-    });
-
-    const res = await postMailWith(app, [
-      { mimeType: "image/png", data: "@@@not-valid-base64@@@" },
-    ]);
-
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({
-      error: { code: "malformed_base64", attachmentIndex: 0 },
-    });
-  });
-
-  test("an unsafe filename yields a structured 400, not a 502", async () => {
-    const { service, captured } = captureAttachmentSend();
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-    });
-
-    const data = base64Encode(new Uint8Array([1, 2, 3]));
-    const res = await postMailWith(app, [
-      { mimeType: "image/png", data, name: 'a"b.png' },
-    ]);
-
-    // Rejected at the boundary before the message is ever assembled, so the
-    // client sees a 400 with the structured code rather than a 502 from the
-    // MIME assembler's header-safety guard.
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({
-      error: { code: "invalid_attachment_name", attachmentIndex: 0 },
-    });
-    expect(captured).toHaveLength(0);
-  });
-
-  test("oversize attachment wins over total, reporting the offending index", async () => {
-    const { service } = captureAttachmentSend();
-    const app = createTestApp({
-      grants: [makeMailGrant()],
-      sessionService: service,
-    });
-
-    const small = base64Encode(new Uint8Array([1, 2, 3]));
-    const oversize = base64Encode(new Uint8Array(11 * 1024 * 1024).fill(0x61));
-    const res = await postMailWith(app, [
-      { mimeType: "image/png", data: small },
-      { mimeType: "image/png", data: oversize },
-      { mimeType: "image/png", data: small },
-    ]);
-
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({
-      error: { code: "oversize_attachment", attachmentIndex: 1 },
-    });
-  });
-
-  test("auth runs before attachment validation", async () => {
-    const { service, captured } = captureAttachmentSend();
-    const app = createTestApp({
-      grants: [],
-      sessionService: service,
-    });
-
-    // A disallowed attachment would be a 400 if validation ran first; with
-    // no write grant the route must reject with its auth failure instead.
-    const data = base64Encode(new Uint8Array([1, 2, 3]));
-    const res = await postMailWith(app, [{ mimeType: "image/tiff", data }]);
-
-    expect(res.status).toBe(403);
-    expect(captured).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// DELETE /:runId — folded run (workflow_run) stop path
-// ---------------------------------------------------------------------------
-
-describe("DELETE /workflows/runs/:runId (folded run)", () => {
-  type Update = { table: string; set: Record<string, unknown> };
-  type EndCall = { address: string; reason: string };
-
-  const RUN_ID = "ins_folded_run";
-  const RUN_PRINCIPAL = "prn_run";
-  const RUN_ADDRESS = `${RUN_ID}@${testTenant.domain}`;
-
-  function makeRun(overrides: Record<string, unknown> = {}) {
-    return {
-      id: RUN_ID,
-      tenantId: TENANT_ID,
-      anchorRunId: null,
-      definitionId: "wfd_folded",
-      principalId: RUN_PRINCIPAL,
-      address: RUN_ADDRESS,
-      status: "running",
-      publicKey: "pk-run",
-      endedAt: null,
-      ...overrides,
-    };
-  }
-
-  // A db whose `select(workflow_run)` returns the seeded run and whose
-  // `update(...)` records the (table, set) of every write, so the test can
-  // assert the run, its principal, and its session are all flipped terminal.
-  function createFoldedDeleteDB(opts: {
-    run: Record<string, unknown> | undefined;
-    updates: Update[];
-  }) {
-    function updateChain(table: unknown) {
-      return {
-        set: (values: Record<string, unknown>) => ({
-          where: () => {
-            opts.updates.push({
-              table: drizzleTableName(table),
-              set: values,
-            });
-            return Promise.resolve();
-          },
-        }),
-      };
-    }
-
-    // The teardown writes run inside db.transaction; the tx exposes the same
-    // capturing update as the db.
-    const txLike = { update: updateChain };
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
-    return {
-      query: {
-        // The tenant/principal middleware resolves these before the route runs.
-        tenant: {
-          findFirst: async () => testTenant,
-          findMany: notImplemented("db.query.tenant.findMany"),
-        },
-        principal: {
-          findFirst: async () => testPrincipal,
-          findMany: notImplemented("db.query.principal.findMany"),
-        },
-      },
-      select: () => ({
-        from: (table: unknown) => ({
-          where: () => ({
-            limit: () =>
-              Promise.resolve(
-                drizzleTableName(table) === "workflow_run" && opts.run
-                  ? [opts.run]
-                  : [],
-              ),
-          }),
-        }),
-      }),
-      update: updateChain,
-      transaction: async (fn: (tx: typeof txLike) => Promise<unknown>) =>
-        fn(txLike),
-    } as unknown as Parameters<typeof createApp>[0]["db"];
-  }
-
-  function createStopSessionService(calls: EndCall[]): SessionService {
-    return {
-      stageWorkflowStep: () => {
-        throw new Error("mock: stageWorkflowStep not implemented");
-      },
-      deployInstanceAtHead: () => {
-        throw new Error("mock: deployInstanceAtHead not implemented");
-      },
-      deployWorkflowDefinition: () => {
-        throw new Error("mock: deployWorkflowDefinition not implemented");
-      },
-      deploySingleStepAtHead: () => {
-        throw new Error("mock: deploySingleStepAtHead not implemented");
-      },
-      sendUserMessage: () => {
-        throw new Error("mock: sendUserMessage not implemented");
-      },
-      endSession: (address, reason) => {
-        calls.push({ address, reason });
-        return Promise.resolve();
-      },
-    };
-  }
-
-  function stopApp(
-    db: ReturnType<typeof createFoldedDeleteDB>,
-    sessionService: SessionService,
-    abandoned: string[],
-  ) {
-    return createApp({
-      getSession: createMockGetSession(USER_ID),
-      authHandler: () => new Response("", { status: 404 }),
-      db,
-      grantStore: createInMemoryGrantStore([
-        makeGrant({ resource: "workflow-run:*", action: "manage" }),
-      ]),
-      sidecarRouter: createMockSidecarRouter(),
-      sessionService,
-      eventCollectors: {
-        create: () => undefined,
-        dispatch: notImplemented("eventCollectors.dispatch"),
-        abandon: (address) => {
-          abandoned.push(address);
-        },
-        has: () => false,
-        getStatus: () => undefined,
-        getAccumulatedText: () => undefined,
-        getCurrentTurnId: () => undefined,
-        getLastTurnId: () => undefined,
-      },
-      assetService: null,
-      repoStore: null,
-      maxTarballBytes: 10_000_000,
-    });
-  }
-
-  async function stop(app: ReturnType<typeof stopApp>) {
-    return app.request(`/api/tenants/${TENANT_ID}/workflows/runs/${RUN_ID}`, {
-      method: "DELETE",
-    });
-  }
-
-  test("stopping a running folded run flips it, its principal, and its session terminal", async () => {
-    const updates: Update[] = [];
-    const endCalls: EndCall[] = [];
-    const abandoned: string[] = [];
-    const app = stopApp(
-      createFoldedDeleteDB({ run: makeRun(), updates }),
-      createStopSessionService(endCalls),
-      abandoned,
-    );
-
-    const res = await stop(app);
-
-    expect(res.status).toBe(204);
-    expect(endCalls).toEqual([
-      { address: RUN_ADDRESS, reason: "instance_stopped" },
-    ]);
-    expect(abandoned).toEqual([RUN_ADDRESS]);
-
-    const runUpdate = updates.find((u) => u.table === "workflow_run");
-    expect(runUpdate?.set).toMatchObject({ status: "cancelled" });
-    expect(runUpdate?.set["endedAt"]).toBeInstanceOf(Date);
-
-    // The run's own principal is deactivated and its transitional session,
-    // keyed by that principal, is ended.
-    const principalUpdate = updates.find((u) => u.table === "principal");
-    expect(principalUpdate?.set).toMatchObject({ status: "deactivated" });
-
-    const sessionUpdate = updates.find((u) => u.table === "agent_session");
-    expect(sessionUpdate?.set).toMatchObject({ status: "ended" });
-  });
-
-  test("stopping an already-terminal folded run is a 409 with no writes", async () => {
-    const updates: Update[] = [];
-    const endCalls: EndCall[] = [];
-    const abandoned: string[] = [];
-    const app = stopApp(
-      createFoldedDeleteDB({
-        run: makeRun({ status: "cancelled", endedAt: new Date(0) }),
-        updates,
-      }),
-      createStopSessionService(endCalls),
-      abandoned,
-    );
-
-    const res = await stop(app);
-
-    expect(res.status).toBe(409);
-    expect(endCalls).toEqual([]);
-    expect(updates).toEqual([]);
-    expect(abandoned).toEqual([]);
-  });
-
-  test("a run with no address is not an instance the stop route owns (404)", async () => {
-    const updates: Update[] = [];
-    const endCalls: EndCall[] = [];
-    const abandoned: string[] = [];
-    const app = stopApp(
-      createFoldedDeleteDB({
-        run: makeRun({ address: null }),
-        updates,
-      }),
-      createStopSessionService(endCalls),
-      abandoned,
-    );
-
-    const res = await stop(app);
-
-    expect(res.status).toBe(404);
-    expect(endCalls).toEqual([]);
-    expect(updates).toEqual([]);
-    expect(abandoned).toEqual([]);
-  });
-
-  test("a deployment anchor run (workflow-derived address) is not stoppable here (404, no undeploy)", async () => {
-    const updates: Update[] = [];
-    const endCalls: EndCall[] = [];
-    const abandoned: string[] = [];
-    // The anchor run shares the deployment id and owns a workflow-derived
-    // address. The stop route must report it absent rather than tear down the
-    // live deployment via endSession.
-    const app = stopApp(
-      createFoldedDeleteDB({
-        run: makeRun({ address: `ins_dep_anchor@${testTenant.domain}` }),
-        updates,
-      }),
-      createStopSessionService(endCalls),
-      abandoned,
-    );
-
-    const res = await stop(app);
-
-    expect(res.status).toBe(404);
-    expect(endCalls).toEqual([]);
-    expect(updates).toEqual([]);
-    expect(abandoned).toEqual([]);
-  });
-
-  test("a sidecar teardown failure returns 502 before any run write", async () => {
-    const updates: Update[] = [];
-    const abandoned: string[] = [];
-    // endSession rejects: the sidecar-first ordering must surface 502 and
-    // leave the run non-terminal (no writes, no abandon) so a retry re-drives.
-    const throwingService: SessionService = {
-      stageWorkflowStep: () => {
-        throw new Error("mock: stageWorkflowStep not implemented");
-      },
-      deployInstanceAtHead: () => {
-        throw new Error("mock: deployInstanceAtHead not implemented");
-      },
-      deployWorkflowDefinition: () => {
-        throw new Error("mock: deployWorkflowDefinition not implemented");
-      },
-      deploySingleStepAtHead: () => {
-        throw new Error("mock: deploySingleStepAtHead not implemented");
-      },
-      sendUserMessage: () => {
-        throw new Error("mock: sendUserMessage not implemented");
-      },
-      endSession: () => Promise.reject(new Error("sidecar down")),
-    };
-    const app = stopApp(
-      createFoldedDeleteDB({ run: makeRun(), updates }),
-      throwingService,
-      abandoned,
-    );
-
-    const res = await stop(app);
-
-    expect(res.status).toBe(502);
-    expect(updates).toEqual([]);
-    expect(abandoned).toEqual([]);
-  });
-
-  test("stopping a folded run with no principal skips the principal and session writes", async () => {
-    const updates: Update[] = [];
-    const endCalls: EndCall[] = [];
-    const abandoned: string[] = [];
-    const app = stopApp(
-      createFoldedDeleteDB({ run: makeRun({ principalId: null }), updates }),
-      createStopSessionService(endCalls),
-      abandoned,
-    );
-
-    const res = await stop(app);
-
-    expect(res.status).toBe(204);
-    // Only the run is settled; there is no own principal or session to end.
-    expect(updates.map((u) => u.table)).toEqual(["workflow_run"]);
-    expect(abandoned).toEqual([RUN_ADDRESS]);
   });
 });

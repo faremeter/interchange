@@ -10,7 +10,7 @@
 // provisioning loop.
 //
 // A workflow with more than one step derives per-step agent addresses of
-// the form `ins_<runId>-<stepId>@<domain>`, instantiates
+// the form `<runId>-<stepId>@<domain>`, instantiates
 // one agent-state repo per step keyed by the derived address, and writes
 // each step's deploy tree onto its own repo. The derivation is a pure
 // function of `(runId, stepId, domain)`, so the
@@ -36,7 +36,7 @@ import type {
 } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialDelivery } from "@intx/types/sidecar";
-import { formatRunAddress, parseRunAddress } from "@intx/types";
+import { formatRunAddress } from "@intx/types";
 import {
   STEP_ID_PATTERN,
   type Primitive,
@@ -255,8 +255,8 @@ export interface DeployWorkflowArgs {
   /**
    * Mail-domain for the deployment. Required. The multi-step branch
    * derives per-step addresses as
-   * `ins_<deploymentId>-<stepId>@<deploymentDomain>`; the single-step
-   * branch deploys the lone step at `ins_<deploymentId>@<deploymentDomain>`.
+   * `<deploymentId>-<stepId>@<deploymentDomain>`; the single-step
+   * branch deploys the lone step at `<deploymentId>@<deploymentDomain>`.
    */
   readonly deploymentDomain?: string;
   /**
@@ -546,7 +546,7 @@ async function runSingleStepAtHead(args: {
 
   // The lone step IS the head: one deploy at the deployment address, no
   // per-step derivation. The head's agentId and instanceId are the same
-  // `ins_<deploymentId>` identity.
+  // `<deploymentId>` (the minted run id) identity.
   const headAddress = deriveRunAddress({
     runId: deploymentId,
     domain: deploymentDomain,
@@ -815,34 +815,23 @@ function pickStepInferenceSource(args: {
 }
 
 /**
- * The `ins_` marker the orchestrator stamps onto the local part of every
- * workflow-derived address and agent id. `parseRunAddress` requires this
- * marker on the local part at the substrate boundary, so every deriver
- * routes its prefix through this one constant instead of a hand-rolled
- * literal.
- */
-const INSTANCE_ID_PREFIX = "ins_";
-
-/**
  * Pure function: derive a step's agent address from
  * `(runId, stepId, domain)`. Exported so the supervisor can reconstruct
  * the same addresses at spawn time without sharing storage with the
  * orchestrator.
  *
- * The local part carries the `ins_` marker (`INSTANCE_ID_PREFIX`) that
- * `parseRunAddress` requires at the substrate boundary; the per-step
- * local-part is concat-only because `stepId` is already constrained to
- * `[a-zA-Z0-9_-]+` by the workflow definition validator.
+ * The local part IS the run id with the step suffix appended; the runId is
+ * already a minted `run_<hex>` carrying the `run_` marker `parseRunAddress`
+ * requires at the substrate boundary. The per-step local-part is concat-only
+ * because `stepId` is already constrained to `[a-zA-Z0-9_-]+` by the workflow
+ * definition validator.
  */
 export function deriveStepAddress(args: {
   runId: string;
   stepId: string;
   domain: string;
 }): string {
-  return formatRunAddress(
-    `${INSTANCE_ID_PREFIX}${args.runId}-${args.stepId}`,
-    args.domain,
-  );
+  return formatRunAddress(`${args.runId}-${args.stepId}`, args.domain);
 }
 
 /**
@@ -853,7 +842,7 @@ export function deriveStepAgentId(args: {
   runId: string;
   stepId: string;
 }): string {
-  return `${INSTANCE_ID_PREFIX}${args.runId}-${args.stepId}`;
+  return `${args.runId}-${args.stepId}`;
 }
 
 /**
@@ -864,13 +853,12 @@ export function deriveStepInstanceId(args: {
   runId: string;
   stepId: string;
 }): string {
-  return `${INSTANCE_ID_PREFIX}${args.runId}-${args.stepId}`;
+  return `${args.runId}-${args.stepId}`;
 }
 
 /**
  * Derive the deployment-level mail address the supervisor registers on
- * the bus. The shape mirrors `deriveStepAddress` minus the per-step
- * suffix; pure function of `(runId, domain)`.
+ * the bus. It is the run id `@` the domain; pure function of `(runId, domain)`.
  *
  * The supervisor uses this address as the inbound mail address for the
  * deployment as a whole; per-step bindings carry their own
@@ -880,7 +868,7 @@ export function deriveRunAddress(args: {
   runId: string;
   domain: string;
 }): string {
-  return formatRunAddress(`${INSTANCE_ID_PREFIX}${args.runId}`, args.domain);
+  return formatRunAddress(args.runId, args.domain);
 }
 
 /**
@@ -919,7 +907,7 @@ export function resolveStepAddress(args: {
  * frame's `agentId` field. Pure function of `(runId)`.
  */
 export function deriveRunAgentId(args: { runId: string }): string {
-  return `${INSTANCE_ID_PREFIX}${args.runId}`;
+  return args.runId;
 }
 
 /**
@@ -946,37 +934,6 @@ export function deriveRunAgentId(args: { runId: string }): string {
  */
 export function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
-}
-
-/**
- * The id prefix `generateId("deployment")` stamps on every deployment
- * id (mirrors `@intx/hub-common`'s `PREFIXES.deployment`). Every
- * workflow-derived address — both the deployment-level address from
- * `deriveRunAddress` (`ins_dep_<...>`) and the per-step
- * addresses from `deriveStepAddress` (`ins_dep_<...>-<stepId>`) — wraps
- * a deployment id in the `ins_` instance prefix, so its instance id
- * begins with `ins_dep_`. A plain agent-launch instance id is `ins_` +
- * 32 hex characters, which can never produce that segment, so the
- * prefix is an exact discriminator between the two address families.
- */
-const DEPLOYMENT_ID_PREFIX = "dep_";
-
-/**
- * True when `address` is a workflow-derived agent address — either the
- * deployment-level address from `deriveRunAddress` or a per-step
- * address from `deriveStepAddress`. Both wrap a deployment id in the
- * `ins_` instance prefix, so both are recognized here.
- *
- * Used by host-side reactions that must treat workflow-derived
- * addresses (which never carry an `agent_instance` row) differently
- * from launched-agent instance addresses.
- */
-export function isWorkflowDerivedAddress(address: string): boolean {
-  const parsed = parseRunAddress(address);
-  if (parsed === null) {
-    return false;
-  }
-  return parsed.runId.startsWith(`ins_${DEPLOYMENT_ID_PREFIX}`);
 }
 
 /**

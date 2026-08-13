@@ -43,7 +43,7 @@ import {
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A real instance identity, distinct from the reroute test's `b`-filled id so
 // the two integration tests never collide on a substrate slug.
-const INSTANCE_ID = `ins_${"c".repeat(32)}`;
+const INSTANCE_ID = `run_${"c".repeat(32)}`;
 const AGENT_ID = "agent-instance-failover";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
@@ -192,7 +192,7 @@ describe("instance inference-source failover real-agent round-trip", () => {
     // `RunCompleted` -- the agent synthesizes a graceful provider-error reply
     // rather than failing the run. This is why the failover test cannot lean on
     // the terminal type and instead proves failover through reply-equality.
-    const soleDeadRunId = `ins_${"d".repeat(32)}`;
+    const soleDeadRunId = `run_${"d".repeat(32)}`;
     const soleDeadAgentId = "agent-instance-failover-negctl";
     const agentAddress = `${soleDeadRunId}@${DEPLOYMENT_DOMAIN}`;
 

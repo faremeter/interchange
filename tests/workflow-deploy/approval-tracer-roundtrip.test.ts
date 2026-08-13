@@ -160,7 +160,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // legacy `ins_<hex>@<domain>` identity the agent-launch path mints, and the
 // sidecar's deploy router recognizes the single-step projection and applies the
 // launched-agent identity strategy.
-const INSTANCE_LOCAL = "feedface0001feedface0002feedface";
+const INSTANCE_LOCAL = "run_feedface0001feedface0002feedface";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
@@ -503,7 +503,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `ins_${DEPLOYMENT_ID}`,
+        agentId: `${DEPLOYMENT_ID}`,
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: deploymentMailAddress,

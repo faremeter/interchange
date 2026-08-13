@@ -5,10 +5,9 @@
 // and inter-step mail/signal routing still works end to end.
 //
 // Shape: deploy a `step1 -> awaitSignal{name:"go"} -> step2` workflow whose
-// deployment id carries the `dep_` prefix, so its deployment address and
-// every per-step derived address are workflow-derived (`ins_dep_...`,
-// `isWorkflowDerivedAddress` true) rather than the legacy `ins_<hex>`
-// identity. Drive one mail trigger through the full inter-step chain
+// deployment address and every per-step derived address are run addresses
+// (`isRunAddress` true), so they all share the one keyless routing family
+// that survives reconnect. Drive one mail trigger through the full inter-step chain
 // (RunStarted -> step1 -> SignalAwaited -> inject signal -> step2 ->
 // RunCompleted), `settleThenDrop` the hub link, wait for the deployment
 // address to re-route via the reconnect ownership challenge, assert every
@@ -41,6 +40,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
+import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 import {
   awaitSignal,
@@ -53,7 +53,6 @@ import {
   deriveRunAddress,
   deriveStepAddress,
   deriveStepAgentId,
-  isWorkflowDerivedAddress,
   type ApprovalSet,
   type LaunchSessionFn,
   type SendMultiStepDeployFn,
@@ -82,13 +81,10 @@ import {
 import { toLaunchDeployContent } from "./launch-session-bridge";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A `dep_`-prefixed, substrate-safe deployment id: the deployment address
-// and every per-step derived address are then workflow-derived
-// (`ins_dep_...`, `isWorkflowDerivedAddress` true) rather than the legacy
-// `ins_<hex>` identity the single-step reconnect smoke test uses. This is
-// what routes the reconnect challenge through the `workflowAddresses`
-// early-continue path.
-const DEPLOYMENT_ID = "dep_multistep_reroute_1";
+// A substrate-safe deployment id whose run address and every per-step derived
+// address are run addresses (`isRunAddress` true). This is what routes the
+// reconnect challenge through the `workflowAddresses` early-continue path.
+const DEPLOYMENT_ID = "run_dep_multistep_reroute_1";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_IDS = ["step1", "step2"] as const;
 
@@ -112,17 +108,15 @@ describe("multi-step per-step re-route survival across reconnect", () => {
       runId: DEPLOYMENT_ID,
       domain: DEPLOYMENT_DOMAIN,
     });
-    // The deployment address must be workflow-derived: that is the routing
-    // family whose reconnect challenge takes the `workflowAddresses`
-    // early-continue path. A legacy `ins_<hex>` address would land on the
-    // challenged `agentAddresses` set instead and prove nothing about the
-    // workflow-derived path.
-    expect(isWorkflowDerivedAddress(deploymentMailAddress)).toBe(true);
+    // The deployment address is a run address: that is the routing family
+    // whose reconnect challenge takes the `workflowAddresses` early-continue
+    // path and survives the drop.
+    expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
-    // Every per-step derived address is workflow-derived too, so each one
-    // belongs to the same keyless routing family that survives reconnect by
-    // collapsing under the re-challenged deployment address rather than being
-    // resurrected as its own hub route.
+    // Every per-step derived address is a run address too, so each one belongs
+    // to the same keyless routing family that survives reconnect by collapsing
+    // under the re-challenged deployment address rather than being resurrected
+    // as its own hub route.
     const stepAddresses = STEP_IDS.map((stepId) =>
       deriveStepAddress({
         runId: DEPLOYMENT_ID,
@@ -131,7 +125,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
       }),
     );
     for (const stepAddress of stepAddresses) {
-      expect(isWorkflowDerivedAddress(stepAddress)).toBe(true);
+      expect(isRunAddress(stepAddress)).toBe(true);
     }
 
     // ---- deploy the multi-step workflow ----
@@ -165,7 +159,7 @@ describe("multi-step per-step re-route survival across reconnect", () => {
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: `ins_${DEPLOYMENT_ID}`,
+      agentId: `${DEPLOYMENT_ID}`,
       tenantId: "tenant-1",
       principalId: "prin_multistep-reroute-1",
       agentAddress: deploymentMailAddress,
@@ -369,10 +363,10 @@ async function runInterStepChainToCompletion(
     { messageId },
   );
 
-  // The deployment address is the one stable top-level runId. RunStarted is
-  // immutable, so its consumedMessageId permanently identifies the mail that
+  // The deployment's local part is the one stable top-level runId. RunStarted
+  // is immutable, so its consumedMessageId permanently identifies the mail that
   // first fired this deployment.
-  const runId = deploymentMailAddress;
+  const runId = deriveWorkflowRunId(deploymentMailAddress);
   await waitFor(
     async () => {
       const events = await readWorkflowRunEvents(env, deploymentId, runId);

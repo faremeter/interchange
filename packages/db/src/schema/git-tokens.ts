@@ -26,7 +26,7 @@ import { tenant } from "./tenants";
 // (`receivePack`, `createPack`, `resolveRef`, ...). The mint API
 // translates user-facing aliases to canonical names before insert.
 // `resource` is the single substrate authz resource string
-// (e.g. `agent-state:ins_xxx`, `asset:def_yyy`) that the token grants
+// (e.g. `agent-state:run_xxx`, `asset:def_yyy`) that the token grants
 // access to. `refPattern` is a glob restricting which refs within the
 // resource the token may read or write.
 //
