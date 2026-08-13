@@ -12,8 +12,7 @@ import {
 
 import { runDetailQuery } from "@/lib/queries/tenants";
 import { StatusBadge, RUN_STATUS_VARIANTS } from "@/components/status-badge";
-import { Badge } from "@/components/ui/badge";
-import { RunEventList } from "@/components/run-event-list";
+import { RunActivityView } from "@/components/run-activity-view";
 
 const transport = createBrowserTransport();
 
@@ -69,37 +68,13 @@ function RunActivity({ tenantId, runId }: { tenantId: string; runId: string }) {
   const awaiting = findAwaitingSignal(events);
 
   return (
-    <div className="mt-6">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Activity</h3>
-        {hydrated && (
-          <Badge variant={terminal ? "outline" : "secondary"}>
-            {terminal ? "terminal" : "live"}
-          </Badge>
-        )}
-      </div>
-
-      {error && (
-        <p className="mb-2 text-xs text-destructive">
-          Could not read the run's activity: {error.message}
-        </p>
-      )}
-
-      {awaiting && (
-        <p className="mb-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-          Awaiting signal{" "}
-          <span className="font-mono">{awaiting.signalName}</span>
-        </p>
-      )}
-
-      <div className="rounded-lg border bg-background p-3">
-        {!hydrated ? (
-          <p className="text-xs text-muted-foreground">Loading activity...</p>
-        ) : (
-          <RunEventList events={events} />
-        )}
-      </div>
-    </div>
+    <RunActivityView
+      events={events}
+      hydrated={hydrated}
+      terminal={terminal}
+      awaiting={awaiting}
+      error={error}
+    />
   );
 }
 
