@@ -645,7 +645,7 @@ async function runMultiStepBranch(args: {
     // concern; this preserves prior workflow-step behavior.
     sources[stepId] = [
       pickStepInferenceSource({
-        stepAgent,
+        preferred: stepAgent?.inference.sources[0] ?? null,
         stepId,
         workflowId: deploy.workflow.id,
         config: deploy.config,
@@ -765,26 +765,35 @@ export function isSourceApproved(
  * `HarnessConfig.sources`, cross-checked against the operator-approved
  * grant set.
  *
+ * The caller passes the step's preferred `(provider, model)` -- the step
+ * agent's first declared source, or `null` for a step that declares none
+ * (a non-agent step such as sleep/gate/awaitSignal, or an agent with no
+ * declared source). The identity is all this needs, so both the live path
+ * (from an `AgentDefinition`) and the source-ref hub path (from the frozen
+ * inert projection's `modelSources`) feed the same resolver.
+ *
  * The capability walk emits `inference.source:<provider>:<model>`
  * grants only for the (provider, model) pairs the agent declared. The
  * pinning pass here can otherwise resolve a source the walk never
- * surfaced -- the `HarnessConfig.defaultSource` fallback path for an
- * agent whose preference is unresolvable, or the same fallback for a
- * non-agent step (sleep, gate, awaitSignal, ...) whose primitive
+ * surfaced -- the `HarnessConfig.defaultSource` fallback path for a step
+ * whose preference is unresolvable, or the same fallback for a step that
  * carries no preference at all. In both cases the orchestrator must
  * refuse to pin a `(provider, model)` the operator never approved;
  * silently shipping an unapproved source would defeat the capability-
  * walk gate the deploy just passed.
+ *
+ * Exported so the source-ref hub deploy can pin its inert onTrigger body
+ * steps through the exact same resolver the live-authored path uses.
  */
-function pickStepInferenceSource(args: {
-  stepAgent: AgentDefinition<BaseEnv> | null;
+export function pickStepInferenceSource(args: {
+  preferred: { provider: string; model: string } | null;
   stepId: string;
   workflowId: string;
   config: HarnessConfig;
   operatorApprovals: ApprovalSet;
 }): InferenceSource {
-  const preferred = args.stepAgent?.inference.sources[0];
-  if (preferred !== undefined) {
+  const preferred = args.preferred;
+  if (preferred !== null) {
     const match = args.config.sources.find(
       (s) => s.provider === preferred.provider && s.model === preferred.model,
     );
@@ -800,9 +809,9 @@ function pickStepInferenceSource(args: {
   )
     return fallback;
   const preferredDesc =
-    preferred !== undefined
-      ? `agent preferred ${preferred.provider}:${preferred.model}`
-      : `the step's agent declared no preferred source`;
+    preferred !== null
+      ? `preferred ${preferred.provider}:${preferred.model}`
+      : `the step declared no preferred source`;
   const fallbackDesc =
     args.config.defaultSource !== undefined
       ? `the deploy's defaultSource ${JSON.stringify(args.config.defaultSource)} does not resolve to an operator-approved source`
@@ -1075,7 +1084,7 @@ function pinBodySources(args: {
     assertBodyAgentToolless(stepAgent, args.body.id, stepId);
     sources[stepId] = [
       pickStepInferenceSource({
-        stepAgent,
+        preferred: stepAgent?.inference.sources[0] ?? null,
         stepId,
         workflowId: args.body.id,
         config: args.config,
