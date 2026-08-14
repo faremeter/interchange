@@ -113,6 +113,21 @@ export const WorkflowProjectionDefinition = type({
   // hashed projection.
   "credentialBindings?": CredentialBinding.array(),
   "+": "delete",
+}).narrow((value, ctx) => {
+  // Every `stepOrder` entry must name a defined step. A legitimately projected
+  // definition always satisfies this (the authoring validator enforces it), so
+  // this rejects only a projector-bypassing or tampered wire frame -- closing a
+  // phantom-stepOrder entry at the trust boundary for every consumer, rather
+  // than letting a downstream reader index `steps[missing]` as `undefined` and
+  // silently take a default path.
+  for (const stepId of value.stepOrder) {
+    if (!Object.prototype.hasOwnProperty.call(value.steps, stepId)) {
+      return ctx.mustBe(
+        `a workflow projection whose stepOrder names only defined steps; ${JSON.stringify(stepId)} has no matching entry in steps`,
+      );
+    }
+  }
+  return true;
 });
 export type WorkflowProjectionDefinition =
   typeof WorkflowProjectionDefinition.infer;
