@@ -52,6 +52,7 @@ import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   SourceRefPin,
   WorkflowProjectionDefinition,
+  WorkflowProjectionWithSources,
 } from "@intx/types/sidecar";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { computeLiveDefinitionHash } from "@intx/workflow";
@@ -63,6 +64,8 @@ import {
   assertChainHeadIsDefault,
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
+  enumerateInertOnTriggerBodies,
+  pickStepInferenceSource,
   walkCapabilities,
   wrapHarnessAsSingleStepWorkflow,
   type ApprovalSet,
@@ -502,6 +505,16 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * materialization, not carried on this frame.
    */
   credentials?: CredentialDelivery;
+  /**
+   * The projection's inline onTrigger section bodies, each already in inert wire
+   * form with its per-step inference sources pinned and its own wire hash --
+   * built by `deployCodeSourcedWorkflow` from the frozen projection. Carried
+   * verbatim on the SAME `referencedDefinitions` wire field the live-authored
+   * arm uses, so the sidecar stages each body's `sources.json` (and re-verify
+   * hash) with no lineage-specific handling. Absent when the projection has no
+   * inline onTrigger body.
+   */
+  referencedDefinitions?: readonly WorkflowProjectionWithSources[];
 };
 
 export type SendMultiStepDeployFrameArgs =
@@ -544,6 +557,10 @@ export async function sendMultiStepDeployFrame(
       sourceRef: args.sourceRef,
       ...(args.credentials !== undefined
         ? { credentials: args.credentials }
+        : {}),
+      ...(args.referencedDefinitions !== undefined &&
+      args.referencedDefinitions.length > 0
+        ? { referencedDefinitions: [...args.referencedDefinitions] }
         : {}),
     });
   }
@@ -734,6 +751,54 @@ export async function deployCodeSourcedWorkflow(
     credentials = delivery.delivery;
   }
 
+  // Pin per-step inference sources for the projection's inline onTrigger bodies.
+  // The live-authored path pins these off the live AgentDefinition; the
+  // source-ref hub holds only the frozen inert projection, so it enumerates the
+  // inline bodies from the wire form and resolves each body step's source
+  // through the SAME resolver + operator-approval gate the live path uses
+  // (`pickStepInferenceSource` against `approval.approvedGrants`). Each body's
+  // wire hash is recomputed from the inert body verbatim, so a body child's
+  // re-verify over the re-evaluated closure clears the same barrier a top-level
+  // re-verify does. The pinned sources ride OUTSIDE the hash (as on the live
+  // path); their trust comes from being resolved here under the approval gate,
+  // which is why the pin stays hub-side and is never caller-supplied.
+  //
+  // These entries reuse the live-authored `referencedDefinitions` wire field, so
+  // the sidecar stages them through its one lineage-agnostic loop with no
+  // source-ref-specific handling. Each entry's `definition` is the approved
+  // inert body def straight from the frozen, hash-covered projection (id set to
+  // the ref). On source-ref the sidecar stages that as a body workflow.json that
+  // is written REDUNDANTLY and NEVER read: the run child resolves bodies
+  // in-memory from the re-verified closure and hard-fails rather than reading a
+  // body workflow.json off disk (see the staging loop in workflow-host-wiring.ts
+  // and the anti-fallback guard in workflow-host run-child.ts). Only the
+  // co-staged sources.json is read on this path. Reuse is chosen over a
+  // dedicated sources-only field so the two lineages share one staging path and
+  // cannot drift; the redundant file is inert and approval-covered, not
+  // authoritative.
+  const referencedDefinitions: WorkflowProjectionWithSources[] =
+    await Promise.all(
+      enumerateInertOnTriggerBodies(projection).map(async (body) => {
+        const sources: Record<string, InferenceSource[]> = {};
+        for (const bodyStepId of body.definition.stepOrder) {
+          sources[bodyStepId] = [
+            pickStepInferenceSource({
+              preferred: body.preferredByStep[bodyStepId] ?? null,
+              stepId: bodyStepId,
+              workflowId: body.ref,
+              config: args.config,
+              operatorApprovals: approval.approvedGrants,
+            }),
+          ];
+        }
+        return {
+          definition: body.definition,
+          sources,
+          approvedWireHash: await computeWireDefinitionHash(body.definition),
+        };
+      }),
+    );
+
   const result = await sendMultiStepDeployFrame({
     lineage: "source-ref",
     sidecarRouter: args.sidecarRouter,
@@ -744,6 +809,7 @@ export async function deployCodeSourcedWorkflow(
     approvedWireHash: approval.approvedWireHash,
     sourceRef: { source: args.source, closure },
     ...(credentials !== undefined ? { credentials } : {}),
+    ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
   });
 
   // Write the deployment's anchor `workflow_run` row -- the deployment's

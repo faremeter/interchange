@@ -351,7 +351,7 @@ import {
 // name is an arktype schema, so the single re-export carries both its value and
 // its inferred type.
 export { WorkflowStep } from "./wire-workflow";
-export { WorkflowProjectionDefinition };
+export { WorkflowProjectionDefinition, WorkflowProjectionWithSources };
 
 /**
  * The decrypted credential material and per-handle binding descriptors
