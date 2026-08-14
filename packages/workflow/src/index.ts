@@ -6,6 +6,7 @@ export type {
 export * from "./state-machine/index";
 export * from "./definition/index";
 export {
+  onTriggerBodyRef,
   rewriteInlineOnTriggerBodies,
   type ExtractedOnTriggerBody,
   type OnTriggerBodyRewrite,

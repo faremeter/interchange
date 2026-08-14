@@ -31,6 +31,20 @@ export interface OnTriggerBodyRewrite {
 }
 
 /**
+ * Derive an onTrigger section body's ref from its owning workflow id and the
+ * step id that carries the section. This is the SINGLE owner of the
+ * `<workflowId>__<stepId>` scheme: the live rewrite here and the source-ref
+ * hub's inert-body enumerator both mint refs through it, and the source-ref run
+ * child re-derives the same ref when it rewrites the re-evaluated closure
+ * (`run-child`). A hub that stages a body's `sources.json` under this ref and a
+ * run child that reads it back must agree byte-for-byte, so the scheme lives in
+ * one place rather than being re-spelled at each site.
+ */
+export function onTriggerBodyRef(workflowId: string, stepId: string): string {
+  return `${workflowId}__${stepId}`;
+}
+
+/**
  * Replace each inline onTrigger body with a `{ ref }` and return the extracted
  * body definitions (each body's id is its ref). Pure and side-effect-free: no
  * walk, no pin, no write. When the workflow has no inline onTrigger body the
@@ -44,7 +58,7 @@ export function rewriteInlineOnTriggerBodies(
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "onTrigger") continue;
     if (!("inline" in primitive.body)) continue;
-    const ref = `${workflow.id}__${stepId}`;
+    const ref = onTriggerBodyRef(workflow.id, stepId);
     bodies.push({ ref, definition: { ...primitive.body.inline, id: ref } });
     steps[stepId] = { ...primitive, body: { ref } };
   }

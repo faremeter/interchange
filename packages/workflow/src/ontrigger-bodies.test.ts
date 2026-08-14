@@ -1,7 +1,10 @@
 import { describe, test, expect } from "bun:test";
 
 import { defineWorkflow, onTrigger, sleep } from "./definition/index";
-import { rewriteInlineOnTriggerBodies } from "./ontrigger-bodies";
+import {
+  onTriggerBodyRef,
+  rewriteInlineOnTriggerBodies,
+} from "./ontrigger-bodies";
 
 function inlineBodyWorkflow(id: string) {
   return defineWorkflow({
@@ -18,6 +21,20 @@ function inlineBodyWorkflow(id: string) {
     },
   });
 }
+
+describe("onTriggerBodyRef", () => {
+  test("joins the workflow id and step id with the `__` scheme", () => {
+    expect(onTriggerBodyRef("wf", "sect")).toBe("wf__sect");
+  });
+
+  test("is the ref the live rewrite mints (single owner of the scheme)", () => {
+    // A hub that stages a body under this ref and the run child that reads it
+    // back must agree; the rewrite must route through the same helper so the
+    // two never drift.
+    const { bodies } = rewriteInlineOnTriggerBodies(inlineBodyWorkflow("wf"));
+    expect(bodies[0]?.ref).toBe(onTriggerBodyRef("wf", "sect"));
+  });
+});
 
 describe("rewriteInlineOnTriggerBodies", () => {
   test("lifts an inline onTrigger body to a ref and extracts it", () => {
