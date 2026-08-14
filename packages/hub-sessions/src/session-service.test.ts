@@ -2190,6 +2190,10 @@ describe("deployCodeSourcedWorkflow", () => {
     // approve output's frozen closure into the frame's one co-required object.
     expect(sent.sourceRef).toEqual({ source: SOURCE, closure });
 
+    // This projection carries no inline onTrigger body, so the frame carries no
+    // referencedDefinitions: the field appears only when there is a body to pin.
+    expect(sent.referencedDefinitions).toBeUndefined();
+
     // The anchor workflow_run row is born "deployed" (live but pre-trigger) and
     // self-referential (anchorRunId === id), matching deployWorkflowDefinition;
     // its address is the run address derived from the anchor run id.
@@ -2280,6 +2284,159 @@ describe("deployCodeSourcedWorkflow", () => {
         deploymentDomain: DEPLOYMENT_DOMAIN,
       }),
     ).rejects.toThrow(/no credentialCipher was supplied/);
+    expect(deployAttempted).toBe(false);
+  });
+
+  // An approve output whose definition carries a single inline onTrigger section
+  // body with one tool-less agent step. Mirrors makeApproveOutput's gate/freeze
+  // round-trip so the projection is the exact closed shape production hands the
+  // deploy hand-off, with the body kept inline (as the inert projector emits).
+  async function makeBodyApproveOutput(grants: string[]) {
+    const { defineWorkflow, step, onTrigger } = await import(
+      "@intx/workflow/definition"
+    );
+    const { defineAgent } = await import("@intx/agent");
+    const { gateAndFreezeProbeResult } = await import("./workflow-probe-gate");
+    const bodyAgent = defineAgent({
+      id: "composed-body-agent",
+      systemPrompt: "you are the composed body agent",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_composed_body",
+      trigger: { type: "mail", to: DEPLOY_ADDRESS },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: DEPLOY_ADDRESS },
+          body: defineWorkflow({
+            id: "authored-body",
+            trigger: { type: "manual" },
+            steps: { work: step({ agent: bodyAgent }) },
+          }),
+        }),
+      },
+    });
+    const roundTripped: unknown = JSON.parse(
+      JSON.stringify(projectLiveToInert(definition)),
+    );
+    const projection = WorkflowProjectionDefinition(roundTripped);
+    if (projection instanceof type.errors) {
+      throw new Error(
+        `inert projection failed WorkflowProjectionDefinition validation: ${projection.summary}`,
+      );
+    }
+    const wireHash = await computeWireDefinitionHash(projection);
+    const approval = await gateAndFreezeProbeResult({
+      assetId: "asset-composed-body",
+      probeResult: { projection, grants, wireHash },
+      approvals: new Set(grants),
+      persist: async () => ({ definitionId: "def-composed-body" }),
+    });
+    const closure: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [],
+      entries: [],
+    };
+    return { approval, projection, closure, wireHash };
+  }
+
+  test("pins and carries per-step inference sources for an inline onTrigger body", async () => {
+    const mockRouter = createMockRouter();
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    // Approve the body agent's declared inference source so the pin resolves it.
+    const { approval, projection, closure } = await makeBodyApproveOutput([
+      "inference.source:anthropic:mock-model",
+      "director:@intx/agent/default",
+      `mail.address:${DEPLOY_ADDRESS}`,
+      `mail.send:${DEPLOYMENT_DOMAIN}`,
+    ]);
+    if (!approval.ok) throw new Error("expected approval");
+
+    await deployCodeSourcedWorkflow({
+      sidecarRouter: mockRouter,
+      agentAddress: DEPLOY_ADDRESS,
+      config: CONFIG,
+      sources: SOURCES,
+      approved: { approval, projection, closure },
+      source: SOURCE,
+      db: CAPTURING_DB,
+      tenantId: TENANT,
+      anchorRunId: ANCHOR_RUN_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+    });
+
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    const refs = sent.referencedDefinitions;
+    if (refs === undefined) {
+      throw new Error("frame carried no referencedDefinitions for the body");
+    }
+    expect(refs).toHaveLength(1);
+    const body = refs[0];
+    if (body === undefined) throw new Error("missing referenced body");
+    // Staged under the SHARED body ref, so the sidecar path and the run child's
+    // re-derived ref (onTriggerBodyRef(projection.id, stepId)) agree.
+    expect(body.definition.id).toBe("wf_composed_body__section");
+    // The wire narrow requires a source chain per body stepOrder entry.
+    expect(Object.keys(body.sources).sort()).toEqual(
+      [...body.definition.stepOrder].sort(),
+    );
+    // The body agent's declared (anthropic, mock-model) resolved to the
+    // operator-approved config source, pinned as a single-element chain.
+    expect(body.sources["work"]).toEqual(SOURCES.only);
+    // Per-body hash is recomputed from the inert body verbatim, so a body
+    // child's re-verify over the re-evaluated closure clears the same barrier.
+    expect(body.approvedWireHash).toBe(
+      await computeWireDefinitionHash(body.definition),
+    );
+  });
+
+  test("fails closed when a body step's inference source is not operator-approved", async () => {
+    const mockRouter = createMockRouter();
+    let deployAttempted = false;
+    mockRouter.sendAgentDeploy = (() => {
+      deployAttempted = true;
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    // Approve everything EXCEPT the body agent's inference source. The frozen
+    // projection and closure are otherwise valid, but the per-body pin must
+    // refuse to resolve a (provider, model) the operator never approved -- and
+    // fail closed before any frame is sent, never staging an unapproved source.
+    const { approval, projection, closure } = await makeBodyApproveOutput([
+      "director:@intx/agent/default",
+      `mail.address:${DEPLOY_ADDRESS}`,
+      `mail.send:${DEPLOYMENT_DOMAIN}`,
+    ]);
+    if (!approval.ok) throw new Error("expected approval");
+
+    await expect(
+      deployCodeSourcedWorkflow({
+        sidecarRouter: mockRouter,
+        agentAddress: DEPLOY_ADDRESS,
+        config: CONFIG,
+        sources: SOURCES,
+        approved: { approval, projection, closure },
+        source: SOURCE,
+        db: CAPTURING_DB,
+        tenantId: TENANT,
+        anchorRunId: ANCHOR_RUN_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+      }),
+    ).rejects.toThrow(/no approved inference source/);
     expect(deployAttempted).toBe(false);
   });
 });

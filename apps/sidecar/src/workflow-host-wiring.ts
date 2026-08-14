@@ -2205,12 +2205,24 @@ export function createSidecarDeployRouter(deps: {
 
       // Materialize each extracted onTrigger section body as its own
       // `assets/workflow/<bodyRef>/workflow.json` (the body id IS the ref) plus
-      // a co-located `sources.json`, so a body child's spawn-child resolves the
-      // body definition AND its inference sources off disk without a hub
-      // round-trip. The hub also stores each body, but that copy is not on the
-      // sidecar; the deploy frame carries them here for exactly this reason. The
+      // a co-located `sources.json`. The hub also stores each body, but that
+      // copy is not on the sidecar; the deploy frame carries them here. The
       // sources ride on disk (not through env) because the body child is
       // in-process and loses its env across a restart.
+      //
+      // What the body child READS off disk differs by lineage, though this loop
+      // stages BOTH files for BOTH lineages (one staging mechanism):
+      //   - live-authored: the body child resolves BOTH the body definition and
+      //     its inference sources off disk (workflow.json + sources.json).
+      //   - source-ref: the body child resolves the body DEFINITION in-memory
+      //     from the parent's re-verified closure -- `run-child.ts` rewrites the
+      //     inline bodies AFTER the closure re-verify and hard-fails rather than
+      //     ever reading a body workflow.json off disk. So the workflow.json
+      //     staged here on the source-ref path is the approved inert body def (a
+      //     hash-covered sub-tree of the frozen projection), written REDUNDANTLY
+      //     and NEVER read on that path; only its sources.json is read. It is
+      //     staged anyway so both lineages share one mechanism -- treat it as
+      //     inert, never as the authoritative body definition.
       for (const referenced of projection.referencedDefinitions ?? []) {
         await materializeWorkflowJson(dataDir, referenced.definition);
         await materializeWorkflowSources(

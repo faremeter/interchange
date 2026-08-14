@@ -163,3 +163,5 @@ export const WorkflowProjectionWithSources = type({
   }
   return true;
 });
+export type WorkflowProjectionWithSources =
+  typeof WorkflowProjectionWithSources.infer;
