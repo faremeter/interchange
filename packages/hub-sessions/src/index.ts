@@ -87,7 +87,10 @@ export {
   type SidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
 } from "./sidecar-allocation";
-export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
+export {
+  ensureWorkflowDefinitionForAsset,
+  INITIAL_WORKFLOW_DEFINITION_VERSION,
+} from "./workflow-definition-ensure";
 export {
   createWorkflowAllocationService,
   ExclusiveWorkflowPlacementError,
