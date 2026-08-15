@@ -28,11 +28,17 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, DBExecutor } from "@intx/db";
-import { createWorkflowRunStore } from "@intx/db";
+import { createWorkflowRunStore, readApprovedGrantSurface } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
-import { GrantRequirement, isSidecarAllocationDispatchable } from "@intx/types";
+import {
+  GrantRequirement,
+  isSidecarAllocationDispatchable,
+  type ApprovedGrantSurface,
+  type GrantEffect,
+} from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import {
+  enumerateChildWorkflowRefs,
   hydrateDefinition,
   type AssetService,
   type MailTriggeredRunGrantsResult,
@@ -84,8 +90,53 @@ export function deriveRunRuntimeGrantRows(
   runPrincipalId: string,
   now: Date,
 ): MaterializedGrantRow[] {
-  const effectByResource = resolveRuntimeGrantEffects(walk);
+  return projectRuntimeGrantRows(
+    resolveRuntimeGrantEffects(walk),
+    tenantId,
+    runPrincipalId,
+    now,
+  );
+}
 
+/**
+ * Project a deploy-stamped pinned surface into the run's runtime grant rows.
+ * Used for a childWorkflow-bearing definition, whose runtime ceiling is the
+ * stamped surface (own ∪ children) rather than a fresh own-walk -- so a child's
+ * folded authority actually reaches the run.
+ *
+ * Iterates `grants` (the authoritative resource list) and requires an effect
+ * for each, throwing on a missing one -- mirroring the walk projection's
+ * fail-loud invariant (`resolveRuntimeGrantEffects`), which refuses to default
+ * a missing effect lest it downgrade an `ask` tool. A well-formed surface (from
+ * `flattenWalkToSurface`/`mergeGrantSurfaces`) carries an effect for every
+ * grant, so this never fires in practice; reading `grants` rather than
+ * `grantEffects` also means a stray effect key with no matching grant is never
+ * materialized.
+ */
+export function deriveRunRuntimeGrantRowsFromSurface(
+  surface: ApprovedGrantSurface,
+  tenantId: string,
+  runPrincipalId: string,
+  now: Date,
+): MaterializedGrantRow[] {
+  const entries = surface.grants.map((resource): [string, GrantEffect] => {
+    const effect = surface.grantEffects[resource];
+    if (effect === undefined) {
+      throw new Error(
+        `run-grant materialization: pinned surface grant ${JSON.stringify(resource)} has no effect; the stored surface is malformed`,
+      );
+    }
+    return [resource, effect];
+  });
+  return projectRuntimeGrantRows(entries, tenantId, runPrincipalId, now);
+}
+
+function projectRuntimeGrantRows(
+  effectByResource: Iterable<readonly [string, GrantEffect]>,
+  tenantId: string,
+  runPrincipalId: string,
+  now: Date,
+): MaterializedGrantRow[] {
   const rows: MaterializedGrantRow[] = [];
   for (const [resource, effect] of effectByResource) {
     rows.push({
@@ -103,6 +154,72 @@ export function deriveRunRuntimeGrantRows(
     });
   }
   return rows;
+}
+
+/**
+ * The runtime grant ceiling for a definition being materialized, or undefined
+ * when the definition has no childWorkflow steps (its runtime rows then project
+ * from a fresh own-walk, unchanged). A childWorkflow-bearing definition's
+ * ceiling is the deploy-stamped pinned surface (own ∪ children): reading it
+ * back is how a child's folded authority reaches the run.
+ *
+ * The surface is read at the definition's CURRENT version. Unlike the walk, it
+ * is not a pure function of the definition's content -- it carries an external
+ * child contribution and is version-scoped, and `currentVersion` is mutable
+ * (a rollback repoints it). So it must be read per run, never cached by
+ * `definitionId`, or a superseded version's ceiling could over-grant a later
+ * run. Callers with a per-deployment cache freeze only the content-pure
+ * `hasChildWorkflow` predicate (`definitionHasChildWorkflow`) and read the
+ * surface fresh each run via `readChildWorkflowCeiling`.
+ */
+export async function resolveChildWorkflowRuntimeCeiling(
+  db: DBExecutor,
+  definition: WorkflowDefinition,
+  definitionId: string,
+  currentVersion: string,
+): Promise<ApprovedGrantSurface | undefined> {
+  if (!definitionHasChildWorkflow(definition)) {
+    return undefined;
+  }
+  return readChildWorkflowCeiling(db, definitionId, currentVersion);
+}
+
+/** Whether a definition references any childWorkflow -- a pure function of its
+ * content, so a per-deployment cache may freeze it. */
+export function definitionHasChildWorkflow(
+  definition: WorkflowDefinition,
+): boolean {
+  return enumerateChildWorkflowRefs(definition).length > 0;
+}
+
+/**
+ * Read a childWorkflow-bearing definition's stamped pinned surface at a
+ * specific version, failing closed when it is absent. `definitionId` is a live
+ * foreign key from the run's anchor and `currentVersion` is read off that same
+ * definition row, so the version row is present -- a null surface therefore
+ * means the deploy never folded and stamped this definition's children (a
+ * deploy bug, or a deployment predating the fold). Fail closed loudly rather
+ * than run the parent and its children under a ceiling that omits the child
+ * authority no operator reviewed. This also gates un-stubbing childWorkflow
+ * execution (INTR-310): a run cannot reach a child step without a stamped
+ * surface.
+ */
+export async function readChildWorkflowCeiling(
+  db: DBExecutor,
+  definitionId: string,
+  currentVersion: string,
+): Promise<ApprovedGrantSurface> {
+  const surface = await readApprovedGrantSurface(
+    db,
+    definitionId,
+    currentVersion,
+  );
+  if (surface === null) {
+    throw new Error(
+      `run-grant materialization: childWorkflow-bearing definition ${definitionId} (version ${currentVersion}) has no approved grant surface; its deploy must fold and stamp its children's surfaces before it can run`,
+    );
+  }
+  return surface;
 }
 
 /**
@@ -146,6 +263,16 @@ export type StageRunGrantsArgs = {
    * definition's requirements unfiltered.
    */
   grantRequirements: readonly GrantRequirement[];
+  /**
+   * The runtime grant ceiling for a childWorkflow-bearing definition -- the
+   * deploy-stamped pinned surface (own ∪ children). When set, the run's
+   * runtime `tool:`/`effect:` rows project from it instead of the own-walk, so
+   * a child's folded authority reaches the run. Undefined for a definition with
+   * no childWorkflow steps (its rows project from the walk, unchanged).
+   * Resolved by `resolveChildWorkflowRuntimeCeiling`, which fails closed when a
+   * childWorkflow-bearing definition has no stamped surface.
+   */
+  runtimeCeiling?: ApprovedGrantSurface;
 };
 
 export type StageRunGrantsResult =
@@ -198,12 +325,23 @@ export type StageRunGrantsFromWalkArgs = Omit<
 export async function stageRunGrantsFromWalk(
   args: StageRunGrantsFromWalkArgs,
 ): Promise<StageRunGrantsResult> {
-  const runtimeGrantRows = deriveRunRuntimeGrantRows(
-    args.walk,
-    args.tenantId,
-    args.runPrincipalId,
-    args.now,
-  );
+  // A childWorkflow-bearing definition's runtime ceiling is the deploy-stamped
+  // pinned surface (own ∪ children); every other definition projects its rows
+  // from the walk exactly as before.
+  const runtimeGrantRows =
+    args.runtimeCeiling !== undefined
+      ? deriveRunRuntimeGrantRowsFromSurface(
+          args.runtimeCeiling,
+          args.tenantId,
+          args.runPrincipalId,
+          args.now,
+        )
+      : deriveRunRuntimeGrantRows(
+          args.walk,
+          args.tenantId,
+          args.runPrincipalId,
+          args.now,
+        );
 
   const materialization = await resolveGrantMaterialization({
     tenantId: args.tenantId,
@@ -241,6 +379,9 @@ export async function stageRunGrants(
     invokerGrants: args.invokerGrants,
     creatorGrants: args.creatorGrants,
     grantRequirements: args.grantRequirements,
+    ...(args.runtimeCeiling !== undefined
+      ? { runtimeCeiling: args.runtimeCeiling }
+      : {}),
   });
 }
 
@@ -520,14 +661,21 @@ export type MailTriggeredRunGrantsDeps = {
 
 /**
  * A deployment's deploy-approved grant basis: the frozen capability walk the
- * run's runtime `tool:`/`effect:` grants project from, and the creator-sourced
- * grant requirements resolved against it. Both are pure functions of the
- * approved definition content, so they are computed once per deployment and
- * cached; nothing here depends on a live re-read of the asset blob.
+ * run's runtime `tool:`/`effect:` grants project from, the creator-sourced grant
+ * requirements resolved against it, and whether the definition references any
+ * childWorkflow. All three are pure functions of the approved definition
+ * content, so they are computed once per deployment and cached; nothing here
+ * depends on a live re-read of the asset blob.
+ *
+ * The childWorkflow runtime ceiling is deliberately NOT cached here: it is the
+ * version-scoped pinned surface, and `currentVersion` is mutable (a rollback
+ * repoints it), so it is read fresh each run. Caching it by `definitionId`
+ * would over-grant a later run under a superseded version's ceiling.
  */
 type FrozenRunGrantBasis = {
   readonly walk: CapabilityWalkResult;
   readonly creatorRequirements: readonly GrantRequirement[];
+  readonly hasChildWorkflow: boolean;
 };
 
 /**
@@ -574,6 +722,7 @@ export function createMailTriggeredRunGrantsMaterializer(
         tenantId: workflowRun.tenantId,
         definitionId: workflowRun.definitionId,
         definitionAssetId: workflowDefinition.assetId,
+        definitionVersion: workflowDefinition.currentVersion,
         anchorStatus: workflowRun.status,
         topLevelRunStatus: topLevelRun.status,
       })
@@ -655,12 +804,30 @@ export function createMailTriggeredRunGrantsMaterializer(
       const creatorRequirements = parsedRequirements.requirements.filter(
         (r) => r.source !== "invoker",
       );
+      // Freeze whether this definition references a childWorkflow -- a pure
+      // function of its content. The ceiling surface itself is NOT frozen: it
+      // is version-scoped and `currentVersion` can be rolled back, so it is
+      // read fresh each run below.
       basis = {
         walk: buildCapabilityWalk(definition),
         creatorRequirements,
+        hasChildWorkflow: definitionHasChildWorkflow(definition),
       };
       frozenBasisByDefinition.set(definitionId, basis);
     }
+
+    // A childWorkflow-bearing definition's runtime ceiling is read fresh each
+    // run at the definition's current version, so a rollback that repoints
+    // `currentVersion` cannot leave a later run staged from a superseded
+    // (possibly broader) ceiling. Fails closed if the current version carries
+    // no stamped surface.
+    const runtimeCeiling = basis.hasChildWorkflow
+      ? await readChildWorkflowCeiling(
+          deps.db,
+          definitionId,
+          anchor.definitionVersion,
+        )
+      : undefined;
 
     // Creator authority is resolved LIVE per run: the definition's grant SHAPE
     // is frozen above, but which grants the creator currently holds is not part
@@ -692,6 +859,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       invokerGrants: [],
       creatorGrants,
       grantRequirements: basis.creatorRequirements,
+      ...(runtimeCeiling !== undefined ? { runtimeCeiling } : {}),
     });
     if (!staged.ok) {
       return {

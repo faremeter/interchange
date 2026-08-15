@@ -9,13 +9,15 @@ import {
 
 import { eq } from "drizzle-orm";
 
-import { createGrantStore } from "@intx/db";
+import { createGrantStore, writeApprovedGrantSurface } from "@intx/db";
 import {
   grant,
   principal,
   workflowDefinition,
+  workflowDefinitionVersion,
   workflowRun,
 } from "@intx/db/schema";
+import type { ApprovedGrantSurface } from "@intx/types";
 import type { AssetService } from "@intx/hub-sessions";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
 import {
@@ -68,6 +70,27 @@ function workflowJson(creatorRequirementResource: string): string {
         source: "creator",
       },
     ],
+  });
+}
+
+// A parent workflow whose only step is a childWorkflow reference. Its own walk
+// yields NO runtime tool grants (a childWorkflow contributes none), so the
+// materialized ceiling for this definition comes entirely from its
+// deploy-stamped pinned surface, not the walk -- which is exactly what the
+// ceiling test asserts.
+function childWorkflowParentJson(): string {
+  return JSON.stringify({
+    id: "wf_child_parent",
+    triggers: [{ type: "mail", to: WORKFLOW_ADDRESS }],
+    stepOrder: ["sub"],
+    steps: {
+      sub: {
+        kind: "childWorkflow",
+        id: "sub",
+        definitionRef: "ast_child",
+        drainBehavior: "cancel",
+      },
+    },
   });
 }
 
@@ -198,6 +221,61 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const resources = grants.map((g) => `${g.resource}/${g.action}`).sort();
       expect(resources).toContain("tool:read_file/invoke");
       expect(resources).toContain("secret:vault/use");
+    });
+
+    test("a childWorkflow parent's ceiling comes from its stamped pinned surface", async () => {
+      // The parent references a child; its own walk yields no tool grants. The
+      // deploy-stamped pinned surface carries the child's folded authority, and
+      // the materialized run ceiling must be that surface -- proving the child's
+      // authority reaches the run rather than being lost.
+      // A well-formed pinned surface (as flattenWalkToSurface produces) carries
+      // an effect for every runtime-enforced grant: tool grants keep their
+      // ask/allow mark, effect grants are allow.
+      const surface: ApprovedGrantSurface = {
+        grants: ["tool:child_do", "effect:child_cap"],
+        grantEffects: { "tool:child_do": "ask", "effect:child_cap": "allow" },
+      };
+      // Stamp through the SAME writer the deploy path uses, on the same
+      // (definitionId, version) key -- so this closes the real write-fn ->
+      // read-path loop, not just a raw column insert.
+      await h.db.insert(workflowDefinitionVersion).values({
+        id: "wdv_child_parent",
+        definitionId: DEFINITION,
+        version: "1",
+      });
+      await writeApprovedGrantSurface(h.db, DEFINITION, "1", surface);
+
+      const result = await materializeOnce(childWorkflowParentJson(), RUN_ID);
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      const runPrincipalId = principals[0]?.id;
+      const grants = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.principalId, runPrincipalId ?? ""));
+      const resources = grants.map((g) => `${g.resource}/${g.action}`).sort();
+      // The ceiling is the stamped surface, not the (empty) own-walk.
+      expect(resources).toContain("tool:child_do/invoke");
+      expect(resources).toContain("effect:child_cap/invoke");
+      // The ask effect the surface pinned survives into the committed row.
+      const askRow = grants.find((g) => g.resource === "tool:child_do");
+      expect(askRow?.effect).toBe("ask");
+    });
+
+    test("fails closed when a childWorkflow parent has no stamped surface", async () => {
+      // A childWorkflow-bearing definition that reaches materialization without
+      // a stamped surface is a deploy that never folded its children. The
+      // materializer must refuse rather than run the parent under a ceiling that
+      // omits the child authority. No version row is stamped here.
+      await expect(
+        materializeOnce(childWorkflowParentJson(), RUN_ID),
+      ).rejects.toThrow(/has no approved grant surface/);
     });
 
     test("throws when the anchor run's definition has no asset", async () => {

@@ -58,6 +58,7 @@ import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
   parseGrantRequirements,
+  resolveChildWorkflowRuntimeCeiling,
   stageRunGrants,
 } from "./run-grant-materialization";
 import type { MaterializedGrantRow } from "./grant-materialization";
@@ -174,6 +175,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       .select({
         definitionId: workflowRun.definitionId,
         definitionAssetId: workflowDefinition.assetId,
+        definitionVersion: workflowDefinition.currentVersion,
         allocationId: sidecarAllocation.id,
         allocationStatus: sidecarAllocation.status,
         anchorStatus: workflowRun.status,
@@ -357,6 +359,14 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         assetRow.creatorPrincipalId,
         declaredGrantRequirements,
       );
+      // A childWorkflow-bearing definition's runtime ceiling is its
+      // deploy-stamped pinned surface; fails closed if it has none.
+      const runtimeCeiling = await resolveChildWorkflowRuntimeCeiling(
+        db,
+        definition,
+        anchor.definitionId,
+        anchor.definitionVersion,
+      );
       const staged = await stageRunGrants({
         definition,
         tenantId: tenant.id,
@@ -365,6 +375,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         invokerGrants,
         creatorGrants,
         grantRequirements: declaredGrantRequirements,
+        ...(runtimeCeiling !== undefined ? { runtimeCeiling } : {}),
       });
       if (!staged.ok) {
         const { status, code, message } = staged.rejection;
