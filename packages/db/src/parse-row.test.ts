@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import type { ApprovedGrantSurface } from "@intx/types";
 import { RepoAction } from "@intx/types/sidecar";
 
 import {
@@ -263,6 +264,7 @@ function makeWorkflowDefinitionVersionRow(
     version: "1",
     status: "active",
     approvedWireHash: null,
+    approvedGrantSurface: null,
     createdAt: new Date(),
     ...overrides,
   };
@@ -282,6 +284,37 @@ describe("parseWorkflowDefinitionVersionRow", () => {
       makeWorkflowDefinitionVersionRow({ approvedWireHash }),
     );
     expect(parsed.approvedWireHash).toBe(approvedWireHash);
+  });
+
+  test("passes a null approvedGrantSurface through as null", () => {
+    const parsed = parseWorkflowDefinitionVersionRow(
+      makeWorkflowDefinitionVersionRow(),
+    );
+    expect(parsed.approvedGrantSurface).toBeNull();
+  });
+
+  test("validates and returns a present approvedGrantSurface", () => {
+    const approvedGrantSurface: ApprovedGrantSurface = {
+      grants: ["tool:search", "capability:mail"],
+      grantEffects: { "tool:search": "ask" },
+    };
+    const parsed = parseWorkflowDefinitionVersionRow(
+      makeWorkflowDefinitionVersionRow({ approvedGrantSurface }),
+    );
+    expect(parsed.approvedGrantSurface).toEqual(approvedGrantSurface);
+  });
+
+  test("rejects an approvedGrantSurface with a malformed effect", () => {
+    expect(() =>
+      parseWorkflowDefinitionVersionRow(
+        makeWorkflowDefinitionVersionRow({
+          approvedGrantSurface: {
+            grants: ["tool:search"],
+            grantEffects: { "tool:search": "maybe" },
+          },
+        }),
+      ),
+    ).toThrow();
   });
 });
 

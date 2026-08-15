@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_definition_version" ADD COLUMN "approved_grant_surface" jsonb;

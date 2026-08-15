@@ -104,6 +104,17 @@ export const workflowDefinitionVersion = pgTable(
     // and read back during re-verify to detect drift. Null before approval is
     // a legitimate state, so the column takes no NOT NULL constraint.
     approvedWireHash: text("approved_wire_hash"),
+    // The transitively-folded approved grant surface for this version: the
+    // deployment-flattened union of the definition's own walked grants and its
+    // direct children's pinned surfaces (own ∪ ⋃ pinned(directChild)).
+    // Approval-scoped, not content-derived: it carries an external child
+    // contribution that is not recomputable from this definition's own content,
+    // and it is pinned to this approved version alongside `approved_wire_hash`.
+    // A childWorkflow-bearing definition's runtime ceiling is read from here;
+    // a parent folds its direct children's values in from this column. Null
+    // before approval and on versions predating the column, so no NOT NULL
+    // constraint. Validated as ApprovedGrantSurface at parse time.
+    approvedGrantSurface: jsonb("approved_grant_surface"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [

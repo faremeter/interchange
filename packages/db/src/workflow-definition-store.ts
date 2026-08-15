@@ -1,11 +1,16 @@
 import { and, eq } from "drizzle-orm";
 
+import type { ApprovedGrantSurface } from "@intx/types";
+
 import type { DB, DBExecutor } from "./client";
 import {
   workflowDefinition,
   workflowDefinitionVersion,
 } from "./schema/workflow-definitions";
-import { parseWorkflowDefinitionRow } from "./parse-row";
+import {
+  parseWorkflowDefinitionRow,
+  parseWorkflowDefinitionVersionRow,
+} from "./parse-row";
 
 type DBHandle = DB["db"];
 type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
@@ -46,6 +51,63 @@ export async function resolveDefinitionIdForAsset(
     .limit(1)
     .then((rows) => rows[0]);
   return row?.id ?? null;
+}
+
+/**
+ * Persist the transitively-folded approved grant surface for one definition
+ * version. Takes a `DBExecutor` so the write joins the surrounding transaction:
+ * the deploy path stamps this column in the same transaction that stamps
+ * `approved_wire_hash`, so a version never carries one facet of its approval
+ * without the other. Asserts exactly one row updated -- `(definitionId,
+ * version)` is unique, so zero rows means the caller named a version that does
+ * not exist, which is a bug rather than a silent no-op.
+ */
+export async function writeApprovedGrantSurface(
+  db: DBExecutor,
+  definitionId: string,
+  version: string,
+  surface: ApprovedGrantSurface,
+): Promise<void> {
+  const updated = await db
+    .update(workflowDefinitionVersion)
+    .set({ approvedGrantSurface: surface })
+    .where(
+      and(
+        eq(workflowDefinitionVersion.definitionId, definitionId),
+        eq(workflowDefinitionVersion.version, version),
+      ),
+    )
+    .returning({ id: workflowDefinitionVersion.id });
+  if (updated.length !== 1) {
+    throw new Error(
+      `writeApprovedGrantSurface: expected exactly one version row for ` +
+        `(${definitionId}, ${version}), updated ${String(updated.length)}`,
+    );
+  }
+}
+
+/**
+ * Read the approved grant surface a definition version carries, or null when
+ * the version exists but was never stamped (pre-approval, or a version
+ * predating the column) or when the version row is absent. Validation of the
+ * `jsonb` column runs through `parseWorkflowDefinitionVersionRow`, so the
+ * caller receives an `ApprovedGrantSurface`, never a raw row value.
+ */
+export async function readApprovedGrantSurface(
+  db: DBExecutor,
+  definitionId: string,
+  version: string,
+): Promise<ApprovedGrantSurface | null> {
+  const row = await db.query.workflowDefinitionVersion.findFirst({
+    where: and(
+      eq(workflowDefinitionVersion.definitionId, definitionId),
+      eq(workflowDefinitionVersion.version, version),
+    ),
+  });
+  if (row === undefined) {
+    return null;
+  }
+  return parseWorkflowDefinitionVersionRow(row).approvedGrantSurface;
 }
 
 export type WorkflowDefinitionRollbackResult =

@@ -568,6 +568,13 @@
       "when": 1786665226312,
       "tag": "0081_workflow_definition_content_hash_and_approved_wire_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1786759823544,
+      "tag": "0082_add_workflow_definition_version_approved_grant_surface",
+      "breakpoints": true
     }
   ]
 }

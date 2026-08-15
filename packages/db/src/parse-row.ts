@@ -1,6 +1,7 @@
 import { type } from "arktype";
 
 import {
+  ApprovedGrantSurface,
   Capability,
   CredentialBinding,
   GrantRequirement,
@@ -159,6 +160,15 @@ export function parseWorkflowDefinitionVersionRow(
   return {
     ...row,
     status: WorkflowDefinitionVersionStatusValidator.assert(row.status),
+    // Nullable jsonb: `null` on a real drizzle row, `undefined` only on a
+    // partial row-shaped test stub that predates the column. Both mean "no
+    // approved surface yet" -- treat them alike rather than asserting
+    // `undefined` as a surface.
+    approvedGrantSurface:
+      row.approvedGrantSurface === null ||
+      row.approvedGrantSurface === undefined
+        ? null
+        : ApprovedGrantSurface.assert(row.approvedGrantSurface),
   };
 }
 

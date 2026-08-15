@@ -20,8 +20,11 @@ import {
 } from "@intx/db/schema";
 import {
   createWorkflowDefinitionStore,
+  readApprovedGrantSurface,
   resolveDefinitionIdForAsset,
+  writeApprovedGrantSurface,
 } from "@intx/db";
+import type { ApprovedGrantSurface } from "@intx/types";
 import { and, eq } from "drizzle-orm";
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -118,6 +121,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(result).toEqual({ ok: false, reason: "version_not_found" });
       // No partial write: the active version is unchanged.
       expect(await versionStatus("2")).toBe("active");
+    });
+
+    test("approved grant surface round-trips through write and read", async () => {
+      await seedDefinition();
+      const surface: ApprovedGrantSurface = {
+        grants: ["tool:search", "effect:mail.send:example.com"],
+        grantEffects: { "tool:search": "ask" },
+      };
+
+      await writeApprovedGrantSurface(h.db, "wfd_1", "2", surface);
+
+      expect(await readApprovedGrantSurface(h.db, "wfd_1", "2")).toEqual(
+        surface,
+      );
+      // The sibling version was never stamped: null, not the other version's
+      // surface.
+      expect(await readApprovedGrantSurface(h.db, "wfd_1", "1")).toBeNull();
+    });
+
+    test("reading an unstamped or absent version yields null", async () => {
+      await seedDefinition();
+      // Version exists but carries no surface yet.
+      expect(await readApprovedGrantSurface(h.db, "wfd_1", "2")).toBeNull();
+      // Version row absent entirely.
+      expect(await readApprovedGrantSurface(h.db, "wfd_1", "99")).toBeNull();
+    });
+
+    test("writing to a nonexistent version throws rather than no-oping", async () => {
+      await seedDefinition();
+      const surface: ApprovedGrantSurface = { grants: [], grantEffects: {} };
+      await expect(
+        writeApprovedGrantSurface(h.db, "wfd_1", "99", surface),
+      ).rejects.toThrow(/expected exactly one version row/);
     });
 
     test("resolveDefinitionIdForAsset resolves a folded selector and nulls a miss", async () => {

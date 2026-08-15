@@ -59,7 +59,9 @@ export {
 } from "./sidecar-allocation-store";
 export {
   createWorkflowDefinitionStore,
+  readApprovedGrantSurface,
   resolveDefinitionIdForAsset,
+  writeApprovedGrantSurface,
   type WorkflowDefinitionRollbackResult,
   type WorkflowDefinitionSelector,
 } from "./workflow-definition-store";
