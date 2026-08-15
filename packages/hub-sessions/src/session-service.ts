@@ -15,6 +15,7 @@ import {
 import {
   buildCredentialDelivery,
   listAssetsForTenant,
+  writeApprovedGrantSurface,
   type DB,
 } from "@intx/db";
 import {
@@ -25,9 +26,17 @@ import {
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/sidecar";
-import type { CredentialCipher } from "@intx/types";
+import type { ApprovedGrantSurface, CredentialCipher } from "@intx/types";
 import { generateId } from "@intx/hub-common";
-import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
+import {
+  ensureWorkflowDefinitionForAsset,
+  INITIAL_WORKFLOW_DEFINITION_VERSION,
+} from "./workflow-definition-ensure";
+import {
+  enumerateChildWorkflowRefs,
+  mergeGrantSurfaces,
+  resolveChildWorkflowSurface,
+} from "./child-workflow-fold";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type {
   CryptoProvider,
@@ -65,6 +74,7 @@ import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
   enumerateInertOnTriggerBodies,
+  flattenWalkToSurface,
   pickStepInferenceSource,
   walkCapabilities,
   wrapHarnessAsSingleStepWorkflow,
@@ -1495,6 +1505,44 @@ export function createSessionService(
     };
   }
 
+  // Fold a definition's own runtime-enforced surface with its direct children's
+  // already-approved surfaces -- the composite approval-of-record a deploy
+  // stamps on the version row and the runtime ceiling reads back. Walks the
+  // definition itself (a cheap, deterministic re-walk) so a caller needs only
+  // the definition, its asset id, and the tenant. A definition with no
+  // childWorkflow steps needs no asset resolution and never touches the fold
+  // deps; one that references children requires `assetService` and `db`, whose
+  // absence is a deploy-time configuration error surfaced loudly here rather
+  // than a null-surface guard trip at run time.
+  async function computePinnedSurface(args: {
+    definition: WorkflowDefinition;
+    definitionAssetId: string;
+    tenantId: string;
+  }): Promise<ApprovedGrantSurface> {
+    const walk = walkCapabilities(
+      args.definition,
+      createDefaultDirectorRegistry(),
+    );
+    const ownSurface = flattenWalkToSurface(walk);
+    if (enumerateChildWorkflowRefs(args.definition).length === 0) {
+      return ownSurface;
+    }
+    if (assetService === undefined || db === undefined) {
+      throw new Error(
+        "workflow deploy: a workflow with childWorkflow steps requires an asset service and db handle to fold its children's approved grant surfaces",
+      );
+    }
+    const childContribution = await resolveChildWorkflowSurface(
+      {
+        definition: args.definition,
+        deployingAssetId: args.definitionAssetId,
+        tenantId: args.tenantId,
+      },
+      { db, assetService },
+    );
+    return mergeGrantSurfaces(ownSurface, childContribution);
+  }
+
   async function deployWorkflowDefinition(
     params: DeployWorkflowDefinitionParams,
   ): Promise<DeployWorkflowDefinitionResult> {
@@ -1506,6 +1554,14 @@ export function createSessionService(
       definitionAssetId,
       config,
     } = params;
+    // Fold the child surfaces before the deploy frame goes out, so an
+    // unresolved/unapproved/cross-tenant child aborts the deploy rather than
+    // shipping an uncovered childWorkflow.
+    const pinnedSurface = await computePinnedSurface({
+      definition,
+      definitionAssetId,
+      tenantId,
+    });
     const result = await executeWorkflowDefinitionDeploy(params);
 
     if (db === undefined) {
@@ -1527,6 +1583,14 @@ export function createSessionService(
         assetId: definitionAssetId,
         wireHash,
       });
+      // Stamp the pinned surface on the version this deploy just created, in
+      // the same transaction, so the row is never live-and-surface-less.
+      await writeApprovedGrantSurface(
+        tx,
+        definitionId,
+        INITIAL_WORKFLOW_DEFINITION_VERSION,
+        pinnedSurface,
+      );
 
       // The deployment's anchor run: the one workflow_run that carries the
       // deployment's routing identity, 1:1 with the deployment (id and address
@@ -1583,6 +1647,53 @@ export function createSessionService(
         "deployPreparedWorkflowDefinition requires a db handle to update the prepared anchor run",
       );
     }
+    // Stamp the pinned surface before anything can make the prepared anchor a
+    // trigger-routable recipient -- ahead of both the allocation restore and
+    // the deploy frame. The anchor and its version row were born at prepare
+    // (born "deployed"), but prepare has no asset service to fold children
+    // with, so the surface is stamped here. Stamping this early closes any
+    // window in which a trigger could reach the null-surface guard against a
+    // routable-but-unstamped childWorkflow deployment, and folds before the
+    // deploy commits, so an unresolved child aborts before the allocation is
+    // touched. The prepared params omit the asset id, so resolve it from the
+    // anchor's definition. The surface is a pure function of the definition, so
+    // the standalone stamp is idempotent under a retry.
+    const preparedAnchor = await db.query.workflowRun.findFirst({
+      where: eq(workflowRunTable.id, params.anchorRunId),
+      columns: { definitionId: true },
+    });
+    if (preparedAnchor === undefined || preparedAnchor.definitionId === null) {
+      throw new Error(
+        `deployPreparedWorkflowDefinition: prepared anchor ${params.anchorRunId} has no definition to stamp`,
+      );
+    }
+    const preparedDefinitionId = preparedAnchor.definitionId;
+    const preparedDefinitionAsset = await db.query.workflowDefinition.findFirst(
+      {
+        where: eq(workflowDefinitionTable.id, preparedDefinitionId),
+        columns: { assetId: true },
+      },
+    );
+    if (
+      preparedDefinitionAsset === undefined ||
+      preparedDefinitionAsset.assetId === null
+    ) {
+      throw new Error(
+        `deployPreparedWorkflowDefinition: definition ${preparedDefinitionId} has no asset to fold child surfaces against`,
+      );
+    }
+    const pinnedSurface = await computePinnedSurface({
+      definition: params.definition,
+      definitionAssetId: preparedDefinitionAsset.assetId,
+      tenantId: params.tenantId,
+    });
+    await writeApprovedGrantSurface(
+      db,
+      preparedDefinitionId,
+      INITIAL_WORKFLOW_DEFINITION_VERSION,
+      pinnedSurface,
+    );
+
     await restoreWorkflowRunToAllocation({
       agentRepoStore,
       allocationRouter: requireAllocationRouter(),

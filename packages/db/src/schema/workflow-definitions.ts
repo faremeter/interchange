@@ -105,8 +105,11 @@ export const workflowDefinitionVersion = pgTable(
     // a legitimate state, so the column takes no NOT NULL constraint.
     approvedWireHash: text("approved_wire_hash"),
     // The transitively-folded approved grant surface for this version: the
-    // deployment-flattened union of the definition's own walked grants and its
-    // direct children's pinned surfaces (own ∪ ⋃ pinned(directChild)).
+    // deployment-flattened union of the definition's own runtime-enforced
+    // grants and its direct children's pinned surfaces (own ∪ ⋃
+    // pinned(directChild)). It carries only the runtime-enforced grants -- the
+    // tool:/effect: grants a run's ceiling materializes and gates fail-closed --
+    // not the walk's approval-surface-only grants (director/capability/etc.).
     // Approval-scoped, not content-derived: it carries an external child
     // contribution that is not recomputable from this definition's own content,
     // and it is pinned to this approved version alongside `approved_wire_hash`.

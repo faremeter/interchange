@@ -25,7 +25,13 @@ import {
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { generateId } from "@intx/hub-common";
-import { deriveRunAddress } from "@intx/workflow-deploy";
+import {
+  deriveRunAddress,
+  flattenWalkToSurface,
+  walkCapabilities,
+} from "@intx/workflow-deploy";
+import { createDefaultDirectorRegistry } from "@intx/agent";
+import type { ApprovedGrantSurface } from "@intx/types";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
@@ -1271,6 +1277,7 @@ describe("deployWorkflowDefinition", () => {
     const definitionRows: CapturedDefinitionRow[] = [];
     const definitionVersionRows: { definitionId: string; version: string }[] =
       [];
+    const definitionSurfaceStamps: ApprovedGrantSurface[] = [];
     const workflowRepoWrites: { repoId: RepoId; files: string[] }[] = [];
 
     // The workflow asset the definition is projected from. `ensureWorkflow-
@@ -1330,6 +1337,31 @@ describe("deployWorkflowDefinition", () => {
       throw new Error("deployWorkflowDefinition fixture: unexpected insert");
     };
 
+    // The deploy stamps the version row's approved grant surface via
+    // `writeApprovedGrantSurface`, a single UPDATE ... RETURNING. Capture the
+    // stamped surface and echo one updated row so the store's one-row
+    // assertion passes. The fixture deploys a single definition, so the surface
+    // alone identifies the stamp.
+    const update = (table: unknown) => {
+      if (table === workflowDefinitionVersionTable) {
+        return {
+          set(values: { approvedGrantSurface: ApprovedGrantSurface }) {
+            return {
+              where() {
+                return {
+                  returning() {
+                    definitionSurfaceStamps.push(values.approvedGrantSurface);
+                    return Promise.resolve([{ id: "wdv-stamped" }]);
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      throw new Error("deployWorkflowDefinition fixture: unexpected update");
+    };
+
     // `ensureWorkflowDefinitionForAsset` selects the workflow asset by id; every
     // other select in the deploy path is served elsewhere, so only the asset
     // table is answered here.
@@ -1348,13 +1380,15 @@ describe("deployWorkflowDefinition", () => {
     const fakeDb = {
       insert,
       select,
+      update,
       transaction(
         fn: (tx: {
           insert: typeof insert;
           select: typeof select;
+          update: typeof update;
         }) => Promise<void>,
       ) {
-        return fn({ insert, select });
+        return fn({ insert, select, update });
       },
     };
 
@@ -1387,6 +1421,7 @@ describe("deployWorkflowDefinition", () => {
       runRows,
       definitionRows,
       definitionVersionRows,
+      definitionSurfaceStamps,
       workflowRepoWrites,
       fakeDb,
       repoStore,
@@ -1399,6 +1434,7 @@ describe("deployWorkflowDefinition", () => {
       runRows,
       definitionRows,
       definitionVersionRows,
+      definitionSurfaceStamps,
       workflowRepoWrites,
       fakeDb,
       repoStore,
@@ -1516,6 +1552,17 @@ describe("deployWorkflowDefinition", () => {
     expect(definitionVersionRows[0]?.definitionId).toBe(definitionRow.id);
     expect(definitionVersionRows[0]?.version).toBe("1");
 
+    // The deploy stamps the version's approved grant surface in the same
+    // transaction that creates the row -- its own runtime-enforced surface,
+    // since this definition has no childWorkflow steps to fold. This proves
+    // the stamp is wired into the deploy tx and keyed to the created version.
+    expect(definitionSurfaceStamps).toHaveLength(1);
+    expect(definitionSurfaceStamps[0]).toEqual(
+      flattenWalkToSurface(
+        walkCapabilities(definition, createDefaultDirectorRegistry()),
+      ),
+    );
+
     // The deployment's anchor run is recorded in the same transaction: one
     // workflow_run 1:1 with the deployment, its id and routing address both
     // derived from the deployment, born "deployed" in its pre-trigger window
@@ -1590,6 +1637,7 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
       generation: 3,
       ensureAcceptedGeneration: 3,
     };
+    const preparedSurfaceStamps: ApprovedGrantSurface[] = [];
     const fakeTx = {
       select() {
         return {
@@ -1609,11 +1657,22 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
         };
       },
       update(table: unknown) {
-        if (table !== workflowRunTable) {
+        // The prepared deploy publishes the supervisor key on the anchor and
+        // stamps the pinned surface on the version row -- both single
+        // UPDATE ... RETURNING calls with a one-row result. Capture the version
+        // stamp so a test can assert the prepared path stamps the right value.
+        if (
+          table !== workflowRunTable &&
+          table !== workflowDefinitionVersionTable
+        ) {
           throw new Error("unexpected prepared-deploy update table");
         }
+        const capturesSurface = table === workflowDefinitionVersionTable;
         return {
-          set(_values: unknown) {
+          set(values: { approvedGrantSurface?: ApprovedGrantSurface }) {
+            if (capturesSurface && values.approvedGrantSurface !== undefined) {
+              preparedSurfaceStamps.push(values.approvedGrantSurface);
+            }
             return {
               where(_predicate: unknown) {
                 return {
@@ -1627,8 +1686,20 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
         };
       },
     };
+    // The prepared deploy resolves the anchor's definition + asset to fold the
+    // pinned surface. This definition is childless, so the fold reads no child
+    // assets; only the anchor -> definition -> assetId resolution is served.
+    const fakeQuery = {
+      workflowRun: {
+        findFirst: async () => ({ definitionId: "wfd_restore_order" }),
+      },
+      workflowDefinition: {
+        findFirst: async () => ({ assetId: "ast_restore_order" }),
+      },
+    };
     const fakeDb = {
       ...fakeTx,
+      query: fakeQuery,
       transaction: async <T>(callback: (tx: typeof fakeTx) => Promise<T>) =>
         callback(fakeTx),
     };
@@ -1685,11 +1756,18 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
       >,
     });
 
-    return { allocationRouter, allocationState, params, repoStore, service };
+    return {
+      allocationRouter,
+      allocationState,
+      params,
+      preparedSurfaceStamps,
+      repoStore,
+      service,
+    };
   }
 
   test("acknowledges restored history before sending the frame that spawns the supervisor", async () => {
-    const { allocationRouter, params, service } =
+    const { allocationRouter, params, preparedSurfaceStamps, service } =
       await createPreparedDeployFixture();
 
     await service.deployPreparedWorkflowDefinition(params);
@@ -1699,6 +1777,17 @@ describe("deployPreparedWorkflowDefinition recovery", () => {
     const spawnIndex = methods.indexOf("sendAgentDeployToAllocation");
     expect(restoreIndex).toBeGreaterThanOrEqual(0);
     expect(spawnIndex).toBeGreaterThan(restoreIndex);
+
+    // The prepared deploy stamps the version's approved grant surface too --
+    // its own runtime-enforced surface, since the recovered definition has no
+    // childWorkflow steps. This proves the prepared path resolves the anchor's
+    // definition and stamps the folded surface, not just the supervisor key.
+    const { definition } = params;
+    expect(preparedSurfaceStamps).toEqual([
+      flattenWalkToSurface(
+        walkCapabilities(definition, createDefaultDirectorRegistry()),
+      ),
+    ]);
   });
 
   test("does not stage or spawn the workflow when history restoration fails", async () => {

@@ -12,6 +12,13 @@ import {
 } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 
+// The version this projection creates. A native workflow deploy mints exactly
+// one version per definition; a rollback can later repoint `currentVersion` to
+// another version, but the version born here is always this. The deploy stamp
+// sites (approved wire hash, approved grant surface) reference this same
+// constant so the write version can never drift from the created one.
+export const INITIAL_WORKFLOW_DEFINITION_VERSION = "1";
+
 /**
  * The first-class `workflow_definition` a selector names, created if absent. A
  * native workflow carries its body in the asset it points at, so this only
@@ -84,7 +91,7 @@ export async function ensureWorkflowDefinitionForAsset(
     .values({
       id: generateId("workflowDefinitionVersion"),
       definitionId,
-      version: "1",
+      version: INITIAL_WORKFLOW_DEFINITION_VERSION,
     })
     .onConflictDoNothing({
       target: [
