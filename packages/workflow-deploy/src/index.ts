@@ -13,6 +13,8 @@
 
 export {
   walkCapabilities,
+  resolveRuntimeGrantEffects,
+  flattenWalkToSurface,
   type CapabilityWalkResult,
   type GrantDeclarations,
 } from "./capability-walk";

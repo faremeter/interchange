@@ -30,11 +30,7 @@ import {
 import type { DB, DBExecutor } from "@intx/db";
 import { createWorkflowRunStore } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
-import {
-  GrantRequirement,
-  isSidecarAllocationDispatchable,
-  type GrantEffect,
-} from "@intx/types";
+import { GrantRequirement, isSidecarAllocationDispatchable } from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import {
   hydrateDefinition,
@@ -44,6 +40,7 @@ import {
 } from "@intx/hub-sessions";
 import {
   walkCapabilities,
+  resolveRuntimeGrantEffects,
   type CapabilityWalkResult,
 } from "@intx/workflow-deploy";
 import { createDefaultDirectorRegistry } from "@intx/agent";
@@ -67,8 +64,6 @@ const GrantRequirements = GrantRequirement.array();
 // loaded factory's already-namespaced definitions. The `effect:<cap>` rows are
 // different: an action's EffectContext authorizes the bare `effect:<cap>` on
 // both sides, so those rows ARE name-matched and operative at run time.
-const TOOL_GRANT_PREFIX = "tool:";
-const EFFECT_GRANT_PREFIX = "effect:";
 
 /**
  * Project the capability walk into the run's runtime grant rows -- the
@@ -78,16 +73,10 @@ const EFFECT_GRANT_PREFIX = "effect:";
  * definition-pure for the deployment's stable top-level run, so the walk
  * output alone determines it.
  *
- * Tool grants carry the effect the tool's static declaration requested (`ask`
- * for approval-gated tools, `allow` otherwise) via the walk's `grantEffects`
- * map. A tool in more than one step is emitted once; when two steps disagree
- * on its effect, `ask` wins over `allow` so an approval-gated declaration is
- * never silently downgraded.
- *
- * Effect grants are always `allow` -- the `effect.requires` set names the
- * capability floor an action needs, with no per-effect ask/allow distinction,
- * so they are NOT routed through the `grantEffects` map (which covers tool
- * grants only). An `effect:<cap>` in more than one step is emitted once.
+ * The `tool:`/`effect:` effect resolution is owned by
+ * `resolveRuntimeGrantEffects`; a child-workflow parent's pinned surface reads
+ * the SAME projection (via `flattenWalkToSurface`), so a folded ceiling and the
+ * runtime ceiling cannot drift.
  */
 export function deriveRunRuntimeGrantRows(
   walk: CapabilityWalkResult,
@@ -95,36 +84,7 @@ export function deriveRunRuntimeGrantRows(
   runPrincipalId: string,
   now: Date,
 ): MaterializedGrantRow[] {
-  const effectByResource = new Map<string, GrantEffect>();
-  for (const declarations of walk.perStep.values()) {
-    for (const grant of declarations.grants) {
-      if (grant.startsWith(TOOL_GRANT_PREFIX)) {
-        // Every `tool:` grant the walk emits carries a `grantEffects`
-        // entry (the tool-mark floor: `ask` for an approval-gated tool,
-        // `allow` otherwise). A missing entry means the walk's `grants`
-        // and `grantEffects` maps have diverged -- a defaulted `allow`
-        // here would silently DOWNGRADE an `ask` tool below its floor,
-        // defeating the approval gate. Fail loudly instead.
-        const effect = declarations.grantEffects.get(grant);
-        if (effect === undefined) {
-          throw new Error(
-            `deriveRunRuntimeGrantRows: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the capability walk must emit an effect for every tool grant`,
-          );
-        }
-        const existing = effectByResource.get(grant);
-        if (existing === "ask" || effect === "ask") {
-          effectByResource.set(grant, "ask");
-        } else if (existing === undefined) {
-          effectByResource.set(grant, effect);
-        }
-      } else if (grant.startsWith(EFFECT_GRANT_PREFIX)) {
-        // Effect grants are always allow; a repeat across steps is idempotent.
-        if (!effectByResource.has(grant)) {
-          effectByResource.set(grant, "allow");
-        }
-      }
-    }
-  }
+  const effectByResource = resolveRuntimeGrantEffects(walk);
 
   const rows: MaterializedGrantRow[] = [];
   for (const [resource, effect] of effectByResource) {

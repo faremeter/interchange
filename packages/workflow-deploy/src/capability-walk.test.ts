@@ -20,7 +20,13 @@ import {
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
 
-import { DuplicateWalkToolError, walkCapabilities } from "./capability-walk";
+import {
+  DuplicateWalkToolError,
+  flattenWalkToSurface,
+  resolveRuntimeGrantEffects,
+  walkCapabilities,
+  type CapabilityWalkResult,
+} from "./capability-walk";
 
 // A synthetic mail factory that declares one tool, `mail_send`. The walk
 // keys `tool:` grants on each declared definition name (not on the
@@ -516,6 +522,78 @@ describe("walkCapabilities", () => {
 
     expect(() => walkCapabilities(workflow, registry)).toThrow(
       DuplicateWalkToolError,
+    );
+  });
+});
+
+describe("flattenWalkToSurface", () => {
+  test("projects only the runtime-enforced tool/effect grants with effects", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_surface",
+      systemPrompt: "gated + ungated tools",
+      tools: [
+        makeFactory("@intx/tools-posix/sidecar-bundle", [
+          { name: "run_shell", approval: "ask" },
+          { name: "list_dir" },
+        ]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_surface",
+      trigger: { type: "manual" },
+      steps: {
+        run: step({ agent }),
+        commit: action({
+          handler: "commit",
+          effect: { requires: ["git:commit"] },
+          after: ["run"],
+        }),
+      },
+    });
+
+    const surface = flattenWalkToSurface(walkCapabilities(workflow, registry));
+
+    expect(surface.grants).toEqual([
+      "effect:git:commit",
+      "tool:list_dir",
+      "tool:run_shell",
+    ]);
+    expect(surface.grantEffects).toEqual({
+      "tool:run_shell": "ask",
+      "tool:list_dir": "allow",
+      "effect:git:commit": "allow",
+    });
+    // director:/inference.source: grants are approval-surface only, never
+    // runtime-enforced, so they do not appear in the flattened surface.
+    expect(surface.grants.some((g) => g.startsWith("director:"))).toBe(false);
+    expect(surface.grants.some((g) => g.startsWith("inference.source:"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("resolveRuntimeGrantEffects", () => {
+  test("throws when a tool grant carries no effect entry", () => {
+    // A hand-built walk whose grants and grantEffects have diverged: a
+    // defaulted allow here would silently downgrade an ask tool, so this must
+    // fail loud.
+    const walk: CapabilityWalkResult = {
+      perStep: new Map([
+        [
+          "s",
+          {
+            grants: ["tool:orphan"],
+            grantEffects: new Map(),
+          },
+        ],
+      ]),
+      unresolvedDirectors: [],
+    };
+    expect(() => resolveRuntimeGrantEffects(walk)).toThrow(
+      /has no grantEffects entry/,
     );
   });
 });

@@ -114,14 +114,18 @@ export const GrantRequirement = type({
 export type GrantRequirement = typeof GrantRequirement.infer;
 
 // The transitively-folded approved grant surface for one workflow definition
-// version: the deployment-flattened union of the definition's own walked grants
-// and its direct children's pinned surfaces. `grants` is the flat set of grant
-// strings a run's ceiling authorizes; `grantEffects` maps a `tool:` grant to
-// its resolved effect. This is the serialized shape -- `grantEffects` is a
-// plain object, not a `Map`, because a `Map` serializes to `{}` under
-// `JSON.stringify` and would drop every effect. Producers convert their
-// `ReadonlyMap<string, GrantEffect>` to this object form at the boundary; a
-// consumer wanting a `Map` rebuilds one from the entries.
+// version: the deployment-flattened union of the definition's own
+// runtime-enforced grants and its direct children's pinned surfaces. It carries
+// only the grants a run's ceiling materializes and gates fail-closed -- the
+// `tool:` and `effect:` grants -- not the walk's approval-surface-only grants
+// (director/capability/inference.source/mail.*). `grants` is the flat set of
+// those grant strings; `grantEffects` maps each to its resolved effect (`ask`
+// for an approval-gated tool, `allow` otherwise; an `effect:` grant is always
+// `allow`). This is the serialized shape -- `grantEffects` is a plain object,
+// not a `Map`, because a `Map` serializes to `{}` under `JSON.stringify` and
+// would drop every effect. Producers convert their `ReadonlyMap<string,
+// GrantEffect>` to this object form at the boundary; a consumer wanting a `Map`
+// rebuilds one from the entries.
 export const ApprovedGrantSurface = type({
   grants: "string[]",
   grantEffects: { "[string]": Effect },

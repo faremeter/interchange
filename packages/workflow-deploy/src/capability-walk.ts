@@ -56,7 +56,7 @@ import {
   toolApprovalEffect,
   UnknownDirectorIdError,
 } from "@intx/agent";
-import type { GrantEffect } from "@intx/types";
+import type { ApprovedGrantSurface, GrantEffect } from "@intx/types";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 /**
@@ -395,4 +395,79 @@ export class DuplicateWalkToolError extends Error {
     this.toolName = toolName;
     this.factoryId = factoryId;
   }
+}
+
+// The runtime-enforced grant prefixes. `tool:<name>` and `effect:<cap>` are the
+// only grants a workflow run's ceiling materializes and gates fail-closed; the
+// walk's other grants (director/capability/inference.source/mail.*) are
+// approval-surface only and carry no runtime row.
+const TOOL_GRANT_PREFIX = "tool:";
+const EFFECT_GRANT_PREFIX = "effect:";
+
+/**
+ * Resolve a walk into the effect each runtime-enforced grant carries: the
+ * `tool:<name>` and `effect:<cap>` grants a run's ceiling materializes. This is
+ * the single owner of that projection -- both the run-grant materializer (which
+ * turns it into grant rows) and the child-workflow fold (which turns it into a
+ * stored surface) read it, so a parent's pinned surface can never disagree with
+ * the runtime ceiling it is meant to equal.
+ *
+ * A `tool:` grant carries the effect its static declaration requested via the
+ * walk's `grantEffects` map (`ask` for an approval-gated tool, `allow`
+ * otherwise); a tool in more than one step resolves ask-wins so an approval
+ * gate is never downgraded. A missing entry is a walk-invariant violation --
+ * `grants` and `grantEffects` diverged -- and throws rather than defaulting to
+ * `allow`, which would silently downgrade an `ask` tool. An `effect:` grant is
+ * always `allow` (the capability floor an action needs has no ask/allow
+ * distinction) and is not routed through `grantEffects`. Every other grant is
+ * not runtime-enforced and is skipped.
+ */
+export function resolveRuntimeGrantEffects(
+  walk: CapabilityWalkResult,
+): Map<string, GrantEffect> {
+  const effectByResource = new Map<string, GrantEffect>();
+  for (const declarations of walk.perStep.values()) {
+    for (const grant of declarations.grants) {
+      if (grant.startsWith(TOOL_GRANT_PREFIX)) {
+        const effect = declarations.grantEffects.get(grant);
+        if (effect === undefined) {
+          throw new Error(
+            `resolveRuntimeGrantEffects: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the capability walk must emit an effect for every tool grant`,
+          );
+        }
+        const existing = effectByResource.get(grant);
+        if (existing === "ask" || effect === "ask") {
+          effectByResource.set(grant, "ask");
+        } else if (existing === undefined) {
+          effectByResource.set(grant, effect);
+        }
+      } else if (grant.startsWith(EFFECT_GRANT_PREFIX)) {
+        if (!effectByResource.has(grant)) {
+          effectByResource.set(grant, "allow");
+        }
+      }
+    }
+  }
+  return effectByResource;
+}
+
+/**
+ * Flatten a walk into the deployment-wide runtime-enforced grant surface: the
+ * `tool:`/`effect:` grants and their resolved effects. Grants are sorted for a
+ * deterministic stored value. This is the own-surface half of a definition's
+ * pinned surface; the child-workflow fold unions it with its children's stored
+ * surfaces.
+ */
+export function flattenWalkToSurface(
+  walk: CapabilityWalkResult,
+): ApprovedGrantSurface {
+  const effectByResource = resolveRuntimeGrantEffects(walk);
+  const grantEffects: Record<string, GrantEffect> = {};
+  for (const [resource, effect] of effectByResource) {
+    grantEffects[resource] = effect;
+  }
+  return {
+    grants: [...effectByResource.keys()].sort(),
+    grantEffects,
+  };
 }

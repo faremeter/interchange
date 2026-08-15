@@ -2,10 +2,23 @@ import { describe, test, expect } from "bun:test";
 
 import { createInMemoryGrantStore } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
+import type { GrantEffect } from "@intx/types";
 import type { AssetService } from "@intx/hub-sessions";
 import { workflowRun as workflowRunTable } from "@intx/db/schema";
+import {
+  createDefaultDirectorRegistry,
+  defineAgent,
+  type AnnotatedToolFactory,
+  type BaseEnv,
+  type ToolDeclaration,
+} from "@intx/agent";
+import { action, defineWorkflow, step } from "@intx/workflow/definition";
+import { flattenWalkToSurface, walkCapabilities } from "@intx/workflow-deploy";
 
-import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materialization";
+import {
+  createMailTriggeredRunGrantsMaterializer,
+  deriveRunRuntimeGrantRows,
+} from "./run-grant-materialization";
 
 const TENANT_ID = "tenant-1";
 const ASSET_ID = "asset-wf";
@@ -445,5 +458,72 @@ describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
     expect(secondResources).toEqual(firstResources);
     expect(secondResources).toContain("tool:read_file/invoke");
     expect(secondResources).not.toContain("tool:write_file/invoke");
+  });
+});
+
+function makeFactory(
+  id: string,
+  definitions: readonly ToolDeclaration[],
+): AnnotatedToolFactory<BaseEnv> {
+  const factory = (_env: BaseEnv) => ({
+    definitions: [],
+    run: () =>
+      Promise.resolve({ callId: "", content: "", isError: false as const }),
+  });
+  return Object.assign(factory, {
+    id,
+    requires: [] as readonly string[],
+    definitions,
+  });
+}
+
+describe("flattenWalkToSurface agrees with deriveRunRuntimeGrantRows", () => {
+  // The equality is the whole point of extracting the shared core: a child
+  // workflow's stored pinned surface (built via flattenWalkToSurface) must
+  // equal the runtime ceiling the run-grant materializer emits from the same
+  // walk. This pins the two producers together across the
+  // workflow-deploy/hub-api boundary so neither can drift.
+  test("same resources and effects on a walk with ask, allow, and effect grants", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_equal",
+      systemPrompt: "gated + ungated tools",
+      tools: [
+        makeFactory("@intx/tools-posix/sidecar-bundle", [
+          { name: "run_shell", approval: "ask" },
+          { name: "list_dir" },
+        ]),
+      ],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "m" }] },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_equal",
+      trigger: { type: "manual" },
+      steps: {
+        run: step({ agent }),
+        commit: action({
+          handler: "commit",
+          effect: { requires: ["git:commit"] },
+          after: ["run"],
+        }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const surface = flattenWalkToSurface(walk);
+    const rows = deriveRunRuntimeGrantRows(
+      walk,
+      "tnt",
+      "prn",
+      new Date("2020-01-01T00:00:00Z"),
+    );
+
+    const rowEffects: Record<string, GrantEffect> = {};
+    for (const row of rows) {
+      rowEffects[row.resource] = row.effect;
+    }
+    expect(surface.grants).toEqual(rows.map((r) => r.resource).sort());
+    expect(surface.grantEffects).toEqual(rowEffects);
   });
 });
