@@ -133,6 +133,7 @@ export {
   WORKSPACE_BUILTINS_REGISTRY,
 } from "./package-registry-kind";
 export {
+  hydrateDefinition,
   workflowKindHandler,
   workflowAuthorize,
   workflowDefinitionEnvelopeSchema,

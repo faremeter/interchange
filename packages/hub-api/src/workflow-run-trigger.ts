@@ -39,6 +39,7 @@ import {
   type AttachmentError,
 } from "@intx/types";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
+import { hydrateDefinition } from "@intx/hub-sessions";
 import type {
   AssetService,
   RepoStore,
@@ -53,7 +54,6 @@ import type { PrincipalRow, TenantRow } from "./context";
 import {
   collectCreatorGrants,
   commitRunGrants,
-  hydrateDefinition,
   loadCommittedRunGrants,
   lockDispatchableAllocation,
   lockWorkflowRunState,

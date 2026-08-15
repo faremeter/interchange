@@ -28,6 +28,7 @@ import { ToolPackagePinArray } from "@intx/types/tool-packages";
 import {
   createWorkflowRunReader,
   ExclusiveWorkflowPlacementError,
+  hydrateDefinition,
   resolveWorkflowSidecarPlacement,
   type AssetService,
   type RepoStore,
@@ -47,7 +48,6 @@ import {
 import type { TenantEnv } from "../context";
 import { idResource, type RequireGrant } from "../middleware/grant";
 import {
-  hydrateDefinition,
   lockDispatchableAllocation,
   lockWorkflowRunState,
 } from "../run-grant-materialization";
