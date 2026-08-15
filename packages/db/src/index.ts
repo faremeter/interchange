@@ -60,8 +60,10 @@ export {
 export {
   createWorkflowDefinitionStore,
   readApprovedGrantSurface,
+  resolveDefinitionForAsset,
   resolveDefinitionIdForAsset,
   writeApprovedGrantSurface,
+  type ResolvedWorkflowDefinition,
   type WorkflowDefinitionRollbackResult,
   type WorkflowDefinitionSelector,
 } from "./workflow-definition-store";

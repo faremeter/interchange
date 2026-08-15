@@ -145,6 +145,18 @@ export {
   type WorkflowSidecarPrincipal,
 } from "./workflow-kind";
 export {
+  enumerateChildWorkflowRefs,
+  mergeGrantSurfaces,
+  resolveChildWorkflowSurface,
+  ChildWorkflowSelfReferenceError,
+  ChildWorkflowNotFoundError,
+  ChildWorkflowKindError,
+  ChildWorkflowNotApprovedError,
+  type ChildWorkflowRef,
+  type ChildWorkflowFoldDeps,
+  type ChildWorkflowFoldParams,
+} from "./child-workflow-fold";
+export {
   workflowRunKindHandler,
   workflowRunAuthorize,
   enqueueInbox,

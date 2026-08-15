@@ -54,6 +54,47 @@ export async function resolveDefinitionIdForAsset(
 }
 
 /**
+ * The definition a selector names together with its current version pointer.
+ * A caller that must then read a version-scoped column (e.g. the approved
+ * grant surface) needs both the definition id and the version it should read;
+ * `current_version` names the active version, which `rollback` can repoint.
+ */
+export type ResolvedWorkflowDefinition = {
+  definitionId: string;
+  currentVersion: string;
+};
+
+/**
+ * Resolve a selector to its definition id and current version, or null on a
+ * miss. Like `resolveDefinitionIdForAsset`, but also returns the version
+ * pointer so the caller reads the right version's columns rather than assuming
+ * the literal `"1"` -- a `rollback` can repoint `current_version` to another
+ * active version.
+ */
+export async function resolveDefinitionForAsset(
+  db: DBExecutor,
+  selector: WorkflowDefinitionSelector,
+): Promise<ResolvedWorkflowDefinition | null> {
+  const row = await db
+    .select({
+      id: workflowDefinition.id,
+      currentVersion: workflowDefinition.currentVersion,
+    })
+    .from(workflowDefinition)
+    .where(
+      and(
+        eq(workflowDefinition.assetId, selector.assetId),
+        eq(workflowDefinition.wireHash, selector.wireHash),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+  return row === undefined
+    ? null
+    : { definitionId: row.id, currentVersion: row.currentVersion };
+}
+
+/**
  * Persist the transitively-folded approved grant surface for one definition
  * version. Takes a `DBExecutor` so the write joins the surrounding transaction:
  * the deploy path stamps this column in the same transaction that stamps
