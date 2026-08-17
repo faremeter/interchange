@@ -10,15 +10,13 @@
 // One asset can be referenced both ways; a source-format workflow closure
 // references only source entries, so it produces only gitDirs.
 
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-
-import git from "isomorphic-git";
 
 import { getLogger } from "@intx/log";
 import { base64Decode } from "@intx/types";
 import { applyAssetPack } from "@intx/hub-agent";
+import { indexPackIntoGitDir } from "@intx/storage-isogit/node";
 import type { WorkflowSourceAssetMount } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
@@ -27,11 +25,13 @@ const logger = getLogger(["sidecar", "source-asset-delivery"]);
 const SAFE_ASSET_ID = /^[a-zA-Z0-9_.-]+$/;
 
 /**
- * Index a delivered asset pack into `gitDir` (a directory that will hold a
- * `.git`) and RETAIN the object store, so a source subtree can be checked out
- * from it. Mirrors `applyAssetPack`'s pack-index step but keeps the `.git`
- * instead of copying files out and discarding it. Asserts the pinned
- * `commitSha` is present in the pack.
+ * Index a delivered asset pack into `gitDir` and RETAIN the object store, so a
+ * source subtree can be checked out from it. Delegates the pack-index step to
+ * the shared `indexPackIntoGitDir` (which `applyAssetPack` also uses), adding
+ * the durable-store failure semantics: on any error, best-effort remove the
+ * partial `.git` so it does not linger and pass the dir-exists check
+ * `resolveDeploymentAssetMounts` runs on restore. A secondary rm failure is
+ * logged so it does not silently mask state; the primary error is rethrown.
  */
 export async function indexAssetPackIntoGitDir(args: {
   pack: Uint8Array;
@@ -40,32 +40,8 @@ export async function indexAssetPackIntoGitDir(args: {
 }): Promise<void> {
   const { pack, commitSha, gitDir } = args;
   try {
-    await fsp.mkdir(gitDir, { recursive: true });
-    await git.init({ fs, dir: gitDir, defaultBranch: "main" });
-    const packDir = path.join(gitDir, ".git", "objects", "pack");
-    await fsp.mkdir(packDir, { recursive: true });
-    const relPackPath = path.join(
-      ".git",
-      "objects",
-      "pack",
-      `pack-source-${path.basename(gitDir)}.pack`,
-    );
-    await fsp.writeFile(path.join(gitDir, relPackPath), pack);
-    const { oids } = await git.indexPack({
-      fs,
-      dir: gitDir,
-      filepath: relPackPath,
-    });
-    if (!oids.includes(commitSha)) {
-      throw new Error(
-        `source-asset gitdir: expected commit ${commitSha} not found in the delivered pack`,
-      );
-    }
+    await indexPackIntoGitDir(gitDir, pack, commitSha);
   } catch (err) {
-    // Best-effort cleanup so a partial `.git` does not linger and pass the
-    // dir-exists check `resolveDeploymentAssetMounts` runs on restore. Log a
-    // secondary rm failure so it does not silently mask state; the primary
-    // error is still thrown. Mirrors `applyAssetPack`'s failure cleanup.
     await fsp.rm(gitDir, { recursive: true, force: true }).catch((rmErr) => {
       const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
       logger.warn`source-asset gitdir cleanup failed at ${gitDir}: ${rmMsg}`;

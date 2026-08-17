@@ -63,6 +63,7 @@ export const {
   runGC,
   switchBranch,
   writeTreeToDisk,
+  indexPackIntoGitDir,
 } = storage;
 
 export class IsogitStore extends RuntimeIsogitStore {
