@@ -1,6 +1,7 @@
-// Materialize a `kind: "git"` closure entry from an indexed pack.
+// Materialize a source-format asset closure entry (`kind:"asset"` with
+// `package.format:"source"`) from an indexed pack.
 //
-// A git-sourced entry's files come from a subtree of a hub `workflow` git
+// A source-format entry's files come from a subtree of a hub `workflow` git
 // asset at a pinned commit, not a tarball. The pack is indexed once at
 // checkout time (the caller supplies the resulting `gitDir`); this reads the
 // pinned subtree straight from those authenticated objects, verifies its git
@@ -12,10 +13,13 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import git from "isomorphic-git";
+import { getLogger } from "@intx/log";
 import { writeTreeToDisk } from "@intx/storage-isogit/node";
 import type { ToolPackageAssetSourceTree } from "@intx/types/tool-packages";
 
 import { ToolLoaderError, describeError } from "./loader-internal";
+
+const logger = getLogger(["sidecar", "tool-packaging", "git-materialize"]);
 
 /**
  * Read the entry's pinned subtree from `gitDir`, verify it against the frozen
@@ -69,7 +73,13 @@ export async function materializeGitEntry(args: {
   try {
     await writeTreeToDisk(gitDir, dir, subtreeOid);
   } catch (err) {
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    // Best-effort cleanup of the partial scratch dir; log a secondary rm
+    // failure so it does not silently mask state. The primary error is still
+    // thrown. Mirrors the cleanup logging in `applyAssetPack` and the sidecar's
+    // source-asset delivery.
+    await fs.rm(dir, { recursive: true, force: true }).catch((rmErr) => {
+      logger.warn`git subtree scratch cleanup failed at ${dir}: ${describeError(rmErr)}`;
+    });
     throw new ToolLoaderError({
       category: "git.materialization.failed",
       message: `writing git subtree for ${name}@${version} failed: ${describeError(err)}`,

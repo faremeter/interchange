@@ -93,8 +93,8 @@ export interface ApplyAtomicArgs {
    */
   readonly assetMounts: ReadonlyMap<string, string>;
   /**
-   * Maps a `kind: "git"` entry's `source.assetId` to an absolute indexed
-   * git directory. Forwarded verbatim to `ToolLoader.loadManifest`.
+   * Maps a source-format asset entry's `source.assetId` to an absolute
+   * indexed git directory. Forwarded verbatim to `ToolLoader.loadManifest`.
    */
   readonly gitDirs: ReadonlyMap<string, string>;
   readonly attemptId: string;
