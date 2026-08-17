@@ -10,6 +10,7 @@ import { initAgentRepo, initRepo } from "./init";
 import { applyPack, receivePackObjects } from "./pack-receive";
 import { createDeployPack, createNegotiatedPack } from "./pack-send";
 import { collectReachableObjects } from "./object-walk";
+import { writeTreeToDisk } from "./write-tree";
 import {
   countLooseObjects,
   countPackFiles,
@@ -46,6 +47,7 @@ export type {
   MailEntry,
 } from "./mail-store";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
+export { writeTreeToDisk } from "./write-tree";
 
 function bindRepoDir<TArgs extends readonly unknown[], TResult>(
   runtime: StorageRuntime,
@@ -93,5 +95,6 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     maybeGC: bindRepoDir(storageRuntime, maybeGC),
     createMailAuditStore: bindRepoDir(storageRuntime, createMailAuditStore),
     listMail: bindRepoDir(storageRuntime, listMail),
+    writeTreeToDisk: bindRepoDir(storageRuntime, writeTreeToDisk),
   };
 }
