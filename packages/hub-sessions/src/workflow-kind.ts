@@ -20,8 +20,9 @@
 //
 // A tree with neither manifest, or one that carries a `package.json` alongside
 // an envelope-valid `workflow.json`, is rejected: one asset must resolve to
-// exactly one definition. Only the single-package codebase is accepted; a
-// `workspaces` monorepo is not yet supported.
+// exactly one definition. The codebase shape accepts both a single package and
+// a `workspaces` monorepo; for a monorepo the push validates only the root's
+// well-formedness and leaves per-member validation to the resolver.
 //
 // Authz:
 //   - hub principal: full access.
@@ -251,12 +252,13 @@ async function validateWorkflowEnvelopePush(
 
 /**
  * Validate the codebase shape: a top-level `package.json` declaring a contained
- * `interchange.workflow` entry, plus arbitrary source files. Entered when the
- * tree carries a `package.json`. Source files are unconstrained, but the push
- * refuses the envelope-only `capability-declarations.json`, a committed
- * `node_modules`, a `workspaces` monorepo, and an ambiguous tree that also
- * carries an envelope-valid `workflow.json`, so one asset resolves to exactly
- * one definition.
+ * `interchange.workflow` entry (single package), or a `workspaces` monorepo
+ * whose root well-formedness is checked and whose members are deferred to the
+ * resolver, plus arbitrary source files. Entered when the tree carries a
+ * `package.json`. Source files are unconstrained, but the push refuses the
+ * envelope-only `capability-declarations.json`, a committed `node_modules`, and
+ * an ambiguous tree that also carries an envelope-valid `workflow.json`, so one
+ * asset resolves to exactly one definition.
  *
  * The push validates STRUCTURE only. It never imports or evaluates the entry
  * module -- that runs author code and is the sidecar's sandboxed job. The
@@ -311,14 +313,25 @@ async function validateWorkflowCodebasePush(
   }
 
   // `PackageJSON` does not declare `workspaces`, so it is read off the raw
-  // parsed value: a monorepo is a distinct, not-yet-supported shape and must
-  // not half-validate as a single package.
+  // parsed value. A monorepo is a distinct codebase shape: the workflow lives
+  // in one member, selected at resolve time by `packageName`, so this gate does
+  // NOT descend into members or require a root `interchange.workflow`. It
+  // validates ROOT well-formedness only -- `workspaces` is an array of glob
+  // strings -- and defers per-member validation to the resolver, which re-reads
+  // every member and fails loud there (one enumeration owner, not two).
   if (isJSONObject(pkgOutcome.value) && "workspaces" in pkgOutcome.value) {
-    return rejectPush(
-      repoId,
-      ref,
-      `${PACKAGE_JSON_PATH} declares "workspaces"; monorepo workflow assets are not yet supported`,
-    );
+    const workspaces = pkgOutcome.value["workspaces"];
+    if (
+      !Array.isArray(workspaces) ||
+      !workspaces.every((w) => typeof w === "string")
+    ) {
+      return rejectPush(
+        repoId,
+        ref,
+        `${PACKAGE_JSON_PATH} "workspaces" must be an array of glob strings; the object form ({ packages, catalog, catalogs }) is not supported`,
+      );
+    }
+    return { ok: true };
   }
 
   const pkg = PackageJSON(pkgOutcome.value);

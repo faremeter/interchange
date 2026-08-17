@@ -979,21 +979,60 @@ describe("workflowKindHandler.validatePush codebase shape", () => {
     );
   });
 
-  test("rejects a package.json that declares workspaces", async () => {
+  test("accepts a well-formed monorepo root without a root interchange.workflow", async () => {
+    // A private workspace root with globs and no `interchange.workflow`: the
+    // push validates root well-formedness only; the workflow member is selected
+    // and validated at resolve time.
     const files = {
-      [PACKAGE_JSON_PATH]: codebasePackageJSON({
+      [PACKAGE_JSON_PATH]: JSON.stringify({
+        name: "@fixture/monorepo-root",
+        private: true,
         workspaces: ["packages/*"],
       }),
     };
     const result = await validate(
-      uniqueRepoId("codebase-workspaces"),
+      uniqueRepoId("codebase-monorepo-ok"),
+      [PACKAGE_JSON_PATH],
+      files,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects the object form of workspaces", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: JSON.stringify({
+        name: "@fixture/monorepo-root",
+        private: true,
+        workspaces: { packages: ["packages/*"] },
+      }),
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-monorepo-object"),
       [PACKAGE_JSON_PATH],
       files,
     );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(/must be an array of glob strings/);
+  });
+
+  test("rejects a monorepo root that also commits node_modules", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: JSON.stringify({
+        name: "@fixture/monorepo-root",
+        private: true,
+        workspaces: ["packages/*"],
+      }),
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-monorepo-nm"),
+      [PACKAGE_JSON_PATH, NODE_MODULES_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(
-      /monorepo workflow assets are not yet supported/,
+      /committed top-level node_modules directory is not allowed/,
     );
   });
 
