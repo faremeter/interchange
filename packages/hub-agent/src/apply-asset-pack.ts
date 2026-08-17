@@ -20,7 +20,10 @@ import path from "node:path";
 import git from "isomorphic-git";
 
 import { getLogger } from "@intx/log";
-import { writeTreeToDisk } from "@intx/storage-isogit/node";
+import {
+  indexPackIntoGitDir,
+  writeTreeToDisk,
+} from "@intx/storage-isogit/node";
 
 const logger = getLogger(["interchange", "hub-agent", "apply-asset-pack"]);
 
@@ -91,24 +94,11 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
   );
 
   try {
-    await git.init({ fs, dir: scratchDir, defaultBranch: "main" });
-
-    const packDir = path.join(scratchDir, ".git", "objects", "pack");
-    await fsp.mkdir(packDir, { recursive: true });
-
-    const packFilename = `pack-asset-${path.basename(scratchDir)}.pack`;
-    const relPackPath = path.join(".git", "objects", "pack", packFilename);
-    const absPackPath = path.join(scratchDir, relPackPath);
-    await fsp.writeFile(absPackPath, pack);
-
-    const { oids } = await git.indexPack({
-      fs,
-      dir: scratchDir,
-      filepath: relPackPath,
-    });
-    if (!oids.includes(commitSha)) {
-      throw new Error(`expected commit ${commitSha} not found in pack`);
-    }
+    // Index the pack into the scratch `.git` and assert the pinned commit is
+    // present. The scratch dir is discarded in the `finally`; this reuses the
+    // same "index a pack into a gitDir and assert the commit" step a durable
+    // source-asset delivery keeps.
+    await indexPackIntoGitDir(scratchDir, pack, commitSha);
 
     const { commit } = await git.readCommit({
       fs,
