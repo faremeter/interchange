@@ -24,6 +24,8 @@ import type { WorkflowDefinitionRegistrySource } from "@intx/types/workflow-sour
 import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 import { resolveWorkflowClosure } from "./workflow-closure-resolution";
+import type { SourceTreeReads } from "./workflow-source-closure";
+import type { CommittedTreeEntry } from "./repo-store/types";
 
 let scratch: string;
 let fixtureRoot: string;
@@ -117,6 +119,31 @@ function makeAssetReaders(tarballs: Record<string, Uint8Array>): {
       return bytes;
     },
     listBlobs: async (dir) => (dir === "tarballs" ? Object.keys(tarballs) : []),
+  };
+}
+
+// A `SourceTreeReads` fake over `package.json` blobs keyed by packageDir and a
+// tree oid per packageDir, the source-arm analog of `makeAssetReaders`. The
+// git-tree resolver's own logic is unit-covered in
+// `workflow-source-closure.test.ts`; this drives it through `resolveWorkflowClosure`.
+function makeSourceTreeReads(
+  packages: Record<string, { json: unknown; treeOid: string }>,
+): SourceTreeReads {
+  const blobs = new Map<string, Uint8Array>();
+  const oids = new Map<string, string>();
+  for (const [dir, { json, treeOid }] of Object.entries(packages)) {
+    const blobPath = dir === "." ? "package.json" : `${dir}/package.json`;
+    blobs.set(blobPath, new TextEncoder().encode(JSON.stringify(json)));
+    oids.set(dir, treeOid);
+  }
+  return {
+    readBlob: async (blobPath) => {
+      const bytes = blobs.get(blobPath);
+      if (bytes === undefined) throw new Error(`no blob at ${blobPath}`);
+      return bytes;
+    },
+    listDir: async (): Promise<CommittedTreeEntry[]> => [],
+    treeOid: async (dir) => oids.get(dir) ?? null,
   };
 }
 
@@ -269,6 +296,69 @@ describe("resolveWorkflowClosure", () => {
         integrity: top.integrity,
       },
     });
+  });
+
+  test("routes a source-format asset to the git-tree resolver", async () => {
+    // The workflow package lives as a source subtree; its one external dep
+    // resolves through the npm registry into a tarball-backed registry entry.
+    const dep = await buildFixture({
+      name: "wf-src-ext-dep",
+      version: "1.4.0",
+    });
+    const packuments = makePackumentFromFixtures([dep]);
+    const fetchPackument: PackumentFetcher = async (name) => {
+      const p = packuments.find((q) => q.name === name);
+      if (p === undefined) throw new Error(`no packument: ${name}`);
+      return p;
+    };
+
+    const reads = makeSourceTreeReads({
+      ".": {
+        json: {
+          name: "@wf/src-app",
+          version: "3.0.0",
+          dependencies: { [dep.name]: "^1.0.0" },
+        },
+        treeOid: "root-tree",
+      },
+    });
+
+    const manifest = await resolveWorkflowClosure({
+      source: {
+        kind: "asset",
+        assetId: "asset_src",
+        package: { format: "source", commitSha: "commit-xyz" },
+      },
+      reads,
+      registryConfig: { url: "https://registry.test" },
+      fetchPackument,
+    });
+
+    expect(manifest.topLevel).toEqual([
+      { name: "@wf/src-app", version: "3.0.0" },
+    ]);
+    const byName = new Map(manifest.entries.map((e) => [e.name, e]));
+    expect(byName.size).toBe(2);
+
+    // The workflow package is a source entry pinned to the tree oid.
+    const app = byName.get("@wf/src-app");
+    expect(app?.source).toEqual({
+      kind: "asset",
+      assetId: "asset_src",
+      package: {
+        format: "source",
+        commitSha: "commit-xyz",
+        packageDir: ".",
+        treeOid: "root-tree",
+      },
+    });
+
+    // The external dep is a registry entry with the tarball's SRI.
+    const ext = byName.get(dep.name);
+    expect(ext?.version).toBe(dep.version);
+    expect(ext?.source.kind).toBe("registry");
+    if (ext === undefined) throw new Error("missing external entry");
+    expect(getToolPackageSourceContentIdentity(ext.source)).toBe(dep.integrity);
   });
 
   test("fails loud when the asset does not publish a declared dependency", async () => {

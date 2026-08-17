@@ -22,6 +22,8 @@ export {
   type InstallAndApproveResult,
   type ProbeGateResult,
 } from "./workflow-probe-gate";
+export { committedReadsToSourceTree } from "./committed-source-tree";
+export type { SourceTreeReads } from "./workflow-source-closure";
 export type { WorkflowDefinition } from "@intx/workflow/definition";
 export {
   createEventCollectorRegistry,

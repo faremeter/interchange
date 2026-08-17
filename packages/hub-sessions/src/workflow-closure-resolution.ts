@@ -8,13 +8,22 @@
 // `ToolPackageManifest` is the frozen closure the deploy path later ships by
 // source-ref.
 //
-// The registry arm names an npm registry; its URL and credentials are supplied
-// by the caller as a `RegistryConfig`, since the caller is the boundary that
-// owns the registry configuration. The asset arm names a hub `package-registry`
-// asset that publishes the definition package as a tarball; the caller supplies
-// bound `readBlob`/`listBlobs` closures over that asset (the same shape
-// `session-service` mints for `AssetRegistrySource`), keeping this module free
-// of any asset-service dependency.
+// There are three arms, one per `(source.kind, package.format)`:
+//   - `registry` names an npm registry; its URL and credentials are supplied by
+//     the caller as a `RegistryConfig`, since the caller owns the registry
+//     configuration.
+//   - `asset` + `tarball` names a hub asset that publishes the definition
+//     package as a tarball; the caller supplies bound `readBlob`/`listBlobs`
+//     closures over that asset (the same shape `session-service` mints for
+//     `AssetRegistrySource`).
+//   - `asset` + `source` names a hub asset whose definition package lives as a
+//     git subtree at a pinned commit; the caller supplies a `SourceTreeReads`
+//     pinned to that commit plus a `RegistryConfig` for the external npm deps.
+//     This arm delegates to `resolveSourceWorkflowClosure`, which reads the
+//     tree directly and needs no `name@range` pin (it selects the member from
+//     the source's `packageName`).
+// Every arm takes pre-bound read capabilities, keeping this module free of any
+// asset-service or repo-store dependency.
 
 import { base64Encode } from "@intx/types";
 import {
@@ -31,6 +40,11 @@ import type {
   WorkflowDefinitionAssetSource,
   WorkflowDefinitionRegistrySource,
 } from "@intx/types/workflow-sources";
+
+import {
+  resolveSourceWorkflowClosure,
+  type SourceTreeReads,
+} from "./workflow-source-closure";
 
 /**
  * Resolve a workflow definition's dependency closure against the npm registry
@@ -62,7 +76,8 @@ export type ResolveWorkflowClosureRegistryArgs = {
  * map `session-service` already builds for tool packages; that path is not
  * threaded here.
  */
-export type ResolveWorkflowClosureAssetArgs = {
+export type ResolveWorkflowClosureAssetTarballArgs = {
+  /** An asset source whose `package.format` is `"tarball"`. */
   readonly source: WorkflowDefinitionAssetSource;
   /** A `name@range` spec for the workflow definition package. */
   readonly pin: string;
@@ -72,14 +87,49 @@ export type ResolveWorkflowClosureAssetArgs = {
   readonly listBlobs: (dir: string) => Promise<string[]>;
 };
 
+/**
+ * Resolve a source-format workflow definition's dependency closure from the
+ * asset's git tree at the pinned commit. The workspace-local members become
+ * `format:"source"` entries and the external npm deps resolve through the
+ * npm registry the caller supplies; there is no `name@range` pin (the member
+ * is selected from `source.package.packageName`).
+ */
+export type ResolveWorkflowClosureAssetSourceArgs = {
+  /** An asset source whose `package.format` is `"source"`. */
+  readonly source: WorkflowDefinitionAssetSource;
+  /** Git-tree reads pinned to `source.package.commitSha`. */
+  readonly reads: SourceTreeReads;
+  /** URL and credentials for the npm registry external deps resolve against. */
+  readonly registryConfig: RegistryConfig;
+  /**
+   * Test seam for packument fetches. Omitted in production, where the
+   * default `npm-registry-fetch` wrapper reaches the configured URL.
+   */
+  readonly fetchPackument?: PackumentFetcher;
+};
+
 export type ResolveWorkflowClosureArgs =
   | ResolveWorkflowClosureRegistryArgs
-  | ResolveWorkflowClosureAssetArgs;
+  | ResolveWorkflowClosureAssetTarballArgs
+  | ResolveWorkflowClosureAssetSourceArgs;
 
-function isAssetArgs(
+// Both asset arms carry an identical `source` field type, so narrow on the
+// source's own `package.format` discriminant rather than adding a redundant
+// discriminant to the args.
+function isAssetSourceArgs(
   args: ResolveWorkflowClosureArgs,
-): args is ResolveWorkflowClosureAssetArgs {
-  return args.source.kind === "asset";
+): args is ResolveWorkflowClosureAssetSourceArgs {
+  return (
+    args.source.kind === "asset" && args.source.package.format === "source"
+  );
+}
+
+function isAssetTarballArgs(
+  args: ResolveWorkflowClosureArgs,
+): args is ResolveWorkflowClosureAssetTarballArgs {
+  return (
+    args.source.kind === "asset" && args.source.package.format === "tarball"
+  );
 }
 
 /**
@@ -93,7 +143,18 @@ function isAssetArgs(
 export async function resolveWorkflowClosure(
   args: ResolveWorkflowClosureArgs,
 ): Promise<ToolPackageManifest> {
-  if (isAssetArgs(args)) {
+  if (isAssetSourceArgs(args)) {
+    return resolveSourceWorkflowClosure({
+      source: args.source,
+      reads: args.reads,
+      registryConfig: args.registryConfig,
+      ...(args.fetchPackument !== undefined
+        ? { fetchPackument: args.fetchPackument }
+        : {}),
+    });
+  }
+
+  if (isAssetTarballArgs(args)) {
     // The assetId is the source name so every walker resolution error is
     // traceable to the exact asset; it is the sole and default source.
     const name = args.source.assetId;
