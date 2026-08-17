@@ -567,12 +567,29 @@ describe("createWorkflowClosureMaterializer", () => {
       "tarballs/wf-probe-1.0.0.tgz": workflow.bytes,
     });
     const encoded = base64Encode(pack);
+    // The closure references the delivered asset so the first delivery clears
+    // the "delivered but referenced by no closure entry" guard and the second
+    // delivery is what trips the duplicate-delivery guard under test.
     const closure: ToolPackageManifest = {
       schemaVersion: "1",
       topLevel: [
         { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
       ],
-      entries: [],
+      entries: [
+        {
+          name: WORKFLOW_PACKAGE_NAME,
+          version: WORKFLOW_PACKAGE_VERSION,
+          source: {
+            kind: "asset",
+            assetId,
+            package: {
+              format: "tarball",
+              path: "tarballs/wf-probe-1.0.0.tgz",
+              integrity: "sha512-placeholder",
+            },
+          },
+        },
+      ],
     };
     const materialize = createWorkflowClosureMaterializer(materializerConfig());
     await expect(
@@ -600,35 +617,6 @@ describe("createWorkflowClosureMaterializer", () => {
         ],
       }),
     ).rejects.toThrow(/is delivered more than once/);
-  });
-
-  test("fails closed on a git-sourced probe frame", async () => {
-    const materialize = createWorkflowClosureMaterializer(materializerConfig());
-    const closure: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [
-        { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
-      ],
-      entries: [],
-    };
-    await expect(
-      materialize({
-        type: "workflow.probe.request",
-        requestId: "req-1",
-        source: {
-          kind: "asset",
-          assetId: "asset_abc",
-          package: {
-            format: "source",
-            commitSha: "0123456789abcdef0123456789abcdef01234567",
-          },
-        },
-        closure,
-        entry: WORKFLOW_ENTRY,
-      }),
-    ).rejects.toThrow(
-      /source-format asset probe closures cannot be materialized/,
-    );
   });
 
   test("fails loud when the frame entry disagrees with interchange.workflow", async () => {

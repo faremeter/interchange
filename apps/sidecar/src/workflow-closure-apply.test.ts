@@ -286,34 +286,4 @@ describe("applyFrozenWorkflowClosure", () => {
 
     expect(applied.definition.id).toBe(WORKFLOW_ID);
   });
-
-  test("fails closed on a source-format asset closure", async () => {
-    const manifest: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [
-        { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
-      ],
-      entries: [],
-    };
-    await expect(
-      applyFrozenWorkflowClosure({
-        source: {
-          kind: "asset",
-          assetId: "asset_abc",
-          package: {
-            format: "source",
-            commitSha: "0123456789abcdef0123456789abcdef01234567",
-          },
-        },
-        closure: manifest,
-        instanceDir,
-        cacheRoot,
-        cacheMaxBytes: 10_000_000,
-        registryMaxTarballBytes: 10_000_000,
-        registries: registries(),
-      }),
-    ).rejects.toThrow(
-      /source-format asset workflow closures cannot be materialized/,
-    );
-  });
 });

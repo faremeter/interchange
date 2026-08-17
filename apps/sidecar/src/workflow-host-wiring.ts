@@ -72,7 +72,10 @@ import {
   applyFrozenWorkflowClosure,
   type AppliedWorkflowClosure,
 } from "./workflow-closure-apply";
-import { materializeSourceAssetMounts } from "./workflow-closure-materialization";
+import {
+  materializeWorkflowAssets,
+  sourceAssetGitDir,
+} from "./source-asset-delivery";
 import { readRegistries } from "./sidecar-materialization-config";
 
 import type {
@@ -132,14 +135,30 @@ function deploymentSourceAssetRoot(
 }
 
 /**
- * The `assetId -> mountPath` map a pinned closure's `kind:"asset"` entries
- * resolve against, derived purely from the pin (via the shared mount-path
- * helper) so deploy and restore agree without the frame's delivered assets.
+ * The durable indexed-`.git` store root a pinned deployment's source-format
+ * asset entries are checked out from. Sibling of the plain-file source store;
+ * both survive restart so re-materialization needs no re-delivery.
+ */
+function deploymentSourceGitRoot(
+  dataDir: string,
+  deploymentId: string,
+): string {
+  return pathJoin(dataDir, "workflow-definition-source-gits", deploymentId);
+}
+
+/**
+ * The `assetId -> mountPath` map a pinned closure's TARBALL `kind:"asset"`
+ * entries resolve against, derived purely from the pin (via the shared
+ * mount-path helper) so deploy and restore agree without the frame's delivered
+ * assets. Source-format entries resolve through `deriveSourceGitDirs` instead.
  */
 function deriveSourceAssetMounts(pin: SourceRefPin): Map<string, string> {
   const mounts = new Map<string, string>();
   for (const entry of pin.closure.entries) {
-    if (entry.source.kind === "asset") {
+    if (
+      entry.source.kind === "asset" &&
+      entry.source.package.format === "tarball"
+    ) {
       mounts.set(
         entry.source.assetId,
         workflowSourceAssetMountPath(entry.source.assetId),
@@ -147,6 +166,30 @@ function deriveSourceAssetMounts(pin: SourceRefPin): Map<string, string> {
     }
   }
   return mounts;
+}
+
+/**
+ * The `assetId -> gitDir` map a pinned closure's SOURCE `kind:"asset"` entries
+ * check subtrees out of, derived purely from the pin so deploy and restore
+ * agree without re-delivery.
+ */
+function deriveSourceGitDirs(
+  pin: SourceRefPin,
+  gitRoot: string,
+): Map<string, string> {
+  const gitDirs = new Map<string, string>();
+  for (const entry of pin.closure.entries) {
+    if (
+      entry.source.kind === "asset" &&
+      entry.source.package.format === "source"
+    ) {
+      gitDirs.set(
+        entry.source.assetId,
+        sourceAssetGitDir(gitRoot, entry.source.assetId),
+      );
+    }
+  }
+  return gitDirs;
 }
 
 async function isExistingDir(dir: string): Promise<boolean> {
@@ -175,7 +218,11 @@ export async function resolveDeploymentAssetMounts(
   dataDir: string,
   deploymentId: string,
   pin: SourceRefPin,
-): Promise<{ assetRoot: string; assetMounts: ReadonlyMap<string, string> }> {
+): Promise<{
+  assetRoot: string;
+  assetMounts: ReadonlyMap<string, string>;
+  gitDirs: ReadonlyMap<string, string>;
+}> {
   const assetRoot = deploymentSourceAssetRoot(dataDir, deploymentId);
   const assetMounts = deriveSourceAssetMounts(pin);
   for (const [assetId, mountPath] of assetMounts) {
@@ -186,7 +233,16 @@ export async function resolveDeploymentAssetMounts(
       );
     }
   }
-  return { assetRoot, assetMounts };
+  const gitRoot = deploymentSourceGitRoot(dataDir, deploymentId);
+  const gitDirs = deriveSourceGitDirs(pin, gitRoot);
+  for (const [assetId, gitDir] of gitDirs) {
+    if (!(await isExistingDir(gitDir))) {
+      throw new Error(
+        `resolveDeploymentAssetMounts: source asset ${JSON.stringify(assetId)} for deployment ${deploymentId} has no indexed git store at ${gitDir}; the deployment must be re-driven from the hub`,
+      );
+    }
+  }
+  return { assetRoot, assetMounts, gitDirs };
 }
 
 /**
@@ -1561,14 +1617,12 @@ export function createSidecarDeployRouter(deps: {
     );
     await rm(instanceDir, { recursive: true, force: true });
 
-    // `kind:"asset"` entries read their tarballs from the durable source store
-    // the deploy checked out. Deriving and asserting the mounts from the pin
-    // alone is what makes this symmetric on deploy and restore.
-    const { assetRoot, assetMounts } = await resolveDeploymentAssetMounts(
-      dataDir,
-      deploymentId,
-      pin,
-    );
+    // Tarball `kind:"asset"` entries read from the durable plain-file store; a
+    // source-format entry checks its subtree out of the durable indexed git
+    // store. Deriving and asserting both from the pin alone is what makes this
+    // symmetric on deploy and restore.
+    const { assetRoot, assetMounts, gitDirs } =
+      await resolveDeploymentAssetMounts(dataDir, deploymentId, pin);
 
     return applyClosure({
       source: pin.source,
@@ -1586,6 +1640,7 @@ export function createSidecarDeployRouter(deps: {
       registries: readRegistries(),
       assetRoot,
       assetMounts,
+      gitDirs,
     });
   }
 
@@ -2273,13 +2328,17 @@ export function createSidecarDeployRouter(deps: {
         // `materializeDeploymentClosure` (which also runs on restore). A
         // registry-sourced pin delivers no assets and only clears the store.
         const assetStore = deploymentSourceAssetRoot(dataDir, runId);
+        const gitStore = deploymentSourceGitRoot(dataDir, runId);
         await rm(assetStore, { recursive: true, force: true });
+        await rm(gitStore, { recursive: true, force: true });
         if (projection.assets !== undefined && projection.assets.length > 0) {
-          await materializeSourceAssetMounts(
-            projection.assets,
-            assetStore,
-            MAX_DEPLOY_ASSET_PAYLOAD_BYTES,
-          );
+          await materializeWorkflowAssets({
+            assets: projection.assets,
+            closure: projection.sourceRef.closure,
+            assetRoot: assetStore,
+            gitDirRoot: gitStore,
+            maxAssetPayloadBytes: MAX_DEPLOY_ASSET_PAYLOAD_BYTES,
+          });
         }
         // Safe to reclaim the instance dir inside the helper: this deploy is
         // single-flight-guarded (the reservation above) and the child is not
@@ -2471,6 +2530,10 @@ export function createSidecarDeployRouter(deps: {
           { recursive: true, force: true },
         );
         await rm(deploymentSourceAssetRoot(stepStateDataDir, runId), {
+          recursive: true,
+          force: true,
+        });
+        await rm(deploymentSourceGitRoot(stepStateDataDir, runId), {
           recursive: true,
           force: true,
         });
