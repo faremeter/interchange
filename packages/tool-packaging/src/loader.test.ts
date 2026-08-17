@@ -248,6 +248,152 @@ describe("createToolLoader", () => {
     expect(loaded[0]?.credentials).toEqual([]);
   });
 
+  test("lays out a workspace: protocol dependency against its closure member", async () => {
+    // A source-workspace member depends on another member via `workspace:*`.
+    // That protocol is not semver, so before it is normalized the range
+    // resolver rejects the layout with "no satisfying version"; the loader must
+    // instead match the one closure entry of that name.
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const app = await packFixture({
+      name: "@wf/app",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      dependencies: { "@wf/lib": "workspace:*" },
+    });
+    const lib = await packFixture({
+      name: "@wf/lib",
+      version: "1.0.0",
+      interchangeToolsRelPath: null,
+      extraFiles: { "index.mjs": "export const x = 1;\n" },
+    });
+
+    const fetchTarball: TarballFetcher = async (entry) => {
+      if (entry.name === "@wf/app") return app.bytes;
+      if (entry.name === "@wf/lib") return lib.bytes;
+      throw new Error(`unexpected fetch ${entry.name}`);
+    };
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball,
+      importModule: async () => ({ main: makeFakeFactory("@wf/app/main") }),
+    });
+
+    const manifest: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [{ name: "@wf/app", version: "1.0.0" }],
+      entries: [
+        {
+          name: "@wf/app",
+          version: "1.0.0",
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: app.integrity,
+          },
+        },
+        {
+          name: "@wf/lib",
+          version: "1.0.0",
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: lib.integrity,
+          },
+        },
+      ],
+    };
+
+    // Before the workspace: normalization this rejected with
+    // `package.entry.invalid`; it now lays out cleanly.
+    const loaded = await loader.loadManifest({
+      manifest,
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+      gitDirs: new Map(),
+    });
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.name).toBe("@wf/app");
+  });
+
+  test("lays out a catalog: protocol dependency against its closure member", async () => {
+    // A monorepo member's on-disk package.json keeps a bare `catalog:` range;
+    // the hub already expanded it and pinned the external at a concrete version
+    // in the closure. Like `workspace:`, `catalog:` is not semver, so the layout
+    // must match the one closure entry of that name rather than reject it.
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const app = await packFixture({
+      name: "@wf/catalog-app",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      dependencies: { "left-pad": "catalog:" },
+    });
+    const leftPad = await packFixture({
+      name: "left-pad",
+      version: "1.3.0",
+      interchangeToolsRelPath: null,
+      extraFiles: { "index.mjs": "export const x = 1;\n" },
+    });
+
+    const fetchTarball: TarballFetcher = async (entry) => {
+      if (entry.name === "@wf/catalog-app") return app.bytes;
+      if (entry.name === "left-pad") return leftPad.bytes;
+      throw new Error(`unexpected fetch ${entry.name}`);
+    };
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball,
+      importModule: async () => ({
+        main: makeFakeFactory("@wf/catalog-app/main"),
+      }),
+    });
+
+    const manifest: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [{ name: "@wf/catalog-app", version: "1.0.0" }],
+      entries: [
+        {
+          name: "@wf/catalog-app",
+          version: "1.0.0",
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: app.integrity,
+          },
+        },
+        {
+          name: "left-pad",
+          version: "1.3.0",
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: leftPad.integrity,
+          },
+        },
+      ],
+    };
+
+    const loaded = await loader.loadManifest({
+      manifest,
+      instanceScratchDir: instanceDir,
+      assetRoot,
+      assetMounts: new Map(),
+      gitDirs: new Map(),
+    });
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.name).toBe("@wf/catalog-app");
+  });
+
   test("materializes package files independently from the cache extraction", async () => {
     const cache = createTarballCache({
       rootDir: cacheDir,
