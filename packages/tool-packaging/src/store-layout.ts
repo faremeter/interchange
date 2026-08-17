@@ -686,7 +686,11 @@ async function readDirectDependencies(
             package: { name: entry.name, version: entry.version },
           });
         }
-        byName.set(name, { name, range, optional: true });
+        byName.set(name, {
+          name,
+          range: normalizeDepRange(range),
+          optional: true,
+        });
       }
     }
   }
@@ -702,11 +706,38 @@ async function readDirectDependencies(
             package: { name: entry.name, version: entry.version },
           });
         }
-        byName.set(name, { name, range, optional: false });
+        byName.set(name, {
+          name,
+          range: normalizeDepRange(range),
+          optional: false,
+        });
       }
     }
   }
   return Array.from(byName.values());
+}
+
+// Protocol prefixes a source-workspace member's on-disk package.json can carry
+// in a dependency range. Both target a package the closure has ALREADY resolved
+// to a single version -- `workspace:` a workspace-local member, `catalog:` a
+// catalog entry the hub expanded at resolve time -- so neither string is a
+// semver range the resolver can pick against.
+const CLOSURE_RESOLVED_RANGE_PREFIXES = ["workspace:", "catalog:"] as const;
+
+/**
+ * Rewrite a `workspace:`/`catalog:` protocol range to `*` when reading a
+ * package's dependencies. The closure has one entry of the target's name, so
+ * `*` matches it by name; the raw protocol string would otherwise reach
+ * `semver.maxSatisfying` and be rejected as unsatisfiable. A registry-published
+ * package never carries either protocol (npm rewrites them on publish), so this
+ * only affects a source-workspace closure.
+ */
+function normalizeDepRange(range: string): string {
+  return CLOSURE_RESOLVED_RANGE_PREFIXES.some((prefix) =>
+    range.startsWith(prefix),
+  )
+    ? "*"
+    : range;
 }
 
 /**
