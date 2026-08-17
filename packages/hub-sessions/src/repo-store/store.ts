@@ -1861,8 +1861,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // they obtain and validate the commit SHA.
   function committedReadsAt(dir: string, commitSha: string): CommittedReads {
     const { readBlobByOid } = buildPriorTreeClosures(dir, commitSha);
+    const treeOid = async (relPath: string): Promise<string | null> => {
+      // "." and "" both name the root tree; resolveTreeEntry treats the
+      // empty string as the root, so normalize "." to it.
+      const normalized = relPath === "." ? "" : relPath;
+      return resolveTreeEntry(dir, commitSha, normalized, "tree");
+    };
     const listDir = async (relPath: string): Promise<CommittedTreeEntry[]> => {
-      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      const oid = await treeOid(relPath);
       if (oid === null) return [];
       const { tree } = await git.readTree({
         fs,
@@ -1872,7 +1878,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       });
       return tree.map((e) => ({ name: e.path, oid: e.oid, type: e.type }));
     };
-    return { listDir, readBlobByOid };
+    return { listDir, readBlobByOid, treeOid };
   }
 
   async function repoHasGitDir(dir: string): Promise<boolean> {

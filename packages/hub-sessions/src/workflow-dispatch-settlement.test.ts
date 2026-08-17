@@ -30,6 +30,9 @@ function committedReads(files: ReadonlyMap<string, string>): CommittedReads {
       if (value === undefined) throw new Error(`unknown oid ${oid}`);
       return new TextEncoder().encode(value);
     },
+    async treeOid() {
+      return null;
+    },
   };
 }
 
@@ -108,6 +111,9 @@ describe("listReceivedWorkflowSignals", () => {
     ]);
     const visited: string[] = [];
     const reads: CommittedReads = {
+      async treeOid() {
+        return null;
+      },
       async listDir(path) {
         visited.push(path);
         if (path === "runs" || path.includes("unrelated-child")) {
@@ -150,6 +156,9 @@ describe("listReceivedWorkflowSignals", () => {
       }),
     ].join("\n");
     const reads: CommittedReads = {
+      async treeOid() {
+        return null;
+      },
       async listDir(path) {
         if (path === "runs/workflow@tenant") {
           return [{ name: "events.jsonl", oid: "sealed-events", type: "blob" }];
@@ -171,6 +180,9 @@ describe("listReceivedWorkflowSignals", () => {
 
   test("returns no signals for a missing selected run", async () => {
     const reads: CommittedReads = {
+      async treeOid() {
+        return null;
+      },
       async listDir() {
         return [];
       },
@@ -186,6 +198,9 @@ describe("listReceivedWorkflowSignals", () => {
 
   test("rejects a malformed signal in the selected run", async () => {
     const reads: CommittedReads = {
+      async treeOid() {
+        return null;
+      },
       async listDir(path) {
         if (path === "runs/workflow@tenant") {
           return [{ name: "events", oid: "events", type: "tree" }];
@@ -228,6 +243,9 @@ describe("listAcceptedWorkflowDispatches", () => {
       ],
     ]);
     const reads: CommittedReads = {
+      async treeOid() {
+        return null;
+      },
       async listDir(path) {
         if (path === "runs/workflow@tenant") {
           return [{ name: "events", oid: "events", type: "tree" }];
@@ -262,6 +280,9 @@ describe("listAcceptedWorkflowDispatches", () => {
   test("stops the newest-first scan once every unsettled id is found", async () => {
     const visitedOids: string[] = [];
     const reads: CommittedReads = {
+      async treeOid() {
+        return null;
+      },
       async listDir(path) {
         if (path === "runs/workflow@tenant") {
           return [{ name: "events", oid: "events", type: "tree" }];

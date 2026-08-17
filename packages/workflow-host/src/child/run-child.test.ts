@@ -252,6 +252,9 @@ function createStubRepoStore(baseDir: string): RepoStore {
         async readBlobByOid(oid: string) {
           return fs.readFile(path.join(repoDir, oid));
         },
+        async treeOid() {
+          return null;
+        },
       };
     },
   };
