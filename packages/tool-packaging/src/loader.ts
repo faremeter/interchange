@@ -61,6 +61,7 @@ import type {
   ToolPackageManifest,
   ToolPackageManifestEntry,
 } from "@intx/types/tool-packages";
+import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 import type { TarballCache } from "./cache";
 import {
@@ -229,6 +230,14 @@ export interface LoadManifestArgs {
    * sources from an asset.
    */
   readonly assetMounts: ReadonlyMap<string, string>;
+  /**
+   * Maps a `kind: "git"` entry's `source.assetId` to an absolute path to
+   * an indexed git directory whose object database holds the pinned
+   * commit and its trees. The caller checks the delivered pack out into
+   * this directory once per asset before applying. Empty map is valid
+   * when no entry sources from git.
+   */
+  readonly gitDirs: ReadonlyMap<string, string>;
 }
 
 export interface ToolLoader {
@@ -249,6 +258,12 @@ export interface MaterializeClosureArgs {
   readonly instanceScratchDir: string;
   readonly assetRoot: string;
   readonly assetMounts: ReadonlyMap<string, string>;
+  /**
+   * Maps a `kind: "git"` entry's `source.assetId` to an absolute indexed
+   * git directory the pinned subtree is read from. Empty map is valid
+   * when no entry sources from git.
+   */
+  readonly gitDirs: ReadonlyMap<string, string>;
   readonly host: HostPlatform;
   readonly cache: TarballCache;
   /**
@@ -490,16 +505,16 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       });
     }
 
-    // Cache-bust the ESM module cache by appending the entry integrity
-    // as a query string. Node keys the ESM cache by resolved URL/path,
-    // not by content: a `(name, version)` pair whose bytes change
-    // across applies (an operator-recompiled built-in, a hot-fixed
-    // tarball republished under the same version) would otherwise
-    // resolve to the previously-imported module instance until the
-    // sidecar restarts. Same path with a different query is a distinct
-    // ESM cache entry, so the import reflects the bytes actually
+    // Cache-bust the ESM module cache by appending the entry's content
+    // identity as a query string. Node keys the ESM cache by resolved
+    // URL/path, not by content: a `(name, version)` pair whose bytes
+    // change across applies (an operator-recompiled built-in, a
+    // hot-fixed tarball republished under the same version) would
+    // otherwise resolve to the previously-imported module instance until
+    // the sidecar restarts. Same path with a different query is a
+    // distinct ESM cache entry, so the import reflects the bytes actually
     // extracted for this apply.
-    const importUrl = `${pathToFileURL(entryAbs).href}?integrity=${encodeURIComponent(entry.integrity)}`;
+    const importUrl = `${pathToFileURL(entryAbs).href}?integrity=${encodeURIComponent(getToolPackageSourceContentIdentity(entry.source))}`;
     let mod: unknown;
     try {
       mod = await importModule(importUrl);
@@ -534,6 +549,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
         instanceScratchDir: args.instanceScratchDir,
         assetRoot: args.assetRoot,
         assetMounts: args.assetMounts,
+        gitDirs: args.gitDirs,
         host: config.host,
         cache: config.cache,
         registries: config.registries,
@@ -577,6 +593,17 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
   function makeDefaultTarballFetcher(): TarballFetcher {
     return async (entry, ctx) => {
       if (entry.source.kind === "asset") {
+        // A source-format asset is a git subtree materialized by checkout
+        // in the store layout, never fetched as a tarball. Reaching the
+        // tarball fetcher with one is a loader bug; fail loud.
+        if (entry.source.package.format !== "tarball") {
+          throw new ToolLoaderError({
+            category: "git.materialization.failed",
+            message: `source-format asset entry ${entry.name}@${entry.version} reached the tarball fetcher`,
+            package: { name: entry.name, version: entry.version },
+          });
+        }
+        const tarballPath = entry.source.package.path;
         // The mount lookup is guaranteed by `materialize`'s
         // pre-fetch gate, but reassert here so the narrowing is
         // visible to readers — the caller of fetchTarball has no
@@ -589,8 +616,8 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
             package: { name: entry.name, version: entry.version },
           });
         }
-        // Both `mount` and `entry.source.path` originate from the hub
-        // and cross the trust boundary into the sidecar process. A `..`
+        // Both `mount` and `entry.source.package.path` originate from the
+        // hub and cross the trust boundary into the sidecar process. A `..`
         // segment in either would let a malicious manifest read any
         // file the sidecar can open. Resolve the join and assert the
         // result still sits under `assetRoot` so a traversal attempt
@@ -610,14 +637,14 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
           });
         }
         const mountAbs = path.resolve(ctx.assetRoot, mount);
-        const absPath = path.resolve(mountAbs, entry.source.path);
+        const absPath = path.resolve(mountAbs, tarballPath);
         const mountContainmentRoot = mountAbs.endsWith(path.sep)
           ? mountAbs
           : mountAbs + path.sep;
         if (absPath !== mountAbs && !absPath.startsWith(mountContainmentRoot)) {
           throw new ToolLoaderError({
             category: "package.entry.invalid",
-            message: `source.path for ${entry.name}@${entry.version} resolves to ${JSON.stringify(absPath)} which escapes the declared mount ${JSON.stringify(mountAbs)} (cross-mount traversal)`,
+            message: `source.package.path for ${entry.name}@${entry.version} resolves to ${JSON.stringify(absPath)} which escapes the declared mount ${JSON.stringify(mountAbs)} (cross-mount traversal)`,
             package: { name: entry.name, version: entry.version },
           });
         }

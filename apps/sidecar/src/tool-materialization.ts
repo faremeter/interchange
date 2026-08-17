@@ -214,6 +214,9 @@ export async function materializeToolPackages(args: {
     instanceDir,
     assetRoot: args.assetRoot ?? path.join(args.storeDir, "workspace"),
     assetMounts: args.assetMounts,
+    // Step tool packages never source from git; only workflow-definition
+    // closures carry git entries.
+    gitDirs: new Map(),
     attemptId,
     previousDeployId,
     newDeployId,

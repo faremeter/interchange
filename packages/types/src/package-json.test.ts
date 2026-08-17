@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 
-import { PackageJSON } from "./package-json";
+import { PackageJSON, isContainedEntryPath } from "./package-json";
 
 function accepts(data: unknown): boolean {
   return !(PackageJSON(data) instanceof type.errors);
@@ -155,5 +155,35 @@ describe("PackageJSON", () => {
       interchange: { workflow: "./dist/wf.js", extra: "passthrough" },
     });
     expect(result instanceof type.errors).toBe(false);
+  });
+});
+
+describe("isContainedEntryPath", () => {
+  test("accepts a package-relative entry", () => {
+    expect(isContainedEntryPath("index.js")).toBe(true);
+    expect(isContainedEntryPath("./dist/index.js")).toBe(true);
+    expect(isContainedEntryPath("src/nested/wf.js")).toBe(true);
+  });
+
+  test("accepts an entry that normalizes to the package root", () => {
+    expect(isContainedEntryPath(".")).toBe(true);
+  });
+
+  test("rejects a parent-traversal entry", () => {
+    expect(isContainedEntryPath("../escape.js")).toBe(false);
+    expect(isContainedEntryPath("dist/../../escape.js")).toBe(false);
+  });
+
+  test("rejects an absolute entry", () => {
+    expect(isContainedEntryPath("/etc/passwd")).toBe(false);
+  });
+
+  test("rejects an absolute entry regardless of its leading segment", () => {
+    expect(isContainedEntryPath("/pkg/index.js")).toBe(false);
+    expect(isContainedEntryPath("/pkg")).toBe(false);
+  });
+
+  test("rejects a sibling that shares the root as a prefix", () => {
+    expect(isContainedEntryPath("../pkg-sibling/index.js")).toBe(false);
   });
 });

@@ -53,8 +53,12 @@ import type {
   SourceRefPin,
   WorkflowProjectionDefinition,
   WorkflowProjectionWithSources,
+  WorkflowSourceAssetMount,
 } from "@intx/types/sidecar";
-import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import type {
+  WorkflowDefinitionAssetSource,
+  WorkflowDefinitionRegistrySource,
+} from "@intx/types/workflow-sources";
 import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
   defineWorkflow,
@@ -91,6 +95,10 @@ import type {
   SidecarRouter,
 } from "./ws/sidecar-handler";
 import type { Principal, RepoId } from "./repo-store";
+import {
+  buildSourceAssetMounts,
+  type ResolveAssetAttachmentFn,
+} from "./workflow-closure-resolution";
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
 import type { InstallAndApproveResult } from "./workflow-probe-gate";
 
@@ -515,6 +523,13 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * inline onTrigger body.
    */
   referencedDefinitions?: readonly WorkflowProjectionWithSources[];
+  /**
+   * Source assets the pin's `kind:"asset"` closure entries read from, delivered
+   * inline on the frame so the sidecar checks them out into its durable
+   * per-deployment source store. Absent for a registry-sourced pin (its tarballs
+   * are fetched over HTTP).
+   */
+  assets?: readonly WorkflowSourceAssetMount[];
 };
 
 export type SendMultiStepDeployFrameArgs =
@@ -561,6 +576,9 @@ export async function sendMultiStepDeployFrame(
       ...(args.referencedDefinitions !== undefined &&
       args.referencedDefinitions.length > 0
         ? { referencedDefinitions: [...args.referencedDefinitions] }
+        : {}),
+      ...(args.assets !== undefined && args.assets.length > 0
+        ? { assets: [...args.assets] }
         : {}),
     });
   }
@@ -625,9 +643,8 @@ export async function sendMultiStepDeployFrame(
  * `sources`, the deploy `config`, the target `agentAddress`, and the `source`
  * ref that names where the definition's bytes are published.
  */
-export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
+type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
   approved: InstallAndApproveResult;
-  source: WorkflowDefinitionSource;
   /**
    * The hub DB handle, the definition's OWN tenant, the deployment's anchor run
    * id, and the mail domain its run address lives under. REQUIRED: this function
@@ -652,6 +669,30 @@ export type DeployCodeSourcedWorkflowArgs = DeployFrameCommonArgs & {
    */
   credentialCipher?: CredentialCipher;
 };
+
+/** Deploy a definition published to an npm registry: the sidecar fetches its
+ * tarballs over HTTP, so no source asset is delivered. */
+export type DeployCodeSourcedRegistryArgs = DeployCodeSourcedCommonArgs & {
+  source: WorkflowDefinitionRegistrySource;
+};
+
+/** Deploy a definition sourced from a hub `package-registry` asset: the caller
+ * mints `resolveAttachment` so this glue delivers the asset packs the sidecar
+ * checks out, without importing the asset service. */
+export type DeployCodeSourcedAssetArgs = DeployCodeSourcedCommonArgs & {
+  source: WorkflowDefinitionAssetSource;
+  resolveAttachment: ResolveAssetAttachmentFn;
+};
+
+export type DeployCodeSourcedWorkflowArgs =
+  | DeployCodeSourcedRegistryArgs
+  | DeployCodeSourcedAssetArgs;
+
+function isAssetDeployArgs(
+  args: DeployCodeSourcedWorkflowArgs,
+): args is DeployCodeSourcedAssetArgs {
+  return args.source.kind === "asset";
+}
 
 /**
  * The single public composition entrypoint for a code-sourced (npm) deploy. It
@@ -799,6 +840,14 @@ export async function deployCodeSourcedWorkflow(
       }),
     );
 
+  // An asset-sourced pin's `kind:"asset"` closure entries read from source
+  // assets the sidecar cannot fetch itself; deliver them inline on the frame so
+  // the sidecar checks them out into its durable per-deployment source store. A
+  // registry pin fetches its tarballs over HTTP and delivers none.
+  const assets: WorkflowSourceAssetMount[] = isAssetDeployArgs(args)
+    ? await buildSourceAssetMounts(closure, args.resolveAttachment)
+    : [];
+
   const result = await sendMultiStepDeployFrame({
     lineage: "source-ref",
     sidecarRouter: args.sidecarRouter,
@@ -810,6 +859,7 @@ export async function deployCodeSourcedWorkflow(
     sourceRef: { source: args.source, closure },
     ...(credentials !== undefined ? { credentials } : {}),
     ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
+    ...(assets.length > 0 ? { assets } : {}),
   });
 
   // Write the deployment's anchor `workflow_run` row -- the deployment's

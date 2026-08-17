@@ -2259,6 +2259,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const applyStub: NonNullable<
       Parameters<typeof buildMultistepFixture>[0]["applyFrozenWorkflowClosure"]
     > = (args) => {
+      if (args.source.kind !== "registry") {
+        throw new Error(
+          `applyStub expected a registry source, got ${args.source.kind}`,
+        );
+      }
       applyCalls.push({
         registry: args.source.registry,
         entryCount: args.closure.entries.length,

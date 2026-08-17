@@ -29,13 +29,23 @@ import { and, eq } from "drizzle-orm";
 import type { DBExecutor } from "@intx/db";
 import { workflowDefinitionVersion } from "@intx/db/schema";
 import type { PackumentFetcher, RegistryConfig } from "@intx/tool-packaging";
-import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type {
+  WorkflowSourceAssetMount,
+  WorkflowProjectionDefinition,
+} from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
-import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import type {
+  WorkflowDefinitionAssetSource,
+  WorkflowDefinitionRegistrySource,
+} from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 
-import { resolveWorkflowClosure } from "./workflow-closure-resolution";
+import {
+  buildSourceAssetMounts,
+  resolveWorkflowClosure,
+  type ResolveAssetAttachmentFn,
+} from "./workflow-closure-resolution";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import type { SidecarRouter, WorkflowProbeResult } from "./ws/sidecar-handler";
 
@@ -214,13 +224,9 @@ export async function gateAndFreezeProbeResult(
   };
 }
 
-export type InstallAndApproveArgs = {
-  /** Where the definition's bytes come from -- names the npm registry that publishes it. */
-  readonly source: WorkflowDefinitionSource;
+type InstallAndApproveCommonArgs = {
   /** A `name@range` spec for the workflow definition package. */
   readonly pin: string;
-  /** URL and credentials for the registry `source` names. */
-  readonly registryConfig: RegistryConfig;
   /** The `interchange.workflow` entry-module path the sidecar evaluates to project the definition. */
   readonly entry: string;
   /** The `workflow`-kind asset the frozen definition projects over. */
@@ -231,9 +237,42 @@ export type InstallAndApproveArgs = {
   readonly router: Pick<SidecarRouter, "sendProbe">;
   /** Executor the freeze writes through. */
   readonly db: DBExecutor;
+};
+
+/** Install a definition published to an npm registry. */
+export type InstallAndApproveRegistryArgs = InstallAndApproveCommonArgs & {
+  readonly source: WorkflowDefinitionRegistrySource;
+  /** URL and credentials for the registry `source` names. */
+  readonly registryConfig: RegistryConfig;
   /** Test seam for packument fetches, threaded to closure resolution. Omitted in production. */
   readonly fetchPackument?: PackumentFetcher;
 };
+
+/**
+ * Install a definition published as a tarball inside a hub `package-registry`
+ * asset. The caller mints the asset-read closures (`readBlob`/`listBlobs`) and
+ * `resolveAttachment`; this glue never imports the asset service, so hub-service
+ * ownership stays at the caller.
+ */
+export type InstallAndApproveAssetArgs = InstallAndApproveCommonArgs & {
+  readonly source: WorkflowDefinitionAssetSource;
+  /** Reads a blob at `path` from the asset the definition is sourced from. */
+  readonly readBlob: (path: string) => Promise<Uint8Array>;
+  /** Lists the blob names directly under `dir` in that asset. */
+  readonly listBlobs: (dir: string) => Promise<string[]>;
+  /** Resolves each asset the closure references to the pack the probe delivers. */
+  readonly resolveAttachment: ResolveAssetAttachmentFn;
+};
+
+export type InstallAndApproveArgs =
+  | InstallAndApproveRegistryArgs
+  | InstallAndApproveAssetArgs;
+
+function isAssetInstallArgs(
+  args: InstallAndApproveArgs,
+): args is InstallAndApproveAssetArgs {
+  return args.source.kind === "asset";
+}
 
 /**
  * The frozen hand-off `installAndApproveWorkflowDefinition` produces. It carries
@@ -265,14 +304,27 @@ export type InstallAndApproveResult = {
 export async function installAndApproveWorkflowDefinition(
   args: InstallAndApproveArgs,
 ): Promise<InstallAndApproveResult> {
-  const closure = await resolveWorkflowClosure({
-    source: args.source,
-    pin: args.pin,
-    registryConfig: args.registryConfig,
-    ...(args.fetchPackument !== undefined
-      ? { fetchPackument: args.fetchPackument }
-      : {}),
-  });
+  let closure: ToolPackageManifest;
+  let assets: WorkflowSourceAssetMount[];
+  if (isAssetInstallArgs(args)) {
+    closure = await resolveWorkflowClosure({
+      source: args.source,
+      pin: args.pin,
+      readBlob: args.readBlob,
+      listBlobs: args.listBlobs,
+    });
+    assets = await buildSourceAssetMounts(closure, args.resolveAttachment);
+  } else {
+    closure = await resolveWorkflowClosure({
+      source: args.source,
+      pin: args.pin,
+      registryConfig: args.registryConfig,
+      ...(args.fetchPackument !== undefined
+        ? { fetchPackument: args.fetchPackument }
+        : {}),
+    });
+    assets = [];
+  }
 
   const { sendProbe } = args.router;
   if (sendProbe === undefined) {
@@ -284,6 +336,7 @@ export async function installAndApproveWorkflowDefinition(
     source: args.source,
     closure,
     entry: args.entry,
+    ...(assets.length > 0 ? { assets } : {}),
   });
 
   const approval = await gateAndFreezeProbeResult({

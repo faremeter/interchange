@@ -14,6 +14,8 @@ import {
   WORKFLOW_JSON_PATH,
   CAPABILITY_DECLARATIONS_JSON_PATH,
   WORKFLOW_GITIGNORE_PATH,
+  PACKAGE_JSON_PATH,
+  NODE_MODULES_PATH,
 } from "./workflow-kind";
 import { createRepoStore } from "./repo-store";
 import type {
@@ -117,7 +119,7 @@ describe("workflowKindHandler.validatePush", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("rejects when workflow.json is missing", async () => {
+  test("rejects a tree with neither package.json nor workflow.json", async () => {
     const repoId = uniqueRepoId("nodef");
     const files = {
       [WORKFLOW_GITIGNORE_PATH]: "",
@@ -134,7 +136,9 @@ describe("workflowKindHandler.validatePush", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/missing required workflow\.json/);
+    expect(result.reason).toMatch(
+      /has neither a package\.json .* nor a workflow\.json/,
+    );
   });
 
   test("rejects when a disallowed top-level entry is present", async () => {
@@ -868,5 +872,161 @@ describe("workflow per-commit pack walk", () => {
     ).rejects.toThrow(
       /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
     );
+  });
+});
+
+function codebasePackageJSON(overrides?: Record<string, unknown>): string {
+  return JSON.stringify({
+    name: "@fixture/workflow-codebase",
+    version: "1.0.0",
+    interchange: { workflow: "./index.js" },
+    ...overrides,
+  });
+}
+
+describe("workflowKindHandler.validatePush codebase shape", () => {
+  async function validate(
+    repoId: RepoId,
+    topLevelTreePaths: string[],
+    files: Record<string, string>,
+  ): Promise<ValidatePushResult> {
+    return workflowKindHandler.validatePush({
+      repoId,
+      ref: REF,
+      topLevelTreePaths,
+      readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
+    });
+  }
+
+  test("accepts a single-package codebase with a contained entry", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON(),
+      "index.js": "export const workflow = {};",
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-ok"),
+      [PACKAGE_JSON_PATH, "index.js"],
+      files,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts a codebase carrying a non-envelope workflow.json source file", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON(),
+      [WORKFLOW_JSON_PATH]: JSON.stringify({ arbitrary: "data" }),
+      "index.js": "export const workflow = {};",
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-wfjson-source"),
+      [PACKAGE_JSON_PATH, WORKFLOW_JSON_PATH, "index.js"],
+      files,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects a package.json without an interchange.workflow entry", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: JSON.stringify({
+        name: "@fixture/no-entry",
+        version: "1.0.0",
+      }),
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-no-entry"),
+      [PACKAGE_JSON_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(/non-empty "interchange\.workflow" entry/);
+  });
+
+  test("rejects an interchange.workflow entry that escapes the package", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON({
+        interchange: { workflow: "../escape.js" },
+      }),
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-escape"),
+      [PACKAGE_JSON_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(/does not escape the package/);
+  });
+
+  test("rejects a committed node_modules directory", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON(),
+      "index.js": "export const workflow = {};",
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-node-modules"),
+      [PACKAGE_JSON_PATH, "index.js", NODE_MODULES_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(
+      /committed top-level node_modules directory is not allowed/,
+    );
+  });
+
+  test("rejects a package.json that declares workspaces", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON({
+        workspaces: ["packages/*"],
+      }),
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-workspaces"),
+      [PACKAGE_JSON_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(
+      /monorepo workflow assets are not yet supported/,
+    );
+  });
+
+  test("rejects an ambiguous tree carrying both a package.json and an envelope-valid workflow.json", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON(),
+      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
+      "index.js": "export const workflow = {};",
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-ambiguous"),
+      [PACKAGE_JSON_PATH, WORKFLOW_JSON_PATH, "index.js"],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(
+      /must be a codebase or an envelope, not both/,
+    );
+  });
+
+  test("rejects an envelope-only capability-declarations.json in a codebase", async () => {
+    const files = {
+      [PACKAGE_JSON_PATH]: codebasePackageJSON(),
+      [CAPABILITY_DECLARATIONS_JSON_PATH]: JSON.stringify({ declarations: [] }),
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-caps"),
+      [PACKAGE_JSON_PATH, CAPABILITY_DECLARATIONS_JSON_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(/envelope-only artifact/);
   });
 });

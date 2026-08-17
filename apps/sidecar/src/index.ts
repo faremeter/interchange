@@ -386,11 +386,18 @@ const buildHarness = createDefaultHarnessBuilder({ adapters });
 // spawns the one-shot child that evaluates the workflow entry against it.
 // The cache/registry caps are the same boot-edge-resolved values the tool
 // loader uses.
+// The probe delivers source assets inline in one frame (see
+// `WorkflowProbeRequestFrame`). This caps the total base64 asset payload; a
+// git-sourced asset that grows past it is the signal to move the probe's asset
+// delivery to the streamed transfer the deploy path uses.
+const MAX_PROBE_ASSET_PAYLOAD_BYTES = 32 * 1024 * 1024;
+
 const workflowProbeExecutor = createWorkflowProbeExecutor({
   materialize: createWorkflowClosureMaterializer({
     cacheRoot,
     cacheMaxBytes,
     registryMaxTarballBytes,
+    maxAssetPayloadBytes: MAX_PROBE_ASSET_PAYLOAD_BYTES,
     registries: readRegistries(),
     scratchRoot: path.join(dataDir, "workflow-probe", "closures"),
   }),

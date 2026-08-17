@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
   WorkflowDefinitionRegistrySource,
+  WorkflowDefinitionAssetSource,
   WorkflowDefinitionSource,
 } from "./workflow-sources";
 
@@ -33,6 +34,67 @@ describe("WorkflowDefinitionRegistrySource", () => {
   });
 });
 
+describe("WorkflowDefinitionAssetSource", () => {
+  test("accepts a tarball asset source", () => {
+    const result = WorkflowDefinitionAssetSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: { format: "tarball" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a source asset with a member selector", () => {
+    const result = WorkflowDefinitionAssetSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: {
+        format: "source",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        packageName: "@scope/workflow-a",
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a source asset without a member selector", () => {
+    const result = WorkflowDefinitionAssetSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: {
+        format: "source",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a missing assetId", () => {
+    const result = WorkflowDefinitionAssetSource({
+      kind: "asset",
+      package: { format: "tarball" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a missing package", () => {
+    const result = WorkflowDefinitionAssetSource({
+      kind: "asset",
+      assetId: "asset_abc",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a source package missing commitSha", () => {
+    const result = WorkflowDefinitionAssetSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: { format: "source" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
 describe("WorkflowDefinitionSource", () => {
   test("accepts a registry source", () => {
     const result = WorkflowDefinitionSource({
@@ -42,11 +104,31 @@ describe("WorkflowDefinitionSource", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("rejects an unknown kind", () => {
+  test("accepts a tarball asset source", () => {
     const result = WorkflowDefinitionSource({
       kind: "asset",
       assetId: "asset_abc",
-      path: "definitions/foo.json",
+      package: { format: "tarball" },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a source asset source", () => {
+    const result = WorkflowDefinitionSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: {
+        format: "source",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("rejects an unknown kind", () => {
+    const result = WorkflowDefinitionSource({
+      kind: "svn",
+      url: "svn://example.com/trunk",
     });
     expect(result instanceof type.errors).toBe(true);
   });
@@ -60,6 +142,14 @@ describe("WorkflowDefinitionSource", () => {
     const result = WorkflowDefinitionSource({
       kind: "registry",
       registry: 42,
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a registry kind carrying only another arm's fields", () => {
+    const result = WorkflowDefinitionSource({
+      kind: "registry",
+      assetId: "asset_abc",
     });
     expect(result instanceof type.errors).toBe(true);
   });

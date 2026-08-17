@@ -103,8 +103,11 @@ describe("applyFrozenWorkflowClosure", () => {
         {
           name: WORKFLOW_PACKAGE_NAME,
           version: WORKFLOW_PACKAGE_VERSION,
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: REGISTRY_NAME },
+          source: {
+            kind: "registry",
+            registry: REGISTRY_NAME,
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -158,8 +161,11 @@ describe("applyFrozenWorkflowClosure", () => {
           name: WORKFLOW_PACKAGE_NAME,
           version: WORKFLOW_PACKAGE_VERSION,
           // A pinned integrity that does not describe the returned bytes.
-          integrity: `sha512-${createHash("sha512").update("tampered").digest("base64")}`,
-          source: { kind: "registry", registry: REGISTRY_NAME },
+          source: {
+            kind: "registry",
+            registry: REGISTRY_NAME,
+            integrity: `sha512-${createHash("sha512").update("tampered").digest("base64")}`,
+          },
         },
       ],
     };
@@ -208,8 +214,11 @@ describe("applyFrozenWorkflowClosure", () => {
         {
           name: WORKFLOW_PACKAGE_NAME,
           version: WORKFLOW_PACKAGE_VERSION,
-          integrity: `sha512-${createHash("sha512").update("x").digest("base64")}`,
-          source: { kind: "registry", registry: REGISTRY_NAME },
+          source: {
+            kind: "registry",
+            registry: REGISTRY_NAME,
+            integrity: `sha512-${createHash("sha512").update("x").digest("base64")}`,
+          },
         },
       ],
     };
@@ -224,5 +233,87 @@ describe("applyFrozenWorkflowClosure", () => {
         registries: registries(),
       }),
     ).rejects.toThrow(/is not in the sidecar registry config/);
+  });
+
+  test("materializes an asset-sourced closure from a mounted asset root", async () => {
+    // This is the durable-store read path: the deploy checked the source asset
+    // out at <assetRoot>/<mountPath>/, and both deploy and restore materialize
+    // from there with no HTTP fetch. Stage the tarball as a plain file where the
+    // loader resolves a kind:"asset" entry, then apply.
+    const fixture = await packWorkflowFixture();
+    const assetId = "asset_deploy";
+    const mountPath = "source-assets/asset_deploy/";
+    const tarballRel = "tarballs/wf.tgz";
+    const assetRoot = path.join(scratchRoot, "asset-store");
+    const tarballAbs = path.join(assetRoot, mountPath, tarballRel);
+    await fs.mkdir(path.dirname(tarballAbs), { recursive: true });
+    await fs.writeFile(tarballAbs, fixture.bytes);
+
+    const manifest: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [
+        { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
+      ],
+      entries: [
+        {
+          name: WORKFLOW_PACKAGE_NAME,
+          version: WORKFLOW_PACKAGE_VERSION,
+          source: {
+            kind: "asset",
+            assetId,
+            package: {
+              format: "tarball",
+              path: tarballRel,
+              integrity: fixture.integrity,
+            },
+          },
+        },
+      ],
+    };
+
+    const applied = await applyFrozenWorkflowClosure({
+      source: { kind: "asset", assetId, package: { format: "tarball" } },
+      closure: manifest,
+      instanceDir,
+      cacheRoot,
+      cacheMaxBytes: 10_000_000,
+      registryMaxTarballBytes: 10_000_000,
+      registries: registries(),
+      assetRoot,
+      assetMounts: new Map([[assetId, mountPath]]),
+      gitDirs: new Map(),
+    });
+
+    expect(applied.definition.id).toBe(WORKFLOW_ID);
+  });
+
+  test("fails closed on a source-format asset closure", async () => {
+    const manifest: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [
+        { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
+      ],
+      entries: [],
+    };
+    await expect(
+      applyFrozenWorkflowClosure({
+        source: {
+          kind: "asset",
+          assetId: "asset_abc",
+          package: {
+            format: "source",
+            commitSha: "0123456789abcdef0123456789abcdef01234567",
+          },
+        },
+        closure: manifest,
+        instanceDir,
+        cacheRoot,
+        cacheMaxBytes: 10_000_000,
+        registryMaxTarballBytes: 10_000_000,
+        registries: registries(),
+      }),
+    ).rejects.toThrow(
+      /source-format asset workflow closures cannot be materialized/,
+    );
   });
 });

@@ -4,6 +4,7 @@ import * as tar from "tar";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 import {
   type Packument,
@@ -173,8 +174,11 @@ describe("resolveClosure", () => {
     expect(manifest.entries[0]).toMatchObject({
       name: "tools-leaf",
       version: "1.0.0",
-      integrity: "sha512-tools-leaf-1.0.0",
-      source: { kind: "registry", registry: "npmjs" },
+      source: {
+        kind: "registry",
+        registry: "npmjs",
+        integrity: "sha512-tools-leaf-1.0.0",
+      },
       tarballUrl: "https://example.test/tools-leaf/-/tools-leaf-1.0.0.tgz",
     });
     expect(manifest.topLevel).toEqual([
@@ -1063,10 +1067,16 @@ describe("AssetRegistrySource", () => {
     expect(entry?.source).toEqual({
       kind: "asset",
       assetId: "asset_workspace_builtins",
-      path: `tarballs/${fixture.tarballNames[0]}`,
+      package: {
+        format: "tarball",
+        path: `tarballs/${fixture.tarballNames[0]}`,
+        integrity: expect.stringMatching(/^sha512-/),
+      },
     });
     expect(entry?.tarballUrl).toBeUndefined();
-    expect(entry?.integrity).toMatch(/^sha512-/);
+    expect(entry && getToolPackageSourceContentIdentity(entry.source)).toMatch(
+      /^sha512-/,
+    );
   });
 
   test("harvests interchange.credentials from a tarball's package.json onto topLevel", async () => {
@@ -1123,7 +1133,9 @@ describe("AssetRegistrySource", () => {
       { name: "p", version: "1.0.0" },
       { name: "q", version: "1.0.0" },
     ]);
-    const integrities = manifest.entries.map((e) => e.integrity);
+    const integrities = manifest.entries.map((e) =>
+      getToolPackageSourceContentIdentity(e.source),
+    );
     expect(new Set(integrities).size).toBe(integrities.length);
     for (const integrity of integrities) {
       expect(integrity).toMatch(/^sha512-/);
@@ -1133,11 +1145,16 @@ describe("AssetRegistrySource", () => {
       if (entry.source.kind !== "asset") {
         throw new Error(`expected asset entry, got ${entry.source.kind}`);
       }
-      const bytes = await fixture.readBlob(entry.source.path);
+      if (entry.source.package.format !== "tarball") {
+        throw new Error(
+          `expected tarball package, got ${entry.source.package.format}`,
+        );
+      }
+      const bytes = await fixture.readBlob(entry.source.package.path);
       const expected = ssri
         .fromData(bytes, { algorithms: ["sha512"] })
         .toString();
-      expect(entry.integrity).toBe(expected);
+      expect(entry.source.package.integrity).toBe(expected);
     }
   });
 
@@ -1273,7 +1290,11 @@ describe("AssetRegistrySource", () => {
     expect(entry?.source).toEqual({
       kind: "asset",
       assetId: "asset_winner",
-      path: `tarballs/${fixture.tarballNames[0]}`,
+      package: {
+        format: "tarball",
+        path: `tarballs/${fixture.tarballNames[0]}`,
+        integrity: expect.stringMatching(/^sha512-/),
+      },
     });
   });
 

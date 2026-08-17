@@ -5,7 +5,7 @@
 // logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +16,7 @@ import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import {
   parseAgentId,
+  workflowSourceAssetMountPath,
   type Principal,
   type RepoId,
   type RepoStore,
@@ -71,6 +72,7 @@ import {
   applyFrozenWorkflowClosure,
   type AppliedWorkflowClosure,
 } from "./workflow-closure-apply";
+import { materializeSourceAssetMounts } from "./workflow-closure-materialization";
 import { readRegistries } from "./sidecar-materialization-config";
 
 import type {
@@ -107,6 +109,84 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
  */
 export function deriveDeploymentId(agentAddress: string): string {
   return deriveWorkflowRunRepoId(agentAddress);
+}
+
+// A source asset the deploy delivers inline is checked out here as plain
+// files. Mirrors the probe's inline cap; a git-sourced asset that grows past it
+// is the signal to move the deploy's asset delivery to a streamed transfer.
+const MAX_DEPLOY_ASSET_PAYLOAD_BYTES = 32 * 1024 * 1024;
+
+/**
+ * The durable per-deployment store the sidecar checks a source-ref deployment's
+ * source assets out into. A SIBLING of the closure instance dir, not a child:
+ * `materializeDeploymentClosure` reclaims the closure dir on every apply and
+ * restore, but never this store, so the checked-out assets survive a restart
+ * and re-materialization needs no re-delivery. The store is reclaimed on
+ * redeploy (at the deploy call site) and on undeploy.
+ */
+function deploymentSourceAssetRoot(
+  dataDir: string,
+  deploymentId: string,
+): string {
+  return pathJoin(dataDir, "workflow-definition-sources", deploymentId);
+}
+
+/**
+ * The `assetId -> mountPath` map a pinned closure's `kind:"asset"` entries
+ * resolve against, derived purely from the pin (via the shared mount-path
+ * helper) so deploy and restore agree without the frame's delivered assets.
+ */
+function deriveSourceAssetMounts(pin: SourceRefPin): Map<string, string> {
+  const mounts = new Map<string, string>();
+  for (const entry of pin.closure.entries) {
+    if (entry.source.kind === "asset") {
+      mounts.set(
+        entry.source.assetId,
+        workflowSourceAssetMountPath(entry.source.assetId),
+      );
+    }
+  }
+  return mounts;
+}
+
+async function isExistingDir(dir: string): Promise<boolean> {
+  try {
+    return (await stat(dir)).isDirectory();
+  } catch (err) {
+    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Resolve the durable source-asset store root and `assetId -> mountPath` map a
+ * pinned deployment materializes its `kind:"asset"` closure entries from,
+ * asserting every referenced asset's mount directory is present on disk. This
+ * is a cheap early gate for a missing checkout; the loader still SRI-verifies
+ * each tarball's bytes at materialization. Derived purely from the pin, so the
+ * deploy path and the boot-time restore path (which has only the pin, no
+ * re-delivery) resolve the identical mounts. A missing mount is a broken
+ * deployment the hub must re-drive, so it fails loud rather than materializing
+ * against an absent store.
+ */
+export async function resolveDeploymentAssetMounts(
+  dataDir: string,
+  deploymentId: string,
+  pin: SourceRefPin,
+): Promise<{ assetRoot: string; assetMounts: ReadonlyMap<string, string> }> {
+  const assetRoot = deploymentSourceAssetRoot(dataDir, deploymentId);
+  const assetMounts = deriveSourceAssetMounts(pin);
+  for (const [assetId, mountPath] of assetMounts) {
+    const mountDir = pathJoin(assetRoot, mountPath);
+    if (!(await isExistingDir(mountDir))) {
+      throw new Error(
+        `resolveDeploymentAssetMounts: source asset ${JSON.stringify(assetId)} for deployment ${deploymentId} is not present in the durable store at ${mountDir}; the deployment must be re-driven from the hub`,
+      );
+    }
+  }
+  return { assetRoot, assetMounts };
 }
 
 /**
@@ -1480,6 +1560,16 @@ export function createSidecarDeployRouter(deps: {
       deploymentId,
     );
     await rm(instanceDir, { recursive: true, force: true });
+
+    // `kind:"asset"` entries read their tarballs from the durable source store
+    // the deploy checked out. Deriving and asserting the mounts from the pin
+    // alone is what makes this symmetric on deploy and restore.
+    const { assetRoot, assetMounts } = await resolveDeploymentAssetMounts(
+      dataDir,
+      deploymentId,
+      pin,
+    );
+
     return applyClosure({
       source: pin.source,
       closure: pin.closure,
@@ -1494,6 +1584,8 @@ export function createSidecarDeployRouter(deps: {
         "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
       ),
       registries: readRegistries(),
+      assetRoot,
+      assetMounts,
     });
   }
 
@@ -2173,6 +2265,22 @@ export function createSidecarDeployRouter(deps: {
       let effectiveDefinition: WorkflowProjectionDefinition =
         projection.definition;
       if (projection.sourceRef !== undefined) {
+        // Check the frame's inline source assets out into the durable
+        // per-deployment store the closure materializes from. Reclaim the store
+        // first so a redeploy drops assets no longer referenced. This runs only
+        // on the DEPLOY path -- restore re-reads the store the deploy persisted,
+        // with no re-delivery -- so the checkout lives here, not in
+        // `materializeDeploymentClosure` (which also runs on restore). A
+        // registry-sourced pin delivers no assets and only clears the store.
+        const assetStore = deploymentSourceAssetRoot(dataDir, runId);
+        await rm(assetStore, { recursive: true, force: true });
+        if (projection.assets !== undefined && projection.assets.length > 0) {
+          await materializeSourceAssetMounts(
+            projection.assets,
+            assetStore,
+            MAX_DEPLOY_ASSET_PAYLOAD_BYTES,
+          );
+        }
         // Safe to reclaim the instance dir inside the helper: this deploy is
         // single-flight-guarded (the reservation above) and the child is not
         // yet spawned, so no live reader holds it.
@@ -2350,18 +2458,22 @@ export function createSidecarDeployRouter(deps: {
       }
       // Drop the run record so a boot-time restore does not re-spawn a
       // torn-down deployment, and reclaim a source-ref deployment's
-      // materialized closure tree. Both run on every undeploy -- not only when
-      // a supervisor was active -- so a record and closure left behind by a
-      // crash-interrupted deploy, or by a source-ref restore that materialized
-      // the closure and then failed to spawn (registry down), are reclaimed
-      // too. A live-authored deployment never creates the closure tree, so the
-      // `force` remove is a no-op there.
+      // materialized closure tree AND its durable source-asset store. All run
+      // on every undeploy -- not only when a supervisor was active -- so state
+      // left behind by a crash-interrupted deploy, or by a source-ref restore
+      // that materialized the closure and then failed to spawn (registry down),
+      // is reclaimed too. A live-authored or registry-sourced deployment never
+      // creates the source store, so its `force` remove is a no-op there.
       if (stepStateDataDir !== undefined) {
         await deleteWorkflowRunRecord(stepStateDataDir, runId);
         await rm(
           pathJoin(stepStateDataDir, "workflow-definition-closures", runId),
           { recursive: true, force: true },
         );
+        await rm(deploymentSourceAssetRoot(stepStateDataDir, runId), {
+          recursive: true,
+          force: true,
+        });
       }
       releaseSlug(runId, frame.agentAddress);
       deps.unregisterDeployment({
@@ -2465,12 +2577,14 @@ export function createSidecarDeployRouter(deps: {
           // undefined-checks are needed. The helper reclaims the instance dir
           // first, which is safe here because the prior process (the only
           // reader) is dead and restore is serial before `hubLink.connect()`,
-          // so no concurrent reader holds it. The tarball fetch is a cache hit
-          // against the content-addressed closure cache (populated on the
-          // original deploy, survives restart) and SRI-verified either way; a
-          // registry/cache failure soft-fails the record (kept for the next
-          // boot), matching the `assertSourceBuildable` retry-on-later-boot
-          // behavior above.
+          // so no concurrent reader holds it. Registry-sourced entries fetch
+          // from the content-addressed closure cache (a hit populated on the
+          // original deploy, surviving restart); asset-sourced entries read
+          // from the durable source store the original deploy checked out
+          // (`materializeDeploymentClosure` derives the mounts from the pin, so
+          // no re-delivery is needed). Both are SRI-verified. A cache/store miss
+          // soft-fails the record (kept for the next boot), matching the
+          // `assertSourceBuildable` retry-on-later-boot behavior above.
           if (record.lineage === "source-ref") {
             const applied = await materializeDeploymentClosure(
               dataDir,

@@ -6,6 +6,7 @@ import {
   ToolPackageSource,
   ToolPackageManifestEntry,
   ToolPackageManifest,
+  getToolPackageSourceContentIdentity,
 } from "./tool-packages";
 
 describe("ToolPackagePin", () => {
@@ -99,11 +100,43 @@ describe("ToolPackagePinArray", () => {
 });
 
 describe("ToolPackageSource", () => {
-  test("accepts an asset source", () => {
+  test("accepts an asset tarball source", () => {
     const result = ToolPackageSource({
       kind: "asset",
       assetId: "asset_abc",
-      path: "tarballs/foo-1.2.3.tgz",
+      package: {
+        format: "tarball",
+        path: "tarballs/foo-1.2.3.tgz",
+        integrity: "sha512-AAAA",
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an asset source-package", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_wf",
+      package: {
+        format: "source",
+        commitSha: "abc123",
+        packageDir: "packages/wf",
+        treeOid: "def456",
+      },
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an asset source-package rooted at the repo root", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_wf",
+      package: {
+        format: "source",
+        commitSha: "abc123",
+        packageDir: ".",
+        treeOid: "def456",
+      },
     });
     expect(result instanceof type.errors).toBe(false);
   });
@@ -112,6 +145,7 @@ describe("ToolPackageSource", () => {
     const result = ToolPackageSource({
       kind: "registry",
       registry: "npmjs",
+      integrity: "sha512-AAAA",
     });
     expect(result instanceof type.errors).toBe(false);
   });
@@ -124,22 +158,148 @@ describe("ToolPackageSource", () => {
     expect(result instanceof type.errors).toBe(true);
   });
 
-  test("rejects an asset source missing path", () => {
+  test("rejects an asset source missing assetId", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      package: {
+        format: "tarball",
+        path: "tarballs/foo.tgz",
+        integrity: "sha512-AAAA",
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset source missing package", () => {
     const result = ToolPackageSource({ kind: "asset", assetId: "asset_abc" });
     expect(result instanceof type.errors).toBe(true);
   });
 
-  test("rejects an asset source missing assetId", () => {
+  test("rejects an asset tarball missing path", () => {
     const result = ToolPackageSource({
       kind: "asset",
-      path: "tarballs/foo.tgz",
+      assetId: "asset_abc",
+      package: { format: "tarball", integrity: "sha512-AAAA" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset tarball missing integrity", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: { format: "tarball", path: "tarballs/foo.tgz" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset source-package missing treeOid", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_wf",
+      package: { format: "source", commitSha: "abc123", packageDir: "." },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset source-package missing commitSha", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_wf",
+      package: { format: "source", packageDir: ".", treeOid: "def456" },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset source-package with a parent-traversal packageDir", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_wf",
+      package: {
+        format: "source",
+        commitSha: "abc123",
+        packageDir: "../escape",
+        treeOid: "def456",
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset source-package with an absolute packageDir", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_wf",
+      package: {
+        format: "source",
+        commitSha: "abc123",
+        packageDir: "/etc/passwd",
+        treeOid: "def456",
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an asset package with an unknown format", () => {
+    const result = ToolPackageSource({
+      kind: "asset",
+      assetId: "asset_abc",
+      package: { format: "zip", path: "x.zip" },
     });
     expect(result instanceof type.errors).toBe(true);
   });
 
   test("rejects a registry source missing registry", () => {
-    const result = ToolPackageSource({ kind: "registry" });
+    const result = ToolPackageSource({
+      kind: "registry",
+      integrity: "sha512-AAAA",
+    });
     expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a registry source missing integrity", () => {
+    const result = ToolPackageSource({ kind: "registry", registry: "npmjs" });
+    expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("getToolPackageSourceContentIdentity", () => {
+  test("returns the SRI for an asset tarball", () => {
+    expect(
+      getToolPackageSourceContentIdentity({
+        kind: "asset",
+        assetId: "asset_abc",
+        package: {
+          format: "tarball",
+          path: "tarballs/x.tgz",
+          integrity: "sha512-AAAA",
+        },
+      }),
+    ).toBe("sha512-AAAA");
+  });
+
+  test("returns the SRI for a registry source", () => {
+    expect(
+      getToolPackageSourceContentIdentity({
+        kind: "registry",
+        registry: "npmjs",
+        integrity: "sha512-BBBB",
+      }),
+    ).toBe("sha512-BBBB");
+  });
+
+  test("returns the tree oid for an asset source-package", () => {
+    expect(
+      getToolPackageSourceContentIdentity({
+        kind: "asset",
+        assetId: "asset_wf",
+        package: {
+          format: "source",
+          commitSha: "abc123",
+          packageDir: ".",
+          treeOid: "def456",
+        },
+      }),
+    ).toBe("def456");
   });
 });
 
@@ -147,11 +307,14 @@ describe("ToolPackageManifestEntry", () => {
   const validEntry = {
     name: "@intx/tools-posix",
     version: "1.2.3",
-    integrity: "sha512-AAAA",
     source: {
       kind: "asset",
       assetId: "asset_workspace_builtins",
-      path: "tarballs/intx-tools-posix-1.2.3.tgz",
+      package: {
+        format: "tarball",
+        path: "tarballs/intx-tools-posix-1.2.3.tgz",
+        integrity: "sha512-AAAA",
+      },
     },
   } as const;
 
@@ -173,18 +336,24 @@ describe("ToolPackageManifestEntry", () => {
     const result = ToolPackageManifestEntry({
       name: "left-pad",
       version: "1.3.0",
-      integrity: "sha512-BBBB",
-      source: { kind: "registry", registry: "npmjs" },
+      source: { kind: "registry", registry: "npmjs", integrity: "sha512-BBBB" },
       tarballUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
     });
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("rejects missing integrity", () => {
+  test("rejects an asset tarball missing integrity", () => {
     const result = ToolPackageManifestEntry({
       name: validEntry.name,
       version: validEntry.version,
-      source: validEntry.source,
+      source: {
+        kind: "asset",
+        assetId: "asset_workspace_builtins",
+        package: {
+          format: "tarball",
+          path: "tarballs/intx-tools-posix-1.2.3.tgz",
+        },
+      },
     });
     expect(result instanceof type.errors).toBe(true);
   });
@@ -206,11 +375,14 @@ describe("ToolPackageManifest", () => {
       {
         name: "@intx/tools-posix",
         version: "1.2.3",
-        integrity: "sha512-AAAA",
         source: {
           kind: "asset",
           assetId: "asset_workspace_builtins",
-          path: "tarballs/intx-tools-posix-1.2.3.tgz",
+          package: {
+            format: "tarball",
+            path: "tarballs/intx-tools-posix-1.2.3.tgz",
+            integrity: "sha512-AAAA",
+          },
         },
       },
     ],
@@ -238,18 +410,57 @@ describe("ToolPackageManifest", () => {
         {
           name: "tools-with-deps",
           version: "1.0.0",
-          integrity: "sha512-CCCC",
           source: {
             kind: "asset",
             assetId: "asset_workspace_builtins",
-            path: "tarballs/tools-with-deps-1.0.0.tgz",
+            package: {
+              format: "tarball",
+              path: "tarballs/tools-with-deps-1.0.0.tgz",
+              integrity: "sha512-CCCC",
+            },
           },
         },
         {
           name: "left-pad",
           version: "1.3.0",
-          integrity: "sha512-DDDD",
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: "sha512-DDDD",
+          },
+        },
+      ],
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a mixed closure with an asset source top-level and a registry dep", () => {
+    const result = ToolPackageManifest({
+      schemaVersion: "1",
+      topLevel: [{ name: "@wf/app", version: "1.0.0" }],
+      entries: [
+        {
+          name: "@wf/app",
+          version: "1.0.0",
+          source: {
+            kind: "asset",
+            assetId: "asset_wf",
+            package: {
+              format: "source",
+              commitSha: "abc123",
+              packageDir: ".",
+              treeOid: "def456",
+            },
+          },
+        },
+        {
+          name: "left-pad",
+          version: "1.3.0",
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: "sha512-DDDD",
+          },
         },
       ],
     });
@@ -288,7 +499,6 @@ describe("ToolPackageManifest", () => {
         {
           name: "foo",
           version: "1.0.0",
-          integrity: "sha512-EEEE",
           source: { kind: "asset" },
         },
       ],

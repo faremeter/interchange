@@ -42,6 +42,7 @@ import type {
   ToolPackageManifest,
   ToolPackagePin,
 } from "@intx/types/tool-packages";
+import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 import { readDeployTree } from "@intx/hub-agent";
 
 let scratch: string;
@@ -181,7 +182,11 @@ describe("hub→sidecar pipeline (happy path)", () => {
     ];
     const manifest = await resolver.resolveClosure(pins);
     expect(manifest.entries).toHaveLength(1);
-    expect(manifest.entries[0]?.integrity).toBe(fixture.integrity);
+    const materializedEntry = manifest.entries[0];
+    if (materializedEntry === undefined) throw new Error("missing entry");
+    expect(getToolPackageSourceContentIdentity(materializedEntry.source)).toBe(
+      fixture.integrity,
+    );
 
     // Persist the manifest as the deploy tree would; round-trip it.
     const deployDir = path.join(instanceDir, "deploy");
@@ -218,6 +223,7 @@ describe("hub→sidecar pipeline (happy path)", () => {
       instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
       attemptId: "atp_happy",
       previousDeployId: "none",
       newDeployId: "dpl_1",
@@ -247,8 +253,11 @@ describe("hub→sidecar pipeline (failure paths)", () => {
         {
           name: fixture.name,
           version: fixture.version,
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "fixture-registry" },
+          source: {
+            kind: "registry",
+            registry: "fixture-registry",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -272,6 +281,7 @@ describe("hub→sidecar pipeline (failure paths)", () => {
       instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
       attemptId: "atp_mismatch",
       previousDeployId: "dpl_prior",
       newDeployId: "dpl_attempted",
@@ -295,8 +305,11 @@ describe("hub→sidecar pipeline (failure paths)", () => {
         {
           name: fixture.name,
           version: fixture.version,
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "ghost-registry" },
+          source: {
+            kind: "registry",
+            registry: "ghost-registry",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -321,6 +334,7 @@ describe("hub→sidecar pipeline (failure paths)", () => {
       instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
       attemptId: "atp_unknown",
       previousDeployId: "dpl_prior",
       newDeployId: "dpl_attempted",
@@ -391,8 +405,11 @@ describe("hub→sidecar pipeline (cache behavior)", () => {
         {
           name: fixture.name,
           version: fixture.version,
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "fixture-registry" },
+          source: {
+            kind: "registry",
+            registry: "fixture-registry",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -419,6 +436,7 @@ describe("hub→sidecar pipeline (cache behavior)", () => {
       instanceDir: path.join(instanceDir, "first"),
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
       attemptId: "atp_first",
       previousDeployId: "none",
       newDeployId: "dpl_1",
@@ -433,6 +451,7 @@ describe("hub→sidecar pipeline (cache behavior)", () => {
       instanceDir: path.join(instanceDir, "second"),
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
       attemptId: "atp_second",
       previousDeployId: "dpl_1",
       newDeployId: "dpl_2",
@@ -556,8 +575,13 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
         `expected asset source, got ${resolverEntry.source.kind}`,
       );
     }
+    if (resolverEntry.source.package.format !== "tarball") {
+      throw new Error(
+        `expected tarball package, got ${resolverEntry.source.package.format}`,
+      );
+    }
     expect(resolverEntry.source.assetId).toBe(assetId);
-    expect(resolverEntry.source.path).toBe(
+    expect(resolverEntry.source.package.path).toBe(
       `tarballs/${fixture.tarballs[0]?.filename ?? ""}`,
     );
 
@@ -604,6 +628,7 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       instanceDir,
       assetRoot,
       assetMounts: tree.assetMounts,
+      gitDirs: new Map(),
       attemptId: "atp_asset",
       previousDeployId: "none",
       newDeployId: "dpl_asset",

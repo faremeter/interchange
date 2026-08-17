@@ -167,6 +167,19 @@ export const workflow = defineWorkflow({
     ).rejects.toThrow(/escapes the workflow package directory/);
   });
 
+  test("rejects an absolute entry path at the string boundary", async () => {
+    // An absolute entry must be rejected by the shared string-level
+    // containment check before any realpath resolution -- the same rejection
+    // the push-time asset validator makes -- so the two boundaries agree.
+    const packageDir = await createClosureFixture({
+      workflowEntry: "/pkg/index.js",
+    });
+
+    await expect(
+      loadWorkflowDefinitionFromClosure({ packageDir }),
+    ).rejects.toThrow(/escapes the workflow package directory/);
+  });
+
   test("rejects an entry that exports no WorkflowDefinition", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",

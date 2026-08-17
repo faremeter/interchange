@@ -98,8 +98,11 @@ const closure: ToolPackageManifest = {
     {
       name: "@acme/workflow",
       version: "1.0.0",
-      integrity: "sha512-deadbeef",
-      source: { kind: "registry", registry: "npmjs" },
+      source: {
+        kind: "registry",
+        registry: "npmjs",
+        integrity: "sha512-deadbeef",
+      },
     },
   ],
 };

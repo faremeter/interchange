@@ -22,6 +22,7 @@ import {
 } from "./loader";
 import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
+import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 let scratchRoot: string;
 let cacheDir: string;
@@ -222,8 +223,11 @@ describe("createToolLoader", () => {
         {
           name: "tools-leaf",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -233,6 +237,7 @@ describe("createToolLoader", () => {
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.name).toBe("tools-leaf");
@@ -271,14 +276,18 @@ describe("createToolLoader", () => {
           {
             name: "copied-tool",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     const extraction = await cache.extractTarball(fixture.integrity);
@@ -334,14 +343,18 @@ describe("createToolLoader", () => {
           {
             name: "tools-creds",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     expect(loaded[0]?.credentials).toEqual([
@@ -381,14 +394,18 @@ describe("createToolLoader", () => {
             {
               name: "tools-dupcred",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       }),
     ).rejects.toThrow(/duplicate credential handles/);
   });
@@ -450,15 +467,21 @@ describe("createToolLoader", () => {
         {
           name: "watcher-linux",
           version: "1.0.0",
-          integrity: matching.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: matching.integrity,
+          },
           os: ["linux"],
         },
         {
           name: "watcher-darwin",
           version: "1.0.0",
-          integrity: nonMatching.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: nonMatching.integrity,
+          },
           os: ["darwin"],
         },
       ],
@@ -469,6 +492,7 @@ describe("createToolLoader", () => {
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.name).toBe("watcher-linux");
@@ -536,29 +560,41 @@ describe("createToolLoader", () => {
         {
           name: "allow-bare",
           version: "1.0.0",
-          integrity: byName.get("allow-bare")?.integrity ?? "",
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: byName.get("allow-bare")?.integrity ?? "",
+          },
           os: ["linux"],
         },
         {
           name: "deny-bare",
           version: "1.0.0",
-          integrity: byName.get("deny-bare")?.integrity ?? "",
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: byName.get("deny-bare")?.integrity ?? "",
+          },
           os: ["win32"],
         },
         {
           name: "allow-negate",
           version: "1.0.0",
-          integrity: byName.get("allow-negate")?.integrity ?? "",
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: byName.get("allow-negate")?.integrity ?? "",
+          },
           os: ["!win32"],
         },
         {
           name: "deny-negate",
           version: "1.0.0",
-          integrity: byName.get("deny-negate")?.integrity ?? "",
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: byName.get("deny-negate")?.integrity ?? "",
+          },
           os: ["!linux"],
         },
       ],
@@ -569,6 +605,7 @@ describe("createToolLoader", () => {
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     const names = loaded.map((p) => p.name).sort();
     expect(names).toEqual(["allow-bare", "allow-negate"]);
@@ -604,8 +641,11 @@ describe("createToolLoader", () => {
         {
           name: "cached",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -614,6 +654,7 @@ describe("createToolLoader", () => {
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     expect(fetcherCalls).toBe(0);
   });
@@ -647,7 +688,7 @@ describe("createToolLoader", () => {
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball: async (entry) =>
-        entry.integrity === fixtureA.integrity
+        getToolPackageSourceContentIdentity(entry.source) === fixtureA.integrity
           ? fixtureA.bytes
           : fixtureB.bytes,
       importModule: async (importUrl) => {
@@ -663,8 +704,7 @@ describe("createToolLoader", () => {
         {
           name: "swappable",
           version: "1.0.0",
-          integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: { kind: "registry", registry: "npmjs", integrity },
         },
       ],
     });
@@ -679,12 +719,14 @@ describe("createToolLoader", () => {
       instanceScratchDir: instanceDirA,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     await loader.loadManifest({
       manifest: makeManifest(fixtureB.integrity),
       instanceScratchDir: instanceDirB,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     expect(importUrls).toHaveLength(2);
@@ -743,8 +785,11 @@ describe("createToolLoader", () => {
         {
           name: "tools-prefix",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -753,6 +798,7 @@ describe("createToolLoader", () => {
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     const loadedFactory = loaded[0]?.factories[0];
     if (loadedFactory === undefined) {
@@ -822,14 +868,18 @@ describe("createToolLoader", () => {
           {
             name: "tools-dup",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     const loadedFactory = loaded[0]?.factories[0];
     if (loadedFactory === undefined) {
@@ -899,14 +949,18 @@ describe("createToolLoader", () => {
           {
             name: "tools-malformed",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     const loadedFactory = loaded[0]?.factories[0];
     if (loadedFactory === undefined) {
@@ -956,6 +1010,7 @@ describe("loader error categories", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -984,14 +1039,50 @@ describe("loader error categories", () => {
             {
               name: "i",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
         fetchTarball: async () => wrongBytes,
       },
       "integrity.mismatch",
+    );
+  });
+
+  test("git.materialization.failed when a git-sourced entry reaches the loader", async () => {
+    await expectCategory(
+      {
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "g", version: "1.0.0" }],
+          entries: [
+            {
+              name: "g",
+              version: "1.0.0",
+              source: {
+                kind: "asset",
+                assetId: "asset_wf",
+                package: {
+                  format: "source",
+                  commitSha: "abc123",
+                  packageDir: ".",
+                  treeOid: "def456",
+                },
+              },
+            },
+          ],
+        },
+        // The store rejects the git entry before any tarball I/O, so this
+        // fetcher must never run.
+        fetchTarball: async () => {
+          throw new Error("fetchTarball must not run for a git-sourced entry");
+        },
+      },
+      "git.materialization.failed",
     );
   });
 
@@ -1029,14 +1120,14 @@ describe("loader error categories", () => {
             {
               name: "g",
               version: "1.0.0",
-              integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: { kind: "registry", registry: "npmjs", integrity },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1097,14 +1188,18 @@ describe("loader error categories", () => {
             {
               name: "t",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1163,14 +1258,18 @@ describe("loader error categories", () => {
             {
               name: "m",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1198,8 +1297,11 @@ describe("loader error categories", () => {
             {
               name: "u",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "ghost" },
+              source: {
+                kind: "registry",
+                registry: "ghost",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
@@ -1251,14 +1353,14 @@ describe("loader error categories", () => {
             {
               name: "bad-json",
               version: "1.0.0",
-              integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: { kind: "registry", registry: "npmjs", integrity },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1316,14 +1418,14 @@ describe("loader error categories", () => {
             {
               name: "deps-array",
               version: "1.0.0",
-              integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: { kind: "registry", registry: "npmjs", integrity },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1378,14 +1480,14 @@ describe("loader error categories", () => {
             {
               name: "opt-deps-array",
               version: "1.0.0",
-              integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: { kind: "registry", registry: "npmjs", integrity },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1419,11 +1521,14 @@ describe("loader error categories", () => {
             {
               name: "m",
               version: "1.0.0",
-              integrity: "sha512-AAAA",
               source: {
                 kind: "asset",
                 assetId: "asset_one",
-                path: "does/not/exist.tgz",
+                package: {
+                  format: "tarball",
+                  path: "does/not/exist.tgz",
+                  integrity: "sha512-AAAA",
+                },
               },
             },
           ],
@@ -1431,6 +1536,7 @@ describe("loader error categories", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map([["asset_one", "package-registries/one"]]),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1442,8 +1548,8 @@ describe("loader error categories", () => {
   });
 
   test("package.entry.invalid when an asset entry's path escapes the asset root", async () => {
-    // A `..`-bearing entry.source.path would let a malicious manifest
-    // read any file the sidecar process can open. The default fetcher
+    // A `..`-bearing entry.source.package.path would let a malicious
+    // manifest read any file the sidecar process can open. The default fetcher
     // must reject this at the boundary rather than handing the
     // escaped absolute path to fs.readFile.
     const cache = createTarballCache({
@@ -1465,11 +1571,14 @@ describe("loader error categories", () => {
             {
               name: "m",
               version: "1.0.0",
-              integrity: "sha512-AAAA",
               source: {
                 kind: "asset",
                 assetId: "asset_one",
-                path: "../../../../etc/passwd",
+                package: {
+                  format: "tarball",
+                  path: "../../../../etc/passwd",
+                  integrity: "sha512-AAAA",
+                },
               },
             },
           ],
@@ -1477,6 +1586,7 @@ describe("loader error categories", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map([["asset_one", "package-registries/one"]]),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1513,11 +1623,14 @@ describe("loader error categories", () => {
             {
               name: "m",
               version: "1.0.0",
-              integrity: "sha512-AAAA",
               source: {
                 kind: "asset",
                 assetId: "asset_missing",
-                path: "tarballs/m-1.0.0.tgz",
+                package: {
+                  format: "tarball",
+                  path: "tarballs/m-1.0.0.tgz",
+                  integrity: "sha512-AAAA",
+                },
               },
             },
           ],
@@ -1525,6 +1638,7 @@ describe("loader error categories", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map([["asset_other", "package-registries/other"]]),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -1550,8 +1664,11 @@ describe("loader error categories", () => {
             {
               name: "pem",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
@@ -1576,8 +1693,11 @@ describe("loader error categories", () => {
             {
               name: "pi",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
@@ -1605,8 +1725,11 @@ describe("loader error categories", () => {
             {
               name: "ps",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
@@ -1692,14 +1815,20 @@ export const factory = Object.assign(
         {
           name: "@closure-scope/top",
           version: "1.0.0",
-          integrity: topPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: topPkg.integrity,
+          },
         },
         {
           name: "@closure-scope/transitive-dep",
           version: "1.0.0",
-          integrity: depPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: depPkg.integrity,
+          },
         },
       ],
     };
@@ -1709,6 +1838,7 @@ export const factory = Object.assign(
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     expect(loaded).toHaveLength(1);
     const factory = loaded[0]?.factories[0];
@@ -1756,8 +1886,11 @@ export const factory = Object.assign(
         {
           name: "@scope/only",
           version: "2.3.4",
-          integrity: scopedPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: scopedPkg.integrity,
+          },
         },
       ],
     };
@@ -1767,6 +1900,7 @@ export const factory = Object.assign(
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.name).toBe("@scope/only");
@@ -1873,26 +2007,38 @@ export const factory = Object.assign(
         {
           name: "version-top",
           version: "1.0.0",
-          integrity: topPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: topPkg.integrity,
+          },
         },
         {
           name: "lib-a",
           version: "1.0.0",
-          integrity: libA.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: libA.integrity,
+          },
         },
         {
           name: "lodash",
           version: "3.10.1",
-          integrity: lodash3.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: lodash3.integrity,
+          },
         },
         {
           name: "lodash",
           version: "4.17.21",
-          integrity: lodash4.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: lodash4.integrity,
+          },
         },
       ],
     };
@@ -1902,6 +2048,7 @@ export const factory = Object.assign(
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     const factory = loaded[0]?.factories[0];
     if (factory === undefined) throw new Error("expected one factory");
@@ -2062,44 +2209,65 @@ export const factory = Object.assign(
         {
           name: "first-arrival-top",
           version: "1.0.0",
-          integrity: top.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: top.integrity,
+          },
         },
         {
           name: "req-a",
           version: "1.0.0",
-          integrity: rA.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: rA.integrity,
+          },
         },
         {
           name: "req-b",
           version: "1.0.0",
-          integrity: rB.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: rB.integrity,
+          },
         },
         {
           name: "req-c",
           version: "1.0.0",
-          integrity: rC.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: rC.integrity,
+          },
         },
         {
           name: "dep",
           version: "1.0.0",
-          integrity: dep1.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: dep1.integrity,
+          },
         },
         {
           name: "dep",
           version: "1.5.0",
-          integrity: dep1_5.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: dep1_5.integrity,
+          },
         },
         {
           name: "dep",
           version: "2.0.0",
-          integrity: dep2.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: dep2.integrity,
+          },
         },
       ],
     };
@@ -2109,6 +2277,7 @@ export const factory = Object.assign(
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     // Every requirer's node_modules/dep should resolve to the same
@@ -2190,8 +2359,7 @@ describe("entry-path containment", () => {
         {
           name: "evil",
           version: "1.0.0",
-          integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: { kind: "registry", registry: "npmjs", integrity },
         },
       ],
     };
@@ -2203,6 +2371,7 @@ describe("entry-path containment", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -2260,8 +2429,11 @@ describe("entry-path containment", () => {
         {
           name: "evil-symlink",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -2273,6 +2445,7 @@ describe("entry-path containment", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -2341,8 +2514,11 @@ describe("entry-path containment", () => {
         {
           name: "evil-chain",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -2354,6 +2530,7 @@ describe("entry-path containment", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -2417,8 +2594,11 @@ export const main = Object.assign(
         {
           name: "ok-dangling",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -2428,6 +2608,7 @@ export const main = Object.assign(
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.name).toBe("ok-dangling");
@@ -2476,8 +2657,11 @@ export const main = Object.assign(
         {
           name: "evil-dangling",
           version: "1.0.0",
-          integrity: fixture.integrity,
-          source: { kind: "registry", registry: "npmjs" },
+          source: {
+            kind: "registry",
+            registry: "npmjs",
+            integrity: fixture.integrity,
+          },
         },
       ],
     };
@@ -2489,6 +2673,7 @@ export const main = Object.assign(
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -2502,9 +2687,9 @@ export const main = Object.assign(
     }
   });
 
-  test("rejects an asset source.path that traverses out of its declared mount", async () => {
+  test("rejects an asset source.package.path that traverses out of its declared mount", async () => {
     // Two sibling mounts live under the same assetRoot. The manifest
-    // entry names mountB but its source.path walks `..` up to mountA's
+    // entry names mountB but its source.package.path walks `..` up to mountA's
     // tarball. assetRoot-only containment would accept this; per-mount
     // containment must reject it as a cross-mount traversal.
     const mountARel = "package-registries/a/";
@@ -2542,11 +2727,14 @@ export const main = Object.assign(
         {
           name: "pkg",
           version: "1.0.0",
-          integrity: fixture.integrity,
           source: {
             kind: "asset",
             assetId: "ast_b",
-            path: "../a/tarballs/pkg-1.0.0.tgz",
+            package: {
+              format: "tarball",
+              path: "../a/tarballs/pkg-1.0.0.tgz",
+              integrity: fixture.integrity,
+            },
           },
         },
       ],
@@ -2559,6 +2747,7 @@ export const main = Object.assign(
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map([["ast_b", mountBRel]]),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -2637,14 +2826,20 @@ describe("interchange.tools containment under symlink graph", () => {
         {
           name: "evil-top",
           version: "1.0.0",
-          integrity: topPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: topPkg.integrity,
+          },
         },
         {
           name: "evil-dep",
           version: "1.0.0",
-          integrity: depPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: depPkg.integrity,
+          },
         },
       ],
     };
@@ -2656,6 +2851,7 @@ describe("interchange.tools containment under symlink graph", () => {
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -2938,14 +3134,18 @@ describe("interchange.directors walker", () => {
           {
             name: "tools-and-directors",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     expect(loaded).toHaveLength(1);
@@ -2990,14 +3190,18 @@ describe("interchange.directors walker", () => {
           {
             name: "tools-with-stray-director",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     expect(loaded).toHaveLength(1);
@@ -3036,14 +3240,18 @@ describe("interchange.directors walker", () => {
           {
             name: "tools-only",
             version: "1.0.0",
-            integrity: fixture.integrity,
-            source: { kind: "registry", registry: "npmjs" },
+            source: {
+              kind: "registry",
+              registry: "npmjs",
+              integrity: fixture.integrity,
+            },
           },
         ],
       },
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
     });
 
     expect(loaded).toHaveLength(1);
@@ -3087,14 +3295,14 @@ describe("interchange.directors walker", () => {
             {
               name: "bad-json-dir",
               version: "1.0.0",
-              integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: { kind: "registry", registry: "npmjs", integrity },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -3160,14 +3368,14 @@ describe("interchange.directors walker", () => {
             {
               name: "evil-dir",
               version: "1.0.0",
-              integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: { kind: "registry", registry: "npmjs", integrity },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -3231,14 +3439,18 @@ export const main = Object.assign(
             {
               name: "evil-dir-symlink",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -3292,14 +3504,18 @@ export const main = Object.assign(
             {
               name: "dir-import-fail",
               version: "1.0.0",
-              integrity: fixture.integrity,
-              source: { kind: "registry", registry: "npmjs" },
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
             },
           ],
         },
         instanceScratchDir: instanceDir,
         assetRoot,
         assetMounts: new Map(),
+        gitDirs: new Map(),
       });
     } catch (err) {
       caught = err;
@@ -3375,14 +3591,20 @@ export const factory = Object.assign(
         {
           name: "@closure-scope/top",
           version: "1.0.0",
-          integrity: topPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: topPkg.integrity,
+          },
         },
         {
           name: "@closure-scope/transitive-dep",
           version: "1.0.0",
-          integrity: depPkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: depPkg.integrity,
+          },
         },
       ],
     };
@@ -3392,6 +3614,7 @@ export const factory = Object.assign(
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
+      gitDirs: new Map(),
       host: { os: process.platform, cpu: process.arch },
       cache,
       registries: new Map([["test", { url: "https://example.test" }]]),
@@ -3503,8 +3726,11 @@ export const factory = Object.assign(
         {
           name: "@late/pkg",
           version: "1.0.0",
-          integrity: pkg.integrity,
-          source: { kind: "registry", registry: "test" },
+          source: {
+            kind: "registry",
+            registry: "test",
+            integrity: pkg.integrity,
+          },
         },
       ],
     };
@@ -3523,6 +3749,7 @@ export const factory = Object.assign(
       instanceDir,
       assetRoot,
       assetMounts: new Map<string, string>(),
+      gitDirs: new Map(),
       attemptId: `atp-${newDeployId}`,
       previousDeployId,
       newDeployId,

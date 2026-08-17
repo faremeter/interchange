@@ -14,6 +14,7 @@ import { getLogger } from "@intx/log";
 import type { ToolPackageManifestEntry } from "@intx/types/tool-packages";
 
 import { TarballIntegrityMismatchError } from "./cache";
+import { materializeGitEntry } from "./git-materialize";
 import type {
   HostPlatform,
   MaterializeClosureArgs,
@@ -62,29 +63,46 @@ export async function materializeClosure(
   async function materialize(
     entry: ToolPackageManifestEntry,
   ): Promise<{ dir: string; release: () => void }> {
-    // Resolve registry-sourced entries against the sidecar config
-    // before doing any I/O. If the manifest references an unknown
-    // registry name the apply fails loudly here, regardless of whether
-    // the bytes are already cached, so the failure surfaces even on
-    // cache hits that would otherwise hide the misconfiguration.
-    if (entry.source.kind === "registry") {
-      if (!args.registries.has(entry.source.registry)) {
+    // Resolve the source's config/mount before any I/O so a cache hit
+    // cannot hide a misconfiguration. A source-format asset is a git
+    // subtree materialized by checkout and returns early, bypassing the
+    // SRI tarball cache; every other entry is a tarball keyed on its SRI.
+    const source = entry.source;
+    let integrity: string;
+    if (source.kind === "registry") {
+      if (!args.registries.has(source.registry)) {
         throw new ToolLoaderError({
           category: "registry.unknown",
-          message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
+          message: `manifest references registry "${source.registry}" which is not in the sidecar config`,
           package: { name: entry.name, version: entry.version },
         });
       }
-    } else if (entry.source.kind === "asset") {
-      // Reject up front (parallel to the registry.unknown gate) so a
-      // cache hit cannot hide a missing mount from the manifest fan-out.
-      if (!args.assetMounts.has(entry.source.assetId)) {
+      integrity = source.integrity;
+    } else if (source.package.format === "source") {
+      const gitDir = args.gitDirs.get(source.assetId);
+      if (gitDir === undefined) {
+        throw new ToolLoaderError({
+          category: "git.materialization.failed",
+          message: `manifest entry references git assetId "${source.assetId}" which is not in the deploy pack's git-dirs map`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      return materializeGitEntry({
+        tree: source.package,
+        name: entry.name,
+        version: entry.version,
+        gitDir,
+        instanceScratchDir: args.instanceScratchDir,
+      });
+    } else {
+      if (!args.assetMounts.has(source.assetId)) {
         throw new ToolLoaderError({
           category: "asset.mount.missing",
-          message: `manifest entry references assetId "${entry.source.assetId}" which is not in the deploy pack's asset-mounts map`,
+          message: `manifest entry references assetId "${source.assetId}" which is not in the deploy pack's asset-mounts map`,
           package: { name: entry.name, version: entry.version },
         });
       }
+      integrity = source.package.integrity;
     }
 
     // Probe cache presence with `has` rather than `get`: the bytes are
@@ -94,14 +112,14 @@ export async function materializeClosure(
     // without reading or atime-touching the bytes, so a cache-hit
     // apply avoids the wasted read of a tarball that immediately gets
     // discarded.
-    if (!(await args.cache.has(entry.integrity))) {
+    if (!(await args.cache.has(integrity))) {
       const bytes = await args.fetchTarball(entry, {
         registries: args.registries,
         assetRoot: args.assetRoot,
         assetMounts: args.assetMounts,
       });
       try {
-        await args.cache.put(entry.integrity, bytes);
+        await args.cache.put(integrity, bytes);
       } catch (err) {
         if (err instanceof TarballIntegrityMismatchError) {
           throw new ToolLoaderError({
@@ -115,7 +133,7 @@ export async function materializeClosure(
     }
 
     try {
-      return await args.cache.extractTarball(entry.integrity);
+      return await args.cache.extractTarball(integrity);
     } catch (err) {
       // Eviction is reserved for the integrity-mismatch path: the bytes
       // on disk no longer match the pinned hash, so the entry is poison
@@ -127,7 +145,7 @@ export async function materializeClosure(
       // layout copy against the same extraction will not
       // ENOENT mid-readdir.
       if (err instanceof TarballIntegrityMismatchError) {
-        await args.cache.evict(entry.integrity);
+        await args.cache.evict(integrity);
       }
       throw new ToolLoaderError({
         category: "tarball.extract.failed",
