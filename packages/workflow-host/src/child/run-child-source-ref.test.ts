@@ -309,6 +309,9 @@ function createStubRepoStore(baseDir: string): RepoStore {
         async readBlobByOid(oid: string) {
           return fsp.readFile(path.join(repoDir, oid));
         },
+        async treeOid() {
+          return null;
+        },
       };
     },
   };

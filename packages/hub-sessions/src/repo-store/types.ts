@@ -364,6 +364,14 @@ export type CommittedTreeEntry = {
 export type CommittedReads = {
   listDir(relPath: string): Promise<CommittedTreeEntry[]>;
   readBlobByOid(oid: string): Promise<Uint8Array>;
+  /**
+   * The git tree object id of the subtree at `relPath` (the empty string
+   * or "." is the commit's root tree), or `null` when `relPath` is absent
+   * or resolves to a non-tree. This is the content identity a source
+   * closure freezes for a package materialized from the tree: the sidecar
+   * re-checks the checked-out subtree against it.
+   */
+  treeOid(relPath: string): Promise<string | null>;
 };
 
 export interface RepoStore {

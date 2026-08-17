@@ -726,6 +726,9 @@ function createStubRepoStore(
               : { type: "RunStarted", seq: 0 };
           return new TextEncoder().encode(JSON.stringify(event));
         },
+        async treeOid() {
+          return null;
+        },
       };
     },
     openCommittedReadsAtCommit: unused,

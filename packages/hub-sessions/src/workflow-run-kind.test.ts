@@ -2350,6 +2350,9 @@ describe("claim-check API — resume-owned processing entries survive replay", (
 
   test("readCommittedWorkflowRunLifecycle reads the Git ref without a checkout", async () => {
     const reads = {
+      async treeOid() {
+        return null;
+      },
       async listDir(dirPath: string) {
         if (dirPath === "runs/stable") {
           return [{ name: "events", oid: "events", type: "tree" as const }];
