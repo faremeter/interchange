@@ -231,11 +231,11 @@ export interface LoadManifestArgs {
    */
   readonly assetMounts: ReadonlyMap<string, string>;
   /**
-   * Maps a `kind: "git"` entry's `source.assetId` to an absolute path to
-   * an indexed git directory whose object database holds the pinned
+   * Maps a source-format asset entry's `source.assetId` to an absolute path
+   * to an indexed git directory whose object database holds the pinned
    * commit and its trees. The caller checks the delivered pack out into
    * this directory once per asset before applying. Empty map is valid
-   * when no entry sources from git.
+   * when no entry sources from a git subtree.
    */
   readonly gitDirs: ReadonlyMap<string, string>;
 }
@@ -259,9 +259,9 @@ export interface MaterializeClosureArgs {
   readonly assetRoot: string;
   readonly assetMounts: ReadonlyMap<string, string>;
   /**
-   * Maps a `kind: "git"` entry's `source.assetId` to an absolute indexed
-   * git directory the pinned subtree is read from. Empty map is valid
-   * when no entry sources from git.
+   * Maps a source-format asset entry's `source.assetId` to an absolute
+   * indexed git directory the pinned subtree is read from. Empty map is valid
+   * when no entry sources from a git subtree.
    */
   readonly gitDirs: ReadonlyMap<string, string>;
   readonly host: HostPlatform;
