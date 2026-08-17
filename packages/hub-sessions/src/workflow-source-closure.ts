@@ -82,14 +82,24 @@ export async function resolveSourceWorkflowClosure(
   const { commitSha, packageName } = source.package;
   const assetId = source.assetId;
 
-  const members = await enumerateMembers(reads);
+  const { members, rootName, catalog } = await enumerateMembers(reads);
   const selected = selectMember(members, packageName);
 
-  // BFS over workspace-local deps; collect external deps by name. Enumeration
-  // rejects a `workspaces` monorepo, so the walk visits exactly one member and
-  // each external `depName` is seen once -- there is no second write to
-  // reconcile. The `.set` below is last-writer-wins if that ever changes, which
-  // only becomes meaningful once multi-member support lands.
+  // BFS over the reachable workspace members. A dependency classifies by NAME,
+  // never by parsing its range: a name that is a member recurses (a
+  // workspace-local edge); the workspace root's own name is an invalid target
+  // (the root is not a member) and fails loud regardless of how the range is
+  // spelled; anything else is external and resolves through the registry walker.
+  //
+  // External deps collect by name, and a second member contributing the same
+  // name at a DIFFERENT resolved range fails loud rather than silently
+  // collapsing to one pin -- the walker resolves a single range per name, so a
+  // silent overwrite would drop a real constraint. This is a DELIBERATE v1
+  // limitation: two members with drifting-but-compatible ranges (e.g. `^1.0.0`
+  // and `^1.2.0`) that npm/bun would reconcile to one version are rejected here,
+  // not intersected. Aligning the ranges across members, or declaring the dep
+  // once in the root `catalog`, resolves it. (Semver intersection across
+  // members is tracked separately as INTR-460.)
   const sourceEntries: ToolPackageManifestEntry[] = [];
   const externalPins = new Map<string, string>();
   const seen = new Set<string>();
@@ -127,9 +137,21 @@ export async function resolveSourceWorkflowClosure(
     for (const [depName, depSpec] of Object.entries(member.dependencies)) {
       if (members.has(depName)) {
         queue.push(depName);
-      } else {
-        externalPins.set(depName, resolveExternalSpec(depName, depSpec));
+        continue;
       }
+      if (rootName !== undefined && depName === rootName) {
+        throw new Error(
+          `resolveSourceWorkflowClosure: member ${JSON.stringify(member.name)} depends on the workspace root ${JSON.stringify(rootName)}, which is not a workspace member`,
+        );
+      }
+      const resolvedSpec = resolveExternalSpec(depName, depSpec, catalog);
+      const existing = externalPins.get(depName);
+      if (existing !== undefined && existing !== resolvedSpec) {
+        throw new Error(
+          `resolveSourceWorkflowClosure: workspace members pin external ${JSON.stringify(depName)} at conflicting ranges ${JSON.stringify(existing)} and ${JSON.stringify(resolvedSpec)}; the closure resolves a single range per name`,
+        );
+      }
+      externalPins.set(depName, resolvedSpec);
     }
   }
 
@@ -150,31 +172,131 @@ export async function resolveSourceWorkflowClosure(
   };
 }
 
+interface EnumeratedWorkspace {
+  readonly members: Map<string, WorkspaceMember>;
+  /**
+   * The workspace root's package name, when it declares one. Used to reject a
+   * member that depends on the root (which is not itself a member).
+   */
+  readonly rootName: string | undefined;
+  /**
+   * The root's `catalog` object. A bare `catalog:` dependency specifier
+   * expands against it.
+   */
+  readonly catalog: Record<string, string> | undefined;
+}
+
 /**
  * Read the workspace members from the asset's tree. A repo with no
- * `workspaces` field is a single package rooted at the tree; a `workspaces`
- * monorepo is not yet supported here.
+ * `workspaces` field is a single package rooted at the tree (the root IS the
+ * one member). A `workspaces` monorepo enumerates its members from the globs;
+ * the root is the workspace root, NOT a member -- its `name`/`catalog` inform
+ * dependency classification but it contributes no closure entry.
  */
 async function enumerateMembers(
   reads: SourceTreeReads,
-): Promise<Map<string, WorkspaceMember>> {
+): Promise<EnumeratedWorkspace> {
   const root = await readPackageJSON(reads, ".");
-  if (root.workspaces !== undefined) {
+
+  if (root.workspaces === undefined) {
+    // Single-package: the root is the workflow package itself, so it must
+    // declare a name and version.
+    const member = requireMember(root, ".");
+    return {
+      members: new Map([[member.name, member]]),
+      rootName: root.name,
+      catalog: root.catalog,
+    };
+  }
+
+  const members = new Map<string, WorkspaceMember>();
+  for (const glob of root.workspaces) {
+    for (const packageDir of await expandWorkspaceGlob(reads, glob)) {
+      // A `<dir>/*` glob matches every subdirectory, but not all are packages
+      // (docs, fixtures, ...). Skip a directory with no package.json rather than
+      // fail the whole resolution, matching how bun/yarn/pnpm treat a
+      // non-package directory that a workspace glob happens to match. A
+      // directory that HAS a package.json must still parse and declare a name
+      // and version, so a malformed member fails loud.
+      if (!(await dirHasPackageJSON(reads, packageDir))) continue;
+      const parsed = await readPackageJSON(reads, packageDir);
+      const member = requireMember(parsed, packageDir);
+      if (members.has(member.name)) {
+        throw new Error(
+          `resolveSourceWorkflowClosure: workspace member ${JSON.stringify(member.name)} is declared by more than one package directory`,
+        );
+      }
+      members.set(member.name, member);
+    }
+  }
+  if (members.size === 0) {
     throw new Error(
-      "resolveSourceWorkflowClosure: monorepo workspaces are not yet supported",
+      `resolveSourceWorkflowClosure: workspaces ${JSON.stringify(root.workspaces)} matched no member packages`,
     );
   }
-  return new Map([
-    [
-      root.name,
-      {
-        name: root.name,
-        version: root.version,
-        packageDir: ".",
-        dependencies: root.dependencies,
-      },
-    ],
-  ]);
+  return { members, rootName: root.name, catalog: root.catalog };
+}
+
+/**
+ * Turn a parsed package.json at `packageDir` into a workspace member, failing
+ * loud if it does not declare both a string `name` and `version` (the closure
+ * entry it produces is keyed on `name@version`).
+ */
+function requireMember(
+  parsed: ParsedPackageJSON,
+  packageDir: string,
+): WorkspaceMember {
+  if (parsed.name === undefined || parsed.version === undefined) {
+    const blobPath =
+      packageDir === "." ? "package.json" : `${packageDir}/package.json`;
+    throw new Error(
+      `resolveSourceWorkflowClosure: ${blobPath} must declare string "name" and "version"`,
+    );
+  }
+  return {
+    name: parsed.name,
+    version: parsed.version,
+    packageDir,
+    dependencies: parsed.dependencies,
+  };
+}
+
+/**
+ * Expand one `workspaces` glob to the member directories it names. Supports
+ * `<base>/*` (each subtree directly under `<base>`) and an exact path (no glob
+ * character). Any richer shape (`**`, a mid-segment `*`, braces, negation)
+ * fails loud rather than risk mis-enumerating the workspace.
+ */
+async function expandWorkspaceGlob(
+  reads: SourceTreeReads,
+  glob: string,
+): Promise<string[]> {
+  const trimmed = glob.replace(/\/+$/, "");
+  if (!/[*{}!]/.test(trimmed)) {
+    return [trimmed];
+  }
+  const suffix = "/*";
+  const base = trimmed.slice(0, -suffix.length);
+  if (trimmed.endsWith(suffix) && !/[*{}!]/.test(base)) {
+    const children = await reads.listDir(base === "" ? "." : base);
+    return children
+      .filter((child) => child.type === "tree")
+      .map((child) => (base === "" ? child.name : `${base}/${child.name}`));
+  }
+  throw new Error(
+    `resolveSourceWorkflowClosure: unsupported workspaces glob ${JSON.stringify(glob)}; only "<dir>/*" and exact paths are supported`,
+  );
+}
+
+/** Whether `dir` holds a `package.json` blob (i.e. is a package directory). */
+async function dirHasPackageJSON(
+  reads: SourceTreeReads,
+  dir: string,
+): Promise<boolean> {
+  const entries = await reads.listDir(dir);
+  return entries.some(
+    (entry) => entry.name === "package.json" && entry.type === "blob",
+  );
 }
 
 function selectMember(
@@ -203,10 +325,14 @@ function selectMember(
 }
 
 interface ParsedPackageJSON {
-  readonly name: string;
-  readonly version: string;
+  /** Absent when the package.json declares no string `name` (e.g. a private workspace root). */
+  readonly name: string | undefined;
+  /** Absent when the package.json declares no string `version`. */
+  readonly version: string | undefined;
   readonly dependencies: Record<string, string>;
   readonly workspaces: readonly string[] | undefined;
+  /** The `catalog` object (`Record<name, range>`), when present. */
+  readonly catalog: Record<string, string> | undefined;
 }
 
 async function readPackageJSON(
@@ -236,13 +362,13 @@ async function readPackageJSON(
       `resolveSourceWorkflowClosure: ${blobPath} is not an object`,
     );
   }
-  const name = raw["name"];
-  const version = raw["version"];
-  if (typeof name !== "string" || typeof version !== "string") {
-    throw new Error(
-      `resolveSourceWorkflowClosure: ${blobPath} must declare string "name" and "version"`,
-    );
-  }
+  // `name`/`version` are optional here: a private workspace root routinely
+  // omits them. A member that omits either fails loud where it is turned into a
+  // WorkspaceMember (`requireMember`), not here.
+  const nameRaw = raw["name"];
+  const versionRaw = raw["version"];
+  const name = typeof nameRaw === "string" ? nameRaw : undefined;
+  const version = typeof versionRaw === "string" ? versionRaw : undefined;
   const depsRaw = raw["dependencies"];
   const dependencies: Record<string, string> = {};
   if (isRecord(depsRaw)) {
@@ -261,10 +387,18 @@ async function readPackageJSON(
     workspaces = workspacesRaw;
   } else {
     throw new Error(
-      `resolveSourceWorkflowClosure: ${blobPath} "workspaces" must be an array of globs`,
+      `resolveSourceWorkflowClosure: ${blobPath} "workspaces" must be an array of glob strings; the object form ({ packages, catalog, catalogs }) is not supported`,
     );
   }
-  return { name, version, dependencies, workspaces };
+  const catalogRaw = raw["catalog"];
+  let catalog: Record<string, string> | undefined;
+  if (isRecord(catalogRaw)) {
+    catalog = {};
+    for (const [k, v] of Object.entries(catalogRaw)) {
+      if (typeof v === "string") catalog[k] = v;
+    }
+  }
+  return { name, version, dependencies, workspaces, catalog };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -272,20 +406,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Translate an external dependency specifier to a concrete npm range the
- * registry walker can pick against. Plain ranges pass through; the
- * `workspace:`/`catalog:` protocols require a workspace and are handled where
- * a member map / catalog is in scope, so they fail loud here.
+ * Translate an EXTERNAL dependency specifier (one whose name is not a workspace
+ * member) to a concrete npm range the registry walker can pick against:
+ *   - `workspace:` protocol -- the name is not a member, so this is an invalid
+ *     workspace reference; fail loud.
+ *   - bare `catalog:` -- expand against the root `catalog` object; fail loud if
+ *     the catalog declares no entry for this name.
+ *   - named `catalog:<name>` -- not supported; fail loud.
+ *   - plain range -- pass through.
  */
-function resolveExternalSpec(depName: string, spec: string): string {
+function resolveExternalSpec(
+  depName: string,
+  spec: string,
+  catalog: Record<string, string> | undefined,
+): string {
   if (spec.startsWith("workspace:")) {
     throw new Error(
       `resolveSourceWorkflowClosure: ${depName} uses ${JSON.stringify(spec)} but is not a workspace member`,
     );
   }
+  if (spec === "catalog:") {
+    const range = catalog?.[depName];
+    if (range === undefined) {
+      throw new Error(
+        `resolveSourceWorkflowClosure: ${depName} uses the default catalog but the workspace root declares no "catalog" entry for it`,
+      );
+    }
+    return range;
+  }
   if (spec.startsWith("catalog:")) {
     throw new Error(
-      `resolveSourceWorkflowClosure: ${depName} uses catalog protocol, which is not yet supported`,
+      `resolveSourceWorkflowClosure: ${depName} uses named catalog ${JSON.stringify(spec)}, which is not supported`,
     );
   }
   return spec;
