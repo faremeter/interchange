@@ -41,6 +41,15 @@ export interface ResolveSourceWorkflowClosureArgs {
   /** A source whose `package.format` is `"source"`. */
   readonly source: WorkflowDefinitionAssetSource;
   readonly reads: SourceTreeReads;
+  /**
+   * The registry name external deps are stamped with in the frozen closure.
+   * The sidecar resolves each entry's `source.registry` against its own
+   * registry map at materialization, so this MUST be a name that map is keyed
+   * by (the sidecar's npm registry, e.g. `"npmjs"`); an unknown name fails the
+   * materialization loud. The caller owns the sidecar's registry configuration,
+   * so it supplies the name here rather than the walk inventing one.
+   */
+  readonly registryName: string;
   /** URL and credentials for the npm registry external deps resolve against. */
   readonly registryConfig: RegistryConfig;
   /** Test seam for external packument fetches. */
@@ -55,10 +64,6 @@ interface WorkspaceMember {
   readonly dependencies: Record<string, string>;
 }
 
-// The synthetic registry-map key for the external npm walk; internal to the
-// walker, never surfaced.
-const EXTERNAL_REGISTRY_NAME = "npm";
-
 /**
  * Resolve a source-format workflow definition's dependency closure to a frozen
  * `ToolPackageManifest`: a `format:"source"` entry for the workflow package and
@@ -68,7 +73,7 @@ const EXTERNAL_REGISTRY_NAME = "npm";
 export async function resolveSourceWorkflowClosure(
   args: ResolveSourceWorkflowClosureArgs,
 ): Promise<ToolPackageManifest> {
-  const { source, reads, registryConfig, fetchPackument } = args;
+  const { source, reads, registryName, registryConfig, fetchPackument } = args;
   if (source.package.format !== "source") {
     throw new Error(
       "resolveSourceWorkflowClosure: source.package.format must be 'source'",
@@ -80,8 +85,11 @@ export async function resolveSourceWorkflowClosure(
   const members = await enumerateMembers(reads);
   const selected = selectMember(members, packageName);
 
-  // BFS over workspace-local deps; collect external deps by name (the walker
-  // resolves a single range per name, so first-writer-wins is fine here).
+  // BFS over workspace-local deps; collect external deps by name. Enumeration
+  // rejects a `workspaces` monorepo, so the walk visits exactly one member and
+  // each external `depName` is seen once -- there is no second write to
+  // reconcile. The `.set` below is last-writer-wins if that ever changes, which
+  // only becomes meaningful once multi-member support lands.
   const sourceEntries: ToolPackageManifestEntry[] = [];
   const externalPins = new Map<string, string>();
   const seen = new Set<string>();
@@ -129,6 +137,7 @@ export async function resolveSourceWorkflowClosure(
     externalPins.size > 0
       ? await resolveExternalClosure(
           externalPins,
+          registryName,
           registryConfig,
           fetchPackument,
         )
@@ -284,17 +293,18 @@ function resolveExternalSpec(depName: string, spec: string): string {
 
 async function resolveExternalClosure(
   pins: Map<string, string>,
+  registryName: string,
   registryConfig: RegistryConfig,
   fetchPackument: PackumentFetcher | undefined,
 ): Promise<ToolPackageManifestEntry[]> {
   const registrySource = new HttpRegistrySource({
-    name: EXTERNAL_REGISTRY_NAME,
+    name: registryName,
     config: registryConfig,
     ...(fetchPackument !== undefined ? { fetchPackument } : {}),
   });
   const resolver = createClosureResolver({
-    registries: new Map([[EXTERNAL_REGISTRY_NAME, registrySource]]),
-    defaultRegistry: EXTERNAL_REGISTRY_NAME,
+    registries: new Map([[registryName, registrySource]]),
+    defaultRegistry: registryName,
   });
   const rootPins: ToolPackagePin[] = [...pins].map(([name, version]) => ({
     name,

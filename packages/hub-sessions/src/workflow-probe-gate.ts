@@ -279,6 +279,11 @@ export type InstallAndApproveAssetSourceArgs = InstallAndApproveCommonArgs & {
   readonly source: WorkflowDefinitionAssetSource;
   /** Git-tree reads pinned to `source.package.commitSha`. */
   readonly reads: SourceTreeReads;
+  /**
+   * The registry name external deps are stamped with in the frozen closure.
+   * Must be a name the sidecar's registry map is keyed by (its npm registry).
+   */
+  readonly registryName: string;
   /** URL and credentials for the npm registry external deps resolve against. */
   readonly registryConfig: RegistryConfig;
   /** Test seam for packument fetches, threaded to closure resolution. Omitted in production. */
@@ -347,6 +352,7 @@ export async function installAndApproveWorkflowDefinition(
     closure = await resolveWorkflowClosure({
       source: args.source,
       reads: args.reads,
+      registryName: args.registryName,
       registryConfig: args.registryConfig,
       ...(args.fetchPackument !== undefined
         ? { fetchPackument: args.fetchPackument }

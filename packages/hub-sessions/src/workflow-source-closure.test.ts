@@ -78,6 +78,9 @@ describe("resolveSourceWorkflowClosure", () => {
         package: { format: "source", commitSha: "commit-abc" },
       },
       reads,
+      // A distinctive name so the assertion below proves the caller-supplied
+      // registry name (not an invented one) is what the external entry carries.
+      registryName: "npm-corp",
       registryConfig: { url: "https://registry.test" },
       fetchPackument,
     });
@@ -103,7 +106,7 @@ describe("resolveSourceWorkflowClosure", () => {
     expect(leftPad?.version).toBe("1.3.0");
     expect(leftPad?.source).toEqual({
       kind: "registry",
-      registry: "npm",
+      registry: "npm-corp",
       integrity: "sha512-left-pad-1.3.0",
     });
   });
@@ -125,6 +128,7 @@ describe("resolveSourceWorkflowClosure", () => {
         package: { format: "source", commitSha: "c1" },
       },
       reads,
+      registryName: "npmjs",
       registryConfig: { url: "https://registry.test" },
     });
 
@@ -163,6 +167,7 @@ describe("resolveSourceWorkflowClosure", () => {
           package: { format: "source", commitSha: "c" },
         },
         reads,
+        registryName: "npmjs",
         registryConfig: { url: "https://registry.test" },
       }),
     ).rejects.toThrow(/monorepo workspaces are not yet supported/);
@@ -190,6 +195,7 @@ describe("resolveSourceWorkflowClosure", () => {
           package: { format: "source", commitSha: "c" },
         },
         reads,
+        registryName: "npmjs",
         registryConfig: { url: "https://registry.test" },
       }),
     ).rejects.toThrow(/catalog protocol, which is not yet supported/);

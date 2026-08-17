@@ -304,6 +304,10 @@ describe("source-sourced workflow e2e", () => {
       router: env.hub.router,
       db: h.db,
       reads,
+      // The sidecar's default registry map is keyed "npmjs"; external deps this
+      // workflow had (it has none) would be stamped with this name so the
+      // sidecar could resolve them. Kept consistent with that map.
+      registryName: "npmjs",
       registryConfig: { url: "https://registry.test" },
       resolveAttachment,
     });
