@@ -330,6 +330,7 @@ describe("resolveWorkflowClosure", () => {
         package: { format: "source", commitSha: "commit-xyz" },
       },
       reads,
+      registryName: "npmjs",
       registryConfig: { url: "https://registry.test" },
       fetchPackument,
     });

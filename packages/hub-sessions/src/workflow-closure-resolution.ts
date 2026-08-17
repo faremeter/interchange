@@ -99,6 +99,13 @@ export type ResolveWorkflowClosureAssetSourceArgs = {
   readonly source: WorkflowDefinitionAssetSource;
   /** Git-tree reads pinned to `source.package.commitSha`. */
   readonly reads: SourceTreeReads;
+  /**
+   * The registry name external deps are stamped with in the frozen closure.
+   * Must be a name the sidecar's registry map is keyed by (its npm registry),
+   * since the sidecar resolves each external entry's `source.registry` against
+   * that map at materialization.
+   */
+  readonly registryName: string;
   /** URL and credentials for the npm registry external deps resolve against. */
   readonly registryConfig: RegistryConfig;
   /**
@@ -147,6 +154,7 @@ export async function resolveWorkflowClosure(
     return resolveSourceWorkflowClosure({
       source: args.source,
       reads: args.reads,
+      registryName: args.registryName,
       registryConfig: args.registryConfig,
       ...(args.fetchPackument !== undefined
         ? { fetchPackument: args.fetchPackument }
