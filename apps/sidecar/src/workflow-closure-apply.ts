@@ -132,11 +132,10 @@ export async function applyFrozenWorkflowClosure(
 
   // Boundary check on the definition's source. The `registry` arm surfaces a
   // missing source registry loudly before any I/O (the per-entry registry
-  // gates fire again inside the loader). A tarball-format `asset` closure
-  // materializes its entries from `assetMounts` the caller populated from the
-  // durable source-asset store; the loader reads each entry's tarball there and
-  // fails loud (`asset.mount.missing`) if a mount is absent. A source-format
-  // asset closure has no sidecar delivery path yet, so that arm fails closed.
+  // gates fire again inside the loader). An `asset` closure materializes its
+  // entries from the durable stores the caller populated: tarball entries from
+  // `assetMounts`, source entries from `gitDirs`; the loader fails loud
+  // (`asset.mount.missing` / `git.materialization.failed`) if either is absent.
   // The `never` default makes a future source kind a compile error rather than
   // a silent fallthrough.
   switch (args.source.kind) {
@@ -148,11 +147,6 @@ export async function applyFrozenWorkflowClosure(
       }
       break;
     case "asset":
-      if (args.source.package.format === "source") {
-        throw new Error(
-          "sidecar workflow-closure apply: source-format asset workflow closures cannot be materialized on the sidecar yet",
-        );
-      }
       break;
     default: {
       const _exhaustive: never = args.source;

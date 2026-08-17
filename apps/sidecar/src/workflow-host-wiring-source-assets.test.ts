@@ -42,6 +42,40 @@ function assetPin(assetIds: readonly string[]): SourceRefPin {
   };
 }
 
+// A source-format pin: every member is a `format:"source"` entry backed by one
+// asset checked out into the durable indexed-`.git` store. Restore derives the
+// `assetId -> gitDir` map from this pin alone.
+function sourcePin(
+  assetId: string,
+  packageDirs: readonly string[],
+): SourceRefPin {
+  return {
+    source: {
+      kind: "asset",
+      assetId,
+      package: { format: "source", commitSha: "commit-abc" },
+    },
+    closure: {
+      schemaVersion: "1",
+      topLevel: [{ name: "@x/wf", version: "1.0.0" }],
+      entries: packageDirs.map((packageDir, i) => ({
+        name: i === 0 ? "@x/wf" : `@x/member-${String(i)}`,
+        version: "1.0.0",
+        source: {
+          kind: "asset",
+          assetId,
+          package: {
+            format: "source",
+            commitSha: "commit-abc",
+            packageDir,
+            treeOid: `tree-${String(i)}`,
+          },
+        },
+      })),
+    },
+  };
+}
+
 let dataDir: string;
 
 beforeEach(async () => {
@@ -113,6 +147,52 @@ describe("resolveDeploymentAssetMounts", () => {
     ).rejects.toThrow(/is not present in the durable store/);
   });
 
+  test("derives the pin's gitDir map when the durable git store is populated", async () => {
+    const assetId = "asset_top";
+    // Populate the durable indexed-`.git` store exactly as a deploy checkout
+    // would; restore reads only this, deriving the gitDir from the pin. Two
+    // members share one backing asset, so both resolve to one gitDir.
+    await fs.mkdir(
+      path.join(
+        dataDir,
+        "workflow-definition-source-gits",
+        DEPLOYMENT_ID,
+        assetId,
+      ),
+      { recursive: true },
+    );
+
+    const { gitDirs, assetMounts } = await resolveDeploymentAssetMounts(
+      dataDir,
+      DEPLOYMENT_ID,
+      sourcePin(assetId, [".", "packages/member-1"]),
+    );
+
+    // No tarball entries, so no plain-file mounts.
+    expect(assetMounts.size).toBe(0);
+    expect([...gitDirs]).toEqual([
+      [
+        assetId,
+        path.join(
+          dataDir,
+          "workflow-definition-source-gits",
+          DEPLOYMENT_ID,
+          assetId,
+        ),
+      ],
+    ]);
+  });
+
+  test("fails loud when a source pin's git store is absent", async () => {
+    await expect(
+      resolveDeploymentAssetMounts(
+        dataDir,
+        DEPLOYMENT_ID,
+        sourcePin("asset_missing", ["."]),
+      ),
+    ).rejects.toThrow(/has no indexed git store/);
+  });
+
   test("returns an empty mount map for a registry-sourced pin", async () => {
     const registryPin: SourceRefPin = {
       source: { kind: "registry", registry: "npmjs" },
@@ -133,11 +213,12 @@ describe("resolveDeploymentAssetMounts", () => {
       },
     };
 
-    const { assetMounts } = await resolveDeploymentAssetMounts(
+    const { assetMounts, gitDirs } = await resolveDeploymentAssetMounts(
       dataDir,
       DEPLOYMENT_ID,
       registryPin,
     );
     expect(assetMounts.size).toBe(0);
+    expect(gitDirs.size).toBe(0);
   });
 });
