@@ -46,6 +46,7 @@ import {
   resolveWorkflowClosure,
   type ResolveAssetAttachmentFn,
 } from "./workflow-closure-resolution";
+import type { SourceTreeReads } from "./workflow-source-closure";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import type { SidecarRouter, WorkflowProbeResult } from "./ws/sidecar-handler";
 
@@ -225,8 +226,6 @@ export async function gateAndFreezeProbeResult(
 }
 
 type InstallAndApproveCommonArgs = {
-  /** A `name@range` spec for the workflow definition package. */
-  readonly pin: string;
   /** The `interchange.workflow` entry-module path the sidecar evaluates to project the definition. */
   readonly entry: string;
   /** The `workflow`-kind asset the frozen definition projects over. */
@@ -242,6 +241,8 @@ type InstallAndApproveCommonArgs = {
 /** Install a definition published to an npm registry. */
 export type InstallAndApproveRegistryArgs = InstallAndApproveCommonArgs & {
   readonly source: WorkflowDefinitionRegistrySource;
+  /** A `name@range` spec for the workflow definition package. */
+  readonly pin: string;
   /** URL and credentials for the registry `source` names. */
   readonly registryConfig: RegistryConfig;
   /** Test seam for packument fetches, threaded to closure resolution. Omitted in production. */
@@ -254,8 +255,10 @@ export type InstallAndApproveRegistryArgs = InstallAndApproveCommonArgs & {
  * `resolveAttachment`; this glue never imports the asset service, so hub-service
  * ownership stays at the caller.
  */
-export type InstallAndApproveAssetArgs = InstallAndApproveCommonArgs & {
+export type InstallAndApproveAssetTarballArgs = InstallAndApproveCommonArgs & {
   readonly source: WorkflowDefinitionAssetSource;
+  /** A `name@range` spec for the workflow definition package. */
+  readonly pin: string;
   /** Reads a blob at `path` from the asset the definition is sourced from. */
   readonly readBlob: (path: string) => Promise<Uint8Array>;
   /** Lists the blob names directly under `dir` in that asset. */
@@ -264,14 +267,48 @@ export type InstallAndApproveAssetArgs = InstallAndApproveCommonArgs & {
   readonly resolveAttachment: ResolveAssetAttachmentFn;
 };
 
+/**
+ * Install a definition whose package lives as a git subtree of a hub asset at a
+ * pinned commit. The caller binds a `SourceTreeReads` to that commit and
+ * supplies the npm `registryConfig` for the external deps; there is no
+ * `name@range` pin (the member is selected from `source.package.packageName`).
+ * `resolveAttachment` delivers the same git pack the tarball arm does, so the
+ * sidecar checks the subtree out of it.
+ */
+export type InstallAndApproveAssetSourceArgs = InstallAndApproveCommonArgs & {
+  readonly source: WorkflowDefinitionAssetSource;
+  /** Git-tree reads pinned to `source.package.commitSha`. */
+  readonly reads: SourceTreeReads;
+  /** URL and credentials for the npm registry external deps resolve against. */
+  readonly registryConfig: RegistryConfig;
+  /** Test seam for packument fetches, threaded to closure resolution. Omitted in production. */
+  readonly fetchPackument?: PackumentFetcher;
+  /** Resolves each asset the closure references to the pack the probe delivers. */
+  readonly resolveAttachment: ResolveAssetAttachmentFn;
+};
+
 export type InstallAndApproveArgs =
   | InstallAndApproveRegistryArgs
-  | InstallAndApproveAssetArgs;
+  | InstallAndApproveAssetTarballArgs
+  | InstallAndApproveAssetSourceArgs;
 
-function isAssetInstallArgs(
+// Both asset arms carry an identical `source` field type, so narrow on the
+// source's own `package.format` discriminant rather than adding a redundant
+// discriminant to the args.
+function isAssetSourceInstallArgs(
   args: InstallAndApproveArgs,
-): args is InstallAndApproveAssetArgs {
-  return args.source.kind === "asset";
+): args is InstallAndApproveAssetSourceArgs {
+  return (
+    args.source.kind === "asset" && args.source.package.format === "source"
+  );
+}
+
+function isAssetTarballInstallArgs(
+  args: InstallAndApproveArgs,
+): args is InstallAndApproveAssetTarballArgs {
+  return (
+    args.source.kind === "asset" && args.source.package.format === "tarball"
+  );
 }
 
 /**
@@ -306,7 +343,17 @@ export async function installAndApproveWorkflowDefinition(
 ): Promise<InstallAndApproveResult> {
   let closure: ToolPackageManifest;
   let assets: WorkflowSourceAssetMount[];
-  if (isAssetInstallArgs(args)) {
+  if (isAssetSourceInstallArgs(args)) {
+    closure = await resolveWorkflowClosure({
+      source: args.source,
+      reads: args.reads,
+      registryConfig: args.registryConfig,
+      ...(args.fetchPackument !== undefined
+        ? { fetchPackument: args.fetchPackument }
+        : {}),
+    });
+    assets = await buildSourceAssetMounts(closure, args.resolveAttachment);
+  } else if (isAssetTarballInstallArgs(args)) {
     closure = await resolveWorkflowClosure({
       source: args.source,
       pin: args.pin,
