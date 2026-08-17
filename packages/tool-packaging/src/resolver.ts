@@ -139,8 +139,9 @@ export type PackumentFetcher = (
 /**
  * The shape returned by `RegistrySource.materializeRefForEntry`. The
  * walker copies these fields onto the `ToolPackageManifestEntry` it
- * emits, alongside `name`, `version`, `integrity`, and the platform
- * filter metadata it derives from the picked packument version.
+ * emits, alongside `name`, `version`, and the platform filter metadata
+ * it derives from the picked packument version. The content identity
+ * (`integrity`) rides on `source`, so the impl embeds it there.
  */
 export interface MaterializedRef {
   readonly source: ToolPackageSource;
@@ -167,6 +168,7 @@ export interface RegistrySource {
     name: string,
     version: string,
     picked: PackumentVersion,
+    integrity: string,
   ): MaterializedRef;
 }
 
@@ -282,9 +284,10 @@ export class HttpRegistrySource implements RegistrySource {
     _name: string,
     _version: string,
     picked: PackumentVersion,
+    integrity: string,
   ): MaterializedRef {
     return {
-      source: { kind: "registry" as const, registry: this.name },
+      source: { kind: "registry" as const, registry: this.name, integrity },
       tarballUrl: picked.dist.tarball,
     };
   }
@@ -355,6 +358,7 @@ export class AssetRegistrySource implements RegistrySource {
     name: string,
     version: string,
     _picked: PackumentVersion,
+    integrity: string,
   ): MaterializedRef {
     const key = `${name}@${version}`;
     const path = this.#pathByNameVersion.get(key);
@@ -374,7 +378,7 @@ export class AssetRegistrySource implements RegistrySource {
       source: {
         kind: "asset" as const,
         assetId: this.#assetId,
-        path,
+        package: { format: "tarball" as const, path, integrity },
       },
     };
   }
@@ -824,6 +828,7 @@ export function createClosureResolver(
             picked.name,
             picked.version,
             picked,
+            picked.dist.integrity,
           );
         } catch (err) {
           if (next.subtreeId !== null) {
@@ -839,7 +844,6 @@ export function createClosureResolver(
         const entry: ToolPackageManifestEntry = {
           name: picked.name,
           version: picked.version,
-          integrity: picked.dist.integrity,
           source: ref.source,
           ...(ref.tarballUrl !== undefined
             ? { tarballUrl: ref.tarballUrl }

@@ -92,6 +92,11 @@ export interface ApplyAtomicArgs {
    * Forwarded verbatim to `ToolLoader.loadManifest`.
    */
   readonly assetMounts: ReadonlyMap<string, string>;
+  /**
+   * Maps a `kind: "git"` entry's `source.assetId` to an absolute indexed
+   * git directory. Forwarded verbatim to `ToolLoader.loadManifest`.
+   */
+  readonly gitDirs: ReadonlyMap<string, string>;
   readonly attemptId: string;
   /**
    * The deploy id the instance is currently running. Retained on disk
@@ -194,6 +199,7 @@ export async function applyAtomic(
       instanceScratchDir: deployDir,
       assetRoot: args.assetRoot,
       assetMounts: args.assetMounts,
+      gitDirs: args.gitDirs,
     });
   } catch (err) {
     await fs.rm(deployDir, { recursive: true, force: true });

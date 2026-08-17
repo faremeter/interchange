@@ -21,6 +21,7 @@ import * as tar from "tar";
 
 import type { Packument, PackumentFetcher } from "@intx/tool-packaging";
 import type { WorkflowDefinitionRegistrySource } from "@intx/types/workflow-sources";
+import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 import { resolveWorkflowClosure } from "./workflow-closure-resolution";
 
@@ -43,6 +44,7 @@ interface Fixture {
   integrity: string;
   tarballUrl: string;
   dependencies: Record<string, string>;
+  bytes: Uint8Array;
 }
 
 function sriFromBytes(bytes: Uint8Array): string {
@@ -90,6 +92,31 @@ async function buildFixture(spec: {
     integrity: sriFromBytes(bytes),
     tarballUrl,
     dependencies,
+    bytes,
+  };
+}
+
+/**
+ * In-process `readBlob`/`listBlobs` over a synthetic `package-registry` asset
+ * whose `tarballs/` directory holds the given tarballs, keyed by filename. This
+ * is the asset-arm analog of the `fetchPackument` seam the registry tests use:
+ * `AssetRegistrySource` lists `tarballs/`, reads each `.tgz`, and synthesizes
+ * the packuments itself.
+ */
+function makeAssetReaders(tarballs: Record<string, Uint8Array>): {
+  readBlob: (path: string) => Promise<Uint8Array>;
+  listBlobs: (dir: string) => Promise<string[]>;
+} {
+  return {
+    readBlob: async (blobPath) => {
+      const filename = blobPath.replace(/^tarballs\//, "");
+      const bytes = tarballs[filename];
+      if (bytes === undefined) {
+        throw new Error(`no blob at ${blobPath}`);
+      }
+      return bytes;
+    },
+    listBlobs: async (dir) => (dir === "tarballs" ? Object.keys(tarballs) : []),
   };
 }
 
@@ -151,19 +178,25 @@ describe("resolveWorkflowClosure", () => {
     const topEntry = byName.get(top.name);
     if (topEntry === undefined) throw new Error("missing top-level entry");
     expect(topEntry.version).toBe(top.version);
-    expect(topEntry.integrity).toBe(top.integrity);
+    expect(getToolPackageSourceContentIdentity(topEntry.source)).toBe(
+      top.integrity,
+    );
     expect(topEntry.source).toEqual({
       kind: "registry",
       registry: source.registry,
+      integrity: top.integrity,
     });
 
     const depEntry = byName.get(dep.name);
     if (depEntry === undefined) throw new Error("missing transitive entry");
     expect(depEntry.version).toBe(dep.version);
-    expect(depEntry.integrity).toBe(dep.integrity);
+    expect(getToolPackageSourceContentIdentity(depEntry.source)).toBe(
+      dep.integrity,
+    );
     expect(depEntry.source).toEqual({
       kind: "registry",
       registry: source.registry,
+      integrity: dep.integrity,
     });
   });
 
@@ -191,7 +224,76 @@ describe("resolveWorkflowClosure", () => {
       { name: only.name, version: only.version },
     ]);
     expect(manifest.entries).toHaveLength(1);
-    expect(manifest.entries[0]?.version).toBe(only.version);
-    expect(manifest.entries[0]?.integrity).toBe(only.integrity);
+    const onlyEntry = manifest.entries[0];
+    if (onlyEntry === undefined) throw new Error("missing entry");
+    expect(onlyEntry.version).toBe(only.version);
+    expect(getToolPackageSourceContentIdentity(onlyEntry.source)).toBe(
+      only.integrity,
+    );
+  });
+
+  test("resolves an asset-sourced workflow to a kind:asset entry", async () => {
+    const top = await buildFixture({ name: "wf-asset-top", version: "1.0.0" });
+    const tarballFile = "wf-asset-top-1.0.0.tgz";
+    const { readBlob, listBlobs } = makeAssetReaders({
+      [tarballFile]: top.bytes,
+    });
+
+    const manifest = await resolveWorkflowClosure({
+      source: {
+        kind: "asset",
+        assetId: "asset_top",
+        package: { format: "tarball" },
+      },
+      pin: `${top.name}@${top.version}`,
+      readBlob,
+      listBlobs,
+    });
+
+    expect(manifest.topLevel).toEqual([
+      { name: top.name, version: top.version },
+    ]);
+    expect(manifest.entries).toHaveLength(1);
+    const entry = manifest.entries[0];
+    if (entry === undefined) throw new Error("missing entry");
+    expect(entry.version).toBe(top.version);
+    expect(getToolPackageSourceContentIdentity(entry.source)).toBe(
+      top.integrity,
+    );
+    expect(entry.source).toEqual({
+      kind: "asset",
+      assetId: "asset_top",
+      package: {
+        format: "tarball",
+        path: `tarballs/${tarballFile}`,
+        integrity: top.integrity,
+      },
+    });
+  });
+
+  test("fails loud when the asset does not publish a declared dependency", async () => {
+    // The workflow package declares a dependency the asset does not hold; the
+    // single-source asset resolver has no npm fallback, so the walk must throw.
+    const top = await buildFixture({
+      name: "wf-asset-needs-dep",
+      version: "1.0.0",
+      dependencies: { "@external/absent": "^1.0.0" },
+    });
+    const { readBlob, listBlobs } = makeAssetReaders({
+      "wf-asset-needs-dep-1.0.0.tgz": top.bytes,
+    });
+
+    await expect(
+      resolveWorkflowClosure({
+        source: {
+          kind: "asset",
+          assetId: "asset_top",
+          package: { format: "tarball" },
+        },
+        pin: `${top.name}@${top.version}`,
+        readBlob,
+        listBlobs,
+      }),
+    ).rejects.toThrow(/no tarball publishing package "@external\/absent"/);
   });
 });

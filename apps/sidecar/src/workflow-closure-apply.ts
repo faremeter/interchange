@@ -37,6 +37,7 @@ import {
   storeEntryDir,
 } from "@intx/tool-packaging";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
+import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { loadWorkflowDefinitionFromClosure } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
@@ -70,8 +71,14 @@ export interface ApplyFrozenWorkflowClosureArgs {
    * this defaults to `<instanceDir>/workspace`.
    */
   readonly assetRoot?: string;
-  /** `assetId` -> mount path for `kind: "asset"` entries; empty by default. */
+  /** `assetId` -> mount path for tarball `asset` entries; empty by default. */
   readonly assetMounts?: ReadonlyMap<string, string>;
+  /**
+   * `assetId` -> absolute indexed git directory for source-format `asset`
+   * entries. A registry- or tarball-sourced closure carries no source
+   * entries, so this defaults to an empty map.
+   */
+  readonly gitDirs?: ReadonlyMap<string, string>;
   /**
    * Test seam for tarball fetching, forwarded to `createToolLoader`.
    * Production omits it and the loader fetches from the configured registry.
@@ -123,14 +130,36 @@ export async function applyFrozenWorkflowClosure(
     );
   }
 
-  // Boundary check: the sidecar must be configured for the registry the
-  // definition is sourced from. The per-entry registry gates are enforced
-  // again inside the loader; this surfaces a missing source registry loudly
-  // before any I/O.
-  if (!args.registries.has(args.source.registry)) {
-    throw new Error(
-      `sidecar workflow-closure apply: source registry ${JSON.stringify(args.source.registry)} is not in the sidecar registry config`,
-    );
+  // Boundary check on the definition's source. The `registry` arm surfaces a
+  // missing source registry loudly before any I/O (the per-entry registry
+  // gates fire again inside the loader). A tarball-format `asset` closure
+  // materializes its entries from `assetMounts` the caller populated from the
+  // durable source-asset store; the loader reads each entry's tarball there and
+  // fails loud (`asset.mount.missing`) if a mount is absent. A source-format
+  // asset closure has no sidecar delivery path yet, so that arm fails closed.
+  // The `never` default makes a future source kind a compile error rather than
+  // a silent fallthrough.
+  switch (args.source.kind) {
+    case "registry":
+      if (!args.registries.has(args.source.registry)) {
+        throw new Error(
+          `sidecar workflow-closure apply: source registry ${JSON.stringify(args.source.registry)} is not in the sidecar registry config`,
+        );
+      }
+      break;
+    case "asset":
+      if (args.source.package.format === "source") {
+        throw new Error(
+          "sidecar workflow-closure apply: source-format asset workflow closures cannot be materialized on the sidecar yet",
+        );
+      }
+      break;
+    default: {
+      const _exhaustive: never = args.source;
+      throw new Error(
+        `sidecar workflow-closure apply: unhandled workflow source kind ${String(_exhaustive)}`,
+      );
+    }
   }
 
   const cache = createTarballCache({
@@ -162,6 +191,7 @@ export async function applyFrozenWorkflowClosure(
     instanceDir: args.instanceDir,
     assetRoot: args.assetRoot ?? path.join(args.instanceDir, "workspace"),
     assetMounts: args.assetMounts ?? new Map(),
+    gitDirs: args.gitDirs ?? new Map(),
     attemptId: crypto.randomUUID(),
     // This apply stands alone per deployment: there is no prior deploy under
     // `instanceDir` to retain, so the sentinel disables the retention window.
@@ -192,7 +222,11 @@ export async function applyFrozenWorkflowClosure(
   const definition = await loadWorkflowDefinitionFromClosure({
     packageDir,
     ...(workflowEntry !== undefined
-      ? { importCacheKey: workflowEntry.integrity }
+      ? {
+          importCacheKey: getToolPackageSourceContentIdentity(
+            workflowEntry.source,
+          ),
+        }
       : {}),
     ...(args.importModule !== undefined
       ? { importModule: args.importModule }

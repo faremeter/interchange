@@ -30,7 +30,7 @@ import {
   isAnnotatedDirectorFactory,
   type DirectorRegistry,
 } from "@intx/agent";
-import { PackageJSON } from "@intx/types/package-json";
+import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
@@ -251,15 +251,14 @@ async function resolveContainedEntry(
   entryRel: string,
   fieldLabel: string,
 ): Promise<string> {
-  const entryAbs = path.resolve(packageDir, entryRel);
-  const containmentRoot = packageDir.endsWith(path.sep)
-    ? packageDir
-    : packageDir + path.sep;
-  if (entryAbs !== packageDir && !entryAbs.startsWith(containmentRoot)) {
+  // String-level containment, shared with the push-time asset validator so the
+  // two boundaries agree on what "contained" means.
+  if (!isContainedEntryPath(entryRel)) {
     throw new Error(
       `${fieldLabel} entry path ${JSON.stringify(entryRel)} escapes the workflow package directory ${packageDir}`,
     );
   }
+  const entryAbs = path.resolve(packageDir, entryRel);
 
   let realPackageDir: string;
   let realEntryAbs: string;

@@ -14,18 +14,25 @@
 //      approved set, so a naive live re-walk that surfaces MORE grants than
 //      were approved cannot grant beyond the freeze.
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import * as tar from "tar";
 
+import { base64Decode } from "@intx/types";
+import type { DBExecutor } from "@intx/db";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   gateAndFreezeProbeResult,
+  installAndApproveWorkflowDefinition,
   type FrozenApproval,
   type PersistFrozenApprovalFn,
 } from "./workflow-probe-gate";
-import type { WorkflowProbeResult } from "./ws/sidecar-handler";
+import type { SendProbeArgs, WorkflowProbeResult } from "./ws/sidecar-handler";
 
 const PROJECTION: WorkflowProjectionDefinition = {
   id: "wf-under-test",
@@ -188,5 +195,132 @@ describe("gateAndFreezeProbeResult", () => {
     if (result.reason !== "grants_not_approved")
       throw new Error("wrong reason");
     expect(result.unapprovedGrants).toEqual(["tool:escalate"]);
+  });
+});
+
+let installScratch: string;
+
+/**
+ * Pack a minimal workflow definition package into an npm tarball, returning the
+ * bytes and the filename under which a synthetic asset would hold it.
+ */
+async function buildWorkflowTarball(spec: {
+  name: string;
+  version: string;
+}): Promise<{ bytes: Uint8Array; tarballFile: string }> {
+  const stagingDir = path.join(
+    installScratch,
+    `${spec.name.replace("/", "_")}-${spec.version}`,
+  );
+  const packageDir = path.join(stagingDir, "package");
+  await fs.mkdir(packageDir, { recursive: true });
+  await fs.writeFile(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: spec.name,
+      version: spec.version,
+      interchange: { workflow: "./index.js" },
+    }),
+  );
+  await fs.writeFile(
+    path.join(packageDir, "index.js"),
+    "export const workflow = {};\n",
+  );
+  const tarballPath = path.join(stagingDir, "out.tgz");
+  await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
+    "package",
+  ]);
+  const bytes = await fs.readFile(tarballPath);
+  return {
+    bytes,
+    tarballFile: `${spec.name.replace("@", "").replace("/", "-")}-${spec.version}.tgz`,
+  };
+}
+
+function makeAssetReaders(tarballs: Record<string, Uint8Array>): {
+  readBlob: (path: string) => Promise<Uint8Array>;
+  listBlobs: (dir: string) => Promise<string[]>;
+} {
+  return {
+    readBlob: async (blobPath) => {
+      const filename = blobPath.replace(/^tarballs\//, "");
+      const bytes = tarballs[filename];
+      if (bytes === undefined) throw new Error(`no blob at ${blobPath}`);
+      return bytes;
+    },
+    listBlobs: async (dir) => (dir === "tarballs" ? Object.keys(tarballs) : []),
+  };
+}
+
+describe("installAndApproveWorkflowDefinition", () => {
+  beforeEach(async () => {
+    installScratch = await fs.mkdtemp(path.join(os.tmpdir(), "wf-install-"));
+  });
+  afterEach(async () => {
+    await fs.rm(installScratch, { recursive: true, force: true });
+  });
+
+  test("delivers the source asset inline in the probe frame", async () => {
+    const wf = await buildWorkflowTarball({
+      name: "@fixture/wf",
+      version: "1.0.0",
+    });
+    const { readBlob, listBlobs } = makeAssetReaders({
+      [wf.tarballFile]: wf.bytes,
+    });
+    const assetId = "asset_wf";
+    const commitSha = "0123456789abcdef0123456789abcdef01234567";
+
+    let captured: SendProbeArgs | undefined;
+    const router = {
+      sendProbe: async (frame: SendProbeArgs): Promise<WorkflowProbeResult> => {
+        captured = frame;
+        // Capture the built frame and stop: the gate/freeze is out of scope for
+        // this producer test.
+        throw new Error("captured-probe-frame");
+      },
+    };
+    const resolveAttachment = async (id: string) => ({
+      pack: new TextEncoder().encode(`PACK:${id}`),
+      ref: "refs/heads/main",
+      commitSha,
+    });
+
+    await expect(
+      installAndApproveWorkflowDefinition({
+        source: { kind: "asset", assetId, package: { format: "tarball" } },
+        pin: "@fixture/wf@1.0.0",
+        entry: "./index.js",
+        assetId,
+        approvals: new Set<string>() satisfies ApprovalSet,
+        router,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- sendProbe throws before db is read
+        db: {} as unknown as DBExecutor,
+        readBlob,
+        listBlobs,
+        resolveAttachment,
+      }),
+    ).rejects.toThrow(/captured-probe-frame/);
+
+    expect(captured?.source).toEqual({
+      kind: "asset",
+      assetId,
+      package: { format: "tarball" },
+    });
+    expect(captured?.entry).toBe("./index.js");
+    expect(captured?.closure.topLevel).toEqual([
+      { name: "@fixture/wf", version: "1.0.0" },
+    ]);
+    expect(captured?.assets).toHaveLength(1);
+    const mount = captured?.assets?.[0];
+    if (mount === undefined) throw new Error("no delivered asset mount");
+    // The materializer requires the source asset among the delivered mounts.
+    expect(mount.assetId).toBe(assetId);
+    expect(mount.mountPath).toBe(`source-assets/${assetId}/`);
+    expect(mount.ref).toBe("refs/heads/main");
+    expect(mount.commitSha).toBe(commitSha);
+    expect(new TextDecoder().decode(base64Decode(mount.pack))).toBe(
+      `PACK:${assetId}`,
+    );
   });
 });

@@ -97,6 +97,9 @@
         "@intx/workflow-host": "workspace:*",
         "arktype": "catalog:",
       },
+      "devDependencies": {
+        "isomorphic-git": "catalog:",
+      },
     },
     "examples/agent-audit-log": {
       "name": "@intx/example-agent-audit-log",
@@ -524,8 +527,10 @@
       "dependencies": {
         "@intx/agent": "workspace:*",
         "@intx/log": "workspace:*",
+        "@intx/storage-isogit": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",
+        "isomorphic-git": "catalog:",
         "npm-package-arg": "^12.0.2",
         "npm-pick-manifest": "^10.0.0",
         "npm-registry-fetch": "^19.0.0",

@@ -37,6 +37,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { type } from "arktype";
+import { base64Decode } from "@intx/types";
+import { applyAssetPack } from "@intx/hub-agent";
 import { getLogger } from "@intx/log";
 import {
   type RegistryConfig,
@@ -46,7 +48,10 @@ import {
   storeEntryDir,
 } from "@intx/tool-packaging";
 import { PackageJSON } from "@intx/types/package-json";
-import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
+import type {
+  WorkflowSourceAssetMount,
+  WorkflowProbeRequestFrame,
+} from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { resolveHostPlatform } from "./sidecar-materialization-config";
@@ -64,6 +69,13 @@ export interface WorkflowClosureMaterializerConfig {
   readonly cacheMaxBytes: number;
   /** Byte cap for a single HTTP-registry tarball fetch. */
   readonly registryMaxTarballBytes: number;
+  /**
+   * Byte cap for the total base64-encoded asset payload a probe frame may
+   * deliver inline. Measured against the base64 wire length (a conservative
+   * upper bound on the decoded bytes), it is enforced before any pack is
+   * decoded so an oversized frame fails loud rather than being materialized.
+   */
+  readonly maxAssetPayloadBytes: number;
   /** Registry identifier -> URL + credentials the loader resolves entries against. */
   readonly registries: ReadonlyMap<string, RegistryConfig>;
   /**
@@ -76,6 +88,47 @@ export interface WorkflowClosureMaterializerConfig {
    * Production omits it and the loader fetches from the configured registry.
    */
   readonly fetchTarball?: TarballFetcher;
+}
+
+/**
+ * Check out each inline-delivered asset pack as plain files under
+ * `<assetRoot>/<mountPath>/` and return the `assetId -> mountPath` map the
+ * loader resolves `kind:"asset"` entries against. `applyAssetPack` owns the
+ * containment defenses (mount-path sanitization, `commitSha` integrity,
+ * submodule and `.git`-injection rejection); this only enforces the total
+ * payload cap and never evaluates any delivered content.
+ */
+export async function materializeSourceAssetMounts(
+  assets: readonly WorkflowSourceAssetMount[],
+  assetRoot: string,
+  maxAssetPayloadBytes: number,
+): Promise<ReadonlyMap<string, string>> {
+  const mounts = new Map<string, string>();
+  let totalPayloadBytes = 0;
+  for (const asset of assets) {
+    // Cap on the base64 wire length before decoding, so an oversized frame
+    // fails loud rather than allocating the decoded pack.
+    totalPayloadBytes += asset.pack.length;
+    if (totalPayloadBytes > maxAssetPayloadBytes) {
+      throw new Error(
+        `workflow source-asset materialization: inline asset payload exceeds the ${String(maxAssetPayloadBytes)}-byte cap`,
+      );
+    }
+    if (mounts.has(asset.assetId)) {
+      throw new Error(
+        `workflow source-asset materialization: asset ${JSON.stringify(asset.assetId)} is delivered more than once`,
+      );
+    }
+    await applyAssetPack({
+      workspaceRoot: assetRoot,
+      mountPath: asset.mountPath,
+      pack: base64Decode(asset.pack),
+      ref: asset.ref,
+      commitSha: asset.commitSha,
+    });
+    mounts.set(asset.assetId, asset.mountPath);
+  }
+  return mounts;
 }
 
 /**
@@ -115,13 +168,34 @@ export function createWorkflowClosureMaterializer(
       );
     }
 
-    // The sidecar must be configured for the registry the definition is
-    // sourced from. The per-entry registry gates fire again inside the
-    // loader; this surfaces a missing source registry loudly before any I/O.
-    if (!config.registries.has(frame.source.registry)) {
-      throw new Error(
-        `workflow-probe closure materialization: source registry ${JSON.stringify(frame.source.registry)} is not in the sidecar registry config`,
-      );
+    // Boundary check on the definition's source. The `registry` arm surfaces a
+    // missing source registry loudly before any I/O (the per-entry registry
+    // gates fire again inside the loader). A tarball-format `asset` closure is
+    // materialized from the `assets` the frame delivers, mounted below. A
+    // source-format asset closure has no sidecar delivery path yet, so that
+    // arm fails closed. The `never` default makes a future source kind a
+    // compile error rather than a silent fallthrough.
+    switch (frame.source.kind) {
+      case "registry":
+        if (!config.registries.has(frame.source.registry)) {
+          throw new Error(
+            `workflow-probe closure materialization: source registry ${JSON.stringify(frame.source.registry)} is not in the sidecar registry config`,
+          );
+        }
+        break;
+      case "asset":
+        if (frame.source.package.format === "source") {
+          throw new Error(
+            "workflow-probe closure materialization: source-format asset probe closures cannot be materialized on the sidecar yet",
+          );
+        }
+        break;
+      default: {
+        const _exhaustive: never = frame.source;
+        throw new Error(
+          `workflow-probe closure materialization: unhandled workflow source kind ${String(_exhaustive)}`,
+        );
+      }
     }
 
     const scratchDir = path.join(config.scratchRoot, crypto.randomUUID());
@@ -145,6 +219,35 @@ export function createWorkflowClosureMaterializer(
           : {}),
       });
 
+      // Materialize any inline-delivered assets as plain files under the
+      // workspace root, so the loader can resolve `kind:"asset"` closure
+      // entries against their mounts. Registry-sourced closures deliver none;
+      // the map stays empty and the loader fetches over HTTP.
+      const assetRoot = path.join(scratchDir, "workspace");
+      const assetMounts = await materializeSourceAssetMounts(
+        frame.assets ?? [],
+        assetRoot,
+        config.maxAssetPayloadBytes,
+      );
+      // A source-format asset entry is checked out from an indexed pack the
+      // probe would deliver; the probe does not deliver git checkouts yet, so
+      // the map stays empty and a source-format entry fails loud downstream.
+      const gitDirs = new Map<string, string>();
+
+      // Source-boundary check for the asset arm, the post-unpack analog of the
+      // registry arm's config check: the asset the definition is sourced from
+      // holds the workflow package, so it MUST be among the delivered assets.
+      // Surface a missing delivery here rather than as a downstream
+      // `asset.mount.missing` on the top-level entry.
+      if (
+        frame.source.kind === "asset" &&
+        !assetMounts.has(frame.source.assetId)
+      ) {
+        throw new Error(
+          `workflow-probe closure materialization: asset source ${JSON.stringify(frame.source.assetId)} was not among the delivered assets`,
+        );
+      }
+
       // Lay out phases 1-2 only. `topLevel` is emptied so the loader's
       // phase-3 loop imports nothing -- no author code is evaluated on the
       // host; the airlocked child owns the single import of the workflow
@@ -158,8 +261,9 @@ export function createWorkflowClosureMaterializer(
       await loader.loadManifest({
         manifest: layoutManifest,
         instanceScratchDir: scratchDir,
-        assetRoot: path.join(scratchDir, "workspace"),
-        assetMounts: new Map(),
+        assetRoot,
+        assetMounts,
+        gitDirs,
       });
 
       const storeDir = path.join(scratchDir, "store");

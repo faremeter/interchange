@@ -117,8 +117,11 @@ const CLOSURE: ToolPackageManifest = {
     {
       name: "@acme/workflow",
       version: "1.0.0",
-      integrity: "sha512-deadbeef",
-      source: { kind: "registry", registry: "npmjs" },
+      source: {
+        kind: "registry",
+        registry: "npmjs",
+        integrity: "sha512-deadbeef",
+      },
     },
   ],
 };
@@ -183,7 +186,10 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
       expect(seenFrames).toHaveLength(1);
       const observed = seenFrames[0];
       expect(observed?.entry).toBe("./workflow.js");
-      expect(observed?.source.registry).toBe("npmjs");
+      expect(observed?.source.kind).toBe("registry");
+      if (observed?.source.kind === "registry") {
+        expect(observed.source.registry).toBe("npmjs");
+      }
       expect(result.wireHash).toBe("hash-from-injected-executor");
       expect(result.grants).toEqual(["capability:test/inspect"]);
     } finally {

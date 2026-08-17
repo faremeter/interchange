@@ -408,6 +408,24 @@ export const SourceRefPin = type({
 export type SourceRefPin = typeof SourceRefPin.infer;
 
 /**
+ * A hub asset delivered inline in a source-ref frame so the sidecar can
+ * materialize a closure entry whose bytes live in that asset. `pack` is the
+ * base64-encoded git packfile the hub produced for the asset (`createPack`
+ * output); the sidecar checks out `commitSha` from it as plain files under
+ * `mountPath`, then the loader resolves each `kind:"asset"` closure entry
+ * against that mount. `assetId` matches the `source.assetId` the closure
+ * entries name.
+ */
+export const WorkflowSourceAssetMount = type({
+  assetId: "string",
+  mountPath: "string",
+  pack: "string",
+  ref: "string",
+  commitSha: "string",
+});
+export type WorkflowSourceAssetMount = typeof WorkflowSourceAssetMount.infer;
+
+/**
  * A full workflow deploy frame: the shared `WorkflowProjectionWithSources` base
  * (definition + per-step sources + approved hash, carrying the
  * stepOrder-covered-by-sources narrow) intersected with the top-level-only
@@ -439,6 +457,12 @@ export const AgentDeployWorkflow = WorkflowProjectionWithSources.and(
     // Optional: only a code-sourced (npm) deploy carries it; a live-authored
     // deploy has no pin.
     "sourceRef?": SourceRefPin,
+    // Source assets a `kind:"asset"` closure entry reads from, delivered inline
+    // (as on the probe) so the sidecar checks them out into its durable
+    // per-deployment source store before materializing the pin. Optional: only
+    // an asset-sourced deploy carries it; a registry-sourced pin fetches its
+    // tarballs over HTTP and delivers none.
+    "assets?": WorkflowSourceAssetMount.array(),
   }),
 );
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
@@ -707,6 +731,11 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *                              credentials.
  *   tarball.extract.failed   — tar extraction failed or the extracted
  *                              tree was malformed.
+ *   git.materialization.failed
+ *                            — a git-sourced entry could not be
+ *                              materialized from its checked-out
+ *                              subtree, or reached a loader that does
+ *                              not materialize git sources.
  *   manifest.invalid         — the manifest itself did not validate
  *                              at the loader boundary (JSON.parse
  *                              failure or arktype schema failure).
@@ -775,6 +804,7 @@ export const DeployApplyErrorCategory = type.enumerated(
   "registry.unknown",
   "registry.auth.failed",
   "tarball.extract.failed",
+  "git.materialization.failed",
   "manifest.invalid",
   "package.entry.missing",
   "package.entry.invalid",
@@ -816,13 +846,21 @@ export type SyncRequestFrame = typeof SyncRequestFrame.infer;
  *
  * The frame carries everything the sidecar's probe child needs to run the
  * probe with no further hub round-trip:
- *   - `source` names where the definition's bytes come from (the registry that
- *     publishes the definition package).
+ *   - `source` names where the definition's bytes come from (a registry, a
+ *     package-registry asset, or a git asset).
  *   - `closure` is the frozen dependency closure the hub already resolved --
  *     concrete versions and integrity SRIs -- so the child materializes the
  *     exact tree the hub pinned.
  *   - `entry` is the `interchange.workflow` module path within the package
  *     whose evaluation produces the `WorkflowDefinition`.
+ *   - `assets` (optional) delivers the hub assets a `kind:"asset"` closure
+ *     entry reads from, inline. Delivery is inline rather than a separate
+ *     streamed transfer (as the deploy path uses) because the probe is a
+ *     single-shot request that already buffers the whole frame -- streaming
+ *     would only add a transfer-vs-probe correlation state a one-shot has no
+ *     use for. The sidecar caps the total inline payload and fails loud past
+ *     it; a git-sourced asset that grows past that cap is the trigger to
+ *     revisit streaming.
  */
 export const WorkflowProbeRequestFrame = type({
   type: "'workflow.probe.request'",
@@ -830,6 +868,7 @@ export const WorkflowProbeRequestFrame = type({
   source: WorkflowDefinitionSource,
   closure: ToolPackageManifest,
   entry: "string",
+  "assets?": WorkflowSourceAssetMount.array(),
 });
 export type WorkflowProbeRequestFrame = typeof WorkflowProbeRequestFrame.infer;
 

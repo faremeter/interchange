@@ -13,7 +13,10 @@
 import { type } from "arktype";
 import semver from "semver";
 
-import { ToolCredentialDeclarationArray } from "./package-json";
+import {
+  ToolCredentialDeclarationArray,
+  isContainedEntryPath,
+} from "./package-json";
 
 /**
  * npm's documented package-name rules expressed as an arktype regex
@@ -137,50 +140,117 @@ export const ToolPackageTopLevelArray = ToolPackageTopLevelEntry.array().narrow(
 export type ToolPackageTopLevelArray = typeof ToolPackageTopLevelArray.infer;
 
 /**
- * A pinned entry's tarball lives inside an asset attached to the
- * agent at session time. `assetId` is the hub-side asset row id; the
- * sidecar resolves it against the deploy pack's `deploy/asset-mounts.json`
- * map to get a workspace-relative mount path, then opens the tarball at
- * `<workspaceRoot>/<mount>/<path>`. `path` is the asset-root-relative
- * POSIX path of the tarball blob (the package-registry kind handler
- * stores them under `tarballs/<filename>.tgz`).
- *
- * Pre-INTR-108 manifests carried `path` without `assetId` because the
- * single attached asset was implicit; the substrate now supports
- * multiple attached package-registry assets, so the entry must name
- * which asset to read from.
- */
-export const ToolPackageAssetSource = type({
-  kind: "'asset'",
-  assetId: "string",
-  path: "string",
-});
-export type ToolPackageAssetSource = typeof ToolPackageAssetSource.infer;
-
-/**
- * A pinned entry's tarball is fetched from the named registry at apply
- * time. The sidecar's registry config maps `registry` to a URL and
+ * A pinned entry's bytes are fetched from an EXTERNAL npm registry at
+ * apply time. The sidecar's registry config maps `registry` to a URL and
  * credentials.
+ *
+ * `integrity` is the SRI string ("sha512-...") the registry served for
+ * the picked version. The loader verifies the fetched bytes against it
+ * before unpacking and uses it as the content-addressed cache key.
  */
 export const ToolPackageRegistrySource = type({
   kind: "'registry'",
   registry: "string",
+  integrity: "string",
 });
 export type ToolPackageRegistrySource = typeof ToolPackageRegistrySource.infer;
 
 /**
- * Discriminated union over where a manifest entry's bytes come from.
+ * The entry's bytes are a prepackaged npm tarball living at `path` inside
+ * the asset's checkout (the package-registry kind stores them under
+ * `tarballs/<filename>.tgz`). The loader reads the blob and extracts it.
+ *
+ * `integrity` is the SRI string ("sha512-...") of the tarball bytes. A
+ * reclassified npm tarball keeps its SRI: it is the same artifact an
+ * external registry would serve, so the loader verifies the read bytes
+ * against it and uses it as the content-addressed cache key, and a
+ * byte-identical tarball has one identity regardless of transport.
  */
-export const ToolPackageSource = ToolPackageAssetSource.or(
-  ToolPackageRegistrySource,
+export const ToolPackageAssetTarball = type({
+  format: "'tarball'",
+  path: "string",
+  integrity: "string",
+});
+export type ToolPackageAssetTarball = typeof ToolPackageAssetTarball.infer;
+
+/**
+ * The entry's bytes are a source package: the subtree at `packageDir`
+ * of the asset's checkout at `commitSha`, used in place (not packed).
+ * The loader checks the tree out and copies the subtree into the store.
+ *
+ * `packageDir` is the resolved POSIX subtree path of this package within
+ * the repo ("." for a single-package repo root, "packages/foo" for a
+ * monorepo member). It is a resolved directory, not a package name: a
+ * frozen materialization coordinate must not require re-resolving a
+ * `package.json` name against the tree at apply time. The narrow rejects
+ * absolute paths and `..` traversal at the boundary.
+ *
+ * `treeOid` is the git tree object id of the subtree at `commitSha` --
+ * the content identity the loader verifies the checked-out subtree
+ * against. Unlike a tarball's `integrity`, it is a git tree oid, not an
+ * SRI, because a source subtree has no tarball bytes to hash.
+ */
+export const ToolPackageAssetSourceTree = type({
+  format: "'source'",
+  commitSha: "string",
+  packageDir: type("string").narrow((dir, ctx) =>
+    isContainedEntryPath(dir)
+      ? true
+      : ctx.mustBe("a repo-relative path with no '..' traversal"),
+  ),
+  treeOid: "string",
+});
+export type ToolPackageAssetSourceTree =
+  typeof ToolPackageAssetSourceTree.infer;
+
+/**
+ * A pinned entry's bytes come from a hub `asset` -- a checked-out git
+ * repo attached to the agent at session time. `assetId` is the hub-side
+ * asset row id; the sidecar resolves it against the deploy pack's mount
+ * map to reach the asset's checkout. The package lives at a location
+ * within the checkout, either a prepackaged `tarball` or a `source`
+ * subtree, discriminated by `package.format`.
+ */
+export const ToolPackageAssetSource = type({
+  kind: "'asset'",
+  assetId: "string",
+  package: ToolPackageAssetTarball.or(ToolPackageAssetSourceTree),
+});
+export type ToolPackageAssetSource = typeof ToolPackageAssetSource.infer;
+
+/**
+ * Discriminated union over where a manifest entry's bytes come from: an
+ * external npm `registry`, or a hub `asset` (a git checkout holding a
+ * tarball or a source package).
+ */
+export const ToolPackageSource = ToolPackageRegistrySource.or(
+  ToolPackageAssetSource,
 );
 export type ToolPackageSource = typeof ToolPackageSource.infer;
 
 /**
+ * A closure entry's content identity, whatever its source: the tarball
+ * SRI for a `registry` entry or an `asset` tarball, the subtree git tree
+ * oid for an `asset` source package. Cache-bust keys read this rather
+ * than reaching into a shape-specific field.
+ */
+export function getToolPackageSourceContentIdentity(
+  source: ToolPackageSource,
+): string {
+  if (source.kind === "registry") {
+    return source.integrity;
+  }
+  return source.package.format === "tarball"
+    ? source.package.integrity
+    : source.package.treeOid;
+}
+
+/**
  * A single pinned package in the closure.
  *
- * `integrity` is an SRI string ("sha512-..."). The loader verifies
- * fetched bytes against it before unpacking.
+ * The entry's content identity lives on its `source` arm, because how it
+ * is derived and verified depends on where the bytes come from: an SRI
+ * over tarball bytes for the `asset` and `registry` arms.
  *
  * `os` / `cpu` are present when the entry comes from an
  * `optionalDependencies` declaration with platform constraints. The
@@ -195,7 +265,6 @@ export type ToolPackageSource = typeof ToolPackageSource.infer;
 export const ToolPackageManifestEntry = type({
   name: "string",
   version: "string",
-  integrity: "string",
   source: ToolPackageSource,
   "os?": "string[]",
   "cpu?": "string[]",

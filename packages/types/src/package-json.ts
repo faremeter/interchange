@@ -8,6 +8,8 @@
 // set the build path emits, otherwise a freshly-packed builtin would
 // be rejected for shape reasons the build did not anticipate.
 
+import path from "node:path";
+
 import { type } from "arktype";
 
 /**
@@ -68,3 +70,24 @@ export const PackageJSON = type({
   }).onUndeclaredKey("ignore"),
 }).onUndeclaredKey("ignore");
 export type PackageJSON = typeof PackageJSON.infer;
+
+/**
+ * True when `entry` -- an `interchange.workflow`/`interchange.directors`
+ * module path relative to its package -- stays inside the package directory.
+ * An absolute path or a `..` traversal escapes and returns false.
+ *
+ * This is the string-level half of the loader's containment rule. The
+ * load-time loader (`resolveContainedEntry`) pairs it with a realpath-based
+ * symlink-escape check that only a materialized directory can run; the
+ * push-time asset validator, which has no filesystem, relies on this string
+ * half alone. Both boundaries call this one predicate so they cannot diverge
+ * on what "contained" means. The check uses POSIX path semantics so the
+ * result does not depend on the host's separator or cwd.
+ */
+export function isContainedEntryPath(entry: string): boolean {
+  if (path.posix.isAbsolute(entry)) {
+    return false;
+  }
+  const normalized = path.posix.normalize(entry);
+  return normalized !== ".." && !normalized.startsWith(`..${path.posix.sep}`);
+}
