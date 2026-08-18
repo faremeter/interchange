@@ -212,6 +212,72 @@ describe("gateAndFreezeProbeResult", () => {
       throw new Error("wrong reason");
     expect(result.unapprovedGrants).toEqual(["tool:escalate"]);
   });
+
+  test("approve-probed freezes exactly the probe's surface with no ApprovalSet to gate against", async () => {
+    const probeResult = await makeProbeResult({
+      grants: ["tool:fetch", "effect:log", "tool:escalate"],
+    });
+    const { persist, calls } = recordingPersist("def-probed");
+
+    // `approve-probed` supplies no set. A strict `ApprovalSet` that omitted
+    // `tool:escalate` would have failed the gate closed (see the preceding
+    // test); approve-probed skips the membership filter and approves exactly
+    // the probe's surface.
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      probeResult,
+      approvals: { mode: "approve-probed" },
+      persist,
+    });
+
+    const expectedHash = await computeWireDefinitionHash(
+      probeResult.projection,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    expect(result.approvedWireHash).toBe(expectedHash);
+    expect([...result.approvedGrants].sort()).toEqual([
+      "effect:log",
+      "tool:escalate",
+      "tool:fetch",
+    ]);
+
+    // The freeze captured exactly the probe's advertised set, in the probe's
+    // order, including the grant a strict ApprovalSet would have rejected.
+    expect(calls).toHaveLength(1);
+    const frozen = calls[0];
+    if (frozen === undefined) throw new Error("no freeze recorded");
+    expect(frozen.approvedGrants).toEqual([
+      "tool:fetch",
+      "effect:log",
+      "tool:escalate",
+    ]);
+  });
+
+  test("approve-probed still fails closed on a wire-hash mismatch and freezes nothing", async () => {
+    const probeResult = await makeProbeResult({
+      shippedWireHash: "sha256:not-the-real-hash",
+    });
+
+    // Tamper-evidence is independent of the approval policy: approve-probed
+    // relaxes the grant gate, never the wire-hash check.
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      probeResult,
+      approvals: { mode: "approve-probed" },
+      persist: persistMustNotRun,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.reason).toBe("wire_hash_mismatch");
+    if (result.reason !== "wire_hash_mismatch") throw new Error("wrong reason");
+    expect(result.shippedWireHash).toBe("sha256:not-the-real-hash");
+    expect(result.recomputedWireHash).toBe(
+      await computeWireDefinitionHash(probeResult.projection),
+    );
+  });
 });
 
 let installScratch: string;

@@ -12,8 +12,10 @@
 //   3. RECOMPUTE the wire hash over the RECEIVED projection as tamper-evidence:
 //      a shipped hash that differs from the hub recompute is rejected, fail
 //      closed, no coercion.
-//   4. Gate the advisory grant set against the operator's `ApprovalSet`: every
-//      grant the probe surfaced must be operator-approved or the gate fails.
+//   4. Gate the advisory grant set against the approval policy: an operator
+//      `ApprovalSet` requires every grant the probe surfaced to be approved or
+//      the gate fails, while `approve-probed` approves exactly what the probe
+//      surfaced.
 //   5. Freeze the approved wire hash onto the definition version row, keyed by
 //      the definition's selector, and return the frozen approved grant set.
 //
@@ -160,13 +162,43 @@ export function createDbFrozenApprovalWriter(
   };
 }
 
+/**
+ * Approve exactly the grant surface the probe reports, without a pre-walked
+ * operator `ApprovalSet` to gate against. Under this mode the gate skips the
+ * per-grant membership check and freezes exactly what the probe advertised.
+ *
+ * This is the code-sourced analogue of the live-authored self-approve: the hub
+ * has no live definition to pre-walk, so the probe's advertised grants ARE the
+ * declared surface. It does NOT relax tamper-evidence -- the wire-hash check
+ * still runs and can still fail closed.
+ */
+export type ApproveProbedGrants = { readonly mode: "approve-probed" };
+
+/**
+ * How the gate turns the probe's advisory grant set into an approved set.
+ * Either an explicit operator `ApprovalSet` -- every advertised grant must
+ * appear in it or the gate fails closed -- or `approve-probed`, which approves
+ * exactly the surface the probe reported.
+ */
+export type ProbeApprovalPolicy = ApprovalSet | ApproveProbedGrants;
+
+function isApproveProbed(
+  policy: ProbeApprovalPolicy,
+): policy is ApproveProbedGrants {
+  return "mode" in policy;
+}
+
 export type GateAndFreezeArgs = {
   /** The `workflow`-kind asset the frozen definition projects over. */
   readonly assetId: string;
   /** The sidecar's inert probe answer: projection, advisory grants, shipped hash. */
   readonly probeResult: WorkflowProbeResult;
-  /** The operator-approved grant-shape strings. The advisory set is gated against this. */
-  readonly approvals: ApprovalSet;
+  /**
+   * The approval policy. An `ApprovalSet` gates the advisory set against the
+   * operator-approved grant-shape strings; `approve-probed` approves exactly
+   * the surface the probe reported.
+   */
+  readonly approvals: ProbeApprovalPolicy;
   /** Persistence step for the freeze; `createDbFrozenApprovalWriter` in production. */
   readonly persist: PersistFrozenApprovalFn;
 };
@@ -203,11 +235,13 @@ export async function gateAndFreezeProbeResult(
     };
   }
 
-  // Gate the advisory grant set: every grant the probe surfaced must appear in
-  // the operator's approved set. Any miss fails the gate closed.
-  const unapprovedGrants = probeResult.grants.filter(
-    (grant) => !approvals.has(grant),
-  );
+  // Gate the advisory grant set. Under an `ApprovalSet` every grant the probe
+  // surfaced must appear in the operator's approved set; any miss fails the
+  // gate closed. Under `approve-probed` there is no set to gate against -- the
+  // probe's surface IS the approved set -- so nothing is ever unapproved.
+  const unapprovedGrants = isApproveProbed(approvals)
+    ? []
+    : probeResult.grants.filter((grant) => !approvals.has(grant));
   if (unapprovedGrants.length > 0) {
     return { ok: false, reason: "grants_not_approved", unapprovedGrants };
   }
@@ -237,8 +271,12 @@ type InstallAndApproveCommonArgs = {
   readonly entry: string;
   /** The `workflow`-kind asset the frozen definition projects over. */
   readonly assetId: string;
-  /** The operator-approved grant-shape strings. */
-  readonly approvals: ApprovalSet;
+  /**
+   * The approval policy threaded to the gate: an operator `ApprovalSet` to gate
+   * the advisory set against, or `approve-probed` to approve exactly the
+   * surface the probe reports.
+   */
+  readonly approvals: ProbeApprovalPolicy;
   /** The sidecar router carrying the probe transport. */
   readonly router: Pick<SidecarRouter, "sendProbe">;
   /** Executor the freeze writes through. */
@@ -344,7 +382,9 @@ export type InstallAndApproveResult = {
  * result. This is production glue, not test-only wiring.
  *
  * The operator-approval decision is an input (`approvals`): the caller supplies
- * the set the operator approved, and the gate holds the advisory set to it.
+ * either the `ApprovalSet` the operator approved, which the gate holds the
+ * advisory set to, or `approve-probed` to approve exactly the surface the probe
+ * reports.
  *
  * Returns the gate outcome alongside the inert projection and the frozen
  * closure so the deploy hand-off consumes them verbatim rather than re-probing
