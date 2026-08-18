@@ -13,6 +13,12 @@
 export interface PackMaterializationLimits {
   /** Reject a pack whose header declares more than this many objects. */
   readonly maxPackObjects: number;
+  /**
+   * Reject a pack whose header declares a single object larger than this,
+   * BEFORE it is inflated. Bounds the index-time memory a single highly
+   * compressible blob (a "zip bomb") could allocate.
+   */
+  readonly maxObjectInflatedBytes: number;
   /** Reject a checkout once the cumulative bytes written exceed this. */
   readonly maxTreeBytes: number;
   /** Reject a checkout once the cumulative files + directories exceed this. */
@@ -21,6 +27,7 @@ export interface PackMaterializationLimits {
 
 export const DEFAULT_PACK_MATERIALIZATION_LIMITS: PackMaterializationLimits = {
   maxPackObjects: 500_000,
+  maxObjectInflatedBytes: 64 * 1024 * 1024,
   maxTreeBytes: 256 * 1024 * 1024,
   maxTreeEntries: 100_000,
 };

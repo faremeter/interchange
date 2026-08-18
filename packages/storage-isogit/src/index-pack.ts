@@ -7,18 +7,16 @@ import type { PackMaterializationLimits } from "./materialization-limits";
 // is a constant rather than a caller-supplied id.
 const PACK_FILENAME = "pack-indexed.pack";
 
-// A v2/v3 packfile opens with the 4-byte magic "PACK", a 4-byte version, and a
-// 4-byte object count, all before any object data. The count lets us reject an
-// object-count bomb from the header alone, before `git.indexPack` inflates a
-// single object.
+// A v2/v3 packfile opens with a 4-byte magic, a 4-byte version, and a 4-byte
+// object count, all before any object data. The count lets us reject an
+// object-count bomb from the header alone. Magic/version and the object framing
+// are validated by the node inflation guard (which walks every object) and by
+// `git.indexPack` itself, so this reads only the count.
 const PACK_HEADER_BYTES = 12;
-const PACK_MAGIC = 0x5041_434b; // "PACK"
 
 /**
- * Read and validate an untrusted pack's fixed header. Returns the declared
- * object count. Throws on a truncated header, a bad magic, or an unsupported
- * version, so a malformed pack fails loud here rather than deep inside
- * `git.indexPack`.
+ * Read the declared object count from an untrusted pack's fixed header. Requires
+ * the 12-byte header be present so the count read cannot fault.
  */
 function readPackObjectCount(pack: Uint8Array): number {
   if (pack.length < PACK_HEADER_BYTES) {
@@ -27,18 +25,6 @@ function readPackObjectCount(pack: Uint8Array): number {
     );
   }
   const view = new DataView(pack.buffer, pack.byteOffset, pack.byteLength);
-  const magic = view.getUint32(0, false);
-  if (magic !== PACK_MAGIC) {
-    throw new Error(
-      `indexPackIntoGitDir: pack does not begin with the "PACK" magic`,
-    );
-  }
-  const version = view.getUint32(4, false);
-  if (version !== 2 && version !== 3) {
-    throw new Error(
-      `indexPackIntoGitDir: unsupported pack version ${String(version)}`,
-    );
-  }
   return view.getUint32(8, false);
 }
 
