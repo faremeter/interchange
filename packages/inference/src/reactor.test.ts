@@ -5651,6 +5651,29 @@ describe("createReactor — source failover", () => {
     expect(getEvent(events, "inference.done").data.source.sourceId).toBe("s1");
   });
 
+  test("surfaces quota exhaustion for a single source without failover", async () => {
+    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
+      {
+        sourceIds: ["s0"],
+        resultFor: () => ({
+          category: "quota_exhausted",
+          message: "quota exhausted",
+        }),
+      },
+    );
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    // Single source: quota is attempted once, then surfaces. The harness
+    // wrapper owns quota retry, so the reactor does no same-source backoff
+    // and has nowhere to fail over to. attemptedSourceIds must stay ["s0"].
+    expect(attemptedSourceIds).toEqual(["s0"]);
+    expect(getEvent(events, "inference.error").data.error.category).toBe(
+      "quota_exhausted",
+    );
+  });
+
   test("fails over immediately on a transient error already retried by the harness", async () => {
     const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
       {
