@@ -61,6 +61,7 @@ export const CAPABILITY_DECLARATIONS_JSON_PATH = "capability-declarations.json";
 export const WORKFLOW_GITIGNORE_PATH = ".gitignore";
 export const PACKAGE_JSON_PATH = "package.json";
 export const NODE_MODULES_PATH = "node_modules";
+export const PNPM_WORKSPACE_PATH = "pnpm-workspace.yaml";
 
 const ALLOWED_TOP_LEVEL = new Set<string>([
   WORKFLOW_JSON_PATH,
@@ -332,6 +333,19 @@ async function validateWorkflowCodebasePush(
       );
     }
     return { ok: true };
+  }
+
+  // A pnpm monorepo declares its members in `pnpm-workspace.yaml`, not the
+  // package.json `workspaces` field, so a pnpm root has no `workspaces` and
+  // would fall through to the single-package check below. Reject that layout at
+  // the boundary with a clear message rather than letting it fail obscurely at
+  // resolve time (full pnpm support is tracked in INTR-461).
+  if (topLevelTreePaths.includes(PNPM_WORKSPACE_PATH)) {
+    return rejectPush(
+      repoId,
+      ref,
+      `tree declares a ${PNPM_WORKSPACE_PATH}; the pnpm workspace layout is not supported -- declare members via a package.json "workspaces" array`,
+    );
   }
 
   const pkg = PackageJSON(pkgOutcome.value);

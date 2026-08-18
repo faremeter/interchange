@@ -16,6 +16,7 @@ import {
   WORKFLOW_GITIGNORE_PATH,
   PACKAGE_JSON_PATH,
   NODE_MODULES_PATH,
+  PNPM_WORKSPACE_PATH,
 } from "./workflow-kind";
 import { createRepoStore } from "./repo-store";
 import type {
@@ -1014,6 +1015,27 @@ describe("workflowKindHandler.validatePush codebase shape", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(/must be an array of glob strings/);
+  });
+
+  test("rejects a pnpm-workspace.yaml monorepo layout", async () => {
+    // A pnpm root carries no package.json `workspaces` field (members live in
+    // pnpm-workspace.yaml), so it would fall through to the single-package
+    // check. The gate rejects the layout with a clear message instead.
+    const files = {
+      [PACKAGE_JSON_PATH]: JSON.stringify({
+        name: "@fixture/pnpm-root",
+        private: true,
+      }),
+      [PNPM_WORKSPACE_PATH]: "packages:\n  - packages/*\n",
+    };
+    const result = await validate(
+      uniqueRepoId("codebase-pnpm"),
+      [PACKAGE_JSON_PATH, PNPM_WORKSPACE_PATH],
+      files,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(/pnpm workspace layout is not supported/);
   });
 
   test("rejects a monorepo root that also commits node_modules", async () => {
