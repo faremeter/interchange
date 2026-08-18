@@ -172,6 +172,47 @@ describe("resolveSourceWorkflowClosure", () => {
       }),
     ).rejects.toThrow(/declares no "catalog" entry for it/);
   });
+
+  test("fails loud on a pnpm-workspace.yaml monorepo layout", async () => {
+    // A pnpm root has no package.json `workspaces` field (members live in
+    // pnpm-workspace.yaml), so it would otherwise be misread as a single
+    // package. The resolver detects the file and rejects with a clear message.
+    const reads: SourceTreeReads = {
+      async readBlob(path) {
+        if (path === "package.json") {
+          return new TextEncoder().encode(
+            JSON.stringify({ name: "@wf/root", private: true }),
+          );
+        }
+        throw new Error(`no blob at ${path}`);
+      },
+      async listDir(dir): Promise<CommittedTreeEntry[]> {
+        if (dir === "." || dir === "") {
+          return [
+            { name: "package.json", oid: "root-pkg", type: "blob" },
+            { name: "pnpm-workspace.yaml", oid: "pnpm-ws", type: "blob" },
+          ];
+        }
+        return [];
+      },
+      async treeOid() {
+        return "root-tree";
+      },
+    };
+
+    await expect(
+      resolveSourceWorkflowClosure({
+        source: {
+          kind: "asset",
+          assetId: "a",
+          package: { format: "source", commitSha: "c" },
+        },
+        reads,
+        registryName: "npmjs",
+        registryConfig: { url: "https://registry.test" },
+      }),
+    ).rejects.toThrow(/pnpm workspace layout is not supported/);
+  });
 });
 
 // A richer tree fixture for monorepos: `package.json` blobs keyed by dir plus a

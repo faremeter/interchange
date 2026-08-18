@@ -199,6 +199,16 @@ async function enumerateMembers(
   const root = await readPackageJSON(reads, ".");
 
   if (root.workspaces === undefined) {
+    // A pnpm monorepo declares its members in `pnpm-workspace.yaml`, not the
+    // package.json `workspaces` field, so a pnpm root reaches here looking like
+    // a single package. Detect that layout and fail loud rather than silently
+    // misread the private root as the workflow. Full pnpm support is tracked in
+    // INTR-461.
+    if (await rootHasPnpmWorkspaceFile(reads)) {
+      throw new Error(
+        `resolveSourceWorkflowClosure: the asset root declares a pnpm-workspace.yaml; the pnpm workspace layout is not supported -- declare members via a package.json "workspaces" array`,
+      );
+    }
     // Single-package: the root is the workflow package itself, so it must
     // declare a name and version.
     const member = requireMember(root, ".");
@@ -296,6 +306,16 @@ async function dirHasPackageJSON(
   const entries = await reads.listDir(dir);
   return entries.some(
     (entry) => entry.name === "package.json" && entry.type === "blob",
+  );
+}
+
+/** Whether the tree root holds a `pnpm-workspace.yaml` blob (the pnpm layout). */
+async function rootHasPnpmWorkspaceFile(
+  reads: SourceTreeReads,
+): Promise<boolean> {
+  const entries = await reads.listDir(".");
+  return entries.some(
+    (entry) => entry.name === "pnpm-workspace.yaml" && entry.type === "blob",
   );
 }
 
