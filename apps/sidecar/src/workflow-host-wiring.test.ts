@@ -2230,8 +2230,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
     await writeWorkflowRunRecord(dataDir, deploymentId, record);
 
-    // The on-disk inert workflow.json (the approval surface) restore re-reads
-    // and re-validates before spawning; a valid one so it clears the gate.
+    // The source-ref restore arm reconstructs the definition from the
+    // re-materialized closure, NOT from the on-disk inert workflow.json. Write a
+    // DELIBERATELY-CORRUPT workflow.json to prove the arm never reads it: were
+    // the restore path to parse this file it would throw and soft-skip the
+    // record, so a successful restore below is proof the closure is the source
+    // of truth for the definition on this lineage.
     const workflowJsonPath = path.join(
       dataDir,
       "assets",
@@ -2240,21 +2244,34 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       "workflow.json",
     );
     await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
-    await fs.writeFile(
-      workflowJsonPath,
-      JSON.stringify({
-        id: "wf-srcref",
-        triggers: [{ type: "manual" }],
-        stepOrder: ["step-1"],
-        steps: { "step-1": { kind: "step", id: "step-1" } },
-      }),
-      "utf8",
-    );
+    await fs.writeFile(workflowJsonPath, "}{ not valid json", "utf8");
 
-    // Stub the closure materializer: record its inputs and return a fake
-    // package dir. Restore reads only `packageDir` (it validates the on-disk
-    // workflow.json itself), so a minimal stubbed definition is fine.
+    // Stub the closure materializer: record its inputs, and return a fake
+    // package dir plus the evaluated live definition the restore arm now
+    // projects to the inert wire shape -- the SAME
+    // `WorkflowProjectionDefinition(projectLiveToInert(...))` computation the
+    // deploy path applies. The definition (not the on-disk workflow.json) is the
+    // source of truth for the restored definition, so it must be a valid live
+    // definition whose projection covers the record's sources (`step-1`).
     const fakePackageDir = path.join(dataDir, "fake-closure-package");
+    const closureDefinition = {
+      id: "wf-srcref",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1"],
+      steps: {
+        "step-1": {
+          kind: "step",
+          id: "step-1",
+          agent: {
+            id: "agent-1",
+            systemPrompt: "sys",
+            capabilities: [],
+            toolFactories: [],
+            inference: { sources: [] },
+          },
+        },
+      },
+    };
     const applyCalls: { registry: string; entryCount: number }[] = [];
     const applyStub: NonNullable<
       Parameters<typeof buildMultistepFixture>[0]["applyFrozenWorkflowClosure"]
@@ -2269,8 +2286,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         entryCount: args.closure.entries.length,
       });
       return Promise.resolve({
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- restore reads only packageDir on this path; the evaluated definition is unused
-        definition: {} as unknown as WorkflowDefinition,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub stands in for a real closure evaluation; a minimal hand-built live definition cannot satisfy the full `WorkflowDefinition` nominal type
+        definition: closureDefinition as unknown as WorkflowDefinition,
         packageDir: fakePackageDir,
         deployDir: path.join(dataDir, "fake-deploy-dir"),
       });

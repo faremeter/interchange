@@ -2570,35 +2570,81 @@ export function createSidecarDeployRouter(deps: {
             continue;
           }
 
-          // Re-read and RE-VALIDATE the definition off disk with the exact
-          // gates the deploy path applies: the wire arktype
-          // (`AgentDeployWorkflow`) to narrow the untrusted on-disk shape,
-          // then `validateWorkflowProjection` for the structural invariants
-          // the arktype does not cover (non-empty stepOrder, every stepOrder
-          // entry backed by a `steps` entry). The on-disk `workflow.json` is
-          // untrusted at restore, so it must clear the same bar a fresh
-          // deploy frame clears -- no weaker.
-          const definitionRaw = await readWorkflowJson(
-            dataDir,
-            record.definitionId,
-          );
-          const projection = AgentDeployWorkflow({
-            definition: definitionRaw,
-            sources: record.sources,
-          });
-          if (projection instanceof type.errors) {
-            logger.warn`skipping workflow deployment restore for ${record.agentAddress}: workflow.json failed validation: ${projection.summary}`;
-            continue;
+          // Reconstruct this deployment's runnable definition. The two lineages
+          // differ ONLY in where the definition comes from; both then clear the
+          // SAME structural + source-admission gates a fresh deploy clears.
+          //
+          //   - source-ref: re-materialize the pinned closure and evaluate the
+          //     pinned code to the live definition, then project it to the inert
+          //     wire shape -- the SAME computation the deploy path applies
+          //     (`WorkflowProjectionDefinition(projectLiveToInert(...))`). The
+          //     closure IS the source of truth, so the on-disk `workflow.json`
+          //     is NOT read on this arm. The helper reclaims the instance dir
+          //     first, which is safe here because the prior process (the only
+          //     reader) is dead and restore is serial before `hubLink.connect()`,
+          //     so no concurrent reader holds it. Registry-sourced entries fetch
+          //     from the content-addressed closure cache (a hit populated on the
+          //     original deploy, surviving restart); asset-sourced entries read
+          //     from the durable source store the original deploy checked out
+          //     (`materializeDeploymentClosure` derives the mounts from the pin,
+          //     so no re-delivery is needed). Both are SRI-verified. A
+          //     cache/store miss soft-fails the record (kept for the next boot),
+          //     matching the `assertSourceBuildable` retry-on-later-boot
+          //     behavior below. The schema guarantees a source-ref record carries
+          //     a `sourceRef` pin, so no undefined-check is needed.
+          //   - live-authored: re-read and RE-VALIDATE the definition off disk
+          //     with the deploy path's wire arktype (`AgentDeployWorkflow`),
+          //     which narrows the untrusted on-disk shape. The on-disk
+          //     `workflow.json` is untrusted at restore, so it must clear the
+          //     same bar a fresh deploy frame clears -- no weaker.
+          let definition: WorkflowProjectionDefinition;
+          let closurePackageDir: string | undefined;
+          if (record.lineage === "source-ref") {
+            const applied = await materializeDeploymentClosure(
+              dataDir,
+              runId,
+              record.sourceRef,
+            );
+            const validated = WorkflowProjectionDefinition(
+              projectLiveToInert(applied.definition),
+            );
+            if (validated instanceof type.errors) {
+              logger.warn`skipping workflow deployment restore for ${record.agentAddress}: workflow definition loaded from the frozen closure failed projection validation: ${validated.summary}`;
+              continue;
+            }
+            definition = validated;
+            closurePackageDir = applied.packageDir;
+          } else {
+            const definitionRaw = await readWorkflowJson(
+              dataDir,
+              record.definitionId,
+            );
+            const projection = AgentDeployWorkflow({
+              definition: definitionRaw,
+              sources: record.sources,
+            });
+            if (projection instanceof type.errors) {
+              logger.warn`skipping workflow deployment restore for ${record.agentAddress}: workflow.json failed validation: ${projection.summary}`;
+              continue;
+            }
+            definition = projection.definition;
           }
-          validateWorkflowProjection(projection);
+
+          // Structural invariants the wire arktype does not cover (non-empty
+          // stepOrder, every stepOrder entry backed by a `steps` entry AND a
+          // `sources` entry). Both lineages clear this: the source-ref arm skips
+          // `AgentDeployWorkflow`'s coverage narrow, so this is where its
+          // definition-vs-sources coverage is checked; the live-authored arm
+          // re-checks the same invariants against its on-disk projection.
+          validateWorkflowProjection({ definition, sources: record.sources });
 
           // Re-run the source-admission gate: refuse to restore a deployment
           // whose pinned provider this sidecar can no longer build. Every
           // source in a step's failover chain must be buildable, so this
           // iterates the whole list. The record is KEPT (not deleted) so a
           // later boot with the provider restored retries it.
-          for (const stepId of projection.definition.stepOrder) {
-            const chain = projection.sources[stepId];
+          for (const stepId of definition.stepOrder) {
+            const chain = record.sources[stepId];
             if (chain !== undefined) {
               for (const source of chain) deps.assertSourceBuildable(source);
             }
@@ -2606,8 +2652,8 @@ export function createSidecarDeployRouter(deps: {
 
           const spec: WorkflowDeploySpec = {
             agentAddress: record.agentAddress,
-            definition: projection.definition,
-            sources: projection.sources,
+            definition,
+            sources: record.sources,
             // The hub-approved wire hash the original deploy persisted, so the
             // restore re-spawn carries the same `DEFINITION_HASH` rather than a
             // recompute. Absent only for a legacy live-authored record; the
@@ -2627,35 +2673,17 @@ export function createSidecarDeployRouter(deps: {
             // Preserve the persisted lineage; a legacy record with no lineage
             // is live-authored.
             lineage: record.lineage ?? "live-authored",
-          };
-
-          // Source-ref: re-materialize the pinned closure so the restored child
-          // EVALUATES the pinned code (not the non-executable inert
-          // `workflow.json`), exactly as the fresh deploy does. The schema
-          // guarantees a source-ref record carries a `sourceRef` pin, so no
-          // undefined-checks are needed. The helper reclaims the instance dir
-          // first, which is safe here because the prior process (the only
-          // reader) is dead and restore is serial before `hubLink.connect()`,
-          // so no concurrent reader holds it. Registry-sourced entries fetch
-          // from the content-addressed closure cache (a hit populated on the
-          // original deploy, surviving restart); asset-sourced entries read
-          // from the durable source store the original deploy checked out
-          // (`materializeDeploymentClosure` derives the mounts from the pin, so
-          // no re-delivery is needed). Both are SRI-verified. A cache/store miss
-          // soft-fails the record (kept for the next boot), matching the
-          // `assertSourceBuildable` retry-on-later-boot behavior above.
-          if (record.lineage === "source-ref") {
-            const applied = await materializeDeploymentClosure(
-              dataDir,
-              runId,
-              record.sourceRef,
-            );
-            spec.closurePackageDir = applied.packageDir;
+            // Set only on the source-ref arm: the sidecar-local dir of the
+            // just-materialized closure the spawn core threads into the child's
+            // env so it re-evaluates the pinned code.
+            ...(closurePackageDir !== undefined ? { closurePackageDir } : {}),
             // Carry the source-ref pin so a post-restore source rotation --
             // which rebuilds the record from the spec -- re-persists it; without
             // this a rotation would silently drop it and wedge the NEXT restart.
-            spec.sourceRef = record.sourceRef;
-          }
+            ...(record.lineage === "source-ref"
+              ? { sourceRef: record.sourceRef }
+              : {}),
+          };
 
           // The slug is the caller's, matching `deployMultiStep`: claim before
           // the spawn, release on failure. Unlike deploy's soft-fail, restore
