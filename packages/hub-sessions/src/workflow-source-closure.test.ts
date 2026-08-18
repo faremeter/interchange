@@ -509,4 +509,86 @@ describe("resolveSourceWorkflowClosure monorepo", () => {
     const names = new Set(manifest.entries.map((e) => e.name));
     expect(names).toEqual(new Set(["@wf/app", "@wf/lib"]));
   });
+
+  test("fails loud when two package dirs declare the same member name", async () => {
+    const reads = monorepoReads({
+      ".": {
+        json: { name: "@wf/root", private: true, workspaces: ["packages/*"] },
+      },
+      "packages/a": { json: { name: "@wf/dup", version: "1.0.0" } },
+      "packages/b": { json: { name: "@wf/dup", version: "2.0.0" } },
+    });
+
+    await expect(resolveMonorepo(reads, "@wf/dup")).rejects.toThrow(
+      /is declared by more than one package directory/,
+    );
+  });
+
+  test("fails loud when the workspaces globs match no members", async () => {
+    const reads = monorepoReads({
+      ".": {
+        json: { name: "@wf/root", private: true, workspaces: ["packages/*"] },
+      },
+    });
+
+    await expect(resolveMonorepo(reads, "@wf/app")).rejects.toThrow(
+      /matched no member packages/,
+    );
+  });
+
+  test("fails loud when the packageName selector names no member", async () => {
+    const reads = monorepoReads({
+      ".": {
+        json: { name: "@wf/root", private: true, workspaces: ["packages/*"] },
+      },
+      "packages/app": { json: { name: "@wf/app", version: "1.0.0" } },
+    });
+
+    await expect(resolveMonorepo(reads, "@wf/nope")).rejects.toThrow(
+      /workflow member "@wf\/nope" is not a workspace member/,
+    );
+  });
+
+  test("fails loud when a monorepo source carries no packageName selector", async () => {
+    // Two members, so there is no sole member to default to.
+    const reads = monorepoReads({
+      ".": {
+        json: { name: "@wf/root", private: true, workspaces: ["packages/*"] },
+      },
+      "packages/app": { json: { name: "@wf/app", version: "1.0.0" } },
+      "packages/lib": { json: { name: "@wf/lib", version: "1.0.0" } },
+    });
+
+    await expect(
+      resolveSourceWorkflowClosure({
+        source: {
+          kind: "asset",
+          assetId: "asset_mono",
+          package: { format: "source", commitSha: "c" },
+        },
+        reads,
+        registryName: "npmjs",
+        registryConfig: { url: "https://registry.test" },
+      }),
+    ).rejects.toThrow(/a monorepo source requires a packageName selector/);
+  });
+
+  test("fails loud on a workspace: dependency whose name is not a member", async () => {
+    const reads = monorepoReads({
+      ".": {
+        json: { name: "@wf/root", private: true, workspaces: ["packages/*"] },
+      },
+      "packages/app": {
+        json: {
+          name: "@wf/app",
+          version: "1.0.0",
+          dependencies: { "@ext/x": "workspace:*" },
+        },
+      },
+    });
+
+    await expect(resolveMonorepo(reads, "@wf/app")).rejects.toThrow(
+      /@ext\/x uses "workspace:\*" but is not a workspace member/,
+    );
+  });
 });
