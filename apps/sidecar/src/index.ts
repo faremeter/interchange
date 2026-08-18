@@ -21,8 +21,6 @@ import {
   readRegistryMaxTarballBytes,
 } from "./config";
 import { createDefaultHarnessBuilder } from "./default-harness";
-// Pull the workflow-host wiring factory into the sidecar's module
-// graph so the supervisor surface is reachable from this binary.
 // `createSidecarDeployRouter` is the production routing the
 // orchestrator hands to the link's `agent.deploy` handler; every
 // inbound frame stages through the workflow-run substrate, spawning a
@@ -31,7 +29,6 @@ import type { DispatchTimingMark } from "@intx/workflow-host";
 
 import {
   createSidecarDeployRouter,
-  createSidecarWorkflowSupervisor,
   type SidecarDeployRouter,
 } from "./workflow-host-wiring";
 import {
@@ -551,11 +548,3 @@ if (sidecarDeployRouter === undefined) {
 await sidecarDeployRouter.restoreWorkflowRuns();
 
 orchestrator.start();
-
-// Keep `createSidecarWorkflowSupervisor` reachable from this entry
-// point so a deploy handler that branches on workflow kind can
-// instantiate a supervisor per active deployment without forking the
-// boot path. The full wiring -- agent.deploy → kind detect →
-// supervisor.spawn -- threads through the deploy handler in a later
-// commit. The reference here is the seam.
-export { createSidecarWorkflowSupervisor };
