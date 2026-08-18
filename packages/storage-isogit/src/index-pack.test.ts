@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 
-import { collectReachableObjects, indexPackIntoGitDir } from "./node";
+import {
+  DEFAULT_PACK_MATERIALIZATION_LIMITS,
+  collectReachableObjects,
+  indexPackIntoGitDir,
+} from "./node";
 
 const tempDirs: string[] = [];
 
@@ -48,7 +52,12 @@ describe("indexPackIntoGitDir", () => {
     const { commitSha, pack } = await buildPack();
     const gitDir = await tempDir();
 
-    await indexPackIntoGitDir(gitDir, pack, commitSha);
+    await indexPackIntoGitDir(
+      gitDir,
+      pack,
+      commitSha,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
 
     // The retained object store serves the commit and its tree, so a later
     // checkout can walk it.
@@ -65,8 +74,55 @@ describe("indexPackIntoGitDir", () => {
     const gitDir = await tempDir();
     const absentSha = "0".repeat(40);
 
-    await expect(indexPackIntoGitDir(gitDir, pack, absentSha)).rejects.toThrow(
-      /not found in the pack/,
-    );
+    await expect(
+      indexPackIntoGitDir(
+        gitDir,
+        pack,
+        absentSha,
+        DEFAULT_PACK_MATERIALIZATION_LIMITS,
+      ),
+    ).rejects.toThrow(/not found in the pack/);
+  });
+
+  test("rejects a pack whose header declares more objects than the cap", async () => {
+    // The one-file commit carries three objects (commit, tree, blob); a cap of
+    // two rejects it from the header alone, before any object is indexed.
+    const { commitSha, pack } = await buildPack();
+    const gitDir = await tempDir();
+
+    await expect(
+      indexPackIntoGitDir(gitDir, pack, commitSha, {
+        ...DEFAULT_PACK_MATERIALIZATION_LIMITS,
+        maxPackObjects: 2,
+      }),
+    ).rejects.toThrow(/exceeding the 2-object cap/);
+  });
+
+  test("rejects a buffer that does not begin with the PACK magic", async () => {
+    const gitDir = await tempDir();
+    const notAPack = new Uint8Array(16); // 16 zero bytes: valid length, bad magic
+
+    await expect(
+      indexPackIntoGitDir(
+        gitDir,
+        notAPack,
+        "0".repeat(40),
+        DEFAULT_PACK_MATERIALIZATION_LIMITS,
+      ),
+    ).rejects.toThrow(/does not begin with the "PACK" magic/);
+  });
+
+  test("rejects a buffer shorter than the pack header", async () => {
+    const gitDir = await tempDir();
+    const truncated = new Uint8Array(8);
+
+    await expect(
+      indexPackIntoGitDir(
+        gitDir,
+        truncated,
+        "0".repeat(40),
+        DEFAULT_PACK_MATERIALIZATION_LIMITS,
+      ),
+    ).rejects.toThrow(/shorter than the 12-byte header/);
   });
 });

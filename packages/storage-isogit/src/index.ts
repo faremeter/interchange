@@ -50,6 +50,10 @@ export type {
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 export { writeTreeToDisk } from "./write-tree";
 export { indexPackIntoGitDir } from "./index-pack";
+export {
+  DEFAULT_PACK_MATERIALIZATION_LIMITS,
+  type PackMaterializationLimits,
+} from "./materialization-limits";
 
 function bindRepoDir<TArgs extends readonly unknown[], TResult>(
   runtime: StorageRuntime,

@@ -21,6 +21,7 @@ import git from "isomorphic-git";
 
 import { getLogger } from "@intx/log";
 import {
+  DEFAULT_PACK_MATERIALIZATION_LIMITS,
   indexPackIntoGitDir,
   writeTreeToDisk,
 } from "@intx/storage-isogit/node";
@@ -98,7 +99,12 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
     // present. The scratch dir is discarded in the `finally`; this reuses the
     // same "index a pack into a gitDir and assert the commit" step a durable
     // source-asset delivery keeps.
-    await indexPackIntoGitDir(scratchDir, pack, commitSha);
+    await indexPackIntoGitDir(
+      scratchDir,
+      pack,
+      commitSha,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
 
     const { commit } = await git.readCommit({
       fs,
@@ -111,7 +117,12 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
     await fsp.rm(destDir, { recursive: true, force: true });
     await fsp.mkdir(destDir, { recursive: true });
 
-    await writeTreeToDisk(scratchDir, destDir, commit.tree);
+    await writeTreeToDisk(
+      scratchDir,
+      destDir,
+      commit.tree,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
 
     logger.info`Materialized asset pack at ${destDir} (${commitSha.slice(0, 8)} on ${ref})`;
   } catch (err) {

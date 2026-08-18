@@ -38,6 +38,8 @@ export {
   type MailEntry,
   type IsogitPath,
   type IsogitRuntime,
+  DEFAULT_PACK_MATERIALIZATION_LIMITS,
+  type PackMaterializationLimits,
 } from "./index";
 
 export const runtime = createNodeIsogitRuntime();
