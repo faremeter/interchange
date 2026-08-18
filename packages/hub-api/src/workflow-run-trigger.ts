@@ -23,6 +23,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB } from "@intx/db";
+import { loadFrozenGrantSnapshot } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
@@ -43,7 +44,6 @@ import type {
   AssetService,
   RepoStore,
   SidecarRouter,
-  WorkflowDefinition,
   WorkflowDispatchService,
 } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
@@ -53,12 +53,10 @@ import type { PrincipalRow, TenantRow } from "./context";
 import {
   collectCreatorGrants,
   commitRunGrants,
-  hydrateDefinition,
   loadCommittedRunGrants,
   lockDispatchableAllocation,
   lockWorkflowRunState,
-  parseGrantRequirements,
-  stageRunGrants,
+  stageRunGrantsFromSnapshot,
 } from "./run-grant-materialization";
 import type { MaterializedGrantRow } from "./grant-materialization";
 import { validateAttachments } from "./attachment-validation";
@@ -121,14 +119,8 @@ export type TriggerWorkflowRunResult =
  * result the caller maps onto its route surface.
  */
 export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
-  const {
-    db,
-    assetService,
-    grantStore,
-    sidecarRouter,
-    workflowDispatchService,
-    repoStore,
-  } = deps;
+  const { db, grantStore, sidecarRouter, workflowDispatchService, repoStore } =
+    deps;
 
   async function readRunLifecycle(
     anchorRunId: string,
@@ -293,20 +285,18 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       stagedGrantRows = [];
       stepGrants = committedRunGrants.stepGrants;
     } else {
-      let definition: WorkflowDefinition;
-      try {
-        definition = await hydrateDefinition(assetService, definitionAssetId);
-      } catch (err) {
+      // Read the deploy-approved grant-walk snapshot frozen at approval, keyed
+      // by the deployment's definition id. A null snapshot is the "not yet
+      // approved" state; fail closed rather than derive an empty grant set.
+      const snapshot = await loadFrozenGrantSnapshot(db, anchor.definitionId);
+      if (snapshot === null) {
         return {
           ok: false,
           status: 409,
           body: {
             error: {
               code: "invalid_workflow",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to hydrate workflow definition",
+              message: `Workflow definition ${anchor.definitionId} has no approved grant snapshot`,
             },
           },
         };
@@ -333,20 +323,11 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       }
 
       runPrincipalId = await deriveRunPrincipalId(tenant.id, runId);
-      const parsedRequirements = parseGrantRequirements(definition);
-      if (!parsedRequirements.ok) {
-        return {
-          ok: false,
-          status: 409,
-          body: {
-            error: {
-              code: "invalid_workflow",
-              message: parsedRequirements.message,
-            },
-          },
-        };
-      }
-      const declaredGrantRequirements = parsedRequirements.requirements;
+      // The external route resolves invoker grants live and passes the
+      // snapshot's FULL requirement list unfiltered, so
+      // `resolveGrantMaterialization` keeps its reject-on-insufficient-invoker
+      // contract.
+      const declaredGrantRequirements = snapshot.grantRequirements;
       const invokerGrants = await grantStore.collectGrants(
         principal.id,
         tenant.id,
@@ -357,8 +338,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         assetRow.creatorPrincipalId,
         declaredGrantRequirements,
       );
-      const staged = await stageRunGrants({
-        definition,
+      const staged = await stageRunGrantsFromSnapshot({
+        snapshot,
         tenantId: tenant.id,
         runPrincipalId,
         now,

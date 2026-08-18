@@ -10,6 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createDbFrozenApprovalWriter } from "@intx/hub-sessions";
+import type { GrantWalkSnapshot } from "@intx/types";
 import { workflowDefinition, workflowDefinitionVersion } from "@intx/db/schema";
 import {
   createTestDb,
@@ -22,6 +23,18 @@ const TENANT = "tnt";
 const CREATOR = "prn_creator";
 const ASSET = "ast_wf";
 const HASH = "a".repeat(64);
+// A distinctive snapshot so the persist assertion proves the freeze stamps the
+// grant-walk snapshot onto the version row alongside the approved wire hash.
+const SNAPSHOT: GrantWalkSnapshot = {
+  perStep: [
+    {
+      stepId: "work",
+      grants: ["tool:read_file"],
+      grantEffects: { "tool:read_file": "allow" },
+    },
+  ],
+  grantRequirements: [],
+};
 
 // The freeze writer's two statements -- projecting the definition and stamping
 // the approved hash onto its version row -- must commit as one. Its gate-level
@@ -72,6 +85,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         assetId: ASSET,
         approvedWireHash: HASH,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
 
       // The ensure step created a definition keyed by (asset, wireHash) AND the
@@ -93,6 +107,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(versions).toHaveLength(1);
       expect(versions[0]?.version).toBe("1");
       expect(versions[0]?.approvedWireHash).toBe(HASH);
+      // The grant-walk snapshot is stamped onto the same version row in the same
+      // transaction, so the run path reads it back to materialize grants.
+      expect(versions[0]?.grantSnapshot).toEqual(SNAPSHOT);
     });
 
     test("same asset with different wire hashes yields two definitions", async () => {
@@ -105,11 +122,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         assetId: ASSET,
         approvedWireHash: HASH,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
       const second = await writer({
         assetId: ASSET,
         approvedWireHash: otherHash,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
 
       expect(second.definitionId).not.toBe(first.definitionId);
@@ -137,11 +156,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         assetId: ASSET,
         approvedWireHash: HASH,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
       const second = await writer({
         assetId: otherAsset,
         approvedWireHash: HASH,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
 
       expect(second.definitionId).not.toBe(first.definitionId);
@@ -163,11 +184,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         assetId: ASSET,
         approvedWireHash: HASH,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
       const second = await writer({
         assetId: ASSET,
         approvedWireHash: HASH,
         approvedGrants: [],
+        grantSnapshot: SNAPSHOT,
       });
 
       // The (asset, wireHash) selector resolves to the same definition, so a

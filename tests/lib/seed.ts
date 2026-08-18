@@ -8,6 +8,7 @@
 // assertions actually depend on.
 
 import type { DB } from "@intx/db";
+import type { GrantWalkSnapshot } from "@intx/types";
 import {
   asset,
   credential,
@@ -21,6 +22,7 @@ import {
   tenant,
   wallet,
   workflowDefinition,
+  workflowDefinitionVersion,
   workflowRun,
 } from "@intx/db/schema";
 
@@ -318,6 +320,33 @@ export async function seedWorkflowRun(
     status: r.status ?? "running",
     ...(r.createdAt !== undefined ? { createdAt: r.createdAt } : {}),
     ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
+  });
+}
+
+export type SeedWorkflowDefinitionVersion = {
+  definitionId: string;
+  id?: string;
+  version?: string;
+  status?: "active" | "inactive" | "failed";
+  approvedWireHash?: string | null;
+  grantSnapshot: GrantWalkSnapshot | null;
+};
+
+// Freeze a grant-walk snapshot onto a definition's version row, the way a
+// deploy-time approval does. The mail-triggered materializer and the HTTP
+// trigger route both read the run's grants from this row, keyed by
+// (definitionId, version "1").
+export async function seedWorkflowDefinitionVersion(
+  db: Db,
+  v: SeedWorkflowDefinitionVersion,
+): Promise<void> {
+  await db.insert(workflowDefinitionVersion).values({
+    id: v.id ?? `wdv_${v.definitionId}`,
+    definitionId: v.definitionId,
+    version: v.version ?? "1",
+    status: v.status ?? "active",
+    approvedWireHash: v.approvedWireHash ?? "a".repeat(64),
+    grantSnapshot: v.grantSnapshot,
   });
 }
 

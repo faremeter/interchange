@@ -28,12 +28,13 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, DBExecutor } from "@intx/db";
-import { createWorkflowRunStore } from "@intx/db";
+import { createWorkflowRunStore, loadFrozenGrantSnapshot } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import {
-  GrantRequirement,
   isSidecarAllocationDispatchable,
   type GrantEffect,
+  type GrantRequirement,
+  type GrantWalkSnapshot,
 } from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import {
@@ -43,19 +44,12 @@ import {
   type MailTriggeredRunGrantsResult,
   type WorkflowDefinition,
 } from "@intx/hub-sessions";
-import {
-  walkCapabilities,
-  type CapabilityWalkResult,
-} from "@intx/workflow-deploy";
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 
 import {
   resolveGrantMaterialization,
   type MaterializedGrantRow,
 } from "./grant-materialization";
-
-const GrantRequirements = GrantRequirement.array();
 
 // The `tool:<name>` rows carry BARE tool names: the walk reads inline
 // `agent.toolFactories`, which have no bundle context. A workflow child gates
@@ -72,44 +66,50 @@ const TOOL_GRANT_PREFIX = "tool:";
 const EFFECT_GRANT_PREFIX = "effect:";
 
 /**
- * Project the capability walk into the run's runtime grant rows -- the
- * `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
+ * Project the frozen grant-walk snapshot into the run's runtime grant rows --
+ * the `tool:<name>` and `effect:<cap>` grants the runtime enforces fail-closed.
  * Every distinct grant string across all steps becomes one creator-origin
  * `grant` row with `action: invoke`. The run's runtime authority is
- * definition-pure for the deployment's stable top-level run, so the walk
- * output alone determines it.
+ * definition-pure for the deployment's stable top-level run, so the snapshot
+ * alone determines it.
  *
  * Tool grants carry the effect the tool's static declaration requested (`ask`
- * for approval-gated tools, `allow` otherwise) via the walk's `grantEffects`
- * map. A tool in more than one step is emitted once; when two steps disagree
+ * for approval-gated tools, `allow` otherwise) via each step's `grantEffects`
+ * record. A tool in more than one step is emitted once; when two steps disagree
  * on its effect, `ask` wins over `allow` so an approval-gated declaration is
  * never silently downgraded.
  *
  * Effect grants are always `allow` -- the `effect.requires` set names the
  * capability floor an action needs, with no per-effect ask/allow distinction,
- * so they are NOT routed through the `grantEffects` map (which covers tool
+ * so they are NOT routed through the `grantEffects` record (which covers tool
  * grants only). An `effect:<cap>` in more than one step is emitted once.
  */
 export function deriveRunRuntimeGrantRows(
-  walk: CapabilityWalkResult,
+  snapshot: GrantWalkSnapshot,
   tenantId: string,
   runPrincipalId: string,
   now: Date,
 ): MaterializedGrantRow[] {
   const effectByResource = new Map<string, GrantEffect>();
-  for (const declarations of walk.perStep.values()) {
-    for (const grant of declarations.grants) {
+  for (const step of snapshot.perStep) {
+    // The snapshot serializes each step's tool-grant-to-effect map as a plain
+    // object; rehydrate it to a `Map` so the lookup below matches the walk's
+    // original access pattern.
+    const grantEffects = new Map<string, GrantEffect>(
+      Object.entries(step.grantEffects),
+    );
+    for (const grant of step.grants) {
       if (grant.startsWith(TOOL_GRANT_PREFIX)) {
-        // Every `tool:` grant the walk emits carries a `grantEffects`
+        // Every `tool:` grant the snapshot emits carries a `grantEffects`
         // entry (the tool-mark floor: `ask` for an approval-gated tool,
-        // `allow` otherwise). A missing entry means the walk's `grants`
+        // `allow` otherwise). A missing entry means the snapshot's `grants`
         // and `grantEffects` maps have diverged -- a defaulted `allow`
         // here would silently DOWNGRADE an `ask` tool below its floor,
         // defeating the approval gate. Fail loudly instead.
-        const effect = declarations.grantEffects.get(grant);
+        const effect = grantEffects.get(grant);
         if (effect === undefined) {
           throw new Error(
-            `deriveRunRuntimeGrantRows: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the capability walk must emit an effect for every tool grant`,
+            `deriveRunRuntimeGrantRows: tool grant ${JSON.stringify(grant)} has no grantEffects entry; the grant-walk snapshot must carry an effect for every tool grant`,
           );
         }
         const existing = effectByResource.get(grant);
@@ -203,8 +203,14 @@ export function runGrantToWire(
   };
 }
 
-export type StageRunGrantsArgs = {
-  definition: WorkflowDefinition;
+export type StageRunGrantsFromSnapshotArgs = {
+  /**
+   * The deploy-approved grant-walk snapshot frozen at approval. Its per-step
+   * grants drive the run's runtime `tool:`/`effect:` rows; its
+   * `grantRequirements` are NOT read here -- the caller passes the requirement
+   * slice it wants resolved through `grantRequirements` below.
+   */
+  snapshot: GrantWalkSnapshot;
   tenantId: string;
   runPrincipalId: string;
   now: Date;
@@ -217,9 +223,9 @@ export type StageRunGrantsArgs = {
   /** Declared creator grants resolved against the workflow asset's creator. */
   creatorGrants: GrantRule[];
   /**
-   * Grant requirements to resolve. The mail path pre-filters this to the
-   * non-invoker requirements before calling; the external route passes the
-   * definition's requirements unfiltered.
+   * Grant requirements to resolve. The mail path pre-filters the snapshot's
+   * requirements to the non-invoker ones before calling; the external route
+   * passes the snapshot's requirements unfiltered.
    */
   grantRequirements: readonly GrantRequirement[];
 };
@@ -236,46 +242,19 @@ export type StageRunGrantsResult =
     };
 
 /**
- * The capability walk for a workflow definition: the deploy-approved lift the
- * run's runtime `tool:`/`effect:` grants project from. Isolated from
- * `stageRunGrants` so a caller that walks a definition once can bind the walk
- * to a stable identity and reuse it, rather than re-walking on every run (the
- * mail-triggered path does exactly this).
+ * Stage a run's grant rows from the deploy-approved grant-walk snapshot plus
+ * the resolved declared requirements. The snapshot's per-step grants project
+ * the run's runtime `tool:`/`effect:` rows; the mail-triggered materializer and
+ * the external trigger route both drive this one tail. Returns the staged rows
+ * and their wire projection, or a rejection when a declared requirement's
+ * authority is insufficient. No database write happens here --
+ * `commitRunGrants` performs it once the caller has accepted delivery.
  */
-export function buildCapabilityWalk(
-  definition: WorkflowDefinition,
-): CapabilityWalkResult {
-  const directorRegistry = createDefaultDirectorRegistry();
-  return walkCapabilities(definition, directorRegistry);
-}
-
-export type StageRunGrantsFromWalkArgs = Omit<
-  StageRunGrantsArgs,
-  "definition"
-> & {
-  /**
-   * An already-computed capability walk. `stageRunGrants` supplies a fresh
-   * walk of a live definition; the mail-triggered path supplies the walk it
-   * froze at the deployment's approved identity, so no re-walk happens per run.
-   */
-  walk: CapabilityWalkResult;
-};
-
-/**
- * Stage a run's grant rows from an ALREADY-COMPUTED capability walk plus the
- * resolved declared requirements. This is the walk-free tail shared by
- * `stageRunGrants` (which walks a live definition then delegates here) and the
- * mail-triggered materializer (which passes a walk cached at the deployment's
- * approved identity). Returns the staged rows and their wire projection, or a
- * rejection when a declared requirement's authority is insufficient. No
- * database write happens here -- `commitRunGrants` performs it once the caller
- * has accepted delivery.
- */
-export async function stageRunGrantsFromWalk(
-  args: StageRunGrantsFromWalkArgs,
+export async function stageRunGrantsFromSnapshot(
+  args: StageRunGrantsFromSnapshotArgs,
 ): Promise<StageRunGrantsResult> {
   const runtimeGrantRows = deriveRunRuntimeGrantRows(
-    args.walk,
+    args.snapshot,
     args.tenantId,
     args.runPrincipalId,
     args.now,
@@ -297,46 +276,6 @@ export async function stageRunGrantsFromWalk(
   const grantRows = [...runtimeGrantRows, ...materialization.grantRows];
   const stepGrants = grantRows.map((g) => runGrantToWire(g));
   return { ok: true, grantRows, stepGrants };
-}
-
-/**
- * Derive and stage a run's grant rows from its definition: the walk's
- * runtime `tool:`/`effect:` grants plus the resolved declared
- * requirements. Walks the live definition and delegates to
- * `stageRunGrantsFromWalk`. No database write happens here --
- * `commitRunGrants` performs it once the caller has accepted delivery.
- */
-export async function stageRunGrants(
-  args: StageRunGrantsArgs,
-): Promise<StageRunGrantsResult> {
-  return stageRunGrantsFromWalk({
-    walk: buildCapabilityWalk(args.definition),
-    tenantId: args.tenantId,
-    runPrincipalId: args.runPrincipalId,
-    now: args.now,
-    invokerGrants: args.invokerGrants,
-    creatorGrants: args.creatorGrants,
-    grantRequirements: args.grantRequirements,
-  });
-}
-
-/**
- * Validate a definition's `grantRequirements` at the boundary. Returns the
- * validated array or a rejection carrying the validator summary.
- */
-export function parseGrantRequirements(
-  definition: WorkflowDefinition,
-):
-  | { ok: true; requirements: GrantRequirement[] }
-  | { ok: false; message: string } {
-  const validated = GrantRequirements(definition.grantRequirements ?? []);
-  if (validated instanceof type.errors) {
-    return {
-      ok: false,
-      message: `Invalid grant requirements: ${validated.summary}`,
-    };
-  }
-  return { ok: true, requirements: validated };
 }
 
 /**
@@ -595,15 +534,15 @@ export type MailTriggeredRunGrantsDeps = {
 };
 
 /**
- * A deployment's deploy-approved grant basis: the frozen capability walk the
- * run's runtime `tool:`/`effect:` grants project from, and the creator-sourced
- * grant requirements resolved against it. Both are pure functions of the
- * approved definition content, so they are computed once per deployment and
- * cached; nothing here depends on a live re-read of the asset blob.
+ * A deployment's deploy-approved grant basis: the grant-walk snapshot frozen at
+ * approval, from which the run's runtime `tool:`/`effect:` grants and its
+ * declared requirements both derive. The snapshot is a pure function of the
+ * approved definition content, keyed by the definition id, so it is read once
+ * per deployment and cached; nothing here depends on a live re-read or re-walk
+ * of the workflow's `workflow.json`.
  */
 type FrozenRunGrantBasis = {
-  readonly walk: CapabilityWalkResult;
-  readonly creatorRequirements: readonly GrantRequirement[];
+  readonly snapshot: GrantWalkSnapshot;
 };
 
 /**
@@ -611,13 +550,14 @@ type FrozenRunGrantBasis = {
  * `mail.outbound` handler invokes for each workflow-deployment recipient.
  *
  * A mail-triggered run derives its grants from the RECEIVING deployment's
- * definition: the walk's `tool:`/`effect:` runtime grants plus the
+ * frozen snapshot: the snapshot's `tool:`/`effect:` runtime grants plus the
  * CREATOR-resolved declared requirements. Invoker-sourced requirements are
  * NOT materialized -- no invoker is on the wire -- and the run still
  * launches: a step that needs an invoker grant fails closed at its own
- * authz check. The requirements are pre-filtered to `source !== "invoker"`
- * before staging, so `resolveGrantMaterialization` keeps its
- * reject-on-insufficient-invoker contract intact for the external route.
+ * authz check. The snapshot's requirements are pre-filtered to
+ * `source !== "invoker"` before staging, so `resolveGrantMaterialization`
+ * keeps its reject-on-insufficient-invoker contract intact for the external
+ * route.
  *
  * The materializer reserves the stable run and its immutable grants before
  * delivery. A delivery failure can therefore leave a grants-only run, which
@@ -630,16 +570,16 @@ export function createMailTriggeredRunGrantsMaterializer(
   agentAddress: string;
   runId: string;
 }) => Promise<MailTriggeredRunGrantsResult> {
-  // Closure-level cache of each deployment's deploy-approved grant basis, keyed
-  // by the workflow definition's identity. A definition id is content-addressed
-  // -- keyed by `(assetId, wireHash)`, frozen at approval -- and the anchor run
+  // Closure-level cache of each deployment's deploy-approved snapshot, keyed by
+  // the workflow definition's identity. A definition id is content-addressed --
+  // keyed by `(assetId, wireHash)`, frozen at approval -- and the anchor run
   // carries that id, so the key names the APPROVED definition content, not the
-  // mutable asset blob behind it. The first trigger of a deployment hydrates
-  // and walks the definition once and freezes the result here; every later
-  // trigger consumes the frozen basis WITHOUT re-reading the asset blob or
-  // re-walking it. This closes the mutated-asset TOCTOU: rewriting the blob
-  // under a stable asset id cannot change a run's grants, because runs bind to
-  // the frozen approved walk, never a live re-hydrate.
+  // mutable asset blob behind it. The first trigger of a deployment reads the
+  // frozen snapshot from the version row once and caches it here; every later
+  // trigger consumes the cached snapshot WITHOUT re-reading it. The hub never
+  // walks a live definition on this path: a rewritten asset blob under a stable
+  // asset id cannot change a run's grants, because runs bind to the frozen
+  // snapshot, never a live re-hydrate or re-walk.
   const frozenBasisByDefinition = new Map<string, FrozenRunGrantBasis>();
 
   return async ({ agentAddress, runId }) => {
@@ -711,38 +651,35 @@ export function createMailTriggeredRunGrantsMaterializer(
 
     let basis = frozenBasisByDefinition.get(definitionId);
     if (basis === undefined) {
-      // First trigger of this deployment: read and walk the approved
-      // definition exactly once, then freeze the result. Neither the read nor
-      // the walk runs again for this definition id.
-      const definition = await hydrateDefinition(
-        deps.assetService,
-        definitionAssetId,
-      );
-
-      const parsedRequirements = parseGrantRequirements(definition);
-      if (!parsedRequirements.ok) {
+      // First trigger of this deployment: read the frozen snapshot from the
+      // version row once, then cache it. The read never runs again for this
+      // definition id, and no live definition is ever walked here.
+      const snapshot = await loadFrozenGrantSnapshot(deps.db, definitionId);
+      if (snapshot === null) {
+        // The definition has no approved grant snapshot -- the "not yet
+        // approved" state, mirroring a null `approvedWireHash`. Fail closed
+        // rather than substitute an empty grant set, which would launch a run
+        // with no runtime authority.
         throw new Error(
-          `mail-triggered run ${runId} for ${agentAddress}: ${parsedRequirements.message}`,
+          `mail-triggered run ${runId} for ${agentAddress}: definition ${definitionId} has no approved grant snapshot`,
         );
       }
-      // Invoker-sourced requirements are not materialized on the mail path:
-      // filter them out BEFORE staging rather than teaching the resolver a
-      // skip mode, so the external route keeps resolving invoker grants.
-      const creatorRequirements = parsedRequirements.requirements.filter(
-        (r) => r.source !== "invoker",
-      );
-      basis = {
-        walk: buildCapabilityWalk(definition),
-        creatorRequirements,
-      };
+      basis = { snapshot };
       frozenBasisByDefinition.set(definitionId, basis);
     }
 
+    // Invoker-sourced requirements are not materialized on the mail path:
+    // filter them out BEFORE staging rather than teaching the resolver a skip
+    // mode, so the external route keeps resolving invoker grants.
+    const creatorRequirements = basis.snapshot.grantRequirements.filter(
+      (r) => r.source !== "invoker",
+    );
+
     // Creator authority is resolved LIVE per run: the definition's grant SHAPE
-    // is frozen above, but which grants the creator currently holds is not part
-    // of that shape and can change between triggers. This reads the asset row's
-    // creator column and the creator's grants -- not the definition blob -- so
-    // it is not the re-read the frozen basis eliminates.
+    // is frozen in the snapshot, but which grants the creator currently holds
+    // is not part of that shape and can change between triggers. This reads the
+    // asset row's creator column and the creator's grants -- not the snapshot
+    // -- so it is not the read the frozen basis eliminates.
     const creatorPrincipalId = await loadAssetCreatorPrincipalId(
       deps.db,
       tenantId,
@@ -752,7 +689,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       deps.grantStore,
       tenantId,
       creatorPrincipalId,
-      basis.creatorRequirements,
+      creatorRequirements,
     );
 
     // Derive the run principal id from `(tenantId, runId)`. The runId is the
@@ -760,14 +697,14 @@ export function createMailTriggeredRunGrantsMaterializer(
     // principal and canonical grant snapshot.
     const runPrincipalId = await deriveRunPrincipalId(tenantId, runId);
     const now = new Date();
-    const staged = await stageRunGrantsFromWalk({
-      walk: basis.walk,
+    const staged = await stageRunGrantsFromSnapshot({
+      snapshot: basis.snapshot,
       tenantId: tenantId,
       runPrincipalId,
       now,
       invokerGrants: [],
       creatorGrants,
-      grantRequirements: basis.creatorRequirements,
+      grantRequirements: creatorRequirements,
     });
     if (!staged.ok) {
       return {

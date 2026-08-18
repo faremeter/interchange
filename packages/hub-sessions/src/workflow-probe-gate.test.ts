@@ -56,8 +56,18 @@ async function makeProbeResult(overrides?: {
     projection,
     grants: overrides?.grants ?? ["tool:fetch", "effect:log"],
     // The gate operates over the flattened `grants`; the un-flattened walk
-    // snapshot rides through untouched, so an empty snapshot suffices here.
-    grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+    // snapshot rides through to the freeze untouched. A distinctive per-step
+    // shape lets the freeze test assert it is persisted verbatim.
+    grantWalkSnapshot: {
+      perStep: [
+        {
+          stepId: "s1",
+          grants: ["tool:fetch"],
+          grantEffects: { "tool:fetch": "allow" },
+        },
+      ],
+      grantRequirements: [],
+    },
     wireHash,
   };
 }
@@ -152,6 +162,9 @@ describe("gateAndFreezeProbeResult", () => {
       "tool:fetch",
     ]);
     expect(frozen.approvedGrants).not.toContain("tool:unused-extra");
+    // The un-flattened grant-walk snapshot is threaded from the probe result
+    // into the freeze verbatim, so the run path can materialize grants from it.
+    expect(frozen.grantSnapshot).toEqual(probeResult.grantWalkSnapshot);
   });
 
   test("surfaces the inert projection on the ok-arm so the deploy hand-off carries the hashed content", async () => {

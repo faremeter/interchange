@@ -28,6 +28,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { DBExecutor } from "@intx/db";
 import { workflowDefinitionVersion } from "@intx/db/schema";
+import type { GrantWalkSnapshot } from "@intx/types";
 import type { PackumentFetcher, RegistryConfig } from "@intx/tool-packaging";
 import type {
   WorkflowSourceAssetMount,
@@ -58,14 +59,18 @@ const FROZEN_VERSION = "1";
 
 /**
  * The frozen record an approval writes: the definition's asset selector, the
- * approved wire hash (the freeze anchor), and the approved grant set. The grant
- * set is a deterministic projection of the content the hash addresses; it rides
- * the deploy hand-off in memory rather than a version-row column.
+ * approved wire hash (the freeze anchor), the approved grant set, and the
+ * grant-walk snapshot the run path materializes grants from. The grant set is a
+ * deterministic projection of the content the hash addresses and rides the
+ * deploy hand-off in memory; the snapshot is persisted onto the version row so a
+ * run derives its grants from the frozen walk without re-reading and re-walking
+ * the workflow's `workflow.json`.
  */
 export type FrozenApproval = {
   readonly assetId: string;
   readonly approvedWireHash: string;
   readonly approvedGrants: readonly string[];
+  readonly grantSnapshot: GrantWalkSnapshot;
 };
 
 /**
@@ -111,15 +116,16 @@ export type ProbeGateResult =
 /**
  * Build the production persistence step of the freeze. Records identity through
  * the selector-keyed ensure helper (a definition keyed by `(assetId,
- * wireHash)`) and writes the approved wire hash onto that definition's version
- * row. The grant set is not written to a version-row column -- none exists, and
- * the approved wire hash already pins the exact content the grants project
- * from -- so it travels with the returned frozen approval, not the row.
+ * wireHash)`) and writes the approved wire hash and the grant-walk snapshot onto
+ * that definition's version row in one transaction. The grant SET is not written
+ * to a version-row column -- the approved wire hash already pins the content the
+ * grants project from -- so it travels with the returned frozen approval; the
+ * snapshot is written because the run path reads it back to materialize grants.
  */
 export function createDbFrozenApprovalWriter(
   db: DBExecutor,
 ): PersistFrozenApprovalFn {
-  return async ({ assetId, approvedWireHash }) => {
+  return async ({ assetId, approvedWireHash, grantSnapshot }) => {
     // Ensure-then-stamp is one freeze: a crash between the two would persist a
     // version row with a NULL `approvedWireHash`, which the schema treats as
     // the legitimate "not yet approved" state -- indistinguishable from an
@@ -136,7 +142,7 @@ export function createDbFrozenApprovalWriter(
       // fails loud instead of open.
       const stamped = await tx
         .update(workflowDefinitionVersion)
-        .set({ approvedWireHash })
+        .set({ approvedWireHash, grantSnapshot })
         .where(
           and(
             eq(workflowDefinitionVersion.definitionId, definitionId),
@@ -214,6 +220,7 @@ export async function gateAndFreezeProbeResult(
     assetId,
     approvedWireHash: recomputedWireHash,
     approvedGrants,
+    grantSnapshot: probeResult.grantWalkSnapshot,
   });
 
   return {

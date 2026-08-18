@@ -1,5 +1,7 @@
 import { and, eq } from "drizzle-orm";
 
+import { GrantWalkSnapshot } from "@intx/types";
+
 import type { DB, DBExecutor } from "./client";
 import {
   workflowDefinition,
@@ -9,6 +11,12 @@ import { parseWorkflowDefinitionRow } from "./parse-row";
 
 type DBHandle = DB["db"];
 type ParsedWorkflowDefinition = ReturnType<typeof parseWorkflowDefinitionRow>;
+
+// The version `ensureWorkflowDefinitionForAsset` projects for a fresh
+// definition, and therefore the row the approval freeze stamps the grant
+// snapshot onto. Hand-coupled to the ensure helper's initial version; if that
+// helper ever projects a different version this must follow.
+const FROZEN_VERSION = "1";
 
 /**
  * The selector that keys a workflow definition's identity: the asset it
@@ -46,6 +54,32 @@ export async function resolveDefinitionIdForAsset(
     .limit(1)
     .then((rows) => rows[0]);
   return row?.id ?? null;
+}
+
+/**
+ * Read the deploy-approved grant-walk snapshot frozen onto a definition's
+ * version row, validated as a `GrantWalkSnapshot` at this boundary. Returns
+ * `null` when the version row is absent or its `grantSnapshot` column is still
+ * `null` -- the "not yet approved" state, mirroring `approvedWireHash`. The
+ * caller fails closed on `null`; it never substitutes an empty grant set.
+ */
+export async function loadFrozenGrantSnapshot(
+  db: DBExecutor,
+  definitionId: string,
+): Promise<GrantWalkSnapshot | null> {
+  const row = await db
+    .select({ grantSnapshot: workflowDefinitionVersion.grantSnapshot })
+    .from(workflowDefinitionVersion)
+    .where(
+      and(
+        eq(workflowDefinitionVersion.definitionId, definitionId),
+        eq(workflowDefinitionVersion.version, FROZEN_VERSION),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (row === undefined || row.grantSnapshot === null) return null;
+  return GrantWalkSnapshot.assert(row.grantSnapshot);
 }
 
 export type WorkflowDefinitionRollbackResult =
