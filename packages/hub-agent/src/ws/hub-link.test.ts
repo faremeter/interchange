@@ -16,6 +16,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 
 import {
   answerMalformedRequestFrame,
+  classifyAssetPackRejectReason,
   createHubLink,
   type DeployRouter,
   type ReconnectScheduler,
@@ -2369,5 +2370,48 @@ describe("answerMalformedRequestFrame", () => {
     );
     expect(answered).toBe(false);
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("classifyAssetPackRejectReason", () => {
+  test("classifies a symlink rejection as path_violation, not corrupt", () => {
+    expect(
+      classifyAssetPackRejectReason(
+        "asset_materialization_failed: writeTreeToDisk: symlink at link is not supported",
+      ),
+    ).toBe("path_violation");
+  });
+
+  test("classifies a submodule rejection as path_violation", () => {
+    expect(
+      classifyAssetPackRejectReason(
+        "asset_materialization_failed: writeTreeToDisk: submodule reference at sub is not supported",
+      ),
+    ).toBe("path_violation");
+  });
+
+  test("classifies an escaping mountPath as path_violation", () => {
+    expect(
+      classifyAssetPackRejectReason(
+        'asset_materialization_failed: mountPath "x/../y" normalizes to a workspace-root or escaping path',
+      ),
+    ).toBe("path_violation");
+  });
+
+  test("classifies a missing-commit (bad bytes) rejection as corrupt", () => {
+    expect(
+      classifyAssetPackRejectReason(
+        "asset_materialization_failed: indexPackIntoGitDir: expected commit abc not found in the pack",
+      ),
+    ).toBe("corrupt");
+  });
+
+  test("keeps sha_mismatch and signature reasons", () => {
+    expect(classifyAssetPackRejectReason("sha_mismatch: ...")).toBe(
+      "sha_mismatch",
+    );
+    expect(classifyAssetPackRejectReason("signature_unsigned: ...")).toBe(
+      "signature_invalid",
+    );
   });
 });
