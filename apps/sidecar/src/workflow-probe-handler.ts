@@ -29,7 +29,8 @@ import { fileURLToPath } from "node:url";
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
-import { hexDecode, hexEncode } from "@intx/types";
+import { GrantWalkSnapshot, hexDecode, hexEncode } from "@intx/types";
+import type { GrantRequirement } from "@intx/types";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
@@ -94,14 +95,16 @@ const DEFAULT_PROBE_CHILD_BINARY: string = fileURLToPath(
 /**
  * The child's single result payload, carried inside the HMAC-signed
  * envelope. `ok: true` ships the inert projection, the advisory grant
- * set, and the wire hash; `ok: false` ships the failure reason (eval
- * throw, malformed code) so the host can reject the probe with a
- * meaningful message rather than a bare "child exited" surface.
+ * set, the un-flattened grant walk snapshot, and the wire hash; `ok:
+ * false` ships the failure reason (eval throw, malformed code) so the
+ * host can reject the probe with a meaningful message rather than a bare
+ * "child exited" surface.
  */
 const ProbeResultPayload = type({
   ok: "true",
   projection: "unknown",
   grants: "string[]",
+  grantWalkSnapshot: GrantWalkSnapshot,
   wireHash: "string > 0",
 }).or({
   ok: "false",
@@ -111,13 +114,20 @@ type ProbeResultPayload = typeof ProbeResultPayload.infer;
 
 /**
  * The inert answer a probe execution produces: the workflow's inert
- * needs-surface projection, the advisory grant set derived from it, and
- * the projection's content hash. Structurally the `WorkflowProbeResult`
- * the hub-agent probe seam consumes.
+ * needs-surface projection, the advisory grant set derived from it, the
+ * un-flattened grant walk snapshot the set is derived from, and the
+ * projection's content hash. Structurally the `WorkflowProbeResult` the
+ * hub-agent probe seam consumes.
+ *
+ * `grantWalkSnapshot` carries the per-step grant declarations (grant
+ * strings plus each step's tool-grant `grantEffects` map) and the
+ * definition's full `grantRequirements` -- the grouping and effect data
+ * the flattened `grants` union discards.
  */
 export interface WorkflowProbeResult {
   readonly projection: WorkflowProjectionDefinition;
   readonly grants: string[];
+  readonly grantWalkSnapshot: GrantWalkSnapshot;
   readonly wireHash: string;
 }
 
@@ -455,7 +465,12 @@ async function parseProbeResult(
       `workflow probe child projection failed validation: ${projection.summary}`,
     );
   }
-  return { projection, grants: payload.grants, wireHash: payload.wireHash };
+  return {
+    projection,
+    grants: payload.grants,
+    grantWalkSnapshot: payload.grantWalkSnapshot,
+    wireHash: payload.wireHash,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +551,10 @@ async function computeProbePayload(
     ok: true,
     projection,
     grants: collectDeploymentGrants(walk),
+    grantWalkSnapshot: buildGrantWalkSnapshot(
+      walk,
+      definition.grantRequirements,
+    ),
     wireHash,
   };
 }
@@ -553,6 +572,30 @@ function collectDeploymentGrants(walk: CapabilityWalkResult): string[] {
     }
   }
   return [...grants].sort();
+}
+
+/**
+ * Serialize the un-flattened capability walk into a plain-data
+ * `GrantWalkSnapshot`: the per-step grant declarations (each step's grant
+ * strings plus its tool-grant `grantEffects` map, converted from the
+ * walk's `Map` to a plain object) and the definition's full, unfiltered
+ * `grantRequirements`. Unlike `collectDeploymentGrants`, this preserves
+ * the per-step grouping and the effect data the flattened set discards.
+ * A definition that declares no requirements snapshots an empty list.
+ */
+function buildGrantWalkSnapshot(
+  walk: CapabilityWalkResult,
+  grantRequirements: readonly GrantRequirement[] | undefined,
+): GrantWalkSnapshot {
+  const perStep = [...walk.perStep].map(([stepId, declarations]) => ({
+    stepId,
+    grants: [...declarations.grants],
+    grantEffects: Object.fromEntries(declarations.grantEffects),
+  }));
+  return {
+    perStep,
+    grantRequirements: [...(grantRequirements ?? [])],
+  };
 }
 
 interface ProbeChildEnv {

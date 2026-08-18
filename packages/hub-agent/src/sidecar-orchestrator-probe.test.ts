@@ -134,6 +134,16 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
     const fakeResult: WorkflowProbeResult = {
       projection: PROJECTION,
       grants: ["capability:test/inspect"],
+      grantWalkSnapshot: {
+        perStep: [
+          {
+            stepId: "s1",
+            grants: ["capability:test/inspect"],
+            grantEffects: {},
+          },
+        ],
+        grantRequirements: [],
+      },
       wireHash: "hash-from-injected-executor",
     };
     const seenFrames: WorkflowProbeRequestFrame[] = [];
@@ -192,6 +202,8 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
       }
       expect(result.wireHash).toBe("hash-from-injected-executor");
       expect(result.grants).toEqual(["capability:test/inspect"]);
+      // The un-flattened walk snapshot threads back through the seam intact.
+      expect(result.grantWalkSnapshot).toEqual(fakeResult.grantWalkSnapshot);
     } finally {
       orchestrator.close();
       await waitFor(

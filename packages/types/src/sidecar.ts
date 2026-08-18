@@ -8,6 +8,7 @@
 // efficient but JSON is simpler to debug and inspect.
 
 import { type } from "arktype";
+import { GrantWalkSnapshot } from "./grant-snapshot";
 import { WireGrantRule } from "./grant-wire";
 import {
   BoundedApprovalSnapshot,
@@ -883,17 +884,26 @@ export type WorkflowProbeRequestFrame = typeof WorkflowProbeRequestFrame.infer;
  * by `requestId`.
  *
  * `projection` is the same closed `WorkflowProjectionDefinition` a deploy frame
- * carries. `grants` is the deployment-wide inert grant surface -- the set of
- * capability-grant strings the workflow requires -- for pre-deploy operator
+ * carries. `grants` is the deployment-wide inert grant surface -- the deduped,
+ * sorted union of every step's grant strings -- for pre-deploy operator
  * inspection. `wireHash` is the hex SHA-256 of the projection's canonical JSON
  * (`computeWireDefinitionHash` in `@intx/types/wire-definition-hash`), the
  * deployment's content-addressed handle.
+ *
+ * `grantWalkSnapshot` is the UN-flattened capability walk the flattened
+ * `grants` is derived from: the per-step grant declarations (each step's grant
+ * strings plus its tool-grant `grantEffects` map) and the definition's full,
+ * unfiltered `grantRequirements`. It carries the per-step grouping and the
+ * effect data that `grants` discards, so a later persist step can record the
+ * complete grant walk rather than only its flattened union. The flattened
+ * `grants` stays alongside it because the operator-approval gate consumes it.
  */
 export const WorkflowProbeResultFrame = type({
   type: "'workflow.probe.result'",
   requestId: "string",
   projection: WorkflowProjectionDefinition,
   grants: "string[]",
+  grantWalkSnapshot: GrantWalkSnapshot,
   wireHash: "string",
 });
 export type WorkflowProbeResultFrame = typeof WorkflowProbeResultFrame.infer;

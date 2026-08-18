@@ -15,6 +15,7 @@ import {
   hexEncode,
   isRunAddress,
 } from "@intx/types";
+import type { GrantWalkSnapshot } from "@intx/types";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
@@ -156,12 +157,13 @@ export type SendProbeArgs = {
 /**
  * The payload a `sendProbe` promise resolves with, lifted off the sidecar's
  * `workflow.probe.result` frame: the inert needs-surface projection of the
- * probed workflow, the inert grant set derived from it, and the projection's
- * content hash.
+ * probed workflow, the inert grant set derived from it, the un-flattened grant
+ * walk snapshot the set is derived from, and the projection's content hash.
  */
 export type WorkflowProbeResult = {
   projection: WorkflowProjectionDefinition;
   grants: string[];
+  grantWalkSnapshot: GrantWalkSnapshot;
   wireHash: string;
 };
 
@@ -1172,6 +1174,7 @@ export function createSidecarRouter(
         resolveProbe(frame.requestId, {
           projection: frame.projection,
           grants: frame.grants,
+          grantWalkSnapshot: frame.grantWalkSnapshot,
           wireHash: frame.wireHash,
         });
         return;

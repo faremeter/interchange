@@ -2073,7 +2073,12 @@ describe("deployCodeSourcedWorkflow", () => {
     const wireHash = await computeWireDefinitionHash(projection);
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-composed",
-      probeResult: { projection, grants, wireHash },
+      probeResult: {
+        projection,
+        grants,
+        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        wireHash,
+      },
       approvals: new Set(grants),
       persist: async () => ({ definitionId: "def-composed" }),
     });
@@ -2330,7 +2335,12 @@ describe("deployCodeSourcedWorkflow", () => {
     const wireHash = await computeWireDefinitionHash(projection);
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-composed-body",
-      probeResult: { projection, grants, wireHash },
+      probeResult: {
+        projection,
+        grants,
+        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        wireHash,
+      },
       approvals: new Set(grants),
       persist: async () => ({ definitionId: "def-composed-body" }),
     });
