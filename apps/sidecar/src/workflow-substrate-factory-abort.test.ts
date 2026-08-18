@@ -176,7 +176,6 @@ function sharedDeps(substrate: ReturnType<typeof createRepoStore>) {
     substrate,
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
     workflowRunRef: REF,
-    workflowDefinitionRef: REF,
     principal: PRINCIPAL,
     scheduler: createInMemoryScheduler({
       repoStore: createInMemoryRepoStore(),

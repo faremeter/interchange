@@ -28,6 +28,7 @@ export {
   type ActionPrimitive,
   type AwaitSignalOpts,
   type AwaitSignalPrimitive,
+  type ChildWorkflowBody,
   type ChildWorkflowOpts,
   type ChildWorkflowPrimitive,
   type DrainBehavior,

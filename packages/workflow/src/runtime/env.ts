@@ -299,11 +299,12 @@ export interface BlobSubstrate {
  * Spawn callback for `childWorkflow`. The parent runtime allocates the
  * `childRunId` and commits `ChildSpawned` *before* invoking the
  * callback so the parent's audit log records the spawn before any
- * work begins on the child side. The callback resolves
- * `definitionRef` to a concrete `WorkflowDefinition` using whatever
- * lookup the runtime supplies (a `childResolver` function in
- * `runLocal`, a deploy-time resolver in production), constructs the
- * child run against the supplied id, and returns the terminal status.
+ * work begins on the child side. The callback resolves `definitionRef`
+ * -- the internal ref the deploy step assigned when it lifted the authored
+ * inline child -- to a concrete `WorkflowDefinition` using whatever in-memory
+ * lookup the runtime supplies (a lifted-body map in `runLocal`, the parent's
+ * re-evaluated closure map in production), constructs the child run against
+ * the supplied id, and returns the terminal status.
  *
  * The runtime body does not carry a definition lookup of its own.
  */

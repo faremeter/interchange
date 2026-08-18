@@ -22,6 +22,7 @@ import {
   createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
+  rewriteInlineChildWorkflowBodies,
   runLocal,
   resumeFromLog,
   runtimeRun,
@@ -42,13 +43,28 @@ function makeAgent(id: string) {
   });
 }
 
+// A parent whose sole step spawns an embedded (inline) child. The runtime only
+// dispatches a childWorkflow whose definition is the internal `{ ref }` handle,
+// so lift the inline child before running -- the same rewrite the host applies
+// at child boot. The stub spawnChild in these tests ignores the resolved
+// definition, so the child body's content is irrelevant.
+function makeChildSpawningParent() {
+  const child = defineWorkflow({
+    id: "child-w",
+    trigger: { type: "manual" },
+    steps: { childStep: step({ agent: makeAgent("child") }) },
+  });
+  const parent = defineWorkflow({
+    id: "parent-w",
+    trigger: { type: "manual" },
+    steps: { spawn: childWorkflow({ definition: child }) },
+  });
+  return rewriteInlineChildWorkflowBodies(parent).workflow;
+}
+
 describe("childWorkflow terminal-status propagation", () => {
   test("propagates a failed child to a StepFailed on the parent's spawn step", async () => {
-    const parent = defineWorkflow({
-      id: "parent-w",
-      trigger: { type: "manual" },
-      steps: { spawn: childWorkflow({ definitionRef: "child-w" }) },
-    });
+    const parent = makeChildSpawningParent();
     const spawnChild: SpawnChildWorkflow = async () => ({
       terminalStatus: "failed",
     });
@@ -80,11 +96,7 @@ describe("childWorkflow terminal-status propagation", () => {
   });
 
   test("propagates a cancelled child to a StepFailed on the parent's spawn step", async () => {
-    const parent = defineWorkflow({
-      id: "parent-w",
-      trigger: { type: "manual" },
-      steps: { spawn: childWorkflow({ definitionRef: "child-w" }) },
-    });
+    const parent = makeChildSpawningParent();
     const spawnChild: SpawnChildWorkflow = async () => ({
       terminalStatus: "cancelled",
     });
@@ -156,12 +168,8 @@ describe("cancellation log invariants", () => {
   test("emits ChildCancelRequested for every live child on parent cancel", async () => {
     // Drive the spawn callback through a stub `runtimeRun` env so
     // the test can hold the spawn open until cancel arrives,
-    // independently of what runLocal's default childResolver wires.
-    const parent = defineWorkflow({
-      id: "parent-w",
-      trigger: { type: "manual" },
-      steps: { spawn: childWorkflow({ definitionRef: "child-w" }) },
-    });
+    // independently of how the child would otherwise resolve.
+    const parent = makeChildSpawningParent();
 
     let resolveSpawn!: (value: {
       terminalStatus: "completed" | "failed" | "cancelled";

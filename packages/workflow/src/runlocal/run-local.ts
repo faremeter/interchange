@@ -18,6 +18,7 @@ import type {
   WorkflowAuthorizeFn,
 } from "../authorize-context";
 import type { WorkflowDefinition } from "../definition/index";
+import { rewriteInlineChildWorkflowBodies } from "../ontrigger-bodies";
 import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
 import { createEffectContext } from "../runtime/effect-context";
@@ -67,8 +68,6 @@ export interface RunLocalOptions extends RuntimeRunOptions {
    * from `@intx/agent` (the same surface production uses).
    */
   directors?: DirectorRegistry;
-  /** Resolve a `definitionRef` for `childWorkflow` spawns. */
-  childResolver?: (ref: string) => WorkflowDefinition;
   /** Inject a deterministic clock for tests. */
   clock?: () => Date;
   /** Inject a deterministic id generator for tests. */
@@ -102,6 +101,16 @@ export function runLocal(
   const clock = options.clock ?? defaultClock;
   const newId = options.newId ?? defaultNewId;
 
+  // A `childWorkflow` primitive carries its child definition inline. Lift each
+  // inline child to a standalone definition keyed by an internal ref and run
+  // the rewritten workflow whose children are `{ ref }` -- the shape the
+  // runtime dispatches. The in-memory spawn callback resolves each ref from the
+  // lifted map, so no separate child resolver is needed. A recursive child that
+  // embeds its own child is rewritten again when its run reaches this function.
+  const { workflow: rewritten, bodies } =
+    rewriteInlineChildWorkflowBodies(definition);
+  const childBodies = new Map(bodies.map((b) => [b.ref, b.definition]));
+
   const repoStore = createInMemoryRepoStore();
   const env: WorkflowRuntimeEnv = {
     repoStore,
@@ -113,10 +122,10 @@ export function runLocal(
     invokeStep,
     invokeAction,
     effects,
-    spawnChild: createNoopSpawnChild(options.childResolver),
+    spawnChild: createInMemorySpawnChild(childBodies),
     clock,
     newId,
-    drain: createNoopDrainController(definition),
+    drain: createNoopDrainController(rewritten),
   };
   // Wired after construction because the loop-iteration runner closes
   // over the env it belongs to, so that each iteration's child run
@@ -126,7 +135,7 @@ export function runLocal(
     env.loopFns = options.loopFns;
   }
 
-  return runtimeRun(definition, env, extractRuntimeOptions(options));
+  return runtimeRun(rewritten, env, extractRuntimeOptions(options));
 }
 
 function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
@@ -216,20 +225,20 @@ function createInMemoryEffectLedger(): EffectLedger {
   };
 }
 
-function createNoopSpawnChild(
-  resolver: ((ref: string) => WorkflowDefinition) | undefined,
+function createInMemorySpawnChild(
+  bodies: ReadonlyMap<string, WorkflowDefinition>,
 ): SpawnChildWorkflow {
   return async ({ definitionRef, childRunId, input, signal }) => {
-    if (!resolver) {
-      // The author wired a `childWorkflow` primitive into their
-      // workflow but did not supply a resolver. Failing loudly is the
-      // right call -- a silent stub-completion would let workflows
-      // pass tests against a child that was never executed.
+    const resolved = bodies.get(definitionRef);
+    if (resolved === undefined) {
+      // The runtime dispatched a childWorkflow ref with no lifted definition.
+      // Every inline child is lifted into `bodies` before the run starts, so a
+      // miss is a rewrite/dispatch bug -- fail loud rather than silently
+      // completing against a child that was never executed.
       throw new Error(
-        `childWorkflow ${definitionRef} requires a childResolver; pass one to runLocal({ childResolver })`,
+        `childWorkflow ${definitionRef} has no lifted definition; the inline child should have been extracted before the run started`,
       );
     }
-    const resolved = resolver(definitionRef);
     // Recursively invoke runLocal for the resolved child against the
     // parent-allocated childRunId so the parent's audit log and the
     // child's own log agree on identity.

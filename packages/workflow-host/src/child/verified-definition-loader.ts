@@ -14,14 +14,13 @@
 // hash that arrived OUT-OF-BAND from the bytes being checked (a signed spawn
 // env / deploy frame the file-writer cannot forge). Callers with such a hash
 // -- the top-level run child (`run-child.ts`, `SpawnTimeEnv.definitionHash`)
-// and the onTrigger-body spawn path (`adapters/spawn-child.ts`, the parent's
-// frame-carried `referencedDefinitionHashes[bodyId]`) -- use the gated
-// wrapper. A caller with no out-of-band pin -- a `childWorkflow` spawn, which
-// resolves a SEPARATELY-approved, hub-authored, sidecar-read-only asset the
-// parent's frame has no authority over -- uses `readWorkflowDefinitionEnvelope`
-// directly. Gating that path could only fail-closed-always, since there is no
-// approved hash to check against; its integrity is the asset repo's
-// hub-writes/sidecar-reads authorization plus push-time envelope validation.
+// and the live-authored onTrigger-body spawn path (`adapters/spawn-child.ts`,
+// the parent's frame-carried `referencedDefinitionHashes[bodyId]`) -- use the
+// gated wrapper. An owned `childWorkflow` import does NOT read `workflow.json`
+// here at all: its inline child rides the parent's hashed projection (already
+// covered by the parent's re-verify), so the terminal spawn resolves the child
+// from the parent's in-memory closure map (`createInMemorySpawnChild`) with no
+// on-disk read and no separate per-child re-verify.
 //
 // The barrier lives at the LOAD boundary, not at run start. A resumed run
 // reuses the definition this loader returned at child boot, so gating the
@@ -69,10 +68,9 @@ export interface LoadVerifiedWorkflowDefinitionOpts
 /**
  * Read and envelope-validate a workflow definition from the deploy working
  * tree. Returns the validated `WorkflowDefinition` WITHOUT a re-verify gate:
- * this is the read step callers that hold no out-of-band approved hash use
- * directly (a `childWorkflow` spawn resolving a separately-approved,
- * hub-authored, sidecar-read-only asset). Callers that DO hold an out-of-band
- * pin wrap this with `loadVerifiedWorkflowDefinition`.
+ * the read step `loadVerifiedWorkflowDefinition` wraps to add the
+ * out-of-band-pin re-verify barrier for callers that hold an approved hash (the
+ * top-level run child and the live-authored onTrigger-body spawn path).
  */
 export async function readWorkflowDefinitionEnvelope(
   opts: ReadWorkflowDefinitionEnvelopeOpts,

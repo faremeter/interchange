@@ -507,6 +507,39 @@ describe("nested grant surfaces are reified", () => {
     const bytes = canonicalJsonStringify(sect.body.inline);
     expect(bytes).toContain("beta_do");
   });
+
+  const childWorkflowParent = defineWorkflow({
+    id: "wf_childparent",
+    trigger: { type: "manual" },
+    steps: {
+      spawn: childWorkflow({
+        definition: defineWorkflow({
+          id: "authored-child",
+          steps: {
+            work: step({
+              agent: mkAgent([betaTool], baseCapabilities, [OPENAI]),
+            }),
+          },
+        }),
+      }),
+    },
+  });
+
+  test("an inline childWorkflow's tool names appear in the projection", () => {
+    // The inline child projects recursively, mirroring an onTrigger body, so
+    // its grant surface survives the child->hub boundary and rides the parent's
+    // hashed projection.
+    const projection = projectLiveToInert(childWorkflowParent);
+    const spawn = projection.steps["spawn"];
+    if (spawn === undefined || spawn.kind !== "childWorkflow") {
+      throw new Error("expected a childWorkflow step");
+    }
+    if (!("inline" in spawn.definition)) {
+      throw new Error("expected an inline childWorkflow definition");
+    }
+    const bytes = canonicalJsonStringify(spawn.definition.inline);
+    expect(bytes).toContain("beta_do");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -587,7 +620,13 @@ describe("closed step schema accepts every real Primitive variant", () => {
         act: action({ handler: "do.thing" }),
         wait: awaitSignal({ name: "go", after: ["act"] }),
         nap: sleep({ duration: 1000, after: ["wait"] }),
-        child: childWorkflow({ definitionRef: "wf_other", after: ["nap"] }),
+        child: childWorkflow({
+          definition: defineWorkflow({
+            id: "wf_child",
+            steps: { childStep: step({ agent: plainAgent }) },
+          }),
+          after: ["nap"],
+        }),
         esc: escalation({ to: "ops@acme.test", after: ["child"] }),
       },
     }),
