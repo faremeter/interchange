@@ -43,23 +43,31 @@ and writes a `ToolPackageManifest` (validated by
 at apply time.
 
 Manifest entries whose `source.kind` is `"asset"` carry the asset's id
-plus the tarball path inside the asset tree:
+plus a `package` envelope. The envelope's `format` discriminates where
+the bytes live inside the asset: `"tarball"` (this document) points at a
+prepackaged `.tgz` blob and carries its `path` and `integrity`;
+`"source"` points at a git subtree checked out in place (used by
+source-format workflow definitions, see the tool-packaging README). A
+tarball entry looks like:
 
 ```json
 {
   "name": "@intx/tools-mail",
   "version": "0.1.2",
-  "integrity": "sha512-...",
   "source": {
     "kind": "asset",
     "assetId": "ast_workspace_builtins",
-    "path": "tarballs/@intx-tools-mail-0.1.2.tgz"
+    "package": {
+      "format": "tarball",
+      "path": "tarballs/@intx-tools-mail-0.1.2.tgz",
+      "integrity": "sha512-..."
+    }
   }
 }
 ```
 
-The loader joins `source.path` against the materialized asset root on
-the sidecar to locate the bytes.
+The loader joins `source.package.path` against the materialized asset
+root on the sidecar to locate the bytes.
 
 ## Mount table in the deploy pack
 
@@ -78,8 +86,8 @@ asset id to mount path into the deploy pack at
 The sidecar's `readDeployTree` parses this file into a
 `Map<assetId, mountPath>` and hands it to the loader. The loader uses
 the map to resolve every `kind: "asset"` entry — looking up the mount
-path by `source.assetId`, then joining it with `source.path` against
-the workspace's asset root.
+path by `source.assetId`, then joining it with `source.package.path`
+against the workspace's asset root.
 
 ## Per-instance apply state on the sidecar
 
@@ -128,8 +136,8 @@ ladder owned by the sidecar's materialization layer. See
 
 - Bytes are exactly what an npm registry would serve: the package tree
   rooted under `package/`, gzipped tar.
-- Integrity is verified by the sidecar loader against the manifest's
-  `integrity` field before extraction. The asset substrate's git-commit
+- Integrity is verified by the sidecar loader against the entry's
+  `source.package.integrity` field before extraction. The asset substrate's git-commit
   signature provides the trust root; the SRI hash provides byte-level
   integrity at materialization time.
 - The workspace's bundled tarballs (`bin/build-builtins.ts`) emit a
