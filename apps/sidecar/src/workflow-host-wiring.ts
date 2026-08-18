@@ -73,6 +73,7 @@ import {
   type AppliedWorkflowClosure,
 } from "./workflow-closure-apply";
 import {
+  MAX_INLINE_ASSET_PAYLOAD_BYTES,
   materializeWorkflowAssets,
   sourceAssetGitDir,
 } from "./source-asset-delivery";
@@ -113,11 +114,6 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 export function deriveDeploymentId(agentAddress: string): string {
   return deriveWorkflowRunRepoId(agentAddress);
 }
-
-// A source asset the deploy delivers inline is checked out here as plain
-// files. Mirrors the probe's inline cap; a git-sourced asset that grows past it
-// is the signal to move the deploy's asset delivery to a streamed transfer.
-const MAX_DEPLOY_ASSET_PAYLOAD_BYTES = 32 * 1024 * 1024;
 
 /**
  * The durable per-deployment store the sidecar checks a source-ref deployment's
@@ -2337,7 +2333,7 @@ export function createSidecarDeployRouter(deps: {
             closure: projection.sourceRef.closure,
             assetRoot: assetStore,
             gitDirRoot: gitStore,
-            maxAssetPayloadBytes: MAX_DEPLOY_ASSET_PAYLOAD_BYTES,
+            maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
           });
         }
         // Safe to reclaim the instance dir inside the helper: this deploy is

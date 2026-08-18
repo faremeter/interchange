@@ -48,6 +48,7 @@ import {
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
 import { readRegistries } from "./sidecar-materialization-config";
 import { createWorkflowClosureMaterializer } from "./workflow-closure-materialization";
+import { MAX_INLINE_ASSET_PAYLOAD_BYTES } from "./source-asset-delivery";
 import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 
@@ -387,17 +388,15 @@ const buildHarness = createDefaultHarnessBuilder({ adapters });
 // The cache/registry caps are the same boot-edge-resolved values the tool
 // loader uses.
 // The probe delivers source assets inline in one frame (see
-// `WorkflowProbeRequestFrame`). This caps the total base64 asset payload; a
-// git-sourced asset that grows past it is the signal to move the probe's asset
-// delivery to the streamed transfer the deploy path uses.
-const MAX_PROBE_ASSET_PAYLOAD_BYTES = 32 * 1024 * 1024;
-
+// `WorkflowProbeRequestFrame`). A git-sourced asset that grows past the shared
+// inline-payload cap is the signal to move the probe's asset delivery to the
+// streamed transfer the deploy path uses.
 const workflowProbeExecutor = createWorkflowProbeExecutor({
   materialize: createWorkflowClosureMaterializer({
     cacheRoot,
     cacheMaxBytes,
     registryMaxTarballBytes,
-    maxAssetPayloadBytes: MAX_PROBE_ASSET_PAYLOAD_BYTES,
+    maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
     registries: readRegistries(),
     scratchRoot: path.join(dataDir, "workflow-probe", "closures"),
   }),
