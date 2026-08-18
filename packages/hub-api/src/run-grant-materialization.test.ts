@@ -3,7 +3,6 @@ import { describe, test, expect } from "bun:test";
 import { createInMemoryGrantStore } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
 import type { GrantWalkSnapshot } from "@intx/types";
-import type { AssetService } from "@intx/hub-sessions";
 import {
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
@@ -143,21 +142,6 @@ function mockDb(opts: {
   >[0]["db"];
 }
 
-// The mail materializer reads its grants from the frozen snapshot, never the
-// asset blob. This double fails the test loudly if the materializer ever tries
-// to read the workflow asset, proving the blob-read path is gone.
-function throwingAssetService(): AssetService {
-  function notImpl(name: string): never {
-    throw new Error(`mail materializer must not call assetService.${name}`);
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the mail path never touches the asset service; every method must throw
-  return {
-    createAsset: () => notImpl("createAsset"),
-    populateAsset: () => notImpl("populateAsset"),
-    readAssetBlob: () => notImpl("readAssetBlob"),
-  } as unknown as AssetService;
-}
-
 const RUN_ID = "<mail-run-frozen@tenant.example>";
 
 const deploymentRow = {
@@ -197,7 +181,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: snapshot(),
       }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
     const result = await materialize({
@@ -217,7 +200,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         snapshotReads: reads,
         topLevelRunStatus: "completed",
       }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -244,7 +226,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         topLevelRunStatus: null,
         lockedRunStatus: "failed",
       }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -263,7 +244,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   test("stages the tool grant and the creator requirement, omitting the invoker one", async () => {
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: snapshot() }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -302,7 +282,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: invokerOnlySnapshot(),
       }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([]),
     });
     const result = await materialize({
@@ -324,7 +303,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     // materializer must raise rather than launch a run with an empty grant set.
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: null }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -347,7 +325,6 @@ describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
         grantSnapshot: snapshot(),
         snapshotReads: reads,
       }),
-      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 

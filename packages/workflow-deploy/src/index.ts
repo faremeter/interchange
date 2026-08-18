@@ -34,6 +34,7 @@ export {
   assertChainHeadIsDefault,
   isSourceApproved,
   pickStepInferenceSource,
+  buildInertProjectionStepSources,
   buildSingleStepAgentDefinition,
   createWorkflowDeployOrchestrator,
   deriveRunAddress,

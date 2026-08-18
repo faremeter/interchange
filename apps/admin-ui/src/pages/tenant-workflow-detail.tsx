@@ -84,6 +84,15 @@ export function TenantWorkflowDetailPage() {
     model: "",
   });
 
+  // Where this workflow's code is sourced from. Minimal until the multi-variant
+  // source picker lands: the definition is deployed as the workflow asset's own
+  // git subtree at the commit entered below, evaluating the given
+  // `interchange.workflow` entry module.
+  const [launchDefinition, setLaunchDefinition] = useState({
+    entry: "",
+    commitSha: "",
+  });
+
   const [openDeploymentId, setOpenDeploymentId] = useState<string | null>(null);
 
   const [approveTarget, setApproveTarget] = useState<{
@@ -104,6 +113,7 @@ export function TenantWorkflowDetailPage() {
         apiKey: "",
         model: "",
       });
+      setLaunchDefinition({ entry: "", commitSha: "" });
     },
   });
 
@@ -153,7 +163,15 @@ export function TenantWorkflowDetailPage() {
   function submitLaunch(e: React.FormEvent) {
     e.preventDefault();
     deployMut.mutate({
-      assetId: workflowId,
+      source: {
+        kind: "asset",
+        assetId: workflowId,
+        package: {
+          format: "source",
+          commitSha: launchDefinition.commitSha.trim(),
+        },
+      },
+      entry: launchDefinition.entry.trim(),
       sources: [
         {
           id: launchSource.id.trim(),
@@ -181,6 +199,8 @@ export function TenantWorkflowDetailPage() {
   }
 
   const launchReady =
+    launchDefinition.entry.trim() !== "" &&
+    launchDefinition.commitSha.trim() !== "" &&
     launchSource.id.trim() !== "" &&
     launchSource.provider.trim() !== "" &&
     launchSource.baseURL.trim() !== "" &&
@@ -244,6 +264,39 @@ export function TenantWorkflowDetailPage() {
           onSubmit={submitLaunch}
           className="mt-4 space-y-3 rounded-lg border p-4"
         >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-1">
+              <Label htmlFor="definition-entry" className="text-xs">
+                Entry module
+              </Label>
+              <Input
+                id="definition-entry"
+                value={launchDefinition.entry}
+                onChange={(e) =>
+                  setLaunchDefinition((d) => ({ ...d, entry: e.target.value }))
+                }
+                placeholder="e.g. ./workflow.mjs"
+                className="h-8 text-xs"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label htmlFor="definition-commit" className="text-xs">
+                Commit SHA
+              </Label>
+              <Input
+                id="definition-commit"
+                value={launchDefinition.commitSha}
+                onChange={(e) =>
+                  setLaunchDefinition((d) => ({
+                    ...d,
+                    commitSha: e.target.value,
+                  }))
+                }
+                placeholder="the source asset's current commit"
+                className="h-8 text-xs"
+              />
+            </div>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1">
               <Label htmlFor="source-id" className="text-xs">

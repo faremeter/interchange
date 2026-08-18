@@ -313,6 +313,11 @@ function createMockSessionService(): SessionService {
         "mock: sessionService.deployWorkflowDefinition not implemented",
       );
     },
+    deployWorkflowFromSource: () => {
+      throw new Error(
+        "mock: sessionService.deployWorkflowFromSource not implemented",
+      );
+    },
     deploySingleStepAtHead: () => {
       throw new Error(
         "mock: sessionService.deploySingleStepAtHead not implemented",

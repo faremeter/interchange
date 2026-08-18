@@ -1,6 +1,7 @@
 import { type } from "arktype";
 
 import { InferenceSource } from "@intx/types/runtime";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { Transport } from "./transport";
 import { WorkflowRunEvents } from "./validators";
@@ -39,9 +40,20 @@ export type TriggerWorkflowRunInput = {
 };
 
 export type DeployWorkflowInput = {
-  assetId: string;
+  /** Where the definition's bytes come from at apply time. */
+  source: WorkflowDefinitionSource;
+  /** The `interchange.workflow` entry-module path the sidecar evaluates. */
+  entry: string;
+  /** The inference chain the deployment's step agents launch against. */
   sources: InferenceSource[];
+  /** The default source id; the head of the pinned inference chain. */
   defaultSource: string;
+  /**
+   * A `name@range` pin selecting the definition package. Required for the
+   * `registry` and asset-`tarball` source variants; omitted for asset-`source`,
+   * whose member is selected by the source's `packageName`.
+   */
+  pin?: string;
 };
 
 export type DeliverSignalInput = {
@@ -77,14 +89,25 @@ export async function deployWorkflow(
   tenantId: string,
   input: DeployWorkflowInput,
 ): Promise<WorkflowDeployment> {
+  const body: {
+    source: WorkflowDefinitionSource;
+    entry: string;
+    sources: InferenceSource[];
+    defaultSource: string;
+    pin?: string;
+  } = {
+    source: input.source,
+    entry: input.entry,
+    sources: input.sources,
+    defaultSource: input.defaultSource,
+  };
+  if (input.pin !== undefined) {
+    body.pin = input.pin;
+  }
   const raw = await transport.fetch<unknown>(
     "POST",
     `${workflowsBasePath(tenantId)}/deployments`,
-    {
-      assetId: input.assetId,
-      sources: input.sources,
-      defaultSource: input.defaultSource,
-    },
+    body,
   );
   const deployment = WorkflowDeployment(raw);
   if (deployment instanceof type.errors) {

@@ -85,13 +85,20 @@ describe("listWorkflowDeployments", () => {
 });
 
 describe("deployWorkflow", () => {
-  test("POSTs the deploy body and returns the parsed deployment", async () => {
+  const assetSource = {
+    kind: "asset",
+    assetId: "asset_wf1",
+    package: { format: "source", commitSha: "c0ffee" },
+  } as const;
+
+  test("POSTs the code-sourced deploy body and returns the parsed deployment", async () => {
     const deployment = makeDeployment();
     const { transport, calls } = createMockTransport(() => deployment);
     const sources = [makeSource()];
 
     const result = await deployWorkflow(transport, TENANT_ID, {
-      assetId: "asset_wf1",
+      source: assetSource,
+      entry: "./workflow.mjs",
       sources,
       defaultSource: "src_1",
     });
@@ -101,7 +108,8 @@ describe("deployWorkflow", () => {
       method: "POST",
       path: `/api/tenants/${TENANT_ID}/workflows/deployments`,
       body: {
-        assetId: "asset_wf1",
+        source: assetSource,
+        entry: "./workflow.mjs",
         sources,
         defaultSource: "src_1",
       },
@@ -109,11 +117,34 @@ describe("deployWorkflow", () => {
     expect(result).toEqual(deployment);
   });
 
+  test("forwards the optional pin when supplied", async () => {
+    const deployment = makeDeployment();
+    const { transport, calls } = createMockTransport(() => deployment);
+    const sources = [makeSource()];
+
+    await deployWorkflow(transport, TENANT_ID, {
+      source: { kind: "registry", registry: "npmjs" },
+      entry: "./workflow.mjs",
+      sources,
+      defaultSource: "src_1",
+      pin: "@wf/demo@^1.0.0",
+    });
+
+    expect(calls[0]?.body).toEqual({
+      source: { kind: "registry", registry: "npmjs" },
+      entry: "./workflow.mjs",
+      sources,
+      defaultSource: "src_1",
+      pin: "@wf/demo@^1.0.0",
+    });
+  });
+
   test("rejects a response that does not match the deployment shape", async () => {
     const { transport } = createMockTransport(() => ({ id: "deployment_1" }));
     await expect(
       deployWorkflow(transport, TENANT_ID, {
-        assetId: "asset_wf1",
+        source: assetSource,
+        entry: "./workflow.mjs",
         sources: [makeSource()],
         defaultSource: "src_1",
       }),

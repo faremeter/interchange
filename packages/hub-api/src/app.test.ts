@@ -42,6 +42,11 @@ const sessionService: SessionService = {
       "mock: sessionService.deployWorkflowDefinition not implemented",
     );
   },
+  deployWorkflowFromSource(_params) {
+    throw new Error(
+      "mock: sessionService.deployWorkflowFromSource not implemented",
+    );
+  },
   deploySingleStepAtHead(_params) {
     throw new Error(
       "mock: sessionService.deploySingleStepAtHead not implemented",
