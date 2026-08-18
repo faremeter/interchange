@@ -21,6 +21,8 @@ export {
   type InstallAndApproveArgs,
   type InstallAndApproveResult,
   type ProbeGateResult,
+  type ProbeApprovalPolicy,
+  type ApproveProbedGrants,
 } from "./workflow-probe-gate";
 export { committedReadsToSourceTree } from "./committed-source-tree";
 export type { SourceTreeReads } from "./workflow-source-closure";
