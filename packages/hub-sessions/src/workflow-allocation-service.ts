@@ -111,41 +111,10 @@ function parseDefinitionSnapshot(snapshot: Record<string, unknown>) {
   return validated as unknown as WorkflowDefinition;
 }
 
-export function resolveDeclaredWorkflowSidecarPlacement(
-  definition: WorkflowDefinition,
-): SidecarPlacementRequirement | undefined {
-  const placements: SidecarPlacementRequirement[] = [];
-
-  function visit(current: WorkflowDefinition): void {
-    if (current.sidecarPlacement !== undefined) {
-      placements.push(current.sidecarPlacement);
-    }
-    for (const primitive of Object.values(current.steps)) {
-      if (primitive.kind === "loop") {
-        visit(primitive.body);
-      } else if (primitive.kind === "onTrigger" && "inline" in primitive.body) {
-        visit(primitive.body.inline);
-      }
-    }
-  }
-
-  visit(definition);
-  if (placements.length === 0) return undefined;
-  return {
-    sharing: "exclusive",
-    reuse: placements.every(
-      (placement) => placement.reuse === "same-deployment",
-    )
-      ? "same-deployment"
-      : "never",
-  };
-}
-
-/** Resolve workflow and inherited tenant placement into one launch decision. */
+/** Resolve the tenant-inherited sidecar placement into one launch decision. */
 export async function resolveWorkflowSidecarPlacement(
   db: DB["db"],
   tenantId: string,
-  definition: WorkflowDefinition,
 ): Promise<SidecarPlacementRequirement | null> {
   const tenantIds = await getAncestorChain(db, tenantId);
   const rows = await db.query.tenant.findMany({
@@ -169,11 +138,7 @@ export async function resolveWorkflowSidecarPlacement(
     }
     return config;
   });
-  const workflowPlacement = resolveDeclaredWorkflowSidecarPlacement(definition);
-  return resolveEffectiveSidecarPlacement({
-    tenantConfigs,
-    ...(workflowPlacement !== undefined ? { workflowPlacement } : {}),
-  });
+  return resolveEffectiveSidecarPlacement({ tenantConfigs });
 }
 
 export function createWorkflowAllocationService({

@@ -341,11 +341,7 @@ export function createWorkflowRoutes({
 
       let placement;
       try {
-        placement = await resolveWorkflowSidecarPlacement(
-          db,
-          tenant.id,
-          definition,
-        );
+        placement = await resolveWorkflowSidecarPlacement(db, tenant.id);
       } catch (err) {
         return c.json(
           {

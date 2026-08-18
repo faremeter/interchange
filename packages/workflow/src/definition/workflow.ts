@@ -9,11 +9,7 @@
 
 import { canonicalizeForHash } from "@intx/agent";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
-import {
-  SidecarPlacementRequirement,
-  type CredentialBinding,
-  type GrantRequirement,
-} from "@intx/types";
+import type { CredentialBinding, GrantRequirement } from "@intx/types";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -24,8 +20,6 @@ import {
   type StepPrimitive,
 } from "./primitives";
 import type { Trigger } from "./triggers";
-
-export type { SidecarPlacementRequirement } from "@intx/types";
 
 export interface WorkflowDefinition {
   id: string;
@@ -38,11 +32,6 @@ export interface WorkflowDefinition {
    */
   stepOrder: readonly string[];
   state?: { schema?: StateSchema };
-  /**
-   * Requires an exclusive sidecar for this workflow. This is a placement
-   * guarantee, not a process, filesystem, network, or host boundary.
-   */
-  sidecarPlacement?: SidecarPlacementRequirement;
   /**
    * The grant requirements a run resolves against the creator's and
    * invoker's authority at trigger time. Each entry declares a resource,
@@ -68,7 +57,6 @@ export interface WorkflowConfig {
   triggers?: readonly Trigger[];
   steps: Record<string, Primitive>;
   state?: { schema?: StateSchema };
-  sidecarPlacement?: SidecarPlacementRequirement;
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
 }
@@ -79,7 +67,6 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   trigger?: Trigger;
   triggers?: readonly Trigger[];
   state?: { schema?: StateSchema };
-  sidecarPlacement?: SidecarPlacementRequirement;
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
 }
@@ -170,9 +157,6 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     steps,
     stepOrder,
     ...(config.state !== undefined ? { state: config.state } : {}),
-    ...(config.sidecarPlacement !== undefined
-      ? { sidecarPlacement: normalizeSidecarPlacement(config.sidecarPlacement) }
-      : {}),
     ...(config.grantRequirements !== undefined
       ? { grantRequirements: config.grantRequirements }
       : {}),
@@ -181,16 +165,6 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       : {}),
   };
   return definition;
-}
-
-function normalizeSidecarPlacement(
-  placement: SidecarPlacementRequirement,
-): SidecarPlacementRequirement {
-  const validated = SidecarPlacementRequirement.assert(placement);
-  return {
-    sharing: "exclusive",
-    reuse: validated.reuse ?? "never",
-  };
 }
 
 function resolveTriggers(
@@ -611,9 +585,6 @@ function projectForHash(definition: WorkflowDefinition): unknown {
     id: definition.id,
     triggers: definition.triggers,
     ...(definition.state !== undefined ? { state: definition.state } : {}),
-    ...(definition.sidecarPlacement !== undefined
-      ? { sidecarPlacement: definition.sidecarPlacement }
-      : {}),
     ...(definition.grantRequirements !== undefined
       ? { grantRequirements: definition.grantRequirements }
       : {}),

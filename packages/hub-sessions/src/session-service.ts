@@ -425,10 +425,6 @@ function toWireWorkflowDefinition(definition: WorkflowDefinition): {
   steps: Record<string, unknown>;
   state?: Record<string, unknown>;
   grantRequirements?: unknown[];
-  sidecarPlacement?: {
-    sharing: "exclusive";
-    reuse?: "never" | "same-deployment";
-  };
 } {
   return {
     id: definition.id,
@@ -438,9 +434,6 @@ function toWireWorkflowDefinition(definition: WorkflowDefinition): {
     ...(definition.state !== undefined ? { state: definition.state } : {}),
     ...(definition.grantRequirements !== undefined
       ? { grantRequirements: [...definition.grantRequirements] }
-      : {}),
-    ...(definition.sidecarPlacement !== undefined
-      ? { sidecarPlacement: definition.sidecarPlacement }
       : {}),
   };
 }
