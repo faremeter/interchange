@@ -1,55 +1,55 @@
 import { describe, expect, test } from "bun:test";
 
-import { defineAgent } from "@intx/agent";
-import { defineWorkflow, onTrigger, step } from "@intx/workflow/definition";
+import type { DB } from "@intx/db";
 
-import { resolveDeclaredWorkflowSidecarPlacement } from "./workflow-allocation-service";
+import { resolveWorkflowSidecarPlacement } from "./workflow-allocation-service";
 
-const agent = defineAgent({
-  id: "worker",
-  systemPrompt: "Do the work",
-  tools: [],
-  capabilities: [],
-  inference: { sources: [{ provider: "test", model: "test" }] },
-});
+const TENANT_ID = "tnt-workflow-allocation";
 
-describe("resolveDeclaredWorkflowSidecarPlacement", () => {
-  test("strengthens placement from an inline workflow body", () => {
-    const body = defineWorkflow({
-      id: "body",
-      sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-      steps: { work: step({ agent }) },
-    });
-    const definition = defineWorkflow({
-      id: "root",
-      steps: {
-        section: onTrigger({ on: { type: "manual" }, body }),
+// A minimal DB stand-in shaped for the two reads `resolveWorkflowSidecarPlacement`
+// performs: `getAncestorChain` walks `tenant.findFirst` (a single root tenant here,
+// so the chain is one hop) and the resolver then loads each tenant's config with
+// `tenant.findMany`. Placement now derives from tenant config alone; the workflow
+// definition never enters this decision.
+function createFakeDb(config: unknown): DB["db"] {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
+  return {
+    query: {
+      tenant: {
+        findFirst: async () => ({ parentId: null }),
+        findMany: async () => [{ id: TENANT_ID, config }],
       },
-    });
+    },
+  } as unknown as DB["db"];
+}
 
-    expect(resolveDeclaredWorkflowSidecarPlacement(definition)).toEqual({
-      sharing: "exclusive",
-      reuse: "same-deployment",
-    });
+describe("resolveWorkflowSidecarPlacement", () => {
+  test("permits shared placement when tenant config requires nothing", async () => {
+    const placement = await resolveWorkflowSidecarPlacement(
+      createFakeDb(null),
+      TENANT_ID,
+    );
+    expect(placement).toBeNull();
   });
 
-  test("uses the strictest reuse policy in the definition tree", () => {
-    const body = defineWorkflow({
-      id: "body",
-      sidecarPlacement: { sharing: "exclusive" },
-      steps: { work: step({ agent }) },
-    });
-    const definition = defineWorkflow({
-      id: "root",
-      sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-      steps: {
-        section: onTrigger({ on: { type: "manual" }, body }),
-      },
-    });
+  test("inherits exclusive placement from tenant config", async () => {
+    const placement = await resolveWorkflowSidecarPlacement(
+      createFakeDb({ sidecarPlacement: { sharing: "exclusive" } }),
+      TENANT_ID,
+    );
+    expect(placement).toEqual({ sharing: "exclusive", reuse: "never" });
+  });
 
-    expect(resolveDeclaredWorkflowSidecarPlacement(definition)).toEqual({
+  test("preserves same-deployment reuse from tenant config", async () => {
+    const placement = await resolveWorkflowSidecarPlacement(
+      createFakeDb({
+        sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
+      }),
+      TENANT_ID,
+    );
+    expect(placement).toEqual({
       sharing: "exclusive",
-      reuse: "never",
+      reuse: "same-deployment",
     });
   });
 });

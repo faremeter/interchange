@@ -439,32 +439,6 @@ describe("workflowDefinitionEnvelopeSchema", () => {
     }
     expect(validated.credentialBindings).toEqual(blob.credentialBindings);
   });
-
-  test("accepts and preserves exclusive sidecar placement", () => {
-    const blob = {
-      id: "my-workflow",
-      triggers: [{ type: "manual" }],
-      steps: { first: { kind: "step", id: "first" } },
-      stepOrder: ["first"],
-      sidecarPlacement: { sharing: "exclusive" as const },
-    };
-    const validated = workflowDefinitionEnvelopeSchema(blob);
-    if (validated instanceof type.errors) {
-      throw new Error(`unexpected validation error: ${validated.summary}`);
-    }
-    expect(validated.sidecarPlacement).toEqual(blob.sidecarPlacement);
-  });
-
-  test("rejects an unknown sidecar sharing mode", () => {
-    const validated = workflowDefinitionEnvelopeSchema({
-      id: "my-workflow",
-      triggers: [{ type: "manual" }],
-      steps: { first: { kind: "step", id: "first" } },
-      stepOrder: ["first"],
-      sidecarPlacement: { sharing: "shared" },
-    });
-    expect(validated instanceof type.errors).toBe(true);
-  });
 });
 
 describe("workflowKindHandler metadata", () => {

@@ -72,7 +72,6 @@ const agent = defineAgent({
 const definition = defineWorkflow({
   id: "wf-workflow-allocation",
   trigger: { type: "manual" },
-  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
   steps: { work: step({ agent, after: [] }) },
 });
 

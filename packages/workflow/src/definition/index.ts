@@ -65,7 +65,6 @@ export {
   defineWorkflow,
   hashDefinition,
   STEP_ID_PATTERN,
-  type SidecarPlacementRequirement,
   type SingularWorkflowConfig,
   type WorkflowConfig,
   type WorkflowDefinition,

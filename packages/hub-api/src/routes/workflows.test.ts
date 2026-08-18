@@ -144,11 +144,6 @@ const WORKFLOW_JSON = JSON.stringify({
   },
 });
 
-const EXCLUSIVE_WORKFLOW_JSON = JSON.stringify({
-  ...JSON.parse(WORKFLOW_JSON),
-  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-});
-
 // A workflow whose sole step declares two tools, one approval-gated. The
 // capability walk lifts these into the run's tool grants: the trigger route
 // materializes one `tool:<name>` grant row per declared tool, carrying the
@@ -785,6 +780,7 @@ type TestAppOpts = {
   workflowSignalDispatchEnqueues?: WorkflowSignalDispatchEnqueue[];
   workflowSignalDispatchError?: Error;
   workflowJson?: string | null;
+  tenantConfig?: unknown;
   repoDirById?: Map<string, string>;
   runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
 };
@@ -813,6 +809,9 @@ function createTestApp(opts: TestAppOpts = {}) {
   const dbOpts = opts.db ?? { assetRow: workflowAssetRow, deploymentRow };
   const db = createMockDB({
     ...dbOpts,
+    ...(opts.tenantConfig !== undefined
+      ? { tenantConfig: opts.tenantConfig }
+      : {}),
     // The trigger route materializes grants from the frozen snapshot. Derive it
     // from the effective workflow envelope unless the test overrode it. A null
     // envelope leaves the snapshot null so the route fails closed.
@@ -1005,7 +1004,10 @@ describe("POST /workflows/deployments", () => {
       grants: [makeGrant({ action: "create" })],
       deployCalls,
       allocationPrepareCalls,
-      workflowJson: EXCLUSIVE_WORKFLOW_JSON,
+      workflowJson: WORKFLOW_JSON,
+      tenantConfig: {
+        sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
+      },
     });
 
     const res = await app.fetch(
