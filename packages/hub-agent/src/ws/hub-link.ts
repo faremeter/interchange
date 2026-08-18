@@ -25,6 +25,7 @@ import {
   type PackDoneFrame,
   type PackAckFrame,
   type PackRejectFrame,
+  type PackRejectReason,
   RepoId,
   type SignalDeliverFrame,
   type RunGrantsFrame,
@@ -138,6 +139,30 @@ const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
  * request/ack frame whose key is itself missing) -- the caller then logs
  * and drops, because there is nothing to answer.
  */
+/**
+ * Classify an `applyAssetPack` failure message into a `repo.pack.reject` reason.
+ * A structural rejection -- a symlink or submodule the checkout cannot reproduce
+ * faithfully, or a mountPath that escapes -- is a `path_violation`, distinct from
+ * `corrupt` (bad or incomplete bytes). The match is on the messages
+ * `writeTreeToDisk` and the mountPath guard raise; a wording drift only reverts
+ * the reason to `corrupt`, never misclassifies bytes as a path issue. The raw
+ * message rides on the frame's `detail` regardless, so the operator always sees
+ * the specific cause.
+ */
+export function classifyAssetPackRejectReason(msg: string): PackRejectReason {
+  if (msg.startsWith("sha_mismatch")) return "sha_mismatch";
+  if (
+    msg.startsWith("signature_invalid") ||
+    msg.startsWith("signature_unsigned")
+  ) {
+    return "signature_invalid";
+  }
+  if (/symlink at |submodule reference at |mountPath|escaping path/.test(msg)) {
+    return "path_violation";
+  }
+  return "corrupt";
+}
+
 export function answerMalformedRequestFrame(
   raw: unknown,
   summary: string,
@@ -1055,15 +1080,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // asset_materialization_failed errors mirror deploy materialization
-      // errors into the same `corrupt` bucket — finer-grained
-      // classification is out of scope for v1 asset packs.
-      const reason = msg.startsWith("sha_mismatch")
-        ? "sha_mismatch"
-        : msg.startsWith("signature_invalid") ||
-            msg.startsWith("signature_unsigned")
-          ? "signature_invalid"
-          : "corrupt";
+      const reason = classifyAssetPackRejectReason(msg);
       logger.warn`Pack apply failed for ${frame.agentAddress}: ${msg}`;
       send({
         type: "repo.pack.reject",
@@ -1071,6 +1088,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         repoId: frame.repoId,
         transferId: frame.transferId,
         reason,
+        detail: msg,
       });
     }
   }

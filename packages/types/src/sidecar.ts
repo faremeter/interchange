@@ -703,6 +703,10 @@ export const PackRejectFrame = type({
   repoId: RepoId,
   transferId: "string",
   reason: PackRejectReason,
+  // Optional human-readable cause carried alongside the machine reason, so the
+  // sender's operator sees WHY (e.g. "symlink at X is not supported") instead of
+  // only the coarse reason. Absent on rejects that have no extra detail.
+  "detail?": "string",
 });
 export type PackRejectFrame = typeof PackRejectFrame.infer;
 

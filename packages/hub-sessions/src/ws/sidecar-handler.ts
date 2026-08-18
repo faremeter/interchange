@@ -2296,7 +2296,13 @@ export function createSidecarRouter(
     }
     clearTimeout(entry.timer);
     pendingPacks.delete(frame.transferId);
-    entry.reject(frame.reason);
+    // Surface the receiver's specific cause when it carried one, so the awaiting
+    // push sees "corrupt: <detail>" rather than only the coarse reason.
+    entry.reject(
+      frame.detail !== undefined
+        ? `${frame.reason}: ${frame.detail}`
+        : frame.reason,
+    );
   }
 
   function resolveUndeployPending(ws: WsHandle, agentAddress: string): void {
