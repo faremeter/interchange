@@ -93,6 +93,9 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
   const scratchDir = await fsp.mkdtemp(
     path.join(workspaceRoot, ".intx-asset-scratch-"),
   );
+  // Set while a materialized-files temp dir awaits publish; cleared once it is
+  // renamed onto the mount. The `finally` removes it if a failure leaves it.
+  let materializeDir: string | undefined;
 
   try {
     // Index the pack into the scratch `.git` and assert the pinned commit is
@@ -112,35 +115,41 @@ export async function applyAssetPack(args: ApplyAssetPackArgs): Promise<void> {
       oid: commitSha,
     });
 
-    // Clear any prior materialization at the mount so removed files
-    // don't linger from an older asset version.
-    await fsp.rm(destDir, { recursive: true, force: true });
-    await fsp.mkdir(destDir, { recursive: true });
-
+    // Materialize into a sibling temp dir, then atomically publish it to the
+    // mount by rename, so a crash mid-write never leaves a partial mount that
+    // restore's dir-exists check would trust. A re-delivery keeps the prior
+    // mount until the new one is ready, so a failed materialization does not
+    // destroy a working mount.
+    materializeDir = await fsp.mkdtemp(
+      path.join(workspaceRoot, ".intx-asset-materialize-"),
+    );
     await writeTreeToDisk(
       scratchDir,
-      destDir,
+      materializeDir,
       commit.tree,
       DEFAULT_PACK_MATERIALIZATION_LIMITS,
     );
+    // Publish atomically: ensure the mount's PARENT exists, clear any prior
+    // mount, and rename the fully materialized temp into place.
+    await fsp.mkdir(path.dirname(destDir), { recursive: true });
+    await fsp.rm(destDir, { recursive: true, force: true });
+    await fsp.rename(materializeDir, destDir);
+    materializeDir = undefined; // published; nothing left to clean up
 
     logger.info`Materialized asset pack at ${destDir} (${commitSha.slice(0, 8)} on ${ref})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Best-effort cleanup so a partial materialization doesn't linger.
-    // Log any secondary failure so it does not silently mask state — the
-    // primary materialization error is still thrown to the caller.
-    await fsp.rm(destDir, { recursive: true, force: true }).catch((rmErr) => {
-      const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
-      logger.warn`asset pack destDir cleanup failed at ${destDir}: ${rmMsg}`;
-    });
+    // The mount is published only by the atomic rename above, so a failure here
+    // leaves the prior (complete) mount untouched -- do not remove it. The
+    // partial temp is cleaned in the `finally`.
     throw new Error(`asset_materialization_failed: ${msg}`, { cause: err });
   } finally {
-    await fsp
-      .rm(scratchDir, { recursive: true, force: true })
-      .catch((rmErr) => {
+    for (const dir of [scratchDir, materializeDir]) {
+      if (dir === undefined) continue;
+      await fsp.rm(dir, { recursive: true, force: true }).catch((rmErr) => {
         const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
-        logger.warn`asset pack scratchDir cleanup failed at ${scratchDir}: ${rmMsg}`;
+        logger.warn`asset pack temp cleanup failed at ${dir}: ${rmMsg}`;
       });
+    }
   }
 }
