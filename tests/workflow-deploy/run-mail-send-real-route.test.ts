@@ -60,11 +60,17 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedGrant,
+  seedPrincipal,
+  seedWorkflowDefinitionVersion,
+} from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
+  walkCapabilities,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -356,6 +362,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         name: DEPLOYMENT_ID,
         assetId: DEFINITION_ASSET_ID,
+      });
+      // Freeze the deploy-approved grant-walk snapshot onto the version row so
+      // the run's grants materialize from it when the mail-send route fires.
+      const walk = walkCapabilities(workflow, createDefaultDirectorRegistry());
+      await seedWorkflowDefinitionVersion(h.db, {
+        definitionId: `wfd_${DEPLOYMENT_ID}`,
+        grantSnapshot: {
+          perStep: [...walk.perStep].map(([stepId, decl]) => ({
+            stepId,
+            grants: [...decl.grants],
+            grantEffects: Object.fromEntries(decl.grantEffects),
+          })),
+          grantRequirements: [...(workflow.grantRequirements ?? [])],
+        },
       });
       await h.db.insert(workflowRunTable).values({
         id: DEPLOYMENT_ID,

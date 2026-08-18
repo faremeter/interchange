@@ -84,11 +84,16 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedPrincipal,
+  seedWorkflowDefinitionVersion,
+} from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import {
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
+  walkCapabilities,
   type ApprovalSet,
   type DeploySingleStepFn,
   type LaunchSessionFn,
@@ -342,6 +347,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: RECEIVER_TENANT_ID,
         name: RECEIVER_ID,
         assetId: RECEIVER_ASSET_ID,
+      });
+      // Freeze the receiver's deploy-approved grant-walk snapshot onto the
+      // version row: the mail materializer reads the run's grants from it.
+      const receiverWalk = walkCapabilities(
+        receiverWorkflow,
+        createDefaultDirectorRegistry(),
+      );
+      await seedWorkflowDefinitionVersion(h.db, {
+        definitionId: `wfd_${RECEIVER_ID}`,
+        grantSnapshot: {
+          perStep: [...receiverWalk.perStep].map(([stepId, decl]) => ({
+            stepId,
+            grants: [...decl.grants],
+            grantEffects: Object.fromEntries(decl.grantEffects),
+          })),
+          grantRequirements: [...(receiverWorkflow.grantRequirements ?? [])],
+        },
       });
       await h.db.insert(workflowRunTable).values({
         id: RECEIVER_ID,

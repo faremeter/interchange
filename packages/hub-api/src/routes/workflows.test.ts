@@ -8,13 +8,14 @@ import { type, type Type } from "arktype";
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
 import { WorkflowRunDispatchPayloadConflictError } from "@intx/db";
 import { base64Decode, ErrorResponse, signalName } from "@intx/types";
-import type { SidecarAllocationStatus } from "@intx/types";
+import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
   grant as grantTable,
   principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
+  workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import {
@@ -24,7 +25,10 @@ import {
   type BaseEnv,
   type ToolDeclaration,
 } from "@intx/agent";
-import { defineWorkflow } from "@intx/workflow/definition";
+import {
+  defineWorkflow,
+  type WorkflowDefinition,
+} from "@intx/workflow/definition";
 import {
   deriveRunAddress,
   deriveWorkflowRunRepoId,
@@ -285,6 +289,10 @@ type MockDBOpts = {
   lockedAllocationStatus?: SidecarAllocationStatus;
   anchorStatus?: "running" | "completed" | "failed" | "cancelled";
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
+  // The deploy-approved grant-walk snapshot the trigger route reads from the
+  // definition's version row. `null` models the "not yet approved" state
+  // (fail-closed); `undefined` returns no version row (also fail-closed).
+  grantSnapshot?: GrantWalkSnapshot | null;
 };
 
 function createMockDB(opts: MockDBOpts) {
@@ -331,6 +339,11 @@ function createMockDB(opts: MockDBOpts) {
                     : status,
                 },
               ];
+        }
+        if (table === workflowDefinitionVersionTable) {
+          return opts.grantSnapshot === undefined
+            ? []
+            : [{ grantSnapshot: opts.grantSnapshot }];
         }
         if (table !== workflowRunTable || opts.deploymentRow === undefined) {
           if (table === principalTable) {
@@ -776,10 +789,40 @@ type TestAppOpts = {
   runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
 };
 
+// Project a workflow envelope into the deploy-approved grant-walk snapshot the
+// trigger route reads back at run time. Mirrors the deploy-time walk over the
+// approved projection: the same grants the old hydrate-then-walk path derived.
+function snapshotFromWorkflowJson(json: string): GrantWalkSnapshot {
+  const parsed: unknown = JSON.parse(json);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- controlled test fixture envelope; the deploy path walks the same approved projection shape
+  const workflow = parsed as WorkflowDefinition;
+  const walk = walkCapabilities(workflow, createDefaultDirectorRegistry());
+  return {
+    perStep: [...walk.perStep].map(([stepId, decl]) => ({
+      stepId,
+      grants: [...decl.grants],
+      grantEffects: Object.fromEntries(decl.grantEffects),
+    })),
+    grantRequirements: [...(workflow.grantRequirements ?? [])],
+  };
+}
+
 function createTestApp(opts: TestAppOpts = {}) {
-  const db = createMockDB(
-    opts.db ?? { assetRow: workflowAssetRow, deploymentRow },
-  );
+  const effectiveWorkflowJson =
+    opts.workflowJson === undefined ? WORKFLOW_JSON : opts.workflowJson;
+  const dbOpts = opts.db ?? { assetRow: workflowAssetRow, deploymentRow };
+  const db = createMockDB({
+    ...dbOpts,
+    // The trigger route materializes grants from the frozen snapshot. Derive it
+    // from the effective workflow envelope unless the test overrode it. A null
+    // envelope leaves the snapshot null so the route fails closed.
+    grantSnapshot:
+      dbOpts.grantSnapshot !== undefined
+        ? dbOpts.grantSnapshot
+        : effectiveWorkflowJson === null
+          ? null
+          : snapshotFromWorkflowJson(effectiveWorkflowJson),
+  });
   return createApp({
     getSession: createMockGetSession(),
     authHandler: () => new Response("", { status: 404 }),
@@ -2508,11 +2551,21 @@ describe("deriveRunRuntimeGrantRows tool-mark floor", () => {
     const now = new Date("2026-01-01T00:00:00Z");
     const runPrincipalId = "prn_run_floor";
     const walk = walkCapabilities(workflow, createDefaultDirectorRegistry());
+    // The run path materializes grants from the serialized grant-walk snapshot,
+    // not the live walk; project the walk into that snapshot shape here.
+    const snapshot = {
+      perStep: [...walk.perStep].map(([stepId, decl]) => ({
+        stepId,
+        grants: [...decl.grants],
+        grantEffects: Object.fromEntries(decl.grantEffects),
+      })),
+      grantRequirements: [],
+    };
 
     // The tool's `ask` mark materializes as an `ask` floor grant on the run
     // principal.
     const floorRows = deriveRunRuntimeGrantRows(
-      walk,
+      snapshot,
       TENANT_ID,
       runPrincipalId,
       now,

@@ -2,8 +2,12 @@ import { describe, test, expect } from "bun:test";
 
 import { createInMemoryGrantStore } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
+import type { GrantWalkSnapshot } from "@intx/types";
 import type { AssetService } from "@intx/hub-sessions";
-import { workflowRun as workflowRunTable } from "@intx/db/schema";
+import {
+  workflowDefinitionVersion as workflowDefinitionVersionTable,
+  workflowRun as workflowRunTable,
+} from "@intx/db/schema";
 
 import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materialization";
 
@@ -12,49 +16,80 @@ const ASSET_ID = "asset-wf";
 const CREATOR_PRINCIPAL_ID = "prn_creator";
 const WORKFLOW_ADDRESS = "run_wf1@tenant.example";
 
-// A one-step workflow whose agent declares one tool, plus a creator-sourced
-// and an invoker-sourced grant requirement. The walk yields a `tool:` runtime
-// grant; the creator requirement resolves against the creator's grants; the
-// invoker requirement must be OMITTED on the mail path.
-function workflowJson(): string {
-  return JSON.stringify({
-    id: "wf_mail",
-    triggers: [{ type: "mail", to: WORKFLOW_ADDRESS }],
-    stepOrder: ["work"],
-    steps: {
-      work: {
-        kind: "step",
-        id: "work",
-        agent: {
-          id: "worker",
-          systemPrompt: "do work",
-          toolFactories: [{ id: "fac", definitions: [{ name: "read_file" }] }],
-          capabilities: [],
-          inference: { sources: [{ provider: "anthropic", model: "m" }] },
-        },
-        after: [],
+// The deploy-approved grant-walk snapshot for a one-step workflow: one `tool:`
+// runtime grant plus a creator-sourced and an invoker-sourced requirement. The
+// walk yields the `tool:read_file` grant; the creator requirement resolves
+// against the creator's grants; the invoker requirement must be OMITTED on the
+// mail path.
+function snapshot(): GrantWalkSnapshot {
+  return {
+    perStep: [
+      {
+        stepId: "work",
+        grants: ["tool:read_file"],
+        grantEffects: { "tool:read_file": "allow" },
       },
-    },
+    ],
     grantRequirements: [
       { resource: "secret:vault", action: "use", source: "creator" },
       { resource: "secret:other", action: "use", source: "invoker" },
     ],
-  });
+  };
 }
 
-// A DB stand-in for the deployment lookup and first-run reservation. It
-// reports no pre-existing run principal, so each test exercises the winning
-// reservation path.
+// A snapshot carrying ONLY an invoker-sourced requirement plus the tool grant.
+function invokerOnlySnapshot(): GrantWalkSnapshot {
+  return {
+    perStep: [
+      {
+        stepId: "work",
+        grants: ["tool:read_file"],
+        grantEffects: { "tool:read_file": "allow" },
+      },
+    ],
+    grantRequirements: [
+      { resource: "secret:other", action: "use", source: "invoker" },
+    ],
+  };
+}
+
+// A DB stand-in for the deployment lookup, the frozen-snapshot read, and the
+// first-run reservation. It reports no pre-existing run principal, so each test
+// exercises the winning reservation path. The frozen snapshot is served from
+// the `workflow_definition_version` row read; `snapshotReads` counts how many
+// times that row is actually read, so a stable count across triggers proves the
+// materializer caches the snapshot rather than re-reading it per run.
 function mockDb(opts: {
   deploymentRow:
     | { id: string; tenantId: string; definitionAssetId: string }
     | undefined;
   assetRow: unknown;
+  grantSnapshot: GrantWalkSnapshot | null;
+  snapshotReads?: { count: number };
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
   lockedRunStatus?: "running" | "completed" | "failed" | "cancelled";
 }) {
-  // The materializer resolves the deployment's anchor run and its definition in
-  // one inner-joined select keyed by address; model that read shape here.
+  function rows(table: unknown, joined: boolean): unknown[] {
+    if (table === workflowRunTable && opts.deploymentRow) {
+      return joined
+        ? [
+            {
+              anchorRunId: opts.deploymentRow.id,
+              tenantId: opts.deploymentRow.tenantId,
+              definitionId: `wfd_${opts.deploymentRow.id}`,
+              definitionAssetId: opts.deploymentRow.definitionAssetId,
+              anchorStatus: "running",
+              topLevelRunStatus: opts.topLevelRunStatus ?? null,
+            },
+          ]
+        : [{ status: "running" }];
+    }
+    if (table === workflowDefinitionVersionTable) {
+      if (opts.snapshotReads) opts.snapshotReads.count += 1;
+      return [{ grantSnapshot: opts.grantSnapshot }];
+    }
+    return [];
+  }
   const select = () => ({
     from: (table: unknown) => {
       let joined = false;
@@ -69,33 +104,14 @@ function mockDb(opts: {
         },
         where: () => ({
           limit: () =>
-            Object.assign(
-              Promise.resolve(
-                table === workflowRunTable && opts.deploymentRow
-                  ? joined
-                    ? [
-                        {
-                          anchorRunId: opts.deploymentRow.id,
-                          tenantId: opts.deploymentRow.tenantId,
-                          definitionId: `wfd_${opts.deploymentRow.id}`,
-                          definitionAssetId:
-                            opts.deploymentRow.definitionAssetId,
-                          anchorStatus: "running",
-                          topLevelRunStatus: opts.topLevelRunStatus ?? null,
-                        },
-                      ]
-                    : [{ status: "running" }]
-                  : [],
-              ),
-              {
-                for: () =>
-                  Promise.resolve(
-                    table === workflowRunTable && opts.deploymentRow
-                      ? [{ status: opts.lockedRunStatus ?? "running" }]
-                      : [],
-                  ),
-              },
-            ),
+            Object.assign(Promise.resolve(rows(table, joined)), {
+              for: () =>
+                Promise.resolve(
+                  table === workflowRunTable && opts.deploymentRow
+                    ? [{ status: opts.lockedRunStatus ?? "running" }]
+                    : [],
+                ),
+            }),
         }),
       };
       return chain;
@@ -127,75 +143,19 @@ function mockDb(opts: {
   >[0]["db"];
 }
 
-function mockAssetService(json: string): AssetService {
+// The mail materializer reads its grants from the frozen snapshot, never the
+// asset blob. This double fails the test loudly if the materializer ever tries
+// to read the workflow asset, proving the blob-read path is gone.
+function throwingAssetService(): AssetService {
   function notImpl(name: string): never {
-    throw new Error(`mock: assetService.${name} not implemented`);
+    throw new Error(`mail materializer must not call assetService.${name}`);
   }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only readAssetBlob is exercised by the materializer
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the mail path never touches the asset service; every method must throw
   return {
     createAsset: () => notImpl("createAsset"),
     populateAsset: () => notImpl("populateAsset"),
-    readAssetBlob: async () => new TextEncoder().encode(json),
+    readAssetBlob: () => notImpl("readAssetBlob"),
   } as unknown as AssetService;
-}
-
-// A mutable, read-counting asset service. `setJson` swaps the blob returned
-// under the same asset id, modeling a mutated asset; `reads` records how many
-// times the materializer actually read the blob (the only path to a capability
-// walk), so a stable count across triggers proves no per-run re-read or re-walk.
-type CountingAssetService = AssetService & {
-  reads: number;
-  setJson: (json: string) => void;
-};
-
-function countingAssetService(initialJson: string): CountingAssetService {
-  function notImpl(name: string): never {
-    throw new Error(`mock: assetService.${name} not implemented`);
-  }
-  let json = initialJson;
-  const svc = {
-    reads: 0,
-    setJson(next: string) {
-      json = next;
-    },
-    createAsset: () => notImpl("createAsset"),
-    populateAsset: () => notImpl("populateAsset"),
-    readAssetBlob: async () => {
-      svc.reads += 1;
-      return new TextEncoder().encode(json);
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only readAssetBlob is exercised by the materializer
-  return svc as unknown as CountingAssetService;
-}
-
-// The same workflow rewritten under a stable asset id: its agent now declares a
-// DIFFERENT tool, so a live re-walk would surface `tool:write_file` and drop
-// `tool:read_file`. A run bound to the frozen approved walk must ignore this.
-function mutatedWorkflowJson(): string {
-  return JSON.stringify({
-    id: "wf_mail",
-    triggers: [{ type: "mail", to: WORKFLOW_ADDRESS }],
-    stepOrder: ["work"],
-    steps: {
-      work: {
-        kind: "step",
-        id: "work",
-        agent: {
-          id: "worker",
-          systemPrompt: "do work",
-          toolFactories: [{ id: "fac", definitions: [{ name: "write_file" }] }],
-          capabilities: [],
-          inference: { sources: [{ provider: "anthropic", model: "m" }] },
-        },
-        after: [],
-      },
-    },
-    grantRequirements: [
-      { resource: "secret:vault", action: "use", source: "creator" },
-      { resource: "secret:other", action: "use", source: "invoker" },
-    ],
-  });
 }
 
 const RUN_ID = "<mail-run-frozen@tenant.example>";
@@ -232,8 +192,12 @@ function creatorGrant(): GrantRule {
 describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   test("skips when the address names no deployed deployment", async () => {
     const materialize = createMailTriggeredRunGrantsMaterializer({
-      db: mockDb({ deploymentRow: undefined, assetRow }),
-      assetService: mockAssetService(workflowJson()),
+      db: mockDb({
+        deploymentRow: undefined,
+        assetRow,
+        grantSnapshot: snapshot(),
+      }),
+      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
     const result = await materialize({
@@ -243,19 +207,17 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     expect(result.outcome).toBe("skip");
   });
 
-  test("rejects mail for a terminal stable run before loading its definition", async () => {
+  test("rejects mail for a terminal stable run before reading its snapshot", async () => {
+    const reads = { count: 0 };
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({
         deploymentRow,
         assetRow,
+        grantSnapshot: snapshot(),
+        snapshotReads: reads,
         topLevelRunStatus: "completed",
       }),
-      assetService: {
-        ...mockAssetService(workflowJson()),
-        readAssetBlob: async () => {
-          throw new Error("terminal run must not load its definition");
-        },
-      },
+      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -269,6 +231,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       status: 409,
       code: "workflow_run_terminal",
     });
+    // The terminal preflight rejects before the snapshot is ever read.
+    expect(reads.count).toBe(0);
   });
 
   test("revalidates under lock before reserving a run that became terminal", async () => {
@@ -276,10 +240,11 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       db: mockDb({
         deploymentRow,
         assetRow,
+        grantSnapshot: snapshot(),
         topLevelRunStatus: null,
         lockedRunStatus: "failed",
       }),
-      assetService: mockAssetService(workflowJson()),
+      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -297,8 +262,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
 
   test("stages the tool grant and the creator requirement, omitting the invoker one", async () => {
     const materialize = createMailTriggeredRunGrantsMaterializer({
-      db: mockDb({ deploymentRow, assetRow }),
-      assetService: mockAssetService(workflowJson()),
+      db: mockDb({ deploymentRow, assetRow, grantSnapshot: snapshot() }),
+      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -313,7 +278,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     const resources = result.stepGrants
       .map((g) => `${g.resource}/${g.action}`)
       .sort();
-    // The walk's tool grant and the resolved creator requirement are present.
+    // The snapshot's tool grant and the resolved creator requirement are
+    // present.
     expect(resources).toContain("tool:read_file/invoke");
     expect(resources).toContain("secret:vault/use");
     // The invoker-sourced requirement is silently omitted (no invoker on the
@@ -327,36 +293,16 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   });
 
   test("still stages when the run launches with an omitted invoker grant", async () => {
-    // No creator grant held: the creator requirement would fail closed. But
-    // the invoker requirement is filtered out before staging, so a definition
-    // with ONLY an invoker requirement still launches.
-    const invokerOnlyJson = JSON.stringify({
-      id: "wf_invoker_only",
-      triggers: [{ type: "mail", to: WORKFLOW_ADDRESS }],
-      stepOrder: ["work"],
-      steps: {
-        work: {
-          kind: "step",
-          id: "work",
-          agent: {
-            id: "worker",
-            systemPrompt: "do work",
-            toolFactories: [
-              { id: "fac", definitions: [{ name: "read_file" }] },
-            ],
-            capabilities: [],
-            inference: { sources: [{ provider: "anthropic", model: "m" }] },
-          },
-          after: [],
-        },
-      },
-      grantRequirements: [
-        { resource: "secret:other", action: "use", source: "invoker" },
-      ],
-    });
+    // No creator grant held: a creator requirement would fail closed. But the
+    // invoker requirement is filtered out before staging, so a snapshot with
+    // ONLY an invoker requirement still launches.
     const materialize = createMailTriggeredRunGrantsMaterializer({
-      db: mockDb({ deploymentRow, assetRow }),
-      assetService: mockAssetService(invokerOnlyJson),
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: invokerOnlySnapshot(),
+      }),
+      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([]),
     });
     const result = await materialize({
@@ -367,18 +313,41 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       throw new Error(`expected materialized, got ${result.outcome}`);
     }
     const resources = result.stepGrants.map((g) => `${g.resource}/${g.action}`);
-    // Only the walk's tool grant survives; the invoker requirement is omitted
-    // and the creator requirement is absent, so the run launches with the tool.
+    // Only the snapshot's tool grant survives; the invoker requirement is
+    // omitted and no creator requirement exists, so the run launches with the
+    // tool.
     expect(resources).toEqual(["tool:read_file/invoke"]);
+  });
+
+  test("fails closed when the definition has no approved grant snapshot", async () => {
+    // A null `grant_snapshot` column is the "not yet approved" state. The
+    // materializer must raise rather than launch a run with an empty grant set.
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({ deploymentRow, assetRow, grantSnapshot: null }),
+      assetService: throwingAssetService(),
+      grantStore: createInMemoryGrantStore([creatorGrant()]),
+    });
+
+    await expect(
+      materialize({
+        agentAddress: WORKFLOW_ADDRESS,
+        runId: WORKFLOW_ADDRESS,
+      }),
+    ).rejects.toThrow(/no approved grant snapshot/);
   });
 });
 
 describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
-  test("does not re-read or re-walk the definition per run", async () => {
-    const assets = countingAssetService(workflowJson());
+  test("reads the frozen snapshot once and caches it per definition", async () => {
+    const reads = { count: 0 };
     const materialize = createMailTriggeredRunGrantsMaterializer({
-      db: mockDb({ deploymentRow, assetRow }),
-      assetService: assets,
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: snapshot(),
+        snapshotReads: reads,
+      }),
+      assetService: throwingAssetService(),
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -389,13 +358,11 @@ describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
     if (first.outcome !== "materialized") {
       throw new Error(`expected materialized, got ${first.outcome}`);
     }
-    // The first trigger reads and walks the approved definition exactly once.
-    expect(assets.reads).toBe(1);
+    // The first trigger reads the frozen snapshot exactly once.
+    expect(reads.count).toBe(1);
 
     // A second trigger of the SAME deployment consumes the closure-cached
-    // frozen basis: the asset blob is never read again, and the capability
-    // walk -- which can only run over a freshly read definition -- therefore
-    // does not run again either.
+    // snapshot: the version row is never read again.
     const second = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
       runId: RUN_ID,
@@ -403,47 +370,6 @@ describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
     if (second.outcome !== "materialized") {
       throw new Error(`expected materialized, got ${second.outcome}`);
     }
-    expect(assets.reads).toBe(1);
-  });
-
-  test("a mutated asset blob under a stable id cannot change run grants", async () => {
-    const assets = countingAssetService(workflowJson());
-    const materialize = createMailTriggeredRunGrantsMaterializer({
-      db: mockDb({ deploymentRow, assetRow }),
-      assetService: assets,
-      grantStore: createInMemoryGrantStore([creatorGrant()]),
-    });
-
-    const first = await materialize({
-      agentAddress: WORKFLOW_ADDRESS,
-      runId: RUN_ID,
-    });
-    if (first.outcome !== "materialized") {
-      throw new Error(`expected materialized, got ${first.outcome}`);
-    }
-    const firstResources = first.stepGrants
-      .map((g) => `${g.resource}/${g.action}`)
-      .sort();
-    expect(firstResources).toContain("tool:read_file/invoke");
-
-    // Rewrite the asset blob under the SAME asset id to a definition whose
-    // live re-walk would surface a different tool grant and drop the original.
-    assets.setJson(mutatedWorkflowJson());
-
-    const second = await materialize({
-      agentAddress: WORKFLOW_ADDRESS,
-      runId: RUN_ID,
-    });
-    if (second.outcome !== "materialized") {
-      throw new Error(`expected materialized, got ${second.outcome}`);
-    }
-    const secondResources = second.stepGrants
-      .map((g) => `${g.resource}/${g.action}`)
-      .sort();
-    // The run's grants are the deploy-approved set, unchanged by the mutation:
-    // the smuggled-in tool never appears, and the original is still present.
-    expect(secondResources).toEqual(firstResources);
-    expect(secondResources).toContain("tool:read_file/invoke");
-    expect(secondResources).not.toContain("tool:write_file/invoke");
+    expect(reads.count).toBe(1);
   });
 });
