@@ -263,6 +263,7 @@ function makeWorkflowDefinitionVersionRow(
     version: "1",
     status: "active",
     approvedWireHash: null,
+    grantSnapshot: null,
     createdAt: new Date(),
     ...overrides,
   };

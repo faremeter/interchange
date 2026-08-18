@@ -4,6 +4,7 @@ export * from "./tenants";
 export * from "./principals";
 export * from "./roles";
 export * from "./grants";
+export * from "./grant-snapshot";
 export * from "./signals";
 export * from "./instances";
 export * from "./workflows";
