@@ -189,7 +189,6 @@ const lookups = {
   ...createHubSessionLookups({ db, agentRepoStore }),
   materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer({
     db,
-    assetService,
     grantStore: createGrantStore(db),
   }),
 };

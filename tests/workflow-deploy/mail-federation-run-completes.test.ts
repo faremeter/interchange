@@ -241,7 +241,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // deliverMailToRecipient through its true grants-write seam.
       const materializer = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
-        assetService,
         grantStore: createGrantStore(h.db),
       });
       env = await startDeployFlowEnv({

@@ -41,14 +41,12 @@ import { deriveRunRuntimeGrantRows } from "../run-grant-materialization";
 import {
   createSidecarEmitter,
   type AssetService,
-  type DeployWorkflowDefinitionParams,
   type DeployWorkflowDefinitionResult,
+  type DeployWorkflowFromSourceParams,
   type EventCollectorRegistry,
-  type PrepareExclusiveWorkflowDeploymentArgs,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
-  type WorkflowAllocationService,
   type WorkflowDispatchService,
   type WorkflowRunLifecycle,
 } from "@intx/hub-sessions";
@@ -542,7 +540,7 @@ function createMockSidecarRouter(
 }
 
 function createMockSessionService(
-  deployCalls: DeployWorkflowDefinitionParams[],
+  deployCalls: DeployWorkflowFromSourceParams[],
   result?: DeployWorkflowDefinitionResult,
   deployError?: Error,
 ): SessionService {
@@ -552,7 +550,11 @@ function createMockSessionService(
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
     deployInstanceAtHead: () => notImpl("deployInstanceAtHead"),
-    deployWorkflowDefinition: (params) => {
+    deployWorkflowDefinition: () => notImpl("deployWorkflowDefinition"),
+    // The `POST /deployments` route now composes a code-sourced deploy through
+    // this one method; the mock records the args and returns the seeded result
+    // (or throws to model an install/gate or sidecar failure).
+    deployWorkflowFromSource: (params) => {
       deployCalls.push(params);
       if (result === undefined) {
         throw deployError ?? new Error("deploy failed");
@@ -562,27 +564,6 @@ function createMockSessionService(
     deploySingleStepAtHead: () => notImpl("deploySingleStepAtHead"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
-  };
-}
-
-function createMockWorkflowAllocationService(
-  prepareCalls: PrepareExclusiveWorkflowDeploymentArgs[],
-  prepareError?: Error,
-): WorkflowAllocationService {
-  return {
-    prepareExclusiveDeployment: (args) => {
-      prepareCalls.push(args);
-      if (prepareError !== undefined) throw prepareError;
-      return Promise.resolve({
-        anchorRunId: DEPLOYMENT_ID,
-        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
-        allocationId: "sal_test",
-        status: "pending",
-      });
-    },
-    deployReadyAllocation: () => {
-      throw new Error("mock: deployReadyAllocation not implemented");
-    },
   };
 }
 
@@ -771,11 +752,9 @@ type TestAppOpts = {
   runGrantsCalls?: RunGrantsCall[];
   sendOrder?: SendCall[];
   runGrantsResult?: boolean;
-  deployCalls?: DeployWorkflowDefinitionParams[];
+  deployCalls?: DeployWorkflowFromSourceParams[];
   deployResult?: DeployWorkflowDefinitionResult;
   deployError?: Error;
-  allocationPrepareCalls?: PrepareExclusiveWorkflowDeploymentArgs[];
-  allocationPrepareError?: Error;
   workflowDispatchEnqueues?: WorkflowDispatchEnqueue[];
   workflowSignalDispatchEnqueues?: WorkflowSignalDispatchEnqueue[];
   workflowSignalDispatchError?: Error;
@@ -840,14 +819,6 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.deployResult,
       opts.deployError,
     ),
-    ...(opts.allocationPrepareCalls !== undefined
-      ? {
-          workflowAllocationService: createMockWorkflowAllocationService(
-            opts.allocationPrepareCalls,
-            opts.allocationPrepareError,
-          ),
-        }
-      : {}),
     ...(opts.workflowDispatchEnqueues !== undefined
       ? {
           workflowDispatchService: createMockWorkflowDispatchService(
@@ -948,9 +919,39 @@ function assertBody<T extends Type>(schema: T, raw: unknown): T["infer"] {
   return parsed;
 }
 
+// A code-sourced deploy body: the definition is the workflow asset's own git
+// subtree at a pinned commit, evaluated at `entry`. `source.assetId` is the
+// workflow asset the route anchors the deployment to (ASSET_ID here), so the
+// asset lookup and the derived `definitionAssetId` both key off it.
+const DEPLOY_COMMIT = "c0ffee".padEnd(40, "0");
+const DEPLOY_ENTRY = "./workflow.mjs";
+function sourceDeployBody(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    source: {
+      kind: "asset",
+      assetId: ASSET_ID,
+      package: { format: "source", commitSha: DEPLOY_COMMIT },
+    },
+    entry: DEPLOY_ENTRY,
+    sources: [
+      {
+        id: "src",
+        provider: "anthropic",
+        baseURL: "https://api.example",
+        apiKey: "secret",
+        model: "m",
+      },
+    ],
+    defaultSource: "src",
+    ...overrides,
+  };
+}
+
 describe("POST /workflows/deployments", () => {
-  test("deploys a workflow and returns the deployment record", async () => {
-    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+  test("deploys a code-sourced workflow and returns the deployment record", async () => {
+    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       deployCalls,
@@ -962,20 +963,7 @@ describe("POST /workflows/deployments", () => {
     });
 
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-        toolPackages: [{ name: "@intx/tools-posix", version: "^1.2.3" }],
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
 
     expect(res.status).toBe(201);
@@ -990,105 +978,75 @@ describe("POST /workflows/deployments", () => {
     if (call === undefined) throw new Error("missing deploy call");
     expect(call.deploymentDomain).toBe(DOMAIN);
     expect(call.definitionAssetId).toBe(ASSET_ID);
-    expect(call.definition.id).toBe("wf_demo");
-    expect(call.definition.stepOrder).toEqual(["plan", "wait"]);
-    expect(call.toolPackagePins).toEqual([
-      { name: "@intx/tools-posix", version: "^1.2.3" },
+    expect(call.entry).toBe(DEPLOY_ENTRY);
+    expect(call.source).toEqual({
+      kind: "asset",
+      assetId: ASSET_ID,
+      package: { format: "source", commitSha: DEPLOY_COMMIT },
+    });
+    // The route derives the deployment address from the minted anchor run and
+    // threads the operator's inference chain onto the harness config.
+    expect(call.agentAddress).toBe(
+      deriveRunAddress({ runId: call.anchorRunId, domain: DOMAIN }),
+    );
+    expect(call.config.defaultSource).toBe("src");
+    expect(call.config.sources).toEqual([
+      {
+        id: "src",
+        provider: "anthropic",
+        baseURL: "https://api.example",
+        apiKey: "secret",
+        model: "m",
+      },
     ]);
   });
 
-  test("prepares exclusive placement without deploying on shared capacity", async () => {
-    const deployCalls: DeployWorkflowDefinitionParams[] = [];
-    const allocationPrepareCalls: PrepareExclusiveWorkflowDeploymentArgs[] = [];
+  test("rejects exclusive placement as not yet supported for code-sourced deploys", async () => {
+    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       deployCalls,
-      allocationPrepareCalls,
-      workflowJson: WORKFLOW_JSON,
       tenantConfig: {
         sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
       },
     });
 
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "offering-anthropic",
-            provider: "caller-value-is-not-persisted",
-            baseURL: "https://caller.example",
-            apiKey: "caller-secret-is-not-persisted",
-            model: "caller-model",
-          },
-        ],
-        defaultSource: "offering-anthropic",
-        toolPackages: [{ name: "@intx/tools-posix", version: "^1.2.3" }],
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
 
-    expect(res.status).toBe(201);
-    expect(await res.json()).toMatchObject({
-      id: DEPLOYMENT_ID,
-      status: "pending",
-    });
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("exclusive_placement_unsupported");
+    // The route rejects before composing any deploy.
     expect(deployCalls).toHaveLength(0);
-    expect(allocationPrepareCalls).toHaveLength(1);
-    expect(allocationPrepareCalls[0]).toMatchObject({
-      tenantId: TENANT_ID,
-      definitionAssetId: ASSET_ID,
-      placement: { sharing: "exclusive", reuse: "same-deployment" },
-      sourceAuthorityPrincipalId: PRINCIPAL_ID,
-      sourceOfferingIds: ["offering-anthropic"],
-      defaultSourceOfferingId: "offering-anthropic",
-      toolPackagePins: [{ name: "@intx/tools-posix", version: "^1.2.3" }],
-    });
   });
 
-  test("rejects invalid workflow tool package pins", async () => {
-    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+  test("rejects a registry-sourced deploy as unsupported on this route", async () => {
+    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       deployCalls,
     });
 
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-        toolPackages: [{ name: "@intx/tools-posix", version: "invalid" }],
-      }),
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({
+          source: { kind: "registry", registry: "npmjs" },
+          pin: "@wf/demo@^1.0.0",
+        }),
+      ),
     );
 
     expect(res.status).toBe(400);
+    expect(await errorCode(res)).toBe("unsupported_source");
     expect(deployCalls).toHaveLength(0);
   });
 
   test("rejects a caller without the workflow create grant", async () => {
     const app = createTestApp({ grants: [] });
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(403);
   });
@@ -1100,29 +1058,17 @@ describe("POST /workflows/deployments", () => {
       grants: [makeGrant({ action: "create" })],
     });
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(502);
     expect(await errorCode(res)).toBe("sidecar_unavailable");
   });
 
-  test("reports an invalid single-step source chain as 409 invalid_workflow", async () => {
-    // A WorkflowDefinitionInvalidError from the single-step source-chain
-    // assertion (inverted or unapproved chain) is a client error, not a
-    // sidecar-reachability failure -- the route must classify it as 409.
-    const deployCalls: DeployWorkflowDefinitionParams[] = [];
+  test("reports an invalid source chain as 409 invalid_workflow", async () => {
+    // A WorkflowDefinitionInvalidError from the install/gate or the per-step
+    // source pin (an unapproved or mis-ordered chain) is a client/definition
+    // error, not a sidecar-reachability failure -- classify it as 409.
+    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       deployCalls,
@@ -1132,67 +1078,11 @@ describe("POST /workflows/deployments", () => {
       ),
     });
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(409);
     expect(await errorCode(res)).toBe("invalid_workflow");
-    // Pin the assertion to the deploy-catch branch: the hydrate-failure path
-    // also yields 409 invalid_workflow but never reaches the deploy call.
     expect(deployCalls).toHaveLength(1);
-  });
-
-  test("rejects a single-step deploy whose default is not the chain head with 409, before deploying", async () => {
-    // The single-step chain gate lives at the route edge: a default source that
-    // is not the head of the pinned chain is contradictory request shape, so
-    // the route must reject it with a caller-facing invalid_workflow BEFORE
-    // handing anything to the deploy call -- not surface the orchestrator's
-    // internal invariant wording through the deploy-catch branch.
-    const deployCalls: DeployWorkflowDefinitionParams[] = [];
-    const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
-      deployCalls,
-      // stepOrder ["work"] -- single-step, so the chain-head rule applies.
-      workflowJson: WORKFLOW_JSON_WITH_TOOLS,
-    });
-    const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src-b",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-          {
-            id: "src-a",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m2",
-          },
-        ],
-        defaultSource: "src-a",
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe("invalid_workflow");
-    // The edge check pre-empts the deploy entirely -- an empty deployCalls
-    // proves the rejection did not come from the orchestrator assert.
-    expect(deployCalls).toHaveLength(0);
   });
 
   test("reports a missing post-deploy anchor run as 500, not 502", async () => {
@@ -1206,19 +1096,7 @@ describe("POST /workflows/deployments", () => {
       },
     });
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(500);
     expect(await errorCode(res)).toBe("anchor_run_missing");
@@ -1230,19 +1108,7 @@ describe("POST /workflows/deployments", () => {
       db: { assetRow: undefined },
     });
     const res = await app.fetch(
-      authedPost(`${base()}/deployments`, {
-        assetId: ASSET_ID,
-        sources: [
-          {
-            id: "src",
-            provider: "anthropic",
-            baseURL: "https://api.example",
-            apiKey: "secret",
-            model: "m",
-          },
-        ],
-        defaultSource: "src",
-      }),
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(404);
   });

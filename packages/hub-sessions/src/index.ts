@@ -11,6 +11,7 @@ export {
   type SessionService,
   type DeployWorkflowDefinitionParams,
   type DeployWorkflowDefinitionResult,
+  type DeployWorkflowFromSourceParams,
   type DeployPreparedWorkflowDefinitionParams,
   type PreparedWorkflowDeployer,
   type DeployCodeSourcedWorkflowArgs,

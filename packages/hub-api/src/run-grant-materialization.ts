@@ -16,7 +16,6 @@
 
 import { and, asc, eq } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { type } from "arktype";
 
 import {
   asset,
@@ -37,13 +36,7 @@ import {
   type GrantWalkSnapshot,
 } from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
-import {
-  workflowDefinitionEnvelopeSchema,
-  WORKFLOW_JSON_PATH,
-  type AssetService,
-  type MailTriggeredRunGrantsResult,
-  type WorkflowDefinition,
-} from "@intx/hub-sessions";
+import { type MailTriggeredRunGrantsResult } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 
 import {
@@ -144,41 +137,6 @@ export function deriveRunRuntimeGrantRows(
     });
   }
   return rows;
-}
-
-/**
- * Read and hydrate the workflow definition from a workflow asset's
- * `workflow.json`. Validates the structural envelope at this boundary,
- * mirroring the workflow-host child's `loadWorkflowDefinition`: the
- * per-primitive narrows live in the runtime layer that consumes the
- * definition, so the envelope check plus the documented narrow is the
- * canonical hydration shape.
- */
-export async function hydrateDefinition(
-  assetService: AssetService,
-  assetId: string,
-): Promise<WorkflowDefinition> {
-  const raw = await assetService.readAssetBlob({
-    assetId,
-    path: WORKFLOW_JSON_PATH,
-  });
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(raw));
-  } catch (cause) {
-    throw new Error(
-      `workflow asset ${assetId} ${WORKFLOW_JSON_PATH} is not valid JSON`,
-      { cause },
-    );
-  }
-  const validated = workflowDefinitionEnvelopeSchema(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(
-      `workflow asset ${assetId} ${WORKFLOW_JSON_PATH} failed envelope validation: ${validated.summary}`,
-    );
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope schema enforces structural shape; per-primitive narrows live in the runtime layer that consumes the definition, matching loadWorkflowDefinition in @intx/workflow-host
-  return validated as unknown as WorkflowDefinition;
 }
 
 /**
@@ -529,7 +487,6 @@ export async function commitRunGrants(
 
 export type MailTriggeredRunGrantsDeps = {
   db: DB["db"];
-  assetService: AssetService;
   grantStore: GrantStore;
 };
 

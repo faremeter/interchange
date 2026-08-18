@@ -35,7 +35,10 @@ import type {
   ToolDefinition,
 } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type {
+  CredentialDelivery,
+  WorkflowProjectionDefinition,
+} from "@intx/types/sidecar";
 import { formatRunAddress } from "@intx/types";
 import {
   STEP_ID_PATTERN,
@@ -51,6 +54,7 @@ import {
   type CapabilityApprovalGate,
 } from "./capability-approval";
 import { walkCapabilities, type CapabilityWalkResult } from "./capability-walk";
+import { readInertStepPreference } from "./inert-ontrigger-bodies";
 
 /**
  * Minimal `DeployContent` shape the orchestrator passes through to
@@ -820,6 +824,47 @@ export function pickStepInferenceSource(args: {
     args.workflowId,
     `step ${args.stepId} has no approved inference source: ${preferredDesc} is either missing from HarnessConfig.sources or not in the operator-approved grant set, and ${fallbackDesc}`,
   );
+}
+
+/**
+ * Pin every TOP-LEVEL step of a frozen inert projection to a single approved
+ * inference source, producing the `sources` map the source-ref deploy frame
+ * carries. This is the source-ref counterpart of the live-authored
+ * orchestrator's per-step pin loop (`runMultiStepBranch`): the hub holds no live
+ * definition, so each step's declared `(provider, model)` preference is read off
+ * the inert projection's `modelSources` and resolved through the SAME
+ * `pickStepInferenceSource` resolver + operator-approval gate the live path uses.
+ * A step whose preferred source the operator never approved (or that resolves to
+ * no approved source at all) throws, failing the whole deploy closed before any
+ * frame is sent.
+ *
+ * Every step in `stepOrder` gets one entry (a non-agent step falls back to the
+ * approved default), mirroring the live loop, so the sidecar child finds a
+ * pinned source for each staged step.
+ */
+export function buildInertProjectionStepSources(args: {
+  projection: WorkflowProjectionDefinition;
+  config: HarnessConfig;
+  operatorApprovals: ApprovalSet;
+}): Record<string, InferenceSource[]> {
+  const sources: Record<string, InferenceSource[]> = {};
+  for (const stepId of args.projection.stepOrder) {
+    const preferred = readInertStepPreference(
+      args.projection.steps[stepId],
+      "buildInertProjectionStepSources: ",
+      stepId,
+    );
+    sources[stepId] = [
+      pickStepInferenceSource({
+        preferred,
+        stepId,
+        workflowId: args.projection.id,
+        config: args.config,
+        operatorApprovals: args.operatorApprovals,
+      }),
+    ];
+  }
+  return sources;
 }
 
 /**

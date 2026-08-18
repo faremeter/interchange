@@ -105,15 +105,21 @@ function firstPreference(
 }
 
 /**
- * Read a body step's declared preference. Mirrors `extractAgent`: a `step`
- * carries the agent directly, a `map` carries it on its inner step, and any
- * other primitive declares none (`null`). A `step`/`map` that fails the agent
- * shape is a malformed projection and throws.
+ * Read an inert projection step's declared inference preference. Mirrors
+ * `extractAgent`: a `step` carries the agent directly, a `map` carries it on its
+ * inner step, and any other primitive declares none (`null`). A `step`/`map`
+ * that fails the agent shape is a malformed projection and throws.
+ *
+ * `context` is a caller label the throw prefixes with, so a malformed step is
+ * traceable to whoever read it (an inline onTrigger body enumeration, or the
+ * top-level projection step-source pinning). Exported so both the body
+ * enumeration here and the top-level source pin in `orchestrator.ts` read a
+ * step's preference through one validator.
  */
-function readBodyStepPreference(
+export function readInertStepPreference(
   stepValue: unknown,
-  bodyRef: string,
-  bodyStepId: string,
+  context: string,
+  stepId: string,
 ): InertBodyStepPreference | null {
   const asStep = StepWithAgent(stepValue);
   if (!(asStep instanceof type.errors)) {
@@ -129,7 +135,7 @@ function readBodyStepPreference(
     (kind.kind === "step" || kind.kind === "map")
   ) {
     throw new Error(
-      `enumerateInertOnTriggerBodies: body ${bodyRef} step ${bodyStepId} is a ${kind.kind} primitive but carries no valid agent.modelSources`,
+      `${context}step ${stepId} is a ${kind.kind} primitive but carries no valid agent.modelSources`,
     );
   }
   return null;
@@ -164,9 +170,9 @@ export function enumerateInertOnTriggerBodies(
 
     const preferredByStep: Record<string, InertBodyStepPreference | null> = {};
     for (const bodyStepId of definition.stepOrder) {
-      preferredByStep[bodyStepId] = readBodyStepPreference(
+      preferredByStep[bodyStepId] = readInertStepPreference(
         definition.steps[bodyStepId],
-        ref,
+        `enumerateInertOnTriggerBodies: body ${ref} `,
         bodyStepId,
       );
     }

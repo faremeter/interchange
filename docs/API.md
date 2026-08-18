@@ -573,13 +573,13 @@ Body: WorkflowRollbackRequest
 ### POST /api/tenants/:tenantId/workflows/deployments
 Deploy a workflow
 
-Hydrates a workflow definition from its workflow asset's workflow.json and deploys it through the general multi-step workflow deploy path. Returns the deployment record.
+Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then deploys it by source-ref. Returns the deployment record.
 
 Body: unknown
 
 201: unknown -- Workflow deployed
 404: ErrorResponse -- Workflow asset not found
-409: ErrorResponse -- Workflow definition could not be hydrated
+409: ErrorResponse -- Workflow definition invalid, or exclusive placement not yet supported for code-sourced deploys
 500: ErrorResponse -- Deployment projection row missing after deploy
 502: ErrorResponse -- Sidecar unavailable
 

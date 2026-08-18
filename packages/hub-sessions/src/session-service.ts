@@ -58,6 +58,7 @@ import type {
 import type {
   WorkflowDefinitionAssetSource,
   WorkflowDefinitionRegistrySource,
+  WorkflowDefinitionSource,
 } from "@intx/types/workflow-sources";
 import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
@@ -66,12 +67,14 @@ import {
 } from "@intx/workflow/definition";
 import {
   assertChainHeadIsDefault,
+  buildInertProjectionStepSources,
   createWorkflowDeployOrchestrator,
   deriveRunAddress,
   enumerateInertOnTriggerBodies,
   pickStepInferenceSource,
   walkCapabilities,
   wrapHarnessAsSingleStepWorkflow,
+  WorkflowDefinitionInvalidError,
   type ApprovalSet,
   type DeployContent as OrchestratorDeployContent,
   type DeployWorkflowArgs,
@@ -94,13 +97,18 @@ import type {
   SidecarAllocationRouter,
   SidecarRouter,
 } from "./ws/sidecar-handler";
-import type { Principal, RepoId } from "./repo-store";
+import type { Principal, RepoId, RepoKind } from "./repo-store";
 import {
   buildSourceAssetMounts,
   type ResolveAssetAttachmentFn,
 } from "./workflow-closure-resolution";
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
-import type { InstallAndApproveResult } from "./workflow-probe-gate";
+import { committedReadsToSourceTree } from "./committed-source-tree";
+import {
+  installAndApproveWorkflowDefinition,
+  type InstallAndApproveArgs,
+  type InstallAndApproveResult,
+} from "./workflow-probe-gate";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -193,6 +201,30 @@ export type SessionService = {
   ): Promise<DeployWorkflowDefinitionResult>;
 
   /**
+   * Deploy a CODE-SOURCED workflow definition end to end: install + probe +
+   * gate + freeze (`approve-probed`), then deploy the frozen definition by
+   * source-ref. This is the general workflow deploy entry point the
+   * `POST /deployments` route drives; it never hydrates a live definition from a
+   * static `workflow.json`.
+   *
+   * The service owns the source-read wiring (`repoStore` committed reads and
+   * asset pack fan-out) and the registry configuration, so the caller passes
+   * only the deploy intent: where the definition's bytes come from
+   * (`source`/`entry`/`pin`), the `workflow`-kind asset the definition projects
+   * over (`definitionAssetId`), and the shared harness config. The method
+   * dispatches on `source.kind`/`source.package.format` to build the install
+   * args, pins every top-level step's inference source under the frozen
+   * approval, and persists the deployment's anchor run.
+   *
+   * Persists the deployment's anchor `workflow_run` (id = `anchorRunId`) via
+   * `deployCodeSourcedWorkflow`, so the deployment is listable per tenant.
+   * Returns the supervisor's principal public key from the sidecar deploy ack.
+   */
+  deployWorkflowFromSource(
+    params: DeployWorkflowFromSourceParams,
+  ): Promise<DeployWorkflowDefinitionResult>;
+
+  /**
    * Compose a signed RFC 2822 message from the user and deliver it to the
    * agent via the mail transport. Throws if the agent is unreachable.
    * Returns the raw MIME bytes of the assembled message.
@@ -255,6 +287,46 @@ export type DeployWorkflowDefinitionResult = {
   deploymentAddress: string;
   /** Supervisor principal public key from the sidecar's deploy ack. */
   publicKey: string;
+};
+
+export type DeployWorkflowFromSourceParams = {
+  /** Owning tenant; recorded on the deployment's anchor run. */
+  tenantId: string;
+  /**
+   * Stable deployment identifier and anchor-run id. The deployment-level
+   * address derives from it; the caller owns its generation.
+   */
+  anchorRunId: string;
+  /** Mail domain the deployment's derived addresses live under. */
+  deploymentDomain: string;
+  /**
+   * The deployment-level mail address, derived by the caller from `anchorRunId`
+   * + `deploymentDomain`. Re-derived and asserted coherent inside
+   * `deployCodeSourcedWorkflow`.
+   */
+  agentAddress: string;
+  /** Where the definition's bytes come from at apply time. */
+  source: WorkflowDefinitionSource;
+  /** The `interchange.workflow` entry-module path the sidecar evaluates. */
+  entry: string;
+  /**
+   * A `name@range` spec for the definition package. REQUIRED for the `registry`
+   * and asset-`tarball` variants (the pin selects the member); omitted for the
+   * asset-`source` variant, whose member is selected by `package.packageName`.
+   */
+  pin?: string;
+  /**
+   * The `workflow`-kind asset the frozen definition projects a
+   * `workflow_definition` over. Distinct from a `source.kind === "asset"`
+   * source's `assetId`, which names where the bytes live.
+   */
+  definitionAssetId: string;
+  /**
+   * Harness config shared across the deployment. Its `sources`/`defaultSource`
+   * are the operator-supplied inference chain; the method pins each top-level
+   * step to one approved source from it.
+   */
+  config: HarnessConfig;
 };
 
 export type PreparedWorkflowDeployer = {
@@ -1618,6 +1690,253 @@ export function createSessionService(
     return result;
   }
 
+  // Resolve the npm registry config a code-sourced install resolves external
+  // deps against, by the registry name. A code-sourced deploy needs the
+  // registry map configured; a hub that mounts the deploy surface without it is
+  // mis-wired, so this fails loud rather than defaulting a registry URL.
+  function requireRegistryConfig(registryName: string): RegistryConfig {
+    if (toolPackageRegistries === undefined) {
+      throw new Error(
+        "deployWorkflowFromSource: the session service has no toolPackageRegistries configured; a code-sourced deploy cannot resolve its dependency closure",
+      );
+    }
+    const config = toolPackageRegistries.httpRegistries.get(registryName);
+    if (config === undefined) {
+      throw new Error(
+        `deployWorkflowFromSource: no HTTP registry named ${JSON.stringify(registryName)} is configured`,
+      );
+    }
+    return config;
+  }
+
+  // Build the git-pack resolver a source/tarball asset arm delivers inline. The
+  // pin names one backing asset, so the resolver binds that asset's repo (its
+  // kind fixed by the arm) and its default ref; a request for any OTHER asset id
+  // is a closure that reaches beyond its single backing asset and fails loud
+  // rather than silently packing the wrong repo.
+  function bindAssetAttachmentResolver(
+    assetId: string,
+    repoKind: RepoKind,
+  ): ResolveAssetAttachmentFn {
+    return async (requestedAssetId) => {
+      if (requestedAssetId !== assetId) {
+        throw new Error(
+          `deployWorkflowFromSource: closure references asset ${requestedAssetId}, but only the pinned source asset ${assetId} is deliverable`,
+        );
+      }
+      const repoId: RepoId = { kind: repoKind, id: assetId };
+      const commitSha = await agentRepoStore.repoStore.resolveRef(
+        HUB_PRINCIPAL,
+        repoId,
+        DEFAULT_ASSET_REF,
+      );
+      if (commitSha === null) {
+        throw new Error(
+          `deployWorkflowFromSource: source asset ${assetId} has no commit on ${DEFAULT_ASSET_REF}`,
+        );
+      }
+      const { pack, ref } = await agentRepoStore.repoStore.createPack(
+        HUB_PRINCIPAL,
+        repoId,
+        DEFAULT_ASSET_REF,
+      );
+      return { pack, ref, commitSha };
+    };
+  }
+
+  // Assemble the install args for the concrete source arm. Mirrors the
+  // `isAssetSourceInstallArgs`/`isAssetTarballInstallArgs` guards the probe gate
+  // narrows on: an asset-`source` arm binds committed reads at the pinned commit
+  // plus the npm registry for external deps; an asset-`tarball` arm binds the
+  // asset's blob reads and a pin; a `registry` arm carries only its registry
+  // config and a pin. A `pin` missing where the arm requires it fails closed.
+  async function buildInstallArgs(
+    params: DeployWorkflowFromSourceParams,
+    resolveAttachment: ResolveAssetAttachmentFn | null,
+  ): Promise<InstallAndApproveArgs> {
+    if (db === undefined) {
+      throw new Error(
+        "deployWorkflowFromSource requires a db handle to freeze the approval",
+      );
+    }
+    const dbHandle = db;
+    const common = {
+      entry: params.entry,
+      assetId: params.definitionAssetId,
+      approvals: { mode: "approve-probed" } as const,
+      router: sidecarRouter,
+      db: dbHandle,
+    };
+    const source = params.source;
+
+    if (source.kind === "asset") {
+      if (resolveAttachment === null) {
+        throw new Error(
+          "deployWorkflowFromSource: an asset-sourced deploy requires an attachment resolver",
+        );
+      }
+      if (source.package.format === "source") {
+        const committed =
+          await agentRepoStore.repoStore.openCommittedReadsAtCommit(
+            HUB_PRINCIPAL,
+            { kind: "workflow", id: source.assetId },
+            source.package.commitSha,
+          );
+        if (committed === null) {
+          throw new Error(
+            `deployWorkflowFromSource: source asset ${source.assetId} has no commit ${source.package.commitSha}`,
+          );
+        }
+        const registryName = requireDefaultRegistryName();
+        return {
+          ...common,
+          source,
+          reads: committedReadsToSourceTree(committed),
+          registryName,
+          registryConfig: requireRegistryConfig(registryName),
+          resolveAttachment,
+        };
+      }
+      if (params.pin === undefined) {
+        throw new Error(
+          "deployWorkflowFromSource: an asset-tarball deploy requires a name@range pin",
+        );
+      }
+      if (assetService === undefined) {
+        throw new Error(
+          "deployWorkflowFromSource: an asset-tarball deploy requires an asset service to read the package blobs",
+        );
+      }
+      const tarballAssetId = source.assetId;
+      const tarballService = assetService;
+      return {
+        ...common,
+        source,
+        pin: params.pin,
+        readBlob: (path) =>
+          tarballService.readAssetBlob({ assetId: tarballAssetId, path }),
+        listBlobs: (dir) =>
+          tarballService.listAssetBlobs({ assetId: tarballAssetId, dir }),
+        resolveAttachment,
+      };
+    }
+    if (params.pin === undefined) {
+      throw new Error(
+        "deployWorkflowFromSource: a registry deploy requires a name@range pin",
+      );
+    }
+    return {
+      ...common,
+      source,
+      pin: params.pin,
+      registryConfig: requireRegistryConfig(source.registry),
+    };
+  }
+
+  function requireDefaultRegistryName(): string {
+    if (toolPackageRegistries === undefined) {
+      throw new Error(
+        "deployWorkflowFromSource: the session service has no toolPackageRegistries configured; a code-sourced deploy cannot resolve its dependency closure",
+      );
+    }
+    return toolPackageRegistries.defaultRegistry;
+  }
+
+  async function deployWorkflowFromSource(
+    params: DeployWorkflowFromSourceParams,
+  ): Promise<DeployWorkflowDefinitionResult> {
+    if (db === undefined) {
+      throw new Error(
+        "deployWorkflowFromSource requires a db handle to record the deployment's anchor run",
+      );
+    }
+    // An asset arm delivers its backing repo inline; a registry arm fetches its
+    // tarballs over HTTP and delivers no asset. Bind the resolver up front so
+    // both the install (probe) and the deploy carry the same pack fan-out.
+    const source = params.source;
+    const resolveAttachment: ResolveAssetAttachmentFn | null =
+      source.kind === "asset"
+        ? bindAssetAttachmentResolver(
+            source.assetId,
+            source.package.format === "source"
+              ? "workflow"
+              : "package-registry",
+          )
+        : null;
+
+    const installArgs = await buildInstallArgs(params, resolveAttachment);
+    const approved = await installAndApproveWorkflowDefinition(installArgs);
+    if (!approved.approval.ok) {
+      throw new WorkflowDefinitionInvalidError(
+        approved.projection.id,
+        `code-sourced workflow install did not approve (reason: ${approved.approval.reason})`,
+      );
+    }
+
+    // Pin every top-level step's inference source under the frozen approval,
+    // exactly as the live-authored orchestrator's per-step loop does, then hand
+    // the frozen bundle to the source-ref deploy.
+    const sources = buildInertProjectionStepSources({
+      projection: approved.projection,
+      config: params.config,
+      operatorApprovals: approved.approval.approvedGrants,
+    });
+
+    const commonDeploy = {
+      approved,
+      sidecarRouter,
+      agentAddress: params.agentAddress,
+      config: params.config,
+      sources,
+      db,
+      tenantId: params.tenantId,
+      anchorRunId: params.anchorRunId,
+      deploymentDomain: params.deploymentDomain,
+    };
+    // Branch on the source discriminant so the deploy args match the
+    // asset/registry arms of `DeployCodeSourcedWorkflowArgs`: an asset arm
+    // carries the attachment resolver (asserted non-null here to satisfy the
+    // union and fail loud on a mis-wired caller), a registry arm carries none.
+    let result: { publicKey: string };
+    if (source.kind === "asset") {
+      if (resolveAttachment === null) {
+        throw new Error(
+          "deployWorkflowFromSource: asset source deploy is missing its attachment resolver",
+        );
+      }
+      result = await deployCodeSourcedWorkflow({
+        ...commonDeploy,
+        source,
+        resolveAttachment,
+      });
+    } else {
+      result = await deployCodeSourcedWorkflow({ ...commonDeploy, source });
+    }
+
+    // Seed the deploying principal's read grant on the deployment's workflow-run
+    // resource, mirroring `deployWorkflowDefinition`. `deployCodeSourcedWorkflow`
+    // wrote the anchor row but deliberately leaves this grant to the route,
+    // which carries the authenticated deployer principal.
+    const now = new Date();
+    await db.insert(grantTable).values({
+      id: generateId("grant"),
+      tenantId: params.tenantId,
+      principalId: params.config.principalId,
+      resource: `workflow-run:${params.anchorRunId}`,
+      action: "read",
+      effect: "allow",
+      origin: "creator",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      anchorRunId: params.anchorRunId,
+      deploymentAddress: params.agentAddress,
+      publicKey: result.publicKey,
+    };
+  }
+
   async function deployPreparedWorkflowDefinition(
     params: DeployPreparedWorkflowDefinitionParams,
   ): Promise<DeployWorkflowDefinitionResult> {
@@ -2061,6 +2380,7 @@ export function createSessionService(
     deployInstanceAtHead,
     deploySingleStepAtHead,
     deployWorkflowDefinition,
+    deployWorkflowFromSource,
     deployPreparedWorkflowDefinition,
     sendUserMessage,
     endSession,

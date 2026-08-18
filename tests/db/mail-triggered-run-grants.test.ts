@@ -18,7 +18,6 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { GrantWalkSnapshot } from "@intx/types";
-import type { AssetService } from "@intx/hub-sessions";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
 import {
   createTestDb,
@@ -62,21 +61,6 @@ function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
       },
     ],
   };
-}
-
-// The mail materializer reads its grants from the frozen snapshot, never the
-// asset blob. This double fails the test loudly if the materializer ever reads
-// the workflow asset.
-function throwingAssetService(): AssetService {
-  function notImpl(name: string): never {
-    throw new Error(`mail materializer must not call assetService.${name}`);
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the mail path never touches the asset service
-  return {
-    createAsset: () => notImpl("createAsset"),
-    populateAsset: () => notImpl("populateAsset"),
-    readAssetBlob: () => notImpl("readAssetBlob"),
-  } as unknown as AssetService;
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -157,7 +141,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
-        assetService: throwingAssetService(),
         grantStore: createGrantStore(h.db),
       });
       return materialize({ agentAddress: WORKFLOW_ADDRESS, runId });

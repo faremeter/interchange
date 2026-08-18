@@ -312,6 +312,9 @@ function createMockSessionService(): SessionService {
     deployWorkflowDefinition(_params) {
       return notImpl("deployWorkflowDefinition");
     },
+    deployWorkflowFromSource(_params) {
+      return notImpl("deployWorkflowFromSource");
+    },
     deploySingleStepAtHead(_params) {
       return notImpl("deploySingleStepAtHead");
     },
