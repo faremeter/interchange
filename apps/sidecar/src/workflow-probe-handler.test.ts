@@ -14,11 +14,34 @@ import {
 import {
   createWorkflowProbeExecutor,
   defaultProbeChildSpawner,
+  enrichProbeError,
   type MaterializeWorkflowClosure,
   type MaterializedWorkflowClosure,
   type ProbeChildHandle,
   type ProbeChildSpawner,
 } from "./workflow-probe-handler";
+
+describe("enrichProbeError", () => {
+  test("adds a dependencies/devDependencies hint to a module-not-found", () => {
+    const enriched = enrichProbeError(
+      new Error("Cannot find module '@wf/lib' from '/x/workflow.mjs'"),
+    );
+    expect(enriched).toMatch(/could not resolve "@wf\/lib"/);
+    expect(enriched).toMatch(/"dependencies" rather than "devDependencies"/);
+  });
+
+  test("matches the 'Cannot find package' phrasing too", () => {
+    const enriched = enrichProbeError(
+      new Error('Cannot find package "left-pad" imported from /x/workflow.mjs'),
+    );
+    expect(enriched).toMatch(/could not resolve "left-pad"/);
+  });
+
+  test("passes a non-resolution error through unchanged", () => {
+    const enriched = enrichProbeError(new Error("boom, author code threw"));
+    expect(enriched).toBe("boom, author code threw");
+  });
+});
 
 // The workflow package the fixture entry modules import
 // `@intx/workflow/definition` from. The fixture lays this out under the
