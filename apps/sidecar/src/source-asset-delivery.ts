@@ -88,6 +88,15 @@ export function sourceAssetGitDir(gitDirRoot: string, assetId: string): string {
 }
 
 /**
+ * The single cap on the total inline (base64) source-asset payload a workflow
+ * closure may deliver in one frame. Both the probe and the deploy pass this to
+ * `materializeWorkflowAssets`; a git-sourced asset that grows past it is the
+ * signal to move that path's asset delivery to a streamed transfer. One
+ * constant so the two paths cannot drift.
+ */
+export const MAX_INLINE_ASSET_PAYLOAD_BYTES = 32 * 1024 * 1024;
+
+/**
  * Materialize a workflow closure's delivered source assets: for each asset,
  * check out plain tarball files under `assetRoot` (if the closure has tarball
  * entries for it) and/or index the pack into a gitDir under `gitDirRoot` (if it
