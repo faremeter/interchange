@@ -13,12 +13,14 @@ import {
 } from "@intx/agent";
 import {
   action,
+  childWorkflow,
   defineWorkflow,
   loop,
   onTrigger,
   step,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
+import { rewriteInlineChildWorkflowBodies } from "@intx/workflow";
 
 import { DuplicateWalkToolError, walkCapabilities } from "./capability-walk";
 
@@ -206,6 +208,87 @@ describe("walkCapabilities", () => {
     expect(grants.has("tool:mail_send")).toBe(true);
     expect(grants.has("capability:reply")).toBe(true);
     expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
+  });
+
+  test("folds an inline childWorkflow's tool, capability, and effect grants into the spawning step", () => {
+    // An owned childWorkflow import is embedded inline, so the operator must
+    // approve the child's agent/action grants at the parent deploy. The walk
+    // descends into the authored inline child before the deploy step lifts it
+    // to a ref, exactly as it does for an inline onTrigger body.
+    const registry = createDefaultDirectorRegistry();
+    const childAgent = defineAgent({
+      id: "ag_child_body",
+      systemPrompt: "child body agent",
+      tools: [makeMailFactory()],
+      capabilities: ["reply"],
+      inference: { sources: [{ provider: "anthropic", model: "claude-3" }] },
+    });
+    const child = defineWorkflow({
+      id: "child-body",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent: childAgent }),
+        commit: action({
+          handler: "do.commit",
+          effect: { requires: ["git.write"] },
+          after: ["work"],
+        }),
+      },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_childparent",
+      steps: {
+        spawn: childWorkflow({ definition: child }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("spawn");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("tool:mail_send")).toBe(true);
+    expect(grants.has("capability:reply")).toBe(true);
+    expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
+    expect(grants.has("effect:git.write")).toBe(true);
+    // Every `tool:` grant carries a `grantEffects` entry.
+    expect(declarations.grantEffects.get("tool:mail_send")).toBe("allow");
+  });
+
+  test("a by-ref childWorkflow contributes no child grants to the parent", () => {
+    // The by-`ref` form is the internal extracted-body handle the deploy step
+    // produces AFTER the walk; its grants were already folded in from the
+    // inline form. A walk that sees a `{ ref }` child (as the source-ref run
+    // child does over its re-evaluated closure) must skip it, exactly as it
+    // skips a `{ ref }` onTrigger body.
+    const registry = createDefaultDirectorRegistry();
+    const childAgent = defineAgent({
+      id: "ag_ref_child",
+      systemPrompt: "ref child agent",
+      tools: [makeMailFactory()],
+      capabilities: ["reply"],
+      inference: { sources: [{ provider: "anthropic", model: "claude-3" }] },
+    });
+    const child = defineWorkflow({
+      id: "ref-child-body",
+      trigger: { type: "manual" },
+      steps: { work: step({ agent: childAgent }) },
+    });
+    const inlineWorkflow = defineWorkflow({
+      id: "wf_refparent",
+      steps: { spawn: childWorkflow({ definition: child }) },
+    });
+    // Lift the inline child to `{ ref }`, then walk the rewritten workflow.
+    const { workflow } = rewriteInlineChildWorkflowBodies(inlineWorkflow);
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("spawn");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("tool:mail_send")).toBe(false);
+    expect(grants.has("capability:reply")).toBe(false);
+    expect(grants.has("inference.source:anthropic:claude-3")).toBe(false);
   });
 
   test("mail trigger emits both address and send-domain grants", () => {

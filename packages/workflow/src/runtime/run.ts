@@ -3914,6 +3914,18 @@ async function runChildWorkflow(
   abort: AbortSignal,
 ): Promise<unknown> {
   void parent;
+  // Post-extraction the child definition is the internal `{ ref }` handle: the
+  // deploy step lifts the authored inline child to a standalone definition and
+  // the host resolves it from an in-memory closure map keyed by this ref. An
+  // inline child reaching the runtime is a deploy-step bug -- the same
+  // contract `runOnTrigger` enforces on its body.
+  if (!("ref" in primitive.definition)) {
+    throw new Error(
+      `childWorkflow ${primitive.id} reached the runtime with an inline ` +
+        `definition; the deploy step must lift the child to an internal ref`,
+    );
+  }
+  const definitionRef = primitive.definition.ref;
   const childInput =
     primitive.input !== undefined
       ? evaluate(primitive.input, selectorCtx)
@@ -3928,7 +3940,7 @@ async function runChildWorkflow(
   // ChildCancelRequested against.
   const childRunId = env.newId("run");
   await emitStepStartedWithValue(env, parentRunId, primitive.id, {
-    definitionRef: primitive.definitionRef,
+    definitionRef,
     input: childInput,
     ...(primitive.drainBehavior !== undefined
       ? { drainBehavior: primitive.drainBehavior }
@@ -3941,7 +3953,7 @@ async function runChildWorkflow(
     at: env.clock().toISOString(),
     stepId: primitive.id,
     childRunId,
-    childDefinitionRef: primitive.definitionRef,
+    childDefinitionRef: definitionRef,
   };
   state = await commit(env, parentRunId, spawned);
   // Segment boundary: the parent is about to hand off to and AWAIT a
@@ -3967,7 +3979,7 @@ async function runChildWorkflow(
   let child: { terminalStatus: "completed" | "failed" | "cancelled" };
   try {
     child = await env.spawnChild({
-      definitionRef: primitive.definitionRef,
+      definitionRef,
       childRunId,
       input: childInput,
       parentRunId,
@@ -4005,7 +4017,7 @@ async function runChildWorkflow(
     // and silent-if-forgotten. runPrimitiveSafe's catch lands the
     // StepFailed when the throw bubbles out of this runner.
     throw new ChildWorkflowFailedError(
-      `child run ${childRunId} (${primitive.definitionRef}) ended ${child.terminalStatus}`,
+      `child run ${childRunId} (${definitionRef}) ended ${child.terminalStatus}`,
       child.terminalStatus,
     );
   }

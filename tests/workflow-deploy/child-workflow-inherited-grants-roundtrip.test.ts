@@ -157,7 +157,7 @@ describe("parent -> child inherited grants round-trip", () => {
       steps: {
         step1: step({ agent: parentStepAgent }),
         spawn: childWorkflow({
-          definitionRef: CHILD_WORKFLOW_ID,
+          definition: childWorkflowDefinition,
           after: ["step1"],
         }),
       },
@@ -241,18 +241,9 @@ describe("parent -> child inherited grants round-trip", () => {
         env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
-    // Deploy the child (as its own asset) then the parent.
-    const childResult = await orchestrator.deployWorkflow({
-      workflow: childWorkflowDefinition,
-      config: baseConfig(childMailAddress, `${CHILD_DEPLOYMENT_ID}`),
-      deployContent: { systemPrompt: "Fallback prompt (overridden per step)." },
-      operatorApprovals,
-      runId: CHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(childResult.publicKey).toBeTruthy();
-
+    // The child is embedded inline in the parent (an owned import), so only
+    // the parent is deployed; the child rides the parent's closure and is
+    // resolved from the in-memory map at spawn time.
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
       config: baseConfig(parentMailAddress, `${PARENT_DEPLOYMENT_ID}`),

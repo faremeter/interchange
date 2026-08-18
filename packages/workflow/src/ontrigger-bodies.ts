@@ -67,3 +67,51 @@ export function rewriteInlineOnTriggerBodies(
   }
   return { workflow: { ...workflow, steps }, bodies };
 }
+
+export interface ExtractedChildWorkflowBody {
+  /** The body's ref -- `<workflowId>__<stepId>` -- and the id of `definition`. */
+  readonly ref: string;
+  /** The inline child lifted to a standalone definition (its id is `ref`). */
+  readonly definition: WorkflowDefinition;
+}
+
+export interface ChildWorkflowBodyRewrite {
+  /** The workflow with every inline childWorkflow definition replaced by a `{ ref }`. */
+  readonly workflow: WorkflowDefinition;
+  /** The extracted child definitions, one per rewritten inline child. */
+  readonly bodies: readonly ExtractedChildWorkflowBody[];
+}
+
+/**
+ * Replace each inline `childWorkflow` definition with a `{ ref }` and return the
+ * extracted child definitions (each child's id is its ref). The childWorkflow
+ * counterpart to {@link rewriteInlineOnTriggerBodies}: pure and
+ * side-effect-free (no walk, no pin, no write), and it mints refs through the
+ * same {@link onTriggerBodyRef} `<workflowId>__<stepId>` scheme -- a step
+ * carries at most one of an onTrigger section or a childWorkflow, so the two
+ * rewriters never collide on a ref. The runtime dispatches a `{ ref }` child by
+ * resolving the extracted definition from an in-memory map keyed by the ref, so
+ * the host lifts these bodies at child boot and never reads a separate on-disk
+ * asset. When the workflow has no inline childWorkflow the original object is
+ * returned unchanged with an empty `bodies`.
+ */
+export function rewriteInlineChildWorkflowBodies(
+  workflow: WorkflowDefinition,
+): ChildWorkflowBodyRewrite {
+  const steps: Record<string, Primitive> = { ...workflow.steps };
+  const bodies: ExtractedChildWorkflowBody[] = [];
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    if (primitive.kind !== "childWorkflow") continue;
+    if (!("inline" in primitive.definition)) continue;
+    const ref = onTriggerBodyRef(workflow.id, stepId);
+    bodies.push({
+      ref,
+      definition: { ...primitive.definition.inline, id: ref },
+    });
+    steps[stepId] = { ...primitive, definition: { ref } };
+  }
+  if (bodies.length === 0) {
+    return { workflow, bodies: [] };
+  }
+  return { workflow: { ...workflow, steps }, bodies };
+}

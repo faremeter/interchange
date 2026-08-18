@@ -775,7 +775,7 @@ describe("loop validation", () => {
       defineWorkflow({
         id: "child-body",
         trigger: { type: "manual" },
-        steps: { sub: childWorkflow({ definitionRef: "x" }) },
+        steps: { sub: childWorkflow({ definition: simpleBody() }) },
       }),
     ];
     for (const body of forbiddenBodies) {
@@ -815,6 +815,84 @@ describe("loop validation", () => {
     });
     expect(() => hashDefinition(def)).not.toThrow();
     expect(hashDefinition(def)).toEqual(hashDefinition(def));
+  });
+});
+
+describe("childWorkflow inline authoring", () => {
+  test("wraps an authored child definition as an inline body", () => {
+    const parent = defineWorkflow({
+      id: "parent",
+      trigger: { type: "manual" },
+      steps: { sub: childWorkflow({ definition: simpleBody() }) },
+    });
+    const sub = parent.steps.sub;
+    if (sub === undefined || sub.kind !== "childWorkflow") {
+      throw new Error("expected a childWorkflow step");
+    }
+    if (!("inline" in sub.definition)) {
+      throw new Error("expected an inline child body");
+    }
+    expect(sub.definition.inline.id).toBe("body");
+  });
+
+  test("validates a well-formed inline child body", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "parent",
+        trigger: { type: "manual" },
+        steps: { sub: childWorkflow({ definition: simpleBody() }) },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects a malformed inline child body at the parent's authoring time", () => {
+    const child = simpleBody();
+    const malformedChild: WorkflowDefinition = {
+      ...child,
+      steps: {
+        ...child.steps,
+        broken: step({ agent: makeAgent("b"), after: ["ghost"] }),
+      },
+      stepOrder: [...child.stepOrder, "broken"],
+    };
+    expect(() =>
+      defineWorkflow({
+        id: "parent",
+        trigger: { type: "manual" },
+        steps: { sub: childWorkflow({ definition: malformedChild }) },
+      }),
+    ).toThrow(/not a known step/);
+  });
+
+  test("applies the loop-body ban recursively inside an inline child body", () => {
+    const loopBodyWithChild = defineWorkflow({
+      id: "loop-body",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: simpleBody() }) },
+    });
+    const child = simpleBody();
+    const childWithBadLoop: WorkflowDefinition = {
+      ...child,
+      steps: {
+        ...child.steps,
+        rework: loop({
+          body: loopBodyWithChild,
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "esc",
+        }),
+        esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+      },
+      stepOrder: [...child.stepOrder, "rework", "esc"],
+    };
+    expect(() =>
+      defineWorkflow({
+        id: "parent",
+        trigger: { type: "manual" },
+        steps: { sub: childWorkflow({ definition: childWithBadLoop }) },
+      }),
+    ).toThrow(/a loop body may not contain/);
   });
 });
 

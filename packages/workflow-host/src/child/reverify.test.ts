@@ -25,6 +25,7 @@ import {
 } from "@intx/hub-sessions";
 import type { AuthorizeFn, Principal, RepoId } from "@intx/hub-sessions";
 import type { RepoStore } from "@intx/hub-sessions/substrate";
+import type { WorkflowDefinition } from "@intx/workflow";
 
 import {
   createControlChannelSender,
@@ -36,7 +37,7 @@ import {
   type NdjsonWriter,
 } from "../ipc/index";
 import {
-  createWorkflowSpawnChild,
+  createInMemorySpawnChild,
   createWorkflowSpawnSuspendableChild,
   type RunChildWorkflow,
   type RunSuspendableChild,
@@ -268,35 +269,26 @@ describe("Site B spawn-child load boundary", () => {
   // The re-verify barrier lives on the onTrigger-BODY spawn path
   // (`createWorkflowSpawnSuspendableChild`), where the body's approved hash
   // is intrinsic to the parent's approval and rides the signed frame. The
-  // terminal childWorkflow path (`createWorkflowSpawnChild`) resolves a
-  // SEPARATELY-approved asset the parent holds no hash for, so it reads +
-  // envelope-validates WITHOUT a gate -- a gate there could only
-  // fail-closed-always. These tests pin both halves of that contract.
+  // terminal childWorkflow path (`createInMemorySpawnChild`) resolves an owned
+  // inline child from the parent's own re-verified closure map, so it needs no
+  // separate gate -- the parent's re-verify already covers the inline child.
+  // These tests pin both halves of that contract.
 
-  test("the terminal childWorkflow path does NOT re-verify -- a divergent-but-valid asset still resolves", async () => {
-    const dataDir = await makeTempDir("reverify-siteb-child-nogate-");
-    const substrate = createRepoStore({
-      dataDir,
-      signingKey: await generateKeyPair(),
-      handlers: { workflow: workflowKindHandler },
-      authorize: allowAll,
-    });
-    // A childWorkflow asset the parent's frame carries no hash for. There is
-    // no approved-hash parameter on the terminal adapter at all, so any
-    // envelope-valid asset resolves -- the childWorkflow's integrity rests on
-    // the workflow-kind repo's hub-writes/sidecar-reads authorization, not a
-    // parent pin.
-    await seedBody(substrate, "child-nogate", wireDefinition("child-nogate"));
-
+  test("the terminal childWorkflow path does NOT re-verify -- it resolves the child from the in-memory closure map", async () => {
+    // The inline child rides the parent's hashed projection, so the parent's
+    // re-verify already covers it; the terminal resolver takes no approved-hash
+    // parameter and does no separate per-child re-verify.
     const calls: Parameters<RunChildWorkflow>[0][] = [];
     const runChild: RunChildWorkflow = async (input) => {
       calls.push(input);
       return { terminalStatus: "completed" };
     };
-    const spawn = createWorkflowSpawnChild({
-      substrate,
-      principal: SIDECAR_PRINCIPAL,
-      deployRef: REF,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test fixture: the terminal resolver copies the definition by reference and hands it to the runChild stub, which reads only its id
+    const childDef = wireDefinition(
+      "child-nogate",
+    ) as unknown as WorkflowDefinition;
+    const spawn = createInMemorySpawnChild({
+      bodies: new Map([["child-nogate", childDef]]),
       runChild,
     });
 

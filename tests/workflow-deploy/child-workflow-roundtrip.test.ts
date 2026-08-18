@@ -8,14 +8,15 @@
 // the parent's `runs/<parentRunId>/events/` -- the sub-namespace shape
 // the in-process `runChild` recursion produces.
 //
-// The child workflow is deployed first as its own workflow asset; the
-// parent's `childWorkflow{definitionRef}` references the child by its
-// `WorkflowDefinition.id`. The spawn-child adapter
-// (`createWorkflowSpawnChild`) resolves the definitionRef against the
-// workflow asset substrate at run time; the in-process `runChild`
-// (`createSidecarRunChild`) builds a per-childRunId `WorkflowRuntimeEnv`
-// and drives the child's `runtimeRun` to terminal status, settling the
-// parent's spawn step with the child's terminal status.
+// The child workflow is embedded inline in the parent (an owned import), so
+// only the parent is deployed. The deploy step lifts the inline child to an
+// internal ref (`<parentWorkflowId>__<stepId>`); at child boot the host lifts
+// the same inline child into an in-memory map, and the terminal spawn adapter
+// (`createInMemorySpawnChild`) resolves the ref from that map with no on-disk
+// read. The in-process `runChild` (`createSidecarRunChild`) builds a
+// per-childRunId `WorkflowRuntimeEnv` and drives the child's `runtimeRun` to
+// terminal status, settling the parent's spawn step with the child's terminal
+// status.
 //
 // This file does not modify the pre-landed `deploy-flow-env` fixture.
 
@@ -90,12 +91,11 @@ const CHILD_WORKFLOW_ID = `wf_${CHILD_DEPLOYMENT_ID}`;
 const PARENT_WORKFLOW_ID = `wf_${PARENT_DEPLOYMENT_ID}`;
 const WORKFLOW_RUN_REF = "refs/heads/main";
 
-// Grandchild-depth deployment ids. Each rung is deployed as its own
-// workflow asset; the parent's `childWorkflow{definitionRef}` references
-// the child by id, and the child's `childWorkflow{definitionRef}` in
-// turn references the grandchild. The sub-namespace scoping under
-// `runs/<runId>/` should isolate every rung in the parent's
-// workflow-run repo without leakage.
+// Grandchild-depth deployment ids. Each rung embeds the next inline: the
+// parent embeds the child, the child embeds the grandchild. Only the parent
+// is deployed; each rung lifts its own inline child to an in-memory map when
+// it runs. The sub-namespace scoping under `runs/<runId>/` should isolate
+// every rung in the parent's workflow-run repo without leakage.
 const NESTED_PARENT_DEPLOYMENT_ID = "run_child-workflow-nested-parent-1";
 const NESTED_CHILD_DEPLOYMENT_ID = "run_child-workflow-nested-child-1";
 const NESTED_GRANDCHILD_DEPLOYMENT_ID =
@@ -104,9 +104,9 @@ const NESTED_PARENT_WORKFLOW_ID = `wf_${NESTED_PARENT_DEPLOYMENT_ID}`;
 const NESTED_CHILD_WORKFLOW_ID = `wf_${NESTED_CHILD_DEPLOYMENT_ID}`;
 const NESTED_GRANDCHILD_WORKFLOW_ID = `wf_${NESTED_GRANDCHILD_DEPLOYMENT_ID}`;
 
-// Siblings-fanout deployment ids. The parent deploys 5
-// `childWorkflow` primitives in `stepOrder`, each pointing at one of
-// 5 distinct definitionRefs (deployed as 5 separate workflow assets).
+// Siblings-fanout deployment ids. The parent carries 5 `childWorkflow`
+// primitives in `stepOrder`, each embedding one of 5 distinct child
+// definitions inline; each is lifted to its own `<parentId>__spawnN` ref.
 const SIBLINGS_PARENT_DEPLOYMENT_ID = "run_child-workflow-siblings-parent-1";
 const SIBLINGS_CHILD_COUNT = 5;
 const SIBLINGS_CHILD_DEPLOYMENT_IDS: readonly string[] = Array.from(
@@ -184,12 +184,15 @@ describe("parent -> child workflow round-trip", () => {
       steps: {
         step1: step({ agent: parentStep1Agent }),
         spawn: childWorkflow({
-          definitionRef: CHILD_WORKFLOW_ID,
+          definition: childWorkflowDefinition,
           after: ["step1"],
         }),
         step2: step({ agent: parentStep2Agent, after: ["spawn"] }),
       },
     });
+    // The deploy step lifts the inline child to an internal ref
+    // (`<parentWorkflowId>__<stepId>`); ChildSpawned carries that ref.
+    const CHILD_BODY_REF = `${PARENT_WORKFLOW_ID}__spawn`;
 
     const operatorApprovals: ApprovalSet = new Set<string>([
       "inference.source:anthropic:mock-model",
@@ -282,23 +285,9 @@ describe("parent -> child workflow round-trip", () => {
         env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
-    const childResult = await orchestrator.deployWorkflow({
-      workflow: childWorkflowDefinition,
-      config: baseConfig(
-        childMailAddress,
-        `${CHILD_DEPLOYMENT_ID}`,
-        "Fallback prompt (overridden per step).",
-      ),
-      deployContent: {
-        systemPrompt: "Fallback prompt (overridden per step).",
-      },
-      operatorApprovals,
-      runId: CHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(childResult.publicKey).toBeTruthy();
-
+    // The child is embedded inline in the parent (an owned import), so only
+    // the parent is deployed; the child rides the parent's closure and
+    // resolves from the in-memory map at spawn time.
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
       config: baseConfig(
@@ -364,7 +353,7 @@ describe("parent -> child workflow round-trip", () => {
         `ChildSpawned event is missing a string childRunId field; got ${typeof childRunId}`,
       );
     }
-    expect(spawnedEvent.body["childDefinitionRef"]).toBe(CHILD_WORKFLOW_ID);
+    expect(spawnedEvent.body["childDefinitionRef"]).toBe(CHILD_BODY_REF);
 
     await waitFor(
       async () => {
@@ -473,13 +462,13 @@ describe("parent -> child workflow round-trip", () => {
   }, 180_000);
 
   // Grandchild-depth recursion. The sidecar's `createSidecarRunChild`
-  // wires the child env's `spawnChild` via `createWorkflowSpawnChild`
+  // wires the child env's `spawnChild` via `createInMemorySpawnChild`
   // against the same recursive `runChild`, so an in-process grandchild
-  // spawn resolves the grandchild's `workflow.json` from the workflow-
-  // asset substrate and drives a per-grandchildRunId `runtimeRun`
-  // exactly the way the child's own spawn does. Sub-namespace scoping
-  // continues to hold at every depth because each rung's runtime env
-  // keys substrate operations on its own `runId`.
+  // spawn resolves the grandchild's inline child definition from the
+  // parent rung's in-memory closure map and drives a per-grandchildRunId
+  // `runtimeRun` exactly the way the child's own spawn does. Sub-namespace
+  // scoping continues to hold at every depth because each rung's runtime
+  // env keys substrate operations on its own `runId`.
   test("parent -> child -> grandchild recursion at depth 2", async () => {
     // Recursion-depth coverage. The case above tests parent -> 1
     // child; the runtime's in-process `runChildWorkflow` is designed
@@ -541,7 +530,7 @@ describe("parent -> child workflow round-trip", () => {
       steps: {
         childStep: step({ agent: childStepAgent }),
         spawnGrandchild: childWorkflow({
-          definitionRef: NESTED_GRANDCHILD_WORKFLOW_ID,
+          definition: grandchildWorkflowDefinition,
           after: ["childStep"],
         }),
       },
@@ -552,11 +541,17 @@ describe("parent -> child workflow round-trip", () => {
       steps: {
         parentStep: step({ agent: parentStepAgent }),
         spawnChild: childWorkflow({
-          definitionRef: NESTED_CHILD_WORKFLOW_ID,
+          definition: childWorkflowDefinition,
           after: ["parentStep"],
         }),
       },
     });
+    // Refs the deploy step assigns as it lifts each inline child. The parent's
+    // spawnChild body is `<parentId>__spawnChild`; that body's own inline
+    // grandchild is lifted a second time when the child rung runs, giving
+    // `<parentId>__spawnChild__spawnGrandchild`.
+    const CHILD_BODY_REF = `${NESTED_PARENT_WORKFLOW_ID}__spawnChild`;
+    const GRANDCHILD_BODY_REF = `${CHILD_BODY_REF}__spawnGrandchild`;
 
     const operatorApprovals: ApprovalSet = new Set<string>([
       "inference.source:anthropic:mock-model",
@@ -650,44 +645,9 @@ describe("parent -> child workflow round-trip", () => {
         env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
-    // Deploy grandchild and child as workflow assets so the parent's
-    // spawn-child resolver can find them. Each gets its own deployment
-    // so the workflow-asset substrate carries a distinct
-    // `workflow.json` per definitionRef.
-    const grandchildResult = await orchestrator.deployWorkflow({
-      workflow: grandchildWorkflowDefinition,
-      config: baseConfig(
-        grandchildMailAddress,
-        `${NESTED_GRANDCHILD_DEPLOYMENT_ID}`,
-        "Fallback prompt (overridden per step).",
-      ),
-      deployContent: {
-        systemPrompt: "Fallback prompt (overridden per step).",
-      },
-      operatorApprovals,
-      runId: NESTED_GRANDCHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(grandchildResult.publicKey).toBeTruthy();
-
-    const childResult = await orchestrator.deployWorkflow({
-      workflow: childWorkflowDefinition,
-      config: baseConfig(
-        childMailAddress,
-        `${NESTED_CHILD_DEPLOYMENT_ID}`,
-        "Fallback prompt (overridden per step).",
-      ),
-      deployContent: {
-        systemPrompt: "Fallback prompt (overridden per step).",
-      },
-      operatorApprovals,
-      runId: NESTED_CHILD_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(childResult.publicKey).toBeTruthy();
-
+    // The child and grandchild are embedded inline (owned imports nested two
+    // deep), so only the parent is deployed; each rung lifts its own inline
+    // child to an in-memory map when it runs, with no separate asset.
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
       config: baseConfig(
@@ -761,9 +721,7 @@ describe("parent -> child workflow round-trip", () => {
         `nested test: ChildSpawned is missing string childRunId; got ${typeof childRunId}`,
       );
     }
-    expect(parentSpawned.body["childDefinitionRef"]).toBe(
-      NESTED_CHILD_WORKFLOW_ID,
-    );
+    expect(parentSpawned.body["childDefinitionRef"]).toBe(CHILD_BODY_REF);
 
     const parentChildCompleted = parentEvents.find(
       (e) => e.type === "ChildCompleted",
@@ -796,9 +754,7 @@ describe("parent -> child workflow round-trip", () => {
         `nested test: child's ChildSpawned is missing string childRunId; got ${typeof grandchildRunId}`,
       );
     }
-    expect(childSpawned.body["childDefinitionRef"]).toBe(
-      NESTED_GRANDCHILD_WORKFLOW_ID,
-    );
+    expect(childSpawned.body["childDefinitionRef"]).toBe(GRANDCHILD_BODY_REF);
 
     const childChildCompleted = childEvents.find(
       (e) => e.type === "ChildCompleted",
@@ -911,10 +867,10 @@ describe("parent -> child workflow round-trip", () => {
       parentStep: step({ agent: parentStepAgent }),
     };
     for (let i = 0; i < SIBLINGS_CHILD_COUNT; i += 1) {
-      const wfId = SIBLINGS_CHILD_WORKFLOW_IDS[i];
-      if (wfId === undefined) throw new Error("unreachable");
+      const siblingDef = siblingWorkflowDefinitions[i];
+      if (siblingDef === undefined) throw new Error("unreachable");
       parentSteps[`spawn${(i + 1).toString()}`] = childWorkflow({
-        definitionRef: wfId,
+        definition: siblingDef,
         after: ["parentStep"],
       });
     }
@@ -924,6 +880,13 @@ describe("parent -> child workflow round-trip", () => {
       trigger: { type: "mail", to: parentMailAddress },
       steps: parentSteps,
     });
+    // Each inline sibling is lifted to `<parentId>__spawnN`; ChildSpawned
+    // carries that ref, one per sibling step in stepOrder.
+    const SIBLING_BODY_REFS: readonly string[] = Array.from(
+      { length: SIBLINGS_CHILD_COUNT },
+      (_unused, i) =>
+        `${SIBLINGS_PARENT_WORKFLOW_ID}__spawn${(i + 1).toString()}`,
+    );
 
     const operatorApprovals: ApprovalSet = new Set<string>([
       "inference.source:anthropic:mock-model",
@@ -1016,30 +979,8 @@ describe("parent -> child workflow round-trip", () => {
         env.hub.sessionService.deploySingleStepAtHead(params),
     });
 
-    for (let i = 0; i < SIBLINGS_CHILD_COUNT; i += 1) {
-      const def = siblingWorkflowDefinitions[i];
-      const address = siblingMailAddresses[i];
-      const depId = SIBLINGS_CHILD_DEPLOYMENT_IDS[i];
-      if (def === undefined || address === undefined || depId === undefined) {
-        throw new Error("unreachable");
-      }
-      const r = await orchestrator.deployWorkflow({
-        workflow: def,
-        config: baseConfig(
-          address,
-          `${depId}`,
-          "Fallback prompt (overridden per step).",
-        ),
-        deployContent: {
-          systemPrompt: "Fallback prompt (overridden per step).",
-        },
-        operatorApprovals,
-        runId: depId,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-      });
-      expect(r.publicKey).toBeTruthy();
-    }
+    // Every sibling is embedded inline in the parent, so none is deployed as
+    // its own asset; each is lifted to an in-memory map when the parent runs.
 
     const parentResult = await orchestrator.deployWorkflow({
       workflow: parentWorkflowDefinition,
@@ -1133,9 +1074,7 @@ describe("parent -> child workflow round-trip", () => {
     }
     expect(spawnedRefs.size).toBe(SIBLINGS_CHILD_COUNT);
     expect(spawnedRunIds.size).toBe(SIBLINGS_CHILD_COUNT);
-    expect([...spawnedRefs].sort()).toEqual(
-      [...SIBLINGS_CHILD_WORKFLOW_IDS].sort(),
-    );
+    expect([...spawnedRefs].sort()).toEqual([...SIBLING_BODY_REFS].sort());
 
     const completedRunIds = new Set<string>();
     for (const ev of completedEvents) {

@@ -8,13 +8,18 @@ export * from "./definition/index";
 export {
   onTriggerBodyRef,
   rewriteInlineOnTriggerBodies,
+  rewriteInlineChildWorkflowBodies,
   type ExtractedOnTriggerBody,
   type OnTriggerBodyRewrite,
+  type ExtractedChildWorkflowBody,
+  type ChildWorkflowBodyRewrite,
 } from "./ontrigger-bodies";
 export {
   projectLiveToInert,
   computeLiveDefinitionHash,
   type InertAgent,
+  type InertChildWorkflow,
+  type InertChildWorkflowBody,
   type InertLoop,
   type InertMap,
   type InertModelSource,

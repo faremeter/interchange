@@ -74,7 +74,7 @@ import {
   createWorkflowRunBlobSubstrate,
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
-  createWorkflowSpawnChild,
+  createInMemorySpawnChild,
   createWorkflowSpawnSuspendableChild,
   createWorkflowStepInvoker,
   hashGrants,
@@ -95,6 +95,7 @@ import {
   baseStepId,
   createNoopDrainController,
   emptyState,
+  rewriteInlineChildWorkflowBodies,
   runtimeRun,
   type ParkedApprovalOp,
   type ReadParkedApprovalOps,
@@ -1083,18 +1084,6 @@ interface SidecarRunChildDeps {
   workflowRunRepoId: RepoId;
   /** Workflow-run ref the child reads/writes against. */
   workflowRunRef: string;
-  /**
-   * Deploy ref the child env's recursive `spawnChild` resolves
-   * grandchild `definitionRef`s against. The runtime body's
-   * `runChildWorkflow` was designed for arbitrary depth; the child's
-   * env's `spawnChild` slot must itself be a `createWorkflowSpawnChild`
-   * adapter against this deploy ref so a grandchild spawn resolves
-   * the grandchild's `workflow.json` from the workflow asset substrate
-   * the same way the parent's spawn does. The sub-namespace scoping
-   * (`runs/<runId>/...`) continues to work because each rung's
-   * runtime env routes through `runId`-keyed substrate adapters.
-   */
-  workflowDefinitionRef: string;
   /** Principal the child presents on every substrate operation. */
   principal: Principal;
   /** Host-process scheduler singleton; shared with the parent. */
@@ -1241,8 +1230,8 @@ export function createSidecarRunChild(
     ref: deps.workflowRunRef,
   });
   // Self-referential `RunChildWorkflow` so a child env's recursive
-  // `spawnChild` (built via `createWorkflowSpawnChild` below) can route
-  // grandchild spawns back through the same adapter. Each invocation
+  // `spawnChild` (built via `createInMemorySpawnChild` in `buildChildRunEnv`)
+  // can route grandchild spawns back through the same adapter. Each invocation
   // builds a per-runId env that itself wires a `spawnChild` slot whose
   // `runChild` is this same `runChild` constant -- the recursion bottoms
   // out when a rung's `WorkflowDefinition` has no `childWorkflow`
@@ -1257,7 +1246,11 @@ export function createSidecarRunChild(
     parentRunId,
     signal,
   }) => {
-    const { env, signalChannel } = await buildChildRunEnv({
+    const {
+      env,
+      signalChannel,
+      definition: rewrittenDefinition,
+    } = await buildChildRunEnv({
       deps,
       directors,
       clock,
@@ -1269,7 +1262,7 @@ export function createSidecarRunChild(
       parentRunId,
     });
     try {
-      const handle = runtimeRun(definition, env, {
+      const handle = runtimeRun(rewrittenDefinition, env, {
         runId: childRunId,
         triggerPayload: input,
       });
@@ -1364,7 +1357,11 @@ export function createSidecarSpawnSuspendableChild(
     { definition, childRunId, input, parentRunId, signal, resumeFromEvents },
     onEvent,
   ) => {
-    const { env: baseEnv, signalChannel } = await buildChildRunEnv({
+    const {
+      env: baseEnv,
+      signalChannel,
+      definition: rewrittenDefinition,
+    } = await buildChildRunEnv({
       deps,
       directors,
       clock,
@@ -1445,7 +1442,7 @@ export function createSidecarSpawnSuspendableChild(
     // grant via resume on the correlation it recovered from its own log. On a
     // fresh spawn, seed the run with the event's trigger payload.
     const handle = runtimeRun(
-      definition,
+      rewrittenDefinition,
       env,
       resumeFromEvents !== undefined
         ? { runId: childRunId, resumeFromEvents }
@@ -1565,6 +1562,7 @@ async function buildChildRunEnv(args: {
 }): Promise<{
   env: WorkflowRuntimeEnv;
   signalChannel: ReturnType<typeof createWorkflowHostSignalChannel>;
+  definition: WorkflowDefinition;
 }> {
   const {
     deps,
@@ -1579,6 +1577,18 @@ async function buildChildRunEnv(args: {
     bodyStepInvoker,
     onEvent,
   } = args;
+  // A rung may itself embed a child (grandchild recursion) as an inline
+  // `childWorkflow`. Lift each to an internal `{ ref }` and run the rewritten
+  // definition whose children are refs -- the shape the runtime dispatches --
+  // and keep the lifted definitions in an in-memory map the rung's own
+  // terminal resolver serves from, so a grandchild spawns with no on-disk read
+  // at any depth. Returned to the caller so `runtimeRun` drives the rewritten
+  // form.
+  const { workflow: rewrittenDefinition, bodies: grandchildBodies } =
+    rewriteInlineChildWorkflowBodies(definition);
+  const grandchildMap = new Map(
+    grandchildBodies.map((b) => [b.ref, b.definition]),
+  );
   // Inherit the parent run's grants. A spawned child runs under the
   // authority of the run that spawned it, so its authorize resolves
   // against the parent's per-run grant set -- the same flat set read
@@ -1626,7 +1636,7 @@ async function buildChildRunEnv(args: {
   // `createCredentialsBackedAuthorize` reads only `grants`.
   const contentHash = await hashGrants(parentGrants);
   const credentialsSnapshot: CredentialsSnapshot = {
-    steps: definition.stepOrder.map((stepId) => ({
+    steps: rewrittenDefinition.stepOrder.map((stepId) => ({
       stepId,
       address: stepId,
       grants: parentGrants,
@@ -1663,17 +1673,14 @@ async function buildChildRunEnv(args: {
     credentialsRef,
     deps.evaluateGrants,
   );
-  const drain = createNoopDrainController(definition);
-  // Recursive `spawnChild`: a grandchild's `definitionRef` is resolved
-  // against the workflow-asset substrate the parent's spawn used, and
-  // the resolved `WorkflowDefinition` flows back into this same
-  // `runChild` callback. The runtime body's `runChildWorkflow`
-  // contract is depth-agnostic; the wiring here makes the sidecar's
-  // adapter depth-agnostic too.
-  const spawnChild = createWorkflowSpawnChild({
-    substrate: deps.substrate,
-    principal: deps.principal,
-    deployRef: deps.workflowDefinitionRef,
+  const drain = createNoopDrainController(rewrittenDefinition);
+  // Recursive `spawnChild`: a grandchild embedded inline in this rung is
+  // resolved from the in-memory map lifted above and flows back into this same
+  // `runChild` callback. The runtime body's `runChildWorkflow` contract is
+  // depth-agnostic; the in-memory resolver makes the sidecar's adapter
+  // depth-agnostic too, with no on-disk read at any rung.
+  const spawnChild = createInMemorySpawnChild({
+    bodies: grandchildMap,
     runChild,
   });
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with
@@ -1704,7 +1711,10 @@ async function buildChildRunEnv(args: {
       );
     }
     const bodySourcesRef: SourcesSnapshotRef = {
-      current: await readBodyStepInferenceSources(deps.dataDir, definition.id),
+      current: await readBodyStepInferenceSources(
+        deps.dataDir,
+        rewrittenDefinition.id,
+      ),
     };
     const bodyOnEvent = onEvent;
     invokeStep = (req) =>
@@ -1723,7 +1733,7 @@ async function buildChildRunEnv(args: {
     newId,
     drain,
   };
-  return { env, signalChannel };
+  return { env, signalChannel, definition: rewrittenDefinition };
 }
 
 /**
@@ -2161,7 +2171,6 @@ export function createSidecarSubstrateFactory(
       substrate,
       workflowRunRepoId,
       workflowRunRef: validated.WORKFLOW_RUN_REF,
-      workflowDefinitionRef: validated.WORKFLOW_DEFINITION_REF,
       principal,
       scheduler,
       invokeStep: childInvokeStep,
@@ -2171,14 +2180,11 @@ export function createSidecarSubstrateFactory(
       dataDir: validated.SIDECAR_DATA_DIR,
       evaluateGrants: evaluateGrantsAdapter,
     };
+    // Terminal childWorkflow executor. `run-child` builds the in-memory
+    // resolver from this plus the lifted-body map it extracts after loading
+    // the parent's re-verified definition, so an owned inline child spawns
+    // with no on-disk asset read.
     const runChild = createSidecarRunChild(childRunDeps);
-
-    const spawnChild = createWorkflowSpawnChild({
-      substrate,
-      principal,
-      deployRef: validated.WORKFLOW_DEFINITION_REF,
-      runChild,
-    });
 
     // An onTrigger section runs each event's body as a suspendable child.
     // The resolving adapter maps the body's definition ref to a definition
@@ -2307,7 +2313,7 @@ export function createSidecarSubstrateFactory(
       workflowDefinitionRef: validated.WORKFLOW_DEFINITION_REF,
       invokeStep,
       initialSources: stepInferenceSources,
-      spawnChild,
+      runChild,
       spawnSuspendableChild,
       runSuspendableChild,
       scheduler,

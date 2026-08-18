@@ -216,7 +216,6 @@ describe("createSidecarRunChild grant inheritance", () => {
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: REF,
-      workflowDefinitionRef: "refs/heads/main",
       principal: PRINCIPAL,
       scheduler: createInMemoryScheduler({
         repoStore: createInMemoryRepoStore(),
@@ -269,7 +268,6 @@ describe("createSidecarRunChild grant inheritance", () => {
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: REF,
-      workflowDefinitionRef: "refs/heads/main",
       principal: PRINCIPAL,
       scheduler: createInMemoryScheduler({
         repoStore: createInMemoryRepoStore(),
@@ -314,7 +312,6 @@ describe("createSidecarRunChild grant inheritance", () => {
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: REF,
-      workflowDefinitionRef: "refs/heads/main",
       principal: PRINCIPAL,
       scheduler: createInMemoryScheduler({
         repoStore: createInMemoryRepoStore(),
@@ -377,7 +374,6 @@ describe("createSidecarRunChild grant inheritance", () => {
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: REF,
-      workflowDefinitionRef: "refs/heads/main",
       principal: PRINCIPAL,
       scheduler: createInMemoryScheduler({
         repoStore: createInMemoryRepoStore(),

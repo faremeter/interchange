@@ -163,6 +163,7 @@ export function walkCapabilities(
       }
       collectLoopBodyGrants(primitive, registry, unresolved, collected);
       collectOnTriggerBodyGrants(primitive, registry, unresolved, collected);
+      collectChildWorkflowGrants(primitive, registry, unresolved, collected);
       perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
       continue;
     }
@@ -290,6 +291,51 @@ function collectOnTriggerBodyGrants(
       collected.grants.add(grant);
     }
     collectLoopBodyGrants(bodyPrimitive, registry, unresolved, collected);
+  }
+}
+
+/**
+ * Union an embedded (inline) childWorkflow's agent/action grants into the
+ * spawning step's declaration set, so the approval gate sees every agent and
+ * action the child can run. The walk runs before the deploy step lifts the
+ * child body to its internal ref, so it sees the authored `{ inline }` form; a
+ * by-`ref` child is the internal extracted-body handle whose grants were
+ * already folded in from its inline form, so it is skipped here -- exactly as
+ * a `{ ref }` onTrigger body is. A child body may itself contain a loop (whose
+ * body grants are collected), a nested onTrigger section (whose body grants are
+ * collected), or a nested childWorkflow (whose grants recurse through this same
+ * collector), so an owned import's full closure surfaces in the parent's
+ * approved set.
+ */
+function collectChildWorkflowGrants(
+  primitive: WorkflowDefinition["steps"][string],
+  registry: DirectorRegistry,
+  unresolved: Set<string>,
+  collected: GrantSet,
+): void {
+  if (primitive.kind !== "childWorkflow") {
+    return;
+  }
+  if (!("inline" in primitive.definition)) {
+    return;
+  }
+  for (const bodyStepId of primitive.definition.inline.stepOrder) {
+    const bodyPrimitive = primitive.definition.inline.steps[bodyStepId];
+    if (bodyPrimitive === undefined) {
+      throw new Error(
+        `capability walk: childWorkflow body step ${bodyStepId} listed in stepOrder is missing from steps`,
+      );
+    }
+    const bodyAgent = extractAgent(bodyPrimitive);
+    if (bodyAgent !== null) {
+      collectAgentGrants(bodyAgent, registry, unresolved, collected);
+    }
+    for (const grant of collectActionGrants(bodyPrimitive)) {
+      collected.grants.add(grant);
+    }
+    collectLoopBodyGrants(bodyPrimitive, registry, unresolved, collected);
+    collectOnTriggerBodyGrants(bodyPrimitive, registry, unresolved, collected);
+    collectChildWorkflowGrants(bodyPrimitive, registry, unresolved, collected);
   }
 }
 

@@ -132,12 +132,34 @@ export interface SleepPrimitive extends PrimitiveBase {
   drainBehavior?: DrainBehavior;
 }
 
+/**
+ * Spawns an OWNED child workflow. The child is an import: its full
+ * `WorkflowDefinition` is embedded inline (mirroring an inline `onTrigger`
+ * body and a `loop` body), so the child's grants fold into the parent's
+ * approved surface and no separately-deployed asset is read. `input`
+ * selects the child run's launch payload.
+ */
 export interface ChildWorkflowPrimitive extends PrimitiveBase {
   kind: "childWorkflow";
-  definitionRef: string;
+  definition: ChildWorkflowBody;
   input?: Selector;
   drainBehavior?: DrainBehavior;
 }
+
+/**
+ * The embedded child definition, in one of its two lifecycle forms.
+ * Authored inline (the constructor wraps the author's `WorkflowDefinition`
+ * as `{ inline }`); the deploy step materializes that inline child into its
+ * own workflow asset and rewrites it to `{ ref }`, so the runtime spawns the
+ * child as a run resolved by ref. The `{ ref }` arm is only the internal
+ * extracted-child handle -- never an author-facing separate-deployment id.
+ * Exactly one arm is present -- a discriminated union, not two optionals, so
+ * neither "both" nor "neither" is representable and consumers switch
+ * exhaustively. Mirrors `OnTriggerBody`.
+ */
+export type ChildWorkflowBody =
+  | { inline: WorkflowDefinition }
+  | { ref: string };
 
 export interface EscalationPrimitive extends PrimitiveBase {
   kind: "escalation";
@@ -462,7 +484,7 @@ export function sleep(opts: SleepOpts): SleepPrimitive {
 }
 
 export interface ChildWorkflowOpts {
-  definitionRef: string;
+  definition: WorkflowDefinition;
   input?: Selector;
   drainBehavior?: DrainBehavior;
   after?: readonly string[];
@@ -473,7 +495,8 @@ export function childWorkflow(opts: ChildWorkflowOpts): ChildWorkflowPrimitive {
   return {
     kind: "childWorkflow",
     id: "",
-    definitionRef: opts.definitionRef,
+    // Authored inline; the deploy step rewrites this to `{ ref }`.
+    definition: { inline: opts.definition },
     drainBehavior,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),

@@ -61,7 +61,10 @@ import type {
 import { readProcessingEntry } from "@intx/hub-sessions/substrate";
 import type { DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
-import { rewriteInlineOnTriggerBodies } from "@intx/workflow";
+import {
+  rewriteInlineOnTriggerBodies,
+  rewriteInlineChildWorkflowBodies,
+} from "@intx/workflow";
 import type { AuthzCallResult } from "@intx/inference";
 
 import type {
@@ -94,8 +97,12 @@ import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import type {
   HostSpawnSuspendableChild,
   RunSuspendableChild,
+  RunChildWorkflow,
 } from "../adapters/spawn-child";
-import { createInMemorySpawnSuspendableChild } from "../adapters/spawn-child";
+import {
+  createInMemorySpawnSuspendableChild,
+  createInMemorySpawnChild,
+} from "../adapters/spawn-child";
 import {
   createControlChannelSender,
   createEventChannelSender,
@@ -331,11 +338,25 @@ export interface RunWorkflowChildBindings {
    */
   invokeStep: ChildStepInvoker;
   /**
-   * Child-spawn callback the runtime body invokes for `childWorkflow`
-   * primitives. The production binary wires this against
-   * `createWorkflowSpawnChild`; tests inject a stub.
+   * Terminal child-spawn callback the runtime body invokes for a
+   * `childWorkflow` primitive when the deployment embeds NO inline child
+   * import (the map `run-child` lifts is empty). Optional and, in practice,
+   * only a test seam: a production deployment that carries a childWorkflow
+   * always has a non-empty lifted-body map and routes through the in-memory
+   * resolver built from `runChild` below, and one that carries none never
+   * invokes this. A workflow that reaches a childWorkflow with neither this
+   * nor `runChild` wired fails loud at spawn.
    */
-  spawnChild: SpawnChildWorkflow;
+  spawnChild?: SpawnChildWorkflow;
+  /**
+   * Raw in-process terminal child executor. `run-child` builds the in-memory
+   * childWorkflow resolver from this executor plus the lifted-body map it
+   * extracts after loading the definition -- the parent's own re-verified
+   * closure -- so an owned inline child resolves with NO on-disk read. Parallel
+   * to `runSuspendableChild` for onTrigger bodies. Optional for the same
+   * reason: a child that embeds no childWorkflow import omits it.
+   */
+  runChild?: RunChildWorkflow;
   /**
    * Suspendable child-spawn callback the runtime body invokes for an
    * `onTrigger` section's per-event body: a child run driven across approval
@@ -655,6 +676,21 @@ export async function runWorkflowChild(
     });
   }
 
+  // An owned `childWorkflow` import embeds its child inline in the parent's
+  // definition (folded into the parent's hash and approval), so it is already
+  // covered by the re-verify above on BOTH lineages. Lift each inline child to
+  // an internal `{ ref }` -- the form the runtime dispatches -- and keep the
+  // lifted definitions in an in-memory map. The terminal childWorkflow resolver
+  // below runs each child from THIS map, with no on-disk asset read and no
+  // separate per-child re-verify. Unlike an onTrigger body (extracted to its
+  // own on-disk asset on the live-authored lineage), a childWorkflow child
+  // rides inline on every lineage, so the rewrite runs unconditionally here.
+  const childRewrite = rewriteInlineChildWorkflowBodies(definition);
+  definition = childRewrite.workflow;
+  const childBodiesMap = new Map(
+    childRewrite.bodies.map((b) => [b.ref, b.definition]),
+  );
+
   // Directors resolve from the pinned closure on the source-ref arm so a
   // custom director authored in the workflow's own package runs; the
   // live-authored arm keeps the injected-or-default registry. Loading
@@ -694,6 +730,41 @@ export async function runWorkflowChild(
     });
   } else {
     suspendableChildHost = opts.bindings.spawnSuspendableChild;
+  }
+
+  // Terminal childWorkflow resolver, selected ONCE per deployment. When the
+  // definition embeds any inline child (the lifted map is non-empty), resolve
+  // each from that in-memory map via the raw terminal executor -- the parent's
+  // own re-verified closure -- so an owned child spawns with no disk read. A
+  // deployment that embeds a childWorkflow but whose host wired no executor is
+  // a misconfiguration and fails loud at startup rather than falling back to a
+  // disk read. A definition with no inline child keeps the injected binding (a
+  // test seam); its childWorkflow slot is never invoked.
+  let spawnChild: SpawnChildWorkflow;
+  if (childBodiesMap.size > 0) {
+    const executor = opts.bindings.runChild;
+    if (executor === undefined) {
+      throw new Error(
+        "workflow-child: deployment embeds childWorkflow imports but the " +
+          "host wired no runChild executor; cannot resolve children in-memory",
+      );
+    }
+    spawnChild = createInMemorySpawnChild({
+      bodies: childBodiesMap,
+      runChild: executor,
+    });
+  } else if (opts.bindings.spawnChild !== undefined) {
+    spawnChild = opts.bindings.spawnChild;
+  } else {
+    // No inline child and no injected binding: a workflow that nonetheless
+    // reaches a childWorkflow spawn fails loud here rather than silently
+    // completing against a child that never ran.
+    spawnChild = async ({ definitionRef }) => {
+      throw new Error(
+        `workflow-child: childWorkflow ${definitionRef} reached the runtime ` +
+          `but no child executor is wired`,
+      );
+    };
   }
 
   const authorize = createCredentialsBackedAuthorize(
@@ -758,6 +829,7 @@ export async function runWorkflowChild(
       authorize,
       directors,
       suspendableChildHost,
+      spawnChild,
       clock,
       newId,
       drainController,
@@ -851,6 +923,7 @@ export async function runWorkflowChild(
           authorize,
           directors,
           suspendableChildHost,
+          spawnChild,
           clock,
           newId,
           eventSender,
@@ -928,6 +1001,7 @@ async function handleControlPayload(
     authorize: WorkflowAuthorizeFn;
     directors: DirectorRegistry;
     suspendableChildHost: HostSpawnSuspendableChild | undefined;
+    spawnChild: SpawnChildWorkflow;
     clock: () => Date;
     newId: (prefix: string) => string;
     eventSender: ReturnType<typeof createEventChannelSender>;
@@ -988,6 +1062,7 @@ async function handleControlPayload(
         authorize: ctx.authorize,
         directors: ctx.directors,
         suspendableChildHost: ctx.suspendableChildHost,
+        spawnChild: ctx.spawnChild,
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
@@ -1347,6 +1422,7 @@ function buildRuntimeEnv(args: {
   authorize: WorkflowAuthorizeFn;
   directors: DirectorRegistry;
   suspendableChildHost: HostSpawnSuspendableChild | undefined;
+  spawnChild: SpawnChildWorkflow;
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
@@ -1409,7 +1485,7 @@ function buildRuntimeEnv(args: {
     directors: args.directors,
     authorize: args.authorize,
     invokeStep,
-    spawnChild: args.bindings.spawnChild,
+    spawnChild: args.spawnChild,
     // Wire the suspendable-child seam only when the host supplied it; a child
     // that never runs an onTrigger section omits the binding, and the runtime
     // body fails loud if a workflow reaches a section the env did not wire.

@@ -76,7 +76,7 @@ describe("runLocal dispatch-shape fixture", () => {
           after: ["pause"],
         }),
         followup: childWorkflow({
-          definitionRef: "child",
+          definition: makeChildDef(),
           after: ["approval"],
         }),
         attribute: step({ agent: attribution, after: ["followup"] }),
@@ -111,7 +111,6 @@ describe("runLocal dispatch-shape fixture", () => {
       triggerPayload: { goal: "ship it" },
       authorize,
       invokeStep,
-      childResolver: () => makeChildDef(),
     });
 
     // The signal channel queues pre-await deliveries under the signal
