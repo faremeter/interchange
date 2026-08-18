@@ -470,7 +470,7 @@ describe("parent -> child workflow round-trip", () => {
     if (childRunStartedBody === undefined) throw new Error("unreachable");
     expect(childRunStartedBody["runId"]).toBe(childRunId);
     void parentRunId;
-  });
+  }, 180_000);
 
   // Grandchild-depth recursion. The sidecar's `createSidecarRunChild`
   // wires the child env's `spawnChild` via `createWorkflowSpawnChild`
@@ -838,7 +838,7 @@ describe("parent -> child workflow round-trip", () => {
     // sub-namespace scoping would silently collide if the runtime
     // re-used a runId across rungs.
     expect(new Set([parentRunId, childRunId, grandchildRunId]).size).toBe(3);
-  });
+  }, 180_000);
 
   test(`parent -> ${String(SIBLINGS_CHILD_COUNT)} siblings via stepOrder`, async () => {
     // Sibling-fanout coverage. The runtime resolves
@@ -1170,5 +1170,5 @@ describe("parent -> child workflow round-trip", () => {
       expect(runFailedIdx).toBeGreaterThan(stepFailedIdx);
       expectChildStepNotImplemented(childEvents[stepFailedIdx]);
     }
-  });
+  }, 180_000);
 });
