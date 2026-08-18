@@ -2,7 +2,7 @@
 
 ## Overview
 
-The sidecar manages agent harnesses on behalf of the hub. Each agent gets its own harness instance backed by `@intx/harness`, with an isogit repository for persistent storage and an Ed25519 key pair for identity.
+The sidecar manages agent workloads on behalf of the hub. Each deployment runs in its own supervised workflow child process: the sidecar's deploy router (`@intx/hub-agent`) creates one `WorkflowSupervisor` (`@intx/workflow-host`) per deployment, which spawns an isolated `bin/workflow-child` OS process, and each agent step runs in-process inside that child via `@intx/agent`. Each workload has an isogit repository for persistent storage and an Ed25519 key pair for identity.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ The sidecar manages agent harnesses on behalf of the hub. Each agent gets its ow
 │              Sidecar (apps/sidecar/)                              │
 │  - One per machine                                                │
 │  - Pure WebSocket client (no HTTP server)                        │
-│  - Creates @intx/harness instances per agent              │
+│  - Spawns a supervised workflow child process per deployment     │
 │  - Self-restores agent sessions from disk on restart             │
 │  - Proves agent ownership via Ed25519 challenge/response         │
 └─────────────────────────────────────────────────────────────────┘
@@ -30,20 +30,21 @@ The sidecar manages agent harnesses on behalf of the hub. Each agent gets its ow
 ## Sidecar Package Structure
 
 The sidecar app is a thin wiring file that composes building blocks
-out of `@intx/hub-agent`, `@intx/harness`, and `@intx/agent`. The
-per-agent disk layout, harness lifecycle, and the hub WebSocket
-protocol live in `@intx/hub-agent`; the in-process agent runtime
+out of `@intx/hub-agent`, `@intx/workflow-host`, and `@intx/agent`.
+The per-deployment disk layout, the hub WebSocket protocol, and the
+deploy router live in `@intx/hub-agent`; `@intx/workflow-host` owns
+the per-deployment `WorkflowSupervisor` that spawns and supervises the
+`bin/workflow-child` process; the in-process agent runtime
 (`createAgent(def, env)` wrapping the reactor exactly once) lives in
-`@intx/agent`; `@intx/harness` narrows to a composition layer that
-calls `createAgent` and adds transport subscription, the connector
-router, the INBOX watch, and connector-reply forwarding. The app
-supplies the concrete crypto / tool / storage / authz plugins.
+`@intx/agent` and runs inside that child. The sidecar draws runtime
+capabilities, step tools, and conversation state from `@intx/harness`.
+The app supplies the concrete crypto / tool / storage / authz plugins.
 
 ```
 apps/sidecar/
 ├── src/
-│   ├── index.ts             # Entry point, wires the stores, SessionManager, and HubLink
-│   └── default-harness.ts   # HarnessBuilder; constructs the AgentDefinition and env, calls createHarness(def, env)
+│   ├── index.ts             # Entry point: wires the stores, the harness builder, and the hub link
+│   └── default-harness.ts   # HarnessBuilder source-admission seam (canBuildSource) the deploy router consults before spawning
 ├── package.json
 └── tsconfig.json
 ```
