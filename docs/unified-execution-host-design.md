@@ -367,11 +367,11 @@ multi-step durability model:
   `"unbounded"` (interactive) step the runtime re-arms rather than completing
   (§3h), so **one** run spans every turn: a single `RunStarted` ->
   `StepStarted`, then a park/deliver cycle per turn, and no terminal until the
-  run is torn down. A terminal batch deployment is not fired again. The batch bracket is exactly the one the current
-  `driveTrivialRunChain` projector hand-rolls
-  (`apps/sidecar/src/workflow-host-wiring.ts`), except now the runtime emits it
-  natively because a real `runtimeRun` is driving the step. That projector is
-  deleted (§4).
+  run is torn down. A terminal batch deployment is not fired again. The batch bracket is the one the former
+  `driveTrivialRunChain` projector hand-rolled
+  (`apps/sidecar/src/workflow-host-wiring.ts`); the runtime now emits it
+  natively because a real `runtimeRun` drives the step, and that projector has
+  been deleted (§4).
 - **Conversation state across trigger occurrences.** The agent's
   connector/conversation state is committed to the workflow-run substrate at
   turn boundaries (and at connector-state-change points, mirroring the
@@ -463,6 +463,19 @@ lifecycle is the riskiest sub-item, and it is what the sandbox boundary
 (Decision 1) must contain. See §6.
 
 ### 3d-bis. Pluggable sandbox boundary (Decision 1)
+
+> **Status — seam present, concrete boundaries deferred.** The child-launch
+> seam described here exists (`SubprocessSpawner` / `SubprocessHandle` /
+> `defaultSubprocessSpawner`), but the `SandboxBoundary` strategy and the
+> concrete `os-namespace` / `oci-container` implementations are not built yet.
+> The seam is slated
+> to be renamed to the boundary-neutral `ChildSpawner` / `ChildHandle` as part
+> of capability-based placement (see §3f). Whole-sidecar isolation has shipped
+> along a separate axis: an exclusive-placement deployment runs on a dedicated
+> sidecar the hub provisions through a pluggable provisioner (`ensure` /
+> `destroy`) contract with a reconciled allocation lifecycle — currently
+> fail-closed, since the in-tree build registers no concrete provisioner
+> backend.
 
 The child is the isolation unit (§3d). The _mechanism_ that draws that
 boundary must be **pluggable**, not pinned to host subprocesses, because the
@@ -675,6 +688,18 @@ it touches the adapter's public surface, so it is a deliberate API change, not
 a one-line edit.
 
 ### 3f. Multiplexing and workflow-declared isolation granularity (Decision 2)
+
+> **Status — not yet built; direction refined into capability-based placement.**
+> The `isolation` declaration and isolation-domain multiplex described below are
+> not built yet: `activeSupervisors` still keys one child per deployment address,
+> and the workflow-definition types carry no `isolation` field yet. The
+> workflow-declares-isolation direction is refined into **capability-based
+> placement** — a workflow declares the positive runtime capabilities it needs
+> (for example `subprocess`, `filesystem`), derived primarily from the tools it
+> uses; each execution boundary advertises the capability profile it provides;
+> and deploy-time placement selects the cheapest boundary whose profile covers
+> the required floor, failing loudly when none fits. Per-node (spawn-rung)
+> placement and the security/isolation axis remain deferred.
 
 Today one child hosts one deployment: `activeSupervisors` keys one supervisor
 (thus one child) per deployment address in
@@ -1080,6 +1105,12 @@ re-serviced.
 
 ### New design surface (did not exist before this revision)
 
+> **Status — proposed, not yet built.** The isolation surface listed here
+> (`WorkflowDefinition.isolation`, per-node `isolation`, the `SandboxBoundary`
+> strategy, and the isolation-domain multiplex key) is not built yet. See
+> §3d-bis and §3f for the refined capability-based-placement direction and the
+> shipped whole-sidecar exclusive-allocation substrate.
+
 - `WorkflowDefinition.isolation` (workflow-level) **and per-node `isolation`** on
   `StepPrimitive` / `ChildWorkflowPrimitive` / `MapPrimitive` and their
   `StepOpts` / `ChildWorkflowOpts` / `MapOpts` constructors
@@ -1109,17 +1140,29 @@ special case — or deleted where the in-process branch it served is gone:
 - `wrapHarnessAsSingleStepWorkflow`
   (`packages/workflow-deploy/src/orchestrator.ts`) kept its name; still used to
   build the one-step definition.
-- `buildTrivialApprovalSet` -> `buildSingleStepApprovalSet`
-  (`packages/hub-sessions/src/session-service.ts`).
+- `buildTrivialApprovalSet`: deleted. The single-step approval set is built
+  inline over `ApprovalSet` from `@intx/workflow-deploy` in
+  `packages/hub-sessions/src/session-service.ts`; it was not renamed to a
+  `buildSingleStepApprovalSet` helper.
 - `isTrivialDeploy` / `trivialBindings` / the trivial orchestrator branch:
-  **deleted** if single-step routes through the multi-step branch (likely);
-  otherwise renamed `isSingleStepDeploy`. Confirm during build.
+  **deleted** — single-step deploys route through the multi-step branch, so no
+  `isSingleStepDeploy` replacement was needed.
 - `deriveDeploymentId` (`apps/sidecar/src/workflow-host-wiring.ts`): kept; still
   called at the workflow-host wiring sites.
 - `TrivialLaunch` / `trivialLaunch` / `trivialClaimedSlugSucceeded`: deleted
   with the in-process branch.
 
 ## 5. Phased build path
+
+> **Build status.** Phases 1–4 have landed: the sidecar spawns a child that runs
+> a real agent with materialized tools, threads events up, keeps the agent warm,
+> and persists conversation durably across a respawn. Phase 5's retirement of the
+> in-process runtime has landed — `provisionAgent`, the trivial deploy branch,
+> and the `driveTrivialRunChain` projector are gone. Phase 5's workflow-declared
+> multiplex (isolation-domain keying) and Phases 4b/4c (isolation declaration and
+> the sandbox-boundary abstraction) are not built yet; that work is refined into
+> capability-based placement (see §3f). Phase 6 (hardened per-rung boundaries)
+> remains deferred.
 
 The whole thing ships together (INTR-209 held until done), but the build is
 phased so each phase is independently verifiable and the risky work is
@@ -1580,8 +1623,8 @@ are explicitly **not** a go-live gate for INTR-209.
   (mail ingestion, dispatch loop, `spawn`); `supervisor/credentials.ts`
   (`assembleCredentialsSnapshot`, `deriveStepAddress`, `deriveStepRepoId`,
   `STEP_GRANTS_PATH`, `defaultStepRepoId`); `supervisor/types.ts`
-  (`TrivialLaunch`, `SupervisorDeployFrame`); `supervisor/recycle.ts`;
-  `drain-controller.ts`.
+  (`WorkflowSupervisorBindings`, `SubprocessSpawner`, `SubprocessHandle`);
+  `supervisor/recycle.ts`; `drain-controller.ts`.
 - Child: `packages/workflow-host/src/child/run-child.ts`
   (`runWorkflowChild`, `loadWorkflowDefinition`, `discoverInFlightRuns`,
   event sender, `trigger.fired` handling).
@@ -1598,23 +1641,23 @@ are explicitly **not** a go-live gate for INTR-209.
   `runWorkflowChildFromProcessEnv`).
 - Deploy router / wiring: `apps/sidecar/src/workflow-host-wiring.ts`
   (`createSidecarDeployRouter`, `deployMultiStep`, `activeSupervisors`,
-  `deriveDeploymentId`, `driveTrivialRunChain`, `TrivialRunCell`,
-  `publishWorkflowInferenceEvent`).
+  `deriveDeploymentId`, `publishWorkflowInferenceEvent`).
 - Child-launch / sandbox-boundary seam (Decision 1):
   `apps/sidecar/src/workflow-host-wiring.ts` (`SubprocessSpawner`,
   `SubprocessHandle`, `defaultSubprocessSpawner`, `binaryPath`,
   `SIDECAR_WORKFLOW_CHILD_BINARY`; `multistepSubprocessSpawner` /
   `multistepBinaryPath` threaded through `createSidecarDeployRouter`).
-- Workflow-definition isolation surface (Decision 2):
+- Workflow-definition surface (Decision 2, isolation not yet added):
   `packages/workflow/src/definition/workflow.ts` (`WorkflowDefinition`,
   `WorkflowConfig`, `SingularWorkflowConfig`, `defineWorkflow`, `normalize`,
-  `hashDefinition`, `projectForHash`, `projectPrimitive`, `projectAgent` —
-  workflow-level `isolation` added here).
-- Per-node isolation surface (recursive refinement):
+  `hashDefinition`, `projectForHash`, `projectPrimitive`, `projectAgent`). The
+  workflow-level `isolation` field will attach here; the refined direction
+  carries capability requirements rather than an isolation declaration (see §3f).
+- Per-node definition surface (recursive refinement, not yet added):
   `packages/workflow/src/definition/primitives.ts` (`PrimitiveBase`,
   `StepPrimitive`/`StepOpts`, `ChildWorkflowPrimitive`/`ChildWorkflowOpts`,
-  `MapPrimitive`/`MapOpts` — per-node `isolation` added to the spawn-trigger
-  primitives and their constructors).
+  `MapPrimitive`/`MapOpts`). Per-node `isolation` will attach to the
+  spawn-trigger primitives and their constructors.
 - Recursive spawn / per-rung host (already exists; the recursion point):
   `apps/sidecar/src/workflow-substrate-factory.ts` (`createSidecarRunChild`
   self-referential `runChild`, sub-namespace `runs/<runId>/...`, proxy
