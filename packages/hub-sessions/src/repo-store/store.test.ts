@@ -520,6 +520,261 @@ describe("RepoStore", () => {
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
+  // Build a pack carrying one commit whose root tree holds a single symlink or
+  // submodule entry, and receivePack it into a fresh store. Returns the store
+  // and the receivePack promise so the caller can assert rejection + a
+  // still-absent ref. The handler accepts everything, so a rejection can only
+  // come from the substrate's admission gate, not the kind handler.
+  async function pushSingleEntryTree(
+    prefix: string,
+    spec:
+      | { kind: "symlink"; path: string; target: string }
+      | { kind: "submodule"; path: string; gitlinkOid: string },
+  ): Promise<{
+    store: ReturnType<typeof createRepoStore>;
+    receive: Promise<unknown>;
+  }> {
+    const buildDir = await makeTempDir(`${prefix}-build-`);
+    await git.init({ fs, dir: buildDir, defaultBranch: "main" });
+
+    let entry: {
+      mode: string;
+      path: string;
+      oid: string;
+      type: "blob" | "commit";
+    };
+    const extraOids: string[] = [];
+    if (spec.kind === "symlink") {
+      const blobOid = await git.writeBlob({
+        fs,
+        dir: buildDir,
+        blob: new TextEncoder().encode(spec.target),
+      });
+      entry = { mode: "120000", path: spec.path, oid: blobOid, type: "blob" };
+      extraOids.push(blobOid);
+    } else {
+      // A gitlink references a commit that is NOT in the repo, so it is not
+      // packed; the tree entry references it by oid only.
+      entry = {
+        mode: "160000",
+        path: spec.path,
+        oid: spec.gitlinkOid,
+        type: "commit",
+      };
+    }
+
+    const treeOid = await git.writeTree({ fs, dir: buildDir, tree: [entry] });
+    const commitSha = await git.writeCommit({
+      fs,
+      dir: buildDir,
+      commit: {
+        tree: treeOid,
+        parent: [],
+        message: "single-entry",
+        author: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+        committer: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+      },
+    });
+    const { packfile } = await git.packObjects({
+      fs,
+      dir: buildDir,
+      oids: [commitSha, treeOid, ...extraOids],
+    });
+    if (packfile === undefined) {
+      throw new Error("pushSingleEntryTree: packObjects returned no packfile");
+    }
+
+    const storeDir = await makeTempDir(`${prefix}-store-`);
+    const store = createRepoStore({
+      dataDir: storeDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    return {
+      store,
+      receive: store.receivePack(
+        principal,
+        repoId,
+        REF,
+        packfile,
+        commitSha,
+        null,
+      ),
+    };
+  }
+
+  test("receivePack rejects a pushed tree carrying a symlink and does not advance the ref", async () => {
+    const { store, receive } = await pushSingleEntryTree("symlink", {
+      kind: "symlink",
+      path: "link",
+      target: "../escape",
+    });
+    // Anchored so a doubled `path_violation:` prefix would fail the assertion.
+    await expect(receive).rejects.toThrow(
+      /^path_violation: symlink at link is not allowed/,
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+  });
+
+  test("receivePack rejects a pushed tree carrying a submodule and does not advance the ref", async () => {
+    const { store, receive } = await pushSingleEntryTree("submodule", {
+      kind: "submodule",
+      path: "sub",
+      gitlinkOid: "0".repeat(40),
+    });
+    await expect(receive).rejects.toThrow(
+      /^path_violation: submodule at sub is not allowed/,
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+  });
+
+  test("receivePack rejects a nested symlink with its full path and does not advance the ref", async () => {
+    const buildDir = await makeTempDir("nested-symlink-build-");
+    await git.init({ fs, dir: buildDir, defaultBranch: "main" });
+    const blobOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("../escape"),
+    });
+    const subTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [{ mode: "120000", path: "link", oid: blobOid, type: "blob" }],
+    });
+    const rootTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [{ mode: "040000", path: "deep", oid: subTreeOid, type: "tree" }],
+    });
+    const commitSha = await git.writeCommit({
+      fs,
+      dir: buildDir,
+      commit: {
+        tree: rootTreeOid,
+        parent: [],
+        message: "nested",
+        author: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+        committer: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+      },
+    });
+    const { packfile } = await git.packObjects({
+      fs,
+      dir: buildDir,
+      oids: [commitSha, rootTreeOid, subTreeOid, blobOid],
+    });
+    if (packfile === undefined) {
+      throw new Error("nested symlink: packObjects returned no packfile");
+    }
+
+    const storeDir = await makeTempDir("nested-symlink-store-");
+    const store = createRepoStore({
+      dataDir: storeDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    // The recursion must build the full "deep/link" path, not just "link".
+    await expect(
+      store.receivePack(principal, repoId, REF, packfile, commitSha, null),
+    ).rejects.toThrow(/^path_violation: symlink at deep\/link is not allowed/);
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+  });
+
+  test("receivePack admits a legitimate tree with an exec bit and a subtree", async () => {
+    const buildDir = await makeTempDir("legit-push-build-");
+    await git.init({ fs, dir: buildDir, defaultBranch: "main" });
+    const fileOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("hello\n"),
+    });
+    const execOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("#!/bin/sh\necho hi\n"),
+    });
+    const nestedOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("nested\n"),
+    });
+    const subTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [{ mode: "100644", path: "n.txt", oid: nestedOid, type: "blob" }],
+    });
+    const rootTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [
+        { mode: "100644", path: "a.txt", oid: fileOid, type: "blob" },
+        { mode: "100755", path: "run.sh", oid: execOid, type: "blob" },
+        { mode: "040000", path: "sub", oid: subTreeOid, type: "tree" },
+      ],
+    });
+    const commitSha = await git.writeCommit({
+      fs,
+      dir: buildDir,
+      commit: {
+        tree: rootTreeOid,
+        parent: [],
+        message: "legit",
+        author: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+        committer: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+      },
+    });
+    const { packfile } = await git.packObjects({
+      fs,
+      dir: buildDir,
+      oids: [commitSha, rootTreeOid, subTreeOid, fileOid, execOid, nestedOid],
+    });
+    if (packfile === undefined) {
+      throw new Error("legit push: packObjects returned no packfile");
+    }
+
+    const storeDir = await makeTempDir("legit-push-store-");
+    const store = createRepoStore({
+      dataDir: storeDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    // A regular file, an executable (100755), and a subtree must all pass.
+    await store.receivePack(principal, repoId, REF, packfile, commitSha, null);
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(commitSha);
+  });
+
   test("createPack and receivePack round-trip", async () => {
     const sourceDir = await makeTempDir("repo-store-rt-source-");
     const sourceHandler = createTestHandler();
