@@ -32,7 +32,6 @@ import { createDB } from "@intx/db";
 import { asset } from "@intx/db/schema";
 import {
   WORKSPACE_BUILTINS_REGISTRY,
-  WORKFLOW_JSON_PATH,
   ensureWorkflowDefinitionForAsset,
 } from "@intx/hub-sessions";
 import { catalogModels, catalogProviders } from "@intx/inference-catalog";
@@ -42,7 +41,7 @@ import { resolveDbConfig } from "./lib/db-config";
 
 import {
   buildWorkflowFixture,
-  buildWorkflowJson,
+  buildWorkflowCodebaseTree,
   WORKFLOW_FIXTURE_ASSET_NAME,
   WORKFLOW_FIXTURE_SIGNAL_NAME,
   WORKFLOW_RUN_GRANT_ACTION,
@@ -1058,12 +1057,15 @@ for (const p of catalogProviders) {
 // workflow whose step-agents are authored inline (system prompts and
 // inference preferences on the definition; no FK to the agent-catalog
 // rows above). The definition is created as a `workflow`-kind asset and
-// its `workflow.json` is pushed over the asset smart-HTTP route -- the
-// only surface that writes asset tree content, since `createAsset` only
-// lays down the genesis `.gitignore`. The push uses the system git
-// binary with a `GIT_ASKPASS` bearer-token shim, matching the
-// established asset-push convention; isomorphic-git over HTTP is not
-// used anywhere in the repo for this.
+// pushed as a code-sourced CODEBASE -- a `package.json` declaring
+// `interchange.workflow` plus a bundled entry module -- over the asset
+// smart-HTTP route, the only surface that writes asset tree content since
+// `createAsset` only lays down the genesis `.gitignore`. The push uses
+// the system git binary with a `GIT_ASKPASS` bearer-token shim, matching
+// the established asset-push convention; isomorphic-git over HTTP is not
+// used anywhere in the repo for this. The seed makes the fixture
+// deployable but does not deploy it; an operator deploys it via the
+// admin-ui / API.
 
 log("Seeding workflow definition on Acme...");
 
@@ -1207,11 +1209,11 @@ function withBasicAuth(url: string, user: string, pass: string): string {
   return u.toString();
 }
 
-async function pushWorkflowJson(args: {
+async function pushWorkflowCodebase(args: {
   tenantId: string;
   assetName: string;
   tokenSecret: string;
-  workflowJson: string;
+  files: Record<string, string>;
 }): Promise<void> {
   // The bearer token is embedded as the basic-auth password in the
   // smart-HTTP URL (username is an ignored placeholder); a GIT_ASKPASS
@@ -1252,17 +1254,15 @@ async function pushWorkflowJson(args: {
       throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
     }
 
-    await writeFile(
-      join(repoDir, WORKFLOW_JSON_PATH),
-      args.workflowJson,
-      "utf-8",
-    );
+    for (const [name, content] of Object.entries(args.files)) {
+      await writeFile(join(repoDir, name), content, "utf-8");
+    }
 
     const remaining: { label: string; args: string[] }[] = [
-      { label: "add workflow.json", args: ["add", WORKFLOW_JSON_PATH] },
+      { label: "add codebase tree", args: ["add", "-A"] },
       {
         label: "commit",
-        args: ["commit", "-m", "Seed approval-flow workflow definition"],
+        args: ["commit", "-m", "Seed approval-flow workflow codebase"],
       },
       {
         label: "push",
@@ -1355,13 +1355,14 @@ if (workflowAssetCreated) {
     "git token mint response",
   );
 
-  await pushWorkflowJson({
+  const codebaseTree = await buildWorkflowCodebaseTree();
+  await pushWorkflowCodebase({
     tenantId: acmeTenantId,
     assetName: WORKFLOW_FIXTURE_ASSET_NAME,
     tokenSecret: token.secret,
-    workflowJson: buildWorkflowJson(),
+    files: codebaseTree.files,
   });
-  log(`  Pushed ${WORKFLOW_JSON_PATH} to ${WORKFLOW_FIXTURE_ASSET_NAME}`);
+  log(`  Pushed workflow codebase to ${WORKFLOW_FIXTURE_ASSET_NAME}`);
 }
 
 // Confirm the workflow asset is listable on the tenant.
