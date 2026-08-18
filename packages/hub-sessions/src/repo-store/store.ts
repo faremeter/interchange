@@ -806,6 +806,54 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return out;
   }
 
+  // git tree-entry modes an admitted asset tree must not carry: a symlink can
+  // escape its directory when the tree is checked out, and a submodule gitlink
+  // is always a dangling reference (a pushed pack ships no submodule object).
+  const GIT_MODE_SYMLINK = "120000";
+  const GIT_MODE_SUBMODULE = "160000";
+
+  // Walk a commit's tree and return the first entry whose mode is disallowed
+  // (a symlink or a submodule), or null when the tree is clean. This mirrors
+  // the materialization backstop in `writeTreeToDisk`, but at the PUSH boundary
+  // so a directory-escaping symlink (or a dangling gitlink) is refused at
+  // admission rather than only caught later at checkout. It reads trees only,
+  // never blobs; `seen` deduplicates shared subtree oids across the commits of
+  // one pack so a subtree is walked once.
+  async function findDisallowedTreeMode(
+    dir: string,
+    treeOid: string,
+    seen: Set<string>,
+    prefix = "",
+  ): Promise<{ path: string; kind: "symlink" | "submodule" } | null> {
+    if (seen.has(treeOid)) return null;
+    seen.add(treeOid);
+    const { tree } = await git.readTree({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: treeOid,
+    });
+    for (const entry of tree) {
+      const entryPath = prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+      if (entry.mode === GIT_MODE_SYMLINK) {
+        return { path: entryPath, kind: "symlink" };
+      }
+      if (entry.type === "commit" || entry.mode === GIT_MODE_SUBMODULE) {
+        return { path: entryPath, kind: "submodule" };
+      }
+      if (entry.type === "tree") {
+        const nested = await findDisallowedTreeMode(
+          dir,
+          entry.oid,
+          seen,
+          entryPath,
+        );
+        if (nested !== null) return nested;
+      }
+    }
+    return null;
+  }
+
   // Bound the set of paths a received-pack commit may have changed
   // relative to its parent, as repo-root-relative POSIX prefixes ending
   // in `/`. Git is content-addressed: a subtree whose object id is
@@ -1312,6 +1360,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       buildPriorTreeClosures(dir, parentCommitSha);
     const prospective = buildTreeReadClosures(dir, newRootTreeOid);
     const changedPathPrefixes = w.changedPathPrefixes;
+    // No disallowed-mode (symlink/submodule) gate here on purpose: the
+    // substrate mode gate lives on the pack-receive path. This write path
+    // cannot introduce a `120000`/`160000` entry -- `assembleTree` writes puts
+    // as `100644` and passes base-tree entries through unchanged, and no
+    // ingress ever admits such a mode into a base tree (the pack path is now
+    // gated; this path only writes `100644`). Adding a walk here would gate a
+    // tree that cannot carry those modes.
     const validation = await handler.validatePush({
       repoId,
       ref,
@@ -1641,6 +1696,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             existingCommits,
           );
           newCommitsFromPack.push(...newCommits);
+          // Shared across the pack's commits so a subtree common to several is
+          // walked once by the disallowed-mode gate below.
+          const seenTreeOids = new Set<string>();
           for (const newCommit of newCommits) {
             const { commit: parsed } = await git.readCommit({
               fs,
@@ -1699,6 +1757,26 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               newCommit,
               parentSha,
             );
+            // Admission gate for EVERY kind, before the per-kind validatePush:
+            // an asset tree carrying a symlink (which can escape its directory
+            // at checkout) or a submodule (a dangling gitlink the pack cannot
+            // reproduce) is refused here, so the ref never advances. No kind
+            // legitimately pushes either; `writeTreeToDisk` rejects both at
+            // materialization as the defense-in-depth backstop. Per-commit, so
+            // an intermediate commit that adds a symlink a later commit deletes
+            // is still caught.
+            const disallowed = await findDisallowedTreeMode(
+              dir,
+              parsed.tree,
+              seenTreeOids,
+            );
+            if (disallowed !== null) {
+              // The substrate owns the `path_violation:` prefix on the thrown
+              // message, so the reason omits it (matching every handler reason).
+              const reason = `${disallowed.kind} at ${disallowed.path} is not allowed in a pushed asset tree (commit ${newCommit})`;
+              logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${reason}`;
+              return { ok: false, reason };
+            }
             const result = await handler.validatePush({
               repoId,
               ref,
