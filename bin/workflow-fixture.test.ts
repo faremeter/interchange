@@ -1,12 +1,20 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, test, expect } from "bun:test";
 
 import { type } from "arktype";
 import { hashDefinition } from "@intx/workflow";
-import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions";
+import { loadWorkflowDefinitionFromClosure } from "@intx/workflow-host";
+import { PackageJSON } from "@intx/types/package-json";
 
 import {
   buildWorkflowFixture,
-  buildWorkflowJson,
+  buildWorkflowCodebaseTree,
+  WORKFLOW_FIXTURE_ENTRY,
+  WORKFLOW_FIXTURE_ENTRY_FILE,
+  WORKFLOW_FIXTURE_PACKAGE_JSON_FILE,
   WORKFLOW_FIXTURE_SIGNAL_NAME,
   WORKFLOW_RUN_GRANT_ACTION,
   WORKFLOW_RUN_GRANT_RESOURCE,
@@ -59,16 +67,42 @@ describe("workflow fixture", () => {
     expect(a).toEqual(b);
   });
 
-  test("serialized workflow.json passes the push-time envelope schema", () => {
-    const parsed: unknown = JSON.parse(buildWorkflowJson());
-    const validated = workflowDefinitionEnvelopeSchema(parsed);
-    expect(validated instanceof type.errors).toBe(false);
+  test("the codebase package.json validates and declares the workflow entry", async () => {
+    const tree = await buildWorkflowCodebaseTree();
+    const manifest = tree.files[WORKFLOW_FIXTURE_PACKAGE_JSON_FILE];
+    if (manifest === undefined) {
+      throw new Error("codebase tree is missing its package.json");
+    }
+    const parsed: unknown = JSON.parse(manifest);
+    const pkg = PackageJSON(parsed);
+    expect(pkg instanceof type.errors).toBe(false);
+    if (pkg instanceof type.errors) throw new Error("unreachable");
+    expect(pkg.interchange?.workflow).toBe(WORKFLOW_FIXTURE_ENTRY);
   });
 
-  test("serialized workflow.json round-trips through defineWorkflow's shape", () => {
-    const original = buildWorkflowFixture();
-    const parsed: unknown = JSON.parse(buildWorkflowJson());
-    expect(parsed).toEqual(JSON.parse(JSON.stringify(original)));
+  test("the bundled entry is self-contained with no bare @intx import", async () => {
+    const tree = await buildWorkflowCodebaseTree();
+    const entry = tree.files[WORKFLOW_FIXTURE_ENTRY_FILE];
+    if (entry === undefined) {
+      throw new Error("codebase tree is missing its bundled entry");
+    }
+    expect(entry.includes("@intx/")).toBe(false);
+  });
+
+  test("the codebase tree loads via loadWorkflowDefinitionFromClosure", async () => {
+    const tree = await buildWorkflowCodebaseTree();
+    const packageDir = await mkdtemp(join(tmpdir(), "approval-flow-fixture-"));
+    try {
+      for (const [name, content] of Object.entries(tree.files)) {
+        await writeFile(join(packageDir, name), content, "utf-8");
+      }
+      const loaded = await loadWorkflowDefinitionFromClosure({ packageDir });
+      const expected = buildWorkflowFixture();
+      expect(loaded.id).toBe(expected.id);
+      expect(loaded.stepOrder).toEqual(expected.stepOrder);
+    } finally {
+      await rm(packageDir, { recursive: true, force: true });
+    }
   });
 
   test("the planted signal grant matches the route's resource gate", () => {
