@@ -210,6 +210,19 @@ describe("createWorkflowProbeExecutor", () => {
         "mail.address:probe@example.com",
         "mail.send:example.com",
       ]);
+      // The un-flattened snapshot preserves the per-step grouping and the
+      // (here empty) tool-grant effect map the flattened `grants` discards.
+      // The `sleep` step carries only the deployment-wide trigger grants.
+      expect(result.grantWalkSnapshot).toEqual({
+        perStep: [
+          {
+            stepId: "wait",
+            grants: ["mail.address:probe@example.com", "mail.send:example.com"],
+            grantEffects: {},
+          },
+        ],
+        grantRequirements: [],
+      });
       expect(result.wireHash).toMatch(/^[0-9a-f]{64}$/);
 
       // A real child was spawned, and it is reaped by the time the probe
@@ -248,6 +261,12 @@ describe("createWorkflowProbeExecutor", () => {
             ok: true as const,
             projection,
             grants: ["cap:probe-race"],
+            grantWalkSnapshot: {
+              perStep: [
+                { stepId: "s1", grants: ["cap:probe-race"], grantEffects: {} },
+              ],
+              grantRequirements: [],
+            },
             wireHash: "a".repeat(64),
           };
           const envelope: FrameEnvelope = { seq: 0, channelId, payload };
@@ -284,6 +303,10 @@ describe("createWorkflowProbeExecutor", () => {
     const result = await executor.probe(probeFrame());
     expect(result.projection).toEqual(projection);
     expect(result.grants).toEqual(["cap:probe-race"]);
+    expect(result.grantWalkSnapshot).toEqual({
+      perStep: [{ stepId: "s1", grants: ["cap:probe-race"], grantEffects: {} }],
+      grantRequirements: [],
+    });
     expect(result.wireHash).toBe("a".repeat(64));
   });
 

@@ -55,6 +55,9 @@ async function makeProbeResult(overrides?: {
   return {
     projection,
     grants: overrides?.grants ?? ["tool:fetch", "effect:log"],
+    // The gate operates over the flattened `grants`; the un-flattened walk
+    // snapshot rides through untouched, so an empty snapshot suffices here.
+    grantWalkSnapshot: { perStep: [], grantRequirements: [] },
     wireHash,
   };
 }

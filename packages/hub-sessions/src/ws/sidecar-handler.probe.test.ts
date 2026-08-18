@@ -134,6 +134,22 @@ describe("SidecarRouter workflow probe", () => {
 
     const grants = ["tool:send_mail", "mail.address:wf@local"];
     const wireHash = "abc123";
+    // The un-flattened walk snapshot rides the frame alongside the flattened
+    // `grants`, carrying the per-step `grantEffects` map (a `tool:` grant gated
+    // behind approval) and the definition's `grantRequirements` that the
+    // flattened union discards.
+    const grantWalkSnapshot = {
+      perStep: [
+        {
+          stepId: "s1",
+          grants: ["tool:send_mail", "mail.address:wf@local"],
+          grantEffects: { "tool:send_mail": "ask" as const },
+        },
+      ],
+      grantRequirements: [
+        { resource: "mailbox", action: "send", source: "creator" as const },
+      ],
+    };
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -141,11 +157,17 @@ describe("SidecarRouter workflow probe", () => {
         requestId,
         projection,
         grants,
+        grantWalkSnapshot,
         wireHash,
       }),
     );
 
-    await expect(promise).resolves.toEqual({ projection, grants, wireHash });
+    await expect(promise).resolves.toEqual({
+      projection,
+      grants,
+      grantWalkSnapshot,
+      wireHash,
+    });
   });
 
   test("a workflow.probe.error reply rejects the probe with its error", async () => {

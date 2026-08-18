@@ -450,11 +450,12 @@ export type WorkflowRunPackApplier = (args: {
 /**
  * The inert answer a probe execution produces, lifted off the
  * `workflow.probe.result` frame: the workflow's needs-surface projection, the
- * inert grant set derived from it, and the projection's content hash.
+ * inert grant set derived from it, the un-flattened grant walk snapshot the set
+ * is derived from, and the projection's content hash.
  */
 export type WorkflowProbeResult = Pick<
   WorkflowProbeResultFrame,
-  "projection" | "grants" | "wireHash"
+  "projection" | "grants" | "grantWalkSnapshot" | "wireHash"
 >;
 
 /**
@@ -1336,6 +1337,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         requestId: frame.requestId,
         projection: result.projection,
         grants: result.grants,
+        grantWalkSnapshot: result.grantWalkSnapshot,
         wireHash: result.wireHash,
       });
     } catch (err) {
