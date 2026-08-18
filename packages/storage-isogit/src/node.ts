@@ -8,6 +8,8 @@ import {
 } from "./index";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { IsogitStore as RuntimeIsogitStore } from "./store";
+import { assertPackInflationWithinBounds } from "./pack-inflation-guard";
+import type { PackMaterializationLimits } from "./materialization-limits";
 export { createNodeIsogitRuntime } from "./node-runtime";
 export {
   countLooseObjects,
@@ -65,8 +67,25 @@ export const {
   runGC,
   switchBranch,
   writeTreeToDisk,
-  indexPackIntoGitDir,
+  indexPackIntoGitDir: rawIndexPackIntoGitDir,
 } = storage;
+
+/**
+ * The node build guards `indexPackIntoGitDir` with a per-object inflation scan
+ * (`assertPackInflationWithinBounds`) before it indexes, so every node caller
+ * that materializes an untrusted pushed pack is protected against a zip bomb
+ * without having to remember a separate call. The browser build indexes only
+ * its own repos and needs no such guard.
+ */
+export async function indexPackIntoGitDir(
+  gitDir: string,
+  pack: Uint8Array,
+  commitSha: string,
+  limits: PackMaterializationLimits,
+): Promise<void> {
+  await assertPackInflationWithinBounds(pack, limits);
+  await rawIndexPackIntoGitDir(gitDir, pack, commitSha, limits);
+}
 
 export class IsogitStore extends RuntimeIsogitStore {
   constructor(dir: string, signer?: CommitSigner, gcPolicy?: GCPolicy) {
