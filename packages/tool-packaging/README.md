@@ -19,22 +19,28 @@ transitives are reachable from inside it.
 Concretely the loader:
 
 1. Walks every manifest entry and validates that each one is
-   registry-chain-consistent: every entry the manifest says lives at a
-   registry resolves end-to-end against that registry, and every entry
-   that lives in an asset resolves against the asset's `assetMounts`
-   map.
+   source-consistent: every entry the manifest says lives at a
+   registry resolves end-to-end against that registry; an asset entry
+   whose `package.format` is `"tarball"` resolves against the asset's
+   `assetMounts` map; an asset entry whose `package.format` is
+   `"source"` (a git subtree, used by source-format workflow
+   definitions) resolves against the separate `gitDirs` map.
 2. Materializes every entry into the content-addressable tarball
    cache: bytes pulled from the entry's source on a miss are verified
    through `cache.put`, and the bytes are then unpacked once via
    `cache.extractTarball`. A single sha512 produces a single
-   extraction shared across instances.
+   extraction shared across instances. A `"source"` asset entry is the
+   exception: it has no tarball and no SRI, so it bypasses the cache
+   entirely — its subtree is checked out in place from the indexed
+   `gitDir` (`materializeGitEntry`) and verified against the frozen git
+   `treeOid` rather than an sha512.
 3. Lays out each entry under `<scratch>/store/<name>/<version>/` by
-   copying the file tree from the cache extraction. Each layout
-   directory then gets `node_modules/<dep>` symlinked into it pointing
-   at the sibling `store/<dep>/<depVersion>/` chosen for that
-   requirer. Symlinks at the `node_modules/` boundary let Node's
-   realpath-based resolver walk to the dep's own layout dir (which has
-   its own `node_modules/`).
+   copying the file tree from the cache extraction — or, for a
+   `"source"` entry, from its git checkout. Each layout directory then
+   gets `node_modules/<dep>` symlinked into it pointing at the sibling
+   `store/<dep>/<depVersion>/` chosen for that requirer. Symlinks at
+   the `node_modules/` boundary let Node's realpath-based resolver walk
+   to the dep's own layout dir (which has its own `node_modules/`).
 4. Dynamically imports each top-level entry's `interchange.tools`
    module and collects the `AnnotatedToolFactory` /
    `AnnotatedPluginFactory` values it exports.
