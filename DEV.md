@@ -264,7 +264,7 @@ packages/
   storage-isogit/  Git-backed agent state (isomorphic-git)
   inference/    LLM inference reactor
   harness/      Agent harness (tools, transport, audit)
-  hub/          Hub library (sidecar router, event collection)
+  hub-sessions/  Hub session library (sidecar router, event collection)
   ...
 bin/            Development and operational scripts
 .githooks/      Git hooks (pre-commit lint, commit-msg format)
