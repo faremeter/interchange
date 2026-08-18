@@ -16,7 +16,10 @@ import path from "node:path";
 import { getLogger } from "@intx/log";
 import { base64Decode } from "@intx/types";
 import { applyAssetPack } from "@intx/hub-agent";
-import { indexPackIntoGitDir } from "@intx/storage-isogit/node";
+import {
+  DEFAULT_PACK_MATERIALIZATION_LIMITS,
+  indexPackIntoGitDir,
+} from "@intx/storage-isogit/node";
 import type { WorkflowSourceAssetMount } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
@@ -40,7 +43,12 @@ export async function indexAssetPackIntoGitDir(args: {
 }): Promise<void> {
   const { pack, commitSha, gitDir } = args;
   try {
-    await indexPackIntoGitDir(gitDir, pack, commitSha);
+    await indexPackIntoGitDir(
+      gitDir,
+      pack,
+      commitSha,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
   } catch (err) {
     await fsp.rm(gitDir, { recursive: true, force: true }).catch((rmErr) => {
       const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);

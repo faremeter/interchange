@@ -14,7 +14,10 @@ import path from "node:path";
 
 import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
-import { writeTreeToDisk } from "@intx/storage-isogit/node";
+import {
+  DEFAULT_PACK_MATERIALIZATION_LIMITS,
+  writeTreeToDisk,
+} from "@intx/storage-isogit/node";
 import type { ToolPackageAssetSourceTree } from "@intx/types/tool-packages";
 
 import { ToolLoaderError, describeError } from "./loader-internal";
@@ -71,7 +74,12 @@ export async function materializeGitEntry(args: {
 
   const dir = await fs.mkdtemp(path.join(instanceScratchDir, "git-"));
   try {
-    await writeTreeToDisk(gitDir, dir, subtreeOid);
+    await writeTreeToDisk(
+      gitDir,
+      dir,
+      subtreeOid,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
   } catch (err) {
     // Best-effort cleanup of the partial scratch dir; log a secondary rm
     // failure so it does not silently mask state. The primary error is still

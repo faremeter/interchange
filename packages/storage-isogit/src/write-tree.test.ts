@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 
-import { writeTreeToDisk } from "./node";
+import { DEFAULT_PACK_MATERIALIZATION_LIMITS, writeTreeToDisk } from "./node";
 
 const tempDirs: string[] = [];
 
@@ -53,7 +53,12 @@ describe("writeTreeToDisk", () => {
       "nested/plain.txt": { content: "plain\n", mode: "100644" },
     });
     const target = await tempDir();
-    await writeTreeToDisk(dir, target, treeOid);
+    await writeTreeToDisk(
+      dir,
+      target,
+      treeOid,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
 
     const execStat = await fsp.stat(path.join(target, "nested", "exec.sh"));
     const plainStat = await fsp.stat(path.join(target, "nested", "plain.txt"));
@@ -67,7 +72,12 @@ describe("writeTreeToDisk", () => {
       "top.txt": { content: "top-bytes" },
     });
     const target = await tempDir();
-    await writeTreeToDisk(dir, target, treeOid);
+    await writeTreeToDisk(
+      dir,
+      target,
+      treeOid,
+      DEFAULT_PACK_MATERIALIZATION_LIMITS,
+    );
 
     expect(
       await fsp.readFile(path.join(target, "a/b/c/deep.txt"), "utf-8"),
@@ -93,7 +103,14 @@ describe("writeTreeToDisk", () => {
       ],
     });
     const target = await tempDir();
-    await expect(writeTreeToDisk(dir, target, treeOid)).rejects.toThrow(
+    await expect(
+      writeTreeToDisk(
+        dir,
+        target,
+        treeOid,
+        DEFAULT_PACK_MATERIALIZATION_LIMITS,
+      ),
+    ).rejects.toThrow(
       /writeTreeToDisk: submodule reference at submod is not supported/,
     );
   });
@@ -119,8 +136,40 @@ describe("writeTreeToDisk", () => {
       ],
     });
     const target = await tempDir();
-    await expect(writeTreeToDisk(dir, target, treeOid)).rejects.toThrow(
-      /writeTreeToDisk: symlink at link is not supported/,
-    );
+    await expect(
+      writeTreeToDisk(
+        dir,
+        target,
+        treeOid,
+        DEFAULT_PACK_MATERIALIZATION_LIMITS,
+      ),
+    ).rejects.toThrow(/writeTreeToDisk: symlink at link is not supported/);
+  });
+
+  test("rejects a checkout whose cumulative bytes exceed the cap", async () => {
+    const { dir, treeOid } = await commitTree({
+      "big.txt": { content: "0123456789" }, // 10 bytes
+    });
+    const target = await tempDir();
+    await expect(
+      writeTreeToDisk(dir, target, treeOid, {
+        ...DEFAULT_PACK_MATERIALIZATION_LIMITS,
+        maxTreeBytes: 5,
+      }),
+    ).rejects.toThrow(/exceeds the 5-byte cap/);
+  });
+
+  test("rejects a checkout whose entry count exceeds the cap", async () => {
+    const { dir, treeOid } = await commitTree({
+      "a.txt": { content: "a" },
+      "b.txt": { content: "b" },
+    });
+    const target = await tempDir();
+    await expect(
+      writeTreeToDisk(dir, target, treeOid, {
+        ...DEFAULT_PACK_MATERIALIZATION_LIMITS,
+        maxTreeEntries: 1,
+      }),
+    ).rejects.toThrow(/exceeds the 1-entry cap/);
   });
 });
