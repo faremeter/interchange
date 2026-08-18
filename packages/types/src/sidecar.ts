@@ -165,8 +165,8 @@ export const SessionErrorFrame = type({
 export type SessionErrorFrame = typeof SessionErrorFrame.infer;
 
 /**
- * Acknowledges that an agent has been fully undeployed: harness stopped,
- * state pushed (best-effort), and directory deleted.
+ * Acknowledges that an agent has been fully undeployed: the deployment's
+ * workflow child stopped, state pushed (best-effort), and directory deleted.
  */
 export const AgentUndeployAckFrame = type({
   type: "'agent.undeploy.ack'",
@@ -495,9 +495,9 @@ export const AgentDeployFrame = type({
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 
 /**
- * Remove an agent from this sidecar. The sidecar tears down the harness,
- * pushes state to the hub (best-effort), deletes the agent directory, and
- * responds with agent.undeploy.ack.
+ * Remove an agent from this sidecar. The sidecar shuts the deployment's
+ * supervisor down, pushes state to the hub (best-effort), deletes the agent
+ * directory, and responds with agent.undeploy.ack.
  */
 export const AgentUndeployFrame = type({
   type: "'agent.undeploy'",
@@ -768,13 +768,13 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *                              cannot see `bundle.definitions` without
  *                              invoking the factory, and the `BaseEnv`
  *                              the factory needs is constructed by the
- *                              sidecar harness AFTER the commit. Both
- *                              paths carry the same category so the
- *                              operator-facing failure shape is
- *                              uniform regardless of which check
- *                              fired; only the channel (apply.error
- *                              frame vs runtime construct failure)
- *                              differs.
+ *                              workflow child's step build env AFTER
+ *                              the commit. Both paths carry the same
+ *                              category so the operator-facing failure
+ *                              shape is uniform regardless of which
+ *                              check fired; only the channel
+ *                              (apply.error frame vs runtime construct
+ *                              failure) differs.
  *   apply.swap.failed        — DEPRECATED, no longer emitted. The apply
  *                              protocol stages each deploy into a stable
  *                              per-deploy-id directory and commits via a
