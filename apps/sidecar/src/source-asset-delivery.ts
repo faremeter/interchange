@@ -29,12 +29,17 @@ const SAFE_ASSET_ID = /^[a-zA-Z0-9_.-]+$/;
 
 /**
  * Index a delivered asset pack into `gitDir` and RETAIN the object store, so a
- * source subtree can be checked out from it. Delegates the pack-index step to
- * the shared `indexPackIntoGitDir` (which `applyAssetPack` also uses), adding
- * the durable-store failure semantics: on any error, best-effort remove the
- * partial `.git` so it does not linger and pass the dir-exists check
- * `resolveDeploymentAssetMounts` runs on restore. A secondary rm failure is
- * logged so it does not silently mask state; the primary error is rethrown.
+ * source subtree can be checked out from it. Builds into a sibling temp `.git`
+ * and RENAMES it into place, so the durable store is complete-or-absent: a crash
+ * mid-materialization leaves only the temp, never a partial `gitDir` that the
+ * dir-exists check `resolveDeploymentAssetMounts` runs on restore would trust.
+ * The rename is same-filesystem (the temp is a sibling under `gitDir`'s parent).
+ *
+ * On a rename conflict (a stale `gitDir` from a torn prior attempt) the freshly
+ * built store wins: the existing dir is removed and the temp renamed over it, so
+ * a re-delivery at a new commit never keeps the old content. A secondary rm
+ * failure is logged so it does not silently mask state; the primary error is
+ * rethrown.
  */
 export async function indexAssetPackIntoGitDir(args: {
   pack: Uint8Array;
@@ -42,20 +47,57 @@ export async function indexAssetPackIntoGitDir(args: {
   gitDir: string;
 }): Promise<void> {
   const { pack, commitSha, gitDir } = args;
+  const parent = path.dirname(gitDir);
+  await fsp.mkdir(parent, { recursive: true });
+  const tempDir = await fsp.mkdtemp(path.join(parent, ".indexing-"));
+
+  const cleanupTemp = async (): Promise<void> => {
+    await fsp.rm(tempDir, { recursive: true, force: true }).catch((rmErr) => {
+      const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
+      logger.warn`source-asset temp gitdir cleanup failed at ${tempDir}: ${rmMsg}`;
+    });
+  };
+
   try {
     await indexPackIntoGitDir(
-      gitDir,
+      tempDir,
       pack,
       commitSha,
       DEFAULT_PACK_MATERIALIZATION_LIMITS,
     );
   } catch (err) {
-    await fsp.rm(gitDir, { recursive: true, force: true }).catch((rmErr) => {
-      const rmMsg = rmErr instanceof Error ? rmErr.message : String(rmErr);
-      logger.warn`source-asset gitdir cleanup failed at ${gitDir}: ${rmMsg}`;
-    });
+    await cleanupTemp();
     throw err;
   }
+
+  try {
+    await fsp.rename(tempDir, gitDir);
+  } catch (err) {
+    // Only a "destination already exists" failure means a torn prior attempt we
+    // may supersede; any other rename error (EXDEV, EACCES, ENOSPC, EIO) must
+    // NOT destroy a possibly-good prior store -- clean up only the fresh temp
+    // and surface it.
+    if (!isDestinationExistsError(err)) {
+      await cleanupTemp();
+      throw err;
+    }
+    // The final path already holds a store (a torn prior attempt): rebuild
+    // wins, so drop the stale store and rename the fresh one over it.
+    await fsp.rm(gitDir, { recursive: true, force: true });
+    try {
+      await fsp.rename(tempDir, gitDir);
+    } catch (retryErr) {
+      await cleanupTemp();
+      throw retryErr;
+    }
+  }
+}
+
+/** Whether `err` is a rename failure caused by a non-empty destination. */
+function isDestinationExistsError(err: unknown): boolean {
+  if (err === null || typeof err !== "object" || !("code" in err)) return false;
+  const code = String(err.code);
+  return code === "ENOTEMPTY" || code === "EEXIST" || code === "EISDIR";
 }
 
 /**

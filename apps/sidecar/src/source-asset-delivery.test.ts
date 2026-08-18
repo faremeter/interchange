@@ -1,16 +1,23 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import git from "isomorphic-git";
 
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
+import { collectReachableObjects } from "@intx/storage-isogit/node";
 
 import {
   assetReferenceFormats,
+  indexAssetPackIntoGitDir,
   sourceAssetGitDir,
 } from "./source-asset-delivery";
 
-// The git-index + subtree-checkout path (`indexAssetPackIntoGitDir`,
-// `materializeWorkflowAssets`) is exercised end-to-end by the source-workflow
-// e2e; these cover the pure classification and path helpers in isolation.
+// The subtree-checkout path (`materializeWorkflowAssets`) is exercised
+// end-to-end by the source-workflow e2e; these cover the pure classification and
+// path helpers, plus `indexAssetPackIntoGitDir`'s atomic-publish semantics, in
+// isolation.
 
 function manifest(
   entries: ToolPackageManifest["entries"],
@@ -136,5 +143,70 @@ describe("sourceAssetGitDir", () => {
     expect(() => sourceAssetGitDir("/root/gits", assetId)).toThrow(
       /unsafe assetId/,
     );
+  });
+});
+
+describe("indexAssetPackIntoGitDir", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    const dirs = tempDirs.splice(0);
+    await Promise.all(
+      dirs.map((d) => fsp.rm(d, { recursive: true, force: true })),
+    );
+  });
+
+  async function tempDir(): Promise<string> {
+    const d = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "source-delivery-test-"),
+    );
+    tempDirs.push(d);
+    return d;
+  }
+
+  // Pack a one-commit repo and return its commit sha plus a pack of every
+  // object reachable from it.
+  async function buildPack(): Promise<{ commitSha: string; pack: Uint8Array }> {
+    const dir = await tempDir();
+    await git.init({ fs, dir, defaultBranch: "main" });
+    await fsp.writeFile(path.join(dir, "package.json"), '{"name":"x"}\n');
+    await git.add({ fs, dir, filepath: "package.json" });
+    const commitSha = await git.commit({
+      fs,
+      dir,
+      message: "t",
+      author: { name: "t", email: "t@t.dev" },
+    });
+    const oids = await collectReachableObjects(dir, commitSha);
+    const { packfile } = await git.packObjects({ fs, dir, oids });
+    if (packfile === undefined) {
+      throw new Error("source-delivery test: packObjects returned no packfile");
+    }
+    return { commitSha, pack: packfile };
+  }
+
+  test("retains the durable gitDir on success", async () => {
+    const root = await tempDir();
+    const gitDir = path.join(root, "asset-ok");
+    const { commitSha, pack } = await buildPack();
+
+    await indexAssetPackIntoGitDir({ pack, commitSha, gitDir });
+
+    expect(fs.existsSync(path.join(gitDir, ".git"))).toBe(true);
+  });
+
+  test("leaves no durable gitDir when indexing fails", async () => {
+    // The pin is absent from the pack, so indexing throws. The atomic
+    // temp+rename build means the final gitDir is never created -- restore's
+    // dir-exists gate must not find a partial store.
+    const root = await tempDir();
+    const gitDir = path.join(root, "asset-bad");
+    const { pack } = await buildPack();
+
+    await expect(
+      indexAssetPackIntoGitDir({ pack, commitSha: "0".repeat(40), gitDir }),
+    ).rejects.toThrow(/not found in the pack/);
+
+    expect(fs.existsSync(gitDir)).toBe(false);
   });
 });

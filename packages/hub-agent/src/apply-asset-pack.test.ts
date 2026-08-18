@@ -175,6 +175,45 @@ describe("applyAssetPack", () => {
     await expect(promise).rejects.toThrow(/^asset_materialization_failed:/);
   });
 
+  test("leaves the prior mount intact when a re-delivery fails", async () => {
+    const workspaceRoot = await tempDir();
+    const mountFile = path.join(
+      workspaceRoot,
+      "skills",
+      "example",
+      "doc",
+      "SKILL.md",
+    );
+
+    const good = await buildAssetPack({ "doc/SKILL.md": "good-content\n" });
+    await applyAssetPack({
+      workspaceRoot,
+      mountPath: "skills/example/",
+      pack: good.pack,
+      ref: "refs/heads/main",
+      commitSha: good.commitSha,
+    });
+    expect(await fsp.readFile(mountFile, "utf-8")).toBe("good-content\n");
+
+    // A re-delivery whose pinned commit is absent from the pack fails during
+    // indexing, before the atomic publish. The prior mount must survive: the
+    // mount is replaced by rename, never cleared-then-rewritten.
+    const replacement = await buildAssetPack({
+      "doc/SKILL.md": "new-content\n",
+    });
+    await expect(
+      applyAssetPack({
+        workspaceRoot,
+        mountPath: "skills/example/",
+        pack: replacement.pack,
+        ref: "refs/heads/main",
+        commitSha: "0".repeat(40),
+      }),
+    ).rejects.toThrow(/^asset_materialization_failed:/);
+
+    expect(await fsp.readFile(mountFile, "utf-8")).toBe("good-content\n");
+  });
+
   test("rejects path traversal in mountPath", async () => {
     const { pack, commitSha } = await buildAssetPack({
       "a/SKILL.md": "---\nname: a\ndescription: a\n---\n",
