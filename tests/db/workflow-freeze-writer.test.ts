@@ -95,6 +95,68 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(versions[0]?.approvedWireHash).toBe(HASH);
     });
 
+    test("same asset with different wire hashes yields two definitions", async () => {
+      // The identity space is keyed on (assetId, wireHash), so one asset backs
+      // many definitions -- a monorepo asset installs one definition per member,
+      // each member projecting to its own wire hash.
+      const writer = createDbFrozenApprovalWriter(h.db);
+      const otherHash = "b".repeat(64);
+      const first = await writer({
+        assetId: ASSET,
+        approvedWireHash: HASH,
+        approvedGrants: [],
+      });
+      const second = await writer({
+        assetId: ASSET,
+        approvedWireHash: otherHash,
+        approvedGrants: [],
+      });
+
+      expect(second.definitionId).not.toBe(first.definitionId);
+      const defs = await h.db
+        .select()
+        .from(workflowDefinition)
+        .where(eq(workflowDefinition.assetId, ASSET));
+      expect(defs).toHaveLength(2);
+    });
+
+    test("different assets with the same wire hash yield two definitions", async () => {
+      // The unique key is (assetId, wireHash), NOT a global wireHash, so the
+      // same hash under two assets is two distinct definitions.
+      const otherAsset = "ast_wf_other";
+      await seedAsset(h.db, {
+        id: otherAsset,
+        tenantId: TENANT,
+        kind: "workflow",
+        name: "wf-name-2",
+        displayName: "WF Display 2",
+        creatorPrincipalId: CREATOR,
+      });
+      const writer = createDbFrozenApprovalWriter(h.db);
+      const first = await writer({
+        assetId: ASSET,
+        approvedWireHash: HASH,
+        approvedGrants: [],
+      });
+      const second = await writer({
+        assetId: otherAsset,
+        approvedWireHash: HASH,
+        approvedGrants: [],
+      });
+
+      expect(second.definitionId).not.toBe(first.definitionId);
+      const forFirst = await h.db
+        .select()
+        .from(workflowDefinition)
+        .where(eq(workflowDefinition.assetId, ASSET));
+      const forSecond = await h.db
+        .select()
+        .from(workflowDefinition)
+        .where(eq(workflowDefinition.assetId, otherAsset));
+      expect(forFirst).toHaveLength(1);
+      expect(forSecond).toHaveLength(1);
+    });
+
     test("re-freezing the same asset+hash is idempotent and keeps the stamp", async () => {
       const writer = createDbFrozenApprovalWriter(h.db);
       const first = await writer({
