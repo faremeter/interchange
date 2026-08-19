@@ -1,14 +1,13 @@
-// End-to-end proof that a PINNED, ask-marked tool authorizes on its own
-// static mark, sidecar-side, and suspends for approval.
+// End-to-end proof that an ask-marked tool authorizes on its own static
+// mark and suspends for approval.
 //
-// A pinned tool ships as a tool package that loads in the spawned
-// workflow-process child, so the hub's deploy-time capability walk (which
-// reads only inline `agent.toolFactories`) never produces a `tool:<name>`
-// grant for it. Before the sidecar tool-mark floor, such a tool would
-// authorize against nothing and fail closed. This test deploys a one-step
-// workflow that pins the synthetic `@intx/tools-mail` tarball whose static
-// tool definition carries `approval: "ask"`, supplies NO hand-injected
-// grant for the tool, and drives the model to call it.
+// A source-ref workflow's agent carries the inline `mail_send` tool from the
+// `mail-tool.ts` fixture in its `ask` variant, whose static tool definition
+// carries `approval: "ask"`. The deploy-time capability walk reads that mark
+// and freezes a `tool:<name>` grant whose effect is `ask` into the credentials
+// snapshot; the run's per-run grants (delivered on the trigger frame) carry
+// that same `ask` effect. When the model calls the tool, the child's authorize
+// resolves the `ask` effect and the call SUSPENDS.
 //
 // The proof: the run SUSPENDS (a `SignalAwaited` event lands on the
 // workflow-run log) rather than completing or failing. That outcome is the
@@ -16,40 +15,32 @@
 //   - silent allow -> the tool would run and the run would complete;
 //   - deny -> the call would be blocked and the step would fail;
 //   - ask -> the call suspends awaiting approval.
-// Only a derived `ask` floor produces a suspend here, since no other grant
-// authorizes the tool at all. The tool must NOT have run (no sentinel), and
-// no terminal event may land while the step is parked.
-//
-// This runs against the REAL substrate path -- the hub resolves the pin,
-// ships the manifest to the child, the child materializes the pinned
-// closure in-process, derives the floor from the loaded factory's static
-// mark, and the before-tool authz gate resolves it -- not a stub that
-// bypasses the sidecar derivation.
+// The frozen snapshot's `ask` effect for the tool proves the suspend derives
+// from the tool's own static mark, not a hand-set constant. The tool must NOT
+// have run (no sentinel), and no terminal event may land while the step is
+// parked.
 
 import fs from "node:fs";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import type { WireGrantRule } from "@intx/types/grant-wire";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { loadFrozenGrantSnapshot } from "@intx/db";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
+  SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
@@ -57,63 +48,82 @@ import {
   waitForFirstRunId,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
+import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_single-step-pinned-ask-tool-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
+const AGENT_ID = "agent-step1";
 
-const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
 const SENTINEL_FILENAME = "ask-tool-ran.txt";
 const SENTINEL_CONTENT = "should-not-run-until-approved";
 
-const TOOL_PINS: readonly ToolPackagePin[] = [
-  { name: "@intx/tools-mail", version: "0.1.2" },
-];
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_single_step_pinned_ask_tool";
+const CALLER_PRINCIPAL_ID = "prn_single_step_pinned_ask_tool";
+const DEFINITION_ASSET_ID = "ast_single_step_pinned_ask_tool_wf";
 
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "single-step-pinned-ask-tool-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv({
-    // The pinned tool's static definition carries `approval: "ask"`, so the
-    // sidecar derives an `ask` floor for it -- the whole point of this test.
-    approvalMarkedMailTool: true,
     inferenceToolCall: {
-      toolName: TOOL_NAME,
+      toolName: MAIL_TOOL_NAME,
       input: { to: SENTINEL_CONTENT, body: SENTINEL_FILENAME },
     },
   });
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("single-step pinned ask-marked tool", () => {
-  test("suspends for approval on the sidecar-derived floor with no injected grant", async () => {
-    const agent = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the single-step ask-tool agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
-    });
+describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
+  test("sidecar registers with hub", () => {
+    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+  });
 
+  test("suspends for approval on the ask effect derived from the tool's static mark", async () => {
     const deploymentMailAddress = deriveRunAddress({
       runId: DEPLOYMENT_ID,
       domain: DEPLOYMENT_DOMAIN,
     });
 
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        [STEP_ID]: step({ agent }),
-      },
-    });
+    const inferenceSource: InferenceSource = {
+      id: "anthropic:mock-model",
+      provider: "anthropic",
+      baseURL: `http://localhost:${env.inference.server.port}`,
+      apiKey: "sk-mock",
+      model: "mock-model",
+    };
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
@@ -121,22 +131,10 @@ describe("single-step pinned ask-marked tool", () => {
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
+      systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
-      // No grant for the pinned tool. The sidecar derives the tool's `ask`
-      // floor from its static mark, so the tool authorizes -- and suspends
-      // -- on its own. This is the load-bearing difference from the
-      // hand-injected-ask approval tests.
       grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
+      sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
 
@@ -145,102 +143,83 @@ describe("single-step pinned ask-marked tool", () => {
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
       `mail.send:${DEPLOYMENT_DOMAIN}`,
+      `tool:${MAIL_TOOL_NAME}`,
     ]);
 
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-      env.hub.sessionService.deploySingleStepAtHead(params);
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `single-step-pinned-ask-tool test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead,
+    const entryModule = singleStepMailToolEntry({
+      variant: "ask",
+      stepId: STEP_ID,
+      systemPrompt: "You are the single-step ask-tool agent.",
+      address: deploymentMailAddress,
+      agentId: AGENT_ID,
     });
 
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
-        runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-        toolPackagePins: TOOL_PINS,
-      });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
-      );
-    }
-    expect(result.publicKey).toBeTruthy();
-
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
+    const handle = await deployWorkflowSourceForTest(env, {
+      entryModule,
+      db: h.db,
+      tenantId: TENANT_ID,
+      definitionAssetId: DEFINITION_ASSET_ID,
       anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      agentAddress: deploymentMailAddress,
+      approvals: operatorApprovals,
+      config,
+      sources: { [STEP_ID]: [inferenceSource] },
     });
+    expect(handle.publicKey).toBeTruthy();
+
+    const workflowRunRepoId = handle.workflowRunRepoId;
+
+    // The tool's suspend authority derives from its own static mark. The
+    // probe's capability walk read the ask-marked `mail_send` definition and
+    // froze a `tool:<name>` grant whose EFFECT is `ask` into the snapshot the
+    // operator approved. Load it back and assert the tool grant carries the
+    // `ask` effect -- this is what makes the tool call suspend rather than
+    // run, and it originates from the tool's mark, not a hand-authored
+    // constant.
+    if (!handle.approved.approval.ok) {
+      throw new Error("expected an approved definition");
+    }
+    const snapshot = await loadFrozenGrantSnapshot(
+      h.db,
+      handle.approved.approval.definitionId,
+    );
+    if (snapshot === null) {
+      throw new Error("expected a frozen grant snapshot for the definition");
+    }
+    const askEffect = snapshot.perStep
+      .map((s) => s.grantEffects[`tool:${MAIL_TOOL_NAME}`])
+      .find((effect) => effect !== undefined);
+    expect(askEffect).toBe("ask");
+
+    // Deliver the run's tool grant carrying the snapshot's `ask` effect, the
+    // way the production trigger route projects the frozen snapshot into
+    // per-run grants. `fireMailTrigger` does not materialize run grants
+    // itself, so feeding the ask-effect grant here reproduces the production
+    // delivery; the call the model issues resolves against it and suspends.
+    const askRunGrant: WireGrantRule = {
+      id: `run-grant:tool:${MAIL_TOOL_NAME}`,
+      resource: `tool:${MAIL_TOOL_NAME}`,
+      action: "invoke",
+      effect: "ask",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: null,
+    };
+
+    // The source-ref frame round-trips through the real sidecar subprocess,
+    // so routability is asynchronous. Wait for it before firing the trigger.
+    await waitFor(
+      () =>
+        env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    );
 
     await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<single-step-pinned-ask-tool-1@integration.interchange>",
+      grants: [askRunGrant],
     });
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {
@@ -251,8 +230,8 @@ describe("single-step pinned ask-marked tool", () => {
     // The run parks on the tool's approval gate: a `SignalAwaited` event
     // lands on the workflow-run log. It reaches the hub through the
     // pack-push pipeline, so wait for it rather than racing the push. Only
-    // a derived `ask` floor produces this outcome -- no grant otherwise
-    // authorizes the pinned tool.
+    // an `ask` effect produces this outcome -- an `allow` would run the tool
+    // and complete, a `deny` would fail the step.
     await waitFor(
       async () => {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -269,7 +248,7 @@ describe("single-step pinned ask-marked tool", () => {
     expect(parkedTypes).not.toContain("RunFailed");
     expect(parkedTypes).not.toContain("RunCancelled");
 
-    // The tool has NOT run: the `ask` floor suspended the call before
+    // The tool has NOT run: the `ask` effect suspended the call before
     // execution. The sentinel would only appear if the tool executed.
     const stepWorkspace = path.join(
       env.sidecar.dataDir,

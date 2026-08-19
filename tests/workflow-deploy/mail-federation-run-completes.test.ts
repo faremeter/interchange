@@ -20,17 +20,18 @@
 //     is NEVER triggered by the fixture, so its grants come ONLY from the
 //     sidecar's real materializer -- if that stages them under the wrong
 //     runId, B's onRunStart finds no grants file and B fails closed. B
-//     reaching RunCompleted is therefore the whole proof.
-//   - Deployment A (the SENDER) is on sidecar 1 and carries the
-//     transport-backed `mail_send` tool; its mock inference calls it with
-//     `to: <B's address>`, so A's run forwards a real `mail.outbound` frame to
-//     the hub, which routes it through
+//     reaching RunCompleted is therefore the whole proof. Its grants come from
+//     the frozen grant snapshot the source-ref deploy's approve step wrote.
+//   - Deployment A (the SENDER) is on sidecar 1 and its agent carries the
+//     inline `mail_send` tool from the `mail-tool.ts` fixture in its transport
+//     variant; its mock inference calls it with `to: <B's address>`, so A's run
+//     forwards a real `mail.outbound` frame to the hub, which routes it through
 //     `handleMailOutbound -> deliverMailToRecipient(B)`.
 //
 // The REAL `createMailTriggeredRunGrantsMaterializer` (backed by a migrated
-// schema + a real asset service) is wired into the fixture hub's sidecar
-// router via the `materializeMailTriggeredRunGrants` option, closing the
-// harness gap that let the earlier route test assert only DB rows.
+// schema) is wired into the fixture hub's sidecar router via the
+// `materializeMailTriggeredRunGrants` option, closing the harness gap that let
+// the earlier route test assert only DB rows.
 //
 // SCOPE: this exercises the RECEIVER seam -- grant materialization + the
 // onRunStart barrier -- across a real sidecar transport on ONE hub. It is NOT
@@ -39,10 +40,6 @@
 // federation-transport test is separate and non-gating; do not read this as
 // covering that hop. The harness's dependence on the placement invariant
 // below is tracked in INTR-395.
-
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 import {
   afterAll,
@@ -54,57 +51,24 @@ import {
   test,
 } from "bun:test";
 
-import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { createGrantStore } from "@intx/db";
-import {
-  tenant as tenantTable,
-  workflowDefinition as workflowDefinitionTable,
-  workflowRun as workflowRunTable,
-} from "@intx/db/schema";
-import { createSSHSignature, generateKeyPair } from "@intx/crypto";
-import {
-  DEFAULT_ASSET_REF,
-  WORKFLOW_JSON_PATH,
-  createAssetService,
-  createRepoStore,
-  workflowAuthorize,
-  workflowKindHandler,
-  type AuthorizeFn,
-  type RepoId,
-  type RepoStore,
-  type WorkflowRunHubPrincipal,
-} from "@intx/hub-sessions";
+import { tenant as tenantTable } from "@intx/db/schema";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { HarnessConfig, KeyPair } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import {
-  seedAsset,
-  seedPrincipal,
-  seedWorkflowDefinitionVersion,
-} from "@intx/test-harness/seed";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  walkCapabilities,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   SECOND_SIDECAR_ID,
   SECOND_TOKEN,
   SESSION_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
   startSidecarSubprocess,
@@ -114,10 +78,11 @@ import {
   type DeployFlowEnv,
   type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
+import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 
 // The RECEIVER, whose grants come only from the sidecar materializer. The
 // `run_` prefix is load-bearing and MUST NOT be dropped: the address SHAPE
@@ -132,16 +97,13 @@ const RECEIVER_ID = "run_fed-mail-receiver-1";
 const RECEIVER_TENANT_ID = "tnt_fed_mail_receiver";
 const RECEIVER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_receiver_creator";
 const RECEIVER_ASSET_ID = "ast_fed_mail_receiver_wf";
+const RECEIVER_STEP_ID = "receive";
 // The SENDER, triggered by the fixture to mail the receiver.
 const SENDER_ID = "run_fed-mail-sender-1";
-
-const RECEIVER_STEP_ID = "receive";
+const SENDER_TENANT_ID = "tnt_fed_mail_sender";
+const SENDER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_sender_creator";
+const SENDER_ASSET_ID = "ast_fed_mail_sender_wf";
 const SENDER_STEP_ID = "send";
-
-const MAIL_TOOL = "@intx/tools-mail/sidecar-bundle:mail_send";
-const TOOL_PINS: readonly ToolPackagePin[] = [
-  { name: "@intx/tools-mail", version: "0.1.2" },
-];
 
 const receiverAddress = deriveRunAddress({
   runId: RECEIVER_ID,
@@ -157,7 +119,7 @@ const senderAddress = deriveRunAddress({
 // receiver whose grants are the property under test).
 const SENDER_MAIL_GRANT: WireGrantRule = {
   id: "grant-sender-mail",
-  resource: `tool:${MAIL_TOOL}`,
+  resource: `tool:${MAIL_TOOL_NAME}`,
   action: "invoke",
   effect: "allow",
   origin: "creator",
@@ -167,64 +129,10 @@ const SENDER_MAIL_GRANT: WireGrantRule = {
   principalId: null,
 };
 
-// A completing echo agent for the receiver, and a mail-sending agent for
-// the sender. Neither declares tools inline; the sender's mail tool comes
-// from the pinned bundle + grant.
-const receiverAgent = defineAgent({
-  id: `agent_${RECEIVER_ID}`,
-  systemPrompt: "You are the federated-mail receiver agent.",
-  tools: [],
-  capabilities: [],
-  inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-});
-const senderAgent = defineAgent({
-  id: `agent_${SENDER_ID}`,
-  systemPrompt: "You are the federated-mail sender agent.",
-  tools: [],
-  capabilities: [],
-  inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-});
-
-const receiverWorkflow: WorkflowDefinition = defineWorkflow({
-  id: `wf_${RECEIVER_ID}`,
-  trigger: { type: "mail", to: receiverAddress },
-  steps: { [RECEIVER_STEP_ID]: step({ agent: receiverAgent }) },
-});
-const senderWorkflow: WorkflowDefinition = defineWorkflow({
-  id: `wf_${SENDER_ID}`,
-  trigger: { type: "mail", to: senderAddress },
-  steps: { [SENDER_STEP_ID]: step({ agent: senderAgent }) },
-});
-
 let env: DeployFlowEnv;
 let h: TestDb;
-let signingKey: KeyPair;
-let repoStore: RepoStore;
-let assetService: ReturnType<typeof createAssetService>;
 let sidecar2: SidecarHandle | undefined;
 const tempDirs: string[] = [];
-
-async function createWorkflowRepoStore(): Promise<RepoStore> {
-  const dataDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "fed-mail-completes-"),
-  );
-  tempDirs.push(dataDir);
-  const signer = async (payload: string) =>
-    createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
-  const authorize: AuthorizeFn = (principal, repoId, ref, act) => {
-    if (repoId.kind === "workflow") {
-      return workflowAuthorize(principal, repoId, ref, act);
-    }
-    return { allowed: false, reason: `no authorize for ${repoId.kind}` };
-  };
-  return createRepoStore({
-    dataDir,
-    signingKey,
-    handlers: { workflow: workflowKindHandler },
-    authorize,
-    signingCallback: () => signer,
-  });
-}
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "a mail-triggered run started through the sidecar deliver path reaches RunCompleted",
@@ -232,10 +140,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     let hasRun = false;
 
     beforeAll(async () => {
-      signingKey = await generateKeyPair();
       h = await createTestDb();
-      repoStore = await createWorkflowRepoStore();
-      assetService = createAssetService({ db: h.db, repoStore });
       // The REAL materializer the production sidecar router uses, wired into
       // the fixture hub so a `mail.outbound` frame for the receiver drives
       // deliverMailToRecipient through its true grants-write seam.
@@ -244,12 +149,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         grantStore: createGrantStore(h.db),
       });
       env = await startDeployFlowEnv({
-        transportBackedMailTool: true,
         // The sender's mock inference calls the mail tool with the RECEIVER
         // as `to`; the receiver has no such tool, so its request falls
         // through to echo and its run completes.
         inferenceToolCall: {
-          toolName: MAIL_TOOL,
+          toolName: MAIL_TOOL_NAME,
           input: { to: receiverAddress, body: "federated hello" },
         },
         inferenceEchoUserMessage: true,
@@ -262,11 +166,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sidecar2.proc.kill();
         sidecar2 = undefined;
       }
-      await env.teardown();
-      await h.close();
-      for (const d of tempDirs.splice(0)) {
-        await fs.promises.rm(d, { recursive: true, force: true });
-      }
+      if (env !== undefined) await env.teardown();
+      if (h !== undefined) await h.close();
+      tempDirs.splice(0);
     });
 
     beforeEach(async () => {
@@ -305,13 +207,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("hub.server.port is undefined; expected a bound port");
       }
 
-      // Seed the receiver's tenancy + its workflow asset so the materializer
-      // can resolve the anchor by address and hydrate the definition.
+      // Seed the receiver's and sender's tenancy + workflow asset so each
+      // source-ref deploy's install/approve freeze and anchor `workflow_run`
+      // insert resolve their FKs. The receiver's frozen grant snapshot -- the
+      // one the materializer reads -- is written by its approve step here.
       await h.db.insert(tenantTable).values({
         id: RECEIVER_TENANT_ID,
         name: RECEIVER_TENANT_ID,
         slug: RECEIVER_TENANT_ID,
-        domain: DEPLOYMENT_DOMAIN,
+        // The tenant's own domain is a tenant attribute distinct from the
+        // deployment mail domain; the two deployments share the deployment
+        // domain but each tenant carries a unique `tenant.domain`.
+        domain: `recv.${DEPLOYMENT_DOMAIN}`,
         parentId: null,
       });
       await seedPrincipal(h.db, {
@@ -328,60 +235,49 @@ describe.skipIf(!harnessDbEnvAvailable())(
         name: "fed-mail-receiver-wf",
         creatorPrincipalId: RECEIVER_CREATOR_PRINCIPAL_ID,
       });
-      await repoStore.initRepo({
+      await h.db.insert(tenantTable).values({
+        id: SENDER_TENANT_ID,
+        name: SENDER_TENANT_ID,
+        slug: SENDER_TENANT_ID,
+        domain: `send.${DEPLOYMENT_DOMAIN}`,
+        parentId: null,
+      });
+      await seedPrincipal(h.db, {
+        id: SENDER_CREATOR_PRINCIPAL_ID,
+        tenantId: SENDER_TENANT_ID,
+        kind: "user",
+        refId: "usr_fed_mail_sender_creator",
+        status: "active",
+      });
+      await seedAsset(h.db, {
+        id: SENDER_ASSET_ID,
+        tenantId: SENDER_TENANT_ID,
         kind: "workflow",
-        id: RECEIVER_ASSET_ID,
-      });
-      await assetService.populateAsset({
-        assetId: RECEIVER_ASSET_ID,
-        ref: DEFAULT_ASSET_REF,
-        principal: { kind: "hub" },
-        tree: {
-          files: { [WORKFLOW_JSON_PATH]: JSON.stringify(receiverWorkflow) },
-          message: "seed receiver workflow.json",
-        },
-      });
-      await h.db.insert(workflowDefinitionTable).values({
-        id: `wfd_${RECEIVER_ID}`,
-        tenantId: RECEIVER_TENANT_ID,
-        name: RECEIVER_ID,
-        assetId: RECEIVER_ASSET_ID,
-      });
-      // Freeze the receiver's deploy-approved grant-walk snapshot onto the
-      // version row: the mail materializer reads the run's grants from it.
-      const receiverWalk = walkCapabilities(
-        receiverWorkflow,
-        createDefaultDirectorRegistry(),
-      );
-      await seedWorkflowDefinitionVersion(h.db, {
-        definitionId: `wfd_${RECEIVER_ID}`,
-        grantSnapshot: {
-          perStep: [...receiverWalk.perStep].map(([stepId, decl]) => ({
-            stepId,
-            grants: [...decl.grants],
-            grantEffects: Object.fromEntries(decl.grantEffects),
-          })),
-          grantRequirements: [...(receiverWorkflow.grantRequirements ?? [])],
-        },
-      });
-      await h.db.insert(workflowRunTable).values({
-        id: RECEIVER_ID,
-        tenantId: RECEIVER_TENANT_ID,
-        anchorRunId: RECEIVER_ID,
-        definitionId: `wfd_${RECEIVER_ID}`,
-        address: receiverAddress,
-        // The deploy-time birth state; the first mail trigger flips it running.
-        status: "deployed",
+        name: "fed-mail-sender-wf",
+        creatorPrincipalId: SENDER_CREATOR_PRINCIPAL_ID,
       });
 
       // Deploy the receiver onto sidecar 1 while it is the sole connection.
       // The receiver is the PASSIVE party -- it never initiates, it only wakes
       // when the sender's mail arrives -- so it, not the sender, is the one we
       // let absorb the connection churn of the placement dance below.
-      await deployWorkflow(receiverWorkflow, RECEIVER_ID, receiverAddress, {
-        toolPins: [],
-        grants: [],
-        approvals: [],
+      const receiverEntry = singleStepAgentEntry({
+        stepId: RECEIVER_STEP_ID,
+        systemPrompt: "You are the federated-mail receiver agent.",
+        address: receiverAddress,
+        agentId: `agent_${RECEIVER_ID}`,
+      });
+      await deployWorkflowSourceForTest(env, {
+        entryModule: receiverEntry,
+        db: h.db,
+        tenantId: RECEIVER_TENANT_ID,
+        definitionAssetId: RECEIVER_ASSET_ID,
+        anchorRunId: RECEIVER_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: receiverAddress,
+        approvals: buildApprovals(receiverAddress, []),
+        config: buildConfig(RECEIVER_ID, receiverAddress),
+        sources: { [RECEIVER_STEP_ID]: [inferenceSource()] },
       });
 
       // Bring up a second sidecar and wait for it to register.
@@ -421,11 +317,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Deploy the sender; it lands on sidecar 2, the pristine connection that
       // never churns, so the run that must actively fire on trigger is never
-      // disrupted.
-      await deployWorkflow(senderWorkflow, SENDER_ID, senderAddress, {
-        toolPins: TOOL_PINS,
-        grants: [SENDER_MAIL_GRANT],
-        approvals: [`tool:${MAIL_TOOL}`],
+      // disrupted. Its agent carries the transport-backed mail tool from its
+      // source closure.
+      const senderEntry = singleStepMailToolEntry({
+        variant: "transport",
+        stepId: SENDER_STEP_ID,
+        systemPrompt: "You are the federated-mail sender agent.",
+        address: senderAddress,
+        agentId: `agent_${SENDER_ID}`,
+      });
+      await deployWorkflowSourceForTest(env, {
+        entryModule: senderEntry,
+        db: h.db,
+        tenantId: SENDER_TENANT_ID,
+        definitionAssetId: SENDER_ASSET_ID,
+        anchorRunId: SENDER_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: senderAddress,
+        approvals: buildApprovals(senderAddress, [`tool:${MAIL_TOOL_NAME}`]),
+        config: buildConfig(SENDER_ID, senderAddress),
+        sources: { [SENDER_STEP_ID]: [inferenceSource()] },
       });
 
       // Wait for sidecar 1 (the receiver) to reconnect so the receiver is
@@ -474,118 +385,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(terminal.type).toBe("RunCompleted");
     });
 
-    async function deployWorkflow(
-      workflow: WorkflowDefinition,
-      anchorRunId: string,
-      address: string,
-      extras: {
-        toolPins: readonly ToolPackagePin[];
-        grants: WireGrantRule[];
-        approvals: string[];
-      },
-    ): Promise<void> {
-      const config: HarnessConfig = {
+    function inferenceSource(): InferenceSource {
+      return {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+    }
+
+    function buildConfig(anchorRunId: string, address: string): HarnessConfig {
+      return {
         sessionId: SESSION_ID,
         agentId: `${anchorRunId}`,
         tenantId: "tenant-1",
         principalId: "prin_integration-1",
         agentAddress: address,
-        systemPrompt: "Fallback prompt (overridden per step by orchestrator)",
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
-        grants: extras.grants,
-        sources: [
-          {
-            id: "anthropic:mock-model",
-            provider: "anthropic",
-            baseURL: `http://localhost:${String(env.inference.server.port)}`,
-            apiKey: "sk-mock",
-            model: "mock-model",
-          },
-        ],
+        grants: [],
+        sources: [inferenceSource()],
         defaultSource: "anthropic:mock-model",
       };
-      const operatorApprovals: ApprovalSet = new Set<string>([
+    }
+
+    function buildApprovals(address: string, extra: string[]): ApprovalSet {
+      return new Set<string>([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${address}`,
         `mail.send:${DEPLOYMENT_DOMAIN}`,
-        ...extras.approvals,
+        ...extra,
       ]);
-      const launchSession: LaunchSessionFn = async (p) => {
-        await env.hub.sessionService.stageWorkflowStep({
-          agentAddress: p.agentAddress,
-          agentId: p.agentId,
-          runId: p.runId,
-          config: p.config,
-          deployContent: toLaunchDeployContent(p.deployContent),
-          ...(p.toolPackagePins !== undefined
-            ? { toolPackagePins: p.toolPackagePins }
-            : {}),
-        });
-      };
-      const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-        env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-          definition: {
-            id: params.definition.id,
-            triggers: [...params.definition.triggers],
-            stepOrder: [...params.definition.stepOrder],
-            steps: params.definition.steps as Record<string, unknown>,
-            ...(params.definition.state !== undefined
-              ? { state: params.definition.state }
-              : {}),
-          },
-          sources: params.sources,
-        });
-      const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-        env.hub.sessionService.deploySingleStepAtHead(params);
-      const workflowRepo: WorkflowRepoWriter = {
-        async writeWorkflowRepo(args) {
-          const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-          const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-          const files: Record<string, string> = {};
-          for (const [k, v] of args.files) files[k] = v;
-          await env.hub.agentRepoStore.repoStore.writeTree(
-            principal,
-            repoId,
-            DEFAULT_ASSET_REF,
-            { files, message: `fed-mail test: ${args.workflowRepoId}` },
-          );
-        },
-      };
-      const orchestrator = createWorkflowDeployOrchestrator({
-        directorRegistry: createDefaultDirectorRegistry(),
-        workflowRepo,
-        launchSession,
-        sendMultiStepDeploy,
-        deploySingleStepAtHead,
-      });
-      const result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
-        runId: anchorRunId,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-        ...(extras.toolPins.length > 0
-          ? { toolPackagePins: extras.toolPins }
-          : {}),
-      });
-      if (!result.publicKey) {
-        throw new Error(
-          `deployWorkflow(${anchorRunId}) returned no publicKey\n${env.sidecarDiagnostics()}`,
-        );
-      }
-      env.registerDeployment({
-        anchorRunId,
-        workflowDefinition: workflow,
-        workflowRunRepoId: {
-          kind: "workflow-run",
-          id: deriveDeploymentId(address),
-        },
-        workflowRunRef: WORKFLOW_RUN_REF,
-        mailAddress: address,
-      });
     }
   },
 );

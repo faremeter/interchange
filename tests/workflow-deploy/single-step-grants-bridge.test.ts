@@ -1,36 +1,39 @@
 // Phase 4.1 lock: a single-step agent routed through the
-// spawned workflow-process child resolves its GRANTS from the
-// agent-state repo, preserves its `run_<hex>` identity, and threads its
-// inference events to the hub timeline keyed to the deploy's session.
+// spawned workflow-process child resolves its GRANTS, preserves its
+// `run_<hex>` identity, and threads its inference events to the hub
+// timeline keyed to the deploy's session.
 //
 // This is the foundation sub-step every later Phase 4 step keys off: if
 // grants resolve EMPTY the child's authorize fails closed on every
 // resource and every tool-using agent silently stops working. The test
-// is therefore written to FAIL if the grants bridge is removed (the
-// granted tool's authorize would deny, the run would not complete, and
-// the credentials snapshot would read back empty).
+// is therefore written to FAIL if the grants path is broken (the granted
+// tool's authorize would deny, the run would not complete, and the frozen
+// grant snapshot would carry no tool grant).
 //
-// The deploy is a one-step workflow whose deploy mail address is the
-// run's own top-level `run_<id>@<domain>` address. The sidecar's
-// deploy router recognizes the single-step projection
-// (`stepOrder.length === 1`) and applies the single-agent identity
-// strategy: the sole step's grants live in the agent-state repo
-// keyed by `parseAgentId(address)`, and the grants bridge writes
-// `config.grants` there before the child spawns.
+// The deploy is a one-step workflow deployed BY SOURCE-REF whose agent
+// carries the inline `mail_send` tool from the `mail-tool.ts` fixture. The
+// deploy mail address is the run's own top-level `run_<id>@<domain>`
+// address. On the source path, tool authorization rides the frozen grant
+// snapshot: the probe's capability walk reads the source agent's inline tool
+// and emits a `tool:<name>` grant that the operator approves and the approve
+// step freezes onto the definition version row; the run's per-run grants
+// (delivered on the trigger frame) authorize the tool call at run time.
 //
 // Assertions:
 //   (a) identity: the deploy-ack persisted the public key for the run
 //       mail address, and `isRunAddress` recognizes it -- every routable
 //       address now names one self-anchored run.
-//   (b) grants resolve: `assembleCredentialsSnapshot` (the exact call the
-//       supervisor runs) reads the granted rule back from the legacy
-//       agent-state repo's `state/grants.json`.
+//   (b) grants resolve: the frozen grant snapshot (`loadFrozenGrantSnapshot`,
+//       the source-path grant store) carries the granted tool's
+//       `tool:<name>` grant. An empty snapshot here is the silent
+//       zero-grants failure this sub-step exists to prevent.
 //   (c) authorize round-trip: `evaluateGrants` (the exact evaluator the
 //       child's authorize adapter uses) ALLOWS the granted resource and
-//       FAILS CLOSED on an ungranted one. The behavioral half drives a
-//       mail message whose model turn calls the granted tool: the tool's
-//       authorize succeeds in the child, the tool runs, and the run
-//       reaches `RunCompleted`.
+//       FAILS CLOSED on an ungranted one, evaluated over the per-run grant
+//       the trigger delivers. The behavioral half drives a mail message
+//       whose model turn calls the granted tool: the tool's authorize
+//       succeeds in the child, the tool runs, and the run reaches
+//       `RunCompleted`.
 //   (d) events: an `inference.start` reaches the hub's `agent.event` sink
 //       carrying the deploy's sessionId.
 
@@ -39,41 +42,27 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { type } from "arktype";
 
 import { evaluateGrants } from "@intx/authz";
 import { isRunAddress } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import { WireGrantRule } from "@intx/types/grant-wire";
-import type { HarnessConfig } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { loadFrozenGrantSnapshot } from "@intx/db";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { generateKeyPair } from "@intx/crypto";
-import {
-  assembleCredentialsSnapshot,
-  type CredentialsSnapshot,
-} from "@intx/workflow-host";
-import {
-  createAgentRepoStore,
-  parseAgentId,
-  type RepoId,
-  type WorkflowRunHubPrincipal,
-} from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
+  SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
@@ -82,7 +71,8 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
+import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A single-agent run id: `run_` + a hex-shaped local part. The
@@ -91,28 +81,23 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // is exercised.
 const INSTANCE_LOCAL = "run_deadbeefcafe0001deadbeefcafe0002";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
+const AGENT_ID = "agent-launched-grants";
 
-// The tool the model is told to call. The granted resource is
-// `tool:<TOOL_NAME>` with action `invoke`; the agent's authorize gate
-// fires that exact query when the model calls the tool.
-const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
-const GRANTED_RESOURCE = `tool:${TOOL_NAME}`;
+// The granted resource is `tool:<MAIL_TOOL_NAME>` with action `invoke`; the
+// agent's authorize gate fires that exact query when the model calls the tool.
+const GRANTED_RESOURCE = `tool:${MAIL_TOOL_NAME}`;
 const UNGRANTED_RESOURCE = "tool:@intx/some-other/bundle:forbidden_tool";
 
 const SENTINEL_FILENAME = "grants-bridge-ran.txt";
 const SENTINEL_CONTENT = "authorized-in-child";
 
-const TOOL_PINS: readonly ToolPackagePin[] = [
-  { name: "@intx/tools-mail", version: "0.1.2" },
-];
-
-// The operator-approved grant the hub ships in-band on the deploy frame.
-// The grants bridge writes this verbatim into the legacy agent-state
-// repo's `state/grants.json`; the child reads it back to authorize the
-// tool. `expiresAt: null` keeps the rule non-expiring so the evaluator
-// never compares a wire-serialized date.
+// The run's tool grant, delivered per run via the `run.grants` frame the
+// trigger sends. `fireMailTrigger` does not materialize run grants itself the
+// way the production route does, so feeding the tool grant here reproduces the
+// per-run delivery, and the child's authorize resolves the tool call against
+// it. `expiresAt: null` keeps the rule non-expiring so the evaluator never
+// compares a wire-serialized date.
 const GRANTED_RULE: WireGrantRule = {
   id: "grant-tool-invoke",
   resource: GRANTED_RESOURCE,
@@ -125,352 +110,276 @@ const GRANTED_RULE: WireGrantRule = {
   principalId: null,
 };
 
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_single_step_grants_bridge";
+const CALLER_PRINCIPAL_ID = "prn_single_step_grants_bridge";
+const DEFINITION_ASSET_ID = "ast_single_step_grants_bridge_wf";
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "single-step-grants-bridge-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv({
     inferenceToolCall: {
-      toolName: TOOL_NAME,
+      toolName: MAIL_TOOL_NAME,
       input: { to: SENTINEL_CONTENT, body: SENTINEL_FILENAME },
     },
   });
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("single-step launched-agent grants bridge via spawned child", () => {
-  test("grants resolve from the legacy agent-state repo, identity is preserved, and events carry the sessionId", async () => {
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
+describe.skipIf(!harnessDbEnvAvailable())(
+  "single-step launched-agent grants via spawned child",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    // (a) precondition: the deployment address is the launched-agent
-    // identity shape, not a workflow-derived address.
-    expect(isRunAddress(deploymentMailAddress)).toBe(true);
-
-    const agent = defineAgent({
-      id: "agent-launched-grants",
-      systemPrompt: "You are the single-step launched agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        [STEP_ID]: step({ agent }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      // The non-empty grant set is the whole point: it must resolve in
-      // the child for the granted tool's authorize to allow.
-      grants: [GRANTED_RULE],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-      env.hub.sessionService.deploySingleStepAtHead(params);
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `single-step-grants-bridge test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
+    test("grants resolve from the frozen snapshot, identity is preserved, and events carry the sessionId", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-        toolPackagePins: TOOL_PINS,
+        domain: DEPLOYMENT_DOMAIN,
       });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
-      );
-    }
-    expect(result.publicKey).toBeTruthy();
 
-    // (a) identity: the deploy-ack fired for the run's `run_<hex>`
-    // address and persisted a public key. The ack listener keys on the
-    // top-level run address (per-step derived addresses are a no-op), so a
-    // captured ack for this address proves the identity survived the
-    // child re-route.
-    await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
-    const ackKey = env.hub.deployAcks.get(deploymentMailAddress);
-    expect(ackKey).toBeDefined();
-    expect(typeof ackKey).toBe("string");
-    expect((ackKey ?? "").length).toBeGreaterThan(0);
+      // (a) precondition: the deployment address is the launched-agent
+      // identity shape, not a workflow-derived address.
+      expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${env.inference.server.port}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
 
-    // (b) grants resolve: the grants bridge wrote `config.grants` into the
-    // legacy agent-state repo at `parseAgentId(legacyAddress)`. Read it
-    // back through `assembleCredentialsSnapshot` -- the EXACT call the
-    // supervisor runs at spawn -- against the sidecar's on-disk substrate,
-    // using the same single-step `deriveStepRepoId` the deploy router
-    // applied. An empty snapshot here is the silent zero-grants failure
-    // this sub-step exists to prevent.
-    const legacyAgentStateRepoId: RepoId = {
-      kind: "agent-state",
-      id: parseAgentId(deploymentMailAddress),
-    };
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
 
-    // Read the grants back off the SIDECAR's on-disk substrate. The
-    // sidecar runs in a subprocess, so reconstruct a RepoStore pointed at
-    // the same data dir; only `getRepoDir` (a pure path computation that
-    // honors the agent-state kind's directory layout) is exercised by
-    // `assembleCredentialsSnapshot`, so a throwaway signing key is fine.
-    const readbackRepoStore = createAgentRepoStore({
-      dataDir: env.sidecar.dataDir,
-      signingKey: await generateKeyPair(),
-    }).repoStore;
-    const grantsFilePath = path.join(
-      readbackRepoStore.getRepoDir(legacyAgentStateRepoId),
-      "state",
-      "grants.json",
-    );
-    await waitFor(() => fs.existsSync(grantsFilePath), {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+        `tool:${MAIL_TOOL_NAME}`,
+      ]);
 
-    const snapshot: CredentialsSnapshot = await assembleCredentialsSnapshot({
-      repoStore: readbackRepoStore,
-      principal: { kind: "hub" },
-      stepOrder: [STEP_ID],
-      anchorRunId: deriveDeploymentId(deploymentMailAddress),
-      deriveStepAddress: () => deploymentMailAddress,
-      deriveStepRepoId: () => legacyAgentStateRepoId,
-    });
-    const stepSnapshot = snapshot.steps.find((s) => s.stepId === STEP_ID);
-    if (stepSnapshot === undefined) {
-      throw new Error(
-        `credentials snapshot has no entry for step ${STEP_ID}; steps=${JSON.stringify(
-          snapshot.steps.map((s) => s.stepId),
-        )}`,
-      );
-    }
-    // The granted rule must be present -- the lock against silent
-    // zero-grants. If the grants bridge were removed this array would be
-    // empty and the find would fail. Validate the snapshot's
-    // `readonly unknown[]` grants through the same `WireGrantRule`
-    // validator the wire boundary uses; the validator coerces
-    // `expiresAt` back to a `Date`, yielding `GrantRule`-shaped entries
-    // the evaluator accepts.
-    const validatedGrants = WireGrantRule.array()([...stepSnapshot.grants]);
-    if (validatedGrants instanceof type.errors) {
-      throw new Error(
-        `read-back grants failed WireGrantRule validation: ${validatedGrants.summary}`,
-      );
-    }
-    const readBackGrants: GrantRule[] = validatedGrants;
-    expect(readBackGrants.length).toBeGreaterThan(0);
-    const granted = readBackGrants.find(
-      (g) => g.resource === GRANTED_RESOURCE && g.effect === "allow",
-    );
-    expect(granted).toBeDefined();
+      const entryModule = singleStepMailToolEntry({
+        variant: "fs",
+        stepId: STEP_ID,
+        systemPrompt: "You are the single-step launched agent.",
+        address: deploymentMailAddress,
+        agentId: AGENT_ID,
+      });
 
-    // (c) authorize round-trip against the read-back grants -- the same
-    // evaluator the child's authorize adapter uses. Granted allows;
-    // ungranted fails closed (no allow effect).
-    const allowed = await evaluateGrants(
-      [...readBackGrants],
-      GRANTED_RESOURCE,
-      "invoke",
-    );
-    expect(allowed.effect).toBe("allow");
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
 
-    const denied = await evaluateGrants(
-      [...readBackGrants],
-      UNGRANTED_RESOURCE,
-      "invoke",
-    );
-    // Fail closed: no grant matches, so the resolved effect is null (the
-    // authorize layer treats a null effect as deny).
-    expect(denied.effect).not.toBe("allow");
-
-    // (c) behavioral: drive a mail message. The model turn calls the
-    // granted tool; the tool's authorize succeeds in the child, the tool
-    // runs (writes the sentinel), and the run reaches RunCompleted. If
-    // grants had resolved empty the tool authorize would deny and the run
-    // would not complete.
-    await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<single-step-grants-bridge-1@integration.interchange>",
-      grants: [GRANTED_RULE],
-    });
-
-    const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
-    });
-
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      runId,
-      {
+      // (a) identity: the deploy-ack fired for the run's `run_<hex>`
+      // address and persisted a public key. The ack listener keys on the
+      // top-level run address (per-step derived addresses are a no-op), so a
+      // captured ack for this address proves the identity survived the
+      // child re-route.
+      await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
         timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
-      },
-    );
-    if (terminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
-      const failed = events.find(
-        (e) => e.type === "StepFailed" || e.type === "RunFailed",
-      );
-      throw new Error(
-        `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(terminal.type).toBe("RunCompleted");
+      });
+      const ackKey = env.hub.deployAcks.get(deploymentMailAddress);
+      expect(ackKey).toBeDefined();
+      expect(typeof ackKey).toBe("string");
+      expect((ackKey ?? "").length).toBeGreaterThan(0);
 
-    // The granted tool actually executed in the child (proof the
-    // authorize allowed it): the tool wrote a sentinel into the warm
-    // single-step agent's STABLE per-agent workspace, rooted at
-    // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
-    // step identity, not the per-message runId).
-    const sentinelPath = path.join(
-      env.sidecar.dataDir,
-      "workflow-step-state",
-      workflowRunRepoId.id,
-      "warm",
-      encodeURIComponent(STEP_ID),
-      "workspace",
-      SENTINEL_FILENAME,
-    );
-    if (!fs.existsSync(sentinelPath)) {
-      throw new Error(
-        `granted tool sentinel ${sentinelPath} was not written; the tool authorize did not allow in the child\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
+      const workflowRunRepoId = handle.workflowRunRepoId;
 
-    // (d) events: an inference.start reached the hub's agent.event sink
-    // carrying the deploy's sessionId. The sink is keyed by
-    // (agentAddress, sessionId); the production wiring threads
-    // config.sessionId through publishWorkflowInferenceEvent.
-    await waitFor(
-      () =>
-        env.hub.agentEvents.some(
-          (e) =>
-            e.addr === deploymentMailAddress &&
-            e.sid === SESSION_ID &&
-            isInferenceStart(e.event),
-        ),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    const inferenceStart = env.hub.agentEvents.find(
-      (e) =>
-        e.addr === deploymentMailAddress &&
-        e.sid === SESSION_ID &&
-        isInferenceStart(e.event),
-    );
-    expect(inferenceStart).toBeDefined();
-    expect(inferenceStart?.sid).toBe(SESSION_ID);
-  });
-});
+      // (b) grants resolve: the source path freezes the probed grant surface
+      // onto the definition version row. Read the frozen snapshot back --
+      // the source-path grant store -- and assert it carries the granted
+      // tool's `tool:<name>` grant. An empty snapshot here is the silent
+      // zero-grants failure this sub-step exists to prevent.
+      if (!handle.approved.approval.ok) {
+        throw new Error("expected an approved definition");
+      }
+      const snapshot = await loadFrozenGrantSnapshot(
+        h.db,
+        handle.approved.approval.definitionId,
+      );
+      if (snapshot === null) {
+        throw new Error("expected a frozen grant snapshot for the definition");
+      }
+      const snapshotToolGrants = snapshot.perStep.flatMap((s) =>
+        s.grants.filter((g) => g.startsWith("tool:")),
+      );
+      expect(snapshotToolGrants).toContain(GRANTED_RESOURCE);
+
+      // (c) authorize round-trip against the per-run grant the trigger
+      // delivers -- the same evaluator the child's authorize adapter uses.
+      // Validate the wire grant through the same `WireGrantRule` validator the
+      // wire boundary uses; the validator coerces `expiresAt` back to a `Date`,
+      // yielding a `GrantRule`-shaped entry the evaluator accepts. Granted
+      // allows; ungranted fails closed (no allow effect).
+      const validatedGrants = WireGrantRule.array()([GRANTED_RULE]);
+      if (validatedGrants instanceof type.errors) {
+        throw new Error(
+          `run grant failed WireGrantRule validation: ${validatedGrants.summary}`,
+        );
+      }
+      const runGrants: GrantRule[] = validatedGrants;
+
+      const allowed = await evaluateGrants(
+        [...runGrants],
+        GRANTED_RESOURCE,
+        "invoke",
+      );
+      expect(allowed.effect).toBe("allow");
+
+      const denied = await evaluateGrants(
+        [...runGrants],
+        UNGRANTED_RESOURCE,
+        "invoke",
+      );
+      // Fail closed: no grant matches, so the resolved effect is null (the
+      // authorize layer treats a null effect as deny).
+      expect(denied.effect).not.toBe("allow");
+
+      // The source-ref frame round-trips through the real sidecar subprocess,
+      // so routability is asynchronous. Wait for it before firing the trigger.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // (c) behavioral: drive a mail message. The model turn calls the
+      // granted tool; the tool's authorize succeeds in the child, the tool
+      // runs (writes the sentinel), and the run reaches RunCompleted. If
+      // the per-run grant had not landed the tool authorize would deny and
+      // the run would not complete.
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<single-step-grants-bridge-1@integration.interchange>",
+        grants: [GRANTED_RULE],
+      });
+
+      const runId = await waitForFirstRunId(env, workflowRunRepoId, {
+        diagnostics: env.sidecarDiagnostics,
+        timeoutMs: 20_000,
+      });
+
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+        {
+          timeoutMs: 20_000,
+          diagnostics: env.sidecarDiagnostics,
+        },
+      );
+      if (terminal.type !== "RunCompleted") {
+        const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
+        const failed = events.find(
+          (e) => e.type === "StepFailed" || e.type === "RunFailed",
+        );
+        throw new Error(
+          `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(terminal.type).toBe("RunCompleted");
+
+      // The granted tool actually executed in the child (proof the
+      // authorize allowed it): the tool wrote a sentinel into the warm
+      // single-step agent's STABLE per-agent workspace, rooted at
+      // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
+      // step identity, not the per-message runId).
+      const sentinelPath = path.join(
+        env.sidecar.dataDir,
+        "workflow-step-state",
+        workflowRunRepoId.id,
+        "warm",
+        encodeURIComponent(STEP_ID),
+        "workspace",
+        SENTINEL_FILENAME,
+      );
+      if (!fs.existsSync(sentinelPath)) {
+        throw new Error(
+          `granted tool sentinel ${sentinelPath} was not written; the tool authorize did not allow in the child\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
+
+      // (d) events: an inference.start reached the hub's agent.event sink
+      // carrying the deploy's sessionId. The sink is keyed by
+      // (agentAddress, sessionId); the production wiring threads
+      // config.sessionId through publishWorkflowInferenceEvent.
+      await waitFor(
+        () =>
+          env.hub.agentEvents.some(
+            (e) =>
+              e.addr === deploymentMailAddress &&
+              e.sid === SESSION_ID &&
+              isInferenceStart(e.event),
+          ),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      const inferenceStart = env.hub.agentEvents.find(
+        (e) =>
+          e.addr === deploymentMailAddress &&
+          e.sid === SESSION_ID &&
+          isInferenceStart(e.event),
+      );
+      expect(inferenceStart).toBeDefined();
+      expect(inferenceStart?.sid).toBe(SESSION_ID);
+    });
+  },
+);
 
 function isInferenceStart(event: unknown): boolean {
   return (
