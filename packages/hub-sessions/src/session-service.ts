@@ -991,9 +991,32 @@ async function emitSourceRefDeployFrame(
       enumerateInertOnTriggerBodies(projection).map(async (body) => {
         const sources: Record<string, InferenceSource[]> = {};
         for (const bodyStepId of body.definition.stepOrder) {
+          // Agent-bearing body steps run inference and need a source pinned
+          // through the approval gate. A non-agent body step (sleep,
+          // awaitSignal) declares no preference and runs no inference, so it
+          // advertises no `inference.source` grant the gate could approve --
+          // but the deploy frame's coverage contract still requires a source
+          // entry for EVERY body step. Pin the deploy's default source as an
+          // inert placeholder for such a step: the body child resolves a
+          // step's source only when that step invokes inference, so this entry
+          // is never read, which is why it needs no operator approval.
+          const preferred = body.preferredByStep[bodyStepId] ?? null;
+          if (preferred === null) {
+            const placeholder = args.config.sources.find(
+              (s) => s.id === args.config.defaultSource,
+            );
+            if (placeholder === undefined) {
+              throw new WorkflowDefinitionInvalidError(
+                body.ref,
+                `non-agent body step ${bodyStepId} needs an inert placeholder source, but the deploy config carries no defaultSource entry to pin`,
+              );
+            }
+            sources[bodyStepId] = [placeholder];
+            continue;
+          }
           sources[bodyStepId] = [
             pickStepInferenceSource({
-              preferred: body.preferredByStep[bodyStepId] ?? null,
+              preferred,
               stepId: bodyStepId,
               workflowId: body.ref,
               config: args.config,
