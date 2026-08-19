@@ -185,3 +185,42 @@ test("deploys through the asset source picker without a pin", async ({
   });
   expect(body).not.toHaveProperty("pin");
 });
+
+test("deploys through the asset tarball source picker with a pin", async ({
+  page,
+}) => {
+  const baseURL = requireBaseURL();
+  await signUp(page, "picker-tarball@example.com");
+  const deploy = await stubWorkflowDetail(page);
+
+  await page.goto(`${baseURL}/tenants/${TENANT_ID}/workflows/${WORKFLOW_ID}`);
+  await expect(
+    page.getByRole("heading", { name: "Launch Workflow" }),
+  ).toBeVisible();
+
+  await page.locator("#definition-kind").click();
+  await page.getByRole("option", { name: "Asset tarball" }).click();
+
+  // The tarball variant names a hub asset and selects the definition package
+  // inside it by the install pin, so it sends an asset source with a `tarball`
+  // format plus a pin.
+  await page.locator("#definition-entry").fill("./workflow.mjs");
+  await page.locator("#definition-asset-id").fill("ast_flow_tarball");
+  await page.locator("#definition-pin").fill("@acme/flow@1.2.3");
+  await fillInferenceSource(page);
+
+  await page.getByRole("button", { name: "Launch Workflow" }).click();
+
+  await expect(page.getByText(DEPLOYMENT_ID)).toBeVisible();
+  expect(deploy.body()).toEqual({
+    source: {
+      kind: "asset",
+      assetId: "ast_flow_tarball",
+      package: { format: "tarball" },
+    },
+    entry: "./workflow.mjs",
+    sources: expectedSources,
+    defaultSource: "anthropic:claude-sonnet-5",
+    pin: "@acme/flow@1.2.3",
+  });
+});
