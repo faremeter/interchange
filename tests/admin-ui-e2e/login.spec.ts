@@ -15,12 +15,14 @@ test("signs up and loads the authenticated dashboard", async ({ page }) => {
   await page.goto(baseURL);
   await expect(page).toHaveURL(`${baseURL}/login`);
 
-  // The fresh database has no user, so drive the sign-up flow: toggle
-  // the form into create-account mode, which reveals the name field.
+  // Drive the sign-up flow with a fresh, un-seeded address: the global
+  // setup seeds alice@example.com, so this spec must not reuse it or the
+  // sign-up would collide. Toggle the form into create-account mode, which
+  // reveals the name field.
   await page.getByRole("button", { name: "Sign up" }).click();
 
-  await page.getByLabel("Name").fill("Alice Admin");
-  await page.getByLabel("Email").fill("alice@example.com");
+  await page.getByLabel("Name").fill("Fresh Signup");
+  await page.getByLabel("Email").fill("fresh-signup@example.com");
   await page.getByLabel("Password").fill("password123");
 
   // autoSignIn (better-auth default) establishes the session cookie on
