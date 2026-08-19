@@ -39,9 +39,9 @@ export interface InertBodyStepPreference {
 export interface EnumeratedInertOnTriggerBody {
   /**
    * The body's ref -- `onTriggerBodyRef(projection.id, stepId)`. This is also
-   * `definition.id`, the id the sidecar stages the body's `workflow.json` and
-   * `sources.json` under, and the id the source-ref run child re-derives when it
-   * rewrites the re-evaluated closure -- so the three agree byte-for-byte.
+   * `definition.id`, the id the sidecar stages the body's `sources.json` under,
+   * and the id the source-ref run child re-derives when it rewrites the
+   * re-evaluated closure -- so the three agree byte-for-byte.
    */
   readonly ref: string;
   /**

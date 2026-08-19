@@ -493,10 +493,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       kind: "workflow-run",
       id: DEPLOYMENT_ID,
     };
-    const workflowDefinitionRepoId: RepoId = {
-      kind: "workflow-run",
-      id: "workflow-asset",
-    };
     const principal: WorkflowRunWorkflowProcessPrincipal = {
       kind: "workflow-process",
       anchorRunId: DEPLOYMENT_ID,
@@ -625,8 +621,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
         principal,
-        workflowDefinitionRepoId,
-        workflowDefinitionRef: WORKFLOW_RUN_REF,
         invokeStep,
         spawnChild: async () => ({ terminalStatus: "completed" }),
         scheduler: { scheduleIn: () => () => undefined },

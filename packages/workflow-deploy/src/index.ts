@@ -34,7 +34,6 @@ export {
   type InertBodyStepPreference,
 } from "./inert-ontrigger-bodies";
 export {
-  isSourceApproved,
   pickStepInferenceSource,
   buildInertProjectionStepSources,
   buildSingleStepAgentDefinition,

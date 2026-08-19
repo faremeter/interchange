@@ -420,11 +420,6 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: REF,
     principal: { kind: "supervisor" } as Principal,
-    // The source-ref child never reads the workflow-asset repo; these are
-    // present because the bindings shape requires them and the live-authored
-    // arm consumes them.
-    workflowDefinitionRepoId: { kind: "workflow", id: "workflow-asset" },
-    workflowDefinitionRef: REF,
     invokeStep: async () => ({ output: null }),
     spawnChild: async () => ({ terminalStatus: "completed" }),
     scheduler: { scheduleIn: () => () => undefined },

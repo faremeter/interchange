@@ -309,7 +309,7 @@ export function mountHubRoutes(
   );
 
   // The workflow deploy + signal + listing surface needs the asset
-  // service to hydrate a workflow definition from its workflow.json, and
+  // service to hydrate a workflow definition from its source closure, and
   // the run-observe routes read the workflow-run repo through the repo
   // store. Gate on both being present; the XOR throw above keeps
   // assetService and repoStore moving as a unit, so this also narrows

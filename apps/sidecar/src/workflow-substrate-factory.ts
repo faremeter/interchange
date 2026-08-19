@@ -173,8 +173,6 @@ export class ChildStepNotImplementedError extends Error {
  */
 export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "SIDECAR_DATA_DIR",
-  "WORKFLOW_DEFINITION_REPO_ID",
-  "WORKFLOW_DEFINITION_REF",
   "WORKFLOW_RUN_REPO_ID",
   "WORKFLOW_RUN_REF",
   "SIDECAR_SIGNING_PUBLIC_KEY",
@@ -190,8 +188,6 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
 
 const SubstrateConfig = type({
   SIDECAR_DATA_DIR: "string > 0",
-  WORKFLOW_DEFINITION_REPO_ID: "string > 0",
-  WORKFLOW_DEFINITION_REF: "string > 0",
   WORKFLOW_RUN_REPO_ID: "string > 0",
   WORKFLOW_RUN_REF: "string > 0",
   SIDECAR_SIGNING_PUBLIC_KEY: "string > 0",
@@ -1964,10 +1960,6 @@ export function createSidecarSubstrateFactory(
       kind: "workflow-run" as const,
       id: validated.WORKFLOW_RUN_REPO_ID,
     };
-    const workflowDefinitionRepoId = {
-      kind: "workflow" as const,
-      id: validated.WORKFLOW_DEFINITION_REPO_ID,
-    };
     const principal: WorkflowRunWorkflowProcessPrincipal = {
       kind: "workflow-process",
       anchorRunId: env.spawn.anchorRunId,
@@ -2414,8 +2406,6 @@ export function createSidecarSubstrateFactory(
       workflowRunRepoId,
       workflowRunRef: validated.WORKFLOW_RUN_REF,
       principal,
-      workflowDefinitionRepoId,
-      workflowDefinitionRef: validated.WORKFLOW_DEFINITION_REF,
       invokeStep,
       initialSources: stepInferenceSources,
       runChild,

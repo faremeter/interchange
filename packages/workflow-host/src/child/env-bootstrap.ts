@@ -69,14 +69,6 @@ const SpawnTimeEnvShape = type({
   // so the warm-keep decision is deterministic and a multi-step agent is
   // never warm-kept by a silent default.
   "WARM_KEEP?": "string",
-  // JSON object mapping each referenced onTrigger body id to the hub-approved
-  // wire hash of that body's projection. The sidecar's deploy router injects
-  // it (via the substrate env) from the deploy frame's per-body approved
-  // hashes so a body child can re-verify its own recompute against the hub
-  // authority. Optional: only an onTrigger deploy that carried referenced
-  // bodies with approved hashes sets it; absent otherwise. Parsed to a record
-  // below; malformed JSON or a non-string value throws.
-  "REFERENCED_DEFINITION_HASHES?": "string",
   // Sidecar-local directory of the materialized workflow-definition closure the
   // deployment evaluates. Source-ref is the only deploy lineage, so the child
   // always evaluates a pinned code closure to a LIVE definition and re-verifies
@@ -110,13 +102,6 @@ export interface SpawnTimeEnv {
    * this value.
    */
   definitionHash: string;
-  /**
-   * Hub-approved wire hash per referenced onTrigger body id. Empty when the
-   * deployment carried no referenced bodies (or none with an approved hash).
-   * A body child re-verifies its body projection recompute against the entry
-   * keyed by the body id.
-   */
-  referencedDefinitionHashes: Record<string, string>;
   /** Mail address the deployment registered on the bus. */
   mailboxAddress: string;
   /**
@@ -191,16 +176,12 @@ export function parseSpawnTimeEnv(
       `workflow-child STEP_COUNT must be a positive integer; got ${JSON.stringify(validated.STEP_COUNT)}`,
     );
   }
-  const referencedDefinitionHashes = parseReferencedDefinitionHashes(
-    validated.REFERENCED_DEFINITION_HASHES,
-  );
   return {
     channelId: validated.IPC_CHANNEL_ID,
     hmacKey,
     hostPublicKey,
     anchorRunId: validated.DEPLOYMENT_ID,
     definitionHash: validated.DEFINITION_HASH,
-    referencedDefinitionHashes,
     mailboxAddress: validated.MAILBOX_ADDRESS,
     stepCount,
     // Strict `=== "true"` so any other value (including the key's
@@ -209,39 +190,4 @@ export function parseSpawnTimeEnv(
     warmKeep: validated.WARM_KEEP === "true",
     closurePackageDir: validated.CLOSURE_PACKAGE_DIR,
   };
-}
-
-/** A JSON object of `bodyId -> approved wire hash`, each a non-empty string. */
-const ReferencedDefinitionHashesShape = type({
-  "[string]": "string > 0",
-});
-
-/**
- * Parse the `REFERENCED_DEFINITION_HASHES` env value into a validated
- * `bodyId -> approvedWireHash` record. An absent value is the common case (a
- * deployment with no referenced onTrigger bodies) and yields an empty record.
- * A present value must be a JSON object whose every value is a non-empty
- * string; malformed JSON or an off-shape object throws so the child aborts
- * before it trusts an unparseable per-body hash map.
- */
-function parseReferencedDefinitionHashes(
-  raw: string | undefined,
-): Record<string, string> {
-  if (raw === undefined) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(
-      "workflow-child REFERENCED_DEFINITION_HASHES must be valid JSON",
-      { cause },
-    );
-  }
-  const validated = ReferencedDefinitionHashesShape(parsed);
-  if (validated instanceof type.errors) {
-    throw new Error(
-      `workflow-child REFERENCED_DEFINITION_HASHES failed validation: ${validated.summary}`,
-    );
-  }
-  return validated;
 }

@@ -9,15 +9,13 @@
 // (each step's ordered inference-source failover chain, threaded to the child
 // via the spawn env and durable nowhere else), `sessionId` (inference-event
 // correlation), `hubPublicKey` (the head's deploy-pack / inbound verification
-// key), `approvedWireHash` + `referencedDefinitionHashes` (the hub-approved
-// hashes the deploy frame carried, so a restore re-spawn feeds the child the
-// same re-verify anchors without recomputing them), `lineage`, and -- for a
-// source-ref deployment -- the `sourceRef` pin (source + frozen closure) a
-// restore needs to re-materialize and re-evaluate the pinned code. The
-// definition itself lives
-// in `assets/workflow/<definitionId>/workflow.json`, referenced by
-// `definitionId`, and each step's grants live in its agent-state repo, so
-// neither is duplicated here.
+// key), `approvedWireHash` (the hub-approved wire hash the deploy frame
+// carried, so a restore re-spawn feeds the child the same re-verify anchor
+// without recomputing it), `lineage`, and -- for a source-ref deployment --
+// the `sourceRef` pin (source + frozen closure) a restore needs to
+// re-materialize and re-evaluate the pinned code. The definition itself is
+// re-materialized from that `sourceRef` closure on restore, and each step's
+// grants live in its agent-state repo, so neither is duplicated here.
 
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { dirname, join as pathJoin } from "node:path";
@@ -53,16 +51,6 @@ const workflowRunRecordBase = {
   },
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
-  // The hub-approved wire hash per referenced onTrigger body id, from the
-  // deploy frame's `referencedDefinitions`. A boot-time restore re-threads
-  // these into the child's spawn env so the onTrigger-body re-verify barrier
-  // holds across a restart, rather than the body spawn failing closed for want
-  // of a hash. The hash originated out-of-band on the signed deploy frame (not
-  // from the on-disk body bytes), matching how the top-level `approvedWireHash`
-  // is carried across restart. Omitted when the deployment has no bodies.
-  "referencedDefinitionHashes?": {
-    "[string]": "string > 0",
-  },
 } as const;
 
 /**

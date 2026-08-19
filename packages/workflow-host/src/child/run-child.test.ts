@@ -452,8 +452,6 @@ function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     principal,
-    workflowDefinitionRepoId: { kind: "workflow", id: "workflow-asset" },
-    workflowDefinitionRef: "refs/heads/main",
     invokeStep: async () => ({ output: null }),
     spawnChild: async () => ({ terminalStatus: "completed" }),
     scheduler: {
@@ -1891,10 +1889,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       kind: "workflow-run",
       id: anchorRunId,
     };
-    const workflowDefinitionRepoId: RepoId = {
-      kind: "workflow-run",
-      id: "workflow-asset",
-    };
 
     // Real substrate so the runtime body's event commits persist and
     // read back (the runtime stalls against a non-persisting stub). The
@@ -1981,8 +1975,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRepoId,
       workflowRunRef: "refs/heads/main",
       principal,
-      workflowDefinitionRepoId,
-      workflowDefinitionRef: "refs/heads/main",
       invokeStep,
       spawnChild: async () => ({ terminalStatus: "completed" }),
       scheduler: { scheduleIn: () => () => undefined },
@@ -2101,10 +2093,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       kind: "workflow-run",
       id: anchorRunId,
     };
-    const workflowDefinitionRepoId: RepoId = {
-      kind: "workflow-run",
-      id: "workflow-asset",
-    };
 
     const signingKey: KeyPair = await generateKeyPair();
     const allowAll: AuthorizeFn = () => ({ allowed: true });
@@ -2163,8 +2151,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRepoId,
       workflowRunRef: "refs/heads/main",
       principal,
-      workflowDefinitionRepoId,
-      workflowDefinitionRef: "refs/heads/main",
       invokeStep,
       spawnChild: async () => ({ terminalStatus: "completed" }),
       scheduler: { scheduleIn: () => () => undefined },
