@@ -813,12 +813,11 @@ branches on the frame shape:
    and `credentialsSnapshot` assembly.
 
 A frame carrying neither shape is rejected -- there is no in-process
-deploy path. A single agent deploys as a single-step workflow: the
-instance-deploy path wraps its `HarnessConfig` with
-`wrapHarnessAsSingleStepWorkflow`
-(`packages/workflow-deploy/src/orchestrator.ts`) and deploys it at the
-workflow's head, so single- and multi-step deployments run the same
-supervised-child topology and differ only in step count.
+deploy path. A single agent deploys as a single-step workflow whose
+lone step IS the deployment head (`deriveRunAddress` in
+`packages/workflow-deploy/src/orchestrator.ts`), so single- and
+multi-step deployments run the same supervised-child topology and
+differ only in step count.
 
 Run-lifecycle events (`RunStarted` / `StepStarted` / `StepCompleted` /
 `RunCompleted`) are committed by the workflow-process child from its own
@@ -1298,7 +1297,7 @@ On reconnect the sidecar restores its workflow deployments from local disk (see 
 
 1. After local restoration, the sidecar sends exactly one initial handshake: an empty `register` when it hosts no live workflow deployment, or a `reconnect` carrying its complete live workflow-deployment address set (in `agentAddresses`). A restored sidecar never sends a preliminary empty `register`, so the Hub cannot mistake its not-yet-announced inventory for an empty one
 2. For each address the hub resolves the stored deployment key (`workflow_deployment.publicKey`, gated on a live `deployed` status), issues a random nonce, and routes the address only after the sidecar returns a valid signature over `nonce ‖ address`. An address with no live key fails closed and stays unrouted — a token-holding sidecar cannot reclaim a deployment's route without the deployment's key
-3. The hub does not run its deploy-ref freshness catch-up for a workflow-deployment address — that pack-transfer path is launched-agent only (`isWorkflowDerivedAddress` short-circuits it). A deployment's in-flight run state is reconstructed sidecar-locally at restore, not re-fetched from the hub
+3. The hub does not run its deploy-ref freshness catch-up for a workflow-deployment address — that pack-transfer path is launched-agent only (`isRunAddress` short-circuits it). A deployment's in-flight run state is reconstructed sidecar-locally at restore, not re-fetched from the hub
 
 The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
 
@@ -1310,7 +1309,7 @@ The hub enforces that boundary structurally in `handleRegister`: a `register` fr
 
 A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates, the workflow-asset repo, the per-step `agent-state` repos — until an explicit undeploy/redeploy replaces it. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
 
-This holds across a sidecar↔hub disconnect. If the workflow definition is edited on the hub while a sidecar is disconnected, the reconnect does not pull the newer definition down: the deploy-ref freshness catch-up that re-deploys a stale launched agent is deliberately skipped for a workflow-derived address (`isWorkflowDerivedAddress` short-circuits it in the reconnect path — see item 3 above and the exclusion-branch comment in `sidecar-handler.ts`). The reconnected deployment resumes on the definition it deployed with; picking up the new definition requires an explicit redeploy. This is the pinned-forever decision, and it is orthogonal to recycle (same deploy tree, fresh process) as documented under "Recycle" — recycle likewise never refetches the deploy tree.
+This holds across a sidecar↔hub disconnect. If the workflow definition is edited on the hub while a sidecar is disconnected, the reconnect does not pull the newer definition down: the deploy-ref freshness catch-up that re-deploys a stale launched agent is deliberately skipped for a workflow-derived address (`isRunAddress` short-circuits it in the reconnect path — see item 3 above and the exclusion-branch comment in `sidecar-handler.ts`). The reconnected deployment resumes on the definition it deployed with; picking up the new definition requires an explicit redeploy. This is the pinned-forever decision, and it is orthogonal to recycle (same deploy tree, fresh process) as documented under "Recycle" — recycle likewise never refetches the deploy tree.
 
 ### State Push Policy
 

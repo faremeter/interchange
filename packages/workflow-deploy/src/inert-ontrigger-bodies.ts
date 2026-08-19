@@ -1,15 +1,11 @@
 // Enumerate the inline onTrigger section bodies of a FROZEN inert projection.
 //
-// The live-authored deploy path holds the live `WorkflowDefinition` and lifts
-// its inline onTrigger bodies with `extractOnTriggerBodies` (see
-// `orchestrator.ts`), reading each body agent's declared inference preference
-// straight off the live `AgentDefinition`. The source-ref (code-sourced) deploy
-// path never holds the live definition -- the hub has only the inert
-// `WorkflowProjectionDefinition` the gate froze and hashed. This module is the
-// source-ref counterpart: it walks that frozen projection, lifts each inline
-// onTrigger body, and surfaces each body step's declared `(provider, model)`
-// preference from the projection's `modelSources` so the hub can pin per-body
-// inference sources through the SAME resolver + approval gate the live path uses
+// On the source-ref (code-sourced) deploy the hub never holds a live
+// `WorkflowDefinition` -- it has only the inert `WorkflowProjectionDefinition`
+// the gate froze and hashed. This module walks that frozen projection, lifts
+// each inline onTrigger body, and surfaces each body step's declared
+// `(provider, model)` preference from the projection's `modelSources` so the
+// hub can pin per-body inference sources through the resolver + approval gate
 // (`pickStepInferenceSource`).
 //
 // It reads NOTHING off an unvalidated `unknown`: the wire projection types its

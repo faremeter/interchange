@@ -1,7 +1,7 @@
 // Agent-to-workflow fold: reading a folded definition's launch body.
 //
 // `extractFoldedBody` reads the launch-relevant fields back out of a folded
-// single-step `workflow.json`. The inverse builder, `synthesizeFoldedWorkflow`,
+// single-step workflow definition. The inverse builder, `synthesizeFoldedWorkflow`,
 // is test-only and lives in `@intx/workflow-deploy/testing`.
 
 import type { CredentialBinding, GrantRequirement } from "@intx/types";
@@ -32,7 +32,7 @@ export interface FoldedBody {
  * of `synthesizeFoldedWorkflow`. A folded definition is a single `step`-kind
  * primitive carrying the agent; the system prompt and tool-package pins live on
  * that agent, the grant requirements on the envelope. Raises if the definition
- * is not that single-step shape, so a malformed `workflow.json` surfaces here
+ * is not that single-step shape, so a malformed folded definition surfaces here
  * rather than launching a broken instance.
  */
 export function extractFoldedBody(definition: WorkflowDefinition): FoldedBody {

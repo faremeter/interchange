@@ -10,9 +10,9 @@
 // It carries NO deploy machinery (no capability walk, no source-pinning, no hub
 // write), so the callers that run it over a RE-EVALUATED closure -- the
 // source-ref run child and the sidecar deploy router, which have neither a
-// director registry nor the operator approval set -- share the exact rewrite
-// the live-authored orchestrator (`extractOnTriggerBodies`) layers its
-// walk/pin/write onto.
+// director registry nor the operator approval set -- share one exact structural
+// rewrite, kept separate from the capability walk and source-pinning the deploy
+// layers on elsewhere.
 
 import type { Primitive, WorkflowDefinition } from "./definition/index";
 

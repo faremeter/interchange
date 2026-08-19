@@ -91,7 +91,7 @@ export function isSourceApproved(
  * pinning pass here can otherwise resolve a source the walk never
  * surfaced -- the `HarnessConfig.defaultSource` fallback path for a step
  * whose preference is unresolvable, or the same fallback for a step that
- * carries no preference at all. In both cases the orchestrator must
+ * carries no preference at all. In both cases the source-pinning pass must
  * refuse to pin a `(provider, model)` the operator never approved;
  * silently shipping an unapproved source would defeat the capability-
  * walk gate the deploy just passed.
@@ -179,7 +179,7 @@ export function buildInertProjectionStepSources(args: {
  * Pure function: derive a step's run address from
  * `(runId, stepId, domain)`. Exported so the supervisor can reconstruct
  * the same addresses at spawn time without sharing storage with the
- * orchestrator.
+ * deploy flow.
  *
  * The local part IS the run id with the step suffix appended; the runId is
  * already a minted `run_<hex>` carrying the `run_` marker `parseRunAddress`

@@ -1,32 +1,44 @@
 # @intx/workflow-deploy
 
 Deploy-time validation, capability walk, operator-approval gating,
-and the workflow deploy orchestrator.
+address derivation, and per-step source pinning for the code-sourced
+deploy.
 
 This package is the deploy-side counterpart to `@intx/workflow`. It
-takes a `WorkflowDefinition`, computes the per-step grant
-declarations the workflow will require, gates them against an
-operator-supplied `ApprovalSet`, and routes the deployment by step
-count:
+takes a `WorkflowDefinition`, computes the per-step grant declarations
+the workflow will require, gates them against an operator-supplied
+`ApprovalSet`, and derives the deployment addresses the run occupies.
+
+Address derivation is a pure function of `(runId, stepId, domain)`:
 
 - **Single-step workflow**: the lone step has no distinct address --
-  it IS the deployment head. Deploy once at the head
-  (`<runId>@<domain>`) through the single-step
-  hand-off, staging the head's deploy tree and firing the
-  `agent.deploy` frame in one call.
-- **Multi-step workflow**: derive per-step run addresses as
-  `<runId>-<stepId>@<domain>`, instantiate one
-  `agent-state` repo per step, and write per-step deploy trees.
+  it IS the deployment head (`deriveRunAddress`, `<runId>@<domain>`).
+- **Multi-step workflow**: each step derives a per-step run address of
+  the form `<runId>-<stepId>@<domain>` (`deriveStepAddress`).
+
+`resolveStepAddress` owns the head/step collapse decision. Because the
+derivation carries no per-deploy state, the supervisor reconstructs the
+same addresses at spawn time from the host-sourced step count alone.
 
 Public surface:
 
-- `createWorkflowDeployOrchestrator(opts)` — the orchestrator.
-- `walkCapabilities(workflow)` — the pure capability walk; reused
-  to populate per-step `capability-declarations.json` and as the
-  input to the approval gate.
+- `walkCapabilities(workflow, registry, pluginDefs)` — the pure
+  capability walk; reused to populate per-step capability declarations
+  and as the input to the approval gate.
 - `createApprovalSetGate(approvals)` / `createApprovalSourceGate(source)`
-  — operator-approval gating against a flat `ApprovalSet` or an
-  async source.
+  — operator-approval gating against a flat `ApprovalSet` or an async
+  source.
+- `pickStepInferenceSource(...)` / `buildInertProjectionStepSources(...)`
+  — resolve each step's inference source against the operator-approved
+  grant set, so an unapproved source fails the deploy closed.
+- `enumerateInertOnTriggerBodies(...)` — lift each inline onTrigger body
+  out of a frozen inert projection and surface its declared
+  `(provider, model)` preference for per-body source pinning.
+- `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /
+  `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
+  — the pure address and id derivation helpers.
+- `extractFoldedBody(definition)` — read the launch-relevant fields back
+  out of a folded single-step definition.
 
 The capability walk emits the v1 grant-shape vocabulary: `tool:`,
 `director:`, `capability:`, `inference.source:`, `mail.address:`,

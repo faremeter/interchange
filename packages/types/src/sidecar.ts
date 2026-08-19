@@ -475,8 +475,9 @@ export const AgentDeployWorkflow = type({
   // The hub-approved wire hash of the frozen projection -- the freeze anchor the
   // hub gate wrote. The sidecar feeds it to the child as `DEFINITION_HASH`, which
   // the child re-verifies its closure evaluation against. Optional on the wire
-  // so a frame predating the source-ref hand-off still validates; the production
-  // hub builder always stamps it and the sidecar fails closed if it is absent.
+  // because the frame schema does not force it; enforcement lives at runtime
+  // instead -- the production hub builder always stamps it and the sidecar fails
+  // closed if it is absent.
   "approvedWireHash?": "string > 0",
   // Extracted onTrigger section bodies. Each entry carries the body's inert
   // definition, its own per-step inference-source pins, and its approved wire

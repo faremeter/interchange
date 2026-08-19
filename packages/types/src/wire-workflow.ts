@@ -149,9 +149,9 @@ export const WorkflowProjectionWithSources = type({
   // the child as the `DEFINITION_HASH` it re-verifies its own recompute
   // against, rather than trusting a sidecar-computed hash. At the top level it
   // pins the deployment's content handle; per body it pins the body's
-  // projection. Optional on the wire so a frame built before the source-ref
-  // hand-off (raw-frame paths) still validates; the production hub builder
-  // always stamps it.
+  // projection, which is re-verified in-memory as part of the parent's
+  // already-re-verified closure. Optional on the wire because the frame schema
+  // does not force it; the production hub builder always stamps it.
   "approvedWireHash?": "string > 0",
 }).narrow((value, ctx) => {
   for (const stepId of value.definition.stepOrder) {

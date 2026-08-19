@@ -1,6 +1,6 @@
 // Operator-approval gating for the deploy-time capability walk.
 //
-// The orchestrator hands the walk's `CapabilityWalkResult` to a gate; the
+// The deploy flow hands the walk's `CapabilityWalkResult` to a gate; the
 // gate compares the walk-derived per-step grants against an operator-
 // supplied `ApprovalSet` and decides whether the deploy may proceed.
 //
@@ -11,13 +11,13 @@
 //     fails the gate.
 //   - A non-empty `unresolvedDirectors` field on the walk result is
 //     itself a deploy-time failure; the gate surfaces it through
-//     `ApprovalDecision` and the orchestrator aborts.
+//     `ApprovalDecision` and the caller aborts the deploy.
 
 import type { CapabilityWalkResult } from "./capability-walk";
 
 /**
  * A flat set of grant-shape strings the operator has approved for this
- * deployment. The orchestrator-side wiring synthesizes the set from the
+ * deployment. The deploy flow's wiring synthesizes the set from the
  * deployment context (admin UI cache, legacy grant-store mirror,
  * scripted policy). Order does not matter; membership is the only thing
  * the gate consults.
@@ -34,10 +34,10 @@ export interface ApprovalSource {
 }
 
 /**
- * The decision the approval gate hands back to the orchestrator.
+ * The decision the approval gate hands back to the caller.
  *
  * `ok: true` -- every grant the walk surfaced is approved and the
- * orchestrator may continue with deploy.
+ * caller may continue with deploy.
  * `ok: false` -- one or more grants are missing approval or the walk
  * surfaced unresolvable directors. `pending` carries the per-step delta
  * the operator must approve; `unresolvedDirectors` mirrors the walk's
@@ -52,7 +52,7 @@ export type ApprovalDecision =
     };
 
 /**
- * The approval gate the orchestrator calls. The single method consumes
+ * The approval gate the deploy flow calls. The single method consumes
  * the walk output and yields a decision.
  */
 export interface CapabilityApprovalGate {
@@ -75,7 +75,7 @@ export interface CapabilityApprovalGate {
  *     approve.
  *   - `unresolvedDirectors` is mirrored verbatim. A non-empty value
  *     forces `ok: false` regardless of whether every per-step grant
- *     happens to be approved -- the orchestrator must not let a deploy
+ *     happens to be approved -- the caller must not let a deploy
  *     proceed against a walk that could not resolve every director ref.
  */
 export function createApprovalSetGate(

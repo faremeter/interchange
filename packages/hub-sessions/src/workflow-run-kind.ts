@@ -3013,7 +3013,7 @@ export type ReadProcessingEntryResult = {
  * committed -- which is exactly when the supervisor forwards
  * `trigger.fired` -- observes the processing entry. Reading the working tree (rather than walking the
  * committed git tree) matches the workflow-process child's sibling
- * reads of `workflow.json` and `runs/<runId>/events/`. Because the
+ * read of `runs/<runId>/events/`. Because the
  * read issues no commit it cannot race the supervisor's `markConsumed`
  * write; it returns a point-in-time snapshot of the directory.
  */

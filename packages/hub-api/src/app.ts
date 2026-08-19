@@ -287,7 +287,6 @@ export function mountHubRoutes(
       sidecarRouter,
       eventCollectors,
       repoStore,
-      assetService,
       ...(workflowDispatchService !== undefined
         ? { workflowDispatchService }
         : {}),
@@ -308,13 +307,10 @@ export function mountHubRoutes(
     createWorkflowDefinitionRoutes({ db, requireGrant }),
   );
 
-  // The workflow deploy + signal + listing surface needs the asset
-  // service to hydrate a workflow definition from its source closure, and
-  // the run-observe routes read the workflow-run repo through the repo
-  // store. Gate on both being present; the XOR throw above keeps
-  // assetService and repoStore moving as a unit, so this also narrows
-  // both away from null for the route factory.
-  if (assetService !== null && repoStore !== null) {
+  // The workflow deploy + signal + listing surface reads the workflow-run
+  // repo through the repo store (its run-observe routes and the mail-send
+  // trigger's terminal-state read). Gate on the repo store being present.
+  if (repoStore !== null) {
     app.route(
       "/api/tenants/:tenantId/workflows",
       createWorkflowRoutes({
@@ -327,7 +323,6 @@ export function mountHubRoutes(
           ? { workflowDispatchService }
           : {}),
         sidecarRouter,
-        assetService,
         repoStore,
         grantStore,
         requireGrant,

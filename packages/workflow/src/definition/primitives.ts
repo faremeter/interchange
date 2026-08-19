@@ -304,11 +304,10 @@ export interface StepOpts<EnvReq extends BaseEnv> {
  * `"unbounded"` is the long-lived interactive agent that never self-completes.
  *
  * Validates the declared value on every read: `step()` rejects a bad value at
- * authoring time, but a definition hydrated from `workflow.json` never passes
- * through `step()` (the envelope schema checks structure only), so this read
- * point is where a persisted `triggers: 0`/`-1`/`1.5` fails loud instead of
- * silently coercing (a non-positive budget would behave as `1`; a fractional
- * one would service an extra trigger).
+ * authoring time, but this read point re-checks rather than trust that every
+ * definition reached it through `step()`, so a `triggers: 0`/`-1`/`1.5` fails
+ * loud instead of silently coercing (a non-positive budget would behave as
+ * `1`; a fractional one would service an extra trigger).
  */
 export function stepTriggerBudget(step: StepPrimitive): number | "unbounded" {
   if (step.triggers === undefined) return 1;
@@ -338,8 +337,8 @@ function validateTriggers(triggers: number | "unbounded"): void {
  * would re-service the launch trigger and never re-service the
  * already-consumed one -- a wrong conversation reported as success.
  * `step()` enforces this at authoring time; the runtime re-applies it at
- * `runStep` entry because a definition hydrated from `workflow.json` never
- * passes through `step()`.
+ * `runStep` entry as a defensive re-check, rather than trust that every
+ * definition reached it through `step()`.
  */
 export function validateRetryTriggerCombination(step: StepPrimitive): void {
   const retry = step.retry;
