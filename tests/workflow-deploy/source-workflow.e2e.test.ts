@@ -22,7 +22,6 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { dirname } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
@@ -58,6 +57,7 @@ import {
   type DeployFlowEnv,
   type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
+import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = generateId("workflowRun");
@@ -84,8 +84,6 @@ const deploymentMailAddress = deriveRunAddress({
   domain: DEPLOYMENT_DOMAIN,
 });
 
-const repoRoot = path.resolve(import.meta.dir, "..", "..");
-
 const workflowEntrySource = `
 import { defineWorkflow, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
@@ -108,49 +106,6 @@ export const workflow = defineWorkflow({
   },
 });
 `;
-
-// Bundle the entry into one self-contained `.mjs` (its `@intx/*` imports inlined
-// to source) so the sidecar-materialized closure evaluates it with no bare
-// import left to resolve. Mirrors the asset/registry skeleton fixtures.
-async function bundleWorkflowEntry(
-  scratchDir: string,
-  entrySource: string,
-): Promise<string> {
-  const entrySrcPath = path.join(scratchDir, "source-workflow-entry-src.ts");
-  await fs.writeFile(entrySrcPath, entrySource);
-
-  const built = await Bun.build({
-    entrypoints: [entrySrcPath],
-    target: "bun",
-    format: "esm",
-    throw: true,
-    plugins: [
-      {
-        name: "resolve-intx-to-source",
-        setup(build) {
-          build.onResolve({ filter: /^@intx\// }, (args) => {
-            const fromDir = args.importer.startsWith(`${repoRoot}${path.sep}`)
-              ? dirname(args.importer)
-              : repoRoot;
-            return { path: Bun.resolveSync(args.path, fromDir) };
-          });
-        },
-      },
-    ],
-  });
-
-  const artifact = built.outputs[0];
-  if (artifact === undefined) {
-    throw new Error("bundleWorkflowEntry: Bun.build produced no output");
-  }
-  const code = await artifact.text();
-  if (code.includes("@intx/")) {
-    throw new Error(
-      "bundleWorkflowEntry: bundle still carries a bare @intx import",
-    );
-  }
-  return code;
-}
 
 let env: DeployFlowEnv;
 let h: TestDb;
