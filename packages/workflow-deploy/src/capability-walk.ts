@@ -307,8 +307,9 @@ function collectLoopBodyGrants(
  * section can run per event. The walk runs before the deploy step extracts
  * the body into its own asset, so it sees the authored `{ inline }` form; a
  * deployed `{ ref }` body is an independent asset with its own declarations
- * and is skipped here. A section body may itself contain a loop, whose body
- * grants are collected too; a nested onTrigger is forbidden at definition
+ * and is skipped here. A section body may itself contain a loop (whose body
+ * grants are collected) or a childWorkflow (whose grants recurse through
+ * `collectChildWorkflowGrants`); a nested onTrigger is forbidden at definition
  * time, so there is no section-within-section recursion to handle.
  */
 function collectOnTriggerBodyGrants(
@@ -345,6 +346,13 @@ function collectOnTriggerBodyGrants(
       collected.grants.add(grant);
     }
     collectLoopBodyGrants(
+      bodyPrimitive,
+      registry,
+      pluginDefs,
+      unresolved,
+      collected,
+    );
+    collectChildWorkflowGrants(
       bodyPrimitive,
       registry,
       pluginDefs,
