@@ -7,7 +7,11 @@ import {
   test,
 } from "bun:test";
 
-import { createEnvKeyCredentialCipher } from "@intx/crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { createEnvKeyCredentialCipher, generateKeyPair } from "@intx/crypto";
 import {
   createSidecarAllocationStore,
   createWorkflowRunLaunchSpecStore,
@@ -15,14 +19,20 @@ import {
 import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import {
+  createAgentRepoStore,
+  createSessionService,
+  createSidecarRouter,
   createWorkflowAllocationService,
   SessionLaunchError,
   type DeployPreparedCodeSourcedWorkflowParams,
   type InstallAndApproveResult,
+  type SidecarAuthIdentity,
   type SidecarProvisioner,
+  type WsHandle,
 } from "@intx/hub-sessions";
 import { credentialAad } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import { deriveRunAddress } from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -89,6 +99,58 @@ function frozenApproval(): InstallAndApproveResult {
     projection: { id: "wf-x", triggers: [], stepOrder: [], steps: {} },
     closure: { schemaVersion: "1", topLevel: [], entries: [] },
   };
+}
+
+// The frozen bundle's inert closure. Shared by the deploy-path assertions
+// below: the source-ref deploy frame must carry this shape verbatim.
+const FROZEN_CLOSURE = { schemaVersion: "1", topLevel: [], entries: [] };
+const FROZEN_WIRE_HASH = "a".repeat(64);
+
+const ANCHOR_RUN_ID = "dep-workflow-allocation";
+const ALLOCATION_ID = "sal-workflow-allocation";
+const SIDECAR_ID = "sc-workflow-allocation";
+const SESSION_ID = "ses-workflow-allocation";
+const DEPLOYMENT_DOMAIN = `${TENANT_ID}.example.test`;
+const WORKFLOW_RUN_ADDRESS = deriveRunAddress({
+  runId: ANCHOR_RUN_ID,
+  domain: DEPLOYMENT_DOMAIN,
+});
+// A 32-byte hex Ed25519 hub key; the source-ref deploy frame carries it, so the
+// router refuses to emit a deploy without one.
+const TEST_HUB_KEY = "ab".repeat(32);
+// The supervisor public key the allocated worker acks the deploy with.
+const SUPERVISOR_PUBLIC_KEY = "b".repeat(64);
+
+const tick = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
+function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
+  return {
+    sent: [],
+    closed: false,
+    send(data: string) {
+      this.sent.push(data);
+    },
+    close() {
+      this.closed = true;
+    },
+  };
+}
+
+// Poll the mock socket until the `agent.deploy` frame lands. The deploy path
+// awaits several DB round-trips (anchor read, launch-spec read, source
+// re-resolution) before it emits the frame, so a single microtask tick is not
+// enough; poll on a short interval up to a bounded ceiling instead.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the wire frame is JSON off the mock socket; the assertions below narrow the fields they read
+async function waitForDeployFrame(ws: { sent: string[] }): Promise<any> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const frame = ws.sent
+      .map((raw) => JSON.parse(raw))
+      .find((parsed) => parsed.type === "agent.deploy");
+    if (frame !== undefined) return frame;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("mock socket never received an agent.deploy frame");
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -291,6 +353,300 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(error.leakedAgent).toBe(true);
       expect(deployCalls).toHaveLength(1);
+    });
+
+    // === Real allocated-deploy routing =====================================
+    //
+    // The case above drives a FAKE `deployPreparedCodeSourcedWorkflow` and
+    // asserts the deploy CALL's arguments; it never routes the frozen bundle
+    // through a real deploy path. The two cases below wire the REAL
+    // `deployPreparedCodeSourcedWorkflow` (from `createSessionService`) into the
+    // allocation service, and route it through the REAL sidecar allocation
+    // router onto a connected (mock) allocated worker. That proves the frozen
+    // bundle's source ref + closure + wire hash reach the
+    // `sendAgentDeployToAllocation` wire frame intact -- the routing the fake
+    // deployer never exercises.
+
+    // A source-ref freeze synthesized on shared capacity. Inserting the
+    // definition row mirrors the real freeze (the anchor row FKs to it); the
+    // returned bundle carries the source, the inert closure, and the wire hash,
+    // but no resolved inference source, so no credential secret is persisted.
+    async function freezeSourceBundle(): Promise<InstallAndApproveResult> {
+      await h.db
+        .insert(workflowDefinition)
+        .values({
+          id: DEFINITION_ID,
+          tenantId: TENANT_ID,
+          name: "workflow-allocation-def",
+        })
+        .onConflictDoNothing({ target: workflowDefinition.id });
+      return frozenApproval();
+    }
+
+    // Stand up a real sidecar allocation router with a connected allocated
+    // worker (a mock socket), plus the real session-service prepared deployer.
+    // The worker is fenced and registered at generation 1 so
+    // `sendAgentDeployToAllocation` resolves the exact generation.
+    async function startAllocatedWorker(): Promise<{
+      router: ReturnType<typeof createSidecarRouter>;
+      ws: ReturnType<typeof createMockWs>;
+      deployPreparedCodeSourcedWorkflow: ReturnType<
+        typeof createSessionService
+      >["deployPreparedCodeSourcedWorkflow"];
+      dataDir: string;
+    }> {
+      const dataDir = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "alloc-deploy-"),
+      );
+      const agentRepoStore = createAgentRepoStore({
+        dataDir,
+        signingKey: await generateKeyPair(),
+      });
+      const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
+        kind: "allocated",
+        sidecarId: SIDECAR_ID,
+        allocationId: ALLOCATION_ID,
+        tenantId: TENANT_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        workflowRunAddress: WORKFLOW_RUN_ADDRESS,
+        generation: 1,
+      };
+      const router = createSidecarRouter({
+        hubPublicKey: TEST_HUB_KEY,
+        authenticateSidecar: async () => identity,
+        validateSidecarIdentity: async () => true,
+        requestTimeoutMs: 5_000,
+      });
+      const sessionService = createSessionService({
+        sidecarRouter: router,
+        sidecarAllocationRouter: router,
+        agentRepoStore,
+        db: h.db,
+      });
+
+      router.fenceAllocation(ALLOCATION_ID, 1);
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: SIDECAR_ID,
+          token: "token",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      return {
+        router,
+        ws,
+        deployPreparedCodeSourcedWorkflow:
+          sessionService.deployPreparedCodeSourcedWorkflow,
+        dataDir,
+      };
+    }
+
+    function makeService(overrides: {
+      router: Pick<
+        ReturnType<typeof createSidecarRouter>,
+        "isAllocatedWorkflowActive"
+      >;
+      installAndApproveWorkflowSource: () => Promise<InstallAndApproveResult>;
+      deployPreparedCodeSourcedWorkflow: ReturnType<
+        typeof createSessionService
+      >["deployPreparedCodeSourcedWorkflow"];
+    }) {
+      return createWorkflowAllocationService({
+        db: h.db,
+        plugins: {
+          getDefaultProvisioner: () => provisioner,
+          getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
+        },
+        preparedDeployer: {
+          installAndApproveWorkflowSource:
+            overrides.installAndApproveWorkflowSource,
+          deployPreparedCodeSourcedWorkflow:
+            overrides.deployPreparedCodeSourcedWorkflow,
+        },
+        credentialCipher: CREDENTIAL_CIPHER,
+        allocationRouter: overrides.router,
+        createAllocationId: () => ALLOCATION_ID,
+        now: () => new Date("2026-08-03T12:00:00.000Z"),
+      });
+    }
+
+    const prepareArgs = {
+      tenantId: TENANT_ID,
+      anchorRunId: ANCHOR_RUN_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      source: SOURCE,
+      entry: ENTRY,
+      definitionAssetId: ASSET_ID,
+      placement: { sharing: "exclusive", reuse: "same-deployment" },
+      sessionId: SESSION_ID,
+      sourceAuthorityPrincipalId: PRINCIPAL_ID,
+      sourceOfferingIds: [OFFERING_ID],
+      defaultSourceOfferingId: OFFERING_ID,
+      deployContent: { systemPrompt: "" },
+    } as const;
+
+    async function bindAndAllocate(allocationId: string) {
+      const allocations = createSidecarAllocationStore(h.db);
+      const bound = await allocations.bindInitialSidecar({
+        allocationId,
+        expectedGeneration: 0,
+        sidecarId: SIDECAR_ID,
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date("2026-08-03T12:02:00.000Z"),
+      });
+      if (bound?.generation !== 1) {
+        throw new Error("expected generation 1 after binding the sidecar");
+      }
+      const allocated = await allocations.markAllocated({
+        allocationId,
+        generation: 1,
+      });
+      if (allocated === null) throw new Error("allocation was not accepted");
+      return allocated;
+    }
+
+    // Drive a ready allocation's deploy through the real router: wait for the
+    // frame to land on the worker's socket, ack it, and settle the deploy. The
+    // deploy promise is always awaited before returning so an in-flight DB
+    // query can never dangle into the next test's `h.reset()`.
+    async function deployAndAck(
+      service: ReturnType<typeof createWorkflowAllocationService>,
+      allocated: Parameters<
+        ReturnType<
+          typeof createWorkflowAllocationService
+        >["deployReadyAllocation"]
+      >[0],
+      router: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+    ) {
+      const deployPromise = service.deployReadyAllocation(allocated);
+      try {
+        const frame = await waitForDeployFrame(ws);
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "agent.deploy.ack",
+            agentAddress: WORKFLOW_RUN_ADDRESS,
+            publicKey: SUPERVISOR_PUBLIC_KEY,
+          }),
+        );
+        const result = await deployPromise;
+        return { frame, result };
+      } catch (err) {
+        await deployPromise.catch(() => undefined);
+        throw err;
+      }
+    }
+
+    test("routes the frozen source ref and closure to the allocated worker intact", async () => {
+      const { router, ws, deployPreparedCodeSourcedWorkflow, dataDir } =
+        await startAllocatedWorker();
+      try {
+        const service = makeService({
+          router,
+          installAndApproveWorkflowSource: freezeSourceBundle,
+          deployPreparedCodeSourcedWorkflow,
+        });
+
+        const prepared = await service.prepareExclusiveDeployment(prepareArgs);
+        expect(prepared.deploymentAddress).toBe(WORKFLOW_RUN_ADDRESS);
+        const allocated = await bindAndAllocate(prepared.allocationId);
+
+        const { frame, result } = await deployAndAck(
+          service,
+          allocated,
+          router,
+          ws,
+        );
+        if (result === null) {
+          throw new Error("expected a deploy result, not a no-op");
+        }
+
+        // The frame reached the allocated worker's socket, addressed to the
+        // deployment's own run address.
+        expect(frame.type).toBe("agent.deploy");
+        expect(frame.agentAddress).toBe(WORKFLOW_RUN_ADDRESS);
+        expect(frame.hubPublicKey).toBe(TEST_HUB_KEY);
+        // The frozen bundle's source ref + closure + wire hash ride verbatim.
+        expect(frame.workflow.sourceRef.source).toEqual(SOURCE);
+        expect(frame.workflow.sourceRef.closure).toEqual(FROZEN_CLOSURE);
+        expect(frame.workflow.approvedWireHash).toBe(FROZEN_WIRE_HASH);
+        // The inference chain is re-resolved from the offering ids at deploy
+        // time, decrypting the credential only now.
+        expect(frame.config).toMatchObject({
+          sessionId: SESSION_ID,
+          principalId: PRINCIPAL_ID,
+          defaultSource: OFFERING_ID,
+          sources: [
+            { id: OFFERING_ID, apiKey: CREDENTIAL_SECRET, model: "opus" },
+          ],
+        });
+
+        expect(result.publicKey).toBe(SUPERVISOR_PUBLIC_KEY);
+        // The ack's key was stamped onto the prepared anchor under the
+        // allocation-ownership lock.
+        const anchor = await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          columns: { publicKey: true },
+        });
+        expect(anchor?.publicKey).toBe(SUPERVISOR_PUBLIC_KEY);
+      } finally {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
+      }
+    });
+
+    test("rehydrates a persisted frozen bundle and re-deploys after a fresh service is constructed", async () => {
+      const { router, ws, deployPreparedCodeSourcedWorkflow, dataDir } =
+        await startAllocatedWorker();
+      try {
+        // Prepare (freeze + persist) with one service instance.
+        const prepareService = makeService({
+          router,
+          installAndApproveWorkflowSource: freezeSourceBundle,
+          deployPreparedCodeSourcedWorkflow,
+        });
+        const prepared =
+          await prepareService.prepareExclusiveDeployment(prepareArgs);
+        const allocated = await bindAndAllocate(prepared.allocationId);
+
+        // Deploy with a FRESH service instance whose freeze step throws: a
+        // recovery worker re-deploys from the persisted launch spec alone and
+        // never re-probes the source.
+        const recoverService = makeService({
+          router,
+          installAndApproveWorkflowSource: () => {
+            throw new Error("recovery deploy must not re-freeze the source");
+          },
+          deployPreparedCodeSourcedWorkflow,
+        });
+
+        const { frame, result } = await deployAndAck(
+          recoverService,
+          allocated,
+          router,
+          ws,
+        );
+        if (result === null) {
+          throw new Error("expected a deploy result, not a no-op");
+        }
+
+        // The frozen source ref + closure survived the launch-spec round-trip
+        // through the DB and reached the allocated deploy frame intact.
+        expect(frame.type).toBe("agent.deploy");
+        expect(frame.agentAddress).toBe(WORKFLOW_RUN_ADDRESS);
+        expect(frame.workflow.sourceRef.source).toEqual(SOURCE);
+        expect(frame.workflow.sourceRef.closure).toEqual(FROZEN_CLOSURE);
+        expect(frame.workflow.approvedWireHash).toBe(FROZEN_WIRE_HASH);
+        expect(result.publicKey).toBe(SUPERVISOR_PUBLIC_KEY);
+      } finally {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
+      }
     });
   },
 );
