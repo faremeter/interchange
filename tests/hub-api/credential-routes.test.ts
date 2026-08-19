@@ -16,6 +16,7 @@ import {
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
+import { pgErrorCode } from "@intx/db";
 import { credential, grant as grantTable } from "@intx/db/schema";
 import type { GrantRule } from "@intx/types/authz";
 import { credentialAad } from "@intx/types";
@@ -26,6 +27,8 @@ import {
 } from "@intx/test-harness/db-harness";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
+  seedCredential,
+  seedModelProvider,
   seedPrincipal,
   seedProvider,
   seedTenants,
@@ -451,6 +454,108 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(deleteRes.status).toBe(404);
     });
 
+    test("returns 409 and preserves the credential when a model provider references it", async () => {
+      const app = await setup();
+      const createRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: PROVIDER_ID,
+            name: "bound",
+            type: "api_key",
+            secret: "sk-personal",
+            principalId: OWNER_PRINCIPAL_ID,
+          }),
+        },
+      );
+      expect(createRes.status).toBe(201);
+      const created: unknown = await createRes.json();
+      if (!isObject(created)) throw new Error("expected object body");
+      const credentialId = created["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+
+      await seedModelProvider(h.db, {
+        id: "mp_bound",
+        tenantId: TENANT_ID,
+        name: "bound-provider",
+        plugin: "openai",
+        baseURL: "https://api.openai.com",
+        credentialId,
+      });
+
+      const deleteRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        { method: "DELETE" },
+      );
+      expect(deleteRes.status).toBe(409);
+      const body: unknown = await deleteRes.json();
+      if (!isObject(body)) throw new Error("expected object body");
+      const error = body["error"];
+      if (!isObject(error)) throw new Error("expected error object");
+      expect(error["code"]).toBe("conflict");
+
+      // The rejected delete leaves the credential and its use-grant intact.
+      const [row] = await h.db
+        .select()
+        .from(credential)
+        .where(eq(credential.id, credentialId));
+      expect(row).toBeDefined();
+      expect(await useGrantsFor(credentialId, OWNER_PRINCIPAL_ID)).toHaveLength(
+        1,
+      );
+    });
+
+    test("returns 404 without disclosing a referenced credential in another tenant", async () => {
+      const app = await setup();
+
+      // A credential in a different tenant, referenced by a model provider
+      // there. The acting principal holds a wildcard `credential:*` grant, so
+      // requireGrant admits the request; tenant isolation is owned by the
+      // delete's WHERE clause. A pre-check that queried the referencing row
+      // globally would leak the credential's existence as a 409.
+      const OTHER_TENANT_ID = "tnt_other";
+      await seedTenants(h.db, [{ id: OTHER_TENANT_ID }]);
+      await seedProvider(h.db, {
+        id: "prv_other",
+        tenantId: OTHER_TENANT_ID,
+        name: "openai",
+      });
+      await seedCredential(h.db, {
+        id: "crd_foreign",
+        tenantId: OTHER_TENANT_ID,
+        providerId: "prv_other",
+        name: "foreign",
+        type: "api_key",
+        secret: "sk",
+      });
+      await seedModelProvider(h.db, {
+        id: "mp_foreign",
+        tenantId: OTHER_TENANT_ID,
+        name: "foreign-provider",
+        plugin: "openai",
+        baseURL: "https://api.openai.com",
+        credentialId: "crd_foreign",
+      });
+
+      const deleteRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/crd_foreign`,
+        { method: "DELETE" },
+      );
+      expect(deleteRes.status).toBe(404);
+
+      // The foreign credential is untouched -- the delete matched no row in the
+      // caller's tenant and never reached the foreign referencing row.
+      const creds = await h.db
+        .select({ id: credential.id })
+        .from(credential)
+        .where(eq(credential.id, "crd_foreign"));
+      expect(creds).toHaveLength(1);
+    });
+
     test("removes every grant naming the exact resource but spares the wildcard and prefix siblings", async () => {
       const app = await setup();
       const createRes = await app.request(
@@ -537,6 +642,71 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(remainingResources).toContain(
         `credential:${credentialId}-other/use`,
       );
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "credential delete foreign-key error shape",
+  () => {
+    test("a restrict violation on credential delete is recognized as a referenced-row violation", async () => {
+      // The DELETE handler's catch maps a model_provider.credential_id restrict
+      // violation to a 409; its isReferencedRowViolation check reads the
+      // SQLSTATE via pgErrorCode. Pin the empirical fact this rests on: a real
+      // restrict-foreign-key delete through drizzle surfaces a referenced-row
+      // violation on the error cause chain -- 23001 (restrict_violation) or
+      // 23503 (foreign_key_violation), depending on the Postgres version. The
+      // route 409 test drives the catch end to end; a driver-wrapping change is
+      // caught here.
+      await seedTenants(h.db, [{ id: TENANT_ID }]);
+      await seedPrincipal(h.db, {
+        id: OWNER_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        refId: "usr_owner",
+      });
+      await seedProvider(h.db, {
+        id: PROVIDER_ID,
+        tenantId: TENANT_ID,
+        name: "openai",
+      });
+      await seedCredential(h.db, {
+        id: "crd_bound",
+        tenantId: TENANT_ID,
+        providerId: PROVIDER_ID,
+        principalId: OWNER_PRINCIPAL_ID,
+        name: "bound",
+        type: "api_key",
+        secret: "sk",
+      });
+      await seedModelProvider(h.db, {
+        id: "mp_ref",
+        tenantId: TENANT_ID,
+        name: "ref",
+        plugin: "openai",
+        baseURL: "https://api.openai.com",
+        credentialId: "crd_bound",
+      });
+
+      let caught: unknown = undefined;
+      let deletedWithoutError = false;
+      try {
+        await h.db.transaction(async (tx) => {
+          await tx
+            .delete(credential)
+            .where(eq(credential.id, "crd_bound"))
+            .returning();
+        });
+        deletedWithoutError = true;
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(deletedWithoutError).toBe(false);
+      const code = pgErrorCode(caught);
+      if (code === undefined) {
+        throw new Error("expected a SQLSTATE on the caught error");
+      }
+      expect(["23001", "23503"]).toContain(code);
     });
   },
 );
