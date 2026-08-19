@@ -369,3 +369,174 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
   },
 );
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "DELETE /api/tenants/:tenantId/credentials/:credentialId",
+  () => {
+    test("removes the owner's per-credential use-grant when a personal credential is deleted", async () => {
+      const app = await setup();
+      const createRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: PROVIDER_ID,
+            name: "delete-me",
+            type: "api_key",
+            secret: "sk-personal",
+            principalId: OWNER_PRINCIPAL_ID,
+          }),
+        },
+      );
+      expect(createRes.status).toBe(201);
+      const created: unknown = await createRes.json();
+      if (!isObject(created)) throw new Error("expected object body");
+      const credentialId = created["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+
+      expect(await useGrantsFor(credentialId, OWNER_PRINCIPAL_ID)).toHaveLength(
+        1,
+      );
+
+      const deleteRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        { method: "DELETE" },
+      );
+      expect(deleteRes.status).toBe(204);
+
+      expect(await useGrantsFor(credentialId, OWNER_PRINCIPAL_ID)).toHaveLength(
+        0,
+      );
+    });
+
+    test("deletes an organizational credential that has no use-grant", async () => {
+      const app = await setup();
+      const createRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: PROVIDER_ID,
+            name: "org-delete-me",
+            type: "api_key",
+            secret: "sk-org",
+          }),
+        },
+      );
+      expect(createRes.status).toBe(201);
+      const created: unknown = await createRes.json();
+      if (!isObject(created)) throw new Error("expected object body");
+      const credentialId = created["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+
+      const deleteRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        { method: "DELETE" },
+      );
+      expect(deleteRes.status).toBe(204);
+    });
+
+    test("returns 404 when the credential does not exist", async () => {
+      const app = await setup();
+      const deleteRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/crd_missing`,
+        { method: "DELETE" },
+      );
+      expect(deleteRes.status).toBe(404);
+    });
+
+    test("removes every grant naming the exact resource but spares the wildcard and prefix siblings", async () => {
+      const app = await setup();
+      const createRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: PROVIDER_ID,
+            name: "guarded",
+            type: "api_key",
+            secret: "sk-personal",
+            principalId: OWNER_PRINCIPAL_ID,
+          }),
+        },
+      );
+      expect(createRes.status).toBe(201);
+      const created: unknown = await createRes.json();
+      if (!isObject(created)) throw new Error("expected object body");
+      const credentialId = created["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+
+      // Alongside the auto-minted `credential:{id}` / `use` grant, seed a
+      // same-resource `manage` grant (must also be removed), a coarse
+      // `credential:*` wildcard grant (must survive), and a prefix-sibling
+      // `credential:{id}-other` grant (must survive). Together these guard the
+      // two design decisions: exact-match never touches the wildcard, and the
+      // delete is action-agnostic.
+      await h.db.insert(grantTable).values([
+        {
+          id: "grn_extra_manage",
+          tenantId: TENANT_ID,
+          principalId: OWNER_PRINCIPAL_ID,
+          resource: `credential:${credentialId}`,
+          action: "manage",
+          effect: "allow",
+          origin: "invoker",
+        },
+        {
+          id: "grn_wildcard",
+          tenantId: TENANT_ID,
+          principalId: OWNER_PRINCIPAL_ID,
+          resource: "credential:*",
+          action: "use",
+          effect: "allow",
+          origin: "invoker",
+        },
+        {
+          id: "grn_sibling",
+          tenantId: TENANT_ID,
+          principalId: OWNER_PRINCIPAL_ID,
+          resource: `credential:${credentialId}-other`,
+          action: "use",
+          effect: "allow",
+          origin: "invoker",
+        },
+      ]);
+
+      const deleteRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        { method: "DELETE" },
+      );
+      expect(deleteRes.status).toBe(204);
+
+      const remaining = await h.db
+        .select()
+        .from(grantTable)
+        .where(eq(grantTable.tenantId, TENANT_ID));
+      const remainingResources = remaining.map(
+        (g) => `${g.resource}/${g.action}`,
+      );
+
+      // Both grants naming the exact resource are gone (use + manage).
+      expect(remainingResources).not.toContain(
+        `credential:${credentialId}/use`,
+      );
+      expect(remainingResources).not.toContain(
+        `credential:${credentialId}/manage`,
+      );
+      // The wildcard grant and the prefix sibling are untouched.
+      expect(remainingResources).toContain("credential:*/use");
+      expect(remainingResources).toContain(
+        `credential:${credentialId}-other/use`,
+      );
+    });
+  },
+);
