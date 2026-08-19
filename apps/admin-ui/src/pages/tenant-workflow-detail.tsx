@@ -33,6 +33,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -41,6 +48,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  buildDeployInput,
+  isSourceKind,
+  launchReady as isLaunchReady,
+  SOURCE_KIND_LABELS,
+  SOURCE_KINDS,
+  type SourceKind,
+} from "./tenant-workflow-launch";
 
 const APPROVE_SIGNAL_NAME = "approve";
 
@@ -84,14 +99,23 @@ export function TenantWorkflowDetailPage() {
     model: "",
   });
 
-  // Where this workflow's code is sourced from. Minimal until the multi-variant
-  // source picker lands: the definition is deployed as the workflow asset's own
-  // git subtree at the commit entered below, evaluating the given
-  // `interchange.workflow` entry module.
-  const [launchDefinition, setLaunchDefinition] = useState({
+  // Where this workflow's code is sourced from. The picker builds any
+  // `WorkflowDefinitionSource` variant; `assetId` defaults to this workflow's
+  // own asset because deploying its own source tree is the common path, but the
+  // operator can point at any asset or an external registry. Fields not used by
+  // the selected `kind` are ignored when the deploy input is built.
+  const initialLaunchDefinition = {
+    kind: "asset-source" as SourceKind,
     entry: "",
+    registry: "",
+    assetId: workflowId,
     commitSha: "",
-  });
+    packageName: "",
+    pin: "",
+  };
+  const [launchDefinition, setLaunchDefinition] = useState(
+    initialLaunchDefinition,
+  );
 
   const [openDeploymentId, setOpenDeploymentId] = useState<string | null>(null);
 
@@ -113,7 +137,7 @@ export function TenantWorkflowDetailPage() {
         apiKey: "",
         model: "",
       });
-      setLaunchDefinition({ entry: "", commitSha: "" });
+      setLaunchDefinition(initialLaunchDefinition);
     },
   });
 
@@ -162,27 +186,7 @@ export function TenantWorkflowDetailPage() {
 
   function submitLaunch(e: React.FormEvent) {
     e.preventDefault();
-    deployMut.mutate({
-      source: {
-        kind: "asset",
-        assetId: workflowId,
-        package: {
-          format: "source",
-          commitSha: launchDefinition.commitSha.trim(),
-        },
-      },
-      entry: launchDefinition.entry.trim(),
-      sources: [
-        {
-          id: launchSource.id.trim(),
-          provider: launchSource.provider.trim(),
-          baseURL: launchSource.baseURL.trim(),
-          apiKey: launchSource.apiKey,
-          model: launchSource.model.trim(),
-        },
-      ],
-      defaultSource: launchSource.id.trim(),
-    });
+    deployMut.mutate(buildDeployInput(launchDefinition, launchSource));
   }
 
   function submitApprove(e: React.FormEvent) {
@@ -198,14 +202,7 @@ export function TenantWorkflowDetailPage() {
     );
   }
 
-  const launchReady =
-    launchDefinition.entry.trim() !== "" &&
-    launchDefinition.commitSha.trim() !== "" &&
-    launchSource.id.trim() !== "" &&
-    launchSource.provider.trim() !== "" &&
-    launchSource.baseURL.trim() !== "" &&
-    launchSource.apiKey !== "" &&
-    launchSource.model.trim() !== "";
+  const launchReady = isLaunchReady(launchDefinition, launchSource);
 
   if (isLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
@@ -266,6 +263,33 @@ export function TenantWorkflowDetailPage() {
         >
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1">
+              <Label htmlFor="definition-kind" className="text-xs">
+                Source kind
+              </Label>
+              <Select
+                value={launchDefinition.kind}
+                onValueChange={(v) => {
+                  if (isSourceKind(v))
+                    setLaunchDefinition((d) => ({ ...d, kind: v }));
+                }}
+              >
+                <SelectTrigger
+                  id="definition-kind"
+                  size="sm"
+                  className="w-full text-xs"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SOURCE_KINDS.map((kind) => (
+                    <SelectItem key={kind} value={kind} className="text-xs">
+                      {SOURCE_KIND_LABELS[kind]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1">
               <Label htmlFor="definition-entry" className="text-xs">
                 Entry module
               </Label>
@@ -279,24 +303,132 @@ export function TenantWorkflowDetailPage() {
                 className="h-8 text-xs"
               />
             </div>
-            <div className="grid gap-1">
-              <Label htmlFor="definition-commit" className="text-xs">
-                Commit SHA
-              </Label>
-              <Input
-                id="definition-commit"
-                value={launchDefinition.commitSha}
-                onChange={(e) =>
-                  setLaunchDefinition((d) => ({
-                    ...d,
-                    commitSha: e.target.value,
-                  }))
-                }
-                placeholder="the source asset's current commit"
-                className="h-8 text-xs"
-              />
-            </div>
           </div>
+          {launchDefinition.kind === "registry" && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1">
+                <Label htmlFor="definition-registry" className="text-xs">
+                  Registry
+                </Label>
+                <Input
+                  id="definition-registry"
+                  value={launchDefinition.registry}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({
+                      ...d,
+                      registry: e.target.value,
+                    }))
+                  }
+                  placeholder="the sidecar registry name"
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="definition-pin" className="text-xs">
+                  Pin
+                </Label>
+                <Input
+                  id="definition-pin"
+                  value={launchDefinition.pin}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({ ...d, pin: e.target.value }))
+                  }
+                  placeholder="e.g. my-workflow@^1.0.0"
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          )}
+          {launchDefinition.kind === "asset-tarball" && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1">
+                <Label htmlFor="definition-asset-id" className="text-xs">
+                  Asset ID
+                </Label>
+                <Input
+                  id="definition-asset-id"
+                  value={launchDefinition.assetId}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({
+                      ...d,
+                      assetId: e.target.value,
+                    }))
+                  }
+                  placeholder="the source asset's id"
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="definition-pin" className="text-xs">
+                  Pin
+                </Label>
+                <Input
+                  id="definition-pin"
+                  value={launchDefinition.pin}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({ ...d, pin: e.target.value }))
+                  }
+                  placeholder="e.g. my-workflow@^1.0.0"
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          )}
+          {launchDefinition.kind === "asset-source" && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1">
+                <Label htmlFor="definition-asset-id" className="text-xs">
+                  Asset ID
+                </Label>
+                <Input
+                  id="definition-asset-id"
+                  value={launchDefinition.assetId}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({
+                      ...d,
+                      assetId: e.target.value,
+                    }))
+                  }
+                  placeholder="the source asset's id"
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="definition-commit" className="text-xs">
+                  Commit SHA
+                </Label>
+                <Input
+                  id="definition-commit"
+                  value={launchDefinition.commitSha}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({
+                      ...d,
+                      commitSha: e.target.value,
+                    }))
+                  }
+                  placeholder="the source asset's current commit"
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="grid gap-1 sm:col-span-2">
+                <Label htmlFor="definition-package-name" className="text-xs">
+                  Package name (optional)
+                </Label>
+                <Input
+                  id="definition-package-name"
+                  value={launchDefinition.packageName}
+                  onChange={(e) =>
+                    setLaunchDefinition((d) => ({
+                      ...d,
+                      packageName: e.target.value,
+                    }))
+                  }
+                  placeholder="monorepo member; blank for a single-package tree"
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1">
               <Label htmlFor="source-id" className="text-xs">
