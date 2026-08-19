@@ -879,6 +879,7 @@ Only credentials owned by this tenant can be revoked.
 
 204: (no content) -- Credential revoked
 404: ErrorResponse -- Credential not found
+409: ErrorResponse -- Credential is in use by a model provider
 
 ## Discovery
 

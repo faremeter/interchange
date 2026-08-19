@@ -22,6 +22,7 @@ import type { CredentialCipher } from "@intx/types";
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
+import { isReferencedRowViolation } from "../pg-errors";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {
@@ -467,44 +468,75 @@ export function createCredentialRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
+        409: {
+          description: "Credential is in use by a model provider",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
       },
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const credentialId = c.req.param("credentialId");
 
-      // Delete the credential and its per-credential grants atomically. The
-      // `credential:{id}` resource is a plain text column with no foreign key
-      // to `credential`, so nothing cascades; every grant naming this exact
-      // resource is orphaned once the credential is gone and must be removed
-      // here. The exact-match resource never touches the coarse `credential:*`
-      // role grant.
-      const outcome = await db.transaction(async (tx) => {
-        const deleted = await tx
-          .delete(credential)
-          .where(
-            and(
-              eq(credential.id, credentialId),
-              eq(credential.tenantId, tenantCtx.id),
-            ),
-          )
-          .returning();
+      // Delete the credential and its per-credential grants atomically. Two
+      // invariants, each owned by exactly one layer:
+      //   - Existence within the tenant is owned by the delete's WHERE clause
+      //     (`id` AND `tenantId`). authz cannot own it: the resource string
+      //     `credential:{id}` is opaque, so a wildcard grant matches an id in
+      //     any tenant. A foreign or unknown id matches zero rows -> 404,
+      //     disclosing nothing across the tenant boundary.
+      //   - "Cannot delete a credential a model provider still references" is
+      //     owned by the model_provider.credential_id foreign key, which is
+      //     onDelete "restrict" (catalog.ts). The delete fires it only for a row
+      //     actually being deleted (an in-tenant credential), so the catch maps
+      //     the raw violation to a 409 instead of a 500.
+      // The grant delete keys on the exact `credential:{id}` resource, which has
+      // no foreign key to `credential` (nothing cascades) and never matches the
+      // coarse `credential:*` role grant.
+      let outcome: "not_found" | "deleted";
+      try {
+        outcome = await db.transaction(async (tx) => {
+          const deleted = await tx
+            .delete(credential)
+            .where(
+              and(
+                eq(credential.id, credentialId),
+                eq(credential.tenantId, tenantCtx.id),
+              ),
+            )
+            .returning();
 
-        if (deleted.length === 0) {
-          return "not_found" as const;
+          if (deleted.length === 0) {
+            return "not_found" as const;
+          }
+
+          await tx
+            .delete(grantTable)
+            .where(
+              and(
+                eq(grantTable.tenantId, tenantCtx.id),
+                eq(grantTable.resource, `credential:${credentialId}`),
+              ),
+            );
+
+          return "deleted" as const;
+        });
+      } catch (err) {
+        if (!isReferencedRowViolation(err)) {
+          throw err;
         }
-
-        await tx
-          .delete(grantTable)
-          .where(
-            and(
-              eq(grantTable.tenantId, tenantCtx.id),
-              eq(grantTable.resource, `credential:${credentialId}`),
-            ),
-          );
-
-        return "deleted" as const;
-      });
+        return c.json(
+          {
+            error: {
+              code: "conflict",
+              message: "Credential is in use by a model provider",
+            },
+          },
+          409,
+        );
+      }
 
       if (outcome === "not_found") {
         return c.json(
