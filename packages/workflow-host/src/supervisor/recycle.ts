@@ -322,8 +322,8 @@ export async function triggerRecycle(
   // Step 3: respawn. Fresh channelId, fresh HMAC key, fresh Ed25519
   // IPC keypair. Per-step credentials are re-read so a grants update
   // that landed since the original spawn is reflected in the new
-  // child's snapshot. The deploy tree (`workflow.json`, agents,
-  // workflow-asset repo) is UNCHANGED.
+  // child's snapshot. The deploy tree (the materialized source closure,
+  // the workflow-asset repo, the agent-state repos) is UNCHANGED.
   const channelId = generateChannelId();
   const hmacKey = generateHmacKey();
   const ipcKeypair = await (

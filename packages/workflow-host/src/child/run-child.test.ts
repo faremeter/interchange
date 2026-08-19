@@ -5,7 +5,8 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { computeLiveDefinitionHash } from "@intx/workflow";
+import { loadWorkflowDefinitionFromClosure } from "@intx/workflow-host";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import type {
   AuthorizeFn,
@@ -272,30 +273,75 @@ function createStubRepoStore(baseDir: string): RepoStore {
   });
 }
 
-async function seedWorkflowDefinition(
-  baseDir: string,
-  repoId: RepoId,
-  workflow: { steps: Record<string, unknown>; stepOrder: string[] } = {
-    steps: {},
-    stepOrder: [],
-  },
-): Promise<string> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(dir, { recursive: true });
-  const definition = {
-    id: "test-workflow",
-    triggers: [],
-    steps: workflow.steps,
-    stepOrder: workflow.stepOrder,
+/**
+ * A minimal LIVE agent step: an agent carrying `inference` (the executable
+ * shape the runtime runs and the projector canonicalizes to `modelSources`).
+ * This is the shape `computeLiveDefinitionHash` projects and hashes; a bare
+ * `{ kind: "step" }` carries no agent and does not project, so every step a
+ * materialized closure holds is a full agent step.
+ */
+function agentStep(id: string): Record<string, unknown> {
+  return {
+    kind: "step",
+    id,
+    agent: {
+      id: `agent-${id}`,
+      systemPrompt: "fixture agent",
+      capabilities: [],
+      toolFactories: [],
+      inference: { sources: [{ provider: "openai", model: "gpt-4o" }] },
+    },
+    input: { from: "trigger.payload" },
   };
+}
+
+/**
+ * Materialize a source-ref workflow-definition closure on disk and return its
+ * package dir plus the hub-approved wire hash the closure evaluates to
+ * (project-then-hash via `computeLiveDefinitionHash`). Source-ref is the only
+ * deploy lineage, so the child loads its definition by evaluating this closure
+ * and re-verifying the recompute against `DEFINITION_HASH`; the caller threads
+ * the returned dir into `CLOSURE_PACKAGE_DIR` and the hash into
+ * `DEFINITION_HASH`.
+ */
+async function materializeClosure(
+  prefix: string,
+  definition: {
+    id: string;
+    triggers: unknown[];
+    steps: Record<string, unknown>;
+    stepOrder: string[];
+  },
+): Promise<{ packageDir: string; approvedHash: string }> {
+  const packageDir = await makeTempDir(prefix);
   await fs.writeFile(
-    path.join(dir, "workflow.json"),
-    JSON.stringify(definition),
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/run-child",
+      version: "1.0.0",
+      interchange: { workflow: "workflow.mjs" },
+    }),
+    "utf8",
   );
-  // The re-verify barrier recomputes the wire hash over the loaded
-  // projection, so return the approved hash of exactly these bytes for the
-  // caller to thread into `DEFINITION_HASH`.
-  return computeWireDefinitionHash(definition);
+  await fs.writeFile(
+    path.join(packageDir, "workflow.mjs"),
+    `export const workflow = ${JSON.stringify(definition)};\n`,
+    "utf8",
+  );
+  const live = await loadWorkflowDefinitionFromClosure({ packageDir });
+  const approvedHash = await computeLiveDefinitionHash(live);
+  return { packageDir, approvedHash };
+}
+
+/** The empty-steps definition the trigger/self-discovery tests deploy: a run
+ * fires against it and reaches terminal with no steps to invoke. */
+function emptyWorkflowDefinition(): {
+  id: string;
+  triggers: unknown[];
+  steps: Record<string, unknown>;
+  stepOrder: string[];
+} {
+  return { id: "test-workflow", triggers: [], steps: {}, stepOrder: [] };
 }
 
 async function seedRun(
@@ -439,6 +485,7 @@ function makeSpawnEnv(opts: {
   hmacKeyHex: string;
   hostPubKeyHex: string;
   definitionHash?: string;
+  closurePackageDir?: string;
 }): Record<string, string> {
   return {
     IPC_CHANNEL_ID: opts.channelId,
@@ -448,6 +495,10 @@ function makeSpawnEnv(opts: {
     DEFINITION_HASH: opts.definitionHash ?? "definition-hash-abc",
     MAILBOX_ADDRESS: "deployment-x@example.com",
     STEP_COUNT: "1",
+    // Source-ref is the only deploy lineage: the child evaluates the pinned
+    // closure at this dir. The parse-only contract tests pass a placeholder
+    // (they never load it); the run tests pass a materialized closure dir.
+    CLOSURE_PACKAGE_DIR: opts.closurePackageDir ?? "/fake/closure/package",
   };
 }
 
@@ -551,10 +602,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
     // Seed the claim-check processing entry the child reads to recover
     // the inbound message bytes for the `trigger.fire` below. The
     // supervisor's dispatch loop creates this entry via
@@ -580,6 +629,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -640,10 +690,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -655,6 +703,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
     const bindings = buildBindings({ baseDir, childKeyPair });
@@ -724,10 +773,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
     for (const messageId of ["msg-1", "msg-2"]) {
       await seedProcessingEntry(
         baseDir,
@@ -751,6 +798,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -820,10 +868,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
     await seedProcessingEntry(
       baseDir,
       { kind: "workflow-run", id: "deployment-x" },
@@ -849,6 +895,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
       WARM_KEEP: "true",
     });
@@ -939,10 +986,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
     // Run "live" has RunStarted but no terminal event.
     await seedRun(
       baseDir,
@@ -991,6 +1036,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -1043,10 +1089,10 @@ describe("runWorkflowChild", () => {
     // seeded crashed StepStarted settles as a `StepFailed`
     // (crash-mid-invocation) rather than resolving to a coordination
     // primitive the resume could re-arm.
-    const definitionHash = await seedWorkflowDefinition(
-      baseDir,
-      { kind: "workflow", id: "workflow-asset" },
-      {
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-single-driver-def-", {
+        id: "test-workflow",
+        triggers: [],
         steps: {
           "step-1": {
             kind: "step",
@@ -1065,8 +1111,7 @@ describe("runWorkflowChild", () => {
           },
         },
         stepOrder: ["step-1"],
-      },
-    );
+      });
     // Surviving non-terminal log: RunStarted + the agent step's
     // StepStarted with no StepCompleted -- a crash mid-invocation.
     await seedRun(
@@ -1116,6 +1161,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -1246,10 +1292,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -1261,6 +1305,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -1322,14 +1367,13 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(
-      baseDir,
-      { kind: "workflow", id: "workflow-asset" },
-      {
-        steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-sources-multistep-def-", {
+        id: "test-workflow",
+        triggers: [],
+        steps: { "step-1": agentStep("step-1"), "step-2": agentStep("step-2") },
         stepOrder: ["step-1", "step-2"],
-      },
-    );
+      });
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -1341,6 +1385,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
     const bindings = buildBindings({ baseDir, childKeyPair });
@@ -1387,11 +1432,13 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(
-      baseDir,
-      { kind: "workflow", id: "workflow-asset" },
-      { steps: { "step-1": { kind: "step" } }, stepOrder: ["step-1"] },
-    );
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-sources-nowarm-def-", {
+        id: "test-workflow",
+        triggers: [],
+        steps: { "step-1": agentStep("step-1") },
+        stepOrder: ["step-1"],
+      });
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -1403,6 +1450,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
     const bindings = buildBindings({ baseDir, childKeyPair });
@@ -1446,10 +1494,8 @@ describe("runWorkflowChild", () => {
     const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -1461,6 +1507,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -1524,10 +1571,8 @@ describe("runWorkflowChild", () => {
     const otherKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const definitionHash = await seedWorkflowDefinition(baseDir, {
-      kind: "workflow",
-      id: "workflow-asset",
-    });
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -1539,6 +1584,7 @@ describe("runWorkflowChild", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
     );
 
@@ -1748,20 +1794,20 @@ function stubReactorEvent(type: string): StreamEvent {
 }
 
 /**
- * Seed a one-step workflow whose sole step's input defaults to the
- * trigger payload, so the child's `trigger.fire` delivers the inbound
- * mail body to `agent.send`. The step's `agent` envelope is a bare
- * metadata object: the runtime body passes it through to the invoker,
- * and the spy agentFactory ignores it. Written as a flat file into the
- * workflow-asset repo's working tree, which the child's
- * `loadWorkflowDefinition` reads with a flat `fs.readFile`.
+ * The one-step warm-roundtrip workflow definition whose sole step's input
+ * defaults to the trigger payload, so the child's `trigger.fire` delivers the
+ * inbound mail body to `agent.send`. The step's `agent` carries `inference`
+ * (the live shape the projector canonicalizes and the child runs); the spy
+ * agentFactory ignores the metadata. Materialized as a source-ref closure the
+ * child evaluates and re-verifies at boot.
  */
-async function seedOneStepWorkflowDir(
-  repoDir: string,
-  stepId: string,
-): Promise<string> {
-  await fs.mkdir(repoDir, { recursive: true });
-  const definition = {
+function warmWorkflowDefinition(stepId: string): {
+  id: string;
+  triggers: unknown[];
+  steps: Record<string, unknown>;
+  stepOrder: string[];
+} {
+  return {
     id: "warm-roundtrip-workflow",
     triggers: [{ type: "manual" }],
     steps: {
@@ -1783,11 +1829,6 @@ async function seedOneStepWorkflowDir(
     },
     stepOrder: [stepId],
   };
-  await fs.writeFile(
-    path.join(repoDir, "workflow.json"),
-    JSON.stringify(definition),
-  );
-  return computeWireDefinitionHash(definition);
 }
 
 /**
@@ -1901,22 +1942,14 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       text: "bravo body",
     });
 
-    // The workflow definition the child loads. Genesis the asset repo so
-    // its working tree exists, then write `workflow.json` the child reads
-    // flat.
-    await substrate.writeTree(
-      { kind: "hub" },
-      workflowDefinitionRepoId,
-      "refs/heads/main",
-      {
-        files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
-        message: "genesis",
-      },
-    );
-    const definitionHash = await seedOneStepWorkflowDir(
-      substrate.getRepoDir(workflowDefinitionRepoId),
-      stepId,
-    );
+    // The workflow definition the child loads: source-ref is the only deploy
+    // lineage, so the child evaluates a materialized closure and re-verifies
+    // it at boot. The workflow-asset repo is not read on this path.
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure(
+        "warm-roundtrip-def-",
+        warmWorkflowDefinition(stepId),
+      );
 
     const { agent, spy } = buildWarmAgentSpy();
     let factoryCalls = 0;
@@ -1984,6 +2017,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
       WARM_KEEP: "true",
     });
@@ -2096,16 +2130,14 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       receivedAt: 1,
       text: "alpha body",
     });
-    await substrate.writeTree(
-      { kind: "hub" },
-      workflowDefinitionRepoId,
-      "refs/heads/main",
-      { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
-    );
-    const definitionHash = await seedOneStepWorkflowDir(
-      substrate.getRepoDir(workflowDefinitionRepoId),
-      stepId,
-    );
+    // Source-ref is the only deploy lineage: the child evaluates a
+    // materialized closure and re-verifies it at boot; the workflow-asset repo
+    // is not read on this path.
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure(
+        "warm-sources-def-",
+        warmWorkflowDefinition(stepId),
+      );
 
     const { agent, spy } = buildWarmAgentSpy();
     let factoryCalls = 0;
@@ -2164,6 +2196,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
+        closurePackageDir,
       }),
       WARM_KEEP: "true",
     });
