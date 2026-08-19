@@ -682,8 +682,8 @@ implemented as library code in
 the supervisor object's `recycle()` method.
 
 **Strict orthogonality with redeploy.** Recycle uses the SAME deploy
-tree -- the same `workflow.json`, the same workflow-asset repo, the
-same per-step `agent-state` repos. Redeploy is the other shape: a
+tree -- the same materialized source closure, the same workflow-asset
+repo, the same per-step `agent-state` repos. Redeploy is the other shape: a
 new deploy tree, a new workflow definition, possibly different
 agents. The recycle module never refetches the deploy tree, never
 consults an updated workflow definition, never re-resolves agents.
@@ -1308,7 +1308,7 @@ The hub enforces that boundary structurally in `handleRegister`: a `register` fr
 
 #### Workflow Definition Versioning: Pinned-Forever
 
-A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the `workflow.json`, the workflow-asset repo, the per-step `agent-state` repos — until an explicit undeploy/redeploy replaces it. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
+A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates, the workflow-asset repo, the per-step `agent-state` repos — until an explicit undeploy/redeploy replaces it. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
 
 This holds across a sidecar↔hub disconnect. If the workflow definition is edited on the hub while a sidecar is disconnected, the reconnect does not pull the newer definition down: the deploy-ref freshness catch-up that re-deploys a stale launched agent is deliberately skipped for a workflow-derived address (`isWorkflowDerivedAddress` short-circuits it in the reconnect path — see item 3 above and the exclusion-branch comment in `sidecar-handler.ts`). The reconnected deployment resumes on the definition it deployed with; picking up the new definition requires an explicit redeploy. This is the pinned-forever decision, and it is orthogonal to recycle (same deploy tree, fresh process) as documented under "Recycle" — recycle likewise never refetches the deploy tree.
 
