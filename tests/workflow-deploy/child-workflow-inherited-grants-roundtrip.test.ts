@@ -4,10 +4,12 @@
 // the parent's authority: the spawn adapter reads the parent's
 // `runs/<parentRunId>/grants.json` and writes the same flat grant set to
 // the child's own `runs/<childRunId>/grants.json`. This test drives that
-// composition end to end -- a real deployed parent workflow whose spawn
-// step fires a child through the real sidecar subprocess -- and asserts
-// BOTH files land on the sidecar's on-disk workflow-run repo, carrying the
-// grants the trigger delivered.
+// composition end to end -- a real parent workflow deployed BY SOURCE-REF
+// (bundle a source entry module into a hub asset, probe it, approve+freeze
+// it against a real DB, deploy the source-ref frame) whose spawn step fires a
+// child through the real sidecar subprocess -- and asserts BOTH files land on
+// the sidecar's on-disk workflow-run repo, carrying the grants the trigger
+// delivered.
 //
 // What this ADDS over the unit coverage. The spawn adapter's behavior in
 // isolation -- inheritance, grandchild multi-hop, and fail-closed-at-spawn
@@ -36,29 +38,21 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  childWorkflow,
-  defineWorkflow,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
@@ -66,13 +60,17 @@ import {
   waitForFirstRunId,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { childWorkflowEntry } from "./fixtures/child-workflow";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const PARENT_DEPLOYMENT_ID = "run_child-inherited-grants-parent-1";
 const CHILD_DEPLOYMENT_ID = "run_child-inherited-grants-child-1";
 const PARENT_WORKFLOW_ID = `wf_${PARENT_DEPLOYMENT_ID}`;
 const CHILD_WORKFLOW_ID = `wf_${CHILD_DEPLOYMENT_ID}`;
+
+const TENANT_ID = "tnt_child_inherited_grants";
+const CALLER_PRINCIPAL_ID = "prn_child_inherited_grants";
+const DEFINITION_ASSET_ID = "ast_child_inherited_grants_wf";
 
 // The parent run's grant, delivered per run via the `run.grants` frame.
 // The child must inherit exactly this set into its own grants file.
@@ -92,13 +90,36 @@ const PARENT_GRANT: WireGrantRule = {
 const GrantsFile = type({ grants: "unknown[]" }).onUndeclaredKey("ignore");
 
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "child-inherited-grants-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
 // Read a run's grants.json off the sidecar's on-disk workflow-run repo.
@@ -120,211 +141,166 @@ function readRunGrantsFile(repoId: string, runId: string): unknown[] | null {
   return GrantsFile.assert(parsed).grants;
 }
 
-describe("parent -> child inherited grants round-trip", () => {
-  test("the child inherits the parent's delivered grants file at spawn", async () => {
-    const childAgent = defineAgent({
-      id: "agent-inherited-child-step",
-      systemPrompt: "You are the child workflow's step agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-    });
-    const parentStepAgent = defineAgent({
-      id: "agent-inherited-parent-step",
-      systemPrompt: "You are the parent workflow's first step agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-    });
+describe.skipIf(!harnessDbEnvAvailable())(
+  "parent -> child inherited grants round-trip",
+  () => {
+    test("the child inherits the parent's delivered grants file at spawn", async () => {
+      const parentMailAddress = deriveRunAddress({
+        runId: PARENT_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const childMailAddress = deriveRunAddress({
+        runId: CHILD_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
 
-    const parentMailAddress = deriveRunAddress({
-      runId: PARENT_DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
-    const childMailAddress = deriveRunAddress({
-      runId: CHILD_DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
 
-    const childWorkflowDefinition: WorkflowDefinition = defineWorkflow({
-      id: CHILD_WORKFLOW_ID,
-      trigger: { type: "mail", to: childMailAddress },
-      steps: { childStep: step({ agent: childAgent }) },
-    });
-    const parentWorkflowDefinition: WorkflowDefinition = defineWorkflow({
-      id: PARENT_WORKFLOW_ID,
-      trigger: { type: "mail", to: parentMailAddress },
-      steps: {
-        step1: step({ agent: parentStepAgent }),
-        spawn: childWorkflow({
-          definition: childWorkflowDefinition,
-          after: ["step1"],
-        }),
-      },
-    });
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${PARENT_DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: parentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step).",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
 
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${parentMailAddress}`,
-      `mail.address:${childMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${parentMailAddress}`,
+        `mail.address:${childMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
 
-    const baseConfig = (address: string, agentId: string): HarnessConfig => ({
-      sessionId: SESSION_ID,
-      agentId,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: address,
-      systemPrompt: "Fallback prompt (overridden per step).",
-      tools: [],
-      grants: [],
-      sources: [
+      const entryModule = childWorkflowEntry({
+        workflowId: PARENT_WORKFLOW_ID,
+        address: parentMailAddress,
+        steps: [
+          {
+            stepId: "step1",
+            agentId: "agent-inherited-parent-step",
+            systemPrompt: "You are the parent workflow's first step agent.",
+          },
+        ],
+        spawns: [
+          {
+            stepId: "spawn",
+            after: ["step1"],
+            child: {
+              workflowId: CHILD_WORKFLOW_ID,
+              address: childMailAddress,
+              steps: [
+                {
+                  stepId: "childStep",
+                  agentId: "agent-inherited-child-step",
+                  systemPrompt: "You are the child workflow's step agent.",
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: PARENT_DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: parentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: {
+          step1: [inferenceSource],
+          spawn: [inferenceSource],
+        },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const parentWorkflowRunRepoId: RepoId = handle.workflowRunRepoId;
+      const parentRepoId = parentWorkflowRunRepoId.id;
+
+      await waitFor(
+        () => env.hub.router.getRoutableAddresses().includes(parentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // Fire the parent trigger carrying the parent grant per run.
+      await fireMailTrigger(env, parentMailAddress, {
+        messageId: "<child-inherited-grants-1@integration.interchange>",
+        grants: [PARENT_GRANT],
+      });
+
+      const parentRunId = await waitForFirstRunId(
+        env,
+        parentWorkflowRunRepoId,
         {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
+          diagnostics: env.sidecarDiagnostics,
+          timeoutMs: 20_000,
         },
-      ],
-      defaultSource: "anthropic:mock-model",
-    });
+      );
 
-    const launchSession: LaunchSessionFn = async (p) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: p.agentAddress,
-        agentId: p.agentId,
-        runId: p.runId,
-        config: p.config,
-        deployContent: toLaunchDeployContent(p.deployContent),
-        ...(p.toolPackagePins !== undefined
-          ? { toolPackagePins: p.toolPackagePins }
-          : {}),
-      });
-    };
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
+      // Wait for the spawn to fire; capture the child's runId.
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            PARENT_DEPLOYMENT_ID,
+            parentRunId,
+          );
+          return events.some((e) => e.type === "ChildSpawned");
         },
-        sources: params.sources,
-      });
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) files[k] = v;
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          { files, message: `inherited-grants test: ${args.workflowRepoId}` },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead: (params) =>
-        env.hub.sessionService.deploySingleStepAtHead(params),
-    });
-
-    // The child is embedded inline in the parent (an owned import), so only
-    // the parent is deployed; the child rides the parent's closure and is
-    // resolved from the in-memory map at spawn time.
-    const parentResult = await orchestrator.deployWorkflow({
-      workflow: parentWorkflowDefinition,
-      config: baseConfig(parentMailAddress, `${PARENT_DEPLOYMENT_ID}`),
-      deployContent: { systemPrompt: "Fallback prompt (overridden per step)." },
-      operatorApprovals,
-      runId: PARENT_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(parentResult.publicKey).toBeTruthy();
-
-    const parentRepoId = deriveDeploymentId(parentMailAddress);
-    const parentWorkflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: parentRepoId,
-    };
-    env.registerDeployment({
-      anchorRunId: PARENT_DEPLOYMENT_ID,
-      workflowDefinition: parentWorkflowDefinition,
-      workflowRunRepoId: parentWorkflowRunRepoId,
-      workflowRunRef: "refs/heads/main",
-      mailAddress: parentMailAddress,
-    });
-
-    expect(env.hub.router.getRoutableAddresses()).toContain(parentMailAddress);
-
-    // Fire the parent trigger carrying the parent grant per run.
-    await fireMailTrigger(env, parentMailAddress, {
-      messageId: "<child-inherited-grants-1@integration.interchange>",
-      grants: [PARENT_GRANT],
-    });
-
-    const parentRunId = await waitForFirstRunId(env, parentWorkflowRunRepoId, {
-      diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
-    });
-
-    // Wait for the spawn to fire; capture the child's runId.
-    await waitFor(
-      async () => {
-        const events = await readWorkflowRunEvents(
-          env,
-          PARENT_DEPLOYMENT_ID,
-          parentRunId,
-        );
-        return events.some((e) => e.type === "ChildSpawned");
-      },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
-    );
-
-    const parentEvents = await readWorkflowRunEvents(
-      env,
-      PARENT_DEPLOYMENT_ID,
-      parentRunId,
-    );
-    const spawned = parentEvents.find((e) => e.type === "ChildSpawned");
-    if (spawned === undefined) throw new Error("unreachable: no ChildSpawned");
-    const childRunId = spawned.body["childRunId"];
-    if (typeof childRunId !== "string") {
-      throw new Error(
-        `ChildSpawned missing string childRunId; got ${typeof childRunId}`,
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
       );
-    }
 
-    // The parent's delivered grants landed in its own grants file.
-    const parentGrantsOnDisk = readRunGrantsFile(parentRepoId, parentRunId);
-    if (parentGrantsOnDisk === null) {
-      throw new Error(
-        `parent grants.json absent for run ${parentRunId}\n${env.sidecarDiagnostics()}`,
+      const parentEvents = await readWorkflowRunEvents(
+        env,
+        PARENT_DEPLOYMENT_ID,
+        parentRunId,
       );
-    }
-    expect(parentGrantsOnDisk).toEqual([PARENT_GRANT]);
+      const spawned = parentEvents.find((e) => e.type === "ChildSpawned");
+      if (spawned === undefined)
+        throw new Error("unreachable: no ChildSpawned");
+      const childRunId = spawned.body["childRunId"];
+      if (typeof childRunId !== "string") {
+        throw new Error(
+          `ChildSpawned missing string childRunId; got ${typeof childRunId}`,
+        );
+      }
 
-    // The child's inherited grants file was written at spawn, carrying the
-    // parent's grant set verbatim. The spawn writes it before the child's
-    // (INTR-310-failing) step runs; poll to let the write land.
-    await waitFor(() => readRunGrantsFile(parentRepoId, childRunId) !== null, {
-      diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
+      // The parent's delivered grants landed in its own grants file.
+      const parentGrantsOnDisk = readRunGrantsFile(parentRepoId, parentRunId);
+      if (parentGrantsOnDisk === null) {
+        throw new Error(
+          `parent grants.json absent for run ${parentRunId}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(parentGrantsOnDisk).toEqual([PARENT_GRANT]);
+
+      // The child's inherited grants file was written at spawn, carrying the
+      // parent's grant set verbatim. The spawn writes it before the child's
+      // (INTR-310-failing) step runs; poll to let the write land.
+      await waitFor(
+        () => readRunGrantsFile(parentRepoId, childRunId) !== null,
+        {
+          diagnostics: env.sidecarDiagnostics,
+          timeoutMs: 20_000,
+        },
+      );
+      const childGrantsOnDisk = readRunGrantsFile(parentRepoId, childRunId);
+      expect(childGrantsOnDisk).toEqual([PARENT_GRANT]);
     });
-    const childGrantsOnDisk = readRunGrantsFile(parentRepoId, childRunId);
-    expect(childGrantsOnDisk).toEqual([PARENT_GRANT]);
-  });
-});
+  },
+);

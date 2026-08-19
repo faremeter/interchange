@@ -8,32 +8,35 @@
 //
 //   - The workflow's single ACTION step declares `effect:{requires:
 //     ["fs:write"]}`. The deploy-time capability walk lifts that into a
-//     `effect:fs:write` runtime grant; the trigger route materializes it
-//     onto a fresh run principal and commits the principal + run + grant
-//     rows in one transaction (`commitRunGrants`). The route declares NO
-//     `grants` inline -- the `effect:fs:write` row exists only because the
-//     WALK derived it, which is the property under test.
+//     `effect:fs:write` runtime grant, frozen onto the definition version at
+//     approval; the trigger route materializes it onto a fresh run principal
+//     and commits the principal + run + grant rows in one transaction
+//     (`commitRunGrants`). The route declares NO `grants` inline -- the
+//     `effect:fs:write` row exists only because the WALK derived it, which is
+//     the property under test.
+//   - The workflow is deployed BY SOURCE-REF (bundle a source entry module
+//     into a hub asset, probe it, approve+freeze it against a real DB, deploy
+//     the source-ref frame). The freeze writes the deployment's
+//     `workflow_definition` + frozen version (with the grant-walk snapshot) and
+//     the anchor `workflow_run` row, so the trigger route reads a genuinely
+//     approved deployment rather than a hand-seeded one.
 //   - `createApp` is wired with the real `h.db`, a real `assetService` +
-//     `repoStore` (so the `/workflows` routes mount and `hydrateDefinition`
-//     reads the deployment's `workflow.json`), a real DB-backed grant store,
-//     and the fixture's real `env.hub.router`. The route's `sendRunGrants`
-//     and `routeMail` therefore reach the SAME deployed sidecar the fixture
-//     stood up, so a 202 means the run was genuinely accepted for dispatch.
+//     `repoStore` (so the `/workflows` routes mount), a real DB-backed grant
+//     store, and the fixture's real `env.hub.router`. The route's
+//     `sendRunGrants` and `routeMail` therefore reach the SAME deployed sidecar
+//     the fixture stood up, so a 202 means the run was genuinely accepted for
+//     dispatch.
 //   - The committed rows insert under real foreign keys: `workflow_run`'s
-//     `deployment_id` references its anchor run's `workflow_run.id`, and the
-//     run principal is a real `principal` row. A broken derivation or a wrong
+//     `anchorRunId` references its anchor run's `workflow_run.id`, and the run
+//     principal is a real `principal` row. A broken derivation or a wrong
 //     deployment id fails at the DB, not at a mock.
 //
 // SCOPE. This proves the route's grant DERIVATION + DB COMMIT under real
 // constraints. It does NOT exercise the runtime CONSUME side: the sidecar
-// workflow host does not execute action primitives (no `invokeAction` is
-// wired on the production run env), so the dispatched run fails its action
-// step with "this host does not support action primitives" and never runs
-// the effect. That downstream failure is expected and irrelevant here --
-// the derivation and commit both complete before the run dispatches, and
-// those are what this test asserts. The action-effect authorization path
-// (`EffectContext.perform` gating `effect:fs:write`) only runs under the
-// in-process `runLocal` host and is covered there.
+// workflow host does not execute action primitives, so the dispatched run
+// fails its action step and never runs the effect. That downstream failure is
+// expected and irrelevant here -- the derivation and commit both complete
+// before the run dispatches, and those are what this test asserts.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -51,20 +54,16 @@ import {
 import { and, eq } from "drizzle-orm";
 import { type } from "arktype";
 
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import { createGrantStore } from "@intx/db";
 import {
   grant as grantTable,
   principal as principalTable,
   tenant as tenantTable,
-  workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { createSSHSignature, generateKeyPair } from "@intx/crypto";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
-  DEFAULT_ASSET_REF,
-  WORKFLOW_JSON_PATH,
   createAssetService,
   createRepoStore,
   workflowAuthorize,
@@ -73,47 +72,29 @@ import {
   workflowRunKindHandler,
   type AuthorizeFn,
   type EventCollectorRegistry,
-  type RepoId,
   type RepoStore,
   type SessionService,
-  type WorkflowRunHubPrincipal,
 } from "@intx/hub-sessions";
-import type { KeyPair } from "@intx/types/runtime";
-import type { HarnessConfig } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
+import type {
+  HarnessConfig,
+  InferenceSource,
+  KeyPair,
+} from "@intx/types/runtime";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import {
-  seedAsset,
-  seedGrant,
-  seedPrincipal,
-  seedWorkflowDefinitionVersion,
-} from "@intx/test-harness/seed";
-import {
-  action,
-  defineWorkflow,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  walkCapabilities,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
+import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   SESSION_ID,
+  deployWorkflowSourceForTest,
   startDeployFlowEnv,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { actionStepEntry } from "./fixtures/action-step";
 
 // The tenant domain must equal the fixture's deploy domain so the route's
 // derived address (`<anchorRunId>@<tenant.domain>`) matches the
@@ -128,27 +109,9 @@ const CALLER_PRINCIPAL_ID = "prn_mail_trigger_caller";
 const DEFINITION_ASSET_ID = "ast_mail_trigger_wf";
 const STEP_ID = "act";
 
-const TOOL_PINS: readonly ToolPackagePin[] = [];
-
 const deploymentMailAddress = deriveRunAddress({
   runId: DEPLOYMENT_ID,
   domain: DEPLOYMENT_DOMAIN,
-});
-
-// The workflow the deployment carries: a single action step whose effect
-// requires `fs:write`. The capability walk derives `effect:fs:write` from
-// this; no `grants` are declared inline, so the derived row is the ONLY
-// source of that grant. The handler ref is inert here (the run never
-// executes the action on this host).
-const workflow: WorkflowDefinition = defineWorkflow({
-  id: `wf_${DEPLOYMENT_ID}`,
-  trigger: { type: "mail", to: deploymentMailAddress },
-  steps: {
-    [STEP_ID]: action({
-      handler: "writer",
-      effect: { requires: ["fs:write"] },
-    }),
-  },
 });
 
 // The trigger route's 202 body shape. Validated rather than cast so a
@@ -215,8 +178,8 @@ function createMockEventCollectors(): EventCollectorRegistry {
   };
 }
 
-// A real RepoStore carrying both kinds the `/mail` route reads: the workflow
-// asset's `workflow.json` and the deployment's workflow-run lifecycle.
+// A real RepoStore carrying both kinds the `/workflows` routes mount over: the
+// workflow asset and the deployment's workflow-run lifecycle.
 async function createWorkflowRepoStore(): Promise<RepoStore> {
   const dataDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "mail-trigger-derived-"),
@@ -302,6 +265,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: CALLER_USER_ID,
         status: "active",
       });
+      // The `workflow`-kind asset the frozen definition projects over. The
+      // deploy freeze writes a `workflow_definition` over this asset, and the
+      // trigger route reads this asset row to hydrate.
       await seedAsset(h.db, {
         id: DEFINITION_ASSET_ID,
         tenantId: TENANT_ID,
@@ -318,30 +284,64 @@ describe.skipIf(!harnessDbEnvAvailable())(
         origin: "system",
         principalId: CALLER_PRINCIPAL_ID,
       });
-      // Deploy the workflow asset's `workflow.json` through a real asset
-      // service so the route can hydrate it.
+
+      // Deploy the action-step workflow BY SOURCE-REF to the real sidecar. The
+      // freeze writes the deployment's definition + frozen grant snapshot (the
+      // effect:fs:write derivation) and the anchor workflow_run row the trigger
+      // route reads; the deploy frame makes the address routable so the route's
+      // sendRunGrants + routeMail reach this deployment.
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+      // The action step declares `effect:{requires:["fs:write"]}`; the walk
+      // lifts `effect:fs:write`, which the operator must approve so the gate
+      // freezes it into the snapshot the route derives from.
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "effect:fs:write",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule: actionStepEntry({
+          address: deploymentMailAddress,
+          stepId: STEP_ID,
+          handler: "writer",
+          requires: ["fs:write"],
+        }),
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
+      });
+      if (!handle.publicKey) {
+        throw new Error(
+          `deployWorkflowSourceForTest returned no publicKey\n${env.sidecarDiagnostics()}`,
+        );
+      }
+
       const repoStore = await createWorkflowRepoStore();
       const assetService = createAssetService({ db: h.db, repoStore });
-      await repoStore.initRepo({ kind: "workflow", id: DEFINITION_ASSET_ID });
-      await assetService.populateAsset({
-        assetId: DEFINITION_ASSET_ID,
-        ref: DEFAULT_ASSET_REF,
-        principal: { kind: "hub" },
-        tree: {
-          files: { [WORKFLOW_JSON_PATH]: JSON.stringify(workflow) },
-          message: "seed workflow.json",
-        },
-      });
-
-      // Deploy the workflow to the real sidecar so its address is routable
-      // and its workflow-run repo exists. The route's sendRunGrants +
-      // routeMail reach this deployment.
-      await deployWorkflowToSidecar();
-
-      // Seed the deployment row after the asset + sidecar deploy so the
-      // FK target exists for commitRunGrants.
-      await seedDeploymentRow();
-
       const grantStore = createGrantStore(h.db);
       const triggerApp = createApp({
         getSession: createMockGetSession(CALLER_USER_ID),
@@ -422,138 +422,5 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(effectGrant.effect).toBe("allow");
       expect(effectGrant.origin).toBe("creator");
     });
-
-    // Seed the deployment's first-class definition and its anchor run at the
-    // fixture's deploy address: the trigger route reads the workflow asset and
-    // the run's definition off the anchor.
-    async function seedDeploymentRow(): Promise<void> {
-      await h.db.insert(workflowDefinitionTable).values({
-        id: `wfd_${DEPLOYMENT_ID}`,
-        tenantId: TENANT_ID,
-        name: DEPLOYMENT_ID,
-        assetId: DEFINITION_ASSET_ID,
-      });
-      // Freeze the deploy-approved grant-walk snapshot onto the version row: the
-      // trigger route materializes the run's grants from it. Derived from the
-      // same walk the deploy path runs, so the grants match the approved set.
-      const walk = walkCapabilities(workflow, createDefaultDirectorRegistry());
-      await seedWorkflowDefinitionVersion(h.db, {
-        definitionId: `wfd_${DEPLOYMENT_ID}`,
-        grantSnapshot: {
-          perStep: [...walk.perStep].map(([stepId, decl]) => ({
-            stepId,
-            grants: [...decl.grants],
-            grantEffects: Object.fromEntries(decl.grantEffects),
-          })),
-          grantRequirements: [...(workflow.grantRequirements ?? [])],
-        },
-      });
-      await h.db.insert(workflowRunTable).values({
-        id: DEPLOYMENT_ID,
-        tenantId: TENANT_ID,
-        anchorRunId: DEPLOYMENT_ID,
-        definitionId: `wfd_${DEPLOYMENT_ID}`,
-        address: deploymentMailAddress,
-        // The deploy-time birth state; the first mail trigger flips it to
-        // "running" and attaches the run principal.
-        status: "deployed",
-      });
-    }
-
-    async function deployWorkflowToSidecar(): Promise<void> {
-      const config: HarnessConfig = {
-        sessionId: SESSION_ID,
-        agentId: `${DEPLOYMENT_ID}`,
-        tenantId: "tenant-1",
-        principalId: "prin_integration-1",
-        agentAddress: deploymentMailAddress,
-        systemPrompt: "Fallback",
-        tools: [],
-        grants: [],
-        sources: [
-          {
-            id: "anthropic:mock-model",
-            provider: "anthropic",
-            baseURL: `http://localhost:${String(env.inference.server.port)}`,
-            apiKey: "sk-mock",
-            model: "mock-model",
-          },
-        ],
-        defaultSource: "anthropic:mock-model",
-      };
-      const operatorApprovals: ApprovalSet = new Set<string>([
-        "inference.source:anthropic:mock-model",
-        "director:@intx/agent/default",
-        `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
-        "effect:fs:write",
-      ]);
-      const launchSession: LaunchSessionFn = async (p) => {
-        await env.hub.sessionService.stageWorkflowStep({
-          agentAddress: p.agentAddress,
-          agentId: p.agentId,
-          runId: p.runId,
-          config: p.config,
-          deployContent: toLaunchDeployContent(p.deployContent),
-          ...(p.toolPackagePins !== undefined
-            ? { toolPackagePins: p.toolPackagePins }
-            : {}),
-        });
-      };
-      const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-        env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-          definition: {
-            id: params.definition.id,
-            triggers: [...params.definition.triggers],
-            stepOrder: [...params.definition.stepOrder],
-            steps: params.definition.steps as Record<string, unknown>,
-            ...(params.definition.state !== undefined
-              ? { state: params.definition.state }
-              : {}),
-          },
-          sources: params.sources,
-        });
-      const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-        env.hub.sessionService.deploySingleStepAtHead(params);
-      const workflowRepo: WorkflowRepoWriter = {
-        async writeWorkflowRepo(args) {
-          const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-          const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-          const files: Record<string, string> = {};
-          for (const [k, v] of args.files) files[k] = v;
-          await env.hub.agentRepoStore.repoStore.writeTree(
-            principal,
-            repoId,
-            DEFAULT_ASSET_REF,
-            {
-              files,
-              message: `mail-trigger derived test: ${args.workflowRepoId}`,
-            },
-          );
-        },
-      };
-      const orchestrator = createWorkflowDeployOrchestrator({
-        directorRegistry: createDefaultDirectorRegistry(),
-        workflowRepo,
-        launchSession,
-        sendMultiStepDeploy,
-        deploySingleStepAtHead,
-      });
-      const result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
-        runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-        ...(TOOL_PINS.length > 0 ? { toolPackagePins: TOOL_PINS } : {}),
-      });
-      if (!result.publicKey) {
-        throw new Error(
-          `deployWorkflow returned no publicKey\n${env.sidecarDiagnostics()}`,
-        );
-      }
-    }
   },
 );

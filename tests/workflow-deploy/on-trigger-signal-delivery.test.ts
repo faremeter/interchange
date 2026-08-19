@@ -9,11 +9,14 @@
 // await on the container, a signal delivered to the parent run resolves that
 // await, and the section relays it back down into the body, which continues.
 //
-// Shape: deploy a single-step workflow whose one step is an `onTrigger` section
-// subscribed to the deployment mail address, with a NON-AGENT body -- a single
-// `awaitSignal({ name })` gate with no timeout. (Body agent-step execution is
-// not wired yet, INTR-310; the signal-relay feature is non-agent by nature, so
-// the body IS an awaitSignal, exercising exactly the capability under test.)
+// The workflow is deployed BY SOURCE-REF (bundle a source entry module into a
+// hub asset, probe it, approve+freeze it against a real DB, deploy the
+// source-ref frame): a single-step workflow whose one step is an `onTrigger`
+// section subscribed to the deployment mail address, with a NON-AGENT body -- a
+// single `awaitSignal({ name })` gate with no timeout. (Body agent-step
+// execution is not wired yet, INTR-310; the signal-relay feature is non-agent
+// by nature, so the body IS an awaitSignal, exercising exactly the capability
+// under test.)
 //
 //   1. Fire mail #1 -> the container run starts and spawns the body
 //      `section__0`, which parks on `awaitSignal({ name: "proceed" })`. The
@@ -42,31 +45,21 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  awaitSignal,
-  defineWorkflow,
-  onTrigger,
-  sleep,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
   listRunIds,
@@ -75,23 +68,60 @@ import {
   waitFor,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import {
+  onTriggerBodyEntry,
+  type OnTriggerBodyVariant,
+} from "./fixtures/on-trigger-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_on-trigger-signal-delivery-1";
 const DEPLOYMENT_ID_TIMED = "run_on-trigger-timed-abandon-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const SECTION_ID = "section";
 const SIGNAL_NAME = "proceed";
 
+// The definition's own tenant, the caller principal that creates the
+// definition assets, and one `workflow`-kind asset per deploy the frozen
+// definitions project over. The install/approve freeze and the anchor
+// `workflow_run` insert both write against these, so they must exist in the
+// real DB before each deploy runs.
+const TENANT_ID = "tnt_on_trigger_signal";
+const CALLER_PRINCIPAL_ID = "prn_on_trigger_signal";
+const DEFINITION_ASSET_ID = "ast_on_trigger_signal_wf";
+const TIMED_DEFINITION_ASSET_ID = "ast_on_trigger_timed_wf";
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  for (const id of [DEFINITION_ASSET_ID, TIMED_DEFINITION_ASSET_ID]) {
+    await seedAsset(h.db, {
+      id,
+      tenantId: TENANT_ID,
+      kind: "workflow",
+      name: id,
+      creatorPrincipalId: CALLER_PRINCIPAL_ID,
+    });
+  }
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
 /**
@@ -126,31 +156,31 @@ const hasChildCompleted = (
   );
 
 /**
- * Deploy a single onTrigger section with the given body, register it, fire the
- * first event, and wait for the section to proxy the body's author `awaitSignal`
- * gate UP as a signal-relay await on the container. Returns the container run
- * id so each test drives the section from there. Shared by the delivery and
- * timeout scenarios, which diverge only in what becomes of the proxied await.
+ * Deploy a single onTrigger section with the given body BY SOURCE-REF, fire the
+ * first event, and wait for the section to proxy the body's author
+ * `awaitSignal` gate UP as a signal-relay await on the container. Returns the
+ * container run id so each test drives the section from there. Shared by the
+ * delivery and timeout scenarios, which diverge only in what becomes of the
+ * proxied await.
  */
-async function deployAndTriggerSection(
-  anchorRunId: string,
-  body: WorkflowDefinition,
-): Promise<{ workflowRunRepoId: RepoId; containerRunId: string }> {
+async function deployAndTriggerSection(opts: {
+  anchorRunId: string;
+  definitionAssetId: string;
+  body: OnTriggerBodyVariant;
+}): Promise<{ workflowRunRepoId: RepoId; containerRunId: string }> {
+  const { anchorRunId } = opts;
   const deploymentMailAddress = deriveRunAddress({
     runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
-  const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${anchorRunId}`,
-    trigger: { type: "mail", to: deploymentMailAddress },
-    steps: {
-      [SECTION_ID]: onTrigger({
-        on: { type: "mail", to: deploymentMailAddress },
-        body,
-      }),
-    },
-  });
+  const inferenceSource: InferenceSource = {
+    id: "anthropic:mock-model",
+    provider: "anthropic",
+    baseURL: `http://localhost:${String(env.inference.server.port)}`,
+    apiKey: "sk-mock",
+    model: "mock-model",
+  };
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
@@ -158,18 +188,10 @@ async function deployAndTriggerSection(
     tenantId: "tenant-1",
     principalId: `prin_${anchorRunId}`,
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
+    systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
     grants: [],
-    sources: [
-      {
-        id: "anthropic:mock-model",
-        provider: "anthropic",
-        baseURL: `http://localhost:${String(env.inference.server.port)}`,
-        apiKey: "sk-mock",
-        model: "mock-model",
-      },
-    ],
+    sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };
 
@@ -180,96 +202,32 @@ async function deployAndTriggerSection(
     `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
-  const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    await env.hub.sessionService.stageWorkflowStep({
-      agentAddress: orchestratorParams.agentAddress,
-      agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.runId,
-      config: orchestratorParams.config,
-      deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-      ...(orchestratorParams.toolPackagePins !== undefined
-        ? { toolPackagePins: orchestratorParams.toolPackagePins }
-        : {}),
-    });
-  };
-
-  const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-    env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-      definition: {
-        id: params.definition.id,
-        triggers: [...params.definition.triggers],
-        stepOrder: [...params.definition.stepOrder],
-        steps: params.definition.steps as Record<string, unknown>,
-        ...(params.definition.state !== undefined
-          ? { state: params.definition.state }
-          : {}),
-      },
-      sources: params.sources,
-    });
-
-  const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-    env.hub.sessionService.deploySingleStepAtHead(params);
-
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-      const files: Record<string, string> = {};
-      for (const [k, v] of args.files) files[k] = v;
-      await env.hub.agentRepoStore.repoStore.writeTree(
-        principal,
-        repoId,
-        DEFAULT_ASSET_REF,
-        {
-          files,
-          message: `on-trigger signal test: write workflow repo ${args.workflowRepoId}`,
-        },
-      );
-    },
-  };
-
-  const orchestrator = createWorkflowDeployOrchestrator({
-    directorRegistry: createDefaultDirectorRegistry(),
-    workflowRepo,
-    launchSession,
-    sendMultiStepDeploy,
-    deploySingleStepAtHead,
+  const entryModule = onTriggerBodyEntry({
+    address: deploymentMailAddress,
+    sectionId: SECTION_ID,
+    body: opts.body,
+    workflowId: `wf_${anchorRunId}`,
   });
 
-  let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-  try {
-    result = await orchestrator.deployWorkflow({
-      workflow,
-      config,
-      deployContent: { systemPrompt: config.systemPrompt },
-      operatorApprovals,
-      runId: anchorRunId,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    const diag = env.sidecarDiagnostics();
-    throw new Error(
-      `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-      { cause },
-    );
-  }
-  expect(result.publicKey).toBeTruthy();
-
-  const workflowRunRepoId: RepoId = {
-    kind: "workflow-run",
-    id: deriveDeploymentId(deploymentMailAddress),
-  };
-  env.registerDeployment({
+  const handle = await deployWorkflowSourceForTest(env, {
+    entryModule,
+    db: h.db,
+    tenantId: TENANT_ID,
+    definitionAssetId: opts.definitionAssetId,
     anchorRunId,
-    workflowDefinition: workflow,
-    workflowRunRepoId,
-    workflowRunRef: WORKFLOW_RUN_REF,
-    mailAddress: deploymentMailAddress,
+    deploymentDomain: DEPLOYMENT_DOMAIN,
+    agentAddress: deploymentMailAddress,
+    approvals: operatorApprovals,
+    config,
+    sources: { [SECTION_ID]: [inferenceSource] },
   });
-  expect(env.hub.router.getRoutableAddresses()).toContain(
-    deploymentMailAddress,
+  expect(handle.publicKey).toBeTruthy();
+
+  const workflowRunRepoId: RepoId = handle.workflowRunRepoId;
+
+  await waitFor(
+    () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
   );
 
   // Fire the first event; the body parks on its author gate and the section
@@ -297,170 +255,166 @@ async function deployAndTriggerSection(
   return { workflowRunRepoId, containerRunId };
 }
 
-describe("onTrigger body author-signal delivered to the parent run reaches the body via the section", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("a signal delivered to the deployment run resolves the body's awaitSignal gate", async () => {
-    // A non-agent awaitSignal gate (no timeout) -- the signal-relay capability.
-    const body: WorkflowDefinition = defineWorkflow({
-      id: "authored-delivery-body",
-      trigger: { type: "manual" },
-      steps: { gate: awaitSignal({ name: SIGNAL_NAME }) },
-    });
-    const { containerRunId } = await deployAndTriggerSection(
-      DEPLOYMENT_ID,
-      body,
-    );
-
-    // The body is parked on its gate: section__0 spawned, not yet completed.
-    const parked = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      containerRunId,
-    );
-    expect(
-      parked.some(
-        (e) =>
-          e.type === "ChildSpawned" &&
-          e.body["childRunId"] === `${SECTION_ID}__0`,
-      ),
-    ).toBe(true);
-    expect(hasChildCompleted(parked, `${SECTION_ID}__0`)).toBe(false);
-
-    // ---- deliver the author signal to the PARENT deployment run id ----
-    // The body (a child run) never receives a signal directly; delivering to
-    // the container run resolves the section's signal-relay await, and the
-    // section relays it down into the body.
-    await injectSignal(env, DEPLOYMENT_ID, containerRunId, SIGNAL_NAME, {
-      go: true,
+describe.skipIf(!harnessDbEnvAvailable())(
+  "onTrigger body author-signal delivered to the parent run reaches the body via the section",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    // The relay reached the body: its gate completed, section__0 completed, and
-    // the section re-armed on its input park for the next event.
-    await waitFor(
-      async () => {
-        const events = await readWorkflowRunEvents(
-          env,
-          DEPLOYMENT_ID,
-          containerRunId,
-        );
-        return (
-          hasChildCompleted(events, `${SECTION_ID}__0`) &&
-          events.some(
-            (e) => e.type === "SignalAwaited" && e.body["parkKind"] === "input",
-          )
-        );
-      },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
-    );
+    test("a signal delivered to the deployment run resolves the body's awaitSignal gate", async () => {
+      // A non-agent awaitSignal gate (no timeout) -- the signal-relay capability.
+      const { containerRunId } = await deployAndTriggerSection({
+        anchorRunId: DEPLOYMENT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        body: { variant: "awaitSignal", signalName: SIGNAL_NAME },
+      });
 
-    const finalEvents = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      containerRunId,
-    );
-    const finalTypes = finalEvents.map((e) => e.type);
+      // The body is parked on its gate: section__0 spawned, not yet completed.
+      const parked = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+      );
+      expect(
+        parked.some(
+          (e) =>
+            e.type === "ChildSpawned" &&
+            e.body["childRunId"] === `${SECTION_ID}__0`,
+        ),
+      ).toBe(true);
+      expect(hasChildCompleted(parked, `${SECTION_ID}__0`)).toBe(false);
 
-    // The container proxied the body's author gate up (signal-relay await) and
-    // recorded the delivery to the PARENT run (SignalReceived on the same name).
-    expect(
-      finalEvents.some(
-        (e) =>
-          e.type === "SignalAwaited" &&
-          e.body["parkKind"] === "signal-relay" &&
-          e.body["signalName"] === SIGNAL_NAME,
-      ),
-    ).toBe(true);
-    expect(
-      finalEvents.some(
-        (e) =>
-          e.type === "SignalReceived" && e.body["signalName"] === SIGNAL_NAME,
-      ),
-    ).toBe(true);
+      // ---- deliver the author signal to the PARENT deployment run id ----
+      // The body (a child run) never receives a signal directly; delivering to
+      // the container run resolves the section's signal-relay await, and the
+      // section relays it down into the body.
+      await injectSignal(env, DEPLOYMENT_ID, containerRunId, SIGNAL_NAME, {
+        go: true,
+      });
 
-    // The body completed only after the delivery (the relay reached the child).
-    expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
+      // The relay reached the body: its gate completed, section__0 completed, and
+      // the section re-armed on its input park for the next event.
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID,
+            containerRunId,
+          );
+          return (
+            hasChildCompleted(events, `${SECTION_ID}__0`) &&
+            events.some(
+              (e) =>
+                e.type === "SignalAwaited" && e.body["parkKind"] === "input",
+            )
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      );
 
-    // One long-lived run that never self-completes.
-    expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
-    expect(finalTypes).not.toContain("RunCompleted");
-    expect(finalTypes).not.toContain("RunFailed");
-    expect(finalTypes).not.toContain("RunCancelled");
-  }, 120_000);
+      const finalEvents = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+      );
+      const finalTypes = finalEvents.map((e) => e.type);
 
-  test("a body gate that times out routes via onTimeout and the section keeps working", async () => {
-    // The body's gate has a timeout + onTimeout to a completing step. No signal
-    // is delivered, so the timer fires: the body routes onward (does NOT fail),
-    // completes, and the section abandons its now-stale signal-relay await and
-    // re-arms -- the long-lived section keeps working through a timed-out body
-    // gate. onTimeout's target is a non-agent sleep (agent body steps are
-    // INTR-310); its timer fires through the sidecar scheduler.
-    const body: WorkflowDefinition = defineWorkflow({
-      id: "authored-timed-body",
-      trigger: { type: "manual" },
-      steps: {
-        gate: awaitSignal({
-          name: SIGNAL_NAME,
+      // The container proxied the body's author gate up (signal-relay await) and
+      // recorded the delivery to the PARENT run (SignalReceived on the same name).
+      expect(
+        finalEvents.some(
+          (e) =>
+            e.type === "SignalAwaited" &&
+            e.body["parkKind"] === "signal-relay" &&
+            e.body["signalName"] === SIGNAL_NAME,
+        ),
+      ).toBe(true);
+      expect(
+        finalEvents.some(
+          (e) =>
+            e.type === "SignalReceived" && e.body["signalName"] === SIGNAL_NAME,
+        ),
+      ).toBe(true);
+
+      // The body completed only after the delivery (the relay reached the child).
+      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
+
+      // One long-lived run that never self-completes.
+      expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
+      expect(finalTypes).not.toContain("RunCompleted");
+      expect(finalTypes).not.toContain("RunFailed");
+      expect(finalTypes).not.toContain("RunCancelled");
+    }, 120_000);
+
+    test("a body gate that times out routes via onTimeout and the section keeps working", async () => {
+      // The body's gate has a timeout + onTimeout to a completing step. No signal
+      // is delivered, so the timer fires: the body routes onward (does NOT fail),
+      // completes, and the section abandons its now-stale signal-relay await and
+      // re-arms -- the long-lived section keeps working through a timed-out body
+      // gate. onTimeout's target is a non-agent sleep (agent body steps are
+      // INTR-310); its timer fires through the sidecar scheduler.
+      const { containerRunId } = await deployAndTriggerSection({
+        anchorRunId: DEPLOYMENT_ID_TIMED,
+        definitionAssetId: TIMED_DEFINITION_ASSET_ID,
+        body: {
+          variant: "awaitSignal",
+          signalName: SIGNAL_NAME,
           timeout: 500,
-          onTimeout: "recover",
-        }),
-        recover: sleep({ duration: 10, after: ["gate"] }),
-      },
-    });
-    const { containerRunId } = await deployAndTriggerSection(
-      DEPLOYMENT_ID_TIMED,
-      body,
-    );
+          recoverId: "recover",
+          recoverDuration: 10,
+        },
+      });
 
-    // Deliver NOTHING. The 500ms gate times out, routes to recover, completes;
-    // the section abandons its relay await and re-arms on input.
-    await waitFor(
-      async () => {
-        const events = await readWorkflowRunEvents(
-          env,
-          DEPLOYMENT_ID_TIMED,
-          containerRunId,
-        );
-        return (
-          hasChildCompleted(events, `${SECTION_ID}__0`) &&
-          events.some(
-            (e) => e.type === "SignalAwaited" && e.body["parkKind"] === "input",
-          )
-        );
-      },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
-    );
+      // Deliver NOTHING. The 500ms gate times out, routes to recover, completes;
+      // the section abandons its relay await and re-arms on input.
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID_TIMED,
+            containerRunId,
+          );
+          return (
+            hasChildCompleted(events, `${SECTION_ID}__0`) &&
+            events.some(
+              (e) =>
+                e.type === "SignalAwaited" && e.body["parkKind"] === "input",
+            )
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      );
 
-    const finalEvents = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID_TIMED,
-      containerRunId,
-    );
-    const finalTypes = finalEvents.map((e) => e.type);
-    // The section proxied the gate, then ABANDONED it when the body moved on via
-    // its onTimeout route (no signal ever arrived).
-    expect(
-      finalEvents.some(
-        (e) =>
-          e.type === "SignalAwaited" &&
-          e.body["parkKind"] === "signal-relay" &&
-          e.body["signalName"] === SIGNAL_NAME,
-      ),
-    ).toBe(true);
-    expect(
-      finalEvents.some(
-        (e) =>
-          e.type === "SignalAwaitAbandoned" &&
-          e.body["signalName"] === SIGNAL_NAME,
-      ),
-    ).toBe(true);
-    // The body completed via the timeout route; the section keeps working.
-    expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
-    expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
-    expect(finalTypes).not.toContain("RunCompleted");
-    expect(finalTypes).not.toContain("RunFailed");
-    expect(finalTypes).not.toContain("RunCancelled");
-  }, 120_000);
-});
+      const finalEvents = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID_TIMED,
+        containerRunId,
+      );
+      const finalTypes = finalEvents.map((e) => e.type);
+      // The section proxied the gate, then ABANDONED it when the body moved on via
+      // its onTimeout route (no signal ever arrived).
+      expect(
+        finalEvents.some(
+          (e) =>
+            e.type === "SignalAwaited" &&
+            e.body["parkKind"] === "signal-relay" &&
+            e.body["signalName"] === SIGNAL_NAME,
+        ),
+      ).toBe(true);
+      expect(
+        finalEvents.some(
+          (e) =>
+            e.type === "SignalAwaitAbandoned" &&
+            e.body["signalName"] === SIGNAL_NAME,
+        ),
+      ).toBe(true);
+      // The body completed via the timeout route; the section keeps working.
+      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
+      expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
+      expect(finalTypes).not.toContain("RunCompleted");
+      expect(finalTypes).not.toContain("RunFailed");
+      expect(finalTypes).not.toContain("RunCancelled");
+    }, 120_000);
+  },
+);
