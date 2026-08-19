@@ -27,29 +27,21 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  awaitSignal,
-  defineWorkflow,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
   listRunIds,
@@ -61,353 +53,313 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { signalGateEntry } from "./fixtures/signal-gate";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_midrun-signal-reconnect-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
+
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_midrun_signal_reconnect";
+const CALLER_PRINCIPAL_ID = "prn_midrun_signal_reconnect";
+const DEFINITION_ASSET_ID = "ast_midrun_signal_reconnect_wf";
 
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "midrun-signal-reconnect-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("mid-run signal survives hub-link drop -> reconnect", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("interrupted-at-signal run resumes on reconnect and applies effects exactly once", async () => {
-    const agent1 = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the first step agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
-    });
-    const agent2 = defineAgent({
-      id: "agent-step2",
-      systemPrompt: "You are the second step agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
+describe.skipIf(!harnessDbEnvAvailable())(
+  "mid-run signal survives hub-link drop -> reconnect",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        step1: step({ agent: agent1 }),
-        gate: awaitSignal({ name: "go", after: ["step1"] }),
-        step2: step({ agent: agent2, after: ["gate"] }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (p) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: p.agentAddress,
-        agentId: p.agentId,
-        runId: p.runId,
-        config: p.config,
-        deployContent: toLaunchDeployContent(p.deployContent),
-        ...(p.toolPackagePins !== undefined
-          ? { toolPackagePins: p.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) files[k] = v;
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `midrun-signal-reconnect: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
+    test("interrupted-at-signal run resumes on reconnect and applies effects exactly once", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
+        domain: DEPLOYMENT_DOMAIN,
       });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const entryModule = signalGateEntry({
+        address: deploymentMailAddress,
+        signalName: "go",
+        systemPrompt1: "You are the first step agent.",
+        systemPrompt2: "You are the second step agent.",
+        agentId1: "agent-step1",
+        agentId2: "agent-step2",
+        workflowId: `wf_${DEPLOYMENT_ID}`,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: {
+          step1: [inferenceSource],
+          gate: [inferenceSource],
+          step2: [inferenceSource],
+        },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId = handle.workflowRunRepoId;
+
+      // The source-ref frame round-trips through the real sidecar subprocess
+      // (index the pack, check out the pinned subtree, register the address),
+      // so routability is asynchronous. Wait for it before firing the trigger.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-    }
-    expect(result.publicKey).toBeTruthy();
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
+      // ---- fire the trigger and drive to the mid-run signal pause ----
+      const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<midrun-signal-reconnect-1@integration.interchange>",
+      });
 
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
+      // First-half event chain: RunStarted -> StepStarted{step1} ->
+      // StepCompleted{step1} -> SignalAwaited{name:"go"}.
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEventsForAnyRun(
+            env,
+            DEPLOYMENT_ID,
+            workflowRunRepoId,
+          );
+          return events.some(
+            (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      );
 
-    // ---- fire the trigger and drive to the mid-run signal pause ----
-    const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<midrun-signal-reconnect-1@integration.interchange>",
-    });
-
-    // First-half event chain: RunStarted -> StepStarted{step1} ->
-    // StepCompleted{step1} -> SignalAwaited{name:"go"}.
-    await waitFor(
-      async () => {
-        const events = await readWorkflowRunEventsForAnyRun(
-          env,
-          DEPLOYMENT_ID,
-          workflowRunRepoId,
-        );
-        return events.some(
-          (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
-        );
-      },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
-    );
-
-    const runId = await findActiveRunId(env, workflowRunRepoId);
-    const eventsBeforeDrop = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      runId,
-    );
-    const typesBeforeDrop = eventsBeforeDrop.map((e) => e.type);
-    const runStartedIdx = typesBeforeDrop.indexOf("RunStarted");
-    const step1StartedIdx = typesBeforeDrop.findIndex(
-      (t, i) =>
-        t === "StepStarted" && eventsBeforeDrop[i]?.body["stepId"] === "step1",
-    );
-    const step1CompletedIdx = typesBeforeDrop.findIndex(
-      (t, i) =>
-        t === "StepCompleted" &&
-        eventsBeforeDrop[i]?.body["stepId"] === "step1",
-    );
-    const signalAwaitedIdx = typesBeforeDrop.indexOf("SignalAwaited");
-
-    expect(runStartedIdx).toBeGreaterThanOrEqual(0);
-    expect(step1StartedIdx).toBeGreaterThan(runStartedIdx);
-    expect(step1CompletedIdx).toBeGreaterThan(step1StartedIdx);
-    expect(signalAwaitedIdx).toBeGreaterThan(step1CompletedIdx);
-
-    const runStartedBody = eventsBeforeDrop[runStartedIdx]?.body;
-    if (runStartedBody === undefined) throw new Error("unreachable");
-    expect(runStartedBody["consumedMessageId"]).toBe(messageId);
-
-    // The run is parked at the signal gate; step2 has NOT started yet. This
-    // is the mid-run state the drop must interrupt without losing.
-    expect(
-      typesBeforeDrop.some(
+      const runId = await findActiveRunId(env, workflowRunRepoId);
+      const eventsBeforeDrop = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+      );
+      const typesBeforeDrop = eventsBeforeDrop.map((e) => e.type);
+      const runStartedIdx = typesBeforeDrop.indexOf("RunStarted");
+      const step1StartedIdx = typesBeforeDrop.findIndex(
         (t, i) =>
           t === "StepStarted" &&
-          eventsBeforeDrop[i]?.body["stepId"] === "step2",
-      ),
-    ).toBe(false);
-    expect(typesBeforeDrop).not.toContain("RunCompleted");
+          eventsBeforeDrop[i]?.body["stepId"] === "step1",
+      );
+      const step1CompletedIdx = typesBeforeDrop.findIndex(
+        (t, i) =>
+          t === "StepCompleted" &&
+          eventsBeforeDrop[i]?.body["stepId"] === "step1",
+      );
+      const signalAwaitedIdx = typesBeforeDrop.indexOf("SignalAwaited");
 
-    // ---- interrupt: settle the pack pipeline, then drop the hub link ----
-    // `settleThenDrop` waits for the workflow-run pack stream to go quiet
-    // before severing the link, so the interruption exercises the reconnect
-    // guarantee against a settled run parked at the signal gate rather than
-    // an in-flight pack push.
-    await settleThenDrop(env, deploymentMailAddress);
+      expect(runStartedIdx).toBeGreaterThanOrEqual(0);
+      expect(step1StartedIdx).toBeGreaterThan(runStartedIdx);
+      expect(step1CompletedIdx).toBeGreaterThan(step1StartedIdx);
+      expect(signalAwaitedIdx).toBeGreaterThan(step1CompletedIdx);
 
-    // The address leaves routing as the server-side close lands.
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
-    );
+      const runStartedBody = eventsBeforeDrop[runStartedIdx]?.body;
+      if (runStartedBody === undefined) throw new Error("unreachable");
+      expect(runStartedBody["consumedMessageId"]).toBe(messageId);
 
-    // ---- wait for the sidecar to reconnect + re-route ----
-    const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-      timeoutMs: 20_000,
-    });
-    // The reconnect is the sidecar's reconnect delay plus a handshake; a
-    // generous lower bound guards against a false "already routable" pass
-    // that never actually dropped, and the upper bound catches a hung link.
-    expect(reconnectMs).toBeGreaterThan(1_000);
-    expect(reconnectMs).toBeLessThan(20_000);
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
+      // The run is parked at the signal gate; step2 has NOT started yet. This
+      // is the mid-run state the drop must interrupt without losing.
+      expect(
+        typesBeforeDrop.some(
+          (t, i) =>
+            t === "StepStarted" &&
+            eventsBeforeDrop[i]?.body["stepId"] === "step2",
+        ),
+      ).toBe(false);
+      expect(typesBeforeDrop).not.toContain("RunCompleted");
 
-    // ---- resume: inject the awaited signal into the parked run ----
-    const injected = await injectSignal(env, DEPLOYMENT_ID, runId, "go", {
-      resumed: true,
-    });
+      // ---- interrupt: settle the pack pipeline, then drop the hub link ----
+      // `settleThenDrop` waits for the workflow-run pack stream to go quiet
+      // before severing the link, so the interruption exercises the reconnect
+      // guarantee against a settled run parked at the signal gate rather than
+      // an in-flight pack push.
+      await settleThenDrop(env, deploymentMailAddress);
 
-    // Second-half event chain: SignalReceived{name:"go"} ->
-    // StepStarted{step2} -> StepCompleted{step2} -> RunCompleted.
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      runId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    expect(terminal.type).toBe("RunCompleted");
+      // The address leaves routing as the server-side close lands.
+      await waitFor(
+        () =>
+          !env.hub.router
+            .getRoutableAddresses()
+            .includes(deploymentMailAddress),
+        { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
+      );
 
-    const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
-    const types = events.map((e) => e.type);
+      // ---- wait for the sidecar to reconnect + re-route ----
+      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
+        timeoutMs: 20_000,
+      });
+      // The reconnect is the sidecar's reconnect delay plus a handshake; a
+      // generous lower bound guards against a false "already routable" pass
+      // that never actually dropped, and the upper bound catches a hung link.
+      expect(reconnectMs).toBeGreaterThan(1_000);
+      expect(reconnectMs).toBeLessThan(20_000);
+      expect(env.hub.router.getRoutableAddresses()).toContain(
+        deploymentMailAddress,
+      );
 
-    // ---- exactly-once effects ----
-    // The run was interrupted at the signal gate, then resumed by the
-    // reconnected sidecar. The workflow-run log is at-least-once for signal
-    // *delivery* but exactly-once for *effects*: a redelivered signal (same
-    // `signalId`) that the reconnect path replays is a no-op for run state
-    // (`observedSignalIds` dedup in the state machine), so every effect --
-    // each step's StepStarted/StepCompleted, the gate's completion, and the
-    // terminal RunCompleted -- must appear exactly once even if the raw
-    // `SignalReceived` delivery is logged more than once. A resume that
-    // re-drove the workflow from the top, or a duplicate signal that leaked
-    // past the dedup into a second effect, would duplicate one of these.
-    const countType = (t: string): number =>
-      types.filter((x) => x === t).length;
-    const countStep = (t: string, stepId: string): number =>
-      events.filter((e) => e.type === t && e.body["stepId"] === stepId).length;
+      // ---- resume: inject the awaited signal into the parked run ----
+      const injected = await injectSignal(env, DEPLOYMENT_ID, runId, "go", {
+        resumed: true,
+      });
 
-    expect(countType("RunStarted")).toBe(1);
-    expect(countStep("StepStarted", "step1")).toBe(1);
-    expect(countStep("StepCompleted", "step1")).toBe(1);
-    expect(countType("SignalAwaited")).toBe(1);
-    expect(countStep("StepCompleted", "gate")).toBe(1);
-    expect(countStep("StepStarted", "step2")).toBe(1);
-    expect(countStep("StepCompleted", "step2")).toBe(1);
-    expect(countType("RunCompleted")).toBe(1);
+      // Second-half event chain: SignalReceived{name:"go"} ->
+      // StepStarted{step2} -> StepCompleted{step2} -> RunCompleted.
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      expect(terminal.type).toBe("RunCompleted");
 
-    // Every logged `SignalReceived` -- one or more, depending on how many
-    // times the reconnect path replayed the delivery -- carries the SAME
-    // injected signalId and payload. This is the dedup contract's precondition:
-    // the duplicates are redeliveries of the ONE signal this test injected,
-    // not distinct signals, so the single downstream effect above is the
-    // effect of exactly one logical signal, not a coincidence of two.
-    const signalReceivedEvents = events.filter(
-      (e) => e.type === "SignalReceived",
-    );
-    expect(signalReceivedEvents.length).toBeGreaterThanOrEqual(1);
-    const distinctSignalIds = new Set(
-      signalReceivedEvents.map((e) => e.body["signalId"]),
-    );
-    expect(distinctSignalIds).toEqual(new Set([injected.signalId]));
-    for (const e of signalReceivedEvents) {
-      expect(e.body["signalName"]).toBe("go");
-      expect(e.body["signalId"]).toBe(injected.signalId);
-      expect(e.body["payload"]).toEqual({ resumed: true });
-    }
+      const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
+      const types = events.map((e) => e.type);
 
-    // Ordered chain across the interruption boundary: the second half was
-    // driven only after reconnect + signal injection. Index against the
-    // FIRST SignalReceived (the delivery that actually resumed the gate).
-    const signalReceivedIdx = types.indexOf("SignalReceived");
-    const step2StartedIdx = types.findIndex(
-      (t, i) => t === "StepStarted" && events[i]?.body["stepId"] === "step2",
-    );
-    const step2CompletedIdx = types.findIndex(
-      (t, i) => t === "StepCompleted" && events[i]?.body["stepId"] === "step2",
-    );
-    const runCompletedIdx = types.indexOf("RunCompleted");
-    const signalAwaitedIdxFinal = types.indexOf("SignalAwaited");
+      // ---- exactly-once effects ----
+      // The run was interrupted at the signal gate, then resumed by the
+      // reconnected sidecar. The workflow-run log is at-least-once for signal
+      // *delivery* but exactly-once for *effects*: a redelivered signal (same
+      // `signalId`) that the reconnect path replays is a no-op for run state
+      // (`observedSignalIds` dedup in the state machine), so every effect --
+      // each step's StepStarted/StepCompleted, the gate's completion, and the
+      // terminal RunCompleted -- must appear exactly once even if the raw
+      // `SignalReceived` delivery is logged more than once. A resume that
+      // re-drove the workflow from the top, or a duplicate signal that leaked
+      // past the dedup into a second effect, would duplicate one of these.
+      const countType = (t: string): number =>
+        types.filter((x) => x === t).length;
+      const countStep = (t: string, stepId: string): number =>
+        events.filter((e) => e.type === t && e.body["stepId"] === stepId)
+          .length;
 
-    expect(signalReceivedIdx).toBeGreaterThan(signalAwaitedIdxFinal);
-    expect(step2StartedIdx).toBeGreaterThan(signalReceivedIdx);
-    expect(step2CompletedIdx).toBeGreaterThan(step2StartedIdx);
-    expect(runCompletedIdx).toBeGreaterThan(step2CompletedIdx);
+      expect(countType("RunStarted")).toBe(1);
+      expect(countStep("StepStarted", "step1")).toBe(1);
+      expect(countStep("StepCompleted", "step1")).toBe(1);
+      expect(countType("SignalAwaited")).toBe(1);
+      expect(countStep("StepCompleted", "gate")).toBe(1);
+      expect(countStep("StepStarted", "step2")).toBe(1);
+      expect(countStep("StepCompleted", "step2")).toBe(1);
+      expect(countType("RunCompleted")).toBe(1);
 
-    // Exactly one run exists: the interruption did not spawn a second run,
-    // so the effects above are the effects of the single, resumed run.
-    const runIds = await listRunIds(env, workflowRunRepoId);
-    expect(runIds).toEqual([runId]);
-  }, 120_000);
-});
+      // Every logged `SignalReceived` -- one or more, depending on how many
+      // times the reconnect path replayed the delivery -- carries the SAME
+      // injected signalId and payload. This is the dedup contract's precondition:
+      // the duplicates are redeliveries of the ONE signal this test injected,
+      // not distinct signals, so the single downstream effect above is the
+      // effect of exactly one logical signal, not a coincidence of two.
+      const signalReceivedEvents = events.filter(
+        (e) => e.type === "SignalReceived",
+      );
+      expect(signalReceivedEvents.length).toBeGreaterThanOrEqual(1);
+      const distinctSignalIds = new Set(
+        signalReceivedEvents.map((e) => e.body["signalId"]),
+      );
+      expect(distinctSignalIds).toEqual(new Set([injected.signalId]));
+      for (const e of signalReceivedEvents) {
+        expect(e.body["signalName"]).toBe("go");
+        expect(e.body["signalId"]).toBe(injected.signalId);
+        expect(e.body["payload"]).toEqual({ resumed: true });
+      }
+
+      // Ordered chain across the interruption boundary: the second half was
+      // driven only after reconnect + signal injection. Index against the
+      // FIRST SignalReceived (the delivery that actually resumed the gate).
+      const signalReceivedIdx = types.indexOf("SignalReceived");
+      const step2StartedIdx = types.findIndex(
+        (t, i) => t === "StepStarted" && events[i]?.body["stepId"] === "step2",
+      );
+      const step2CompletedIdx = types.findIndex(
+        (t, i) =>
+          t === "StepCompleted" && events[i]?.body["stepId"] === "step2",
+      );
+      const runCompletedIdx = types.indexOf("RunCompleted");
+      const signalAwaitedIdxFinal = types.indexOf("SignalAwaited");
+
+      expect(signalReceivedIdx).toBeGreaterThan(signalAwaitedIdxFinal);
+      expect(step2StartedIdx).toBeGreaterThan(signalReceivedIdx);
+      expect(step2CompletedIdx).toBeGreaterThan(step2StartedIdx);
+      expect(runCompletedIdx).toBeGreaterThan(step2CompletedIdx);
+
+      // Exactly one run exists: the interruption did not spawn a second run,
+      // so the effects above are the effects of the single, resumed run.
+      const runIds = await listRunIds(env, workflowRunRepoId);
+      expect(runIds).toEqual([runId]);
+    }, 120_000);
+  },
+);
 
 /**
  * Read every workflow-run event under any `runs/<runId>/events/` subtree on
