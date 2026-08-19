@@ -116,6 +116,31 @@ async function api(
   return { status: res.status, data, cookies: newCookies };
 }
 
+// Reads every page of a cursor-paginated list endpoint. The server caps each
+// page below the seeded catalog size, so a single large `limit` cannot cover
+// the whole list; follow nextCursor until it runs out.
+async function getAllPages<T extends Type>(
+  path: string,
+  itemSchema: T,
+  label: string,
+  cookies: CookieJar,
+): Promise<T["infer"][]> {
+  const sep = path.includes("?") ? "&" : "?";
+  const items: T["infer"][] = [];
+  let cursor: string | null = null;
+  do {
+    const query =
+      cursor === null
+        ? `${sep}limit=100`
+        : `${sep}limit=100&cursor=${encodeURIComponent(cursor)}`;
+    const { data } = await api("GET", `${path}${query}`, undefined, cookies);
+    const page = parse(paginatedSchema(itemSchema), data, label);
+    items.push(...page.data);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return items;
+}
+
 function log(msg: string) {
   process.stdout.write(`[seed] ${msg}\n`);
 }
@@ -879,18 +904,17 @@ for (const m of catalogModels) {
   checkOrSkip(`create model ${m.canonicalName}`, status, 201, data);
 }
 
-const { data: catalogModelListData } = await api(
-  "GET",
-  `/api/tenants/${acmeTenantId}/catalog/models`,
-  undefined,
-  aliceCookies,
-);
+// Read every model page: this map must cover every one so an offering's model
+// lookup below never misses a row that was created but paged out.
 const modelIdByName = new Map(
-  parse(
-    paginatedSchema(ModelResponse),
-    catalogModelListData,
-    "catalog models response",
-  ).data.map((m) => [m.canonicalName, m.id]),
+  (
+    await getAllPages(
+      `/api/tenants/${acmeTenantId}/catalog/models`,
+      ModelResponse,
+      "catalog models response",
+      aliceCookies,
+    )
+  ).map((m) => [m.canonicalName, m.id]),
 );
 
 for (const p of catalogProviders) {
@@ -1010,17 +1034,14 @@ for (const p of catalogProviders) {
     checkOrSkip(`create offering ${p.name}/${o.model}`, status, 201, data);
   }
 
-  const { data: offeringListData } = await api(
-    "GET",
+  // Read every offering page: the pricing lookup below must find every
+  // offering that was created, not just the first page's worth.
+  const catalogOfferings = await getAllPages(
     `/api/tenants/${acmeTenantId}/catalog/offerings`,
-    undefined,
+    ModelOfferingResponse,
+    "catalog offerings response",
     aliceCookies,
   );
-  const catalogOfferings = parse(
-    paginatedSchema(ModelOfferingResponse),
-    offeringListData,
-    "catalog offerings response",
-  ).data;
   for (const o of p.offerings) {
     const modelId = modelIdByName.get(o.model);
     // The create loop already logged and skipped an offering whose model was
