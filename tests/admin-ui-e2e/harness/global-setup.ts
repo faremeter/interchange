@@ -31,6 +31,24 @@ const ADMIN_UI_DIST_INDEX = path.join(ADMIN_UI_DIR, "dist", "index.html");
 const HOST = "127.0.0.1";
 const HUB_READY_TIMEOUT_MS = 30_000;
 const PREVIEW_READY_TIMEOUT_MS = 30_000;
+const SIDECAR_READY_TIMEOUT_MS = 30_000;
+
+// A fixed sidecar identity for the run. The identity row is provisioned with a
+// hash of SIDECAR_TOKEN BEFORE the sidecar spawns, so the hub's
+// token-authenticated handshake accepts the same token the sidecar presents.
+const SIDECAR_ID = "e2e-sidecar-1";
+const SIDECAR_TOKEN = "e2e-sidecar-token";
+
+// The seed pushes this workflow-source asset and authenticates as this user;
+// the live deploy spec logs in as the same user and deploys the same asset.
+const WORKFLOW_ASSET_NAME = "approval-flow";
+const WORKFLOW_ENTRY = "./workflow.mjs";
+const SEED_LOGIN_EMAIL = "alice@example.com";
+const SEED_LOGIN_PASSWORD = "password123";
+const SEED_TENANT_SLUG = "acme";
+
+const PROVISION_SIDECAR = path.join(REPO_ROOT, "bin", "provision-sidecar.ts");
+const SEED = path.join(REPO_ROOT, "bin", "seed.ts");
 
 /** Allocate a free TCP port by binding `:0` on the loopback interface and
  *  reading the assigned port before releasing it. There is an unavoidable
@@ -91,18 +109,71 @@ function spawnLabeled(
   cmd: string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
+  onLine?: (line: string) => void,
 ): ProcessPromise {
   const proc = $({ cwd, env, nothrow: true })`${cmd}`;
   const prefix = `[${label}]`;
 
-  forwardLines(proc.stdout, (line) =>
-    process.stdout.write(`${prefix} ${line}\n`),
+  const forward =
+    (write: (chunk: string) => void) =>
+    (line: string): void => {
+      write(`${prefix} ${line}\n`);
+      onLine?.(line);
+    };
+  forwardLines(
+    proc.stdout,
+    forward((chunk) => process.stdout.write(chunk)),
   );
-  forwardLines(proc.stderr, (line) =>
-    process.stderr.write(`${prefix} ${line}\n`),
+  forwardLines(
+    proc.stderr,
+    forward((chunk) => process.stderr.write(chunk)),
   );
 
   return proc;
+}
+
+/**
+ * A latch over a labeled process's output. `onLine` is passed to
+ * `spawnLabeled`; the first line that satisfies `match` fires the latch.
+ * `wait` resolves once the latch has fired and rejects if the deadline
+ * passes first, so a readiness gate fails loudly rather than hanging.
+ */
+function createLineSignal(match: (line: string) => boolean): {
+  onLine: (line: string) => void;
+  wait: (timeoutMs: number) => Promise<void>;
+} {
+  let fired = false;
+  // Assigned synchronously by the executor below, before any caller can invoke
+  // `onLine`, so the optional call can never observe it unset.
+  let resolveFn: (() => void) | undefined;
+  const fireable = new Promise<void>((resolve) => {
+    resolveFn = resolve;
+  });
+  return {
+    onLine: (line) => {
+      if (!fired && match(line)) {
+        fired = true;
+        resolveFn?.();
+      }
+    },
+    wait: (timeoutMs) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `readiness line not observed within ${timeoutMs / 1000}s`,
+              ),
+            ),
+          timeoutMs,
+        );
+      });
+      return Promise.race([fireable, expired]).finally(() =>
+        clearTimeout(timer),
+      );
+    },
+  };
 }
 
 async function waitForHTTP(url: string, timeoutMs: number): Promise<void> {
@@ -133,6 +204,16 @@ const ProvisionResult = type({
     BETTER_AUTH_SECRET: "string",
     CREDENTIAL_ENCRYPTION_KEY: "string",
   },
+  // The migration role's connection to the provisioned database. The
+  // pre-flight sidecar provisioning and seed write rows as this table-owning
+  // identity; unlike the hub role it always carries a concrete password.
+  dbEnv: {
+    DB_HOST: "string",
+    DB_PORT: "string",
+    DB_USER: "string",
+    DB_PASSWORD: "string",
+    DB_NAME: "string",
+  },
 });
 
 function parseProvisionResult(stdout: string) {
@@ -153,6 +234,8 @@ type AcquiredStack = {
   database?: string;
   hubDataDir?: string;
   hubProc?: ProcessPromise;
+  sidecarDataDir?: string;
+  sidecarProc?: ProcessPromise;
   previewProc?: ProcessPromise;
 };
 
@@ -195,10 +278,17 @@ const SIGTERM_GRACE_MS = 2000;
  * this whole call to swallow that error and preserve the original.
  */
 async function teardownStack(acquired: AcquiredStack): Promise<void> {
-  const { previewProc, hubProc, database, hubDataDir } = acquired;
+  const {
+    previewProc,
+    sidecarProc,
+    hubProc,
+    database,
+    hubDataDir,
+    sidecarDataDir,
+  } = acquired;
 
   const procs: ProcessPromise[] = [];
-  for (const proc of [previewProc, hubProc]) {
+  for (const proc of [previewProc, sidecarProc, hubProc]) {
     if (proc !== undefined) procs.push(proc);
   }
 
@@ -240,11 +330,220 @@ async function teardownStack(acquired: AcquiredStack): Promise<void> {
       failures.push(err);
     }
   }
+  if (sidecarDataDir !== undefined) {
+    try {
+      fs.rmSync(sidecarDataDir, { recursive: true, force: true });
+    } catch (err) {
+      failures.push(err);
+    }
+  }
   if (failures.length > 0) {
     throw new Error(`stack teardown failed with ${failures.length} error(s)`, {
       cause: failures[0],
     });
   }
+}
+
+// The hub HTTP responses consulted below are external data to this process,
+// so validate their shape at this boundary. Each validator is intentionally
+// narrow: it names only the fields the discovery reads, and arktype ignores
+// the rest of the payload.
+const PrincipalsResponse = type({
+  data: type({ tenantId: "string", tenantSlug: "string" }).array(),
+});
+const AssetsResponse = type({ id: "string", name: "string" }).array();
+const GitTokenResponse = type({ id: "string", secret: "string" });
+
+type CookieJar = string[];
+
+/**
+ * A minimal cookie-jar `fetch` for the discovery below. It mirrors the seed's
+ * own `api` helper: it carries `Set-Cookie` values forward across calls so a
+ * session established by sign-in authenticates the later reads.
+ */
+async function hubFetch(
+  hubURL: string,
+  method: string,
+  routePath: string,
+  body: unknown,
+  cookies: CookieJar,
+): Promise<{ status: number; data: unknown; cookies: CookieJar }> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    // better-auth rejects a state-changing POST whose Origin is not among its
+    // trusted origins (which default to its base URL). The browser reaches the
+    // hub through the preview proxy, which rewrites Origin to the base URL;
+    // this direct server-side call sets the same trusted Origin itself.
+    Origin: hubURL,
+  };
+  if (cookies.length > 0) headers["Cookie"] = cookies.join("; ");
+
+  const res = await fetch(`${hubURL}${routePath}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    redirect: "manual",
+  });
+
+  const nextCookies = [...cookies];
+  for (const setCookie of res.headers.getSetCookie()) {
+    const name = setCookie.split("=")[0];
+    const value = setCookie.split(";")[0];
+    if (name === undefined || value === undefined) continue;
+    const idx = nextCookies.findIndex((c) => c.startsWith(`${name}=`));
+    if (idx >= 0) nextCookies[idx] = value;
+    else nextCookies.push(value);
+  }
+
+  let data: unknown = null;
+  if ((res.headers.get("content-type") ?? "").includes("json")) {
+    data = await res.json();
+  }
+  return { status: res.status, data, cookies: nextCookies };
+}
+
+/**
+ * Resolve the current `refs/heads/main` commit of the seeded workflow-source
+ * asset over the asset smart-HTTP endpoint. There is no JSON surface for an
+ * asset's head commit, so this authenticates a `git ls-remote` with a
+ * short-lived read git-token embedded as the basic-auth password, matching the
+ * seed's own push convention.
+ *
+ * @throws if `git ls-remote` reports no `refs/heads/main` commit.
+ */
+async function resolveWorkflowHeadCommit(
+  hubURL: string,
+  tenantId: string,
+  tokenSecret: string,
+): Promise<string> {
+  const remote = new URL(
+    `${hubURL}/api/tenants/${tenantId}/assets/workflow/${WORKFLOW_ASSET_NAME}.git`,
+  );
+  remote.username = "x-access-token";
+  remote.password = tokenSecret;
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "intx-e2e-lsremote-"));
+  const askpass = path.join(work, "askpass.sh");
+  try {
+    fs.writeFileSync(
+      askpass,
+      `#!/bin/sh\nprintf '%s\\n' '${tokenSecret.replace(/'/g, "'\\''")}'\n`,
+      "utf-8",
+    );
+    fs.chmodSync(askpass, 0o755);
+    const out = await $({
+      cwd: work,
+      env: {
+        ...process.env,
+        GIT_ASKPASS: askpass,
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    })`git -c credential.helper= ls-remote ${remote.toString()} refs/heads/main`;
+    const firstLine = out.stdout.trim().split("\n")[0] ?? "";
+    const commitSha = firstLine.split(/\s+/)[0] ?? "";
+    if (!/^[0-9a-f]{40}$/.test(commitSha)) {
+      throw new Error(
+        `git ls-remote returned no refs/heads/main commit for ${WORKFLOW_ASSET_NAME}: ${JSON.stringify(out.stdout)}`,
+      );
+    }
+    return commitSha;
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/**
+ * After the seed runs, discover the concrete inputs the live deploy spec needs:
+ * the Acme tenant id, the seeded workflow asset's id, and that asset's head
+ * commit. The ids are hub-minted (not deterministic), so they are read back
+ * through the same authenticated API an operator would use.
+ */
+async function discoverSeededWorkflow(hubURL: string): Promise<{
+  tenantId: string;
+  assetId: string;
+  commitSha: string;
+}> {
+  const signIn = await hubFetch(
+    hubURL,
+    "POST",
+    "/api/auth/sign-in/email",
+    { email: SEED_LOGIN_EMAIL, password: SEED_LOGIN_PASSWORD },
+    [],
+  );
+  if (signIn.status !== 200) {
+    throw new Error(
+      `e2e discovery: sign-in as ${SEED_LOGIN_EMAIL} failed with ${signIn.status}`,
+    );
+  }
+  const cookies = signIn.cookies;
+
+  const principalsRes = await hubFetch(
+    hubURL,
+    "GET",
+    "/api/me/principals",
+    undefined,
+    cookies,
+  );
+  const principals = PrincipalsResponse(principalsRes.data);
+  if (principals instanceof type.errors) {
+    throw new Error(`e2e discovery: invalid principals: ${principals.summary}`);
+  }
+  const acme = principals.data.find((p) => p.tenantSlug === SEED_TENANT_SLUG);
+  if (acme === undefined) {
+    throw new Error(
+      `e2e discovery: no ${SEED_TENANT_SLUG} tenant among the seeded principals`,
+    );
+  }
+  const tenantId = acme.tenantId;
+
+  const assetsRes = await hubFetch(
+    hubURL,
+    "GET",
+    `/api/tenants/${tenantId}/assets?kind=workflow`,
+    undefined,
+    cookies,
+  );
+  const assets = AssetsResponse(assetsRes.data);
+  if (assets instanceof type.errors) {
+    throw new Error(`e2e discovery: invalid assets: ${assets.summary}`);
+  }
+  const workflowAsset = assets.find((a) => a.name === WORKFLOW_ASSET_NAME);
+  if (workflowAsset === undefined) {
+    throw new Error(
+      `e2e discovery: seeded workflow asset ${WORKFLOW_ASSET_NAME} not found`,
+    );
+  }
+
+  const tokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const tokenRes = await hubFetch(
+    hubURL,
+    "POST",
+    `/api/tenants/${tenantId}/git-tokens`,
+    {
+      name: "e2e-live-discovery",
+      resource: "asset:*",
+      refPattern: "**",
+      actions: ["can_read"],
+      expiresAt: tokenExpiresAt,
+    },
+    cookies,
+  );
+  if (tokenRes.status !== 201) {
+    throw new Error(
+      `e2e discovery: minting a read git-token failed with ${tokenRes.status}`,
+    );
+  }
+  const token = GitTokenResponse(tokenRes.data);
+  if (token instanceof type.errors) {
+    throw new Error(`e2e discovery: invalid git-token: ${token.summary}`);
+  }
+
+  const commitSha = await resolveWorkflowHeadCommit(
+    hubURL,
+    tenantId,
+    token.secret,
+  );
+  return { tenantId, assetId: workflowAsset.id, commitSha };
 }
 
 async function globalSetup(): Promise<() => Promise<void>> {
@@ -269,8 +568,18 @@ async function globalSetup(): Promise<() => Promise<void>> {
     const provisionOutput = await $({
       cwd: REPO_ROOT,
     })`bun --conditions=intx-src ${E2E_PROVISION} up`;
-    const { database, hubEnv } = parseProvisionResult(provisionOutput.stdout);
+    const { database, hubEnv, dbEnv } = parseProvisionResult(
+      provisionOutput.stdout,
+    );
     acquired.database = database;
+
+    // The DB connection the pre-flight steps (sidecar provisioning, seed)
+    // write through. It uses the table-owning migration role, whose password
+    // is concrete — the hub role may authenticate under trust auth with an
+    // empty password that those bin scripts reject. PG_SCHEMA is stripped for
+    // the same reason the hub env strips it: migrations land in `public`.
+    const dbSpawnEnv: NodeJS.ProcessEnv = { ...process.env, ...dbEnv };
+    delete dbSpawnEnv["PG_SCHEMA"];
 
     const hubDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "intx-e2e-hub-"));
     acquired.hubDataDir = hubDataDir;
@@ -290,21 +599,80 @@ async function globalSetup(): Promise<() => Promise<void>> {
     // that does not exist here.
     delete hubSpawnEnv["PG_SCHEMA"];
 
+    // The hub logs a single line naming the verified sidecar id once it
+    // accepts the register handshake, so a live deploy has a routable sidecar.
+    // Latch on that line rather than sleeping. The log formatter wraps the
+    // interpolated id in quotes and ANSI color codes, so match on the id and
+    // the word "registered" being present rather than an exact phrase (the
+    // "disconnected" line names the id too, but never says "registered").
+    const sidecarRegistered = createLineSignal(
+      (line) => line.includes(SIDECAR_ID) && line.includes("registered"),
+    );
+
     const hubProc = spawnLabeled(
       "hub",
       ["bun", "run", "--conditions=intx-src", "apps/hub/src/index.ts"],
       hubSpawnEnv,
       REPO_ROOT,
+      sidecarRegistered.onLine,
     );
     acquired.hubProc = hubProc;
 
     // Poll the hub directly, not through the preview proxy: the proxy is
     // not up yet, and a direct probe isolates a hub-start failure from a
     // proxy misconfiguration.
-    await waitForHTTP(
-      `http://${HOST}:${hubPort}/api/auth/get-session`,
-      HUB_READY_TIMEOUT_MS,
+    const hubURL = betterAuthBaseURL;
+    await waitForHTTP(`${hubURL}/api/auth/get-session`, HUB_READY_TIMEOUT_MS);
+
+    // Provision the sidecar identity row BEFORE the sidecar spawns: the hub
+    // authenticates the handshake against a per-sidecar token hash, so the row
+    // must carry a hash of the SIDECAR_TOKEN the sidecar presents. `dbSpawnEnv`
+    // carries the table-owning DB connection `provision-sidecar` reads. A
+    // non-zero exit throws and aborts setup.
+    await $({
+      cwd: REPO_ROOT,
+      env: { ...dbSpawnEnv, SIDECAR_ID, SIDECAR_TOKEN },
+    })`bun run --conditions=intx-src ${PROVISION_SIDECAR}`;
+
+    const sidecarDataDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "intx-e2e-sidecar-"),
     );
+    acquired.sidecarDataDir = sidecarDataDir;
+    const sidecarProc = spawnLabeled(
+      "sidecar",
+      ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
+      {
+        ...process.env,
+        HUB_WS_URL: `ws://${HOST}:${hubPort}/api/sidecars/ws`,
+        SIDECAR_ID,
+        SIDECAR_TOKEN,
+        SIDECAR_DATA_DIR: sidecarDataDir,
+      },
+      REPO_ROOT,
+    );
+    acquired.sidecarProc = sidecarProc;
+    await sidecarRegistered.wait(SIDECAR_READY_TIMEOUT_MS);
+
+    // Seed the running hub: users, tenants, model catalog, and a deployable
+    // workflow-source asset pushed over the asset smart-HTTP route. The seed
+    // targets the hub via HUB_URL and projects its workflow definition through
+    // the same table-owning DB connection the provision step used. A non-zero
+    // exit throws.
+    await $({
+      cwd: REPO_ROOT,
+      env: { ...dbSpawnEnv, HUB_URL: hubURL },
+    })`bun --conditions=intx-src ${SEED}`;
+
+    // Read back the hub-minted tenant id, workflow asset id, and the asset's
+    // head commit, then publish them (alongside the seeded login) so the live
+    // deploy spec drives the picker against real, deployable inputs.
+    const seeded = await discoverSeededWorkflow(hubURL);
+    process.env["E2E_WORKFLOW_TENANT_ID"] = seeded.tenantId;
+    process.env["E2E_WORKFLOW_ASSET_ID"] = seeded.assetId;
+    process.env["E2E_WORKFLOW_COMMIT_SHA"] = seeded.commitSha;
+    process.env["E2E_WORKFLOW_ENTRY"] = WORKFLOW_ENTRY;
+    process.env["E2E_LOGIN_EMAIL"] = SEED_LOGIN_EMAIL;
+    process.env["E2E_LOGIN_PASSWORD"] = SEED_LOGIN_PASSWORD;
 
     // ADMIN_UI_HUB_ORIGIN is what the preview `/api` proxy rewrites the
     // Origin to; it must byte-match BETTER_AUTH_BASE_URL or better-auth

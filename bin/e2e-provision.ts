@@ -58,6 +58,19 @@ async function up(): Promise<void> {
           ".env.hub",
         ),
       },
+      // The migration role's connection to the provisioned database. It owns
+      // the freshly-migrated tables, so it is the identity harness pre-flight
+      // steps (sidecar provisioning, seeding) use to write rows directly. The
+      // hub role above may authenticate under trust auth with an empty
+      // password, which those bin scripts reject at their env boundary; the
+      // migration role always carries a concrete password.
+      dbEnv: {
+        DB_HOST: provisioned.config.host,
+        DB_PORT: String(provisioned.config.port),
+        DB_USER: provisioned.config.user,
+        DB_PASSWORD: provisioned.config.password,
+        DB_NAME: provisioned.database,
+      },
     };
 
     // Await the write callback so a piped stdout is fully drained
