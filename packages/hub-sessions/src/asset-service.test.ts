@@ -274,18 +274,22 @@ describe("AssetService", () => {
       expect(asset.name).toBe("nightly-report");
       expect(dbFixture.assets).toHaveLength(1);
 
+      // A workflow asset is a codebase: a package.json declaring an
+      // interchange.workflow entry plus source files. The static
+      // workflow.json envelope form is retired and rejected at the push
+      // boundary, so push the codebase shape the workflow handler accepts.
       const out = await repoStore.writeTree(
         HUB,
         { kind: "workflow", id: asset.id },
         "refs/heads/main",
         {
           files: {
-            "workflow.json": JSON.stringify({
-              id: "nightly-report",
-              triggers: [{ type: "manual" }],
-              steps: { first: { kind: "step", id: "first" } },
-              stepOrder: ["first"],
+            "package.json": JSON.stringify({
+              name: "@fixture/nightly-report",
+              version: "1.0.0",
+              interchange: { workflow: "./index.js" },
             }),
+            "index.js": "export const workflow = {};",
           },
           message: "initial",
         },

@@ -609,6 +609,21 @@ function validWorkflowJSON(): string {
   });
 }
 
+// A workflow asset is a codebase: a package.json declaring an
+// interchange.workflow entry plus source files. This is the shape the
+// workflow handler's push validation accepts now that the static
+// workflow.json envelope form is retired.
+function workflowCodebaseFiles(): Record<string, string> {
+  return {
+    "package.json": JSON.stringify({
+      name: "@fixture/nightly-report",
+      version: "1.0.0",
+      interchange: { workflow: "./index.js" },
+    }),
+    "index.js": "export const workflow = {};",
+  };
+}
+
 // Permissive source handler: the workflow allowlist is enforced by the
 // *target* repo's receivePack (the path the smart-HTTP route drives), so
 // the pack must be staged in a source that does not pre-reject the tree
@@ -688,7 +703,7 @@ describe("workflow-kind asset routes", () => {
     expect(h.state.assets[0]?.kind).toBe("workflow");
   });
 
-  test("a workflow.json pushed to the created repo is accepted by workflowKindHandler", async () => {
+  test("a workflow codebase pushed to the created repo is accepted by workflowKindHandler", async () => {
     const h = await setup();
     const createRes = await h.app.request(createURL, {
       method: "POST",
@@ -700,16 +715,20 @@ describe("workflow-kind asset routes", () => {
 
     // The smart-HTTP git-receive-pack route resolves the URL to this
     // RepoId and hands the pack to repoStore.receivePack, which runs
-    // workflowKindHandler.validatePush on every new commit. Drive that
-    // substrate call directly against the REST-created repo. The pack is
-    // a parentless commit, so push it to a fresh ref (createAsset's
-    // genesis owns refs/heads/main); the workflow handler does not gate
-    // on ref name.
+    // workflowKindHandler.validatePush on every new commit. A workflow
+    // asset is a codebase: a package.json declaring an
+    // interchange.workflow entry plus source files. Drive that substrate
+    // call directly against the REST-created repo. The pack is a
+    // parentless commit, so push it to a fresh ref (createAsset's genesis
+    // owns refs/heads/main); the workflow handler does not gate on ref
+    // name.
     const repoId: RepoId = { kind: "workflow", id: created.id };
     const ref = "refs/heads/deploy";
-    const { pack, commitSha } = await buildWorkflowPack(repoId, ref, {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-    });
+    const { pack, commitSha } = await buildWorkflowPack(
+      repoId,
+      ref,
+      workflowCodebaseFiles(),
+    );
 
     await h.repoStore.receivePack(
       HUB_PRINCIPAL,
@@ -725,7 +744,7 @@ describe("workflow-kind asset routes", () => {
     );
   });
 
-  test("a push carrying a disallowed top-level path is rejected by workflowKindHandler", async () => {
+  test("a legacy workflow.json envelope push is rejected by workflowKindHandler", async () => {
     const h = await setup();
     const createRes = await h.app.request(createURL, {
       method: "POST",
@@ -735,11 +754,15 @@ describe("workflow-kind asset routes", () => {
     expect(createRes.status).toBe(201);
     const created = await parseAssetResponse(createRes);
 
+    // The static workflow.json envelope form is retired. A tree that
+    // carries no package.json is not a codebase, so receivePack rejects
+    // the pack at the workflow handler's push boundary and surfaces the
+    // rejection as a path_violation, the same way the smart-HTTP
+    // git-receive-pack route does.
     const repoId: RepoId = { kind: "workflow", id: created.id };
     const ref = "refs/heads/deploy";
     const { pack, commitSha } = await buildWorkflowPack(repoId, ref, {
       [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-      "stray-file.txt": "not in the workflow allowlist",
     });
 
     await expect(
@@ -752,7 +775,7 @@ describe("workflow-kind asset routes", () => {
         null,
       ),
     ).rejects.toThrow(
-      /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
+      /path_violation:.*workflow\.json envelope form is no longer supported/,
     );
   });
 });

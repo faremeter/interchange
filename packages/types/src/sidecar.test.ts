@@ -78,72 +78,59 @@ describe("AgentDeployFrame", () => {
     model: "gpt-step",
   };
 
+  // The source-ref pin every workflow frame carries: where the definition's
+  // bytes come from plus the frozen dependency closure (empty here -- a
+  // workflow that pins no tool packages).
+  const validSourceRef = {
+    source: { kind: "registry", registry: "npmjs" },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  };
+
   test("accepts the existing trivial-shape frame (no workflow field)", () => {
     const result = AgentDeployFrame(trivialFrame);
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("accepts a multi-step frame with matching definition and sources", () => {
+  test("accepts a workflow frame with per-step sources and a source-ref pin", () => {
     const result = AgentDeployFrame({
       ...trivialFrame,
       workflow: {
-        definition: {
-          id: "wf_demo",
-          triggers: [{ type: "manual" }],
-          stepOrder: ["plan", "act"],
-          steps: { plan: { kind: "step" }, act: { kind: "step" } },
-        },
         sources: { plan: [stepSource], act: [stepSource] },
+        sourceRef: validSourceRef,
       },
     });
     expect(result instanceof type.errors).toBe(false);
   });
 
-  test("rejects a frame whose workflow.definition is present without sources", () => {
+  test("rejects a workflow frame with no source-ref pin", () => {
+    // Source-ref is the only deploy lineage; without the pin the sidecar has
+    // no closure to evaluate the definition from, so the frame is rejected.
     const result = AgentDeployFrame({
       ...trivialFrame,
       workflow: {
-        definition: {
-          id: "wf_demo",
-          triggers: [{ type: "manual" }],
-          stepOrder: ["plan"],
-          steps: { plan: { kind: "step" } },
-        },
-      },
-    });
-    expect(result instanceof type.errors).toBe(true);
-  });
-
-  test("rejects a frame whose stepOrder names a step missing from sources", () => {
-    const result = AgentDeployFrame({
-      ...trivialFrame,
-      workflow: {
-        definition: {
-          id: "wf_demo",
-          triggers: [{ type: "manual" }],
-          stepOrder: ["plan", "act"],
-          steps: { plan: { kind: "step" }, act: { kind: "step" } },
-        },
         sources: { plan: [stepSource] },
       },
     });
     expect(result instanceof type.errors).toBe(true);
   });
 
-  test("rejects a frame whose workflow.definition is missing triggers", () => {
-    // The wire validator must require `triggers` because the sidecar
-    // deploy router serializes `definition` verbatim into
-    // `workflow.json` and the workflow-process child re-validates the
-    // envelope (`workflowDefinitionEnvelopeSchema`) which requires it.
+  test("rejects a workflow frame with no per-step sources", () => {
     const result = AgentDeployFrame({
       ...trivialFrame,
       workflow: {
-        definition: {
-          id: "wf_demo",
-          stepOrder: ["plan"],
-          steps: { plan: { kind: "step" } },
-        },
-        sources: { plan: [stepSource] },
+        sourceRef: validSourceRef,
+      },
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a workflow frame whose step source chain is empty", () => {
+    // Every step's failover chain must carry at least one source.
+    const result = AgentDeployFrame({
+      ...trivialFrame,
+      workflow: {
+        sources: { plan: [] },
+        sourceRef: validSourceRef,
       },
     });
     expect(result instanceof type.errors).toBe(true);
