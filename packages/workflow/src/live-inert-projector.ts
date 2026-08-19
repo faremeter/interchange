@@ -96,6 +96,13 @@ export interface InertAgent {
   readonly director?: DirectorRef;
   readonly capabilities: readonly string[];
   readonly toolFactories: readonly InertToolFactory[];
+  /**
+   * Plugin-package names the agent declares (`AgentDefinition.plugins`).
+   * Part of the hashed grant surface: a plugin package contributes tool
+   * grants (via its static `definitions`) that the operator approves, so a
+   * tampered plugin set must move the wire hash and fail re-verify.
+   */
+  readonly plugins?: readonly string[];
   readonly modelSources: readonly InertModelSource[];
   readonly tags?: Readonly<Record<string, string>>;
   readonly toolPackagePins?: readonly ToolPackagePin[];
@@ -491,6 +498,7 @@ function projectAgent(agent: AgentDefinition): InertAgent {
     ...(agent.director !== undefined ? { director: agent.director } : {}),
     capabilities: [...agent.capabilities],
     toolFactories: agent.toolFactories.map(projectToolFactory),
+    ...(agent.plugins !== undefined ? { plugins: [...agent.plugins] } : {}),
     modelSources: agent.inference.sources.map(projectModelSource),
     ...(agent.tags !== undefined ? { tags: { ...agent.tags } } : {}),
     ...(agent.toolPackagePins !== undefined

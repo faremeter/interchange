@@ -50,7 +50,12 @@
 // `"unresolvable director"` failure when it wires this output into
 // approval flow.
 
-import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
+import type {
+  AgentDefinition,
+  BaseEnv,
+  DirectorRegistry,
+  ToolDeclaration,
+} from "@intx/agent";
 import {
   effectiveDirectorRef,
   toolApprovalEffect,
@@ -94,6 +99,22 @@ export interface CapabilityWalkResult {
 }
 
 /**
+ * Static tool declarations a plugin package contributes, keyed by the
+ * plugin-package name an agent names in `AgentDefinition.plugins`. A
+ * plugin package contributes NO agent-visible tool factory (its tools reach
+ * the agent through `env.plugins` at run time), so the walk cannot read the
+ * plugin's tool grant surface off the definition alone. The caller (the
+ * probe, over the materialized closure) loads each declared plugin's static
+ * `definitions` and threads them here so the walk emits `tool:<name>` grants
+ * for plugin-contributed tools alongside factory-contributed ones. Absent
+ * from a live-authored walk, which materializes no plugin package.
+ */
+export type PluginToolDefinitions = ReadonlyMap<
+  string,
+  readonly ToolDeclaration[]
+>;
+
+/**
  * Mutable accumulator threaded through the collectors while a single
  * step is walked. `grants` is the deduplicated grant-string set;
  * `effects` maps each TOOL grant string to its effect. The two are
@@ -135,6 +156,7 @@ function freezeDeclarations(
 export function walkCapabilities(
   workflow: WorkflowDefinition,
   registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions = new Map(),
 ): CapabilityWalkResult {
   const triggerGrants = collectTriggerGrants(workflow);
   const unresolved = new Set<string>();
@@ -161,9 +183,27 @@ export function walkCapabilities(
       for (const grant of collectActionGrants(primitive)) {
         collected.grants.add(grant);
       }
-      collectLoopBodyGrants(primitive, registry, unresolved, collected);
-      collectOnTriggerBodyGrants(primitive, registry, unresolved, collected);
-      collectChildWorkflowGrants(primitive, registry, unresolved, collected);
+      collectLoopBodyGrants(
+        primitive,
+        registry,
+        pluginDefs,
+        unresolved,
+        collected,
+      );
+      collectOnTriggerBodyGrants(
+        primitive,
+        registry,
+        pluginDefs,
+        unresolved,
+        collected,
+      );
+      collectChildWorkflowGrants(
+        primitive,
+        registry,
+        pluginDefs,
+        unresolved,
+        collected,
+      );
       perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
       continue;
     }
@@ -171,7 +211,7 @@ export function walkCapabilities(
       grants: new Set<string>(),
       effects: new Map(),
     };
-    collectAgentGrants(agent, registry, unresolved, collected);
+    collectAgentGrants(agent, registry, pluginDefs, unresolved, collected);
     perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
   }
 
@@ -231,6 +271,7 @@ function collectActionGrants(
 function collectLoopBodyGrants(
   primitive: WorkflowDefinition["steps"][string],
   registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
@@ -246,7 +287,13 @@ function collectLoopBodyGrants(
     }
     const bodyAgent = extractAgent(bodyPrimitive);
     if (bodyAgent !== null) {
-      collectAgentGrants(bodyAgent, registry, unresolved, collected);
+      collectAgentGrants(
+        bodyAgent,
+        registry,
+        pluginDefs,
+        unresolved,
+        collected,
+      );
     }
     for (const grant of collectActionGrants(bodyPrimitive)) {
       collected.grants.add(grant);
@@ -267,6 +314,7 @@ function collectLoopBodyGrants(
 function collectOnTriggerBodyGrants(
   primitive: WorkflowDefinition["steps"][string],
   registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
@@ -285,12 +333,24 @@ function collectOnTriggerBodyGrants(
     }
     const bodyAgent = extractAgent(bodyPrimitive);
     if (bodyAgent !== null) {
-      collectAgentGrants(bodyAgent, registry, unresolved, collected);
+      collectAgentGrants(
+        bodyAgent,
+        registry,
+        pluginDefs,
+        unresolved,
+        collected,
+      );
     }
     for (const grant of collectActionGrants(bodyPrimitive)) {
       collected.grants.add(grant);
     }
-    collectLoopBodyGrants(bodyPrimitive, registry, unresolved, collected);
+    collectLoopBodyGrants(
+      bodyPrimitive,
+      registry,
+      pluginDefs,
+      unresolved,
+      collected,
+    );
   }
 }
 
@@ -310,6 +370,7 @@ function collectOnTriggerBodyGrants(
 function collectChildWorkflowGrants(
   primitive: WorkflowDefinition["steps"][string],
   registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
@@ -328,20 +389,45 @@ function collectChildWorkflowGrants(
     }
     const bodyAgent = extractAgent(bodyPrimitive);
     if (bodyAgent !== null) {
-      collectAgentGrants(bodyAgent, registry, unresolved, collected);
+      collectAgentGrants(
+        bodyAgent,
+        registry,
+        pluginDefs,
+        unresolved,
+        collected,
+      );
     }
     for (const grant of collectActionGrants(bodyPrimitive)) {
       collected.grants.add(grant);
     }
-    collectLoopBodyGrants(bodyPrimitive, registry, unresolved, collected);
-    collectOnTriggerBodyGrants(bodyPrimitive, registry, unresolved, collected);
-    collectChildWorkflowGrants(bodyPrimitive, registry, unresolved, collected);
+    collectLoopBodyGrants(
+      bodyPrimitive,
+      registry,
+      pluginDefs,
+      unresolved,
+      collected,
+    );
+    collectOnTriggerBodyGrants(
+      bodyPrimitive,
+      registry,
+      pluginDefs,
+      unresolved,
+      collected,
+    );
+    collectChildWorkflowGrants(
+      bodyPrimitive,
+      registry,
+      pluginDefs,
+      unresolved,
+      collected,
+    );
   }
 }
 
 function collectAgentGrants(
   agent: AgentDefinition<BaseEnv>,
   registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
@@ -365,21 +451,29 @@ function collectAgentGrants(
         throw new DuplicateWalkToolError(definition.name, factory.id);
       }
       seenToolNames.add(definition.name);
-      const grant = `tool:${definition.name}`;
-      collected.grants.add(grant);
-      // Ask-wins merge. `collected` is one GrantSet shared across every
-      // body step of a loop, so two body steps declaring the same bare
-      // tool name write the same `tool:<name>` key here. A plain overwrite
-      // would let a later unmarked declaration downgrade an earlier `ask`
-      // to `allow`; keep `ask` if either the existing or the incoming
-      // effect asks, so a same-named sibling can never silently drop the
-      // approval gate.
-      const incoming = toolApprovalEffect(definition);
-      const existing = collected.effects.get(grant);
-      collected.effects.set(
-        grant,
-        existing === "ask" || incoming === "ask" ? "ask" : incoming,
+      emitToolGrant(definition, collected);
+    }
+  }
+  // Plugin-contributed tools. A plugin package (`agent.plugins`) exposes
+  // its tools through `env.plugins` at run time, so they never appear in
+  // `agent.toolFactories`; the loaded static `definitions` supplied by the
+  // caller carry the tool names to authorize. A plugin tool sharing a name
+  // with a factory tool (or another plugin's tool) is a real collision --
+  // both dispatch under the same bare runtime name -- so it flows through
+  // the SAME `seenToolNames` guard.
+  for (const pluginName of agent.plugins ?? []) {
+    const definitions = pluginDefs.get(pluginName);
+    if (definitions === undefined) {
+      throw new Error(
+        `capability walk: agent ${JSON.stringify(agent.id)} declares plugin ${JSON.stringify(pluginName)} but no static tool definitions were loaded for it; a declared plugin whose grant surface cannot be resolved must fail closed`,
       );
+    }
+    for (const definition of definitions) {
+      if (seenToolNames.has(definition.name)) {
+        throw new DuplicateWalkToolError(definition.name, pluginName);
+      }
+      seenToolNames.add(definition.name);
+      emitToolGrant(definition, collected);
     }
   }
   for (const capability of agent.capabilities) {
@@ -396,6 +490,27 @@ function collectAgentGrants(
     if (!(cause instanceof UnknownDirectorIdError)) throw cause;
     unresolved.add(ref.id);
   }
+}
+
+/**
+ * Add a tool's `tool:<name>` grant and its authorization effect to the
+ * collected set, applying the ask-wins merge. `collected` is one GrantSet
+ * shared across every body step of a loop, so two body steps declaring the
+ * same bare tool name write the same `tool:<name>` key; a plain overwrite
+ * would let a later unmarked declaration downgrade an earlier `ask` to
+ * `allow`, so keep `ask` if either the existing or incoming effect asks.
+ * Shared by the factory-declared and plugin-contributed tool paths so both
+ * derive the effect through the one canonical `toolApprovalEffect` mapping.
+ */
+function emitToolGrant(definition: ToolDeclaration, collected: GrantSet): void {
+  const grant = `tool:${definition.name}`;
+  collected.grants.add(grant);
+  const incoming = toolApprovalEffect(definition);
+  const existing = collected.effects.get(grant);
+  collected.effects.set(
+    grant,
+    existing === "ask" || incoming === "ask" ? "ask" : incoming,
+  );
 }
 
 function collectTriggerGrants(workflow: WorkflowDefinition): string[] {

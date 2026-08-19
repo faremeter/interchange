@@ -28,7 +28,10 @@ import {
   createDefaultDirectorRegistry,
   createWorkflowDirectorRegistry,
   isAnnotatedDirectorFactory,
+  isAnnotatedPluginFactory,
+  type AnnotatedPluginFactory,
   type DirectorRegistry,
+  type ToolDeclaration,
 } from "@intx/agent";
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
@@ -203,6 +206,174 @@ export async function loadWorkflowDirectorRegistryFromClosure(
   }
   logger.debug`loaded ${String(loaded.length)} custom director(s) from ${args.packageDir}`;
   return createWorkflowDirectorRegistry(loaded);
+}
+
+export interface LoadWorkflowPluginsFromClosureArgs {
+  /**
+   * Directory of the materialized workflow package within the closure --
+   * the same directory `loadWorkflowDefinitionFromClosure` reads. Each
+   * declared plugin package is resolved from this package's laid-out
+   * `node_modules/`, exactly as the workflow entry's own bare-specifier
+   * imports resolve.
+   */
+  readonly packageDir: string;
+  /**
+   * Plugin-package names the workflow's agents declare via
+   * `AgentDefinition.plugins` (`["@intx/tools-lsp"]`). Each MUST be a
+   * direct dependency of the workflow package so it is laid out under the
+   * workflow package's `node_modules/`. Empty is valid (no plugins).
+   */
+  readonly plugins: readonly string[];
+  /** See `LoadWorkflowDefinitionFromClosureArgs.importCacheKey`. */
+  readonly importCacheKey?: string;
+  /** Test seam for dynamic import; see the definition loader's variant. */
+  readonly importModule?: (importUrl: string) => Promise<unknown>;
+}
+
+/**
+ * Import each declared plugin package's `interchange.tools` module from the
+ * materialized workflow closure and collect the `AnnotatedPluginFactory`
+ * values it exports. This is the run-child counterpart to the tool-package
+ * loader's plugin channel: a source-ref workflow contributes no plugin factory
+ * through its agent definition (a plugin has no agent slot), so the child
+ * materializes the declared plugins straight from the already-laid-out closure
+ * -- no re-download, no manifest -- and feeds them into the existing per-step
+ * plugin chain. The closure bytes were SRI-verified when the deploy applied the
+ * frozen closure, and resolution walks the same `node_modules/` graph the
+ * workflow entry's imports use.
+ *
+ * @throws if a declared plugin package cannot be resolved, declares no
+ *   `interchange.tools` entry, the entry escapes the package, cannot be
+ *   imported, or exports no `AnnotatedPluginFactory` value
+ */
+export async function loadWorkflowPluginFactoriesFromClosure(
+  args: LoadWorkflowPluginsFromClosureArgs,
+): Promise<AnnotatedPluginFactory[]> {
+  const importModule =
+    args.importModule ?? ((url: string) => import(url) as Promise<unknown>);
+  const out: AnnotatedPluginFactory[] = [];
+  for (const pluginName of args.plugins) {
+    const factories = await loadPluginPackageFactories({
+      workflowPackageDir: args.packageDir,
+      pluginName,
+      importModule,
+      ...(args.importCacheKey !== undefined
+        ? { importCacheKey: args.importCacheKey }
+        : {}),
+    });
+    out.push(...factories);
+  }
+  return out;
+}
+
+/**
+ * Read the static tool `definitions` each declared plugin package
+ * contributes, keyed by plugin-package name, WITHOUT retaining the plugin
+ * factory (so the caller never instantiates a plugin, which for LSP would
+ * start a subprocess). This is the probe/capability-walk counterpart to
+ * `loadWorkflowPluginFactoriesFromClosure`: it loads the SAME plugin module
+ * from the SAME frozen closure so the tool grant surface the walk approves
+ * matches the plugin the run-child materializes.
+ *
+ * A plugin package that exports plugin factories but declares no tool
+ * definitions (a middleware-only plugin) maps to an empty array -- valid,
+ * it contributes no tool grant.
+ *
+ * @throws under the same conditions as `loadWorkflowPluginFactoriesFromClosure`
+ */
+export async function loadWorkflowPluginToolDefinitionsFromClosure(
+  args: LoadWorkflowPluginsFromClosureArgs,
+): Promise<Map<string, readonly ToolDeclaration[]>> {
+  const importModule =
+    args.importModule ?? ((url: string) => import(url) as Promise<unknown>);
+  const byPackage = new Map<string, readonly ToolDeclaration[]>();
+  for (const pluginName of args.plugins) {
+    const factories = await loadPluginPackageFactories({
+      workflowPackageDir: args.packageDir,
+      pluginName,
+      importModule,
+      ...(args.importCacheKey !== undefined
+        ? { importCacheKey: args.importCacheKey }
+        : {}),
+    });
+    const definitions: ToolDeclaration[] = [];
+    for (const factory of factories) {
+      definitions.push(...factory.definitions);
+    }
+    byPackage.set(pluginName, definitions);
+  }
+  return byPackage;
+}
+
+async function loadPluginPackageFactories(args: {
+  workflowPackageDir: string;
+  pluginName: string;
+  importCacheKey?: string;
+  importModule: (importUrl: string) => Promise<unknown>;
+}): Promise<AnnotatedPluginFactory[]> {
+  // Resolve the plugin package from the workflow package's laid-out
+  // `node_modules/`. The closure materializer symlinks each direct
+  // dependency into the requirer's `node_modules/`, so a declared plugin
+  // package (which must be a workflow dependency) sits here. Realpath it so
+  // a plugin whose entry-path containment is checked below compares
+  // realpath-vs-realpath.
+  const linkedDir = path.join(
+    args.workflowPackageDir,
+    "node_modules",
+    args.pluginName,
+  );
+  let pluginPkgDir: string;
+  try {
+    pluginPkgDir = await fs.realpath(linkedDir);
+  } catch (cause) {
+    throw new Error(
+      `plugin package ${JSON.stringify(args.pluginName)} could not be resolved from the workflow closure at ${args.workflowPackageDir}; it must be a direct dependency of the workflow package`,
+      { cause },
+    );
+  }
+
+  const pkgJson = await readPackageJSON(pluginPkgDir);
+  const entryRel = pkgJson.interchange?.tools;
+  if (entryRel === undefined) {
+    throw new Error(
+      `plugin package ${JSON.stringify(args.pluginName)} at ${pluginPkgDir} declares no "interchange.tools" entry; it is not a tool package`,
+    );
+  }
+
+  const entryAbs = await resolveContainedEntry(
+    pluginPkgDir,
+    entryRel,
+    "interchange.tools",
+  );
+
+  const importUrl =
+    args.importCacheKey === undefined
+      ? pathToFileURL(entryAbs).href
+      : `${pathToFileURL(entryAbs).href}?importCacheKey=${encodeURIComponent(args.importCacheKey)}`;
+
+  let mod: unknown;
+  try {
+    mod = await args.importModule(importUrl);
+  } catch (cause) {
+    throw new Error(
+      `failed to import interchange.tools entry ${JSON.stringify(entryRel)} for plugin package ${JSON.stringify(args.pluginName)} at ${pluginPkgDir}`,
+      { cause },
+    );
+  }
+  if (mod === null || typeof mod !== "object") {
+    throw new Error(
+      `interchange.tools entry ${JSON.stringify(entryRel)} for plugin package ${JSON.stringify(args.pluginName)} at ${pluginPkgDir} did not evaluate to a module object`,
+    );
+  }
+
+  const factories = Object.values(mod).filter(isAnnotatedPluginFactory);
+  if (factories.length === 0) {
+    throw new Error(
+      `interchange.tools entry ${JSON.stringify(entryRel)} for plugin package ${JSON.stringify(args.pluginName)} at ${pluginPkgDir} exported no AnnotatedPluginFactory values; a package named in an agent's plugins list must export a definePlugin factory`,
+    );
+  }
+  logger.debug`loaded ${String(factories.length)} plugin factory(ies) from ${args.pluginName} at ${pluginPkgDir}`;
+  return factories;
 }
 
 async function readPackageJSON(packageDir: string): Promise<PackageJSON> {

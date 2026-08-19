@@ -46,7 +46,7 @@ import {
   type AdapterRegistry,
 } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
-import type { DirectorRegistry } from "@intx/agent";
+import type { AnnotatedPluginFactory, DirectorRegistry } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
@@ -78,6 +78,7 @@ import {
   createWorkflowSpawnSuspendableChild,
   createWorkflowStepInvoker,
   hashGrants,
+  loadWorkflowPluginFactoriesFromClosure,
   type ChildOutboundMailBridge,
   type CredentialsSnapshot,
   type CredentialsSnapshotRef,
@@ -738,6 +739,19 @@ export interface SidecarStepBuildEnvDeps {
    */
   sourceTools: boolean;
   /**
+   * Sidecar-local directory of the materialized workflow-definition closure
+   * (`env.spawn.closurePackageDir`), present only on the source-ref lineage.
+   * The source arm materializes each step agent's declared plugin packages
+   * (`req.agent.plugins`) from this already-laid-out closure -- resolving them
+   * through the workflow package's `node_modules/` graph, no re-download -- and
+   * feeds the resulting plugin factories into the per-step plugin chain. A
+   * plugin package contributes no agent-visible tool factory, so this closure
+   * load is the only channel that reaches an `env.plugins` a source workflow's
+   * posix bundle consumes. Undefined on the live-authored and toolless arms,
+   * which never materialize plugins from a closure.
+   */
+  closurePackageDir?: string;
+  /**
    * Build a TOOLLESS env: skip tool materialization entirely and attach an
    * empty tool runtime. Set for an onTrigger body step. A body agent is
    * guaranteed toolless by the deploy-time guard (a tool-bearing body agent is
@@ -750,6 +764,39 @@ export interface SidecarStepBuildEnvDeps {
    * called in this mode (there is no floor to record).
    */
   toolless: boolean;
+}
+
+/**
+ * Materialize the plugin factories a source-ref step agent declares
+ * (`req.agent.plugins`) from the workflow's frozen closure. Returns an
+ * empty list when the agent declares no plugins. Fails closed when plugins
+ * are declared but the source-ref closure dir is absent -- that pairing is a
+ * wiring bug (the source arm always carries `closurePackageDir`), and
+ * silently dropping the plugins would run the workflow without the tools it
+ * declared and leave the reactor to fail closed on the un-loaded tool.
+ *
+ * The closure is already laid out on disk from the deploy-side apply, so
+ * this is a load-only pass -- no re-download -- resolving each plugin
+ * package through the workflow package's `node_modules/` graph and
+ * collecting its `definePlugin` factories.
+ */
+async function materializeSourcePluginFactories(
+  deps: SidecarStepBuildEnvDeps,
+  req: StepInvokeRequest,
+): Promise<readonly AnnotatedPluginFactory[]> {
+  const plugins = req.agent.plugins ?? [];
+  if (plugins.length === 0) {
+    return [];
+  }
+  if (deps.closurePackageDir === undefined) {
+    throw new Error(
+      `sidecar workflow-child step invoker: step agent ${JSON.stringify(req.agent.id)} declares plugins ${JSON.stringify(plugins)} but the source-ref closure package dir is absent; a source workflow's plugin factories can only be materialized from its frozen closure`,
+    );
+  }
+  return loadWorkflowPluginFactoriesFromClosure({
+    packageDir: deps.closurePackageDir,
+    plugins,
+  });
 }
 
 /**
@@ -931,9 +978,12 @@ export function createSidecarStepBuildEnv(
     //     would find nothing here; feeding the evaluated factories straight
     //     into the slot is what runs a source workflow's tools. `packageName`
     //     is the factory's bundle `id` (the credential Gate-2 key; a mail/plain
-    //     tool declares no credentials, so it stays inert) and
-    //     `pluginFactories` is empty (a plugin package contributes no
-    //     agent-visible factory and is a later task).
+    //     tool declares no credentials, so it stays inert). Plugin factories --
+    //     which have no agent slot, so Option A cannot carry them -- are
+    //     materialized separately from the frozen closure the child already
+    //     holds (`materializeSourcePluginFactories`) and fed into the SAME
+    //     `pluginFactories` slot the live-authored path uses, so the existing
+    //     per-step plugin chain wires them onto `env.plugins`.
     //
     //   - Live-authored lineage: materialize the pinned tool-package closure
     //     (posix, LSP, mail, ...) from its on-disk deploy tree, rooted per step
@@ -952,7 +1002,10 @@ export function createSidecarStepBuildEnv(
                 declaredCredentials: [],
                 factory,
               })),
-              pluginFactories: [],
+              pluginFactories: await materializeSourcePluginFactories(
+                deps,
+                req,
+              ),
             }
           : await materializeStepTools({
               dataDir: deps.dataDir,
@@ -2019,6 +2072,12 @@ export function createSidecarSubstrateFactory(
       // pinned tool-package manifest off the deploy tree. A child is one
       // lineage or the other for its whole life, so this is fixed here.
       sourceTools: env.spawn.lineage === "source-ref",
+      // The materialized closure dir, present only on the source-ref lineage
+      // (the discriminated `SpawnTimeEnv` pairs it with `lineage`). The source
+      // arm materializes each step agent's declared plugin packages from it.
+      ...(env.spawn.lineage === "source-ref"
+        ? { closurePackageDir: env.spawn.closurePackageDir }
+        : {}),
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
