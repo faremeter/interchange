@@ -144,7 +144,6 @@ export {
   workflowDefinitionEnvelopeSchema,
   WORKFLOW_JSON_PATH,
   CAPABILITY_DECLARATIONS_JSON_PATH,
-  WORKFLOW_GITIGNORE_PATH,
   type WorkflowPrincipal,
   type WorkflowHubPrincipal,
   type WorkflowSidecarPrincipal,
