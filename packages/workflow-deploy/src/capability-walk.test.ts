@@ -379,6 +379,52 @@ describe("walkCapabilities", () => {
     expect(grants.has(`director:${defaultDirectorFactory.id}`)).toBe(true);
   });
 
+  test("collects an onTrigger section's grants nested inside a childWorkflow body", () => {
+    // The mirror of the onTrigger-body -> childWorkflow direction: a
+    // childWorkflow body may run an onTrigger section, whose agent must also
+    // reach the parent deploy's approval set. Both cross-nesting directions
+    // are covered so neither collector can silently drop the other's grants.
+    const registry = createDefaultDirectorRegistry();
+    const sectionAgent = defineAgent({
+      id: "ag_nested_section",
+      systemPrompt: "nested section agent",
+      tools: [makeMailFactory()],
+      capabilities: ["reply"],
+      inference: { sources: [{ provider: "anthropic", model: "claude-3" }] },
+    });
+    const section = defineWorkflow({
+      id: "nested-section-body",
+      trigger: { type: "manual" },
+      steps: { work: step({ agent: sectionAgent }) },
+    });
+    const child = defineWorkflow({
+      id: "child-with-section",
+      trigger: { type: "manual" },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "c@x.example" },
+          body: section,
+        }),
+      },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_child_section",
+      steps: {
+        spawn: childWorkflow({ definition: child }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("spawn");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("tool:mail_send")).toBe(true);
+    expect(grants.has("capability:reply")).toBe(true);
+    expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
+    expect(grants.has(`director:${defaultDirectorFactory.id}`)).toBe(true);
+  });
+
   test("a by-ref childWorkflow contributes no child grants to the parent", () => {
     // The by-`ref` form is the internal extracted-body handle the deploy step
     // produces AFTER the walk; its grants were already folded in from the
