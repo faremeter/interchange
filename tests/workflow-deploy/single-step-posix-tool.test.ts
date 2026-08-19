@@ -1,21 +1,23 @@
 // Phase 2 proof: a step's agent runs a REAL tool materialized in the
 // spawned workflow-process child.
 //
-// Deploys a one-step workflow that pins a tool package (the synthetic
-// `@intx/tools-mail` tarball seeded by the deploy-flow fixture). The
-// hub resolves the pin into a tool-package manifest and ships it to the
-// sidecar's per-step deploy tree; the child materializes the pinned
-// closure IN-PROCESS (the loader runs in the child), attaches the tool
-// factory to the step's agent, and runs the agent.
+// Deploys a one-step workflow BY SOURCE-REF whose agent carries the inline
+// `mail_send` tool from the `mail-tool.ts` fixture (a real `defineTool`
+// module bundled into the workflow's source closure). The sidecar checks the
+// pinned subtree out of the source pack, evaluates the bundle in-child, and
+// feeds the step agent's live `AnnotatedToolFactory`s straight in. The tool's
+// runtime name is the bare `definition.name`; the probe's capability walk
+// already emitted a `tool:<name>` grant for it into the frozen snapshot, so
+// the run authorizes the call through the per-run grants the trigger delivers.
 //
-// The mock inference server is configured to emit a `tool_use` turn
-// calling the pinned tool on the first request, then a text reply once
-// the tool_result lands. The tool's `run` writes a sentinel file into
-// the agent's `env.workdir` -- which, for a step agent, is the per-step
-// workspace under the sidecar data dir. The test asserts that sentinel
-// file exists, proving the tool actually EXECUTED in the child's
-// filesystem view. It also asserts the mock saw the follow-up request
-// (the tool_result round-trip) and the run reached a terminal phase.
+// The mock inference server is configured to emit a `tool_use` turn calling
+// the inline tool on the first request, then a text reply once the tool_result
+// lands. The tool's `run` writes a sentinel file into the agent's `env.workdir`
+// -- which, for a step agent, is the per-step workspace under the sidecar data
+// dir. The test asserts that sentinel file exists, proving the tool actually
+// EXECUTED in the child's filesystem view. It also asserts the mock saw the
+// follow-up request (the tool_result round-trip) and the run reached a terminal
+// phase.
 //
 // This is the test that proves real tools run in-child for Phase 2.
 
@@ -24,302 +26,253 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import type { WireGrantRule } from "@intx/types/grant-wire";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { sanitizeAddress } from "@intx/hub-agent";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
+  SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
+import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_single-step-posix-tool-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
+const AGENT_ID = "agent-step1";
 
-// The tool the model is told to call. The loader namespaces the
-// synthetic bundle's `mail_send` definition under the bundle id.
-const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
 // The tool's `run` writes a file named after its `body` arg with its
 // `to` arg as content; the test drives those values and asserts the
 // file lands in the child's per-step workspace.
 const SENTINEL_FILENAME = "posix-tool-ran.txt";
 const SENTINEL_CONTENT = "executed-in-child";
 
-const TOOL_PINS: readonly ToolPackagePin[] = [
-  { name: "@intx/tools-mail", version: "0.1.2" },
-];
+// The run's single grant, delivered per run via the `run.grants` frame the
+// trigger sends. `fireMailTrigger` is the router-level helper, so it does not
+// materialize the run grants itself the way the production route does; feeding
+// the `tool:<name>` grant here reproduces the production per-run delivery so
+// the child's authorize resolves the inline tool call against it.
+const RUN_TOOL_GRANT: WireGrantRule = {
+  id: `run-grant:tool:${MAIL_TOOL_NAME}`,
+  resource: `tool:${MAIL_TOOL_NAME}`,
+  action: "invoke",
+  effect: "allow",
+  origin: "creator",
+  conditions: null,
+  expiresAt: null,
+  roleId: null,
+  principalId: null,
+};
+
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_single_step_posix_tool";
+const CALLER_PRINCIPAL_ID = "prn_single_step_posix_tool";
+const DEFINITION_ASSET_ID = "ast_single_step_posix_tool_wf";
 
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "single-step-posix-tool-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv({
     inferenceToolCall: {
-      toolName: TOOL_NAME,
+      toolName: MAIL_TOOL_NAME,
       input: { to: SENTINEL_CONTENT, body: SENTINEL_FILENAME },
     },
   });
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("single-step posix-tool in-child execution", () => {
-  test("the spawned child materializes and runs a real tool for the step", async () => {
-    const agent = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the single-step tool agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
+describe.skipIf(!harnessDbEnvAvailable())(
+  "single-step posix-tool in-child execution",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        [STEP_ID]: step({ agent }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      // No hand-injected grant for the pinned tool. The tool ships as a
-      // PINNED package that loads sidecar-side in the child, so the hub's
-      // capability walk never produced a `tool:<name>` grant for it; the
-      // child derives a `tool:<name>` floor from the tool's static mark
-      // (unmarked -> `allow`) and merges it under the run's grants, so the
-      // tool authorizes on its own. This fixture deliberately supplies no
-      // tool grant to prove the sidecar floor is what authorizes it.
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-      env.hub.sessionService.deploySingleStepAtHead(params);
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `single-step-posix-tool test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
+    test("the spawned child materializes and runs a real tool for the step", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-        toolPackagePins: TOOL_PINS,
+        domain: DEPLOYMENT_DOMAIN,
       });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${env.inference.server.port}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      // The operator approves exactly the surface the source workflow declares,
+      // INCLUDING the inline tool's `tool:<name>` grant. That grant is frozen
+      // into the credentials snapshot and, delivered per run, is what
+      // authorizes the tool call at run time -- the source path's tool
+      // authorization rides the snapshot, no sidecar floor.
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+        `tool:${MAIL_TOOL_NAME}`,
+      ]);
+
+      const entryModule = singleStepMailToolEntry({
+        variant: "fs",
+        stepId: STEP_ID,
+        systemPrompt: "You are the single-step tool agent.",
+        address: deploymentMailAddress,
+        agentId: AGENT_ID,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId = handle.workflowRunRepoId;
+
+      // The source-ref frame round-trips through the real sidecar subprocess
+      // (index the pack, check out the pinned subtree, register the address),
+      // so routability is asynchronous. Wait for it before firing the trigger.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-    }
-    expect(result.publicKey).toBeTruthy();
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<single-step-posix-tool-1@integration.interchange>",
+        grants: [RUN_TOOL_GRANT],
+      });
 
-    await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<single-step-posix-tool-1@integration.interchange>",
-    });
+      const runId = await waitForFirstRunId(env, workflowRunRepoId, {
+        diagnostics: env.sidecarDiagnostics,
+        timeoutMs: 20_000,
+      });
 
-    const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
-    });
-
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      runId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    if (terminal.type !== "RunCompleted") {
-      const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
-      const failed = events.find(
-        (e) => e.type === "StepFailed" || e.type === "RunFailed",
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-      throw new Error(
-        `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
+      if (terminal.type !== "RunCompleted") {
+        const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
+        const failed = events.find(
+          (e) => e.type === "StepFailed" || e.type === "RunFailed",
+        );
+        throw new Error(
+          `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(terminal.type).toBe("RunCompleted");
+
+      // The model was driven to call the tool on its first turn, then the
+      // tool_result fed a second inference turn. Two (or more) requests
+      // means the tool executed and the agent looped back -- the tool did
+      // not silently no-op.
+      expect(env.inference.requests.length).toBeGreaterThanOrEqual(2);
+
+      // The first request must have exposed the inline tool to the model --
+      // proof the source closure evaluated in the child and the factory's
+      // definition reached inference.
+      const firstReq = env.inference.requests[0];
+      if (firstReq === undefined)
+        throw new Error("no inference request captured");
+      const toolNames = (firstReq.tools ?? []).map((t) => t.name);
+      expect(toolNames).toContain(MAIL_TOOL_NAME);
+
+      // THE PROOF that the tool ran IN THE CHILD: the tool's `run` wrote a
+      // sentinel file into `env.workdir`, which for the warm single-step
+      // agent is the STABLE per-agent workspace rooted at
+      // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
+      // step identity, not the per-message runId, so the workspace is reused
+      // across messages and bounded to one dir per agent). The file's
+      // presence (with the content the tool was given) means the source
+      // workflow's OWN evaluated tool factory ran in the child's filesystem
+      // view -- and that the `tool:<name>` grant authorized the call.
+      const stepWorkspace = path.join(
+        env.sidecar.dataDir,
+        "workflow-step-state",
+        workflowRunRepoId.id,
+        "warm",
+        encodeURIComponent(STEP_ID),
+        "workspace",
       );
-    }
-    expect(terminal.type).toBe("RunCompleted");
-
-    // The model was driven to call the tool on its first turn, then the
-    // tool_result fed a second inference turn. Two (or more) requests
-    // means the tool executed and the agent looped back -- the tool did
-    // not silently no-op.
-    expect(env.inference.requests.length).toBeGreaterThanOrEqual(2);
-
-    // The first request must have exposed the materialized tool to the
-    // model -- proof the loader ran in the child and the factory's
-    // definition reached inference.
-    const firstReq = env.inference.requests[0];
-    if (firstReq === undefined)
-      throw new Error("no inference request captured");
-    const toolNames = (firstReq.tools ?? []).map((t) => t.name);
-    expect(toolNames).toContain(TOOL_NAME);
-
-    // THE PROOF that the tool ran IN THE CHILD: the tool's `run` wrote a
-    // sentinel file into `env.workdir`, which for the warm single-step
-    // agent is the STABLE per-agent workspace rooted at
-    // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
-    // step identity, not the per-message runId, so the workspace is reused
-    // across messages and bounded to one dir per agent). The file's
-    // presence (with the content the tool was given) means the
-    // materialized tool factory's `run` executed in the child's filesystem
-    // view.
-    const stepWorkspace = path.join(
-      env.sidecar.dataDir,
-      "workflow-step-state",
-      workflowRunRepoId.id,
-      "warm",
-      encodeURIComponent(STEP_ID),
-      "workspace",
-    );
-    const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);
-    if (!fs.existsSync(sentinelPath)) {
-      throw new Error(
-        `tool sentinel file ${sentinelPath} was not written; the materialized tool did not run in the child\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
-
-    // The step's deploy tree (carrying the resolved tool-package
-    // manifest) landed at the HEAD's legacy agent dir on the child -- the
-    // on-disk source the child read for materialization. A single-step
-    // workflow collapses its lone step onto the head, so the deploy tree
-    // is staged at the deployment (head) address, not a per-step address.
-    const headAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
+      const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);
+      if (!fs.existsSync(sentinelPath)) {
+        throw new Error(
+          `tool sentinel file ${sentinelPath} was not written; the source workflow's own tool did not run in the child\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
     });
-    const headDeployDir = path.join(
-      env.sidecar.dataDir,
-      sanitizeAddress(headAddress),
-      "deploy",
-    );
-    expect(
-      fs.existsSync(path.join(headDeployDir, "tool-packages-manifest.json")),
-    ).toBe(true);
-  });
-});
+  },
+);

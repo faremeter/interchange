@@ -72,9 +72,8 @@ import {
   expect,
   test,
 } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { createInMemoryGrantStore } from "@intx/authz";
 import {
   createApprovalStore,
@@ -91,40 +90,28 @@ import { createApp, type GetSession } from "@intx/hub-api";
 import { generateId } from "@intx/hub-common";
 import {
   type EventCollectorRegistry,
-  type RepoId,
   type SessionService,
-  type WorkflowRunHubPrincipal,
 } from "@intx/hub-sessions";
 import { isRunAddress, signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
-import type { ApprovalSnapshot, HarnessConfig } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  HarnessConfig,
+  InferenceSource,
+} from "@intx/types/runtime";
 import { WireGrantRule } from "@intx/types/grant-wire";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import {
-  seedAsset,
-  seedPrincipal,
-  seedTenants,
-  seedWorkflowRun,
-} from "@intx/test-harness/seed";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
+import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 import {
   SESSION_ID,
+  deployWorkflowSourceForTest,
   dropHubLink,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -135,7 +122,8 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
+import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A top-level `run_<hex>` deploy run identity (not a per-step derived
@@ -144,13 +132,13 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 // `onWorkflowAddressesRoutable`, which is what drives Trigger B.
 const INSTANCE_LOCAL = "run_dep0ec0ffee0ec0ffee0ec0ffee0ec0f";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
 
 // The tool the model is told to call. Its grant is `ask`, so the call SUSPENDS
 // instead of running, parking the run on the reserved control-plane channel.
-const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
+const TOOL_NAME = MAIL_TOOL_NAME;
 const ASK_RESOURCE = `tool:${TOOL_NAME}`;
+const STEP_AGENT_ID = "agent-reconnect-reemit";
 
 // The `mail_send` arguments the mock issues. The synthetic bundle writes its
 // `to` argument into the file named by `body`; the run parks before the tool
@@ -159,13 +147,12 @@ const CALL_TO = "correlation-recovery";
 const CALL_BODY = "reconnect-tool-ran.txt";
 const RESUME_REPLY_PREFIX = "done: ";
 
-const TOOL_PINS: readonly ToolPackagePin[] = [
-  { name: "@intx/tools-mail", version: "0.1.2" },
-];
-
-// The operator-approved `ask` grant shipped in-band on the deploy frame. Effect
-// `ask` is the whole point: the tool call suspends awaiting an external
-// decision rather than running, so the run parks and mints a correlation.
+// The run's `ask`-effect tool grant, delivered per run via the `run.grants`
+// frame the trigger sends. `fireMailTrigger` does not materialize run grants
+// itself the way the production route does, so feeding it here reproduces the
+// per-run delivery. Effect `ask` is the whole point: the tool call suspends
+// awaiting an external decision rather than running, so the run parks and mints
+// a correlation.
 const ASK_GRANT: WireGrantRule = {
   id: "grant-tool-ask",
   resource: ASK_RESOURCE,
@@ -187,15 +174,15 @@ const APPROVER_PRINCIPAL_ID = "prn_reconnect_approver";
 let env: DeployFlowEnv;
 let h: TestDb;
 
-// The deployment mail address and the workflow-run repo slug the supervisor
-// stamps onto the register frame's `anchorRunId`. The co-write resolves
-// tenancy by the address and cross-checks the slug, so the seeded
-// anchor run is keyed by the slug with this address.
+// The deployment mail address. The supervisor stamps the workflow-run repo
+// slug this address derives onto the register frame's `anchorRunId`; the
+// co-write cross-checks that slug and resolves the anchor by address. The
+// anchor's own DB id -- the run id the source-ref deploy passed -- is what the
+// co-write keys the approval/correlation rows on.
 const deploymentMailAddress = deriveRunAddress({
   runId: DEPLOYMENT_ID,
   domain: DEPLOYMENT_DOMAIN,
 });
-const deploymentSlug = deriveDeploymentId(deploymentMailAddress);
 
 // Approve-route scaffolding: a mock approver session plus the
 // `approval:<slug>`/`resolve` grant that authorizes the real approve route,
@@ -255,7 +242,7 @@ function createMockEventCollectors(): EventCollectorRegistry {
 
 const approverGrant: GrantRule = {
   id: "grant-approver-resolve",
-  resource: `approval:${deploymentSlug}`,
+  resource: `approval:${DEPLOYMENT_ID}`,
   action: "resolve",
   effect: "allow",
   origin: "system",
@@ -295,6 +282,11 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
     kind: "approval";
     approvalSnapshot: ApprovalSnapshot;
   }): Promise<void> => {
+    // Resolve the deployment's anchor run by address across the live states
+    // (a source-ref deploy's anchor sits at "deployed" in its pre-trigger
+    // window). The co-write keys the correlation/approval rows on the anchor's
+    // own DB id, which for a source-ref deploy is the run id the deploy passed
+    // (distinct from the workflow-run repo slug the frame carries).
     const anchor = await db
       .select({
         id: workflowRun.id,
@@ -304,29 +296,34 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
       .where(
         and(
           eq(workflowRun.address, agentAddress),
-          eq(workflowRun.status, "running"),
+          inArray(workflowRun.status, ["deployed", "running"]),
         ),
       )
       .limit(1)
       .then((rows) => rows[0]);
     if (anchor === undefined) {
       throw new Error(
-        `No running workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
+        `No live workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
       );
     }
-    if (anchor.id !== anchorRunId) {
+    // The frame's `anchorRunId` is the workflow-run repo slug the child stamps;
+    // cross-check it against the slug the recipient address derives, mirroring
+    // production's addressSlug check.
+    const addressSlug = deriveDeploymentId(agentAddress);
+    if (addressSlug !== anchorRunId) {
       throw new Error(
-        `Deployment id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" resolves to "${anchor.id}"`,
+        `Anchor run id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,
       );
     }
     const tenantId = anchor.tenantId;
+    const anchorDbId = anchor.id;
     await db.transaction(async (tx) => {
       // Mirror the production co-write: lazily anchor the run before the
       // correlation and approval reference it, so their runId FK resolves.
       await workflowRunStore.createIfAbsent(
         {
           id: runId,
-          anchorRunId: anchorRunId,
+          anchorRunId: anchorDbId,
           tenantId,
           definitionId: DEFINITION_ID,
           principalId: null,
@@ -338,7 +335,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           correlationId,
           tenantId,
-          anchorRunId: anchorRunId,
+          anchorRunId: anchorDbId,
           agentAddress,
           runId,
           signalName: signalName(correlationId),
@@ -350,7 +347,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         {
           id: generateId("approval"),
           tenantId,
-          anchorRunId: anchorRunId,
+          anchorRunId: anchorDbId,
           runId,
           agentAddress,
           correlationId,
@@ -424,11 +421,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // Seed the tenancy the co-write resolves against: a tenant, the workflow
-      // definition asset the deployment references, the deployment's anchor run
-      // -- the workflow_run whose id is the deployment slug, addressed by the
-      // deployment mail address, which the co-write resolves tenancy from and
-      // whose id the approval/correlation deployment_id FKs reference -- and an
-      // active approver principal.
+      // definition asset the deployment references, a workflow_definition the
+      // co-write's lazily-anchored per-message run row FKs, and an active
+      // approver principal. The deployment's anchor `workflow_run` row is
+      // written by the source-ref deploy below (keyed by the run id the deploy
+      // passes), not seeded here; the co-write resolves tenancy from it by
+      // address.
       await seedTenants(h.db, [{ id: TENANT_ID }]);
       await seedAsset(h.db, {
         id: DEFINITION_ASSET_ID,
@@ -442,15 +440,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         name: "reconnect-reemit-wf",
         assetId: DEFINITION_ASSET_ID,
       });
-      await seedWorkflowRun(h.db, {
-        id: deploymentSlug,
-        tenantId: TENANT_ID,
-        anchorRunId: deploymentSlug,
-        definitionId: DEFINITION_ID,
-        address: deploymentMailAddress,
-        publicKey: null,
-        status: "running",
-      });
       await seedPrincipal(h.db, {
         id: APPROVER_PRINCIPAL_ID,
         tenantId: TENANT_ID,
@@ -459,23 +448,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "active",
       });
 
-      const agent = defineAgent({
-        id: "agent-reconnect-reemit",
-        systemPrompt: "You are the single-step agent under approval control.",
-        tools: [],
-        capabilities: [],
-        inference: {
-          sources: [{ provider: "anthropic", model: "mock-model" }],
-        },
-      });
-
-      const workflow: WorkflowDefinition = defineWorkflow({
-        id: `wf_${DEPLOYMENT_ID}`,
-        trigger: { type: "mail", to: deploymentMailAddress },
-        steps: {
-          [STEP_ID]: step({ agent }),
-        },
-      });
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
 
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
@@ -483,21 +462,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: "tenant-1",
         principalId: "prin_reconnect-reemit-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt:
-          "Fallback prompt (overridden per step by the orchestrator)",
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
-        // The `ask`-effect grant makes the tool call suspend in the child
-        // instead of running, so the run parks and mints a correlation.
-        grants: [ASK_GRANT],
-        sources: [
-          {
-            id: "anthropic:mock-model",
-            provider: "anthropic",
-            baseURL: `http://localhost:${String(env.inference.server.port)}`,
-            apiKey: "sk-mock",
-            model: "mock-model",
-          },
-        ],
+        grants: [],
+        sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
       };
 
@@ -506,111 +474,47 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
         `mail.send:${DEPLOYMENT_DOMAIN}`,
+        `tool:${MAIL_TOOL_NAME}`,
       ]);
 
-      const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-        await env.hub.sessionService.stageWorkflowStep({
-          agentAddress: orchestratorParams.agentAddress,
-          agentId: orchestratorParams.agentId,
-          runId: orchestratorParams.runId,
-          config: orchestratorParams.config,
-          deployContent: toLaunchDeployContent(
-            orchestratorParams.deployContent,
-          ),
-          ...(orchestratorParams.toolPackagePins !== undefined
-            ? { toolPackagePins: orchestratorParams.toolPackagePins }
-            : {}),
-        });
-      };
-
-      const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-        env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-          definition: {
-            id: params.definition.id,
-            triggers: [...params.definition.triggers],
-            stepOrder: [...params.definition.stepOrder],
-            steps: params.definition.steps as Record<string, unknown>,
-            ...(params.definition.state !== undefined
-              ? { state: params.definition.state }
-              : {}),
-          },
-          sources: params.sources,
-        });
-
-      const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-        env.hub.sessionService.deploySingleStepAtHead(params);
-
-      const workflowRepo: WorkflowRepoWriter = {
-        async writeWorkflowRepo(args) {
-          const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-          const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-          const files: Record<string, string> = {};
-          for (const [k, v] of args.files) {
-            files[k] = v;
-          }
-          await env.hub.agentRepoStore.repoStore.writeTree(
-            principal,
-            repoId,
-            "refs/heads/main",
-            {
-              files,
-              message: `reconnect-reemit test: write workflow repo ${args.workflowRepoId}`,
-            },
-          );
-        },
-      };
-
-      const orchestrator = createWorkflowDeployOrchestrator({
-        directorRegistry: createDefaultDirectorRegistry(),
-        workflowRepo,
-        launchSession,
-        sendMultiStepDeploy,
-        deploySingleStepAtHead,
+      const entryModule = singleStepMailToolEntry({
+        variant: "ask",
+        stepId: STEP_ID,
+        systemPrompt: "You are the single-step agent under approval control.",
+        address: deploymentMailAddress,
+        agentId: STEP_AGENT_ID,
       });
 
-      let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-      try {
-        result = await orchestrator.deployWorkflow({
-          workflow,
-          config,
-          deployContent: { systemPrompt: config.systemPrompt },
-          operatorApprovals,
-          runId: DEPLOYMENT_ID,
-          deploymentDomain: DEPLOYMENT_DOMAIN,
-          hubPublicKey: "00".repeat(32),
-          toolPackagePins: TOOL_PINS,
-        });
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        const diag = env.sidecarDiagnostics();
-        throw new Error(
-          `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-          { cause },
-        );
-      }
-      expect(result.publicKey).toBeTruthy();
-
-      const workflowRunRepoId: RepoId = {
-        kind: "workflow-run",
-        id: deploymentSlug,
-      };
-      env.registerDeployment({
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
         anchorRunId: DEPLOYMENT_ID,
-        workflowDefinition: workflow,
-        workflowRunRepoId,
-        workflowRunRef: WORKFLOW_RUN_REF,
-        mailAddress: deploymentMailAddress,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
       });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId = handle.workflowRunRepoId;
 
       // Wait for the deployment to ack its key so the sidecar's hub link is
       // fully live and the address is routable before firing the trigger and
-      // before the drop below has a challenged address to re-route.
+      // before the drop below has a challenged address to re-route. The
+      // source-ref frame round-trips through the real sidecar subprocess, so
+      // routability is asynchronous; wait for it rather than asserting it
+      // synchronously.
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
         timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
-      expect(env.hub.router.getRoutableAddresses()).toContain(
-        deploymentMailAddress,
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- park the run (link up) ----
@@ -638,7 +542,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const rows = await h.db
             .select()
             .from(approval)
-            .where(eq(approval.anchorRunId, deploymentSlug));
+            .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
           return rows.length === 1;
         },
         { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
@@ -647,7 +551,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const parkedApprovalRows = await h.db
         .select()
         .from(approval)
-        .where(eq(approval.anchorRunId, deploymentSlug));
+        .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
       expect(parkedApprovalRows).toHaveLength(1);
       const parkedApproval = parkedApprovalRows[0];
       if (parkedApproval === undefined) throw new Error("unreachable");
@@ -702,20 +606,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // is dropped by the hub's ownership gate until the challenge re-routes it).
       await h.db
         .delete(approval)
-        .where(eq(approval.anchorRunId, deploymentSlug));
+        .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
       await h.db
         .delete(signalCorrelation)
-        .where(eq(signalCorrelation.anchorRunId, deploymentSlug));
+        .where(eq(signalCorrelation.anchorRunId, DEPLOYMENT_ID));
 
       const approvalsWhileDown = await h.db
         .select()
         .from(approval)
-        .where(eq(approval.anchorRunId, deploymentSlug));
+        .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
       expect(approvalsWhileDown).toHaveLength(0);
       const correlationsWhileDown = await h.db
         .select()
         .from(signalCorrelation)
-        .where(eq(signalCorrelation.anchorRunId, deploymentSlug));
+        .where(eq(signalCorrelation.anchorRunId, DEPLOYMENT_ID));
       expect(correlationsWhileDown).toHaveLength(0);
 
       // ---- reconnect: Trigger B re-emits the parked correlation ----
