@@ -1,97 +1,28 @@
-// Pins the agent-step contract for `pickStepInferenceSource`, exercised via the
-// MULTI-step deploy path (the single-step branch now pins the full ordered
-// source chain rather than selecting one, so prefer/fallback selection lives
-// only on the multi-step path after the fold).
+// Pins the agent-step contract for `pickStepInferenceSource`.
 //
-// The orchestrator must not pin a step to a `HarnessConfig.defaultSource`
-// whose `(provider, model)` was never approved by the operator. The
-// capability walk emits `inference.source:<provider>:<model>` grants for
-// every source the operator approved; the orchestrator's source-pinning
-// pass must cross-check whichever source it chooses against that set
-// before letting the deploy proceed. Falling back to an unapproved
-// default would let a deploy slip past the approval gate by pinning a
-// different `(provider, model)` than the agent's preferred source.
+// The deploy must not pin a step to a `HarnessConfig.defaultSource` whose
+// `(provider, model)` was never approved by the operator. The capability walk
+// emits `inference.source:<provider>:<model>` grants for every source the
+// operator approved; the source-pinning pass must cross-check whichever source
+// it chooses against that set before letting the deploy proceed. Falling back
+// to an unapproved default would let a deploy slip past the approval gate by
+// pinning a different `(provider, model)` than the agent's preferred source.
 
 import { describe, test, expect } from "bun:test";
 
-import {
-  createDefaultDirectorRegistry,
-  defaultDirectorFactory,
-  defineAgent,
-  type AgentDefinition,
-  type AnnotatedToolFactory,
-  type BaseEnv,
-} from "@intx/agent";
 import type { HarnessConfig } from "@intx/types/runtime";
-import {
-  defineWorkflow,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow/definition";
+
+import type { InferenceSource } from "@intx/types/runtime";
 
 import {
-  CapabilityApprovalDeniedError,
-  createWorkflowDeployOrchestrator,
+  isSourceApproved,
+  pickStepInferenceSource,
   WorkflowDefinitionInvalidError,
-  type DeployContent,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
 } from "./orchestrator";
 
-function makeMailFactory(): AnnotatedToolFactory<BaseEnv> {
-  const factory = (_env: BaseEnv) => ({
-    definitions: [],
-    run: () =>
-      Promise.resolve({ callId: "", content: "", isError: false as const }),
-  });
-  return Object.assign(factory, {
-    id: "@intx/tools-mail/sidecar-bundle",
-    requires: [] as readonly string[],
-    // The walk keys `tool:` grants per declared definition name; declare
-    // a real tool so the fixture contributes a `tool:mail_send` grant.
-    definitions: [{ name: "mail_send" }],
-  });
-}
-
-function makeAgent(
-  id: string,
-  provider: string,
-  model: string,
-): AgentDefinition<BaseEnv> {
-  return defineAgent({
-    id,
-    systemPrompt: `you are ${id}`,
-    tools: [makeMailFactory()],
-    capabilities: [],
-    inference: {
-      sources: [{ provider, model }],
-    },
-  });
-}
-
-// A MULTI-step workflow: after the fold, `pickStepInferenceSource` (this
-// suite's subject -- prefer/fallback/approval-gate source selection) is
-// exercised only by the multi-step branch. The single-step branch now pins the
-// full ordered chain with head == default (see the single-step-chain tests in
-// orchestrator.test.ts), so the prefer/fallback semantics asserted here live on
-// the multi-step path. Both steps share the agent, so one grant set covers both
-// and the assertions read the head step's recorded pin.
-function makeWorkflow(agent: AgentDefinition<BaseEnv>): WorkflowDefinition {
-  return defineWorkflow({
-    id: "wf_fallback",
-    trigger: { type: "manual" },
-    steps: {
-      only: step({ agent, after: [] }),
-      tail: step({ agent, after: ["only"] }),
-    },
-  });
-}
-
-const DEPLOY_CONTENT_BASE: DeployContent = {
-  systemPrompt: "shared-prompt",
-};
+// The agent's first declared source, the `(provider, model)` preference the
+// deploy reads off the step agent and feeds the picker.
+const PREFERRED = { provider: "anthropic", model: "preferred-model" };
 
 function makeConfig(args: {
   sources: HarnessConfig["sources"];
@@ -111,55 +42,8 @@ function makeConfig(args: {
   };
 }
 
-function createRecordingDeps() {
-  const launches: { agentId: string }[] = [];
-  const launch: LaunchSessionFn = async (params) => {
-    launches.push({ agentId: params.agentId });
-  };
-  const sources: Record<string, unknown>[] = [];
-  const multiStep: SendMultiStepDeployFn = async (params) => {
-    sources.push(params.sources);
-    return { publicKey: "00".repeat(32) };
-  };
-  // A one-step workflow deploys once at the head via this hand-off; it
-  // records the pinned sources exactly as the multi-step hand-off does so
-  // the source-pin assertions read the same `sources` array regardless of
-  // which branch the deploy took.
-  const singleStep: DeploySingleStepFn = async (params) => {
-    sources.push(params.sources);
-    return { publicKey: "00".repeat(32) };
-  };
-  const repoWrites: { workflowRepoId: string }[] = [];
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(params) {
-      repoWrites.push({ workflowRepoId: params.workflowRepoId });
-    },
-  };
-  return {
-    launches,
-    launch,
-    sources,
-    multiStep,
-    singleStep,
-    workflowRepo,
-    repoWrites,
-  };
-}
-
 describe("pickStepInferenceSource (agent step)", () => {
-  test("throws when the agent's preferred source is missing and the defaultSource's (provider, model) is not in the approved grants", async () => {
-    const agent = makeAgent("ag1", "anthropic", "preferred-model");
-    const workflow = makeWorkflow(agent);
-    const directorRegistry = createDefaultDirectorRegistry();
-    const deps = createRecordingDeps();
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry,
-      workflowRepo: deps.workflowRepo,
-      launchSession: deps.launch,
-      sendMultiStepDeploy: deps.multiStep,
-      deploySingleStepAtHead: deps.singleStep,
-    });
-
+  test("throws when the agent's preferred source is missing and the defaultSource's (provider, model) is not in the approved grants", () => {
     // HarnessConfig has only a default-pinned source for openai:default-model,
     // not the agent's preferred (anthropic, preferred-model).
     const config = makeConfig({
@@ -175,46 +59,26 @@ describe("pickStepInferenceSource (agent step)", () => {
       defaultSource: "src-default",
     });
 
-    // Approvals cover the agent's preferred source (which the walk
-    // emits as a grant) plus the tool and director grants -- but NOT
-    // the defaultSource's (openai, default-model). This is the
-    // capability-walk-bypass shape: the operator approved one
-    // (provider, model), the orchestrator silently pins a different one.
+    // Approvals cover the agent's preferred source but NOT the defaultSource's
+    // (openai, default-model). This is the capability-walk-bypass shape: the
+    // operator approved one (provider, model), the picker would otherwise
+    // silently pin a different one.
     const approvals = new Set<string>([
-      "tool:mail_send",
-      `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:preferred-model",
     ]);
 
-    await expect(
-      orchestrator.deployWorkflow({
-        workflow,
-        runId: "run_fallback",
-        deploymentDomain: "workflow.interchange",
+    expect(() =>
+      pickStepInferenceSource({
+        preferred: PREFERRED,
+        stepId: "only",
+        workflowId: "wf_fallback",
         config,
-        deployContent: DEPLOY_CONTENT_BASE,
-        hubPublicKey: "00".repeat(32),
         operatorApprovals: approvals,
       }),
-    ).rejects.toBeInstanceOf(WorkflowDefinitionInvalidError);
-
-    // The hand-off must not fire when source pinning is rejected.
-    expect(deps.sources).toHaveLength(0);
+    ).toThrow(WorkflowDefinitionInvalidError);
   });
 
-  test("uses the defaultSource when its (provider, model) is in the approved grants", async () => {
-    const agent = makeAgent("ag1", "anthropic", "preferred-model");
-    const workflow = makeWorkflow(agent);
-    const directorRegistry = createDefaultDirectorRegistry();
-    const deps = createRecordingDeps();
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry,
-      workflowRepo: deps.workflowRepo,
-      launchSession: deps.launch,
-      sendMultiStepDeploy: deps.multiStep,
-      deploySingleStepAtHead: deps.singleStep,
-    });
-
+  test("uses the defaultSource when its (provider, model) is in the approved grants", () => {
     const config = makeConfig({
       sources: [
         {
@@ -228,57 +92,33 @@ describe("pickStepInferenceSource (agent step)", () => {
       defaultSource: "src-default",
     });
 
-    // The operator approved BOTH the agent's preferred shape (the walk
-    // emits it) and the defaultSource's (provider, model). The agent's
-    // preferred source does not resolve against HarnessConfig.sources,
-    // so the orchestrator legitimately falls back to the default --
-    // which is approved, so the deploy proceeds.
+    // The operator approved BOTH the agent's preferred shape and the
+    // defaultSource's (provider, model). The agent's preferred source does not
+    // resolve against HarnessConfig.sources, so the picker legitimately falls
+    // back to the default -- which is approved.
     const approvals = new Set<string>([
-      "tool:mail_send",
-      `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:preferred-model",
       "inference.source:openai:default-model",
     ]);
 
-    const result = await orchestrator.deployWorkflow({
-      workflow,
-      runId: "run_fallback",
-      deploymentDomain: "workflow.interchange",
+    const picked = pickStepInferenceSource({
+      preferred: PREFERRED,
+      stepId: "only",
+      workflowId: "wf_fallback",
       config,
-      deployContent: DEPLOY_CONTENT_BASE,
-      hubPublicKey: "00".repeat(32),
       operatorApprovals: approvals,
     });
 
-    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
-    expect(deps.sources).toHaveLength(1);
-    const sources = deps.sources[0];
-    if (sources === undefined) throw new Error("missing sources");
-    // The step pins a single-element failover chain around the picked source.
-    expect(sources.only).toEqual([
-      {
-        id: "src-default",
-        provider: "openai",
-        baseURL: "https://api.example/openai",
-        apiKey: "secret",
-        model: "default-model",
-      },
-    ]);
+    expect(picked).toEqual({
+      id: "src-default",
+      provider: "openai",
+      baseURL: "https://api.example/openai",
+      apiKey: "secret",
+      model: "default-model",
+    });
   });
 
-  test("uses the agent's preferred source when it matches an approved HarnessConfig source", async () => {
-    const agent = makeAgent("ag1", "anthropic", "preferred-model");
-    const workflow = makeWorkflow(agent);
-    const directorRegistry = createDefaultDirectorRegistry();
-    const deps = createRecordingDeps();
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry,
-      workflowRepo: deps.workflowRepo,
-      launchSession: deps.launch,
-      sendMultiStepDeploy: deps.multiStep,
-      deploySingleStepAtHead: deps.singleStep,
-    });
-
+  test("uses the agent's preferred source when it matches an approved HarnessConfig source", () => {
     const config = makeConfig({
       sources: [
         {
@@ -299,81 +139,54 @@ describe("pickStepInferenceSource (agent step)", () => {
       defaultSource: "src-other",
     });
 
-    // The agent's preferred (provider, model) is approved AND resolves
-    // against the deploy's HarnessConfig.sources -- the orchestrator
-    // pins it directly without consulting the default.
+    // The agent's preferred (provider, model) is approved AND resolves against
+    // the deploy's HarnessConfig.sources -- the picker pins it directly without
+    // consulting the default.
     const approvals = new Set<string>([
-      "tool:mail_send",
-      `director:${defaultDirectorFactory.id}`,
       "inference.source:anthropic:preferred-model",
     ]);
 
-    const result = await orchestrator.deployWorkflow({
-      workflow,
-      runId: "run_fallback",
-      deploymentDomain: "workflow.interchange",
+    const picked = pickStepInferenceSource({
+      preferred: PREFERRED,
+      stepId: "only",
+      workflowId: "wf_fallback",
       config,
-      deployContent: DEPLOY_CONTENT_BASE,
-      hubPublicKey: "00".repeat(32),
       operatorApprovals: approvals,
     });
 
-    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
-    expect(deps.sources).toHaveLength(1);
-    const sources = deps.sources[0];
-    if (sources === undefined) throw new Error("missing sources");
-    // The step pins a single-element failover chain around the picked source.
-    expect(sources.only).toEqual([
-      {
-        id: "src-preferred",
-        provider: "anthropic",
-        baseURL: "https://api.example/anthropic",
-        apiKey: "secret-a",
-        model: "preferred-model",
-      },
-    ]);
+    expect(picked).toEqual({
+      id: "src-preferred",
+      provider: "anthropic",
+      baseURL: "https://api.example/anthropic",
+      apiKey: "secret-a",
+      model: "preferred-model",
+    });
+  });
+});
+
+describe("isSourceApproved", () => {
+  const source: InferenceSource = {
+    id: "src-a",
+    provider: "anthropic",
+    baseURL: "https://api.example/anthropic",
+    apiKey: "secret",
+    model: "claude",
+  };
+
+  test("true when the source's provider:model is in the approved grant set", () => {
+    const approvals = new Set<string>(["inference.source:anthropic:claude"]);
+    expect(isSourceApproved(source, approvals)).toBe(true);
   });
 
-  test("regression: unapproved fallback is also rejected at the approval gate when the walk surfaces it", async () => {
-    // Confirms the approval gate continues to fail loudly when the
-    // capability walk itself surfaces an unapproved grant, independent
-    // of the source-pinning cross-check the orchestrator adds.
-    const agent = makeAgent("ag1", "anthropic", "preferred-model");
-    const workflow = makeWorkflow(agent);
-    const directorRegistry = createDefaultDirectorRegistry();
-    const deps = createRecordingDeps();
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry,
-      workflowRepo: deps.workflowRepo,
-      launchSession: deps.launch,
-      sendMultiStepDeploy: deps.multiStep,
-      deploySingleStepAtHead: deps.singleStep,
-    });
-    const config = makeConfig({
-      sources: [
-        {
-          id: "src-default",
-          provider: "openai",
-          baseURL: "https://api.example/openai",
-          apiKey: "secret",
-          model: "default-model",
-        },
-      ],
-      defaultSource: "src-default",
-    });
-    // No approvals at all -- the gate fails before the source pin runs.
-    const approvals = new Set<string>();
+  test("false when the source's provider:model is not approved", () => {
+    const approvals = new Set<string>(["inference.source:openai:gpt"]);
+    expect(isSourceApproved(source, approvals)).toBe(false);
+  });
 
-    await expect(
-      orchestrator.deployWorkflow({
-        workflow,
-        runId: "run_fallback",
-        deploymentDomain: "workflow.interchange",
-        config,
-        deployContent: DEPLOY_CONTENT_BASE,
-        hubPublicKey: "00".repeat(32),
-        operatorApprovals: approvals,
-      }),
-    ).rejects.toBeInstanceOf(CapabilityApprovalDeniedError);
+  test("keys on the exact provider:model pair, not the source id", () => {
+    // Approving the source id (not the provider:model grant shape) must not
+    // admit the source -- the grant is keyed by (provider, model).
+    const approvals = new Set<string>(["inference.source:src-a"]);
+    expect(isSourceApproved(source, approvals)).toBe(false);
   });
 });

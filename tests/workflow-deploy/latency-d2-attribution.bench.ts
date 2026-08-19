@@ -53,33 +53,37 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_latency-d2-bench";
 const STEP_ID = "step1";
 const BODY = "Latency-d2 per-leg attribution probe body 0xD2D2D2.";
+
+// The definition's own tenant, the caller principal that creates the
+// deployment's definition asset, and that asset id. The install/approve freeze
+// and the anchor `workflow_run` insert write against these, so they must exist
+// in the real DB before the unified deploy runs.
+const TENANT_ID = "tnt_latency_d2_bench";
+const CALLER_PRINCIPAL_ID = "prn_latency_d2_bench";
+const DEFINITION_ASSET_ID = "ast_latency_d2_wf";
 
 const LEGS = ["enqueue", "dequeue", "runevent", "markconsumed", "wal"] as const;
 type Leg = (typeof LEGS)[number];
@@ -342,6 +346,7 @@ async function runUnifiedD2(opts: {
   messages: number;
   timingFile: string;
   repackEvery: number | null;
+  db: TestDb["db"];
 }): Promise<string[]> {
   const sidecarEnv: Record<string, string> = {
     SIDECAR_LATENCY_BENCH_FILE: opts.timingFile,
@@ -360,19 +365,13 @@ async function runUnifiedD2(opts: {
       domain: DEPLOYMENT_DOMAIN,
     });
 
-    const agent = defineAgent({
-      id: "latency-d2-agent",
-      systemPrompt: "You are the latency-d2 attribution agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: { [STEP_ID]: step({ agent }) },
-    });
+    const inferenceSource: InferenceSource = {
+      id: "anthropic:mock-model",
+      provider: "anthropic",
+      baseURL: `http://localhost:${String(env.inference.server.port)}`,
+      apiKey: "sk-mock",
+      model: "mock-model",
+    };
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
@@ -380,103 +379,39 @@ async function runUnifiedD2(opts: {
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
+      systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
       grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
+      sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
 
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          { files, message: `latency-d2 bench: write workflow repo` },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
+    const entryModule = singleStepAgentEntry({
+      stepId: STEP_ID,
+      systemPrompt: "You are the latency-d2 attribution agent.",
+      address: deploymentMailAddress,
+      agentId: `agent-${DEPLOYMENT_ID}-${STEP_ID}`,
+      workflowId: `wf_${DEPLOYMENT_ID}`,
     });
 
-    const result = await orchestrator.deployWorkflow({
-      workflow,
-      config,
-      deployContent: { systemPrompt: config.systemPrompt },
-      operatorApprovals,
-      runId: DEPLOYMENT_ID,
+    // Deploy the single warm agent BY SOURCE-REF, the same code-sourced front
+    // production drives. The helper registers the deployment on the env, so the
+    // fire loop resolves it by `anchorRunId` with no manual registration.
+    const handle = await deployWorkflowSourceForTest(env, {
+      entryModule,
+      db: opts.db,
+      tenantId: TENANT_ID,
+      definitionAssetId: DEFINITION_ASSET_ID,
+      anchorRunId: DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
+      agentAddress: deploymentMailAddress,
+      approvals: "approve-probed",
+      config,
+      sources: { [STEP_ID]: [inferenceSource] },
     });
-    if (!result.publicKey) {
+    if (!handle.publicKey) {
       throw new Error("d2 bench: deploy did not return a public key");
     }
-
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: "refs/heads/main",
-      mailAddress: deploymentMailAddress,
-    });
 
     await waitForFirstRoutable(env, deploymentMailAddress);
 
@@ -541,6 +476,13 @@ function summarizeLeg(
 }
 
 async function main(): Promise<void> {
+  if (!harnessDbEnvAvailable()) {
+    throw new Error(
+      "latency-d2 bench: no database env (.env + .env.migrate); the " +
+        "code-sourced unified deploy requires a real Postgres schema",
+    );
+  }
+
   const opts = parseArgs(process.argv.slice(2));
   fs.mkdirSync(opts.outDir, { recursive: true });
 
@@ -553,11 +495,42 @@ async function main(): Promise<void> {
   );
   if (fs.existsSync(timingFile)) fs.rmSync(timingFile);
 
-  const orderedRunIds = await runUnifiedD2({
-    messages: opts.messages,
-    timingFile,
-    repackEvery: opts.repackEvery,
+  // The unified deploy is BY SOURCE-REF, so it needs a real migrated schema:
+  // the install/approve freeze and the anchor `workflow_run` insert write
+  // through it. Seed the definition's tenant, the caller principal, and the
+  // `workflow`-kind definition asset before the deploy runs.
+  const h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
   });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "latency-d2-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
+  let orderedRunIds: string[];
+  try {
+    orderedRunIds = await runUnifiedD2({
+      messages: opts.messages,
+      timingFile,
+      repackEvery: opts.repackEvery,
+      db: h.db,
+    });
+  } finally {
+    await h.close();
+  }
   const loadAfter = os.loadavg();
 
   const byRun = parseLegFile(timingFile);
@@ -721,4 +694,15 @@ async function main(): Promise<void> {
   process.stdout.write(`\nwrote ${jsonName}, ${csvName} to ${opts.outDir}\n`);
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+  // Exit explicitly instead of letting the event loop drain. A source-ref
+  // deploy makes the sidecar spawn a child that outlives the sidecar kill in
+  // `env.teardown()`; the child keeps the sidecar's inherited stdout/stderr
+  // pipe open, so the fixture's pipe-reader loops never see EOF and the loop
+  // never drains. `main()` has already torn down the hub, sidecar, and
+  // database, so this exit only bypasses that orphaned pipe handle. A failure
+  // in `main()` rejects this top-level await, which exits non-zero with the
+  // stack, so the error still surfaces.
+  process.exit(0);
+}

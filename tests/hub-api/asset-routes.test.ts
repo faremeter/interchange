@@ -164,15 +164,8 @@ function createMockSidecarRouter(): SidecarRouter {
 function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: notImplemented("sessionService.stageWorkflowStep"),
-    deployInstanceAtHead: notImplemented("sessionService.deployInstanceAtHead"),
-    deployWorkflowDefinition: notImplemented(
-      "sessionService.deployWorkflowDefinition",
-    ),
     deployWorkflowFromSource: notImplemented(
       "sessionService.deployWorkflowFromSource",
-    ),
-    deploySingleStepAtHead: notImplemented(
-      "sessionService.deploySingleStepAtHead",
     ),
     sendUserMessage: notImplemented("sessionService.sendUserMessage"),
     endSession: notImplemented("sessionService.endSession"),

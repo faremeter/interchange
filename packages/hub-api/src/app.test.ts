@@ -32,24 +32,9 @@ const sessionService: SessionService = {
   stageWorkflowStep(_params) {
     throw new Error("mock: sessionService.stageWorkflowStep not implemented");
   },
-  deployInstanceAtHead(_params) {
-    throw new Error(
-      "mock: sessionService.deployInstanceAtHead not implemented",
-    );
-  },
-  deployWorkflowDefinition(_params) {
-    throw new Error(
-      "mock: sessionService.deployWorkflowDefinition not implemented",
-    );
-  },
   deployWorkflowFromSource(_params) {
     throw new Error(
       "mock: sessionService.deployWorkflowFromSource not implemented",
-    );
-  },
-  deploySingleStepAtHead(_params) {
-    throw new Error(
-      "mock: sessionService.deploySingleStepAtHead not implemented",
     );
   },
   sendUserMessage(_params) {

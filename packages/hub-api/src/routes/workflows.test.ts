@@ -552,8 +552,6 @@ function createMockSessionService(
   }
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    deployInstanceAtHead: () => notImpl("deployInstanceAtHead"),
-    deployWorkflowDefinition: () => notImpl("deployWorkflowDefinition"),
     // The `POST /deployments` route now composes a code-sourced deploy through
     // this one method; the mock records the args and returns the seeded result
     // (or throws to model an install/gate or sidecar failure).
@@ -564,7 +562,6 @@ function createMockSessionService(
       }
       return Promise.resolve(result);
     },
-    deploySingleStepAtHead: () => notImpl("deploySingleStepAtHead"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };

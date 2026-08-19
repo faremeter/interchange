@@ -195,11 +195,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
               .where(eq(workflowRun.id, params.anchorRunId));
             return result;
           },
-          deployPreparedWorkflowDefinition: () => {
-            throw new Error(
-              "deployPreparedWorkflowDefinition must not be called on the code-sourced exclusive path",
-            );
-          },
         },
         credentialCipher: CREDENTIAL_CIPHER,
         allocationRouter: {

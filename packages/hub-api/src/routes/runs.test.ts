@@ -306,17 +306,8 @@ function createMockSessionService(): SessionService {
     stageWorkflowStep(_params) {
       return notImpl("stageWorkflowStep");
     },
-    deployInstanceAtHead(_params) {
-      return notImpl("deployInstanceAtHead");
-    },
-    deployWorkflowDefinition(_params) {
-      return notImpl("deployWorkflowDefinition");
-    },
     deployWorkflowFromSource(_params) {
       return notImpl("deployWorkflowFromSource");
-    },
-    deploySingleStepAtHead(_params) {
-      return notImpl("deploySingleStepAtHead");
     },
     sendUserMessage(_params) {
       return notImpl("sendUserMessage");
