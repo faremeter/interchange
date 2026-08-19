@@ -26,29 +26,22 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
-import type { HarnessConfig } from "@intx/types/runtime";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import {
-  DEFAULT_ASSET_REF,
-  type RepoId,
-  type WorkflowRunHubPrincipal,
-} from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   listRunIds,
   readClaimCheckDir,
@@ -60,26 +53,70 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
 
+// The two anchor run ids this file deploys. Each needs its own
+// `workflow`-kind definition asset seeded, since the install/approve freeze
+// projects the frozen definition over a distinct asset per deploy.
+const ARMED_ANCHOR_RUN_ID = "run_dep1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
+const SETTLED_ANCHOR_RUN_ID = "run_dep2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
+
+// The definition's own tenant, the caller principal that creates the
+// definition assets, and the two `workflow`-kind assets the frozen
+// definitions project over. The install/approve freeze and the anchor
+// `workflow_run` insert both write against these, so they must exist in the
+// real DB before each deploy runs.
+const TENANT_ID = "tnt_interrupted_pack_recovery";
+const CALLER_PRINCIPAL_ID = "prn_interrupted_pack_recovery";
+const DEFINITION_ASSET_IDS: Record<string, string> = {
+  [ARMED_ANCHOR_RUN_ID]: "ast_interrupted_pack_armed_wf",
+  [SETTLED_ANCHOR_RUN_ID]: "ast_interrupted_pack_settled_wf",
+};
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  for (const [anchorRunId, definitionAssetId] of Object.entries(
+    DEFINITION_ASSET_IDS,
+  )) {
+    await seedAsset(h.db, {
+      id: definitionAssetId,
+      tenantId: TENANT_ID,
+      kind: "workflow",
+      name: `interrupted-pack-recovery-wf-${anchorRunId}`,
+      creatorPrincipalId: CALLER_PRINCIPAL_ID,
+    });
+  }
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
 /**
- * Deploy a one-step workflow through the multi-step branch (which spawns the
- * workflow-process child) and register its handle on the env. Returns the
- * deployment's mail address and workflow-run repo id.
+ * Deploy a one-step workflow BY SOURCE-REF and register its handle on the env.
+ * Returns the deployment's mail address and workflow-run repo id.
  */
 async function deploySingleStepWorkflow(
   anchorRunId: string,
@@ -89,36 +126,30 @@ async function deploySingleStepWorkflow(
     domain: DEPLOYMENT_DOMAIN,
   });
 
-  const agent = defineAgent({
-    id: `agent-${anchorRunId}`,
-    systemPrompt: "You are the interrupted-pack recovery test agent.",
-    tools: [],
-    capabilities: [],
-    inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-  });
-  const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${anchorRunId}`,
-    trigger: { type: "mail", to: deploymentMailAddress },
-    steps: { [STEP_ID]: step({ agent }) },
-  });
+  const definitionAssetId = DEFINITION_ASSET_IDS[anchorRunId];
+  if (definitionAssetId === undefined) {
+    throw new Error(
+      `interrupted-pack recovery: no definition asset seeded for ${anchorRunId}`,
+    );
+  }
+
+  const inferenceSource: InferenceSource = {
+    id: "anthropic:mock-model",
+    provider: "anthropic",
+    baseURL: `http://localhost:${String(env.inference.server.port)}`,
+    apiKey: "sk-mock",
+    model: "mock-model",
+  };
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
     agentId: `${anchorRunId}`,
     tenantId: "tenant-1",
     principalId: `prin_${anchorRunId}`,
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
+    systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
     grants: [],
-    sources: [
-      {
-        id: "anthropic:mock-model",
-        provider: "anthropic",
-        baseURL: `http://localhost:${String(env.inference.server.port)}`,
-        apiKey: "sk-mock",
-        model: "mock-model",
-      },
-    ],
+    sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };
   const operatorApprovals: ApprovalSet = new Set<string>([
@@ -128,85 +159,38 @@ async function deploySingleStepWorkflow(
     `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
-  const launchSession: LaunchSessionFn = async (p) => {
-    await env.hub.sessionService.stageWorkflowStep({
-      agentAddress: p.agentAddress,
-      agentId: p.agentId,
-      runId: p.runId,
-      config: p.config,
-      deployContent: toLaunchDeployContent(p.deployContent),
-      ...(p.toolPackagePins !== undefined
-        ? { toolPackagePins: p.toolPackagePins }
-        : {}),
-    });
-  };
-  const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-    env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-      definition: {
-        id: params.definition.id,
-        triggers: [...params.definition.triggers],
-        stepOrder: [...params.definition.stepOrder],
-        steps: params.definition.steps as Record<string, unknown>,
-        ...(params.definition.state !== undefined
-          ? { state: params.definition.state }
-          : {}),
-      },
-      sources: params.sources,
-    });
-  const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-    env.hub.sessionService.deploySingleStepAtHead(params);
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-      const files: Record<string, string> = {};
-      for (const [k, v] of args.files) files[k] = v;
-      await env.hub.agentRepoStore.repoStore.writeTree(
-        principal,
-        repoId,
-        DEFAULT_ASSET_REF,
-        { files, message: "interrupted-pack recovery: write workflow repo" },
-      );
-    },
-  };
-  const orchestrator = createWorkflowDeployOrchestrator({
-    directorRegistry: createDefaultDirectorRegistry(),
-    workflowRepo,
-    launchSession,
-    sendMultiStepDeploy,
-    deploySingleStepAtHead,
+  const entryModule = singleStepAgentEntry({
+    stepId: STEP_ID,
+    systemPrompt: "You are the interrupted-pack recovery test agent.",
+    address: deploymentMailAddress,
+    agentId: `agent-${anchorRunId}`,
+    workflowId: `wf_${anchorRunId}`,
   });
 
-  const result = await orchestrator.deployWorkflow({
-    workflow,
-    config,
-    deployContent: { systemPrompt: config.systemPrompt },
-    operatorApprovals,
-    runId: anchorRunId,
+  const handle = await deployWorkflowSourceForTest(env, {
+    entryModule,
+    db: h.db,
+    tenantId: TENANT_ID,
+    definitionAssetId,
+    anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
-    hubPublicKey: "00".repeat(32),
+    agentAddress: deploymentMailAddress,
+    approvals: operatorApprovals,
+    config,
+    sources: { [STEP_ID]: [inferenceSource] },
   });
-  expect(result.publicKey).toBeTruthy();
+  expect(handle.publicKey).toBeTruthy();
 
   await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
     timeoutMs: 20_000,
     diagnostics: env.sidecarDiagnostics,
   });
 
-  const workflowRunRepoId: RepoId = {
-    kind: "workflow-run",
-    id: deriveDeploymentId(deploymentMailAddress),
-  };
-  env.registerDeployment({
-    anchorRunId,
-    workflowDefinition: workflow,
-    workflowRunRepoId,
-    workflowRunRef: WORKFLOW_RUN_REF,
-    mailAddress: deploymentMailAddress,
-  });
+  const workflowRunRepoId = handle.workflowRunRepoId;
 
-  expect(env.hub.router.getRoutableAddresses()).toContain(
-    deploymentMailAddress,
+  await waitFor(
+    () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
   );
 
   return { deploymentMailAddress, workflowRunRepoId };
@@ -238,127 +222,139 @@ async function waitForAnyRunCompleted(
   }
 }
 
-describe("interrupted workflow-run pack recovers on reconnect", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("armed mid-pack drop: run completes after reconnect with no fresh trigger", async () => {
-    const anchorRunId = "run_dep1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a";
-    const { deploymentMailAddress, workflowRunRepoId } =
-      await deploySingleStepWorkflow(anchorRunId);
-    expect(isRunAddress(deploymentMailAddress)).toBe(true);
-
-    // Arm the interrupt so the FIRST run-events pack of this run is applied
-    // on the hub, then every live link is dropped before the ack. The
-    // sidecar's push rejects and latches "Connection lost".
-    env.hub.interrupt.armed = true;
-
-    await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<interrupted-pack-1@integration.interchange>",
-      content: "trigger",
+describe.skipIf(!harnessDbEnvAvailable())(
+  "interrupted workflow-run pack recovers on reconnect",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    // Wait for the interrupt to fire (armed flips back to false) and the
-    // address to leave routing as the dropped link closes.
-    await waitFor(() => env.hub.interrupt.armed === false, {
-      timeoutMs: 30_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
-    expect(env.hub.interrupt.interruptedRef).toBe(WORKFLOW_RUN_REF);
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
-    );
+    test("armed mid-pack drop: run completes after reconnect with no fresh trigger", async () => {
+      const anchorRunId = ARMED_ANCHOR_RUN_ID;
+      const { deploymentMailAddress, workflowRunRepoId } =
+        await deploySingleStepWorkflow(anchorRunId);
+      expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
-    // The sidecar reconnects and re-challenges its deployment address.
-    const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-      timeoutMs: 30_000,
-    });
-    expect(reconnectMs).toBeGreaterThan(0);
+      // Arm the interrupt so the FIRST run-events pack of this run is applied
+      // on the hub, then every live link is dropped before the ack. The
+      // sidecar's push rejects and latches "Connection lost".
+      env.hub.interrupt.armed = true;
 
-    // The liveness contract: the run reaches RunCompleted on its own, with
-    // NO fresh mail trigger to re-drive it. Capture the run-id count so the
-    // assertion below can also confirm no second run was minted.
-    await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
-
-    // Exactly one run exists: the recovery re-shipped the SAME run's events,
-    // it did not mint a fresh run. A second run would mean the recovery
-    // depended on a new trigger rather than re-driving the cancelled push.
-    const finalRunIds = await listRunIds(env, workflowRunRepoId);
-    expect(finalRunIds).toHaveLength(1);
-  }, 180_000);
-
-  test("settled drop control: a fresh trigger runs to completion after reconnect", async () => {
-    const anchorRunId = "run_dep2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
-    const { deploymentMailAddress, workflowRunRepoId } =
-      await deploySingleStepWorkflow(anchorRunId);
-
-    // Drive a first run to completion so the pack stream has something to
-    // go quiet after -- settleThenDrop waits for a no-new-pack quiet window.
-    await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<settled-control-1@integration.interchange>",
-      content: "first",
-    });
-    await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
-
-    // Drop the link only after the pack stream has drained (no push
-    // mid-flight), then wait for the sidecar to reconnect and re-route.
-    await settleThenDrop(env, deploymentMailAddress, {
-      quietMs: 750,
-      timeoutMs: 30_000,
-    });
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
-    );
-    await waitForReconnect(env, deploymentMailAddress, { timeoutMs: 30_000 });
-
-    // A fresh trigger on the recovered link runs to completion. Retry the
-    // trigger with a fresh message id per attempt: a trigger that lands while
-    // a residual reconnect is in flight can be dropped before the supervisor
-    // enqueues it.
-    // Under the stable-runId model every trigger shares the same runId.
-    // Fire triggers until one lands in consumed/ (meaning the dispatch
-    // loop processed it and the run reached terminal).
-    const runId = deriveWorkflowRunId(deploymentMailAddress);
-    let attempt = 0;
-    let consumedMessageId = "";
-    const start = Date.now();
-    for (;;) {
-      attempt += 1;
-      const messageId = `<settled-control-recovered-${String(attempt)}@integration.interchange>`;
       await fireMailTrigger(env, deploymentMailAddress, {
-        messageId,
-        content: "recovered",
+        messageId: "<interrupted-pack-1@integration.interchange>",
+        content: "trigger",
       });
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline) {
-        const consumed = await readClaimCheckDir(
-          env,
-          workflowRunRepoId,
-          deploymentMailAddress,
-          "consumed",
-        );
-        if (consumed.some((c) => c.filename.includes(messageId))) {
-          consumedMessageId = messageId;
-          break;
+
+      // Wait for the interrupt to fire (armed flips back to false) and the
+      // address to leave routing as the dropped link closes.
+      await waitFor(() => env.hub.interrupt.armed === false, {
+        timeoutMs: 30_000,
+        diagnostics: env.sidecarDiagnostics,
+      });
+      expect(env.hub.interrupt.interruptedRef).toBe(WORKFLOW_RUN_REF);
+      await waitFor(
+        () =>
+          !env.hub.router
+            .getRoutableAddresses()
+            .includes(deploymentMailAddress),
+        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // The sidecar reconnects and re-challenges its deployment address.
+      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
+        timeoutMs: 30_000,
+      });
+      expect(reconnectMs).toBeGreaterThan(0);
+
+      // The liveness contract: the run reaches RunCompleted on its own, with
+      // NO fresh mail trigger to re-drive it. Capture the run-id count so the
+      // assertion below can also confirm no second run was minted.
+      await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
+
+      // Exactly one run exists: the recovery re-shipped the SAME run's events,
+      // it did not mint a fresh run. A second run would mean the recovery
+      // depended on a new trigger rather than re-driving the cancelled push.
+      const finalRunIds = await listRunIds(env, workflowRunRepoId);
+      expect(finalRunIds).toHaveLength(1);
+    }, 180_000);
+
+    test("settled drop control: a fresh trigger runs to completion after reconnect", async () => {
+      const anchorRunId = SETTLED_ANCHOR_RUN_ID;
+      const { deploymentMailAddress, workflowRunRepoId } =
+        await deploySingleStepWorkflow(anchorRunId);
+
+      // Drive a first run to completion so the pack stream has something to
+      // go quiet after -- settleThenDrop waits for a no-new-pack quiet window.
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<settled-control-1@integration.interchange>",
+        content: "first",
+      });
+      await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
+
+      // Drop the link only after the pack stream has drained (no push
+      // mid-flight), then wait for the sidecar to reconnect and re-route.
+      await settleThenDrop(env, deploymentMailAddress, {
+        quietMs: 750,
+        timeoutMs: 30_000,
+      });
+      await waitFor(
+        () =>
+          !env.hub.router
+            .getRoutableAddresses()
+            .includes(deploymentMailAddress),
+        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+      );
+      await waitForReconnect(env, deploymentMailAddress, { timeoutMs: 30_000 });
+
+      // A fresh trigger on the recovered link runs to completion. Retry the
+      // trigger with a fresh message id per attempt: a trigger that lands while
+      // a residual reconnect is in flight can be dropped before the supervisor
+      // enqueues it.
+      // Under the stable-runId model every trigger shares the same runId.
+      // Fire triggers until one lands in consumed/ (meaning the dispatch
+      // loop processed it and the run reached terminal).
+      const runId = deriveWorkflowRunId(deploymentMailAddress);
+      let attempt = 0;
+      let consumedMessageId = "";
+      const start = Date.now();
+      for (;;) {
+        attempt += 1;
+        const messageId = `<settled-control-recovered-${String(attempt)}@integration.interchange>`;
+        await fireMailTrigger(env, deploymentMailAddress, {
+          messageId,
+          content: "recovered",
+        });
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const consumed = await readClaimCheckDir(
+            env,
+            workflowRunRepoId,
+            deploymentMailAddress,
+            "consumed",
+          );
+          if (consumed.some((c) => c.filename.includes(messageId))) {
+            consumedMessageId = messageId;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 100));
         }
-        await new Promise((r) => setTimeout(r, 100));
+        if (consumedMessageId !== "") break;
+        if (Date.now() - start > 60_000) {
+          throw new Error(
+            `no fresh run produced on the recovered link after ${String(attempt)} triggers\n${env.sidecarDiagnostics()}`,
+          );
+        }
       }
-      if (consumedMessageId !== "") break;
-      if (Date.now() - start > 60_000) {
-        throw new Error(
-          `no fresh run produced on the recovered link after ${String(attempt)} triggers\n${env.sidecarDiagnostics()}`,
-        );
-      }
-    }
-    const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
-      timeoutMs: 30_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
-    expect(terminal.type).toBe("RunCompleted");
-  }, 180_000);
-});
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        anchorRunId,
+        runId,
+        {
+          timeoutMs: 30_000,
+          diagnostics: env.sidecarDiagnostics,
+        },
+      );
+      expect(terminal.type).toBe("RunCompleted");
+    }, 180_000);
+  },
+);

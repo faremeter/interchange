@@ -52,26 +52,22 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
-import type { HarnessConfig } from "@intx/types/runtime";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   dropHubLink,
   listRunIds,
   readClaimCheckDir,
@@ -82,27 +78,68 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const WORKFLOW_RUN_REF = "refs/heads/main";
+const STEP_ID = "edgeStep";
 
 const NO_HEADER_DEPLOYMENT_ID = "run_mail-edge-no-header-1";
 const MALFORMED_DEPLOYMENT_ID = "run_mail-edge-malformed-1";
 const DUPLICATE_DEPLOYMENT_ID = "run_mail-edge-duplicate-1";
 const CONNECTED_WINDOW_DEPLOYMENT_ID = "run_mail-edge-connected-window-1";
 
+// The definition's own tenant, the caller principal that creates the
+// definition assets, and the four `workflow`-kind assets the frozen
+// definitions project over (one per deployed anchor run id). The
+// install/approve freeze and the anchor `workflow_run` insert both write
+// against these, so they must exist in the real DB before each deploy runs.
+const TENANT_ID = "tnt_mail_edge_cases";
+const CALLER_PRINCIPAL_ID = "prn_mail_edge_cases";
+const DEFINITION_ASSET_IDS: Record<string, string> = {
+  [NO_HEADER_DEPLOYMENT_ID]: "ast_mail_edge_no_header_wf",
+  [MALFORMED_DEPLOYMENT_ID]: "ast_mail_edge_malformed_wf",
+  [DUPLICATE_DEPLOYMENT_ID]: "ast_mail_edge_duplicate_wf",
+  [CONNECTED_WINDOW_DEPLOYMENT_ID]: "ast_mail_edge_connected_window_wf",
+};
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  for (const [anchorRunId, definitionAssetId] of Object.entries(
+    DEFINITION_ASSET_IDS,
+  )) {
+    await seedAsset(h.db, {
+      id: definitionAssetId,
+      tenantId: TENANT_ID,
+      kind: "workflow",
+      name: `mail-edge-cases-wf-${anchorRunId}`,
+      creatorPrincipalId: CALLER_PRINCIPAL_ID,
+    });
+  }
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("mail-handling edge cases", () => {
+describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
   test("sidecar registers with hub", () => {
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
@@ -458,10 +495,10 @@ describe("mail-handling edge cases", () => {
 });
 
 /**
- * Deploy a trivial single-step multi-step workflow against the
- * fixture's orchestrator. Returns a context with the deployment's
- * derived mail address and the workflow-run repo id; the caller fires
- * raw bytes at the mail address via `routeRaw`.
+ * Deploy a trivial single-step workflow BY SOURCE-REF and register its handle
+ * on the env. Returns a context with the deployment's derived mail address and
+ * the workflow-run repo id; the caller fires raw bytes at the mail address via
+ * `routeRaw`.
  */
 async function deployEdgeWorkflow(
   env: DeployFlowEnv,
@@ -470,28 +507,25 @@ async function deployEdgeWorkflow(
   deploymentMailAddress: string;
   workflowRunRepoId: RepoId;
 }> {
-  const stepAgent = defineAgent({
-    id: `agent-${anchorRunId}-step`,
-    systemPrompt: `Edge-case agent for ${anchorRunId}.`,
-    tools: [],
-    capabilities: [],
-    inference: {
-      sources: [{ provider: "anthropic", model: "mock-model" }],
-    },
-  });
-
   const deploymentMailAddress = deriveRunAddress({
     runId: anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
-  const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${anchorRunId}`,
-    trigger: { type: "mail", to: deploymentMailAddress },
-    steps: {
-      edgeStep: step({ agent: stepAgent }),
-    },
-  });
+  const definitionAssetId = DEFINITION_ASSET_IDS[anchorRunId];
+  if (definitionAssetId === undefined) {
+    throw new Error(
+      `mail-edge-cases: no definition asset seeded for ${anchorRunId}`,
+    );
+  }
+
+  const inferenceSource: InferenceSource = {
+    id: "anthropic:mock-model",
+    provider: "anthropic",
+    baseURL: `http://localhost:${env.inference.server.port}`,
+    apiKey: "sk-mock",
+    model: "mock-model",
+  };
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
@@ -499,18 +533,10 @@ async function deployEdgeWorkflow(
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by orchestrator)",
+    systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
     grants: [],
-    sources: [
-      {
-        id: "anthropic:mock-model",
-        provider: "anthropic",
-        baseURL: `http://localhost:${env.inference.server.port}`,
-        apiKey: "sk-mock",
-        model: "mock-model",
-      },
-    ],
+    sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };
 
@@ -521,93 +547,34 @@ async function deployEdgeWorkflow(
     `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
-  const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    const deployContent = orchestratorParams.deployContent;
-    await env.hub.sessionService.stageWorkflowStep({
-      agentAddress: orchestratorParams.agentAddress,
-      agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.runId,
-      config: orchestratorParams.config,
-      deployContent: toLaunchDeployContent(deployContent),
-      ...(orchestratorParams.toolPackagePins !== undefined
-        ? { toolPackagePins: orchestratorParams.toolPackagePins }
-        : {}),
-    });
-  };
-
-  const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-    env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-      definition: {
-        id: params.definition.id,
-        triggers: [...params.definition.triggers],
-        stepOrder: [...params.definition.stepOrder],
-        steps: params.definition.steps as Record<string, unknown>,
-        ...(params.definition.state !== undefined
-          ? { state: params.definition.state }
-          : {}),
-      },
-      sources: params.sources,
-    });
-
-  const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-    env.hub.sessionService.deploySingleStepAtHead(params);
-
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-      const files: Record<string, string> = {};
-      for (const [k, v] of args.files) {
-        files[k] = v;
-      }
-      await env.hub.agentRepoStore.repoStore.writeTree(
-        principal,
-        repoId,
-        DEFAULT_ASSET_REF,
-        {
-          files,
-          message: `mail-edge-cases test: write workflow repo ${args.workflowRepoId}`,
-        },
-      );
-    },
-  };
-
-  const orchestrator = createWorkflowDeployOrchestrator({
-    directorRegistry: createDefaultDirectorRegistry(),
-    workflowRepo,
-    launchSession,
-    sendMultiStepDeploy,
-    deploySingleStepAtHead,
+  const entryModule = singleStepAgentEntry({
+    stepId: STEP_ID,
+    systemPrompt: `Edge-case agent for ${anchorRunId}.`,
+    address: deploymentMailAddress,
+    agentId: `agent-${anchorRunId}-step`,
+    workflowId: `wf_${anchorRunId}`,
   });
 
-  const result = await orchestrator.deployWorkflow({
-    workflow,
-    config,
-    deployContent: { systemPrompt: config.systemPrompt },
-    operatorApprovals,
-    runId: anchorRunId,
-    deploymentDomain: DEPLOYMENT_DOMAIN,
-    hubPublicKey: "00".repeat(32),
-  });
-  expect(result.publicKey).toBeTruthy();
-
-  const workflowRunRepoId: RepoId = {
-    kind: "workflow-run",
-    id: deriveDeploymentId(deploymentMailAddress),
-  };
-  env.registerDeployment({
+  const handle = await deployWorkflowSourceForTest(env, {
+    entryModule,
+    db: h.db,
+    tenantId: TENANT_ID,
+    definitionAssetId,
     anchorRunId,
-    workflowDefinition: workflow,
-    workflowRunRepoId,
-    workflowRunRef: WORKFLOW_RUN_REF,
-    mailAddress: deploymentMailAddress,
+    deploymentDomain: DEPLOYMENT_DOMAIN,
+    agentAddress: deploymentMailAddress,
+    approvals: operatorApprovals,
+    config,
+    sources: { [STEP_ID]: [inferenceSource] },
   });
+  expect(handle.publicKey).toBeTruthy();
 
-  if (!env.hub.router.getRoutableAddresses().includes(deploymentMailAddress)) {
-    throw new Error(
-      `mail-edge-cases: deployment ${anchorRunId} did not register address ${deploymentMailAddress}`,
-    );
-  }
+  const workflowRunRepoId = handle.workflowRunRepoId;
+
+  await waitFor(
+    () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+  );
 
   return { deploymentMailAddress, workflowRunRepoId };
 }
