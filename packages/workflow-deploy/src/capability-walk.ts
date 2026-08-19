@@ -169,49 +169,20 @@ export function walkCapabilities(
         `capability walk: step ${stepId} listed in stepOrder is missing from steps`,
       );
     }
-    const agent = extractAgent(primitive);
-    if (agent === null) {
-      // Non-agent primitives carry no agent grants. An `action`
-      // additionally contributes its declared `effect:<cap>` grants, and
-      // a `loop` contributes the union of its body's grants (so the
-      // approval gate sees every agent/action the loop can run); every
-      // other non-agent primitive gets only the trigger-derived grants.
-      const collected: GrantSet = {
-        grants: new Set<string>(),
-        effects: new Map(),
-      };
-      for (const grant of collectActionGrants(primitive)) {
-        collected.grants.add(grant);
-      }
-      collectLoopBodyGrants(
-        primitive,
-        registry,
-        pluginDefs,
-        unresolved,
-        collected,
-      );
-      collectOnTriggerBodyGrants(
-        primitive,
-        registry,
-        pluginDefs,
-        unresolved,
-        collected,
-      );
-      collectChildWorkflowGrants(
-        primitive,
-        registry,
-        pluginDefs,
-        unresolved,
-        collected,
-      );
-      perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
-      continue;
-    }
+    // Every top-level step gets a fresh grant set; `collectPrimitiveGrants`
+    // routes the step and any nested bodies it carries through one dispatch,
+    // so an approval covers every agent, action, and effect the step can run.
     const collected: GrantSet = {
       grants: new Set<string>(),
       effects: new Map(),
     };
-    collectAgentGrants(agent, registry, pluginDefs, unresolved, collected);
+    collectPrimitiveGrants(
+      primitive,
+      registry,
+      pluginDefs,
+      unresolved,
+      collected,
+    );
     perStep.set(stepId, freezeDeclarations(collected, triggerGrants));
   }
 
@@ -257,170 +228,116 @@ function collectActionGrants(
 }
 
 /**
- * Collect the union of a loop body's grants (agent grants for its step /
- * map steps, effect grants for its action steps) into `collected` so the
- * loop node's approval covers every agent and effect the loop can run.
- * The body-ban forbids a nested loop, so this does not recurse further.
+ * Union a single primitive's grants into `collected`: its agent grants (when
+ * it carries an agent), its action `effect:<cap>` grants, and -- for a
+ * body-bearing primitive -- the grants of every step of its nested body. A
+ * loop, an inline onTrigger section, and an inline childWorkflow each run their
+ * body per the deployment, so the operator must approve everything the body can
+ * run. The walk descends into the authored `{ inline }` form; a `{ ref }` body
+ * is a separately-declared asset whose grants were folded in from its own
+ * inline form, so it is skipped here.
  *
- * Duplicate-name handling is scoped per body step: `collectAgentGrants`
- * throws on a duplicate within a single agent, but two DIFFERENT body
- * steps that each mint the same `tool:<name>` are distinct runtime
- * agents (the runtime builds one agent per step), so the union across
- * body steps is not a duplicate-name error.
+ * The nesting switch is EXHAUSTIVE: a newly-added primitive kind fails the
+ * `never` assignment below at compile time, forcing the walk to decide how to
+ * treat it rather than silently dropping a nested closure's grants. A miss here
+ * is a silent, fail-open authorization gap because `director:` is not re-gated
+ * at runtime -- so the compiler, not a remembered call site, owns coverage.
  */
-function collectLoopBodyGrants(
+function collectPrimitiveGrants(
   primitive: WorkflowDefinition["steps"][string],
   registry: DirectorRegistry,
   pluginDefs: PluginToolDefinitions,
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
-  if (primitive.kind !== "loop") {
-    return;
+  const agent = extractAgent(primitive);
+  if (agent !== null) {
+    collectAgentGrants(agent, registry, pluginDefs, unresolved, collected);
   }
-  for (const bodyStepId of primitive.body.stepOrder) {
-    const bodyPrimitive = primitive.body.steps[bodyStepId];
-    if (bodyPrimitive === undefined) {
-      throw new Error(
-        `capability walk: loop body step ${bodyStepId} listed in stepOrder is missing from steps`,
-      );
-    }
-    const bodyAgent = extractAgent(bodyPrimitive);
-    if (bodyAgent !== null) {
-      collectAgentGrants(
-        bodyAgent,
+  for (const grant of collectActionGrants(primitive)) {
+    collected.grants.add(grant);
+  }
+  switch (primitive.kind) {
+    case "loop":
+      collectBodyGrants(
+        primitive.body,
         registry,
         pluginDefs,
         unresolved,
         collected,
       );
-    }
-    for (const grant of collectActionGrants(bodyPrimitive)) {
-      collected.grants.add(grant);
+      return;
+    case "onTrigger":
+      if ("inline" in primitive.body) {
+        collectBodyGrants(
+          primitive.body.inline,
+          registry,
+          pluginDefs,
+          unresolved,
+          collected,
+        );
+      }
+      return;
+    case "childWorkflow":
+      if ("inline" in primitive.definition) {
+        collectBodyGrants(
+          primitive.definition.inline,
+          registry,
+          pluginDefs,
+          unresolved,
+          collected,
+        );
+      }
+      return;
+    case "step":
+    case "map":
+    case "action":
+    case "gate":
+    case "escalation":
+    case "awaitSignal":
+    case "sleep":
+      // Leaf primitives: no nested body to descend into.
+      return;
+    default: {
+      const exhaustive: never = primitive;
+      throw new Error(
+        `capability walk: unhandled primitive kind ${JSON.stringify(
+          (exhaustive as { kind: string }).kind,
+        )}`,
+      );
     }
   }
 }
 
 /**
- * Union an onTrigger section body's agent/action grants into the section's
- * declaration set, so the approval gate sees every agent and action the
- * section can run per event. The walk sees the authored `{ inline }` form; a
- * `{ ref }` body carries its own declarations and is skipped here. A section
- * body may itself contain a loop (whose body
- * grants are collected) or a childWorkflow (whose grants recurse through
- * `collectChildWorkflowGrants`); a nested onTrigger is forbidden at definition
- * time, so there is no section-within-section recursion to handle.
+ * Walk every step of a nested body (a loop body, an inline onTrigger section
+ * body, or an inline childWorkflow definition) and union its grants into
+ * `collected`. Each step routes through `collectPrimitiveGrants`, so a body
+ * that itself nests another body is covered by the same single dispatch and
+ * the loop-body ban (a validator-owned invariant) simply means the recursion
+ * never encounters a nesting primitive inside a loop body.
+ *
+ * Duplicate-name handling is scoped per body step: `collectAgentGrants` throws
+ * on a duplicate within a single agent, but two DIFFERENT body steps that each
+ * mint the same `tool:<name>` are distinct runtime agents (the runtime builds
+ * one agent per step), so the union across body steps is not a duplicate-name
+ * error.
  */
-function collectOnTriggerBodyGrants(
-  primitive: WorkflowDefinition["steps"][string],
+function collectBodyGrants(
+  body: WorkflowDefinition,
   registry: DirectorRegistry,
   pluginDefs: PluginToolDefinitions,
   unresolved: Set<string>,
   collected: GrantSet,
 ): void {
-  if (primitive.kind !== "onTrigger") {
-    return;
-  }
-  if (!("inline" in primitive.body)) {
-    return;
-  }
-  for (const bodyStepId of primitive.body.inline.stepOrder) {
-    const bodyPrimitive = primitive.body.inline.steps[bodyStepId];
+  for (const bodyStepId of body.stepOrder) {
+    const bodyPrimitive = body.steps[bodyStepId];
     if (bodyPrimitive === undefined) {
       throw new Error(
-        `capability walk: onTrigger body step ${bodyStepId} listed in stepOrder is missing from steps`,
+        `capability walk: body step ${bodyStepId} listed in stepOrder is missing from steps`,
       );
     }
-    const bodyAgent = extractAgent(bodyPrimitive);
-    if (bodyAgent !== null) {
-      collectAgentGrants(
-        bodyAgent,
-        registry,
-        pluginDefs,
-        unresolved,
-        collected,
-      );
-    }
-    for (const grant of collectActionGrants(bodyPrimitive)) {
-      collected.grants.add(grant);
-    }
-    collectLoopBodyGrants(
-      bodyPrimitive,
-      registry,
-      pluginDefs,
-      unresolved,
-      collected,
-    );
-    collectChildWorkflowGrants(
-      bodyPrimitive,
-      registry,
-      pluginDefs,
-      unresolved,
-      collected,
-    );
-  }
-}
-
-/**
- * Union an embedded (inline) childWorkflow's agent/action grants into the
- * spawning step's declaration set, so the approval gate sees every agent and
- * action the child can run. The walk sees the authored `{ inline }` form; a
- * `{ ref }` child carries its grants in its own separately-declared
- * definition, so it is skipped here -- exactly as a `{ ref }` onTrigger body
- * is. A child body may itself contain a loop (whose
- * body grants are collected), a nested onTrigger section (whose body grants are
- * collected), or a nested childWorkflow (whose grants recurse through this same
- * collector), so an owned import's full closure surfaces in the parent's
- * approved set.
- */
-function collectChildWorkflowGrants(
-  primitive: WorkflowDefinition["steps"][string],
-  registry: DirectorRegistry,
-  pluginDefs: PluginToolDefinitions,
-  unresolved: Set<string>,
-  collected: GrantSet,
-): void {
-  if (primitive.kind !== "childWorkflow") {
-    return;
-  }
-  if (!("inline" in primitive.definition)) {
-    return;
-  }
-  for (const bodyStepId of primitive.definition.inline.stepOrder) {
-    const bodyPrimitive = primitive.definition.inline.steps[bodyStepId];
-    if (bodyPrimitive === undefined) {
-      throw new Error(
-        `capability walk: childWorkflow body step ${bodyStepId} listed in stepOrder is missing from steps`,
-      );
-    }
-    const bodyAgent = extractAgent(bodyPrimitive);
-    if (bodyAgent !== null) {
-      collectAgentGrants(
-        bodyAgent,
-        registry,
-        pluginDefs,
-        unresolved,
-        collected,
-      );
-    }
-    for (const grant of collectActionGrants(bodyPrimitive)) {
-      collected.grants.add(grant);
-    }
-    collectLoopBodyGrants(
-      bodyPrimitive,
-      registry,
-      pluginDefs,
-      unresolved,
-      collected,
-    );
-    collectOnTriggerBodyGrants(
-      bodyPrimitive,
-      registry,
-      pluginDefs,
-      unresolved,
-      collected,
-    );
-    collectChildWorkflowGrants(
+    collectPrimitiveGrants(
       bodyPrimitive,
       registry,
       pluginDefs,
