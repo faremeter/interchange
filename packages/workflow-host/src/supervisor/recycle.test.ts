@@ -517,7 +517,15 @@ async function buildBindings(opts: {
     mailBus: opts.mailBus,
     subprocessSpawner: opts.spawner,
     binaryPath: "/fake/bin/workflow-child",
-    substrateEnv: { DATA_DIR: opts.baseDir },
+    // Source-ref is the only deploy lineage, so the child requires
+    // CLOSURE_PACKAGE_DIR to evaluate its pinned closure. In production the
+    // sidecar threads it through the frozen substrate env; the fake spawner
+    // never runs the real child, so a placeholder dir satisfies the
+    // parseSpawnTimeEnv contract this suite asserts on the captured envs.
+    substrateEnv: {
+      DATA_DIR: opts.baseDir,
+      CLOSURE_PACKAGE_DIR: "/fake/closure/package",
+    },
     dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",

@@ -42,7 +42,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
   createDefaultDirectorRegistry,
   type Agent,
@@ -73,6 +73,7 @@ import {
   createWorkflowStepInvoker,
   generateChannelId,
   generateHmacKey,
+  loadWorkflowDefinitionFromClosure,
   parseSpawnTimeEnv,
   runWorkflowChild,
   discoverInFlightRuns,
@@ -294,12 +295,11 @@ async function seedProcessingEntry(
   );
 }
 
-// The one-step workflow definition this test deploys, as its inert wire form.
-// It is the single source of truth for both the on-disk `workflow.json` the
-// child reads and the approved hash the spawn env carries: the run child now
-// re-verifies the loaded definition against `DEFINITION_HASH` at the load
-// boundary, so the hash must be the true content hash of these exact bytes,
-// not a placeholder.
+// The one-step workflow definition this test deploys. Source-ref is the only
+// deploy lineage, so it is materialized as a code closure the child evaluates
+// and re-verifies against `DEFINITION_HASH` at the load boundary; the approved
+// hash the spawn env carries is the project-then-hash of the live definition
+// the closure evaluates to (`computeLiveDefinitionHash`), not a placeholder.
 const ONE_STEP_WORKFLOW_DEFINITION = {
   id: "durability-workflow",
   triggers: [{ type: "manual" }],
@@ -321,12 +321,35 @@ const ONE_STEP_WORKFLOW_DEFINITION = {
   stepOrder: [STEP_ID],
 };
 
-async function seedOneStepWorkflowDir(repoDir: string): Promise<void> {
-  await fs.mkdir(repoDir, { recursive: true });
+/**
+ * Materialize the source-ref workflow-definition closure on disk and return
+ * the hub-approved wire hash the closure evaluates to (project-then-hash via
+ * `computeLiveDefinitionHash`). The child evaluates this closure at
+ * `CLOSURE_PACKAGE_DIR` and re-verifies the recompute against `DEFINITION_HASH`.
+ * The closure dir is stable across the respawn (it models the sidecar's
+ * persistent materialization), so both the initial spawn and the respawn read
+ * the same bytes.
+ */
+async function materializeClosure(
+  packageDir: string,
+): Promise<{ approvedHash: string }> {
+  await fs.mkdir(packageDir, { recursive: true });
   await fs.writeFile(
-    path.join(repoDir, "workflow.json"),
-    JSON.stringify(ONE_STEP_WORKFLOW_DEFINITION),
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/durability",
+      version: "1.0.0",
+      interchange: { workflow: "workflow.mjs" },
+    }),
+    "utf8",
   );
+  await fs.writeFile(
+    path.join(packageDir, "workflow.mjs"),
+    `export const workflow = ${JSON.stringify(ONE_STEP_WORKFLOW_DEFINITION)};\n`,
+    "utf8",
+  );
+  const live = await loadWorkflowDefinitionFromClosure({ packageDir });
+  return { approvedHash: await computeLiveDefinitionHash(live) };
 }
 
 /**
@@ -486,7 +509,8 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       authorize: () => ({ allowed: true }),
     });
 
-    // Genesis the workflow-run + asset repos and seed the workflow def.
+    // Genesis the workflow-run repo the runtime commits its event log and
+    // durable conversation state to.
     await substrate.writeTree(
       { kind: "hub" },
       workflowRunRepoId,
@@ -496,23 +520,14 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         message: "genesis",
       },
     );
-    await substrate.writeTree(
-      { kind: "hub" },
-      workflowDefinitionRepoId,
-      WORKFLOW_RUN_REF,
-      { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
-    );
-    await seedOneStepWorkflowDir(
-      substrate.getRepoDir(workflowDefinitionRepoId),
-    );
 
-    // The run child re-verifies the loaded definition against DEFINITION_HASH
-    // at the load boundary, so the spawn env must carry the true content hash
-    // of the seeded bytes -- the same hash the hub freezes at approval and
-    // persists for a restore re-spawn.
-    const definitionHash = await computeWireDefinitionHash(
-      ONE_STEP_WORKFLOW_DEFINITION,
-    );
+    // Source-ref is the only deploy lineage: the child evaluates a materialized
+    // closure and re-verifies it against DEFINITION_HASH at the load boundary.
+    // The closure dir is stable across the respawn (it models the sidecar's
+    // persistent materialization); the workflow-asset repo is not read here.
+    const closurePackageDir = path.join(baseDir, "workflow-closure");
+    const { approvedHash: definitionHash } =
+      await materializeClosure(closurePackageDir);
 
     const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
     await seedProcessingEntry(runRepoDir, {
@@ -642,6 +657,9 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         MAILBOX_ADDRESS: MAILBOX,
         STEP_COUNT: "1",
         WARM_KEEP: "true",
+        // Source-ref: both the initial spawn and the respawn evaluate the same
+        // stable closure dir; the respawn wipes only the child's local store.
+        CLOSURE_PACKAGE_DIR: closurePackageDir,
       });
 
       const supervisorSender = createControlChannelSender({
