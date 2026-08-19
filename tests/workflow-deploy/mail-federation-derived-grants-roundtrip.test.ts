@@ -67,7 +67,6 @@ import { createSSHSignature, generateKeyPair } from "@intx/crypto";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   DEFAULT_ASSET_REF,
-  WORKFLOW_JSON_PATH,
   createAssetService,
   createRepoStore,
   workflowAuthorize,
@@ -288,7 +287,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     // Seed the shared tenancy and the workflow asset (populated with B's
-    // `workflow.json`), returning the wired app. `creatorHoldsGrant`
+    // workflow codebase), returning the wired app. `creatorHoldsGrant`
     // decides whether the creator holds the backing `secret:vault`/`use`
     // grant.
     async function setup(opts: {
@@ -388,17 +387,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       await repoStore.initRepo({ kind: "workflow", id: assetId });
+      // A workflow asset is a codebase: a package.json declaring an
+      // interchange.workflow entry plus source files. The trigger route reads
+      // the run's grants from the frozen definition-version snapshot and the
+      // asset row's creator, not the asset's tree, so a minimal valid codebase
+      // seed is all the push boundary needs here.
       await assetService.populateAsset({
         assetId,
         ref: DEFAULT_ASSET_REF,
         principal: { kind: "hub" },
         tree: {
           files: {
-            [WORKFLOW_JSON_PATH]: JSON.stringify(
-              bWorkflow(`wf_${opts.anchorRunId}`, address),
-            ),
+            "package.json": JSON.stringify({
+              name: "@fixture/federation-wf",
+              version: "1.0.0",
+              interchange: { workflow: "./workflow.mjs" },
+            }),
+            "workflow.mjs": "export const workflow = {};",
           },
-          message: "seed workflow.json",
+          message: "seed workflow codebase",
         },
       });
 

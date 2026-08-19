@@ -1,15 +1,16 @@
 // Regression suite covering the substrate-cluster fixes: sequence
 // contiguity, principal-vs-path scoping, claim-check inbox-deletion,
-// and workflow.json steps-as-array rejection. Each test pins the
+// and workflow-definition steps-as-array rejection. Each test pins the
 // post-fix contract; a regression that loosens any of these checks
 // surfaces here.
 
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 import {
   workflowRunKindHandler,
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "./workflow-run-kind";
-import { workflowKindHandler, WORKFLOW_JSON_PATH } from "./workflow-kind";
+import { workflowDefinitionEnvelopeSchema } from "./workflow-kind";
 import type { Principal } from "./repo-store";
 
 const REF = "refs/heads/events";
@@ -69,19 +70,6 @@ async function validateRun(
     listDir: makeListDir(prospective),
     priorReadBlob: makePriorReadBlob(prior),
     priorListDir: makeListDir(prior),
-  });
-}
-
-async function validateWorkflow(prospective: Record<string, string>) {
-  return workflowKindHandler.validatePush({
-    repoId: { kind: "workflow", id: "wf-1" },
-    ref: "refs/heads/main",
-    principal: HUB,
-    topLevelTreePaths: topLevels(prospective),
-    readBlob: makeReadBlob(prospective),
-    listDir: makeListDir(prospective),
-    priorReadBlob: async () => null,
-    priorListDir: async () => [],
   });
 }
 
@@ -264,37 +252,36 @@ describe("workflow-run inbox deletion is rejected (regression)", () => {
   });
 });
 
-describe("workflow.json steps-as-array rejection (regression)", () => {
-  test("rejects workflow.json whose steps field is a JSON array", async () => {
-    const wfJson = JSON.stringify({
+// The static workflow.json envelope push path is retired: a workflow asset is
+// now a codebase, and a bare envelope tree is rejected at the push boundary
+// before any steps/state shape check runs. The structural guard that a
+// definition's `steps` and `state` are JSON objects (not arrays) now lives in
+// `workflowDefinitionEnvelopeSchema`, which the codebase ambiguity check and the
+// hydrate-time definition loaders both reuse. These regressions pin that guard
+// at the schema so a loosened narrow surfaces here.
+describe("workflow-definition steps/state-as-array rejection (regression)", () => {
+  test("rejects a definition whose steps field is a JSON array", () => {
+    const result = workflowDefinitionEnvelopeSchema({
       id: "wf-1",
       triggers: [],
       steps: [{ name: "step1" }, { name: "step2" }],
       stepOrder: ["step1", "step2"],
     });
-    const r = await validateWorkflow({
-      [WORKFLOW_JSON_PATH]: wfJson,
-    });
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toContain(WORKFLOW_JSON_PATH);
-    expect(r.reason).toMatch(/array|object/);
+    expect(result instanceof type.errors).toBe(true);
+    if (!(result instanceof type.errors)) throw new Error("unreachable");
+    expect(result.summary).toMatch(/array|object/);
   });
 
-  test("rejects workflow.json whose state field is a JSON array", async () => {
-    const wfJson = JSON.stringify({
+  test("rejects a definition whose state field is a JSON array", () => {
+    const result = workflowDefinitionEnvelopeSchema({
       id: "wf-1",
       triggers: [],
       steps: { s1: { name: "s1" } },
       stepOrder: ["s1"],
       state: [],
     });
-    const r = await validateWorkflow({
-      [WORKFLOW_JSON_PATH]: wfJson,
-    });
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toContain(WORKFLOW_JSON_PATH);
-    expect(r.reason).toMatch(/array|object/);
+    expect(result instanceof type.errors).toBe(true);
+    if (!(result instanceof type.errors)) throw new Error("unreachable");
+    expect(result.summary).toMatch(/array|object/);
   });
 });
