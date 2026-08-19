@@ -39,35 +39,26 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
-  awaitSignal,
-  defineWorkflow,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
   deriveRunAddress,
   deriveStepAddress,
   deriveStepAgentId,
   type ApprovalSet,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  DEFAULT_ASSET_REF,
-  type RepoId,
-  type WorkflowRunHubPrincipal,
-} from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
   readWorkflowRunEvents,
@@ -78,263 +69,226 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { signalGateEntry } from "./fixtures/signal-gate";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A substrate-safe deployment id whose run address and every per-step derived
 // address are run addresses (`isRunAddress` true). This is what routes the
 // reconnect challenge through the `workflowAddresses` early-continue path.
 const DEPLOYMENT_ID = "run_multistep_reroute_1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_IDS = ["step1", "step2"] as const;
 
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_multistep_reroute";
+const CALLER_PRINCIPAL_ID = "prn_multistep_reroute";
+const DEFINITION_ASSET_ID = "ast_multistep_reroute_wf";
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "multistep-reroute-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("multi-step per-step re-route survival across reconnect", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("every per-step address re-routes and inter-step routing survives reconnect", async () => {
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
+describe.skipIf(!harnessDbEnvAvailable())(
+  "multi-step per-step re-route survival across reconnect",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
-    // The deployment address is a run address: that is the routing family
-    // whose reconnect challenge takes the `workflowAddresses` early-continue
-    // path and survives the drop.
-    expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
-    // Every per-step derived address is a run address too, so each one belongs
-    // to the same keyless routing family that survives reconnect by collapsing
-    // under the re-challenged deployment address rather than being resurrected
-    // as its own hub route.
-    const stepAddresses = STEP_IDS.map((stepId) =>
-      deriveStepAddress({
+    test("every per-step address re-routes and inter-step routing survives reconnect", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        stepId,
         domain: DEPLOYMENT_DOMAIN,
-      }),
-    );
-    for (const stepAddress of stepAddresses) {
-      expect(isRunAddress(stepAddress)).toBe(true);
-    }
-
-    // ---- deploy the multi-step workflow ----
-    // Two distinct agent definitions exercise the orchestrator's per-step
-    // `systemPrompt` override so each per-step `agent-state` repo is
-    // provisioned end-to-end.
-    const agent1 = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the first step agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-    });
-    const agent2 = defineAgent({
-      id: "agent-step2",
-      systemPrompt: "You are the second step agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        step1: step({ agent: agent1 }),
-        gate: awaitSignal({ name: "go", after: ["step1"] }),
-        step2: step({ agent: agent2, after: ["gate"] }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_multistep-reroute-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (p) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: p.agentAddress,
-        agentId: p.agentId,
-        runId: p.runId,
-        config: p.config,
-        deployContent: toLaunchDeployContent(p.deployContent),
-        ...(p.toolPackagePins !== undefined
-          ? { toolPackagePins: p.toolPackagePins }
-          : {}),
       });
-    };
+      // The deployment address is a run address: that is the routing family
+      // whose reconnect challenge takes the `workflowAddresses` early-continue
+      // path and survives the drop.
+      expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) files[k] = v;
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `multistep reroute reconnect: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
-        runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-      });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+      // Every per-step derived address is a run address too, so each one belongs
+      // to the same keyless routing family that survives reconnect by collapsing
+      // under the re-challenged deployment address rather than being resurrected
+      // as its own hub route.
+      const stepAddresses = STEP_IDS.map((stepId) =>
+        deriveStepAddress({
+          runId: DEPLOYMENT_ID,
+          stepId,
+          domain: DEPLOYMENT_DOMAIN,
+        }),
       );
-    }
-    expect(result.publicKey).toBeTruthy();
+      for (const stepAddress of stepAddresses) {
+        expect(isRunAddress(stepAddress)).toBe(true);
+      }
 
-    // The deployment acks its own key, which is the oracle the reconnect
-    // challenge is answered against. Wait for it before dropping the link so
-    // the reconnect has a key to verify.
-    await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
+      // ---- deploy the multi-step workflow ----
+      // Two distinct agent system prompts exercise the per-step prompt wiring so
+      // each per-step `agent-state` repo is provisioned end-to-end.
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_multistep-reroute-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
 
-    // Per-step `agent-state` repos materialize on the hub, one per step that
-    // carries an agent (the `awaitSignal` primitive produces none). Their ids
-    // are the per-step `agentId`s, which is the substrate-safe form of the
-    // per-step address the orchestrator staged each step's tree under.
-    for (const stepId of STEP_IDS) {
-      const stepAgentId = deriveStepAgentId({
-        runId: DEPLOYMENT_ID,
-        stepId,
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const entryModule = signalGateEntry({
+        address: deploymentMailAddress,
+        signalName: "go",
+        systemPrompt1: "You are the first step agent.",
+        systemPrompt2: "You are the second step agent.",
+        agentId1: "agent-step1",
+        agentId2: "agent-step2",
+        workflowId: `wf_${DEPLOYMENT_ID}`,
       });
-      const stepRepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
-        kind: "agent-state",
-        id: stepAgentId,
-      });
-      expect(typeof stepRepoDir).toBe("string");
-    }
 
-    // The deployment address is routable on the hub after the multi-step
-    // deploy: `sendAgentDeploy` recorded it on the router's index.
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-
-    // Drive the deployment's one stable run to its inter-step park, reconnect
-    // there, and then complete that SAME run. Re-firing after completion is no
-    // longer a valid way to prove route restoration.
-    await runInterStepChainToCompletion(
-      env,
-      {
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
         anchorRunId: DEPLOYMENT_ID,
-        deploymentMailAddress,
-        messageId: "<multistep-reroute-1@integration.interchange>",
-      },
-      async () => {
-        expect(env.hub.router.getRoutableAddresses()).toContain(
-          deploymentMailAddress,
-        );
-        await settleThenDrop(env, deploymentMailAddress);
-        await waitFor(
-          () =>
-            !env.hub.router
-              .getRoutableAddresses()
-              .includes(deploymentMailAddress),
-          { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
-        );
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: {
+          step1: [inferenceSource],
+          gate: [inferenceSource],
+          step2: [inferenceSource],
+        },
+      });
+      expect(handle.publicKey).toBeTruthy();
 
-        const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-          timeoutMs: 20_000,
+      // The deployment acks its own key, which is the oracle the reconnect
+      // challenge is answered against. Wait for it before dropping the link so
+      // the reconnect has a key to verify.
+      await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
+        timeoutMs: 20_000,
+        diagnostics: env.sidecarDiagnostics,
+      });
+
+      // The source-ref frame round-trips through the real sidecar subprocess, so
+      // routability is asynchronous. Wait for it before driving the run.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // Per-step `agent-state` repos materialize on the hub, one per step that
+      // carries an agent (the `awaitSignal` primitive produces none). Their ids
+      // are the per-step `agentId`s, which is the substrate-safe form of the
+      // per-step address the orchestrator staged each step's tree under.
+      for (const stepId of STEP_IDS) {
+        const stepAgentId = deriveStepAgentId({
+          runId: DEPLOYMENT_ID,
+          stepId,
         });
-        expect(reconnectMs).toBeGreaterThan(1_000);
-        expect(reconnectMs).toBeLessThan(20_000);
-        expect(env.hub.router.getRoutableAddresses()).toContain(
+        const stepRepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
+          kind: "agent-state",
+          id: stepAgentId,
+        });
+        expect(typeof stepRepoDir).toBe("string");
+      }
+
+      // The deployment address is routable on the hub after the multi-step
+      // deploy: `sendAgentDeploy` recorded it on the router's index.
+      expect(env.hub.router.getRoutableAddresses()).toContain(
+        deploymentMailAddress,
+      );
+
+      // Drive the deployment's one stable run to its inter-step park, reconnect
+      // there, and then complete that SAME run. Re-firing after completion is no
+      // longer a valid way to prove route restoration.
+      await runInterStepChainToCompletion(
+        env,
+        {
+          anchorRunId: DEPLOYMENT_ID,
           deploymentMailAddress,
-        );
-      },
-    );
-  }, 180_000);
-});
+          messageId: "<multistep-reroute-1@integration.interchange>",
+        },
+        async () => {
+          expect(env.hub.router.getRoutableAddresses()).toContain(
+            deploymentMailAddress,
+          );
+          await settleThenDrop(env, deploymentMailAddress);
+          await waitFor(
+            () =>
+              !env.hub.router
+                .getRoutableAddresses()
+                .includes(deploymentMailAddress),
+            { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
+          );
+
+          const reconnectMs = await waitForReconnect(
+            env,
+            deploymentMailAddress,
+            {
+              timeoutMs: 20_000,
+            },
+          );
+          expect(reconnectMs).toBeGreaterThan(1_000);
+          expect(reconnectMs).toBeLessThan(20_000);
+          expect(env.hub.router.getRoutableAddresses()).toContain(
+            deploymentMailAddress,
+          );
+        },
+      );
+    }, 180_000);
+  },
+);
 
 /**
  * Drive one full inter-step chain of the `step1 -> awaitSignal -> step2`

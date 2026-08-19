@@ -35,29 +35,21 @@ import fs from "node:fs";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  awaitSignal,
-  defineWorkflow,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
   listRunIds,
@@ -70,17 +62,47 @@ import {
   type DeployFlowEnv,
   type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { signalGateEntry } from "./fixtures/signal-gate";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_crash-restart-resume-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
+
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_crash_restart_resume";
+const CALLER_PRINCIPAL_ID = "prn_crash_restart_resume";
+const DEFINITION_ASSET_ID = "ast_crash_restart_resume_wf";
 
 let env: DeployFlowEnv;
+let h: TestDb;
 let restartedSidecar: SidecarHandle | undefined;
 const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "crash-restart-resume-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv();
 });
 
@@ -89,7 +111,8 @@ afterAll(async () => {
     restartedSidecar.proc.kill();
     await restartedSidecar.proc.exited;
   }
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
   for (const dir of restartTempDirs.splice(0)) {
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
@@ -139,290 +162,225 @@ async function readAllRunEvents(
   return out;
 }
 
-describe("sidecar crash + restart -> restore + reconnect resumes a run parked at awaitSignal", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("mid-run crash at awaitSignal, restore re-spawns, reconnect resumes to RunCompleted exactly once", async () => {
-    const agent1 = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the first step agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
-    });
-    const agent2 = defineAgent({
-      id: "agent-step2",
-      systemPrompt: "You are the second step agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+describe.skipIf(!harnessDbEnvAvailable())(
+  "sidecar crash + restart -> restore + reconnect resumes a run parked at awaitSignal",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        step1: step({ agent: agent1 }),
-        gate: awaitSignal({ name: "go", after: ["step1"] }),
-        step2: step({ agent: agent2, after: ["gate"] }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_crash-restart-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) files[k] = v;
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          { files, message: "crash-restart resume: write workflow repo" },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
+    test("mid-run crash at awaitSignal, restore re-spawns, reconnect resumes to RunCompleted exactly once", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
+        domain: DEPLOYMENT_DOMAIN,
       });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_crash-restart-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const entryModule = signalGateEntry({
+        address: deploymentMailAddress,
+        signalName: "go",
+        systemPrompt1: "You are the first step agent.",
+        systemPrompt2: "You are the second step agent.",
+        agentId1: "agent-step1",
+        agentId2: "agent-step2",
+        workflowId: `wf_${DEPLOYMENT_ID}`,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: {
+          step1: [inferenceSource],
+          gate: [inferenceSource],
+          step2: [inferenceSource],
+        },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId = handle.workflowRunRepoId;
+
+      // The source-ref frame round-trips through the real sidecar subprocess
+      // (index the pack, check out the pinned subtree, register the address),
+      // so routability is asynchronous. Wait for it before firing the trigger.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-    }
-    expect(result.publicKey).toBeTruthy();
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
+      // ---- fire the trigger, drive to the mid-run SignalAwaited pause ----
+      const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<crash-restart-resume-1@integration.interchange>",
+      });
 
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
+      await waitFor(
+        async () => {
+          const events = await readAllRunEvents(env, workflowRunRepoId);
+          return events.some(
+            (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      );
 
-    // ---- fire the trigger, drive to the mid-run SignalAwaited pause ----
-    const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<crash-restart-resume-1@integration.interchange>",
-    });
-
-    await waitFor(
-      async () => {
-        const events = await readAllRunEvents(env, workflowRunRepoId);
-        return events.some(
-          (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
+      const runIdsAtPause = await listRunIds(env, workflowRunRepoId);
+      const runId = runIdsAtPause[0];
+      if (runId === undefined) {
+        throw new Error(
+          "no runs/ entry on the workflow-run repo at the SignalAwaited pause",
         );
-      },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
-    );
+      }
 
-    const runIdsAtPause = await listRunIds(env, workflowRunRepoId);
-    const runId = runIdsAtPause[0];
-    if (runId === undefined) {
-      throw new Error(
-        "no runs/ entry on the workflow-run repo at the SignalAwaited pause",
+      const parked = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
+      const parkedTypes = parked.map((e) => e.type);
+      expect(parkedTypes).toContain("RunStarted");
+      expect(
+        parked.some(
+          (e) => e.type === "StepCompleted" && e.body["stepId"] === "step1",
+        ),
+      ).toBe(true);
+      expect(parkedTypes).toContain("SignalAwaited");
+      expect(
+        parked.some(
+          (e) => e.type === "StepStarted" && e.body["stepId"] === "step2",
+        ),
+      ).toBe(false);
+      expect(parkedTypes).not.toContain("RunCompleted");
+
+      const runStartedBody = parked.find((e) => e.type === "RunStarted")?.body;
+      if (runStartedBody === undefined) throw new Error("unreachable");
+      expect(runStartedBody["consumedMessageId"]).toBe(messageId);
+
+      // ---- quiesce, then CRASH the sidecar subprocess (process death) ----
+      await settleWorkflowRunPacks(env);
+
+      const crashedDataDir = env.sidecar.dataDir;
+      env.sidecar.proc.kill();
+      await env.sidecar.proc.exited;
+
+      await waitFor(
+        () =>
+          !env.hub.router
+            .getRoutableAddresses()
+            .includes(deploymentMailAddress),
+        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
       );
-    }
 
-    const parked = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
-    const parkedTypes = parked.map((e) => e.type);
-    expect(parkedTypes).toContain("RunStarted");
-    expect(
-      parked.some(
-        (e) => e.type === "StepCompleted" && e.body["stepId"] === "step1",
-      ),
-    ).toBe(true);
-    expect(parkedTypes).toContain("SignalAwaited");
-    expect(
-      parked.some(
-        (e) => e.type === "StepStarted" && e.body["stepId"] === "step2",
-      ),
-    ).toBe(false);
-    expect(parkedTypes).not.toContain("RunCompleted");
+      // ---- RESTART: a fresh sidecar against the SAME data dir ----
+      const hubPort = env.hub.server.port;
+      if (hubPort === undefined) {
+        throw new Error("hub.server.port is undefined after crash");
+      }
+      restartedSidecar = await startSidecarSubprocess({
+        hubPort,
+        registerTempDir: (dir) => {
+          restartTempDirs.push(dir);
+        },
+        extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
+      });
+      const restoredDiagnostics = (): string =>
+        `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
 
-    const runStartedBody = parked.find((e) => e.type === "RunStarted")?.body;
-    if (runStartedBody === undefined) throw new Error("unreachable");
-    expect(runStartedBody["consumedMessageId"]).toBe(messageId);
+      // ---- wait for the restored deployment to re-establish the hub link ----
+      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
+        timeoutMs: 30_000,
+      });
+      expect(reconnectMs).toBeGreaterThan(0);
+      expect(env.hub.router.getRoutableAddresses()).toContain(
+        deploymentMailAddress,
+      );
 
-    // ---- quiesce, then CRASH the sidecar subprocess (process death) ----
-    await settleWorkflowRunPacks(env);
+      // ---- deliver the signal, assert resume to RunCompleted ----
+      // The restored child re-armed the parked awaiting-signal gate against
+      // the run's live reduced state; the injected signal now resolves the
+      // re-armed awaiter and drives the run to completion.
+      const injected = await injectSignal(env, DEPLOYMENT_ID, runId, "go", {
+        resumed: true,
+      });
 
-    const crashedDataDir = env.sidecar.dataDir;
-    env.sidecar.proc.kill();
-    await env.sidecar.proc.exited;
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+        { timeoutMs: 30_000, diagnostics: restoredDiagnostics },
+      );
+      expect(terminal.type).toBe("RunCompleted");
 
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
-    );
+      // ---- exactly-once EFFECTS across the full (replay-inclusive) log ----
+      const finalEvents = await readAllRunEvents(env, workflowRunRepoId);
 
-    // ---- RESTART: a fresh sidecar against the SAME data dir ----
-    const hubPort = env.hub.server.port;
-    if (hubPort === undefined) {
-      throw new Error("hub.server.port is undefined after crash");
-    }
-    restartedSidecar = await startSidecarSubprocess({
-      hubPort,
-      registerTempDir: (dir) => {
-        restartTempDirs.push(dir);
-      },
-      extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
-    });
-    const restoredDiagnostics = (): string =>
-      `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
+      const distinctRunIds = new Set(finalEvents.map((e) => e.runId));
+      expect(distinctRunIds).toEqual(new Set([runId]));
 
-    // ---- wait for the restored deployment to re-establish the hub link ----
-    const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-      timeoutMs: 30_000,
-    });
-    expect(reconnectMs).toBeGreaterThan(0);
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
+      const countType = (t: string): number =>
+        finalEvents.filter((e) => e.type === t).length;
+      const countStepCompleted = (stepId: string): number =>
+        finalEvents.filter(
+          (e) => e.type === "StepCompleted" && e.body["stepId"] === stepId,
+        ).length;
 
-    // ---- deliver the signal, assert resume to RunCompleted ----
-    // The restored child re-armed the parked awaiting-signal gate against
-    // the run's live reduced state; the injected signal now resolves the
-    // re-armed awaiter and drives the run to completion.
-    const injected = await injectSignal(env, DEPLOYMENT_ID, runId, "go", {
-      resumed: true,
-    });
+      expect(countType("RunStarted")).toBe(1);
+      expect(countStepCompleted("step1")).toBe(1);
+      expect(countStepCompleted("step2")).toBe(1);
+      expect(countType("RunCompleted")).toBe(1);
 
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      runId,
-      { timeoutMs: 30_000, diagnostics: restoredDiagnostics },
-    );
-    expect(terminal.type).toBe("RunCompleted");
+      const signalReceived = finalEvents.find(
+        (e) => e.type === "SignalReceived" && e.body["signalName"] === "go",
+      );
+      if (signalReceived === undefined) {
+        throw new Error(
+          "no SignalReceived{go} effect after reconnect + resume",
+        );
+      }
+      expect(signalReceived.body["signalId"]).toBe(injected.signalId);
+      expect(signalReceived.body["payload"]).toEqual({ resumed: true });
 
-    // ---- exactly-once EFFECTS across the full (replay-inclusive) log ----
-    const finalEvents = await readAllRunEvents(env, workflowRunRepoId);
-
-    const distinctRunIds = new Set(finalEvents.map((e) => e.runId));
-    expect(distinctRunIds).toEqual(new Set([runId]));
-
-    const countType = (t: string): number =>
-      finalEvents.filter((e) => e.type === t).length;
-    const countStepCompleted = (stepId: string): number =>
-      finalEvents.filter(
-        (e) => e.type === "StepCompleted" && e.body["stepId"] === stepId,
-      ).length;
-
-    expect(countType("RunStarted")).toBe(1);
-    expect(countStepCompleted("step1")).toBe(1);
-    expect(countStepCompleted("step2")).toBe(1);
-    expect(countType("RunCompleted")).toBe(1);
-
-    const signalReceived = finalEvents.find(
-      (e) => e.type === "SignalReceived" && e.body["signalName"] === "go",
-    );
-    if (signalReceived === undefined) {
-      throw new Error("no SignalReceived{go} effect after reconnect + resume");
-    }
-    expect(signalReceived.body["signalId"]).toBe(injected.signalId);
-    expect(signalReceived.body["payload"]).toEqual({ resumed: true });
-
-    // Effect-layer exactly-once: each step's agent is invoked exactly once
-    // across the crash + restart + resume. The mock inference server
-    // records every request; each step agent carries a distinct system
-    // prompt, so a recovery that re-ran a durably-completed step would show
-    // a second invocation here even though the event log dedups the
-    // duplicate. Match on the whole request JSON (the system prompt rides
-    // in its own field the harness type does not surface).
-    const invokedWithPrompt = (needle: string): number =>
-      env.inference.requests.filter((r) => JSON.stringify(r).includes(needle))
-        .length;
-    expect(invokedWithPrompt("first step agent")).toBe(1);
-    expect(invokedWithPrompt("second step agent")).toBe(1);
-  }, 180_000);
-});
+      // Effect-layer exactly-once: each step's agent is invoked exactly once
+      // across the crash + restart + resume. The mock inference server
+      // records every request; each step agent carries a distinct system
+      // prompt, so a recovery that re-ran a durably-completed step would show
+      // a second invocation here even though the event log dedups the
+      // duplicate. Match on the whole request JSON (the system prompt rides
+      // in its own field the harness type does not surface).
+      const invokedWithPrompt = (needle: string): number =>
+        env.inference.requests.filter((r) => JSON.stringify(r).includes(needle))
+          .length;
+      expect(invokedWithPrompt("first step agent")).toBe(1);
+      expect(invokedWithPrompt("second step agent")).toBe(1);
+    }, 180_000);
+  },
+);

@@ -40,29 +40,21 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  awaitSignal,
-  defineWorkflow,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   initiateDrain,
   listRunIds,
@@ -72,11 +64,11 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { signalGateEntry } from "./fixtures/signal-gate";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_drain-roundtrip-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
+const WAIT_DEPLOYMENT_ID = "run_drain-roundtrip-wait-1";
 
 // Wire `deadlineMs` carried on the drain.deliver frame. The child
 // echoes this in its drain log; the supervisor-side accumulator runs
@@ -86,56 +78,73 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 // step aborts the moment the drain signal flips.
 const DRAIN_DEADLINE_MS = 1_000;
 
+// The definition's own tenant, the caller principal that creates the
+// definition assets, and the `workflow`-kind assets the frozen definitions
+// project over (one per deployed anchor run id). The install/approve freeze
+// and the anchor `workflow_run` insert both write against these, so they must
+// exist in the real DB before each deploy runs.
+const TENANT_ID = "tnt_drain_roundtrip";
+const CALLER_PRINCIPAL_ID = "prn_drain_roundtrip";
+const DEFINITION_ASSET_IDS: Record<string, string> = {
+  [DEPLOYMENT_ID]: "ast_drain_roundtrip_cancel_wf",
+  [WAIT_DEPLOYMENT_ID]: "ast_drain_roundtrip_wait_wf",
+};
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  for (const [anchorRunId, definitionAssetId] of Object.entries(
+    DEFINITION_ASSET_IDS,
+  )) {
+    await seedAsset(h.db, {
+      id: definitionAssetId,
+      tenantId: TENANT_ID,
+      kind: "workflow",
+      name: `drain-roundtrip-wf-${anchorRunId}`,
+      creatorPrincipalId: CALLER_PRINCIPAL_ID,
+    });
+  }
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("drain round-trip", () => {
+describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
   test("sidecar registers with hub", () => {
     expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
   });
 
   test("drain on a cancel-mode awaitSignal aborts the step and surfaces RunFailed", async () => {
-    const agent1 = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the first step agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
-    });
-
     const deploymentMailAddress = deriveRunAddress({
       runId: DEPLOYMENT_ID,
       domain: DEPLOYMENT_DOMAIN,
     });
 
-    // The gate is `drainBehavior: "cancel"` so a mid-flight drain
-    // flips the runtime body's drain signal, the awaitSignal step's
-    // local controller aborts, and the primitive runner commits
-    // StepFailed. The supervisor's per-run drainTimeout accumulator
-    // arms in parallel but does not escalate -- the step aborts
-    // first, the run reaches RunFailed, and the accumulator stops
-    // cleanly on the supervisor's shutdown path.
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        step1: step({ agent: agent1 }),
-        gate: awaitSignal({
-          name: "never-arrives",
-          after: ["step1"],
-          drainBehavior: "cancel",
-        }),
-      },
-    });
+    const inferenceSource: InferenceSource = {
+      id: "anthropic:mock-model",
+      provider: "anthropic",
+      baseURL: `http://localhost:${env.inference.server.port}`,
+      apiKey: "sk-mock",
+      model: "mock-model",
+    };
 
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
@@ -143,18 +152,10 @@ describe("drain round-trip", () => {
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by orchestrator)",
+      systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
       grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
+      sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
 
@@ -165,96 +166,51 @@ describe("drain round-trip", () => {
       `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
 
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      const deployContent = orchestratorParams.deployContent;
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `drain-roundtrip test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
+    // The gate is `drainBehavior: "cancel"` so a mid-flight drain
+    // flips the runtime body's drain signal, the awaitSignal step's
+    // local controller aborts, and the primitive runner commits
+    // StepFailed. The supervisor's per-run drainTimeout accumulator
+    // arms in parallel but does not escalate -- the step aborts
+    // first, the run reaches RunFailed, and the accumulator stops
+    // cleanly on the supervisor's shutdown path.
+    const entryModule = signalGateEntry({
+      address: deploymentMailAddress,
+      signalName: "never-arrives",
+      drainBehavior: "cancel",
+      systemPrompt1: "You are the first step agent.",
+      agentId1: "agent-step1",
+      workflowId: `wf_${DEPLOYMENT_ID}`,
     });
 
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
-        runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
-      });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
+    const definitionAssetId = DEFINITION_ASSET_IDS[DEPLOYMENT_ID];
+    if (definitionAssetId === undefined) {
       throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+        `drain-roundtrip: no definition asset seeded for ${DEPLOYMENT_ID}`,
       );
     }
-    expect(result.publicKey).toBeTruthy();
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
+    const handle = await deployWorkflowSourceForTest(env, {
+      entryModule,
+      db: h.db,
+      tenantId: TENANT_ID,
+      definitionAssetId,
       anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      agentAddress: deploymentMailAddress,
+      approvals: operatorApprovals,
+      config,
+      sources: { step1: [inferenceSource], gate: [inferenceSource] },
     });
+    expect(handle.publicKey).toBeTruthy();
 
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
+    const workflowRunRepoId = handle.workflowRunRepoId;
+
+    // The source-ref frame round-trips through the real sidecar subprocess, so
+    // routability is asynchronous. Wait for it before firing the trigger.
+    await waitFor(
+      () =>
+        env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
 
     await fireMailTrigger(env, deploymentMailAddress, {
@@ -357,50 +313,28 @@ describe("drain round-trip", () => {
     // regression that escalated wait-mode the moment drain fired (or
     // never escalated at all) would slip through the cancel-mode
     // assertion suite.
-    const waitDeploymentId = "run_drain-roundtrip-wait-1";
-    const agent1 = defineAgent({
-      id: "agent-wait-step1",
-      systemPrompt: "You are the first step agent in the wait companion.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
-    });
+    const waitDeploymentId = WAIT_DEPLOYMENT_ID;
     const deploymentMailAddress = deriveRunAddress({
       runId: waitDeploymentId,
       domain: DEPLOYMENT_DOMAIN,
     });
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${waitDeploymentId}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        step1: step({ agent: agent1 }),
-        gate: awaitSignal({
-          name: "never-arrives",
-          after: ["step1"],
-          drainBehavior: "wait",
-        }),
-      },
-    });
+    const inferenceSource: InferenceSource = {
+      id: "anthropic:mock-model",
+      provider: "anthropic",
+      baseURL: `http://localhost:${env.inference.server.port}`,
+      apiKey: "sk-mock",
+      model: "mock-model",
+    };
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
       agentId: `${waitDeploymentId}`,
       tenantId: "tenant-1",
       principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by orchestrator)",
+      systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
       grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
+      sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
     const operatorApprovals: ApprovalSet = new Set<string>([
@@ -409,79 +343,41 @@ describe("drain round-trip", () => {
       `mail.address:${deploymentMailAddress}`,
       `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      const deployContent = orchestratorParams.deployContent;
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `drain-roundtrip wait test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
+    const entryModule = signalGateEntry({
+      address: deploymentMailAddress,
+      signalName: "never-arrives",
+      drainBehavior: "wait",
+      systemPrompt1: "You are the first step agent in the wait companion.",
+      agentId1: "agent-wait-step1",
+      workflowId: `wf_${waitDeploymentId}`,
     });
-    const result = await orchestrator.deployWorkflow({
-      workflow,
-      config,
-      deployContent: { systemPrompt: config.systemPrompt },
-      operatorApprovals,
-      runId: waitDeploymentId,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(result.publicKey).toBeTruthy();
-
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
+    const definitionAssetId = DEFINITION_ASSET_IDS[waitDeploymentId];
+    if (definitionAssetId === undefined) {
+      throw new Error(
+        `drain-roundtrip: no definition asset seeded for ${waitDeploymentId}`,
+      );
+    }
+    const handle = await deployWorkflowSourceForTest(env, {
+      entryModule,
+      db: h.db,
+      tenantId: TENANT_ID,
+      definitionAssetId,
       anchorRunId: waitDeploymentId,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      agentAddress: deploymentMailAddress,
+      approvals: operatorApprovals,
+      config,
+      sources: { step1: [inferenceSource], gate: [inferenceSource] },
     });
+    expect(handle.publicKey).toBeTruthy();
+
+    const workflowRunRepoId = handle.workflowRunRepoId;
+
+    await waitFor(
+      () =>
+        env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    );
 
     await fireMailTrigger(env, deploymentMailAddress, {
       messageId: "<drain-roundtrip-wait-1@integration.interchange>",
