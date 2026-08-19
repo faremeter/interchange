@@ -1,26 +1,17 @@
 // KindHandler for the `workflow` asset kind.
 //
-// A workflow asset is a git repo that holds a workflow definition in one of
-// two shapes. `validatePush` accepts either, keyed on which manifest the tree
-// carries at its top level:
+// A workflow asset is a codebase: a top-level `package.json` declaring an
+// `interchange.workflow` entry module plus arbitrary source files. The sidecar
+// materializes the codebase into a closure and evaluates the pinned entry to the
+// definition. `validatePush` requires the `package.json`; a tree that lacks one
+// is rejected. The legacy `workflow.json` envelope form is no longer accepted at
+// the push boundary.
 //
-//   - Envelope shape: a `workflow.json` serialized `WorkflowDefinition` (plus
-//     an optional `capability-declarations.json` and `.gitignore`). The deploy
-//     orchestrator writes this shape on every deploy, and the run/trigger
-//     layer reads it back to materialize grants. The content is parsed and
-//     structurally validated at push time; deeper primitive-shape and DAG
-//     validation belongs to the runtime layer that instantiates the definition
-//     (`defineWorkflow`). Any top-level entry outside the three-file set fails.
-//   - Codebase shape: a `package.json` declaring an `interchange.workflow`
-//     entry module plus arbitrary source files. The sidecar materializes the
-//     codebase into a closure and evaluates the pinned entry to the definition.
-//     Source files are unconstrained; the push validates the manifest's shape
-//     and the entry-path's containment, and refuses envelope-only artifacts and
-//     a committed `node_modules` so the two shapes stay disjoint.
-//
-// A tree with neither manifest, or one that carries a `package.json` alongside
-// an envelope-valid `workflow.json`, is rejected: one asset must resolve to
-// exactly one definition. The codebase shape accepts both a single package and
+// Source files are unconstrained, but the push validates the manifest's shape
+// and the entry-path's containment, and refuses an envelope-only
+// `capability-declarations.json`, a committed `node_modules`, and an ambiguous
+// tree that also carries an envelope-valid `workflow.json`, so one asset resolves
+// to exactly one definition. The codebase shape accepts both a single package and
 // a `workspaces` monorepo; for a monorepo the push validates only the root's
 // well-formedness and leaves per-member validation to the resolver.
 //
@@ -58,16 +49,9 @@ export type WorkflowPrincipal = WorkflowHubPrincipal | WorkflowSidecarPrincipal;
 
 export const WORKFLOW_JSON_PATH = "workflow.json";
 export const CAPABILITY_DECLARATIONS_JSON_PATH = "capability-declarations.json";
-export const WORKFLOW_GITIGNORE_PATH = ".gitignore";
 export const PACKAGE_JSON_PATH = "package.json";
 export const NODE_MODULES_PATH = "node_modules";
 export const PNPM_WORKSPACE_PATH = "pnpm-workspace.yaml";
-
-const ALLOWED_TOP_LEVEL = new Set<string>([
-  WORKFLOW_JSON_PATH,
-  CAPABILITY_DECLARATIONS_JSON_PATH,
-  WORKFLOW_GITIGNORE_PATH,
-]);
 
 /**
  * Structural arktype validator for the `workflow.json` envelope. The
@@ -76,10 +60,10 @@ const ALLOWED_TOP_LEVEL = new Set<string>([
  * `stepOrder`) but does not re-derive `defineWorkflow`'s DAG-level
  * validation here — primitive-level shape, default-input application,
  * and `after`-ref resolution belong to the runtime layer that hydrates
- * the definition. Push-time validation rejects the obvious wrongs
- * (missing top-level fields, wrong primitive types) so a tree that
- * could not possibly hydrate into a `WorkflowDefinition` never reaches
- * the deploy ref.
+ * the definition. The codebase push uses this validator to detect an
+ * ambiguous tree that also carries an envelope-valid `workflow.json`,
+ * and the hydrate-time definition loaders reuse it to validate a
+ * materialized definition before instantiation.
  */
 const StepsObject = type("Record<string, unknown>").narrow((value, ctx) => {
   if (Array.isArray(value)) {
@@ -117,22 +101,6 @@ export const workflowDefinitionEnvelopeSchema = type({
   // passed through to launch-time resolution unchecked.
   "credentialBindings?": CredentialBinding.array(),
 }).onUndeclaredKey("ignore");
-
-/**
- * Capability-declarations.json is held to "is a JSON object" at this
- * commit; the per-step structure is owned by the capability-walk
- * module that authors the file. `Record<string, unknown>` on its own
- * accepts arrays under arktype's structural-object semantics, so the
- * push validator pairs it with an array-rejection narrow.
- */
-const CapabilityDeclarationsObject = type("Record<string, unknown>").narrow(
-  (value, ctx) => {
-    if (Array.isArray(value)) {
-      return ctx.mustBe("a JSON object, not an array");
-    }
-    return true;
-  },
-);
 
 const SidecarPrincipal = type({
   kind: "'sidecar'",
@@ -180,69 +148,6 @@ function rejectPush(
 ): ValidatePushResult {
   logger.debug`workflow validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${reason}`;
   return { ok: false, reason };
-}
-
-/**
- * Validate the envelope shape: a `workflow.json` `WorkflowDefinition` plus an
- * optional `capability-declarations.json` and `.gitignore`, and nothing else at
- * the top level. Entered only when the tree carries no `package.json`.
- */
-async function validateWorkflowEnvelopePush(
-  repoId: RepoId,
-  ref: string,
-  topLevelTreePaths: string[],
-  readBlob: (path: string) => Promise<Uint8Array>,
-): Promise<ValidatePushResult> {
-  for (const entry of topLevelTreePaths) {
-    if (!ALLOWED_TOP_LEVEL.has(entry)) {
-      return rejectPush(
-        repoId,
-        ref,
-        `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_JSON_PATH}", "${CAPABILITY_DECLARATIONS_JSON_PATH}", "${WORKFLOW_GITIGNORE_PATH}"`,
-      );
-    }
-  }
-
-  if (!topLevelTreePaths.includes(WORKFLOW_JSON_PATH)) {
-    return rejectPush(
-      repoId,
-      ref,
-      `tree has neither a ${PACKAGE_JSON_PATH} (codebase) nor a ${WORKFLOW_JSON_PATH} (envelope)`,
-    );
-  }
-
-  const workflowOutcome = await readJSONBlob(WORKFLOW_JSON_PATH, readBlob);
-  if (!workflowOutcome.ok) {
-    return rejectPush(repoId, ref, workflowOutcome.reason);
-  }
-  const validated = workflowDefinitionEnvelopeSchema(workflowOutcome.value);
-  if (validated instanceof type.errors) {
-    return rejectPush(
-      repoId,
-      ref,
-      `${WORKFLOW_JSON_PATH} failed validation: ${validated.summary}`,
-    );
-  }
-
-  if (topLevelTreePaths.includes(CAPABILITY_DECLARATIONS_JSON_PATH)) {
-    const capOutcome = await readJSONBlob(
-      CAPABILITY_DECLARATIONS_JSON_PATH,
-      readBlob,
-    );
-    if (!capOutcome.ok) {
-      return rejectPush(repoId, ref, capOutcome.reason);
-    }
-    const capValidated = CapabilityDeclarationsObject(capOutcome.value);
-    if (capValidated instanceof type.errors) {
-      return rejectPush(
-        repoId,
-        ref,
-        `${CAPABILITY_DECLARATIONS_JSON_PATH} must be a JSON object: ${capValidated.summary}`,
-      );
-    }
-  }
-
-  return { ok: true };
 }
 
 /**
@@ -387,11 +292,10 @@ export const workflowKindHandler: KindHandler = {
         readBlob,
       );
     }
-    return validateWorkflowEnvelopePush(
+    return rejectPush(
       repoId,
       ref,
-      topLevelTreePaths,
-      readBlob,
+      `a workflow asset must be a codebase declaring a ${PACKAGE_JSON_PATH} with an "interchange.workflow" entry; the ${WORKFLOW_JSON_PATH} envelope form is no longer supported`,
     );
   },
   onRefUpdated() {

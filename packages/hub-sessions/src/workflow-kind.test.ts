@@ -13,7 +13,6 @@ import {
   workflowDefinitionEnvelopeSchema,
   WORKFLOW_JSON_PATH,
   CAPABILITY_DECLARATIONS_JSON_PATH,
-  WORKFLOW_GITIGNORE_PATH,
   PACKAGE_JSON_PATH,
   NODE_MODULES_PATH,
   PNPM_WORKSPACE_PATH,
@@ -78,202 +77,33 @@ function validWorkflowJSON(): string {
 }
 
 describe("workflowKindHandler.validatePush", () => {
-  test("accepts a tree with workflow.json, capability-declarations.json, and .gitignore", async () => {
-    const repoId = uniqueRepoId("complete");
+  test("rejects a tree with no package.json", async () => {
+    const repoId = uniqueRepoId("no-pkg");
+    const files = {
+      ".gitignore": "",
+    };
+    const result = await workflowKindHandler.validatePush({
+      repoId,
+      ref: REF,
+      topLevelTreePaths: [".gitignore"],
+      readBlob: makeReadBlob(files),
+      listDir: makeListDir(files),
+      principal: HUB_PRINCIPAL,
+      priorReadBlob: noPriorBlob,
+      priorListDir: noPriorDir,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toMatch(
+      /must be a codebase declaring a package\.json/,
+    );
+  });
+
+  test("rejects a legacy workflow.json envelope tree", async () => {
+    const repoId = uniqueRepoId("legacy-envelope");
     const files = {
       [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
       [CAPABILITY_DECLARATIONS_JSON_PATH]: JSON.stringify({ declarations: [] }),
-      [WORKFLOW_GITIGNORE_PATH]: "",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [
-        WORKFLOW_JSON_PATH,
-        CAPABILITY_DECLARATIONS_JSON_PATH,
-        WORKFLOW_GITIGNORE_PATH,
-      ],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(true);
-  });
-
-  test("accepts a tree with only workflow.json", async () => {
-    const repoId = uniqueRepoId("minimal");
-    const files = {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(true);
-  });
-
-  test("rejects a tree with neither package.json nor workflow.json", async () => {
-    const repoId = uniqueRepoId("nodef");
-    const files = {
-      [WORKFLOW_GITIGNORE_PATH]: "",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_GITIGNORE_PATH],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(
-      /has neither a package\.json .* nor a workflow\.json/,
-    );
-  });
-
-  test("rejects when a disallowed top-level entry is present", async () => {
-    const repoId = uniqueRepoId("extra");
-    const files = {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-      "stray-file.txt": "not allowed here",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH, "stray-file.txt"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/unexpected top-level entry/);
-  });
-
-  test("rejects when a disallowed top-level directory is present", async () => {
-    const repoId = uniqueRepoId("subdir");
-    const files = {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-      "extras/notes.md": "stray",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH, "extras"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/unexpected top-level entry/);
-  });
-
-  test("rejects when workflow.json is not valid JSON", async () => {
-    const repoId = uniqueRepoId("badjson");
-    const files = {
-      [WORKFLOW_JSON_PATH]: "{not-json",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/workflow\.json is not valid JSON/);
-  });
-
-  test("rejects when workflow.json is missing required fields", async () => {
-    const repoId = uniqueRepoId("incomplete");
-    const files = {
-      [WORKFLOW_JSON_PATH]: JSON.stringify({ id: "x" }),
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/workflow\.json failed validation/);
-  });
-
-  test("rejects when workflow.json id is empty", async () => {
-    const repoId = uniqueRepoId("emptyid");
-    const files = {
-      [WORKFLOW_JSON_PATH]: JSON.stringify({
-        id: "",
-        triggers: [],
-        steps: {},
-        stepOrder: [],
-      }),
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/workflow\.json failed validation/);
-  });
-
-  test("rejects when workflow.json is a JSON primitive instead of an object", async () => {
-    const repoId = uniqueRepoId("notobj");
-    const files = {
-      [WORKFLOW_JSON_PATH]: "42",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [WORKFLOW_JSON_PATH],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(/workflow\.json failed validation/);
-  });
-
-  test("rejects when capability-declarations.json is not valid JSON", async () => {
-    const repoId = uniqueRepoId("badcap");
-    const files = {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-      [CAPABILITY_DECLARATIONS_JSON_PATH]: "not-json",
     };
     const result = await workflowKindHandler.validatePush({
       repoId,
@@ -291,59 +121,8 @@ describe("workflowKindHandler.validatePush", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(
-      /capability-declarations\.json is not valid JSON/,
+      /workflow\.json envelope form is no longer supported/,
     );
-  });
-
-  test("rejects when capability-declarations.json is a JSON array instead of an object", async () => {
-    const repoId = uniqueRepoId("caparr");
-    const files = {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-      [CAPABILITY_DECLARATIONS_JSON_PATH]: "[]",
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [
-        WORKFLOW_JSON_PATH,
-        CAPABILITY_DECLARATIONS_JSON_PATH,
-      ],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.reason).toMatch(
-      /capability-declarations\.json must be a JSON object/,
-    );
-  });
-
-  test("accepts capability-declarations.json with an arbitrary object body (deferred to walk task)", async () => {
-    const repoId = uniqueRepoId("freeform");
-    const files = {
-      [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
-      [CAPABILITY_DECLARATIONS_JSON_PATH]: JSON.stringify({
-        anything: "goes",
-        nested: { values: [1, 2, 3] },
-      }),
-    };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [
-        WORKFLOW_JSON_PATH,
-        CAPABILITY_DECLARATIONS_JSON_PATH,
-      ],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
-    expect(result.ok).toBe(true);
   });
 });
 
@@ -684,8 +463,8 @@ describe("workflowAuthorize", () => {
 
 // The substrate's `receivePack` walks every new commit in the pack and
 // invokes the kind handler's `validatePush` once per commit, so a tree
-// that violates the workflow allowlist on an intermediate commit must
-// reject the pack even when the tip is valid. The workflow handler
+// that fails the workflow codebase validation on an intermediate commit
+// must reject the pack even when the tip is valid. The workflow handler
 // does not consult prior closures — every commit's tree is judged on
 // its own top-level paths. This regression pins that behaviour: the
 // per-commit walk catches an intermediate-state violation at the
@@ -729,7 +508,7 @@ describe("workflow per-commit pack walk", () => {
   // The workflow handler does not gate validation on ref name.
   const REF = "refs/heads/deploy";
 
-  test("rejects a multi-commit pack whose second commit adds a disallowed top-level path", async () => {
+  test("rejects a multi-commit pack whose second commit commits node_modules", async () => {
     const sourceDataDir = await makeTempDir("workflow-percommit-src-");
     const sourceStore = createRepoStore({
       dataDir: sourceDataDir,
@@ -743,20 +522,16 @@ describe("workflow per-commit pack walk", () => {
     };
     await sourceStore.initRepo(repoId);
 
-    const validWorkflow = JSON.stringify({
-      id: "my-workflow",
-      triggers: [{ type: "manual" }],
-      steps: { first: { kind: "step", id: "first" } },
-      stepOrder: ["first"],
-    });
+    const validPackage = codebasePackageJSON();
+    const entryModule = "export const workflow = {};";
 
     const { commitSha: firstSha } = await sourceStore.writeTree(
       PRINCIPAL,
       repoId,
       REF,
       {
-        files: { [WORKFLOW_JSON_PATH]: validWorkflow },
-        message: "valid workflow envelope",
+        files: { [PACKAGE_JSON_PATH]: validPackage, "index.js": entryModule },
+        message: "valid workflow codebase",
       },
     );
     const { commitSha: secondSha } = await sourceStore.writeTree(
@@ -765,10 +540,11 @@ describe("workflow per-commit pack walk", () => {
       REF,
       {
         files: {
-          [WORKFLOW_JSON_PATH]: validWorkflow,
-          "stray-file.txt": "not in the workflow allowlist",
+          [PACKAGE_JSON_PATH]: validPackage,
+          "index.js": entryModule,
+          [`${NODE_MODULES_PATH}/dep/index.js`]: "module.exports = {};",
         },
-        message: "intermediate violation: stray top-level path",
+        message: "intermediate violation: committed node_modules",
       },
     );
 
@@ -799,7 +575,7 @@ describe("workflow per-commit pack walk", () => {
     await expect(
       targetStore.receivePack(PRINCIPAL, repoId, REF, pack, secondSha, null),
     ).rejects.toThrow(
-      /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
+      /path_violation:.*committed top-level node_modules directory is not allowed/,
     );
 
     const resolvedAfter = await targetStore.resolveRef(PRINCIPAL, repoId, REF);
@@ -819,18 +595,13 @@ describe("workflow per-commit pack walk", () => {
       id: `wf-${Math.random().toString(36).slice(2, 10)}`,
     };
     await sourceStore.initRepo(repoId);
-    const validWorkflow = JSON.stringify({
-      id: "my-workflow",
-      triggers: [{ type: "manual" }],
-      steps: { first: { kind: "step", id: "first" } },
-      stepOrder: ["first"],
-    });
     const { commitSha } = await sourceStore.writeTree(PRINCIPAL, repoId, REF, {
       files: {
-        [WORKFLOW_JSON_PATH]: validWorkflow,
-        "stray-file.txt": "tip-only violation",
+        [PACKAGE_JSON_PATH]: codebasePackageJSON(),
+        "index.js": "export const workflow = {};",
+        [`${NODE_MODULES_PATH}/dep/index.js`]: "module.exports = {};",
       },
-      message: "tip violates the workflow allowlist",
+      message: "tip commits node_modules",
     });
     const { pack } = await sourceStore.createPack(PRINCIPAL, repoId, REF);
 
@@ -845,7 +616,7 @@ describe("workflow per-commit pack walk", () => {
     await expect(
       targetStore.receivePack(PRINCIPAL, repoId, REF, pack, commitSha, null),
     ).rejects.toThrow(
-      /path_violation:.*unexpected top-level entry "stray-file\.txt"/,
+      /path_violation:.*committed top-level node_modules directory is not allowed/,
     );
   });
 });
