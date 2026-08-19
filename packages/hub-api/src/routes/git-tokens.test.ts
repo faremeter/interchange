@@ -237,24 +237,9 @@ function createMockSessionService(): SessionService {
     stageWorkflowStep: () => {
       throw new Error("mock: sessionService.stageWorkflowStep not implemented");
     },
-    deployInstanceAtHead: () => {
-      throw new Error(
-        "mock: sessionService.deployInstanceAtHead not implemented",
-      );
-    },
-    deployWorkflowDefinition: () => {
-      throw new Error(
-        "mock: sessionService.deployWorkflowDefinition not implemented",
-      );
-    },
     deployWorkflowFromSource: () => {
       throw new Error(
         "mock: sessionService.deployWorkflowFromSource not implemented",
-      );
-    },
-    deploySingleStepAtHead: () => {
-      throw new Error(
-        "mock: sessionService.deploySingleStepAtHead not implemented",
       );
     },
     sendUserMessage: () => {

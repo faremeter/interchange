@@ -45,7 +45,6 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import {
-  bridgeOrchestratorDeployContent,
   committedReadsToSourceTree,
   createAgentRepoStore,
   createSessionService,
@@ -72,17 +71,10 @@ import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
 import type { CredentialCipher } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type LaunchSessionFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { createDefaultDirectorRegistry } from "@intx/agent";
+import { deriveRunAddress } from "@intx/workflow-deploy";
 import { decodeToolName } from "@intx/inference";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
@@ -1253,7 +1245,7 @@ export async function startSidecarSubprocess(opts: {
 
 /**
  * Per-deployment handle tracked by the env. Populated by
- * `deployWorkflow`; consulted by `readWorkflowRunEvents`,
+ * `deployWorkflowSourceForTest`; consulted by `readWorkflowRunEvents`,
  * `waitForWorkflowRunComplete`, `injectSignal`, and
  * `simulateProcessingCrash` so the Phase I integration tests never
  * thread the workflow-run repo identity themselves.
@@ -1271,12 +1263,12 @@ export type DeployFlowEnv = {
   inference: MockInference;
   sidecar: SidecarHandle;
   sidecarDiagnostics: () => string;
-  /** Per-deployment handles populated by `deployWorkflow`. */
+  /** Per-deployment handles populated by `deployWorkflowSourceForTest`. */
   deployments: Map<string, DeploymentHandle>;
   /**
    * Register an externally-constructed deployment handle on the env.
    * Tests call this when the deployment was driven outside
-   * `deployWorkflow` (e.g. a pre-staged repo state) so the env's
+   * `deployWorkflowSourceForTest` (e.g. a pre-staged repo state) so the env's
    * helpers can resolve the handle by `anchorRunId`.
    */
   registerDeployment(handle: DeploymentHandle): void;
@@ -1520,58 +1512,9 @@ const DEFAULT_DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEFAULT_WORKFLOW_RUN_REF = "refs/heads/main";
 
 /**
- * Options accepted by `deployWorkflow`. The helper composes the
- * workflow-deploy orchestrator against the env's hub substrate and routes
- * per-step launches through `env.hub.sessionService.stageWorkflowStep`, the
- * stage-only path production's multi-step branch runs.
- */
-export type DeployWorkflowOpts = {
-  /**
-   * Harness configuration shared across every step's launch. The
-   * orchestrator overrides `agentAddress`, `agentId`, and `systemPrompt`
-   * per step in the multi-step branch.
-   */
-  config: HarnessConfig;
-  /**
-   * Deploy-tree content shared across every step's launch. The
-   * orchestrator overrides `systemPrompt` per step in the multi-step
-   * branch from the step's agent definition.
-   */
-  deployContent: { systemPrompt: string };
-  /**
-   * Stable identifier the branch concatenates into derived agent
-   * addresses. Required.
-   */
-  anchorRunId: string;
-  /**
-   * Mail-domain for the deployment. Defaults to the integration test's
-   * canonical domain so callers do not have to thread the domain through.
-   */
-  deploymentDomain?: string;
-  /** Tool-package pins to ship with every step's deploy. */
-  toolPackagePins?: readonly ToolPackagePin[];
-  /**
-   * Flat set of grant-shape strings the operator has approved for this
-   * deployment. Every grant the capability walk surfaces must be in
-   * this set.
-   */
-  operatorApprovals: ApprovalSet;
-  /**
-   * Optional per-deployment `workflow-run` ref override. Defaults to
-   * `refs/heads/main`, mirroring the sidecar wiring's default.
-   */
-  workflowRunRef?: string;
-  /**
-   * Optional override for the deployment's mail address. Defaults to
-   * `<anchorRunId>@<deploymentDomain>`.
-   */
-  deploymentMailAddress?: string;
-};
-
-/**
- * Handle returned by `deployWorkflow`. Carries the deployment id the
- * orchestrator settled on plus the workflow-run repo identity the
- * other helpers consult.
+ * Handle carrying a deployment's anchor id plus the workflow-run repo
+ * identity the other helpers consult. Returned (extended) by
+ * `deployWorkflowSourceForTest`.
  */
 export type DeployWorkflowHandle = {
   anchorRunId: string;
@@ -1579,112 +1522,6 @@ export type DeployWorkflowHandle = {
   workflowRunRef: string;
   mailAddress: string;
 };
-
-/**
- * Build a workflow-deploy orchestrator wired against the env's hub
- * substrate and run it against the supplied workflow. The orchestrator
- * derives per-step addresses and routes each launch through the
- * `launchSession` callback.
- *
- * Registers the resulting handle on `env.deployments` so the other
- * Phase I helpers (event reads, signal injection, drain initiation,
- * processing-crash simulation) can resolve the deployment by id.
- */
-export async function deployWorkflow(
-  env: DeployFlowEnv,
-  workflow: WorkflowDefinition,
-  opts: DeployWorkflowOpts,
-): Promise<DeployWorkflowHandle> {
-  const workflowRunRef = opts.workflowRunRef ?? DEFAULT_WORKFLOW_RUN_REF;
-
-  const anchorRunId = opts.anchorRunId;
-  const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
-  const mailAddress =
-    opts.deploymentMailAddress ?? `${anchorRunId}@${deploymentDomain}`;
-
-  // The deployment supplies its own substrate-safe `anchorRunId`, which
-  // is the workflow-run repo slug the supervisor commits under.
-  const workflowRunRepoId: RepoId = {
-    kind: "workflow-run",
-    id: anchorRunId,
-  };
-
-  // Route every per-step launch through the session service, mirroring
-  // the production multi-step branch, which drives the orchestrator's
-  // per-step launch callback against `stageWorkflowStep` (stage-only, no
-  // warm harness). The orchestrator's `DeployContent` widens
-  // `toolPackageManifest` to `unknown`; `bridgeOrchestratorDeployContent`
-  // narrows and validates it back to the hub-sessions shape -- the same
-  // bridge production uses.
-  const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    await env.hub.sessionService.stageWorkflowStep({
-      agentAddress: orchestratorParams.agentAddress,
-      agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.runId,
-      config: orchestratorParams.config,
-      deployContent: bridgeOrchestratorDeployContent(
-        orchestratorParams.deployContent,
-      ),
-      ...(orchestratorParams.toolPackagePins !== undefined
-        ? { toolPackagePins: orchestratorParams.toolPackagePins }
-        : {}),
-    });
-  };
-
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-      const files: Record<string, string> = {};
-      for (const [k, v] of args.files) {
-        files[k] = v;
-      }
-      await env.hub.agentRepoStore.repoStore.writeTree(
-        principal,
-        repoId,
-        DEFAULT_ASSET_REF,
-        {
-          files,
-          message: `deployWorkflow: write workflow repo ${args.workflowRepoId}`,
-        },
-      );
-    },
-  };
-
-  const orchestrator = createWorkflowDeployOrchestrator({
-    directorRegistry: createDefaultDirectorRegistry(),
-    workflowRepo,
-    launchSession,
-  });
-
-  await orchestrator.deployWorkflow({
-    workflow,
-    runId: anchorRunId,
-    deploymentDomain,
-    config: opts.config,
-    deployContent: opts.deployContent,
-    operatorApprovals: opts.operatorApprovals,
-    ...(opts.toolPackagePins !== undefined
-      ? { toolPackagePins: opts.toolPackagePins }
-      : {}),
-  });
-
-  const handle: DeploymentHandle = {
-    anchorRunId,
-    workflowDefinition: workflow,
-    workflowRunRepoId,
-    workflowRunRef,
-    mailAddress,
-  };
-  env.registerDeployment(handle);
-
-  return {
-    anchorRunId,
-    workflowRunRepoId,
-    workflowRunRef,
-    mailAddress,
-  };
-}
 
 const SOURCE_FIXTURE_PACKAGE_NAME = "@wf/source-fixture";
 const SOURCE_FIXTURE_PACKAGE_VERSION = "1.0.0";
@@ -1943,7 +1780,7 @@ function requireDeployment(
   const handle = env.deployments.get(anchorRunId);
   if (handle === undefined) {
     throw new Error(
-      `deploy-flow env: no deployment registered for ${anchorRunId}; call deployWorkflow or registerDeployment first`,
+      `deploy-flow env: no deployment registered for ${anchorRunId}; call deployWorkflowSourceForTest or registerDeployment first`,
     );
   }
   return handle;

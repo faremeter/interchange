@@ -1,10 +1,6 @@
 import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 
-import {
-  createDefaultDirectorRegistry,
-  type DirectorRegistry,
-} from "@intx/agent";
 import { getLogger } from "@intx/log";
 import {
   assembleMessage,
@@ -27,7 +23,6 @@ import { base64Encode, hexEncode } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { CredentialCipher } from "@intx/types";
 import { generateId } from "@intx/hub-common";
-import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type {
   CryptoProvider,
@@ -60,30 +55,13 @@ import type {
   WorkflowDefinitionRegistrySource,
   WorkflowDefinitionSource,
 } from "@intx/types/workflow-sources";
-import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
-  defineWorkflow,
-  type WorkflowDefinition,
-} from "@intx/workflow/definition";
-import {
-  assertChainHeadIsDefault,
   buildInertProjectionStepSources,
-  createWorkflowDeployOrchestrator,
   deriveRunAddress,
   enumerateInertOnTriggerBodies,
   pickStepInferenceSource,
-  walkCapabilities,
-  wrapHarnessAsSingleStepWorkflow,
   WorkflowDefinitionInvalidError,
-  type ApprovalSet,
   type DeployContent as OrchestratorDeployContent,
-  type DeployWorkflowArgs,
-  type DeployWorkflowResult,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type ReferencedBodyDefinition,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
@@ -149,58 +127,6 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
-   * Deploy a single agent through the single-step-at-head path,
-   * wrapping the harness as a one-step workflow and routing it through the
-   * deploy core with the run's real identity. Replaces `launchSession`
-   * as the production single-agent deploy entry point: the run executes as a
-   * supervised workflow-process child. Records no deployment anchor run.
-   * Returns the head's agent-key ack (the key the head signs its
-   * reconnect challenges with).
-   */
-  deployInstanceAtHead(params: {
-    agentAddress: string;
-    agentId: string;
-    runId: string;
-    config: HarnessConfig;
-    deployContent: DeployContent;
-    toolPackagePins?: readonly ToolPackagePin[];
-    credentials?: CredentialDelivery;
-  }): Promise<{ publicKey: string }>;
-
-  /**
-   * Deploy a one-step workflow once at the head through the deploy core,
-   * without a DB-backed deployment anchor run. Stages the
-   * head's deploy tree (deploy-tree write, pack, asset fan-out), fires the
-   * deployment `agent.deploy` frame carrying the workflow definition +
-   * source pin (the sidecar initializes the head repo and spawns the
-   * workflow-process child), then delivers the pack to the head. Returns
-   * the sidecar supervisor's principal public key. See `DeploySingleStepFn`.
-   */
-  deploySingleStepAtHead: DeploySingleStepFn;
-
-  /**
-   * Deploy a multi-step `WorkflowDefinition` through the workflow-deploy
-   * orchestrator's multi-step branch. This is the general workflow
-   * deploy entry point: it is not coupled to a single agent's
-   * credential/session model the way `launchSession` is. The
-   * orchestrator derives every per-step address
-   * from `anchorRunId` + `deploymentDomain`, provisions each step's
-   * agent-state repo via the shared per-agent deploy phases, writes the
-   * workflow repo, and fires the deployment-level `agent.deploy` frame.
-   *
-   * Persists the deployment's anchor run -- the `workflow_run` whose id is
-   * `anchorRunId` -- carrying its routing identity and definition, so the
-   * deployment is listable per tenant off its runs; the RepoStore substrate
-   * has no by-kind listing API of its own.
-   *
-   * Returns the supervisor's principal public key surfaced by the
-   * sidecar's `agent.deploy.ack`.
-   */
-  deployWorkflowDefinition(
-    params: DeployWorkflowDefinitionParams,
-  ): Promise<DeployWorkflowDefinitionResult>;
-
-  /**
    * Deploy a CODE-SOURCED workflow definition end to end: install + probe +
    * gate + freeze (`approve-probed`), then deploy the frozen definition by
    * source-ref. This is the general workflow deploy entry point the
@@ -235,49 +161,6 @@ export type SessionService = {
    * Undeploy an agent and wait for the sidecar to acknowledge.
    */
   endSession(agentAddress: string, reason: string): Promise<void>;
-};
-
-export type DeployWorkflowDefinitionParams = {
-  /** Owning tenant; recorded on the deployment's anchor run. */
-  tenantId: string;
-  /**
-   * Stable deployment identifier. The orchestrator concatenates it into
-   * every derived per-step address and the deployment-level address, and
-   * it is the deployment's anchor-run id. The caller owns its generation.
-   */
-  anchorRunId: string;
-  /**
-   * Mail domain the deployment's derived addresses live under. The
-   * orchestrator derives `<anchorRunId>-<stepId>@<deploymentDomain>`
-   * per step and `<anchorRunId>@<deploymentDomain>` for the
-   * deployment-level supervisor address.
-   */
-  deploymentDomain: string;
-  /** The hydrated workflow definition to deploy. */
-  definition: WorkflowDefinition;
-  /**
-   * The `workflow`-kind asset the definition was hydrated from. Recorded
-   * on the projection row so the listing surface can join back to the
-   * source asset.
-   */
-  definitionAssetId: string;
-  /**
-   * Harness configuration shared across every step's launch. The
-   * orchestrator overrides `agentAddress`, `agentId`, and `systemPrompt`
-   * per step.
-   */
-  config: HarnessConfig;
-  /** Deploy-tree content shared across every step's launch. */
-  deployContent: DeployContent;
-  /** Tool-package pins to ship with every step's deploy. */
-  toolPackagePins?: readonly ToolPackagePin[];
-};
-
-export type DeployPreparedWorkflowDefinitionParams = Omit<
-  DeployWorkflowDefinitionParams,
-  "definitionAssetId"
-> & {
-  allocationTarget: AllocatedSidecarTarget;
 };
 
 export type DeployWorkflowDefinitionResult = {
@@ -378,10 +261,6 @@ export type DeployPreparedCodeSourcedWorkflowParams = {
 };
 
 export type PreparedWorkflowDeployer = {
-  /** Deploy an anchor that was durably prepared before capacity was requested. */
-  deployPreparedWorkflowDefinition(
-    params: DeployPreparedWorkflowDefinitionParams,
-  ): Promise<DeployWorkflowDefinitionResult>;
   /**
    * Install + probe + gate + freeze a code-sourced definition on shared
    * capacity, returning the frozen bundle WITHOUT deploying it. The exclusive
@@ -547,37 +426,7 @@ export function bridgeOrchestratorDeployContent(
   return bridged;
 }
 
-/**
- * Project a `WorkflowDefinition` onto the wire envelope the sidecar deploy
- * router serializes verbatim into `workflow.json` and the workflow-process
- * child re-validates against `workflowDefinitionEnvelopeSchema`: `id`,
- * `triggers`, `steps`, `stepOrder`, optional `state`. The projection widens
- * the `readonly` arrays at the boundary (the serializer never mutates them); a
- * missing envelope-required field would round-trip into the child's envelope
- * rejection on disk.
- */
-function toWireWorkflowDefinition(definition: WorkflowDefinition): {
-  id: string;
-  triggers: unknown[];
-  stepOrder: string[];
-  steps: Record<string, unknown>;
-  state?: Record<string, unknown>;
-  grantRequirements?: unknown[];
-} {
-  return {
-    id: definition.id,
-    triggers: [...definition.triggers],
-    stepOrder: [...definition.stepOrder],
-    steps: definition.steps as Record<string, unknown>,
-    ...(definition.state !== undefined ? { state: definition.state } : {}),
-    ...(definition.grantRequirements !== undefined
-      ? { grantRequirements: [...definition.grantRequirements] }
-      : {}),
-  };
-}
-
-/** Fields both deploy-frame arms carry onto `sendAgentDeploy`, independent of
- * whether the definition is live-authored or code-sourced. */
+/** Fields the deploy frame carries onto `sendAgentDeploy`. */
 type DeployFrameCommonArgs = {
   sidecarRouter: SidecarRouter;
   sidecarAllocationRouter?: SidecarAllocationRouter;
@@ -588,30 +437,13 @@ type DeployFrameCommonArgs = {
 };
 
 /**
- * Live-authored arm: the hub holds the live `WorkflowDefinition` and is the
- * authority for the deployment's content hash. It projects the definition onto
- * the wire envelope and recomputes the wire hash the frame carries.
- */
-export type LiveAuthoredDeployFrameArgs = DeployFrameCommonArgs & {
-  lineage: "live-authored";
-  definition: WorkflowDefinition;
-  /**
-   * Extracted onTrigger section bodies to carry inline so the sidecar
-   * materializes each as its own `assets/workflow/<bodyRef>/workflow.json`
-   * plus a co-located `sources.json`; a body child then resolves both the ref
-   * and its inference sources off disk without a hub round-trip.
-   */
-  referencedDefinitions?: readonly ReferencedBodyDefinition[];
-  credentials?: CredentialDelivery;
-};
-
-/**
- * Source-ref arm: for a code-sourced (npm) deploy the hub never holds the live
+ * For a code-sourced (npm) deploy the hub never holds the live
  * `WorkflowDefinition` -- it lives only in the airlocked child. The gate/freeze
  * layer already projected the definition to its inert `WorkflowProjectionDefinition`
- * and hashed THAT; this arm carries both verbatim. The content hash is owned by
- * the gate, so this arm never recomputes it -- recomputing over the live wire
- * lineage would diverge from the inert projection the child re-verifies against.
+ * and hashed THAT; this frame carries both verbatim. The content hash is owned
+ * by the gate, so this frame never recomputes it -- recomputing over a live
+ * wire lineage would diverge from the inert projection the child re-verifies
+ * against.
  */
 export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
   lineage: "source-ref";
@@ -638,20 +470,18 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
   sourceRef: SourceRefPin;
   /**
    * Resolved credential material for the definition's credential bindings,
-   * delivered to the child on the frame (mirrors the live-authored arm). The
-   * hub resolves + decrypts here; the source-ref child decrypts nothing. The
-   * grant that AUTHORIZES a credential's use is minted per-run by run-grant
-   * materialization, not carried on this frame.
+   * delivered to the child on the frame. The hub resolves + decrypts here; the
+   * source-ref child decrypts nothing. The grant that AUTHORIZES a credential's
+   * use is minted per-run by run-grant materialization, not carried on this
+   * frame.
    */
   credentials?: CredentialDelivery;
   /**
    * The projection's inline onTrigger section bodies, each already in inert wire
    * form with its per-step inference sources pinned and its own wire hash --
-   * built by `deployCodeSourcedWorkflow` from the frozen projection. Carried
-   * verbatim on the SAME `referencedDefinitions` wire field the live-authored
-   * arm uses, so the sidecar stages each body's `sources.json` (and re-verify
-   * hash) with no lineage-specific handling. Absent when the projection has no
-   * inline onTrigger body.
+   * built by `deployCodeSourcedWorkflow` from the frozen projection. The sidecar
+   * stages each body's `sources.json` (and re-verify hash). Absent when the
+   * projection has no inline onTrigger body.
    */
   referencedDefinitions?: readonly WorkflowProjectionWithSources[];
   /**
@@ -663,110 +493,49 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
   assets?: readonly WorkflowSourceAssetMount[];
 };
 
-export type SendMultiStepDeployFrameArgs =
-  | LiveAuthoredDeployFrameArgs
-  | SourceRefDeployFrameArgs;
+export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
 
 /**
- * Wire the workflow-deploy orchestrator's `sendMultiStepDeploy`
- * dependency against `SidecarRouter.sendAgentDeploy`. The router
- * accepts an optional `workflow` projection on the deploy frame; the
- * sidecar's deploy router uses field presence to route the frame to
- * the workflow deploy path. The supervisor public key returned by the
- * sidecar's `agent.deploy.ack` is threaded back as the
- * `MultiStepDeployResult.publicKey`.
+ * Emit the source-ref deploy frame onto `SidecarRouter.sendAgentDeploy`. The
+ * router accepts an optional `workflow` projection on the deploy frame; the
+ * sidecar's deploy router uses field presence to route the frame to the
+ * workflow deploy path, and returns the supervisor public key on the
+ * `agent.deploy.ack`.
  *
- * The `lineage` discriminant selects who owns the content hash. On the
- * `source-ref` arm the gate/freeze layer already hashed the inert projection,
- * so the frozen hash and the inert projection ride the frame verbatim. On the
- * `live-authored` arm the hub holds the live definition and recomputes the
- * wire hash.
- * The two arms are mutually exclusive at the type level: a source-ref deploy
- * cannot pass a live definition and cannot omit its frozen hash.
+ * The gate/freeze layer already hashed the inert projection, so the frozen hash
+ * and the inert projection ride the frame verbatim -- this never recomputes the
+ * content hash. Recomputing over a live wire lineage would diverge from the
+ * inert projection the child re-verifies against.
  *
- * Exported so the co-located caller-site test can assert that the
- * closure constructed in `launchSession` reaches the wire surface via
- * `sendAgentDeploy` with a `workflow` field structurally matching the
- * `AgentDeployFrame.workflow` schema.
+ * Exported so the co-located caller-site test can assert that the constructed
+ * closure reaches the wire surface via `sendAgentDeploy` with a `workflow`
+ * field structurally matching the `AgentDeployFrame.workflow` schema.
  */
 export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,
 ): Promise<{ publicKey: string }> {
-  if (args.lineage === "source-ref") {
-    const workflow = {
-      // The inert projection and its gate-frozen hash ride the frame verbatim;
-      // neither is re-derived here. `projection` is already the frame's
-      // `definition` type, so it is assigned with no coercion.
-      definition: args.projection,
-      sources: args.sources,
-      approvedWireHash: args.approvedWireHash,
-      sourceRef: args.sourceRef,
-      ...(args.credentials !== undefined
-        ? { credentials: args.credentials }
-        : {}),
-      ...(args.referencedDefinitions !== undefined &&
-      args.referencedDefinitions.length > 0
-        ? { referencedDefinitions: [...args.referencedDefinitions] }
-        : {}),
-      ...(args.assets !== undefined && args.assets.length > 0
-        ? { assets: [...args.assets] }
-        : {}),
-    };
-    // A prepared exclusive deploy routes its source-ref frame to the dedicated
-    // allocation, mirroring the live-authored arm below; a shared deploy sends
-    // it on the shared router. The frozen projection/hash/pin ride verbatim in
-    // both cases -- only the transport differs.
-    if (args.allocationTarget !== undefined) {
-      if (args.sidecarAllocationRouter === undefined) {
-        throw new Error("Exclusive deployment routing is not configured");
-      }
-      return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
-        args.allocationTarget,
-        args.agentAddress,
-        args.config,
-        workflow,
-      );
-    }
-    return args.sidecarRouter.sendAgentDeploy(
-      args.agentAddress,
-      args.config,
-      workflow,
-    );
-  }
-
-  const wireDefinition = toWireWorkflowDefinition(args.definition);
-  // The hub is the authority for the deployment's content hash: recompute the
-  // wire hash here so the frame carries the hub-approved value the sidecar
-  // feeds the child as `DEFINITION_HASH`. The freeze stored exactly this hash,
-  // so recomputing it at the hub reproduces the frozen approval's anchor; the
-  // sidecar never recomputes.
-  const approvedWireHash = await computeWireDefinitionHash(wireDefinition);
   const workflow = {
-    definition: wireDefinition,
+    // The inert projection and its gate-frozen hash ride the frame verbatim;
+    // neither is re-derived here. `projection` is already the frame's
+    // `definition` type, so it is assigned with no coercion.
+    definition: args.projection,
     sources: args.sources,
-    approvedWireHash,
-    ...(args.referencedDefinitions !== undefined &&
-    args.referencedDefinitions.length > 0
-      ? {
-          referencedDefinitions: await Promise.all(
-            args.referencedDefinitions.map(async (body) => {
-              const bodyWire = toWireWorkflowDefinition(body.definition);
-              return {
-                definition: bodyWire,
-                sources: body.sources,
-                // Per-body freeze anchor: the hub recomputes each referenced
-                // body's wire hash so a body child re-verifies its recompute
-                // against the hub authority.
-                approvedWireHash: await computeWireDefinitionHash(bodyWire),
-              };
-            }),
-          ),
-        }
-      : {}),
+    approvedWireHash: args.approvedWireHash,
+    sourceRef: args.sourceRef,
     ...(args.credentials !== undefined
       ? { credentials: args.credentials }
       : {}),
+    ...(args.referencedDefinitions !== undefined &&
+    args.referencedDefinitions.length > 0
+      ? { referencedDefinitions: [...args.referencedDefinitions] }
+      : {}),
+    ...(args.assets !== undefined && args.assets.length > 0
+      ? { assets: [...args.assets] }
+      : {}),
   };
+  // A prepared exclusive deploy routes its frame to the dedicated allocation; a
+  // shared deploy sends it on the shared router. The frozen projection/hash/pin
+  // ride verbatim in both cases -- only the transport differs.
   if (args.allocationTarget !== undefined) {
     if (args.sidecarAllocationRouter === undefined) {
       throw new Error("Exclusive deployment routing is not configured");
@@ -1067,16 +836,15 @@ async function emitSourceRefDeployFrame(
  * The single public composition entrypoint for a SHARED code-sourced (npm)
  * deploy: emit the source-ref frame, then INSERT the deployment's anchor
  * `workflow_run` row -- the deployment's first-class record that owns its
- * routing address and public key, mirroring the live-authored
- * `deployWorkflowDefinition`. Run-grant materialization keys off this row
+ * routing address and public key. Run-grant materialization keys off this row
  * (address + live status), so WITHOUT it no per-run grants (tool, capability, OR
  * credential) ever materialize for a source-ref deployment. Born "deployed"
  * (live but pre-trigger): the first trigger's materialization flips it to
  * "running" via `anchorWithPrincipal`'s guarded update, which a row born
  * "running" would skip. Its `anchorRunId` equals its own id, so the anchor
- * references itself. The deployer read grant the live-authored path also seeds
- * is deferred to the production route, which carries the authenticated deployer
- * principal; this stays a single insert with no grant row to pair atomically.
+ * references itself. The deployer read grant is deferred to the production
+ * route, which carries the authenticated deployer principal; this stays a
+ * single insert with no grant row to pair atomically.
  *
  * The prepared exclusive path does NOT use this wrapper: its anchor row already
  * exists from prepare time, so it wraps `emitSourceRefDeployFrame` with an
@@ -1099,34 +867,6 @@ export async function deployCodeSourcedWorkflow(
   });
 
   return { publicKey };
-}
-
-/**
- * `WorkflowRepoWriter` backed by the hub's repo substrate. Writes the
- * orchestrator-produced workflow tree (`workflow.json`,
- * `capability-declarations.json`, `.gitignore`) into a `workflow`-kind
- * repo keyed by the workflow definition id, committing on the published
- * asset ref. The hub principal is the only writer of the workflow repo,
- * matching `workflowAuthorize`'s hub-writes / sidecar-reads split.
- */
-function createHubWorkflowRepoWriter(
-  agentRepoStore: AgentRepoStore,
-): WorkflowRepoWriter {
-  return {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const files: Record<string, string> = {};
-      for (const [path, contents] of args.files) {
-        files[path] = contents;
-      }
-      await agentRepoStore.repoStore.writeTree(
-        HUB_PRINCIPAL,
-        repoId,
-        DEFAULT_ASSET_REF,
-        { files, message: "Write workflow deploy tree" },
-      );
-    },
-  };
 }
 
 export function createSessionService(
@@ -1160,18 +900,14 @@ export function createSessionService(
   }
 
   /**
-   * Stage a deploy on the sidecar: resolve assets and tool packages, write
-   * the deploy tree, provision the agent, and deliver the deploy + asset
-   * packs (Phases 0-2b). Phase 1's provision has two shapes:
-   *   - `workflowFrame` set: the single-step head hand-off fires the
-   *     deployment `agent.deploy` frame that spawns the workflow-process
-   *     child. Returns the supervisor public key.
-   *   - `stageOnly` set: a multi-step per-step stage binds a transient route
-   *     for the step address, fires a no-spawn provision frame (init repo +
-   *     record hub key), and unbinds the route once the packs land. No
-   *     child.
-   * A call with neither is rejected -- the legacy warm-harness path
-   * is gone.
+   * Stage one per-step deploy on the sidecar: resolve assets and tool
+   * packages, write the deploy tree, provision the step, and deliver the
+   * deploy + asset packs (Phases 0-2b). Phase 1 binds a transient route for
+   * the step address, fires a no-spawn provision frame (init repo + record
+   * hub key), and unbinds the route once the packs land -- no warm harness and
+   * no child. The deployment-level workflow frame, sent once after every step
+   * is staged, spawns the child. A call without `stageOnly` is rejected -- the
+   * legacy warm-harness and single-step-head paths are gone.
    */
   async function executeLaunchPhases(params: {
     agentAddress: string;
@@ -1181,42 +917,19 @@ export function createSessionService(
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
     /**
-     * Single-step workflow deploy. When present, Phase 1 fires the
-     * deployment `agent.deploy` frame carrying the workflow definition +
-     * source pins (the sidecar initializes the head repo on receipt and
-     * spawns the workflow-process child) instead of the plain provision
-     * frame. The returned supervisor public key comes from that frame's
-     * ack.
-     *
-     * Mutually exclusive with `stageOnly`.
-     */
-    workflowFrame?: {
-      definition: WorkflowDefinition;
-      sources: Record<string, InferenceSource[]>;
-      referencedDefinitions?: readonly ReferencedBodyDefinition[];
-      credentials?: CredentialDelivery;
-    };
-    /**
-     * Multi-step per-step stage. When true, Phase 1 binds a transient route
-     * for the step address, fires a no-spawn provision frame (the sidecar
-     * inits the step's agent-state repo and records the hub key), delivers
-     * the deploy + asset packs, and unbinds the route -- no provision of a
-     * warm harness and no child. The deployment-level workflow frame, sent
-     * once after every step is staged, spawns the child. Returns no ack.
-     * Mutually exclusive with `workflowFrame`.
+     * Per-step stage. When true, Phase 1 binds a transient route for the step
+     * address, fires a no-spawn provision frame (the sidecar inits the step's
+     * agent-state repo and records the hub key), delivers the deploy + asset
+     * packs, and unbinds the route -- no warm harness and no child. The
+     * deployment-level workflow frame, sent once after every step is staged,
+     * spawns the child.
      */
     stageOnly?: boolean;
     allocationTarget?: AllocatedSidecarTarget;
-  }): Promise<{ publicKey: string } | undefined> {
+  }): Promise<void> {
     const { agentAddress, agentId, runId, config, deployContent } = params;
     const toolPackagePins = params.toolPackagePins ?? [];
     const stageOnly = params.stageOnly ?? false;
-    if (params.workflowFrame !== undefined && stageOnly) {
-      throw new Error(
-        "executeLaunchPhases: workflowFrame and stageOnly are mutually exclusive",
-      );
-    }
-    const workflowFrame = params.workflowFrame;
 
     let effectiveDeployContent: DeployContent = deployContent;
 
@@ -1336,41 +1049,13 @@ export function createSessionService(
       }
     }
     try {
-      // Phase 1: Provision on sidecar. A single-step workflow deploy sends
-      // the deployment `agent.deploy` frame carrying the workflow definition
-      // + source pins: the sidecar's deploy router initializes the head repo
-      // on receipt (so the Phase 2 pack has a repo to apply into) and spawns
-      // the workflow-process child. A stage-only per-step deploy sends a
+      // Phase 1: Provision on sidecar. A stage-only per-step deploy sends a
       // no-spawn provision frame: the sidecar inits the step's agent-state
       // repo and records the hub key, but spawns nothing. Firing the frame
       // before the Phase 2 pack is the ordering barrier -- the repo must
-      // exist before the pack applies. A workflow frame's ack surfaces the
-      // supervisor public key to the caller.
-      let deployAckPublicKey: string | undefined;
+      // exist before the pack applies.
       try {
-        if (workflowFrame !== undefined) {
-          const ack = await sendMultiStepDeployFrame({
-            lineage: "live-authored",
-            sidecarRouter,
-            ...(sidecarAllocationRouter !== undefined
-              ? { sidecarAllocationRouter }
-              : {}),
-            ...(params.allocationTarget !== undefined
-              ? { allocationTarget: params.allocationTarget }
-              : {}),
-            agentAddress,
-            config,
-            definition: workflowFrame.definition,
-            sources: workflowFrame.sources,
-            ...(workflowFrame.referencedDefinitions !== undefined
-              ? { referencedDefinitions: workflowFrame.referencedDefinitions }
-              : {}),
-            ...(workflowFrame.credentials !== undefined
-              ? { credentials: workflowFrame.credentials }
-              : {}),
-          });
-          deployAckPublicKey = ack.publicKey;
-        } else if (stageOnly) {
+        if (stageOnly) {
           if (params.allocationTarget === undefined) {
             await sidecarRouter.sendProvisionStep(agentAddress, config);
           } else {
@@ -1381,27 +1066,23 @@ export function createSessionService(
             );
           }
         } else {
-          // Every caller supplies `workflowFrame` (single-step head) or
-          // `stageOnly` (multi-step per-step). A deploy with neither has no
-          // provisioning shape -- the legacy warm-harness path is gone -- so
-          // fail loud rather than ship a deploy pack the sidecar never
-          // provisioned a repo for.
-          throw new Error(
-            "executeLaunchPhases: a deploy requires either workflowFrame or stageOnly",
-          );
+          // Every caller supplies `stageOnly`. A deploy without it has no
+          // provisioning shape -- the legacy warm-harness and single-step-head
+          // paths are gone -- so fail loud rather than ship a deploy pack the
+          // sidecar never provisioned a repo for.
+          throw new Error("executeLaunchPhases: a deploy requires stageOnly");
         }
       } catch (err) {
         throw new SessionLaunchError("provision", err, false);
       }
 
-      // Phase 2: Pack delivery. On failure, the warm/workflow paths tear the
-      // sidecar deployment down; a stage-only step has no supervisor to
-      // undeploy, so it only drops its transient route (in the `finally`).
-      // The step's inited agent-state repo is left on the sidecar: the
-      // orchestrator aborts the whole deploy before the deployment frame is
-      // sent, so there is nothing to undeploy, and a redeploy of the same
-      // deployment overwrites the orphaned repo. This is an acceptable minor
-      // leak on the exceptional staging-failure path, not a live-path cost.
+      // Phase 2: Pack delivery. A stage-only step has no supervisor to
+      // undeploy, so on failure it only drops its transient route (in the
+      // `finally`). The step's inited agent-state repo is left on the sidecar:
+      // the deploy aborts before the deployment frame is sent, so there is
+      // nothing to undeploy, and a redeploy of the same deployment overwrites
+      // the orphaned repo. This is an acceptable minor leak on the exceptional
+      // staging-failure path, not a live-path cost.
       try {
         if (params.allocationTarget === undefined) {
           await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
@@ -1467,10 +1148,6 @@ export function createSessionService(
           }
         }
       }
-
-      return deployAckPublicKey === undefined
-        ? undefined
-        : { publicKey: deployAckPublicKey };
     } finally {
       if (stageOnly) {
         if (params.allocationTarget === undefined) {
@@ -1483,119 +1160,6 @@ export function createSessionService(
         }
       }
     }
-  }
-
-  /**
-   * Deploy a one-step workflow once at the head. Reuses the full
-   * launch-phase machinery (deploy-tree write, pack, asset fan-out) via
-   * `executeLaunchPhases`, swapping the Phase 1 provision frame for the
-   * workflow frame. The workflow frame makes the sidecar initialize the
-   * head repo and spawn the workflow-process child; the follow-up pack
-   * lands the head's deploy tree. Returns the supervisor's principal
-   * public key from the frame's ack. A workflow-frame launch always
-   * yields a deploy-ack key; its absence is a wiring bug, not a
-   * tolerable case.
-   */
-  async function deploySingleStepAtHeadForRoute(
-    deployParams: Parameters<DeploySingleStepFn>[0],
-    allocationTarget?: AllocatedSidecarTarget,
-  ): Promise<{ publicKey: string }> {
-    const result = await executeLaunchPhases({
-      agentAddress: deployParams.agentAddress,
-      agentId: deployParams.agentId,
-      runId: deployParams.runId,
-      config: deployParams.config,
-      deployContent: bridgeOrchestratorDeployContent(
-        deployParams.deployContent,
-      ),
-      workflowFrame: {
-        definition: deployParams.definition,
-        sources: deployParams.sources,
-        ...(deployParams.referencedDefinitions !== undefined
-          ? { referencedDefinitions: deployParams.referencedDefinitions }
-          : {}),
-        ...(deployParams.credentials !== undefined
-          ? { credentials: deployParams.credentials }
-          : {}),
-      },
-      ...(deployParams.toolPackagePins !== undefined
-        ? { toolPackagePins: deployParams.toolPackagePins }
-        : {}),
-      ...(allocationTarget !== undefined ? { allocationTarget } : {}),
-    });
-    if (result === undefined) {
-      throw new Error(
-        "single-step deploy at head: executeLaunchPhases returned no deploy-ack public key for a workflow-frame deploy",
-      );
-    }
-    return result;
-  }
-
-  const deploySingleStepAtHead: DeploySingleStepFn = (deployParams) =>
-    deploySingleStepAtHeadForRoute(deployParams);
-
-  /**
-   * Build the workflow-deploy orchestrator (with its launch-session and
-   * multi-step callbacks) and run one deploy. Shared by `launchSession`
-   * and `deployWorkflowDefinition`, which differ only in the workflow
-   * repo writer, the director registry, and the deploy args.
-   */
-  async function runWorkflowDeploy(args: {
-    workflowRepo: WorkflowRepoWriter;
-    directorRegistry: DirectorRegistry;
-    deployArgs: DeployWorkflowArgs;
-    allocationTarget?: AllocatedSidecarTarget;
-  }): Promise<DeployWorkflowResult> {
-    // The per-step launcher: stage each step's deploy tree WITHOUT a warm
-    // harness (the supervised child runs the step), with the orchestrator's
-    // structural `DeployContent` narrowed back to the hub-sessions shape
-    // first.
-    const launchSessionCallback: LaunchSessionFn = (orchestratorParams) =>
-      stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: bridgeOrchestratorDeployContent(
-          orchestratorParams.deployContent,
-        ),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-        ...(args.allocationTarget !== undefined
-          ? { allocationTarget: args.allocationTarget }
-          : {}),
-      });
-
-    const sendMultiStepDeployCallback: SendMultiStepDeployFn = (deployParams) =>
-      sendMultiStepDeployFrame({
-        lineage: "live-authored",
-        sidecarRouter,
-        ...(sidecarAllocationRouter !== undefined
-          ? { sidecarAllocationRouter }
-          : {}),
-        ...(args.allocationTarget !== undefined
-          ? { allocationTarget: args.allocationTarget }
-          : {}),
-        agentAddress: deployParams.agentAddress,
-        config: deployParams.config,
-        definition: deployParams.definition,
-        sources: deployParams.sources,
-        ...(deployParams.referencedDefinitions !== undefined
-          ? { referencedDefinitions: deployParams.referencedDefinitions }
-          : {}),
-      });
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: args.directorRegistry,
-      workflowRepo: args.workflowRepo,
-      launchSession: launchSessionCallback,
-      sendMultiStepDeploy: sendMultiStepDeployCallback,
-      deploySingleStepAtHead: (deployParams) =>
-        deploySingleStepAtHeadForRoute(deployParams, args.allocationTarget),
-    });
-
-    return orchestrator.deployWorkflow(args.deployArgs);
   }
 
   /**
@@ -1631,211 +1195,6 @@ export function createSessionService(
         ? { allocationTarget: params.allocationTarget }
         : {}),
     });
-  }
-
-  /**
-   * Deploy a single agent through the single-step-at-head path: wrap
-   * the harness as a one-step workflow (the same wrap `launchSession` uses) and
-   * route it through `deploySingleStepAtHead` with the run's REAL identity
-   * -- so the head address IS the instance address and the deploy runs as a
-   * supervised workflow-process child.
-   *
-   * Unlike the orchestrator's `runSingleStepAtHead` (which derives its deploy
-   * key from the deployment), this passes the instance id as the `agentId`
-   * deploy key -- the id the head address encodes and every deploy-ref reader
-   * resolves by, so the hub-written deploy tree and the sidecar's state
-   * writeback share one repo. The child resolves its skills and tool-package
-   * pins by mailbox address, not by this key. It records no deployment anchor
-   * run (a plain instance has no workflow asset). Returns the head's agent-key
-   * ack.
-   */
-  async function deployInstanceAtHead(params: {
-    agentAddress: string;
-    agentId: string;
-    runId: string;
-    config: HarnessConfig;
-    deployContent: DeployContent;
-    toolPackagePins?: readonly ToolPackagePin[];
-    credentials?: CredentialDelivery;
-  }): Promise<{ publicKey: string }> {
-    const { agentAddress, agentId, runId, config, deployContent } = params;
-
-    const singleStepAgent = wrapHarnessAsSingleStepWorkflow({
-      config,
-      deployContent,
-    });
-    const workflow = defineWorkflow({
-      id: `wf_${agentId}`,
-      agent: singleStepAgent,
-      trigger: { type: "mail", to: agentAddress },
-    });
-
-    // The sole step's id, read off the built definition.
-    const stepId = workflow.stepOrder[0];
-    if (stepId === undefined) {
-      throw new Error(
-        `instance deploy for ${agentAddress}: the wrapped single-step workflow has an empty stepOrder`,
-      );
-    }
-
-    // Pin the step's inference sources to the instance's FULL ordered source
-    // chain so the workflow-process child's reactor fails over across it at
-    // runtime. The route already resolved and authorized `config.sources`
-    // against the tenant catalog, so the chain is pinned directly with NO
-    // operator-approval sweep: the operator-approval gate does not apply on
-    // the pre-authorized instance path (unlike the workflow deploy path,
-    // which gates every source in the chain). Only the reactor's
-    // head-is-default invariant is enforced here.
-    assertChainHeadIsDefault({
-      sources: config.sources,
-      defaultSource: config.defaultSource,
-      workflowId: workflow.id,
-    });
-
-    return deploySingleStepAtHead({
-      agentAddress,
-      agentId,
-      runId,
-      config,
-      deployContent,
-      definition: workflow,
-      sources: { [stepId]: config.sources },
-      hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
-      ...(params.toolPackagePins !== undefined
-        ? { toolPackagePins: params.toolPackagePins }
-        : {}),
-      ...(params.credentials !== undefined
-        ? { credentials: params.credentials }
-        : {}),
-    });
-  }
-
-  async function executeWorkflowDefinitionDeploy(
-    params: Omit<DeployWorkflowDefinitionParams, "definitionAssetId"> & {
-      allocationTarget?: AllocatedSidecarTarget;
-    },
-  ): Promise<DeployWorkflowDefinitionResult> {
-    // The deploy is initiated by an authorized tenant operator against a
-    // workflow asset they authored; approve exactly the grant surface the
-    // definition declares. The same director registry feeds both this
-    // approval-set derivation and the orchestrator's gate so the walk the
-    // route approves and the walk the orchestrator enforces are identical.
-    const directorRegistry = createDefaultDirectorRegistry();
-    const walk = walkCapabilities(params.definition, directorRegistry);
-    const operatorApprovals: ApprovalSet = new Set<string>(
-      [...walk.perStep.values()].flatMap((declarations) => [
-        ...declarations.grants,
-      ]),
-    );
-
-    const result = await runWorkflowDeploy({
-      workflowRepo: createHubWorkflowRepoWriter(agentRepoStore),
-      directorRegistry,
-      deployArgs: {
-        workflow: params.definition,
-        runId: params.anchorRunId,
-        deploymentDomain: params.deploymentDomain,
-        config: params.config,
-        deployContent: params.deployContent,
-        operatorApprovals,
-        hubPublicKey: hexEncode(agentRepoStore.getSigningPublicKey()),
-        ...(params.toolPackagePins !== undefined
-          ? { toolPackagePins: params.toolPackagePins }
-          : {}),
-      },
-      ...(params.allocationTarget !== undefined
-        ? { allocationTarget: params.allocationTarget }
-        : {}),
-    });
-
-    return {
-      anchorRunId: params.anchorRunId,
-      deploymentAddress: deriveRunAddress({
-        runId: params.anchorRunId,
-        domain: params.deploymentDomain,
-      }),
-      publicKey: result.publicKey,
-    };
-  }
-
-  async function deployWorkflowDefinition(
-    params: DeployWorkflowDefinitionParams,
-  ): Promise<DeployWorkflowDefinitionResult> {
-    const {
-      tenantId,
-      anchorRunId,
-      deploymentDomain,
-      definition,
-      definitionAssetId,
-      config,
-    } = params;
-    const result = await executeWorkflowDefinitionDeploy(params);
-
-    if (db === undefined) {
-      throw new Error(
-        "deployWorkflowDefinition requires a db handle to record the deployment's anchor run",
-      );
-    }
-    // The wire-projection hash keys the definition's selector-keyed identity:
-    // one asset backs many definitions, distinguished by this content handle.
-    const wireHash = await computeLiveDefinitionHash(definition);
-    const now = new Date();
-    await db.transaction(async (tx) => {
-      // Project the workflow asset into a first-class definition (create-if-
-      // absent) so the anchor run can carry it. A native workflow's definition
-      // is otherwise born only in the one-time backfill; creating it here makes
-      // every deploy yield a definition, so the run's `definitionId` is
-      // populated at birth rather than only for the rows the backfill reached.
-      const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
-        assetId: definitionAssetId,
-        wireHash,
-      });
-
-      // The deployment's anchor run: the one workflow_run that carries the
-      // deployment's routing identity, 1:1 with the deployment (id and address
-      // both derived from `anchorRunId`). It is the deployment's sole
-      // first-class record -- the row that owns the address and public key the
-      // reconnect ownership challenge verifies: deploy-ack writes the key here
-      // and the key lookup reads it off this row. It is born "deployed" -- live
-      // but pre-trigger; the first trigger flips it to "running" -- carrying its
-      // definition. Its `anchorRunId` equals its own id, so the anchor row
-      // references itself. Child runs of this deployment are separate
-      // address-less rows. `principalId` is null -- the workflow-derived key
-      // path reads `publicKey` directly and never consults it, and the
-      // `workflow-run:<anchorRunId>` grant seeded below already covers reads.
-      await tx.insert(workflowRunTable).values({
-        id: anchorRunId,
-        tenantId,
-        anchorRunId,
-        definitionId,
-        address: deriveRunAddress({
-          runId: anchorRunId,
-          domain: deploymentDomain,
-        }),
-        publicKey: result.publicKey,
-        status: "deployed",
-        createdAt: now,
-      });
-
-      // Seed a read grant on the deployment's workflow-run resource for the
-      // deploying principal so they can observe run events out of the box,
-      // mirroring the per-instance agent-state read grant the agent deploy
-      // path seeds for the creator. Without this a non-owner deployer would
-      // deploy a workflow they cannot read the runs of.
-      await tx.insert(grantTable).values({
-        id: generateId("grant"),
-        tenantId,
-        principalId: config.principalId,
-        resource: `workflow-run:${anchorRunId}`,
-        action: "read",
-        effect: "allow",
-        origin: "creator",
-        createdAt: now,
-        updatedAt: now,
-      });
-    });
-
-    return result;
   }
 
   // Resolve the npm registry config a code-sourced install resolves external
@@ -2099,9 +1458,9 @@ export function createSessionService(
     }
 
     // Seed the deploying principal's read grant on the deployment's workflow-run
-    // resource, mirroring `deployWorkflowDefinition`. `deployCodeSourcedWorkflow`
-    // wrote the anchor row but deliberately leaves this grant to the route,
-    // which carries the authenticated deployer principal.
+    // resource. `deployCodeSourcedWorkflow` wrote the anchor row but deliberately
+    // leaves this grant to the route, which carries the authenticated deployer
+    // principal.
     const now = new Date();
     await db.insert(grantTable).values({
       id: generateId("grant"),
@@ -2129,9 +1488,8 @@ export function createSessionService(
    * still names this exact accepted generation for this anchor. A lost lock (the
    * allocation moved on, another worker took the generation) fails closed as a
    * leaked-agent `SessionLaunchError` -- the deploy already reached the sidecar,
-   * so the caller must treat the sidecar agent as possibly live. Shared by the
-   * live-authored (`deployPreparedWorkflowDefinition`) and source-ref
-   * (`deployPreparedCodeSourcedWorkflow`) prepared paths.
+   * so the caller must treat the sidecar agent as possibly live. Used by the
+   * `deployPreparedCodeSourcedWorkflow` prepared path.
    */
   async function updateAnchorPublicKeyUnderAllocationLock(args: {
     tenantId: string;
@@ -2195,38 +1553,11 @@ export function createSessionService(
     }
   }
 
-  async function deployPreparedWorkflowDefinition(
-    params: DeployPreparedWorkflowDefinitionParams,
-  ): Promise<DeployWorkflowDefinitionResult> {
-    if (db === undefined) {
-      throw new Error(
-        "deployPreparedWorkflowDefinition requires a db handle to update the prepared anchor run",
-      );
-    }
-    await restoreWorkflowRunToAllocation({
-      agentRepoStore,
-      allocationRouter: requireAllocationRouter(),
-      allocationTarget: params.allocationTarget,
-      agentAddress: deriveRunAddress({
-        runId: params.anchorRunId,
-        domain: params.deploymentDomain,
-      }),
-    });
-    const result = await executeWorkflowDefinitionDeploy(params);
-    await updateAnchorPublicKeyUnderAllocationLock({
-      tenantId: params.tenantId,
-      anchorRunId: params.anchorRunId,
-      allocationTarget: params.allocationTarget,
-      publicKey: result.publicKey,
-    });
-    return result;
-  }
-
   /**
    * Deploy a previously-frozen code-sourced approval bundle to a dedicated
-   * allocation: the source-ref analogue of `deployPreparedWorkflowDefinition`.
-   * The anchor `workflow_run` row already exists from prepare time (with its
-   * `definitionId` set), so this UPDATES it under the allocation-ownership lock
+   * allocation. The anchor `workflow_run` row already exists from prepare time
+   * (with its `definitionId` set), so this UPDATES it under the
+   * allocation-ownership lock
    * rather than inserting. No re-probe: the frozen projection/hash/closure ride
    * verbatim from `params.approved`, and the per-step inference sources are
    * re-pinned from the re-resolved chain (deliberately NOT frozen, since a
@@ -2688,12 +2019,8 @@ export function createSessionService(
 
   return {
     stageWorkflowStep,
-    deployInstanceAtHead,
-    deploySingleStepAtHead,
-    deployWorkflowDefinition,
     deployWorkflowFromSource,
     installAndApproveWorkflowSource,
-    deployPreparedWorkflowDefinition,
     deployPreparedCodeSourcedWorkflow,
     sendUserMessage,
     endSession,

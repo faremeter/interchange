@@ -302,10 +302,7 @@ function createMockSessionService(): SessionService {
   }
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    deployInstanceAtHead: () => notImpl("deployInstanceAtHead"),
-    deployWorkflowDefinition: () => notImpl("deployWorkflowDefinition"),
     deployWorkflowFromSource: () => notImpl("deployWorkflowFromSource"),
-    deploySingleStepAtHead: () => notImpl("deploySingleStepAtHead"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };

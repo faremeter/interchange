@@ -110,8 +110,8 @@ async function backendPid(
 
 const TENANT = "t1";
 const ASSET = "asset1";
-// The raw `run_...` id `deployWorkflowDefinition` stamps onto the deployment's
-// anchor run -- NOT the workflow-run repo slug. The
+// The raw `run_...` id a deploy stamps onto the deployment's anchor run --
+// NOT the workflow-run repo slug. The
 // `signal_correlation.deployment_id` and `approval.deployment_id` FKs both
 // reference `workflow_run.id`, so this raw id is what the co-write writes into
 // those columns.
@@ -411,7 +411,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("writes both rows for a real raw-id deployment addressed by a slug frame", async () => {
       // Regression: a real deployment's anchor-run id is the raw
-      // `run_...` id `deployWorkflowDefinition` stamps, while the frame's
+      // `run_...` id a deploy stamps, while the frame's
       // `anchorRunId` is the workflow-run repo slug the supervisor derives from
       // the address. seedDeployment seeds exactly that shape (raw id
       // DEPLOYMENT, address WF_ADDR), and the frame carries DEPLOYMENT_SLUG.

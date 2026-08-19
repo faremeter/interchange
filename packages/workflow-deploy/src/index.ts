@@ -7,9 +7,11 @@
 //     consumes.
 //   - approval gate: consumes the walk's output plus an operator-
 //     supplied `ApprovalSet` and yields a per-step pending delta.
-//   - orchestrator: validates the workflow, runs the walk + approval
-//     gate, writes the workflow repo, and branches on the single-step-
-//     vs-multi-step dichotomy for per-agent launches.
+//   - deploy derivation + source pinning: pure address derivation
+//     (`deriveRunAddress`, `deriveStepAddress`, `resolveStepAddress`, ...)
+//     and per-step inference-source resolution against the operator-
+//     approved grant set (`pickStepInferenceSource`,
+//     `buildInertProjectionStepSources`).
 
 export {
   walkCapabilities,
@@ -32,33 +34,16 @@ export {
   type InertBodyStepPreference,
 } from "./inert-ontrigger-bodies";
 export {
-  assertChainHeadIsDefault,
   isSourceApproved,
   pickStepInferenceSource,
   buildInertProjectionStepSources,
   buildSingleStepAgentDefinition,
-  createWorkflowDeployOrchestrator,
   deriveRunAddress,
   deriveRunAgentId,
   deriveStepAddress,
   resolveStepAddress,
   deriveStepAgentId,
   deriveWorkflowRunRepoId,
-  wrapHarnessAsSingleStepWorkflow,
-  CapabilityApprovalDeniedError,
-  MultiStepDeployHandoffMissingError,
-  MultiStepDeploymentArgsMissingError,
-  SingleStepDeployHandoffMissingError,
   WorkflowDefinitionInvalidError,
   type DeployContent,
-  type DeploySingleStepFn,
-  type DeployWorkflowArgs,
-  type DeployWorkflowResult,
-  type LaunchSessionFn,
-  type MultiStepDeployResult,
-  type ReferencedBodyDefinition,
-  type SendMultiStepDeployFn,
-  type WorkflowDeployOrchestrator,
-  type WorkflowDeployOrchestratorDeps,
-  type WorkflowRepoWriter,
 } from "./orchestrator";
