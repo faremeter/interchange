@@ -20,6 +20,13 @@ export type SingleStepAgentFixtureParams = {
   agentId?: string;
   /** The `defineWorkflow` id. Defaults to a stable fixture-local id. */
   workflowId?: string;
+  /**
+   * The agent's single inference source provider. Defaults to `anthropic`
+   * (the built-in the mock inference server speaks). A caller that exercises
+   * an operator-supplied custom adapter overrides it with the manifest's
+   * provider id so the deployed definition pins that provider.
+   */
+  provider?: string;
 };
 
 export function singleStepAgentEntry(
@@ -27,6 +34,7 @@ export function singleStepAgentEntry(
 ): string {
   const agentId = params.agentId ?? "single-step-agent";
   const workflowId = params.workflowId ?? "wf_single_step_agent";
+  const provider = params.provider ?? "anthropic";
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
@@ -37,7 +45,7 @@ const agent = defineAgent({
   tools: [],
   capabilities: [],
   inference: {
-    sources: [{ provider: "anthropic", model: "mock-model" }],
+    sources: [{ provider: ${JSON.stringify(provider)}, model: "mock-model" }],
   },
 });
 

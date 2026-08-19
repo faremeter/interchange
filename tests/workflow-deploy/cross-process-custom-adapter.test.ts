@@ -8,6 +8,11 @@
 // child + the mock inference server exercise the exact production wiring;
 // nothing here is in-process or mocked at the resolution boundary.
 //
+// The workflow deploys BY SOURCE-REF (bundle a source entry module into a hub
+// asset, probe it, approve+freeze it against a real DB, deploy the source-ref
+// frame) through `deployWorkflowSourceForTest` -- the one code-sourced deploy
+// front -- rather than the retired live-authored orchestrator path.
+//
 // POSITIVE: the manifest maps provider "custom-x" to an absolute-path .ts
 // fixture adapter (which delegates to the Anthropic adapter so it speaks the
 // mock server's wire). A one-step workflow whose source.provider is
@@ -18,43 +23,42 @@
 // built-in-only registry has no "custom-x".
 //
 // NEGATIVE (the security firewall): a second deployment names a provider the
-// manifest does NOT contain. The child's registry -- built only from the
-// operator manifest plus the linked-in built-ins -- rejects it, so the run
-// does not complete. This proves a provider string (which deploy/tenant
-// config does control) cannot conjure an adapter: only operator-supplied
-// manifest specifiers can, and they are import()-ed, never the provider key.
+// manifest does NOT contain. The sidecar deploy router's source-admission
+// gate -- built only from the operator manifest plus the linked-in built-ins
+// -- rejects it, so the source-ref deploy frame rejects synchronously and
+// `deployWorkflowSourceForTest` throws. This proves a provider string (which
+// deploy/tenant config does control) cannot conjure an adapter: only
+// operator-supplied manifest specifiers can, and they are import()-ed, never
+// the provider key.
 
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
+  type DeployWorkflowSourceForTestHandle,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const STEP_ID = "step1";
@@ -73,9 +77,48 @@ const FIXTURE_SPECIFIER = path.resolve(
   "fixtures/custom-inference-adapter.ts",
 );
 
+// The definition's own tenant, the caller principal that creates the
+// definition assets, and the two `workflow`-kind assets the frozen
+// definitions project over (one per deployment). The install/approve freeze
+// and the anchor `workflow_run` insert both write against these, so they must
+// exist in the real DB before the deploys run.
+const TENANT_ID = "tnt_cross_process_custom_adapter";
+const CALLER_PRINCIPAL_ID = "prn_cross_process_custom_adapter";
+const POSITIVE_ASSET_ID = "ast_cross_process_custom_positive_wf";
+const NEGATIVE_ASSET_ID = "ast_cross_process_custom_negative_wf";
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: POSITIVE_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "cross-process-custom-positive-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+  await seedAsset(h.db, {
+    id: NEGATIVE_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "cross-process-custom-negative-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv({
     inferenceEchoUserMessage: true,
     sidecarEnv: {
@@ -91,221 +134,161 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-type DeployedWorkflow = {
-  deploymentMailAddress: string;
-  workflowRunRepoId: RepoId;
-};
-
-// Deploy a one-step workflow whose single source uses `provider`. Models the
-// single-step-message-input integration test's orchestrator wiring.
-async function deployCustomProviderWorkflow(
-  anchorRunId: string,
-  provider: string,
-): Promise<DeployedWorkflow> {
+// Deploy a one-step workflow BY SOURCE-REF whose single source uses
+// `provider`. The entry module pins that provider in the agent's inference
+// source, and the operator-pinned per-step source carries it too, so the
+// sidecar's source-admission gate and the child's adapter resolution both key
+// off the same provider id.
+async function deployCustomProviderWorkflow(opts: {
+  anchorRunId: string;
+  provider: string;
+  definitionAssetId: string;
+}): Promise<DeployWorkflowSourceForTestHandle> {
   const deploymentMailAddress = deriveRunAddress({
-    runId: anchorRunId,
+    runId: opts.anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
-  const sourceId = `${provider}:mock-model`;
-  const agent = defineAgent({
-    id: `agent-${anchorRunId}`,
-    systemPrompt: "You are the cross-process custom-adapter test agent.",
-    tools: [],
-    capabilities: [],
-    inference: {
-      sources: [{ provider, model: "mock-model" }],
-    },
-  });
-
-  const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${anchorRunId}`,
-    trigger: { type: "mail", to: deploymentMailAddress },
-    steps: {
-      [STEP_ID]: step({ agent }),
-    },
-  });
+  const sourceId = `${opts.provider}:mock-model`;
+  const inferenceSource: InferenceSource = {
+    id: sourceId,
+    provider: opts.provider,
+    baseURL: `http://localhost:${env.inference.server.port}`,
+    apiKey: "sk-mock",
+    model: "mock-model",
+  };
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${anchorRunId}`,
+    agentId: opts.anchorRunId,
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
+    systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
     grants: [],
-    sources: [
-      {
-        id: sourceId,
-        provider,
-        baseURL: `http://localhost:${env.inference.server.port}`,
-        apiKey: "sk-mock",
-        model: "mock-model",
-      },
-    ],
+    sources: [inferenceSource],
     defaultSource: sourceId,
   };
 
-  const operatorApprovals: ApprovalSet = new Set<string>([
-    `inference.source:${sourceId}`,
-    "director:@intx/agent/default",
-    `mail.address:${deploymentMailAddress}`,
-    `mail.send:${DEPLOYMENT_DOMAIN}`,
-  ]);
-
-  const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    await env.hub.sessionService.stageWorkflowStep({
-      agentAddress: orchestratorParams.agentAddress,
-      agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.runId,
-      config: orchestratorParams.config,
-      deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-      ...(orchestratorParams.toolPackagePins !== undefined
-        ? { toolPackagePins: orchestratorParams.toolPackagePins }
-        : {}),
-    });
-  };
-
-  const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-    env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-      definition: {
-        id: params.definition.id,
-        triggers: [...params.definition.triggers],
-        stepOrder: [...params.definition.stepOrder],
-        steps: params.definition.steps as Record<string, unknown>,
-        ...(params.definition.state !== undefined
-          ? { state: params.definition.state }
-          : {}),
-      },
-      sources: params.sources,
-    });
-
-  const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-    env.hub.sessionService.deploySingleStepAtHead(params);
-
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-      const files: Record<string, string> = {};
-      for (const [k, v] of args.files) {
-        files[k] = v;
-      }
-      await env.hub.agentRepoStore.repoStore.writeTree(
-        principal,
-        repoId,
-        DEFAULT_ASSET_REF,
-        {
-          files,
-          message: `cross-process custom-adapter test: write workflow repo ${args.workflowRepoId}`,
-        },
-      );
-    },
-  };
-
-  const orchestrator = createWorkflowDeployOrchestrator({
-    directorRegistry: createDefaultDirectorRegistry(),
-    workflowRepo,
-    launchSession,
-    sendMultiStepDeploy,
-    deploySingleStepAtHead,
+  const entryModule = singleStepAgentEntry({
+    stepId: STEP_ID,
+    systemPrompt: "You are the cross-process custom-adapter test agent.",
+    address: deploymentMailAddress,
+    provider: opts.provider,
+    agentId: `agent-${opts.anchorRunId}`,
+    workflowId: `wf_${opts.anchorRunId}`,
   });
 
-  const result = await orchestrator.deployWorkflow({
-    workflow,
-    config,
-    deployContent: { systemPrompt: config.systemPrompt },
-    operatorApprovals,
-    runId: anchorRunId,
+  return deployWorkflowSourceForTest(env, {
+    entryModule,
+    db: h.db,
+    tenantId: TENANT_ID,
+    definitionAssetId: opts.definitionAssetId,
+    anchorRunId: opts.anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
-    hubPublicKey: "00".repeat(32),
+    agentAddress: deploymentMailAddress,
+    approvals: "approve-probed",
+    config,
+    sources: { [STEP_ID]: [inferenceSource] },
   });
-  expect(result.publicKey).toBeTruthy();
-
-  const workflowRunRepoId: RepoId = {
-    kind: "workflow-run",
-    id: deriveDeploymentId(deploymentMailAddress),
-  };
-  env.registerDeployment({
-    anchorRunId,
-    workflowDefinition: workflow,
-    workflowRunRepoId,
-    workflowRunRef: "refs/heads/main",
-    mailAddress: deploymentMailAddress,
-  });
-
-  return { deploymentMailAddress, workflowRunRepoId };
 }
 
-describe("cross-process custom inference adapter (INTR-233)", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("a manifest custom adapter resolves in the forked child", async () => {
-    const anchorRunId = "run_cross-process-custom-positive";
-    const body = "Cross-process custom adapter body sentinel-7731.";
-    const { deploymentMailAddress, workflowRunRepoId } =
-      await deployCustomProviderWorkflow(anchorRunId, CUSTOM_PROVIDER);
-
-    const mail = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<cross-process-custom-positive@integration.interchange>",
-      content: body,
+describe.skipIf(!harnessDbEnvAvailable())(
+  "cross-process custom inference adapter (INTR-233)",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
-    });
+    test("a manifest custom adapter resolves in the forked child", async () => {
+      const anchorRunId = "run_cross-process-custom-positive";
+      const body = "Cross-process custom adapter body sentinel-7731.";
+      const handle = await deployCustomProviderWorkflow({
+        anchorRunId,
+        provider: CUSTOM_PROVIDER,
+        definitionAssetId: POSITIVE_ASSET_ID,
+      });
+      expect(handle.publicKey).toBeTruthy();
 
-    const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
-    if (terminal.type !== "RunCompleted") {
+      const deploymentMailAddress = handle.mailAddress;
+      const workflowRunRepoId = handle.workflowRunRepoId;
+
+      // The source-ref frame round-trips through the real sidecar subprocess
+      // (index the pack, check out the pinned subtree, register the address),
+      // so routability is asynchronous. Wait for it before firing the trigger.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      const mail = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<cross-process-custom-positive@integration.interchange>",
+        content: body,
+      });
+
+      const runId = await waitForFirstRunId(env, workflowRunRepoId, {
+        diagnostics: env.sidecarDiagnostics,
+        timeoutMs: 20_000,
+      });
+
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        anchorRunId,
+        runId,
+        {
+          timeoutMs: 20_000,
+          diagnostics: env.sidecarDiagnostics,
+        },
+      );
+      if (terminal.type !== "RunCompleted") {
+        const events = await readWorkflowRunEvents(env, anchorRunId, runId);
+        const failed = events.find(
+          (e) => e.type === "StepFailed" || e.type === "RunFailed",
+        );
+        throw new Error(
+          `expected RunCompleted for the custom-adapter run, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+
       const events = await readWorkflowRunEvents(env, anchorRunId, runId);
-      const failed = events.find(
-        (e) => e.type === "StepFailed" || e.type === "RunFailed",
-      );
-      throw new Error(
-        `expected RunCompleted for the custom-adapter run, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
+      const startedBody = events.find((e) => e.type === "RunStarted")?.body;
+      if (startedBody === undefined) throw new Error("missing RunStarted");
+      expect(startedBody["consumedMessageId"]).toBe(mail.messageId);
 
-    const events = await readWorkflowRunEvents(env, anchorRunId, runId);
-    const startedBody = events.find((e) => e.type === "RunStarted")?.body;
-    if (startedBody === undefined) throw new Error("missing RunStarted");
-    expect(startedBody["consumedMessageId"]).toBe(mail.messageId);
+      // The echoed reply carries the inbound body, proving the custom adapter
+      // ran a full inference round-trip in the child (request built, mock SSE
+      // parsed) -- not merely that resolution did not throw.
+      const reply = readStepReply(stepCompletedBody(events));
+      expect(reply.startsWith("echo:")).toBe(true);
+      expect(reply).toContain(body);
+    });
 
-    // The echoed reply carries the inbound body, proving the custom adapter
-    // ran a full inference round-trip in the child (request built, mock SSE
-    // parsed) -- not merely that resolution did not throw.
-    const reply = readStepReply(stepCompletedBody(events));
-    expect(reply.startsWith("echo:")).toBe(true);
-    expect(reply).toContain(body);
-  });
-
-  test("a provider absent from the manifest is rejected at the source gate", async () => {
-    // The firewall: the operator registry holds only the built-ins plus the
-    // manifest's "custom-x". A provider id that no manifest entry and no
-    // built-in supplies is rejected by the sidecar deploy router's
-    // source-admission gate (which reuses `canBuildSource` against that same
-    // registry) before the workflow-process child is spawned -- so a
-    // provider string (which deploy/tenant config controls) cannot conjure
-    // an adapter, and the deploy is rejected synchronously at deploy time
-    // rather than failing the first run.
-    await expect(
-      deployCustomProviderWorkflow(
-        "cross-process-custom-negative",
-        ABSENT_PROVIDER,
-      ),
-    ).rejects.toThrow(new RegExp(`${ABSENT_PROVIDER}.*not registered`));
-  });
-});
+    test("a provider absent from the manifest is rejected at the source gate", async () => {
+      // The firewall: the operator registry holds only the built-ins plus the
+      // manifest's "custom-x". A provider id that no manifest entry and no
+      // built-in supplies is rejected by the sidecar deploy router's
+      // source-admission gate (which reuses `canBuildSource` against that same
+      // registry) BEFORE the workflow-process child is spawned. The throw
+      // propagates back through the source-ref deploy frame, so
+      // `deployWorkflowSourceForTest` rejects synchronously at deploy time
+      // rather than failing the first run -- a provider string (which
+      // deploy/tenant config controls) cannot conjure an adapter.
+      await expect(
+        deployCustomProviderWorkflow({
+          anchorRunId: "run_cross-process-custom-negative",
+          provider: ABSENT_PROVIDER,
+          definitionAssetId: NEGATIVE_ASSET_ID,
+        }),
+      ).rejects.toThrow(new RegExp(`${ABSENT_PROVIDER}.*not registered`));
+    });
+  },
+);
 
 /** Find the single step's `StepCompleted` event body. */
 function stepCompletedBody(
