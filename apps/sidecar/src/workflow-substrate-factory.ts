@@ -75,7 +75,6 @@ import {
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createInMemorySpawnChild,
-  createWorkflowSpawnSuspendableChild,
   createWorkflowStepInvoker,
   hashGrants,
   loadWorkflowPluginFactoriesFromClosure,
@@ -747,8 +746,8 @@ export interface SidecarStepBuildEnvDeps {
    * feeds the resulting plugin factories into the per-step plugin chain. A
    * plugin package contributes no agent-visible tool factory, so this closure
    * load is the only channel that reaches an `env.plugins` a source workflow's
-   * posix bundle consumes. Undefined on the live-authored and toolless arms,
-   * which never materialize plugins from a closure.
+   * posix bundle consumes. Undefined on a toolless deploy, which never
+   * materializes plugins from a closure.
    */
   closurePackageDir?: string;
   /**
@@ -982,16 +981,18 @@ export function createSidecarStepBuildEnv(
     //     which have no agent slot, so Option A cannot carry them -- are
     //     materialized separately from the frozen closure the child already
     //     holds (`materializeSourcePluginFactories`) and fed into the SAME
-    //     `pluginFactories` slot the live-authored path uses, so the existing
-    //     per-step plugin chain wires them onto `env.plugins`.
+    //     `pluginFactories` slot `materializeStepTools` fills for pinned
+    //     packages, so the existing per-step plugin chain wires them onto
+    //     `env.plugins`.
     //
-    //   - Live-authored lineage: materialize the pinned tool-package closure
-    //     (posix, LSP, mail, ...) from its on-disk deploy tree, rooted per step
-    //     under `storeDir` so concurrent steps in one child never collide on
-    //     the tarball cache or the apply-state tree. A deploy with no manifest
-    //     yields empty tools (the legitimate `rawManifestBytes === undefined`
-    //     case); a present-but-broken manifest surfaces loudly through
-    //     `materializeStepTools` rather than degrading to empty tools.
+    //   - Pinned tool packages (`materializeStepTools`): materialize the pinned
+    //     tool-package closure (posix, LSP, mail, ...) from its on-disk deploy
+    //     tree, rooted per step under `storeDir` so concurrent steps in one
+    //     child never collide on the tarball cache or the apply-state tree. A
+    //     step with no manifest yields empty tools (the legitimate
+    //     `rawManifestBytes === undefined` case); a present-but-broken manifest
+    //     surfaces loudly through `materializeStepTools` rather than degrading to
+    //     empty tools.
     const materialization: StepToolMaterialization =
       deps.toolless === true
         ? { factories: [], pluginFactories: [] }
@@ -2067,17 +2068,14 @@ export function createSidecarSubstrateFactory(
         toolMarkFloorByStep.set(stepId, grants);
       },
       toolless: false,
-      // A source-ref child runs each step agent's own evaluated tool factories
-      // (fed from `req.agent.toolFactories`); a live-authored child reads the
-      // pinned tool-package manifest off the deploy tree. A child is one
-      // lineage or the other for its whole life, so this is fixed here.
-      sourceTools: env.spawn.lineage === "source-ref",
-      // The materialized closure dir, present only on the source-ref lineage
-      // (the discriminated `SpawnTimeEnv` pairs it with `lineage`). The source
-      // arm materializes each step agent's declared plugin packages from it.
-      ...(env.spawn.lineage === "source-ref"
-        ? { closurePackageDir: env.spawn.closurePackageDir }
-        : {}),
+      // Source-ref is the only deploy lineage: the child runs each step agent's
+      // own evaluated tool factories (fed from `req.agent.toolFactories`) from
+      // the materialized closure, never a pinned tool-package manifest off a
+      // deploy tree.
+      sourceTools: true,
+      // The materialized closure dir the source arm materializes each step
+      // agent's declared plugin packages from. Always present (source-ref only).
+      closurePackageDir: env.spawn.closurePackageDir,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
@@ -2308,27 +2306,13 @@ export function createSidecarSubstrateFactory(
     const runChild = createSidecarRunChild(childRunDeps);
 
     // An onTrigger section runs each event's body as a suspendable child.
-    // The resolving adapter maps the body's definition ref to a definition
-    // and delegates to the sidecar spawner, which returns the live handle
-    // `runOnTrigger` drives across the body's approval parks. A body is part
-    // of the parent's approval, so the adapter re-verifies it against the
-    // parent's frame-carried body hashes: thread the parsed
-    // `referencedDefinitionHashes` from the spawn env into the barrier.
-    // The raw in-process body executor is shared into BOTH the disk-backed
-    // combined resolver here (the live-authored lineage, which reads + re-
-    // verifies each body off the deploy tree) AND the child bindings, where
-    // run-child builds the source-ref in-memory resolver from it after re-
-    // evaluating the closure. Built once so both share one repoStore/runChild;
-    // a child is one lineage or the other per `env.lineage`, never both.
+    // Source-ref is the only deploy lineage: `run-child` builds the in-memory
+    // body resolver from this raw executor plus the lifted-body map it extracts
+    // after re-evaluating the parent's closure, so a body resolves in-process
+    // with no on-disk read and no separate per-body re-verify (the parent's
+    // re-verify already covers every inline body).
     const runSuspendableChild =
       createSidecarSpawnSuspendableChild(childRunDeps);
-    const spawnSuspendableChild = createWorkflowSpawnSuspendableChild({
-      substrate,
-      principal,
-      deployRef: validated.WORKFLOW_DEFINITION_REF,
-      runSuspendableChild,
-      referencedDefinitionHashes: env.spawn.referencedDefinitionHashes,
-    });
 
     // Per-run scratch reclamation for the cold (multi-step) path. The
     // run-loop fires this once each run reaches its terminal status; it
@@ -2435,7 +2419,6 @@ export function createSidecarSubstrateFactory(
       invokeStep,
       initialSources: stepInferenceSources,
       runChild,
-      spawnSuspendableChild,
       runSuspendableChild,
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,

@@ -461,7 +461,6 @@ function makeSourceRefEnv(opts: {
     DEFINITION_HASH: opts.definitionHash,
     MAILBOX_ADDRESS: "deployment-x@example.com",
     STEP_COUNT: "1",
-    WORKFLOW_LINEAGE: "source-ref",
     CLOSURE_PACKAGE_DIR: opts.closurePackageDir,
   };
 }
@@ -478,7 +477,7 @@ async function waitForFirstFrame(
 }
 
 describe("source-ref run child", () => {
-  test("parses a source-ref spawn env into the lineage + closurePackageDir", () => {
+  test("parses a source-ref spawn env into the closurePackageDir", () => {
     const env = parseSpawnTimeEnv(
       makeSourceRefEnv({
         channelId: generateChannelId(),
@@ -488,25 +487,13 @@ describe("source-ref run child", () => {
         closurePackageDir: "/tmp/closure",
       }),
     );
-    expect(env.lineage).toBe("source-ref");
     expect(env.closurePackageDir).toBe("/tmp/closure");
   });
 
-  test("a live-authored env (no marker) parses as live-authored with no closure dir", () => {
-    const env = parseSpawnTimeEnv({
-      IPC_CHANNEL_ID: generateChannelId(),
-      IPC_HMAC_KEY: hexEncode(generateHmacKey()),
-      HOST_PUBKEY: hexEncode(new Uint8Array(32)),
-      DEPLOYMENT_ID: "deployment-x",
-      DEFINITION_HASH: "abc",
-      MAILBOX_ADDRESS: "deployment-x@example.com",
-      STEP_COUNT: "1",
-    });
-    expect(env.lineage).toBe("live-authored");
-    expect(env.closurePackageDir).toBeUndefined();
-  });
-
-  test("a source-ref marker with no closure dir fails closed at parse", () => {
+  test("an env with no closure dir fails closed at parse", () => {
+    // Source-ref is the only lineage, so CLOSURE_PACKAGE_DIR is required: an env
+    // that omits it has nothing to evaluate and must fail closed rather than
+    // fall back to a definition load path that no longer exists.
     expect(() =>
       parseSpawnTimeEnv({
         IPC_CHANNEL_ID: generateChannelId(),
@@ -516,9 +503,8 @@ describe("source-ref run child", () => {
         DEFINITION_HASH: "abc",
         MAILBOX_ADDRESS: "deployment-x@example.com",
         STEP_COUNT: "1",
-        WORKFLOW_LINEAGE: "source-ref",
       }),
-    ).toThrow(/requires CLOSURE_PACKAGE_DIR/);
+    ).toThrow(/CLOSURE_PACKAGE_DIR/);
   });
 
   test("evaluates the closure to a live definition, re-verifies a matching hash, and runs a fresh trigger to terminal", async () => {

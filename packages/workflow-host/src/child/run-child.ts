@@ -60,7 +60,6 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import { readProcessingEntry } from "@intx/hub-sessions/substrate";
 import type { DirectorRegistry } from "@intx/agent";
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
@@ -120,10 +119,7 @@ import type { CredentialsSnapshot } from "../supervisor/credentials";
 import { hashGrants } from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
-import {
-  loadVerifiedWorkflowDefinition,
-  loadVerifiedWorkflowDefinitionFromClosure,
-} from "./verified-definition-loader";
+import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
 import { loadWorkflowDirectorRegistryFromClosure } from "../workflow-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
 import {
@@ -134,8 +130,6 @@ import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 
 const logger = getLogger(["workflow-host", "child"]);
-
-const WORKFLOW_JSON_PATH = "workflow.json";
 
 /**
  * `WorkflowAuthorize` closure factory shape. The child's authorize
@@ -358,26 +352,10 @@ export interface RunWorkflowChildBindings {
    */
   runChild?: RunChildWorkflow;
   /**
-   * Suspendable child-spawn callback the runtime body invokes for an
-   * `onTrigger` section's per-event body: a child run driven across approval
-   * parks via a live handle (see `SpawnSuspendableChild`). The production
-   * binary wires this against `createWorkflowSpawnSuspendableChild`. Optional
-   * because it is only needed to service `onTrigger` sections -- a child
-   * process that never runs one omits it, and `runOnTrigger` fails loud if a
-   * workflow uses a section the env did not wire.
-   *
-   * Host-widened with an `onEvent` sink (`HostSpawnSuspendableChild`): the
-   * runtime env exposes the narrow `SpawnSuspendableChild`, and `buildRuntimeEnv`
-   * injects the run's event-channel funnel into this binding so a body's live
-   * inference events reach the hub stream. The runtime contract stays narrow.
-   */
-  spawnSuspendableChild?: HostSpawnSuspendableChild;
-  /**
-   * Raw in-process suspendable-child executor. On the source-ref lineage,
-   * `run-child` builds the in-memory body resolver from this executor plus the
-   * bodies map it extracts AFTER re-evaluating the closure -- the substrate
-   * factory cannot build that resolver because the bodies map does not exist
-   * pre-eval. Optional for the same reason as `spawnSuspendableChild`: a child
+   * Raw in-process suspendable-child executor. `run-child` builds the in-memory
+   * onTrigger-body resolver from this executor plus the bodies map it extracts
+   * AFTER re-evaluating the closure -- the substrate factory cannot build that
+   * resolver because the bodies map does not exist pre-eval. Optional: a child
    * that runs no onTrigger section omits it.
    */
   runSuspendableChild?: RunSuspendableChild;
@@ -426,8 +404,6 @@ export interface RunWorkflowChildBindings {
    * invocation step settles as a terminal failure, the pre-recovery behavior.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
-  /** Optional director registry; defaults to the canonical built-ins. */
-  directors?: DirectorRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
   clock?: () => Date;
   /** Optional id generator override; production wires a monotonic one. */
@@ -632,88 +608,65 @@ export async function runWorkflowChild(
     writer: opts.eventWriter,
   });
 
-  // Re-verify barrier at the load boundary, branching on deployment lineage.
-  // `opts.env.definitionHash` is the hub-approved wire hash in both arms; the
+  // Re-verify barrier at the load boundary. Source-ref is the only deploy
+  // lineage: the inert projection is a non-executable approval surface (agents
+  // carry `modelSources`/no `inference`, tool factories are plain data), so the
+  // child EVALUATES the pinned code closure to a live definition and re-verifies
+  // by projecting it back to inert and hashing (`computeLiveDefinitionHash`)
+  // against `opts.env.definitionHash`; a divergent closure fails closed. The
   // load happens once before both the resume loop and the trigger loop, so the
   // same verified definition serves every fresh trigger AND every resume.
   //
-  //   - source-ref: the inert `workflow.json` is a non-executable approval
-  //     surface (agents carry `modelSources`/no `inference`, tool factories are
-  //     plain data), so the child EVALUATES the pinned code closure to a live
-  //     definition and re-verifies by projecting it back to inert and hashing
-  //     (`computeLiveDefinitionHash`); a divergent closure fails closed.
-  //   - live-authored: read the inert `workflow.json` off the deploy tree and
-  //     re-verify the on-disk bytes' hash, unchanged.
-  // Extracted source-ref onTrigger bodies, keyed by ref, for the in-memory
-  // suspendable-child resolver below (empty on the live-authored arm, which
-  // resolves bodies from disk instead).
-  let bodiesMap = new Map<string, WorkflowDefinition>();
-  let definition: WorkflowDefinition;
-  if (opts.env.lineage === "source-ref") {
-    // The `SpawnTimeEnv` union guarantees a source-ref env carries
-    // `closurePackageDir`; no presence check is needed here.
-    definition = await loadVerifiedWorkflowDefinitionFromClosure({
-      packageDir: opts.env.closurePackageDir,
-      approvedHash: opts.env.definitionHash,
-    });
-    // Post-verify structural rewrite: the re-verify above hashed the closure's
-    // INLINE onTrigger bodies (matching the frozen approval); now lift each to
-    // a `{ ref }` so the runtime dispatches to the body child, and keep the
-    // extracted body definitions in an in-memory map. The source-ref
-    // suspendable-child resolver runs each body from THIS map -- the parent's
-    // already-re-verified closure -- with no disk read and no separate per-body
-    // re-verify. The rewrite MUST follow the re-verify: rewriting first would
-    // diverge from the frozen inline-body hash.
-    const { workflow, bodies } = rewriteInlineOnTriggerBodies(definition);
-    definition = workflow;
-    bodiesMap = new Map(bodies.map((b) => [b.ref, b.definition]));
-  } else {
-    definition = await loadVerifiedWorkflowDefinition({
-      substrate: opts.bindings.substrate,
-      repoId: opts.bindings.workflowDefinitionRepoId,
-      workflowPath: WORKFLOW_JSON_PATH,
-      approvedHash: opts.env.definitionHash,
-    });
-  }
+  // Post-verify structural rewrite: the re-verify above hashed the closure's
+  // INLINE onTrigger bodies (matching the frozen approval); now lift each to a
+  // `{ ref }` so the runtime dispatches to the body child, and keep the
+  // extracted body definitions in an in-memory map. The suspendable-child
+  // resolver runs each body from THIS map -- the parent's already-re-verified
+  // closure -- with no disk read and no separate per-body re-verify. The rewrite
+  // MUST follow the re-verify: rewriting first would diverge from the frozen
+  // inline-body hash.
+  const verifiedDefinition = await loadVerifiedWorkflowDefinitionFromClosure({
+    packageDir: opts.env.closurePackageDir,
+    approvedHash: opts.env.definitionHash,
+  });
+  const { workflow, bodies } = rewriteInlineOnTriggerBodies(verifiedDefinition);
+  let definition: WorkflowDefinition = workflow;
+  const bodiesMap = new Map<string, WorkflowDefinition>(
+    bodies.map((b) => [b.ref, b.definition]),
+  );
 
   // An owned `childWorkflow` import embeds its child inline in the parent's
   // definition (folded into the parent's hash and approval), so it is already
-  // covered by the re-verify above on BOTH lineages. Lift each inline child to
-  // an internal `{ ref }` -- the form the runtime dispatches -- and keep the
-  // lifted definitions in an in-memory map. The terminal childWorkflow resolver
-  // below runs each child from THIS map, with no on-disk asset read and no
-  // separate per-child re-verify. Unlike an onTrigger body (extracted to its
-  // own on-disk asset on the live-authored lineage), a childWorkflow child
-  // rides inline on every lineage, so the rewrite runs unconditionally here.
+  // covered by the re-verify above. Lift each inline child to an internal
+  // `{ ref }` -- the form the runtime dispatches -- and keep the lifted
+  // definitions in an in-memory map. The terminal childWorkflow resolver below
+  // runs each child from THIS map, with no on-disk asset read and no separate
+  // per-child re-verify.
   const childRewrite = rewriteInlineChildWorkflowBodies(definition);
   definition = childRewrite.workflow;
   const childBodiesMap = new Map(
     childRewrite.bodies.map((b) => [b.ref, b.definition]),
   );
 
-  // Directors resolve from the pinned closure on the source-ref arm so a
-  // custom director authored in the workflow's own package runs; the
-  // live-authored arm keeps the injected-or-default registry. Loading
-  // directors OUTSIDE the definition-hash re-verify is safe: the approved
-  // hash pins each director's id + config (which director runs cannot change
-  // post-approval) and the closure's SRI pins its module bytes. Folding
-  // directors into the hash would be redundant, so it is deliberately not
-  // done -- see `loadWorkflowDirectorRegistryFromClosure`.
-  const directors =
-    opts.env.lineage === "source-ref"
-      ? await loadWorkflowDirectorRegistryFromClosure({
-          packageDir: opts.env.closurePackageDir,
-        })
-      : (opts.bindings.directors ?? createDefaultDirectorRegistry());
+  // Directors resolve from the pinned closure so a custom director authored in
+  // the workflow's own package runs. Loading directors OUTSIDE the
+  // definition-hash re-verify is safe: the approved hash pins each director's
+  // id + config (which director runs cannot change post-approval) and the
+  // closure's SRI pins its module bytes. Folding directors into the hash would
+  // be redundant, so it is deliberately not done -- see
+  // `loadWorkflowDirectorRegistryFromClosure`.
+  const directors = await loadWorkflowDirectorRegistryFromClosure({
+    packageDir: opts.env.closurePackageDir,
+  });
 
   // Suspendable-child (onTrigger body) resolver, selected ONCE per deployment:
   // the bodies map is immutable and the per-run `onEvent` is injected later in
-  // `buildRuntimeEnv`. On source-ref, resolve each body from the parent's
-  // in-memory closure (already re-verified above) via the raw executor binding;
-  // the live-authored arm keeps the injected disk-backed binding. A source-ref
-  // deployment that carries bodies but whose host wired no executor is a
-  // misconfiguration -- fail loud at startup rather than silently falling back
-  // to a disk read (the exact behaviour this arm exists to avoid).
+  // `buildRuntimeEnv`. Resolve each body from the parent's in-memory closure
+  // (already re-verified above) via the raw executor binding. A deployment that
+  // carries bodies but whose host wired no executor is a misconfiguration --
+  // fail loud at startup rather than silently falling back to a disk read (the
+  // exact behaviour this arm exists to avoid). A deployment with no onTrigger
+  // body leaves the host undefined; its suspendable-child slot is never invoked.
   let suspendableChildHost: HostSpawnSuspendableChild | undefined;
   if (bodiesMap.size > 0) {
     const executor = opts.bindings.runSuspendableChild;
@@ -728,8 +681,6 @@ export async function runWorkflowChild(
       bodies: bodiesMap,
       runSuspendableChild: executor,
     });
-  } else {
-    suspendableChildHost = opts.bindings.spawnSuspendableChild;
   }
 
   // Terminal childWorkflow resolver, selected ONCE per deployment. When the
