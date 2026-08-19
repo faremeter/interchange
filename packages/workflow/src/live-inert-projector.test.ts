@@ -179,6 +179,24 @@ describe("grant-surface reification", () => {
       { provider: "openai", model: "gpt-4o" },
     ]);
   });
+
+  test("projects the agent's declared plugin-package names", () => {
+    const agent = defineAgent({
+      id: "agent_main",
+      systemPrompt: "main agent",
+      tools: [],
+      plugins: ["@intx/tools-lsp"],
+      capabilities: [],
+      inference: { sources: [OPENAI] },
+    });
+    const main = mainStepOf(mkSingleStep(agent));
+    expect(main.agent.plugins).toEqual(["@intx/tools-lsp"]);
+  });
+
+  test("omits plugins from the projection when the agent declares none", () => {
+    const main = mainStepOf(baseWorkflow());
+    expect(main.agent.plugins).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -233,6 +251,20 @@ describe("hash binds to the grant surface", () => {
     await expectGrantMutation(
       mkSingleStep(mkAgent([alphaTool, gammaTool], baseCapabilities, [OPENAI])),
     );
+  });
+
+  test("adding a declared plugin package changes projection and hash", async () => {
+    // A plugin package contributes tool grants the operator approves, so a
+    // tampered plugin set must move the hashed surface and fail re-verify.
+    const withPlugin = defineAgent({
+      id: "agent_main",
+      systemPrompt: "main agent",
+      tools: [alphaTool, betaTool],
+      plugins: ["@intx/tools-lsp"],
+      capabilities: [...baseCapabilities],
+      inference: { sources: [OPENAI] },
+    });
+    await expectGrantMutation(mkSingleStep(withPlugin));
   });
 
   test("adding a mail.send domain changes projection and hash", async () => {

@@ -1,8 +1,11 @@
 export {
   loadWorkflowDefinitionFromClosure,
   loadWorkflowDirectorRegistryFromClosure,
+  loadWorkflowPluginFactoriesFromClosure,
+  loadWorkflowPluginToolDefinitionsFromClosure,
   type LoadWorkflowDefinitionFromClosureArgs,
   type LoadWorkflowDirectorRegistryFromClosureArgs,
+  type LoadWorkflowPluginsFromClosureArgs,
 } from "./workflow-definition-loader";
 export {
   createWorkflowRunRepoStore,

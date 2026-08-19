@@ -55,6 +55,19 @@ export interface AgentDefinition<EnvReq extends BaseEnv = BaseEnv> {
   readonly systemPrompt: string;
   readonly director?: DirectorRef;
   readonly toolFactories: readonly AnnotatedToolFactory<EnvReq>[];
+  /**
+   * Tool-package names whose `definePlugin` factories this agent uses
+   * (`["@intx/tools-lsp"]`). Unlike a tool factory -- which the agent
+   * imports and places in `toolFactories`, so it is agent-visible -- a
+   * plugin package contributes NO agent-visible factory: its plugin
+   * factory reaches the agent only through `env.plugins`, wired by the
+   * host. This explicit per-agent list is therefore the only way per-step
+   * plugin scoping and the plugin's contributed tool grants can be known
+   * from the definition alone. The field is part of the hashed wire
+   * surface (the live->inert projector carries it), so a tampered plugin
+   * set fails re-verify. Absent when the agent uses no plugins.
+   */
+  readonly plugins?: readonly string[];
   readonly capabilities: readonly string[];
   readonly inference: {
     readonly sources: readonly InferencePreference[];
@@ -143,6 +156,8 @@ export interface DefineAgentConfig<
   readonly systemPrompt: string;
   readonly director?: DirectorRef;
   readonly tools: Factories;
+  /** Plugin-package names this agent uses; see `AgentDefinition.plugins`. */
+  readonly plugins?: readonly string[];
   readonly capabilities: readonly string[];
   readonly inference: {
     readonly sources: readonly InferencePreference[];
@@ -174,6 +189,7 @@ export function defineAgent<
     toolFactories,
     capabilities: config.capabilities,
     inference: config.inference,
+    ...(config.plugins !== undefined ? { plugins: config.plugins } : {}),
     ...(config.description !== undefined
       ? { description: config.description }
       : {}),

@@ -274,6 +274,20 @@ export const PLUGIN_MARKER: unique symbol = Symbol.for("@intx/agent.plugin");
 export interface AnnotatedPluginMeta {
   readonly id: string;
   readonly requires: readonly string[];
+  /**
+   * Static declaration of the tool names this plugin contributes at
+   * runtime, so a caller can enumerate the plugin's tool grant surface
+   * WITHOUT instantiating it (which for a plugin like LSP would start a
+   * language-server subprocess). A plugin adds its tools indirectly -- it
+   * hands a host-defined shape to the tool package that consumes
+   * `env.plugins`, which then registers the plugin's tools under its own
+   * bundle -- so the plugin's contributed tool names are otherwise
+   * invisible until run time. The deploy-time capability walk reads this
+   * field to authorize a plugin-contributed tool the same way it
+   * authorizes a factory-declared tool. Empty when the plugin contributes
+   * no standalone tool (middleware-only plugins).
+   */
+  readonly definitions: readonly ToolDeclaration[];
   readonly [PLUGIN_MARKER]: true;
 }
 
@@ -328,12 +342,21 @@ export function definePlugin<
 >(opts: {
   id: string;
   requires?: readonly string[];
+  /**
+   * Static declaration of the tool names this plugin contributes at run
+   * time. Omit for a middleware-only plugin that adds no standalone tool.
+   * See `AnnotatedPluginMeta.definitions`.
+   */
+  definitions?: readonly ToolDeclaration[];
   factory: PluginFactory<EnvReq, Result>;
 }): AnnotatedPluginFactory<EnvReq, Result & { kind: ToolPluginKind }> {
   validateNamespacedId(opts.id);
   const requires = Object.freeze([
     ...(opts.requires ?? []),
   ]) as readonly string[];
+  const definitions = Object.freeze([
+    ...(opts.definitions ?? []),
+  ]) as readonly ToolDeclaration[];
   const wrapped: PluginFactory<EnvReq, Result & { kind: ToolPluginKind }> = (
     env,
   ) => {
@@ -346,6 +369,7 @@ export function definePlugin<
   return Object.assign(wrapped, {
     id: opts.id,
     requires,
+    definitions,
     [PLUGIN_MARKER]: true as const,
   });
 }

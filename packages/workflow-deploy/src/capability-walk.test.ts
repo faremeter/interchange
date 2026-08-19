@@ -141,6 +141,80 @@ describe("walkCapabilities", () => {
     expect(declarations.grants.length).toBe(implicitGrants.size);
   });
 
+  test("emits tool grants for an agent's declared plugin tools", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_plugin",
+      systemPrompt: "plugin agent",
+      tools: [makeMailFactory()],
+      plugins: ["@intx/tools-lsp"],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: "anthropic", model: "mock-model" }],
+      },
+    });
+    const workflow = makeSingleStepWorkflow(agent);
+
+    const pluginDefs = new Map<string, readonly ToolDeclaration[]>([
+      ["@intx/tools-lsp", [{ name: "lsp" }]],
+    ]);
+    const walk = walkCapabilities(workflow, registry, pluginDefs);
+    const stepId = workflow.stepOrder[0];
+    if (stepId === undefined) throw new Error("missing step");
+    const declarations = walk.perStep.get(stepId);
+    if (declarations === undefined) throw new Error("missing declarations");
+
+    // The plugin-contributed tool grant sits alongside the factory tool
+    // grant; its effect is derived through the same `toolApprovalEffect`
+    // mapping (ungated -> allow).
+    expect(declarations.grants).toContain("tool:lsp");
+    expect(declarations.grants).toContain("tool:mail_send");
+    expect(declarations.grantEffects.get("tool:lsp")).toBe("allow");
+  });
+
+  test("fails closed when a declared plugin has no loaded definitions", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_plugin_missing",
+      systemPrompt: "plugin agent",
+      tools: [makeMailFactory()],
+      plugins: ["@intx/tools-lsp"],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: "anthropic", model: "mock-model" }],
+      },
+    });
+    const workflow = makeSingleStepWorkflow(agent);
+
+    // No plugin definitions supplied: a declared plugin whose grant surface
+    // cannot be resolved must fail loud rather than silently drop its grants.
+    expect(() => walkCapabilities(workflow, registry)).toThrow(
+      /declares plugin/,
+    );
+  });
+
+  test("a plugin tool colliding with a factory tool throws", () => {
+    const registry = createDefaultDirectorRegistry();
+    const agent = defineAgent({
+      id: "ag_plugin_collide",
+      systemPrompt: "plugin agent",
+      tools: [makeFactory("test/collide", [{ name: "lsp" }])],
+      plugins: ["@intx/tools-lsp"],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: "anthropic", model: "mock-model" }],
+      },
+    });
+    const workflow = makeSingleStepWorkflow(agent);
+    const pluginDefs = new Map<string, readonly ToolDeclaration[]>([
+      ["@intx/tools-lsp", [{ name: "lsp" }]],
+    ]);
+
+    expect(() => walkCapabilities(workflow, registry, pluginDefs)).toThrow(
+      DuplicateWalkToolError,
+    );
+  });
+
   test("emits tool, director, capability, and inference-source grants", () => {
     const registry = createDefaultDirectorRegistry();
     const agent = defineAgent({

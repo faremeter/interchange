@@ -11,7 +11,7 @@
 
 import { definePlugin } from "@intx/agent";
 
-import { createLSPPlugin } from "./index";
+import { createLSPPlugin, LSP_TOOL_DEFINITION } from "./index";
 
 /**
  * Named export the loader picks up. The factory returns a
@@ -30,5 +30,13 @@ import { createLSPPlugin } from "./index";
  */
 export const lsp = definePlugin({
   id: "@intx/tools-lsp/sidecar-bundle",
+  // Declare the standalone tool this plugin contributes so the deploy-time
+  // capability walk can authorize it without instantiating the plugin (which
+  // would start a language-server subprocess). The runtime tool name is the
+  // bare `LSP_TOOL_DEFINITION.name` ("lsp") -- the same name posix's bundle
+  // registers it under from `env.plugins` -- so the walked `tool:lsp` grant
+  // matches the reactor's `tool:<call.name>` query. The tool is not
+  // approval-gated, so it carries no `ask` mark.
+  definitions: [{ name: LSP_TOOL_DEFINITION.name }],
   factory: (env) => createLSPPlugin({ cwd: env.workdir }),
 });
