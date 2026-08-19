@@ -1,4 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["**/*.ts", "../hub-agent/lib/deploy-flow-env.ts"]
+  "include": [
+    "**/*.ts",
+    "../hub-agent/lib/deploy-flow-env.ts",
+    "../hub-agent/lib/bundle-workflow-entry.ts"
+  ]
 }

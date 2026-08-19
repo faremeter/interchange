@@ -46,16 +46,20 @@ import {
 } from "@intx/mime";
 import {
   bridgeOrchestratorDeployContent,
+  committedReadsToSourceTree,
   createAgentRepoStore,
   createSessionService,
   createSidecarRouter,
   createWorkflowRunReader,
+  deployCodeSourcedWorkflow,
   dequeueToProcessing,
   enqueueInbox,
+  installAndApproveWorkflowDefinition,
   DEFAULT_ASSET_REF,
   parseAgentId,
   type AgentRepoStore,
   type AssetService,
+  type InstallAndApproveResult,
   type RepoId,
   type SidecarLookups,
   type SidecarRouter,
@@ -65,21 +69,28 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
+import type { CredentialCipher } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import {
   createWorkflowDeployOrchestrator,
+  deriveRunAddress,
   type LaunchSessionFn,
   type WorkflowRepoWriter,
 } from "@intx/workflow-deploy";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { decodeToolName } from "@intx/inference";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
+import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
+import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import { stopServerBounded } from "@intx/test-harness/bun-server";
+import type { TestDb } from "@intx/test-harness/db-harness";
+
+import { bundleWorkflowEntry } from "./bundle-workflow-entry";
 
 export const AGENT_ADDRESS = "run_test-agent@integration.interchange";
 export const AGENT_ID = "run_test-agent";
@@ -1672,6 +1683,251 @@ export async function deployWorkflow(
     workflowRunRepoId,
     workflowRunRef,
     mailAddress,
+  };
+}
+
+const SOURCE_FIXTURE_PACKAGE_NAME = "@wf/source-fixture";
+const SOURCE_FIXTURE_PACKAGE_VERSION = "1.0.0";
+const DEFAULT_WORKFLOW_ENTRY = "./workflow.mjs";
+
+export type DeployWorkflowSourceForTestOpts = {
+  /**
+   * The source entry module text to bundle. A fixture builder (e.g.
+   * `singleStepAgentEntry`) produces this; the helper bundles it to a
+   * self-contained `.mjs`, writes it as a `workflow`-kind source asset, and
+   * deploys the definition BY SOURCE-REF.
+   */
+  entryModule: string;
+  /**
+   * The path inside the source package that exports `workflow`. Defaults to
+   * `./workflow.mjs`, the path the bundle is written to.
+   */
+  entry?: string;
+  /**
+   * Extra source files seeded alongside the bundle under the source asset
+   * (e.g. an inline tool module the entry imports).
+   */
+  extraSourceFiles?: Record<string, string>;
+
+  /**
+   * The real test DB. REQUIRED: the install/approve freeze and the anchor
+   * `workflow_run` insert both write through it.
+   */
+  db: TestDb["db"];
+  /** The definition's OWN tenant. */
+  tenantId: string;
+  /** The `workflow`-kind asset the frozen definition projects over. */
+  definitionAssetId: string;
+
+  /** The deployment's anchor run id. */
+  anchorRunId: string;
+  /** The mail domain the run address lives under. Default `integration.interchange`. */
+  deploymentDomain?: string;
+  /** The deployment's mail address. Default `deriveRunAddress({ runId, domain })`. */
+  agentAddress?: string;
+  /** Optional `workflow-run` ref override. Default `refs/heads/main`. */
+  workflowRunRef?: string;
+
+  /**
+   * The approval policy: an operator `ApprovalSet` the gate holds the probed
+   * surface to, or `"approve-probed"` to approve exactly the probed surface.
+   */
+  approvals: ApprovalSet | "approve-probed";
+
+  /** The deploy harness config. */
+  config: HarnessConfig;
+  /** Per-step inference sources. */
+  sources: Record<string, InferenceSource[]>;
+
+  /** Credential delivery for a credential-consuming fixture. */
+  credentialCipher?: CredentialCipher;
+};
+
+/**
+ * Handle returned by `deployWorkflowSourceForTest`. Carries the same fields as
+ * `DeployWorkflowHandle` (so per-test assertion helpers are unchanged) plus the
+ * frozen approve result and the deploy's public key.
+ */
+export type DeployWorkflowSourceForTestHandle = DeployWorkflowHandle & {
+  approved: InstallAndApproveResult;
+  publicKey: string;
+};
+
+/**
+ * Deploy a workflow BY SOURCE-REF against the env's hub, mirroring
+ * `source-workflow.e2e.test.ts`: bundle the entry module, seed it as a
+ * `workflow`-kind source asset, install + probe + gate + freeze it against the
+ * real DB, then emit the source-ref deploy frame and write the anchor
+ * `workflow_run` row. Registers the resulting handle on the env so the Phase I
+ * assertion helpers resolve it by `anchorRunId`.
+ *
+ * The caller owns the DB lifecycle (`createTestDb`) and seeds the
+ * tenant/principal/definition asset in its own `beforeAll`, matching the e2e
+ * pattern; this helper does not own the DB.
+ */
+export async function deployWorkflowSourceForTest(
+  env: DeployFlowEnv,
+  opts: DeployWorkflowSourceForTestOpts,
+): Promise<DeployWorkflowSourceForTestHandle> {
+  const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
+  const workflowRunRef = opts.workflowRunRef ?? DEFAULT_WORKFLOW_RUN_REF;
+  const entry = opts.entry ?? DEFAULT_WORKFLOW_ENTRY;
+  const agentAddress =
+    opts.agentAddress ??
+    deriveRunAddress({ runId: opts.anchorRunId, domain: deploymentDomain });
+
+  const hubPrincipal: WorkflowRunHubPrincipal = { kind: "hub" };
+  const sourceAssetId = `ast_${opts.anchorRunId.replace(/[^a-zA-Z0-9]/g, "_")}_src`;
+  const sourceRepoId: RepoId = { kind: "workflow", id: sourceAssetId };
+
+  // Bundle the entry module to a self-contained `.mjs` in a throwaway scratch
+  // dir, then seed it as raw source under the source asset. The scratch dir is
+  // only needed for the Bun.build input, so it is removed once the bundle is in
+  // hand.
+  const scratchDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "source-fixture-"),
+  );
+  let workflowJs: string;
+  try {
+    workflowJs = await bundleWorkflowEntry(scratchDir, opts.entryModule);
+  } finally {
+    await fs.promises.rm(scratchDir, { recursive: true, force: true });
+  }
+
+  await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
+  const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
+    hubPrincipal,
+    sourceRepoId,
+    DEFAULT_ASSET_REF,
+    {
+      files: {
+        "package.json": JSON.stringify({
+          name: SOURCE_FIXTURE_PACKAGE_NAME,
+          version: SOURCE_FIXTURE_PACKAGE_VERSION,
+          interchange: { workflow: entry },
+        }),
+        "workflow.mjs": workflowJs,
+        ...opts.extraSourceFiles,
+      },
+      message: `deployWorkflowSourceForTest: seed source package for ${opts.anchorRunId}`,
+    },
+  );
+  const commitSha = writeResult.commitSha;
+
+  const source: WorkflowDefinitionAssetSource = {
+    kind: "asset",
+    assetId: sourceAssetId,
+    package: { format: "source", commitSha },
+  };
+
+  // Deliver the source asset's git pack on the frame: the sidecar indexes it
+  // and checks the pinned subtree out of it.
+  const resolveAttachment = async (
+    assetId: string,
+  ): Promise<{ pack: Uint8Array; ref: string; commitSha: string }> => {
+    if (assetId !== sourceAssetId) {
+      throw new Error(
+        `deployWorkflowSourceForTest: unexpected attachment request ${assetId}`,
+      );
+    }
+    const tipSha = await env.hub.agentRepoStore.repoStore.resolveRef(
+      hubPrincipal,
+      sourceRepoId,
+      DEFAULT_ASSET_REF,
+    );
+    if (tipSha === null) {
+      throw new Error(
+        "deployWorkflowSourceForTest: source asset has no commit",
+      );
+    }
+    const { pack, ref } = await env.hub.agentRepoStore.repoStore.createPack(
+      hubPrincipal,
+      sourceRepoId,
+      DEFAULT_ASSET_REF,
+    );
+    return { pack, ref, commitSha: tipSha };
+  };
+
+  const committed =
+    await env.hub.agentRepoStore.repoStore.openCommittedReadsAtCommit(
+      hubPrincipal,
+      sourceRepoId,
+      commitSha,
+    );
+  if (committed === null) {
+    throw new Error(
+      "deployWorkflowSourceForTest: could not open committed reads at commit",
+    );
+  }
+  const reads = committedReadsToSourceTree(committed);
+
+  const approvals =
+    opts.approvals === "approve-probed"
+      ? ({ mode: "approve-probed" } as const)
+      : opts.approvals;
+
+  const approved = await installAndApproveWorkflowDefinition({
+    source,
+    entry,
+    assetId: opts.definitionAssetId,
+    approvals,
+    router: env.hub.router,
+    db: opts.db,
+    reads,
+    registryName: "npmjs",
+    registryConfig: { url: "https://registry.test" },
+    resolveAttachment,
+  });
+  if (!approved.approval.ok) {
+    throw new Error(
+      `deployWorkflowSourceForTest: install/approve gate did not approve ` +
+        `(reason: ${approved.approval.reason}): ${JSON.stringify(approved.approval)}\n` +
+        env.sidecarDiagnostics(),
+    );
+  }
+
+  const deployResult = await deployCodeSourcedWorkflow({
+    approved,
+    source,
+    resolveAttachment,
+    sidecarRouter: env.hub.router,
+    agentAddress,
+    config: opts.config,
+    sources: opts.sources,
+    db: opts.db,
+    tenantId: opts.tenantId,
+    anchorRunId: opts.anchorRunId,
+    deploymentDomain,
+    ...(opts.credentialCipher !== undefined
+      ? { credentialCipher: opts.credentialCipher }
+      : {}),
+  });
+
+  const workflowRunRepoId: RepoId = {
+    kind: "workflow-run",
+    id: deriveDeploymentId(agentAddress),
+  };
+  const handle: DeploymentHandle = {
+    anchorRunId: opts.anchorRunId,
+    workflowDefinition: {
+      id: approved.projection.id,
+      triggers: [{ type: "mail", to: agentAddress }],
+      steps: {},
+      stepOrder: [...approved.projection.stepOrder],
+    },
+    workflowRunRepoId,
+    workflowRunRef,
+    mailAddress: agentAddress,
+  };
+  env.registerDeployment(handle);
+
+  return {
+    anchorRunId: opts.anchorRunId,
+    workflowRunRepoId,
+    workflowRunRef,
+    mailAddress: agentAddress,
+    approved,
+    publicKey: deployResult.publicKey,
   };
 }
 
