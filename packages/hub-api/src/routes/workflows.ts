@@ -27,6 +27,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   createWorkflowRunReader,
+  ExclusiveWorkflowPlacementError,
   resolveWorkflowSidecarPlacement,
   type AssetService,
   type RepoStore,
@@ -197,6 +198,7 @@ export type CreateWorkflowRoutesDeps = {
 export function createWorkflowRoutes({
   db,
   sessionService,
+  workflowAllocationService,
   workflowDispatchService,
   sidecarRouter,
   assetService,
@@ -252,11 +254,12 @@ export function createWorkflowRoutes({
         },
         409: {
           description:
-            "Workflow definition invalid, or exclusive placement not yet supported for code-sourced deploys",
+            "Workflow definition invalid, exclusive placement unavailable on this Hub, or exclusive prepare rejected the source chain",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         500: {
-          description: "Deployment projection row missing after deploy",
+          description:
+            "Deployment projection row missing after deploy, or exclusive prepare failed unexpectedly",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         502: {
@@ -339,85 +342,130 @@ export function createWorkflowRoutes({
         );
       }
 
-      // Exclusive placement for a code-sourced deploy is not wired yet: the
-      // exclusive allocation path still deploys a live-authored definition and
-      // has not been migrated to the install/freeze/source-ref flow. Reject it
-      // as a current limitation. (Exclusive placement is dormant in-tree -- no
-      // provisioner is registered -- so this only fires when a tenant config
-      // explicitly requests it.)
-      if (placement?.sharing === "exclusive") {
-        return c.json(
-          {
-            error: {
-              code: "exclusive_placement_unsupported",
-              message:
-                "Exclusive workflow placement is not yet supported for code-sourced deploys",
-            },
-          },
-          409,
-        );
-      }
-
       const anchorRunId = generateId("workflowRun");
       const sessionId = generateId("session");
       const agentAddress = deriveRunAddress({
         runId: anchorRunId,
         domain: tenant.domain,
       });
-      const config: HarnessConfig = {
-        sessionId,
-        agentId: deriveRunAgentId({ runId: anchorRunId }),
-        tenantId: tenant.id,
-        principalId: c.get("principal").id,
-        agentAddress,
-        systemPrompt: "",
-        tools: [],
-        grants: [],
-        sources: body.sources,
-        defaultSource: body.defaultSource,
-      };
 
       let deployedId: string;
-      const deploymentStatus = "deployed";
-      try {
-        const result = await sessionService.deployWorkflowFromSource({
-          tenantId: tenant.id,
-          anchorRunId,
-          deploymentDomain: tenant.domain,
-          agentAddress,
-          source: body.source,
-          entry: body.entry,
-          ...(body.pin !== undefined ? { pin: body.pin } : {}),
-          definitionAssetId: assetRow.id,
-          config,
-        });
-        deployedId = result.anchorRunId;
-      } catch (err) {
-        // An install/gate rejection or an unapproved/mis-ordered source chain is
-        // a client/definition error, not a sidecar-reachability failure.
-        if (err instanceof WorkflowDefinitionInvalidError) {
+      let deploymentStatus = "deployed";
+      if (placement?.sharing === "exclusive") {
+        // Exclusive placement freezes the code-sourced approval on shared
+        // capacity NOW and defers the deploy to a dedicated allocation. The
+        // route only records the intent and returns a pending deployment;
+        // `deployReadyAllocation` deploys the frozen bundle once the sidecar is
+        // provisioned. (Exclusive is dormant in-tree -- no provisioner is
+        // registered -- so `prepareExclusiveDeployment` fails closed unless a
+        // tenant config requests it AND an operator build wires a provisioner.)
+        if (workflowAllocationService === undefined) {
           return c.json(
             {
               error: {
-                code: "invalid_workflow",
-                message: err.message,
+                code: "exclusive_placement_unavailable",
+                message:
+                  "Exclusive workflow placement is not configured on this Hub",
               },
             },
             409,
           );
         }
-        return c.json(
-          {
-            error: {
-              code: "sidecar_unavailable",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to deploy workflow",
+        try {
+          const prepared =
+            await workflowAllocationService.prepareExclusiveDeployment({
+              tenantId: tenant.id,
+              anchorRunId,
+              deploymentDomain: tenant.domain,
+              source: body.source,
+              entry: body.entry,
+              ...(body.pin !== undefined ? { pin: body.pin } : {}),
+              definitionAssetId: assetRow.id,
+              placement,
+              sessionId,
+              sourceAuthorityPrincipalId: c.get("principal").id,
+              sourceOfferingIds: body.sources.map((source) => source.id),
+              defaultSourceOfferingId: body.defaultSource,
+              deployContent: { systemPrompt: "" },
+            });
+          deployedId = prepared.anchorRunId;
+          deploymentStatus = prepared.status;
+        } catch (err) {
+          // The shared-capacity probe/gate ran inside prepare: an unapproved
+          // definition is a client/definition error, not an infra failure.
+          if (err instanceof WorkflowDefinitionInvalidError) {
+            return c.json(
+              { error: { code: "invalid_workflow", message: err.message } },
+              409,
+            );
+          }
+          if (err instanceof ExclusiveWorkflowPlacementError) {
+            return c.json(
+              { error: { code: err.code, message: err.message } },
+              409,
+            );
+          }
+          return c.json(
+            {
+              error: {
+                code: "exclusive_deployment_failed",
+                message:
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to prepare exclusive workflow deployment",
+              },
             },
-          },
-          502,
-        );
+            500,
+          );
+        }
+      } else {
+        const config: HarnessConfig = {
+          sessionId,
+          agentId: deriveRunAgentId({ runId: anchorRunId }),
+          tenantId: tenant.id,
+          principalId: c.get("principal").id,
+          agentAddress,
+          systemPrompt: "",
+          tools: [],
+          grants: [],
+          sources: body.sources,
+          defaultSource: body.defaultSource,
+        };
+        try {
+          const result = await sessionService.deployWorkflowFromSource({
+            tenantId: tenant.id,
+            anchorRunId,
+            deploymentDomain: tenant.domain,
+            agentAddress,
+            source: body.source,
+            entry: body.entry,
+            ...(body.pin !== undefined ? { pin: body.pin } : {}),
+            definitionAssetId: assetRow.id,
+            config,
+          });
+          deployedId = result.anchorRunId;
+        } catch (err) {
+          // An install/gate rejection or an unapproved/mis-ordered source chain
+          // is a client/definition error, not a sidecar-reachability failure.
+          if (err instanceof WorkflowDefinitionInvalidError) {
+            return c.json(
+              { error: { code: "invalid_workflow", message: err.message } },
+              409,
+            );
+          }
+          return c.json(
+            {
+              error: {
+                code: "sidecar_unavailable",
+                message:
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to deploy workflow",
+              },
+            },
+            502,
+          );
+        }
       }
 
       // The sidecar deploy succeeded; reading back the anchor run is an

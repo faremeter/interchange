@@ -1,5 +1,3 @@
-import { type } from "arktype";
-
 import {
   createSidecarAllocationStore,
   createWorkflowRunLaunchSpecStore,
@@ -17,13 +15,10 @@ import {
   type CredentialCipher,
   type SidecarPlacementRequirement,
 } from "@intx/types";
+import type { FrozenApprovalBundle } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
-import { computeLiveDefinitionHash } from "@intx/workflow";
-import {
-  hashDefinition,
-  type WorkflowDefinition,
-} from "@intx/workflow/definition";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
@@ -37,8 +32,7 @@ import {
   type PreparedWorkflowDeployer,
 } from "./session-service";
 import type { SidecarAllocationRouter } from "./ws/sidecar-handler";
-import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
-import { workflowDefinitionEnvelopeSchema } from "./workflow-kind";
+import type { InstallAndApproveResult } from "./workflow-probe-gate";
 
 export class ExclusiveWorkflowPlacementError extends Error {
   readonly code: string;
@@ -54,7 +48,15 @@ export type PrepareExclusiveWorkflowDeploymentArgs = {
   readonly tenantId: string;
   readonly anchorRunId: string;
   readonly deploymentDomain: string;
-  readonly definition: WorkflowDefinition;
+  /** Where the definition's bytes come from at probe time. */
+  readonly source: WorkflowDefinitionSource;
+  /** The `interchange.workflow` entry-module path the sidecar evaluates. */
+  readonly entry: string;
+  /**
+   * A `name@range` spec for the definition package. REQUIRED for the `registry`
+   * and asset-`tarball` variants; omitted for the asset-`source` variant.
+   */
+  readonly pin?: string;
   readonly definitionAssetId: string;
   readonly placement: SidecarPlacementRequirement & {
     readonly sharing: "exclusive";
@@ -98,17 +100,6 @@ export type WorkflowAllocationServiceDeps = {
 
 function randomAllocationId(): string {
   return `sal_${hexEncode(crypto.getRandomValues(new Uint8Array(16)))}`;
-}
-
-function parseDefinitionSnapshot(snapshot: Record<string, unknown>) {
-  const validated = workflowDefinitionEnvelopeSchema(snapshot);
-  if (validated instanceof type.errors) {
-    throw new Error(
-      `Persisted workflow definition failed validation: ${validated.summary}`,
-    );
-  }
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the persisted snapshot was written from a WorkflowDefinition and the same deployment-envelope schema validates it again at this DB-to-runtime boundary
-  return validated as unknown as WorkflowDefinition;
 }
 
 /** Resolve the tenant-inherited sidecar placement into one launch decision. */
@@ -156,6 +147,10 @@ export function createWorkflowAllocationService({
   async function prepareExclusiveDeployment(
     args: PrepareExclusiveWorkflowDeploymentArgs,
   ): Promise<PreparedExclusiveWorkflowDeployment> {
+    // Fail closed before any probe: exclusive placement has no meaning without a
+    // provisioner to stand up its dedicated sidecar, and the shared-capacity
+    // probe below is wasted work if no provisioner exists. (In-tree this is
+    // always null -- exclusive is dormant -- so a live prepare never runs here.)
     const provisioner = plugins.getDefaultProvisioner();
     if (provisioner === null) {
       throw new ExclusiveWorkflowPlacementError(
@@ -189,6 +184,37 @@ export function createWorkflowAllocationService({
       );
     }
 
+    // Probe + gate + freeze the code-sourced definition ONCE, on shared
+    // capacity, at request time. The freeze is sidecar-agnostic (a wire hash
+    // over the inert projection plus the resolved closure), so the frozen bundle
+    // deploys later to the dedicated allocation with no re-probe. A non-approval
+    // surfaces as a `WorkflowDefinitionInvalidError` from the deployer, which the
+    // route maps to a 409.
+    const approved = await preparedDeployer.installAndApproveWorkflowSource({
+      source: args.source,
+      entry: args.entry,
+      ...(args.pin !== undefined ? { pin: args.pin } : {}),
+      definitionAssetId: args.definitionAssetId,
+    });
+    if (!approved.approval.ok) {
+      // `installAndApproveWorkflowSource` already fails closed on a non-approval;
+      // restate the narrowing so the frozen bundle below reads the ok arm.
+      throw new Error(
+        "prepareExclusiveDeployment: install did not yield an approved definition",
+      );
+    }
+    // Capture the narrowed values before the transaction: TS drops the
+    // `approval.ok` narrowing inside the async callback below.
+    const definitionId = approved.approval.definitionId;
+    const frozenApprovalBundle: FrozenApprovalBundle = {
+      source: args.source,
+      entry: args.entry,
+      projection: approved.projection,
+      closure: approved.closure,
+      approvedWireHash: approved.approval.approvedWireHash,
+      approvedGrants: [...approved.approval.approvedGrants],
+    };
+
     const allocationId = createAllocationId();
     const createdAt = now();
     const deploymentAddress = deriveRunAddress({
@@ -196,10 +222,9 @@ export function createWorkflowAllocationService({
       domain: args.deploymentDomain,
     });
     await db.transaction(async (tx) => {
-      const { definitionId } = await ensureWorkflowDefinitionForAsset(tx, {
-        assetId: args.definitionAssetId,
-        wireHash: await computeLiveDefinitionHash(args.definition),
-      });
+      // The freeze already ensured (create-if-absent) the definition row keyed by
+      // the approved wire hash and returned its id; anchor to THAT row rather
+      // than re-ensuring, so the anchor's definition is exactly the one approved.
       await tx.insert(workflowRun).values({
         id: args.anchorRunId,
         tenantId: args.tenantId,
@@ -228,8 +253,7 @@ export function createWorkflowAllocationService({
           sessionId: args.sessionId,
           deploymentDomain: args.deploymentDomain,
           sourceAuthorityPrincipalId: args.sourceAuthorityPrincipalId,
-          definitionSnapshot: args.definition,
-          definitionHash: hexEncode(hashDefinition(args.definition)),
+          frozenApprovalBundle,
           sourceOfferingIds: [...args.sourceOfferingIds],
           defaultSourceOfferingId: args.defaultSourceOfferingId,
           deployContent: args.deployContent,
@@ -280,7 +304,7 @@ export function createWorkflowAllocationService({
     };
     const anchor = await db.query.workflowRun.findFirst({
       where: eq(workflowRun.id, allocation.anchorRunId),
-      columns: { publicKey: true },
+      columns: { publicKey: true, definitionId: true },
     });
     if (anchor === undefined) {
       throw new Error(`Allocation ${allocation.id} has no workflow anchor run`);
@@ -295,18 +319,35 @@ export function createWorkflowAllocationService({
         true,
       );
     }
+    if (anchor.definitionId === null) {
+      throw new Error(
+        `Allocation ${allocation.id} anchor run has no frozen workflow definition`,
+      );
+    }
     const spec = await launchSpecStore.get(allocation.anchorRunId);
     if (spec === null) {
       throw new Error(
         `Allocation ${allocation.id} has no workflow launch specification`,
       );
     }
-    const definition = parseDefinitionSnapshot(spec.definitionSnapshot);
-    if (hexEncode(hashDefinition(definition)) !== spec.definitionHash) {
-      throw new Error(
-        `Allocation ${allocation.id} workflow definition hash does not match its launch specification`,
-      );
-    }
+    // The frozen bundle deploys verbatim -- no re-probe. Rehydrate the approval
+    // hand-off from it: the approved grant set becomes a `Set`, and the frozen
+    // definition id is the anchor's own (set at prepare time from this freeze).
+    const bundle = spec.frozenApprovalBundle;
+    const approved: InstallAndApproveResult = {
+      approval: {
+        ok: true,
+        definitionId: anchor.definitionId,
+        approvedWireHash: bundle.approvedWireHash,
+        approvedGrants: new Set(bundle.approvedGrants),
+        projection: bundle.projection,
+      },
+      projection: bundle.projection,
+      closure: bundle.closure,
+    };
+    // Re-resolve the inference chain from the catalog at launch time -- the
+    // launch spec stores offering ids, never resolved sources, so a rotated
+    // credential is picked up here and no secret was ever persisted.
     const resolved = await resolveSourcesByOfferingIds(
       db,
       allocation.tenantId,
@@ -342,20 +383,17 @@ export function createWorkflowAllocationService({
       sources: resolved.sources,
       defaultSource: defaultSource.id,
     };
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- parseWorkflowRunLaunchSpecRow validates the persisted value is a JSON object; DeployContent's optional fields are validated again by the deploy-tree writers that consume them
-    const deployContent = spec.deployContent as DeployContent;
 
-    return preparedDeployer.deployPreparedWorkflowDefinition({
+    return preparedDeployer.deployPreparedCodeSourcedWorkflow({
       tenantId: allocation.tenantId,
       anchorRunId: allocation.anchorRunId,
       deploymentDomain: spec.deploymentDomain,
-      definition,
+      agentAddress: deploymentAddress,
+      source: bundle.source,
+      approved,
       config,
-      deployContent,
       allocationTarget,
-      ...(spec.toolPackagePins !== null
-        ? { toolPackagePins: spec.toolPackagePins }
-        : {}),
+      ...(credentialCipher !== undefined ? { credentialCipher } : {}),
     });
   }
 

@@ -7,22 +7,22 @@ import {
   test,
 } from "bun:test";
 
-import { defineAgent } from "@intx/agent";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import {
   createSidecarAllocationStore,
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
-import { workflowRun } from "@intx/db/schema";
+import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import {
   createWorkflowAllocationService,
   SessionLaunchError,
-  type DeployPreparedWorkflowDefinitionParams,
+  type DeployPreparedCodeSourcedWorkflowParams,
+  type InstallAndApproveResult,
   type SidecarProvisioner,
 } from "@intx/hub-sessions";
 import { credentialAad } from "@intx/types";
-import { defineWorkflow, step } from "@intx/workflow/definition";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -42,12 +42,14 @@ import {
 const TENANT_ID = "tnt-workflow-allocation";
 const PRINCIPAL_ID = "prn-workflow-allocation";
 const ASSET_ID = "ast-workflow-allocation";
+const DEFINITION_ID = "wfd-workflow-allocation";
 const OFFERING_ID = "mof-workflow-allocation";
 const CREDENTIAL_ID = "cred-workflow-allocation";
 const CREDENTIAL_SECRET = "secret-only-resolved-at-launch";
 const CREDENTIAL_CIPHER = createEnvKeyCredentialCipher(
   new Uint8Array(32).fill(7),
 );
+const DEPLOY_COMMIT = "c0ffee".padEnd(40, "0");
 
 const provisioner: SidecarProvisioner = {
   id: "test-provisioner",
@@ -61,19 +63,33 @@ const provisioner: SidecarProvisioner = {
   },
 };
 
-const agent = defineAgent({
-  id: "worker",
-  systemPrompt: "Do the work",
-  tools: [],
-  capabilities: [],
-  inference: { sources: [{ provider: "anthropic", model: "opus" }] },
-});
+// A code-sourced deploy: the workflow asset's own git subtree at a pinned
+// commit, evaluated at `entry`. The exclusive prepare freezes the probe of THIS
+// source on shared capacity, then deploys the frozen bundle to the allocation.
+const SOURCE: WorkflowDefinitionSource = {
+  kind: "asset",
+  assetId: ASSET_ID,
+  package: { format: "source", commitSha: DEPLOY_COMMIT },
+};
+const ENTRY = "./workflow.mjs";
 
-const definition = defineWorkflow({
-  id: "wf-workflow-allocation",
-  trigger: { type: "manual" },
-  steps: { work: step({ agent, after: [] }) },
-});
+// A minimal, valid frozen approval bundle: the projection and closure are the
+// smallest shapes their arktype schemas accept, and the grant set + wire hash
+// are inert strings. No credential secret ever enters the bundle -- sources are
+// re-resolved from the launch spec's offering ids at deploy time.
+function frozenApproval(): InstallAndApproveResult {
+  return {
+    approval: {
+      ok: true,
+      definitionId: DEFINITION_ID,
+      approvedWireHash: "a".repeat(64),
+      approvedGrants: new Set<string>(),
+      projection: { id: "wf-x", triggers: [], stepOrder: [], steps: {} },
+    },
+    projection: { id: "wf-x", triggers: [], stepOrder: [], steps: {} },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  };
+}
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflow allocation service (real DB)",
@@ -137,8 +153,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    test("persists a secret-free launch spec and reconstructs it for the accepted generation", async () => {
-      const deployCalls: DeployPreparedWorkflowDefinitionParams[] = [];
+    test("freezes a secret-free bundle at prepare and deploys it for the accepted generation", async () => {
+      const installCalls: {
+        source: WorkflowDefinitionSource;
+        entry: string;
+      }[] = [];
+      const deployCalls: DeployPreparedCodeSourcedWorkflowParams[] = [];
       let workflowActive = false;
       const service = createWorkflowAllocationService({
         db: h.db,
@@ -147,11 +167,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
           getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
         },
         preparedDeployer: {
-          deployPreparedWorkflowDefinition: async (params) => {
+          // The exclusive prepare freezes the definition on shared capacity: the
+          // real path persists a workflow_definition row and returns its id, so
+          // the mock does the same (the anchor row FKs to it).
+          installAndApproveWorkflowSource: async (params) => {
+            installCalls.push({ source: params.source, entry: params.entry });
+            await h.db
+              .insert(workflowDefinition)
+              .values({
+                id: DEFINITION_ID,
+                tenantId: TENANT_ID,
+                name: "workflow-allocation-def",
+              })
+              .onConflictDoNothing({ target: workflowDefinition.id });
+            return frozenApproval();
+          },
+          deployPreparedCodeSourcedWorkflow: async (params) => {
             deployCalls.push(params);
             const result = {
               anchorRunId: params.anchorRunId,
-              deploymentAddress: params.config.agentAddress,
+              deploymentAddress: params.agentAddress,
               publicKey: "supervisor-public-key",
             };
             await h.db
@@ -159,6 +194,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
               .set({ publicKey: result.publicKey })
               .where(eq(workflowRun.id, params.anchorRunId));
             return result;
+          },
+          deployPreparedWorkflowDefinition: () => {
+            throw new Error(
+              "deployPreparedWorkflowDefinition must not be called on the code-sourced exclusive path",
+            );
           },
         },
         credentialCipher: CREDENTIAL_CIPHER,
@@ -173,7 +213,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         anchorRunId: "dep-workflow-allocation",
         deploymentDomain: `${TENANT_ID}.example.test`,
-        definition,
+        source: SOURCE,
+        entry: ENTRY,
         definitionAssetId: ASSET_ID,
         placement: { sharing: "exclusive", reuse: "same-deployment" },
         sessionId: "ses-workflow-allocation",
@@ -184,10 +225,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       expect(prepared.status).toBe("pending");
+      // The probe/freeze rode shared capacity at prepare time, carrying the
+      // caller's source + entry.
+      expect(installCalls).toEqual([{ source: SOURCE, entry: ENTRY }]);
+
       const spec = await createWorkflowRunLaunchSpecStore(h.db).get(
         prepared.anchorRunId,
       );
       expect(spec?.sourceOfferingIds).toEqual([OFFERING_ID]);
+      // The frozen bundle is the recovery input; it names the source but holds
+      // no resolved inference source, so no credential secret is persisted.
+      expect(spec?.frozenApprovalBundle.source).toEqual(SOURCE);
+      expect(spec?.frozenApprovalBundle.approvedWireHash).toBe("a".repeat(64));
       expect(JSON.stringify(spec)).not.toContain(CREDENTIAL_SECRET);
 
       const allocations = createSidecarAllocationStore(h.db);
@@ -212,6 +261,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         allocationId: prepared.allocationId,
         generation: 1,
       });
+      expect(deployCalls[0]?.source).toEqual(SOURCE);
+      // The inference chain is re-resolved from the launch spec's offering ids
+      // at deploy time, decrypting the credential secret only now.
       expect(deployCalls[0]?.config).toMatchObject({
         sessionId: "ses-workflow-allocation",
         principalId: PRINCIPAL_ID,

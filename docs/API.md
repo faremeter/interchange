@@ -579,8 +579,8 @@ Body: unknown
 
 201: unknown -- Workflow deployed
 404: ErrorResponse -- Workflow asset not found
-409: ErrorResponse -- Workflow definition invalid, or exclusive placement not yet supported for code-sourced deploys
-500: ErrorResponse -- Deployment projection row missing after deploy
+409: ErrorResponse -- Workflow definition invalid, exclusive placement unavailable on this Hub, or exclusive prepare rejected the source chain
+500: ErrorResponse -- Deployment projection row missing after deploy, or exclusive prepare failed unexpectedly
 502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/workflows/deployments

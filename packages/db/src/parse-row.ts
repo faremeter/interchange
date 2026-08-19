@@ -17,7 +17,7 @@ import {
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { WireGrantRule } from "@intx/types/grant-wire";
-import { RepoAction } from "@intx/types/sidecar";
+import { FrozenApprovalBundle, RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
 
 import type {
@@ -217,7 +217,7 @@ export function parseWorkflowRunLaunchSpecRow(
   assertLaunchSpecSources(sourceOfferingIds, row.defaultSourceOfferingId);
   return {
     ...row,
-    definitionSnapshot: JSONObject.assert(row.definitionSnapshot),
+    frozenApprovalBundle: FrozenApprovalBundle.assert(row.frozenApprovalBundle),
     sourceOfferingIds,
     deployContent: JSONObject.assert(row.deployContent),
     toolPackagePins:
