@@ -234,49 +234,33 @@ export type CredentialDeliveryFailure = {
 };
 
 /**
- * A `credential:{id}` / `use` grant the launch stamps onto the instance
- * principal for a resolved binding, scoped to the consuming tool package by the
- * `{ tool }` condition. Ownership is already proven by resolution, so this is a
- * consumer-scoping artifact the runtime per-consumer gate reads -- not a
- * delegation the launch re-authorizes; the caller stamps it with
- * `origin: 'system'` directly.
- */
-export type BindingCredentialGrant = {
-  resource: string;
-  conditions: { tool: string };
-};
-
-/**
  * Outcome of `buildCredentialDelivery`. `ok: true` carries the material +
- * descriptors delivered to the tools and the `credential:{id}` / `use` grants
- * the launch stamps; `delivery` is `undefined` when there are no bindings.
- * `ok: false` carries the first launch-blocking configuration failure for the
- * caller to map to a fail-closed response.
+ * descriptors delivered to the tools; `delivery` is `undefined` when there are
+ * no bindings. `ok: false` carries the first launch-blocking configuration
+ * failure for the caller to map to a fail-closed response.
  */
 export type BuildCredentialDeliveryResult =
   | {
       ok: true;
       delivery: CredentialDelivery | undefined;
-      bindingGrants: BindingCredentialGrant[];
     }
   | { ok: false; reason: CredentialDeliveryFailure };
 
 /**
  * Resolve a definition's credential bindings into the material + per-handle
- * descriptors delivered to its tools, plus the `credential:{id}` / `use` grant
- * requirements the launch materializes. Each credential's secret is decrypted
+ * descriptors delivered to its tools. Each credential's secret is decrypted
  * once, keyed by credentialId (a credential backing several handles is
  * decrypted once).
  *
- * The launch path (`instances.ts`) is the only caller today, using both
- * `delivery` and `bindingGrants`. The shape is built to also serve a planned
- * reconnect re-push that would re-deliver `delivery` alone (the grants survive
- * on the workflow-run substrate, so only the material needs re-sending) --
- * which is why it returns a discriminated result rather than an HTTP response
- * and is safe to call off the request path: a configuration failure is
- * `ok: false`, and a transient DB read fault THROWS so the caller surfaces it
- * (and a future reconnect caller can retry) rather than silently dropping a
- * still-valid credential.
+ * This path delivers credential material only; it does not mint, stamp, or
+ * carry any grant. Credential-use authorization is enforced by a separate grant
+ * layer.
+ *
+ * The workflow-deploy path (`deployCodeSourcedWorkflow`) is the only caller
+ * today, using `delivery`. Returning a discriminated result rather than an HTTP
+ * response keeps it safe to call off the request path: a configuration failure
+ * is `ok: false`, and a transient DB read fault THROWS so the caller surfaces it
+ * rather than silently dropping a still-valid credential.
  */
 export async function buildCredentialDelivery(args: {
   db: DB["db"];
@@ -288,7 +272,6 @@ export async function buildCredentialDelivery(args: {
 }): Promise<BuildCredentialDeliveryResult> {
   const materials = new Map<string, CredentialMaterialEntry>();
   const descriptors: CredentialBindingDescriptor[] = [];
-  const bindingGrants: BindingCredentialGrant[] = [];
 
   for (const binding of args.bindings) {
     const context = {
@@ -356,14 +339,9 @@ export async function buildCredentialDelivery(args: {
     // A binding resolves only a tenant-owned credential (the `tenant` locator
     // filters `principalId IS NULL` in resolveCredentialRequirement), so its use
     // is authorized by ownership -- already proven by this walk-up resolution,
-    // not re-checked downstream. The launch materializes a `credential:{id}` /
-    // `use` grant scoped to this tool package by the `{ tool }` condition; that
-    // grant is what the runtime per-consumer gate reads. No personal grant is
-    // consulted.
-    bindingGrants.push({
-      resource: `credential:${credentialId}`,
-      conditions: { tool: toolConsumer(binding.package) },
-    });
+    // not re-checked here. This path delivers credential material only; it does
+    // not mint or carry any grant. Credential-use authorization is enforced by a
+    // separate grant layer.
     descriptors.push({
       handle: binding.handle,
       credentialId,
@@ -390,6 +368,5 @@ export async function buildCredentialDelivery(args: {
       descriptors.length > 0
         ? { bindings: descriptors, materials: [...materials.values()] }
         : undefined,
-    bindingGrants,
   };
 }
