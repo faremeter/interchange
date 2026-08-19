@@ -400,8 +400,8 @@ deploy tree, runs the tool-package loader (`@intx/tool-packaging`:
 `createToolLoader`, `applyAtomic`, `createTarballCache`), composes the plugin
 chain (posix reads `env.plugins`; the LSP plugin factory **spawns a
 subprocess**), and hands the resulting `toolFactories` to `defineAgent`. The
-child does none of this — `workflow.json`'s `steps[].agent.toolFactories` are
-stripped to bare `{ id, requires }` metadata on serialization
+child does none of this — the inert projection's `steps[].agent.toolFactories`
+are stripped to bare `{ id, requires }` metadata on serialization
 (`packages/workflow/src/definition/workflow.ts`, `projectAgent`).
 
 **The tool-execution locus — stated explicitly, because it determines the
@@ -1006,8 +1006,8 @@ and starts with no resume, so a mid-run failure would re-service the launch
 trigger and never re-service the already-consumed one -- a wrong conversation
 reported as success. `step()` rejects the combination at authoring time and
 the runtime re-rejects it at the read point
-(`validateRetryTriggerCombination`, applied at `runStep` entry, where a
-`workflow.json`-hydrated definition is first executed).
+(`validateRetryTriggerCombination`, applied at `runStep` entry, where the
+closure-evaluated definition is first executed).
 
 **The re-arm mechanism.** Between triggers the runtime parks the step on a
 **snapshot-less input control-plane park** -- a `ControlParkKind` of `"input"`,
