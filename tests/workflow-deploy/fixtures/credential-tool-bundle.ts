@@ -36,8 +36,11 @@ export const PACKAGE_NAME = "@intx/tools-credential-probe";
 /** The bundle id; the loader namespaces the `probe` definition under it. */
 export const BUNDLE_ID = "@intx/tools-credential-probe/sidecar-bundle";
 
+/** The probe definition's bare name. */
+export const PROBE_DEFINITION_NAME = "probe";
+
 /** The model-facing tool name the loader synthesizes (`<bundleId>:<def>`). */
-export const TOOL_NAME = `${BUNDLE_ID}:probe`;
+export const TOOL_NAME = `${BUNDLE_ID}:${PROBE_DEFINITION_NAME}`;
 
 /**
  * Env contract for the probe bundle: `BaseEnv` (for `workdir`) plus the
