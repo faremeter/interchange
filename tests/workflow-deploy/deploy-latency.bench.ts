@@ -348,4 +348,13 @@ async function main(): Promise<void> {
 
 if (import.meta.main) {
   await main();
+  // Exit explicitly instead of letting the event loop drain. A source-ref
+  // deploy makes the sidecar spawn a child that outlives the sidecar kill in
+  // `env.teardown()`; the child keeps the sidecar's inherited stdout/stderr
+  // pipe open, so the fixture's pipe-reader loops never see EOF and the loop
+  // never drains. `main()` has already torn down the hub, sidecar, and
+  // database, so this exit only bypasses that orphaned pipe handle. A failure
+  // in `main()` rejects this top-level await, which exits non-zero with the
+  // stack, so the error still surfaces.
+  process.exit(0);
 }
