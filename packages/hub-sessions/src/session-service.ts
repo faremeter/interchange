@@ -329,10 +329,76 @@ export type DeployWorkflowFromSourceParams = {
   config: HarnessConfig;
 };
 
+/**
+ * Install/probe/gate/freeze inputs for a code-sourced workflow, DECOUPLED from
+ * deploy. The exclusive prepare path calls this on shared capacity at request
+ * time to freeze the approval, persists the frozen bundle, and deploys it to a
+ * dedicated allocation later with no re-probe.
+ */
+export type InstallAndApproveWorkflowSourceParams = {
+  /** Where the definition's bytes come from at probe time. */
+  source: WorkflowDefinitionSource;
+  /** The `interchange.workflow` entry-module path the sidecar evaluates. */
+  entry: string;
+  /**
+   * A `name@range` spec for the definition package. REQUIRED for the `registry`
+   * and asset-`tarball` variants; omitted for the asset-`source` variant.
+   */
+  pin?: string;
+  /** The `workflow`-kind asset the frozen definition projects a definition over. */
+  definitionAssetId: string;
+};
+
+/**
+ * Inputs to deploy a previously-frozen code-sourced approval bundle to a
+ * dedicated allocation. Mirrors `DeployPreparedWorkflowDefinitionParams` for the
+ * source-ref lineage: the anchor `workflow_run` row already exists from prepare
+ * time, so the deploy UPDATES it under the allocation-ownership lock rather than
+ * inserting a fresh one.
+ */
+export type DeployPreparedCodeSourcedWorkflowParams = {
+  /** Owning tenant; the definition's own tenant for credential resolution. */
+  tenantId: string;
+  /** The pre-inserted anchor run id, fixed at prepare time. */
+  anchorRunId: string;
+  /** Mail domain the deployment's derived addresses live under. */
+  deploymentDomain: string;
+  /** The deployment-level mail address; re-derived and asserted coherent. */
+  agentAddress: string;
+  /** Where the definition's bytes come from, rehydrated from the frozen bundle. */
+  source: WorkflowDefinitionSource;
+  /** The frozen approval bundle rehydrated from the launch spec. */
+  approved: InstallAndApproveResult;
+  /** Harness config carrying the re-resolved per-step inference chain. */
+  config: HarnessConfig;
+  /** The exact allocation generation to deploy onto. */
+  allocationTarget: AllocatedSidecarTarget;
+  /** Cipher for the definition's tenant-owned credential bindings, if any. */
+  credentialCipher?: CredentialCipher;
+};
+
 export type PreparedWorkflowDeployer = {
   /** Deploy an anchor that was durably prepared before capacity was requested. */
   deployPreparedWorkflowDefinition(
     params: DeployPreparedWorkflowDefinitionParams,
+  ): Promise<DeployWorkflowDefinitionResult>;
+  /**
+   * Install + probe + gate + freeze a code-sourced definition on shared
+   * capacity, returning the frozen bundle WITHOUT deploying it. The exclusive
+   * prepare path persists the bundle and deploys it later via
+   * `deployPreparedCodeSourcedWorkflow`.
+   */
+  installAndApproveWorkflowSource(
+    params: InstallAndApproveWorkflowSourceParams,
+  ): Promise<InstallAndApproveResult>;
+  /**
+   * Deploy a previously-frozen code-sourced approval bundle to a dedicated
+   * allocation, updating the pre-existing anchor run under the
+   * allocation-ownership lock. No re-probe: the frozen projection/hash/closure
+   * ride verbatim.
+   */
+  deployPreparedCodeSourcedWorkflow(
+    params: DeployPreparedCodeSourcedWorkflowParams,
   ): Promise<DeployWorkflowDefinitionResult>;
 };
 
@@ -627,7 +693,7 @@ export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,
 ): Promise<{ publicKey: string }> {
   if (args.lineage === "source-ref") {
-    return args.sidecarRouter.sendAgentDeploy(args.agentAddress, args.config, {
+    const workflow = {
       // The inert projection and its gate-frozen hash ride the frame verbatim;
       // neither is re-derived here. `projection` is already the frame's
       // `definition` type, so it is assigned with no coercion.
@@ -645,7 +711,27 @@ export async function sendMultiStepDeployFrame(
       ...(args.assets !== undefined && args.assets.length > 0
         ? { assets: [...args.assets] }
         : {}),
-    });
+    };
+    // A prepared exclusive deploy routes its source-ref frame to the dedicated
+    // allocation, mirroring the live-authored arm below; a shared deploy sends
+    // it on the shared router. The frozen projection/hash/pin ride verbatim in
+    // both cases -- only the transport differs.
+    if (args.allocationTarget !== undefined) {
+      if (args.sidecarAllocationRouter === undefined) {
+        throw new Error("Exclusive deployment routing is not configured");
+      }
+      return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
+        args.allocationTarget,
+        args.agentAddress,
+        args.config,
+        workflow,
+      );
+    }
+    return args.sidecarRouter.sendAgentDeploy(
+      args.agentAddress,
+      args.config,
+      workflow,
+    );
   }
 
   const wireDefinition = toWireWorkflowDefinition(args.definition);
@@ -733,6 +819,14 @@ type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
    * deployment.
    */
   credentialCipher?: CredentialCipher;
+  /**
+   * Present only for a prepared exclusive deploy: route the source-ref frame to
+   * this dedicated allocation instead of the shared router. `sidecarAllocationRouter`
+   * carries the allocation transport and is REQUIRED whenever `allocationTarget`
+   * is set. A shared deploy omits both.
+   */
+  allocationTarget?: AllocatedSidecarTarget;
+  sidecarAllocationRouter?: SidecarAllocationRouter;
 };
 
 /** Deploy a definition published to an npm registry: the sidecar fetches its
@@ -779,10 +873,20 @@ function isAssetDeployArgs(
  *
  * A gate outcome that did not approve cannot deploy: an unapproved `approval`
  * fails closed here rather than shipping an unfrozen definition.
+ *
+ * This emits the source-ref deploy frame ONLY -- it does NOT write the anchor
+ * `workflow_run` row. `deployCodeSourcedWorkflow` wraps it with the shared-path
+ * INSERT; the prepared exclusive path wraps it with an UPDATE-under-lock of the
+ * anchor row that already exists from prepare time. It returns the frozen
+ * definition id so each wrapper writes the same content-addressed identity the
+ * gate persisted.
  */
-export async function deployCodeSourcedWorkflow(
-  args: DeployCodeSourcedWorkflowArgs,
-): Promise<{ publicKey: string }> {
+async function emitSourceRefDeployFrame(
+  args: DeployCodeSourcedWorkflowArgs & {
+    allocationTarget?: AllocatedSidecarTarget;
+    sidecarAllocationRouter?: SidecarAllocationRouter;
+  },
+): Promise<{ publicKey: string; definitionId: string }> {
   const { approval, projection, closure } = args.approved;
   if (!approval.ok) {
     throw new Error(
@@ -916,6 +1020,12 @@ export async function deployCodeSourcedWorkflow(
   const result = await sendMultiStepDeployFrame({
     lineage: "source-ref",
     sidecarRouter: args.sidecarRouter,
+    ...(args.sidecarAllocationRouter !== undefined
+      ? { sidecarAllocationRouter: args.sidecarAllocationRouter }
+      : {}),
+    ...(args.allocationTarget !== undefined
+      ? { allocationTarget: args.allocationTarget }
+      : {}),
     agentAddress: args.agentAddress,
     config: args.config,
     sources: args.sources,
@@ -927,30 +1037,45 @@ export async function deployCodeSourcedWorkflow(
     ...(assets.length > 0 ? { assets } : {}),
   });
 
-  // Write the deployment's anchor `workflow_run` row -- the deployment's
-  // first-class record that owns its routing address and public key, mirroring
-  // the live-authored `deployWorkflowDefinition`. Run-grant materialization keys
-  // off this row (address + live status), so WITHOUT it no per-run grants (tool,
-  // capability, OR credential) ever materialize for a source-ref deployment.
-  // Born "deployed" (live but pre-trigger): the first trigger's materialization
-  // flips it to "running" via `anchorWithPrincipal`'s guarded update, which a
-  // row born "running" would skip. Its `anchorRunId` equals its own id, so the
-  // anchor references itself. The deployer read grant the live-authored path
-  // also seeds is deferred to the production route, which carries the
-  // authenticated deployer principal; this stays a single insert with no grant
-  // row to pair atomically.
+  return { publicKey: result.publicKey, definitionId: approval.definitionId };
+}
+
+/**
+ * The single public composition entrypoint for a SHARED code-sourced (npm)
+ * deploy: emit the source-ref frame, then INSERT the deployment's anchor
+ * `workflow_run` row -- the deployment's first-class record that owns its
+ * routing address and public key, mirroring the live-authored
+ * `deployWorkflowDefinition`. Run-grant materialization keys off this row
+ * (address + live status), so WITHOUT it no per-run grants (tool, capability, OR
+ * credential) ever materialize for a source-ref deployment. Born "deployed"
+ * (live but pre-trigger): the first trigger's materialization flips it to
+ * "running" via `anchorWithPrincipal`'s guarded update, which a row born
+ * "running" would skip. Its `anchorRunId` equals its own id, so the anchor
+ * references itself. The deployer read grant the live-authored path also seeds
+ * is deferred to the production route, which carries the authenticated deployer
+ * principal; this stays a single insert with no grant row to pair atomically.
+ *
+ * The prepared exclusive path does NOT use this wrapper: its anchor row already
+ * exists from prepare time, so it wraps `emitSourceRefDeployFrame` with an
+ * UPDATE-under-allocation-lock instead of this INSERT.
+ */
+export async function deployCodeSourcedWorkflow(
+  args: DeployCodeSourcedWorkflowArgs,
+): Promise<{ publicKey: string }> {
+  const { publicKey, definitionId } = await emitSourceRefDeployFrame(args);
+
   await args.db.insert(workflowRunTable).values({
     id: args.anchorRunId,
     tenantId: args.tenantId,
     anchorRunId: args.anchorRunId,
-    definitionId: approval.definitionId,
+    definitionId,
     address: args.agentAddress,
-    publicKey: result.publicKey,
+    publicKey,
     status: "deployed",
     createdAt: new Date(),
   });
 
-  return result;
+  return { publicKey };
 }
 
 /**
@@ -1751,7 +1876,7 @@ export function createSessionService(
   // asset's blob reads and a pin; a `registry` arm carries only its registry
   // config and a pin. A `pin` missing where the arm requires it fails closed.
   async function buildInstallArgs(
-    params: DeployWorkflowFromSourceParams,
+    params: InstallAndApproveWorkflowSourceParams,
     resolveAttachment: ResolveAssetAttachmentFn | null,
   ): Promise<InstallAndApproveArgs> {
     if (db === undefined) {
@@ -1842,6 +1967,56 @@ export function createSessionService(
     return toolPackageRegistries.defaultRegistry;
   }
 
+  // Bind the pack resolver an asset arm delivers inline. An asset arm delivers
+  // its backing repo (its kind fixed by `package.format`); a registry arm
+  // fetches its tarballs over HTTP and delivers no asset, so it binds nothing.
+  // Both the install (probe) and the deploy rebind the SAME resolver from the
+  // source, so a prepared deploy reconstructs it from the frozen `source`.
+  function bindSourceAttachmentResolver(
+    source: WorkflowDefinitionSource,
+  ): ResolveAssetAttachmentFn | null {
+    return source.kind === "asset"
+      ? bindAssetAttachmentResolver(
+          source.assetId,
+          source.package.format === "source" ? "workflow" : "package-registry",
+        )
+      : null;
+  }
+
+  // Install + probe + gate + freeze a code-sourced definition, returning the
+  // frozen bundle and the (asset-only) attachment resolver. The gate outcome is
+  // NOT asserted here: `deployWorkflowFromSource` and `installAndApproveWorkflowSource`
+  // each surface a non-approval as their own domain error. This is the shared
+  // freeze both the shared deploy and the exclusive prepare run.
+  async function prepareCodeSourcedApproval(
+    params: InstallAndApproveWorkflowSourceParams,
+  ): Promise<{
+    approved: InstallAndApproveResult;
+    resolveAttachment: ResolveAssetAttachmentFn | null;
+  }> {
+    const resolveAttachment = bindSourceAttachmentResolver(params.source);
+    const installArgs = await buildInstallArgs(params, resolveAttachment);
+    const approved = await installAndApproveWorkflowDefinition(installArgs);
+    return { approved, resolveAttachment };
+  }
+
+  // Freeze a code-sourced approval on shared capacity WITHOUT deploying it. The
+  // exclusive prepare path persists the returned bundle and deploys it to a
+  // dedicated allocation later. A non-approval fails closed as an invalid
+  // definition.
+  async function installAndApproveWorkflowSource(
+    params: InstallAndApproveWorkflowSourceParams,
+  ): Promise<InstallAndApproveResult> {
+    const { approved } = await prepareCodeSourcedApproval(params);
+    if (!approved.approval.ok) {
+      throw new WorkflowDefinitionInvalidError(
+        approved.projection.id,
+        `code-sourced workflow install did not approve (reason: ${approved.approval.reason})`,
+      );
+    }
+    return approved;
+  }
+
   async function deployWorkflowFromSource(
     params: DeployWorkflowFromSourceParams,
   ): Promise<DeployWorkflowDefinitionResult> {
@@ -1850,22 +2025,9 @@ export function createSessionService(
         "deployWorkflowFromSource requires a db handle to record the deployment's anchor run",
       );
     }
-    // An asset arm delivers its backing repo inline; a registry arm fetches its
-    // tarballs over HTTP and delivers no asset. Bind the resolver up front so
-    // both the install (probe) and the deploy carry the same pack fan-out.
     const source = params.source;
-    const resolveAttachment: ResolveAssetAttachmentFn | null =
-      source.kind === "asset"
-        ? bindAssetAttachmentResolver(
-            source.assetId,
-            source.package.format === "source"
-              ? "workflow"
-              : "package-registry",
-          )
-        : null;
-
-    const installArgs = await buildInstallArgs(params, resolveAttachment);
-    const approved = await installAndApproveWorkflowDefinition(installArgs);
+    const { approved, resolveAttachment } =
+      await prepareCodeSourcedApproval(params);
     if (!approved.approval.ok) {
       throw new WorkflowDefinitionInvalidError(
         approved.projection.id,
@@ -1937,6 +2099,79 @@ export function createSessionService(
     };
   }
 
+  /**
+   * Update a prepared anchor run's `publicKey` under the allocation-ownership
+   * lock. The anchor row was inserted at prepare time; this stamps the
+   * supervisor key returned by the deploy ack, but only while the allocation
+   * still names this exact accepted generation for this anchor. A lost lock (the
+   * allocation moved on, another worker took the generation) fails closed as a
+   * leaked-agent `SessionLaunchError` -- the deploy already reached the sidecar,
+   * so the caller must treat the sidecar agent as possibly live. Shared by the
+   * live-authored (`deployPreparedWorkflowDefinition`) and source-ref
+   * (`deployPreparedCodeSourcedWorkflow`) prepared paths.
+   */
+  async function updateAnchorPublicKeyUnderAllocationLock(args: {
+    tenantId: string;
+    anchorRunId: string;
+    allocationTarget: AllocatedSidecarTarget;
+    publicKey: string;
+  }): Promise<void> {
+    if (db === undefined) {
+      throw new Error(
+        "updateAnchorPublicKeyUnderAllocationLock requires a db handle",
+      );
+    }
+    const dbHandle = db;
+    try {
+      const updated = await dbHandle.transaction(async (tx) => {
+        const [allocation] = await tx
+          .select({
+            id: sidecarAllocationTable.id,
+            anchorRunId: sidecarAllocationTable.anchorRunId,
+            status: sidecarAllocationTable.status,
+            generation: sidecarAllocationTable.generation,
+            ensureAcceptedGeneration:
+              sidecarAllocationTable.ensureAcceptedGeneration,
+          })
+          .from(sidecarAllocationTable)
+          .where(
+            eq(sidecarAllocationTable.id, args.allocationTarget.allocationId),
+          )
+          .limit(1)
+          .for("update");
+        if (
+          allocation === undefined ||
+          allocation.anchorRunId !== args.anchorRunId ||
+          allocation.status !== "allocated" ||
+          allocation.generation !== args.allocationTarget.generation ||
+          allocation.ensureAcceptedGeneration !==
+            args.allocationTarget.generation
+        ) {
+          return null;
+        }
+        const [anchor] = await tx
+          .update(workflowRunTable)
+          .set({ publicKey: args.publicKey })
+          .where(
+            and(
+              eq(workflowRunTable.id, args.anchorRunId),
+              eq(workflowRunTable.anchorRunId, args.anchorRunId),
+              eq(workflowRunTable.tenantId, args.tenantId),
+            ),
+          )
+          .returning({ id: workflowRunTable.id });
+        return anchor ?? null;
+      });
+      if (updated === null) {
+        throw new Error(
+          `Prepared anchor run ${args.anchorRunId} lost allocation ownership before initialization completed`,
+        );
+      }
+    } catch (error) {
+      throw new SessionLaunchError("start", error, true);
+    }
+  }
+
   async function deployPreparedWorkflowDefinition(
     params: DeployPreparedWorkflowDefinitionParams,
   ): Promise<DeployWorkflowDefinitionResult> {
@@ -1955,55 +2190,108 @@ export function createSessionService(
       }),
     });
     const result = await executeWorkflowDefinitionDeploy(params);
-    try {
-      const updated = await db.transaction(async (tx) => {
-        const [allocation] = await tx
-          .select({
-            id: sidecarAllocationTable.id,
-            anchorRunId: sidecarAllocationTable.anchorRunId,
-            status: sidecarAllocationTable.status,
-            generation: sidecarAllocationTable.generation,
-            ensureAcceptedGeneration:
-              sidecarAllocationTable.ensureAcceptedGeneration,
-          })
-          .from(sidecarAllocationTable)
-          .where(
-            eq(sidecarAllocationTable.id, params.allocationTarget.allocationId),
-          )
-          .limit(1)
-          .for("update");
-        if (
-          allocation === undefined ||
-          allocation.anchorRunId !== params.anchorRunId ||
-          allocation.status !== "allocated" ||
-          allocation.generation !== params.allocationTarget.generation ||
-          allocation.ensureAcceptedGeneration !==
-            params.allocationTarget.generation
-        ) {
-          return null;
-        }
-        const [anchor] = await tx
-          .update(workflowRunTable)
-          .set({ publicKey: result.publicKey })
-          .where(
-            and(
-              eq(workflowRunTable.id, params.anchorRunId),
-              eq(workflowRunTable.anchorRunId, params.anchorRunId),
-              eq(workflowRunTable.tenantId, params.tenantId),
-            ),
-          )
-          .returning({ id: workflowRunTable.id });
-        return anchor ?? null;
-      });
-      if (updated === null) {
+    await updateAnchorPublicKeyUnderAllocationLock({
+      tenantId: params.tenantId,
+      anchorRunId: params.anchorRunId,
+      allocationTarget: params.allocationTarget,
+      publicKey: result.publicKey,
+    });
+    return result;
+  }
+
+  /**
+   * Deploy a previously-frozen code-sourced approval bundle to a dedicated
+   * allocation: the source-ref analogue of `deployPreparedWorkflowDefinition`.
+   * The anchor `workflow_run` row already exists from prepare time (with its
+   * `definitionId` set), so this UPDATES it under the allocation-ownership lock
+   * rather than inserting. No re-probe: the frozen projection/hash/closure ride
+   * verbatim from `params.approved`, and the per-step inference sources are
+   * re-pinned from the re-resolved chain (deliberately NOT frozen, since a
+   * resolved source carries a credential secret).
+   */
+  async function deployPreparedCodeSourcedWorkflow(
+    params: DeployPreparedCodeSourcedWorkflowParams,
+  ): Promise<DeployWorkflowDefinitionResult> {
+    if (db === undefined) {
+      throw new Error(
+        "deployPreparedCodeSourcedWorkflow requires a db handle to update the prepared anchor run",
+      );
+    }
+    const dbHandle = db;
+    const approval = params.approved.approval;
+    if (!approval.ok) {
+      throw new Error(
+        "deployPreparedCodeSourcedWorkflow: refusing to deploy an unapproved workflow bundle",
+      );
+    }
+    const allocationRouter = requireAllocationRouter();
+    const source = params.source;
+    const resolveAttachment = bindSourceAttachmentResolver(source);
+
+    // Re-pin every top-level step's inference source from the re-resolved chain
+    // under the frozen approval -- the same pin the shared deploy computes.
+    const sources = buildInertProjectionStepSources({
+      projection: params.approved.projection,
+      config: params.config,
+      operatorApprovals: approval.approvedGrants,
+    });
+
+    // Restore the Hub-authoritative run ref onto the exact allocation generation
+    // before its address is routed, mirroring the live-authored prepared path.
+    await restoreWorkflowRunToAllocation({
+      agentRepoStore,
+      allocationRouter,
+      allocationTarget: params.allocationTarget,
+      agentAddress: params.agentAddress,
+    });
+
+    const commonEmit = {
+      approved: params.approved,
+      sidecarRouter,
+      sidecarAllocationRouter: allocationRouter,
+      allocationTarget: params.allocationTarget,
+      agentAddress: params.agentAddress,
+      config: params.config,
+      sources,
+      db: dbHandle,
+      tenantId: params.tenantId,
+      anchorRunId: params.anchorRunId,
+      deploymentDomain: params.deploymentDomain,
+      ...(params.credentialCipher !== undefined
+        ? { credentialCipher: params.credentialCipher }
+        : {}),
+    };
+    // Branch on the source discriminant so the emit args match the asset/registry
+    // arms: an asset arm carries the rebuilt attachment resolver (asserted
+    // non-null to satisfy the union), a registry arm carries none.
+    let result: { publicKey: string; definitionId: string };
+    if (source.kind === "asset") {
+      if (resolveAttachment === null) {
         throw new Error(
-          `Prepared anchor run ${params.anchorRunId} lost allocation ownership before initialization completed`,
+          "deployPreparedCodeSourcedWorkflow: asset source deploy is missing its attachment resolver",
         );
       }
-    } catch (error) {
-      throw new SessionLaunchError("start", error, true);
+      result = await emitSourceRefDeployFrame({
+        ...commonEmit,
+        source,
+        resolveAttachment,
+      });
+    } else {
+      result = await emitSourceRefDeployFrame({ ...commonEmit, source });
     }
-    return result;
+
+    await updateAnchorPublicKeyUnderAllocationLock({
+      tenantId: params.tenantId,
+      anchorRunId: params.anchorRunId,
+      allocationTarget: params.allocationTarget,
+      publicKey: result.publicKey,
+    });
+
+    return {
+      anchorRunId: params.anchorRunId,
+      deploymentAddress: params.agentAddress,
+      publicKey: result.publicKey,
+    };
   }
 
   async function rollbackCommittedAttachments(
@@ -2381,7 +2669,9 @@ export function createSessionService(
     deploySingleStepAtHead,
     deployWorkflowDefinition,
     deployWorkflowFromSource,
+    installAndApproveWorkflowSource,
     deployPreparedWorkflowDefinition,
+    deployPreparedCodeSourcedWorkflow,
     sendUserMessage,
     endSession,
   };

@@ -575,6 +575,13 @@
       "when": 1787066175571,
       "tag": "0082_blue_black_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1787096121244,
+      "tag": "0083_replace_launch_spec_snapshot_with_frozen_bundle",
+      "breakpoints": true
     }
   ]
 }

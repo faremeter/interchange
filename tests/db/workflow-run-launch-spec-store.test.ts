@@ -25,6 +25,27 @@ const DEFINITION_ID = "wfd-launch-spec";
 const ANCHOR_RUN_ID = "dep-launch-spec";
 const PRINCIPAL_ID = "prn-launch-spec";
 
+// A minimal, valid frozen approval bundle -- the recovery input for an exclusive
+// deploy. It names the source and carries the inert projection/closure/hash; it
+// holds no resolved inference source, so no credential secret can be persisted.
+const FROZEN_APPROVAL_BUNDLE = {
+  source: {
+    kind: "asset" as const,
+    assetId: "ast-launch-spec",
+    package: { format: "source" as const, commitSha: "c0ffee".padEnd(40, "0") },
+  },
+  entry: "./workflow.mjs",
+  projection: {
+    id: "workflow",
+    triggers: [] as unknown[],
+    stepOrder: [] as string[],
+    steps: {},
+  },
+  closure: { schemaVersion: "1" as const, topLevel: [], entries: [] },
+  approvedWireHash: "a".repeat(64),
+  approvedGrants: [] as string[],
+};
+
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowRunLaunchSpecStore (real DB)",
   () => {
@@ -68,13 +89,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sessionId: "ses-launch-spec",
         deploymentDomain: "tenant.example",
         sourceAuthorityPrincipalId: PRINCIPAL_ID,
-        definitionSnapshot: {
-          id: "workflow",
-          triggers: [{ type: "manual" }],
-          steps: { work: { id: "work", kind: "step" } },
-          stepOrder: ["work"],
-        },
-        definitionHash: "aabbccdd",
+        frozenApprovalBundle: FROZEN_APPROVAL_BUNDLE,
         sourceOfferingIds: ["offering-primary", "offering-fallback"],
         defaultSourceOfferingId: "offering-primary",
         deployContent: { systemPrompt: "" },
@@ -90,12 +105,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "offering-fallback",
       ]);
       expect(stored?.defaultSourceOfferingId).toBe("offering-primary");
-      expect(stored?.definitionSnapshot).toEqual({
-        id: "workflow",
-        triggers: [{ type: "manual" }],
-        steps: { work: { id: "work", kind: "step" } },
-        stepOrder: ["work"],
-      });
+      expect(stored?.frozenApprovalBundle).toEqual(FROZEN_APPROVAL_BUNDLE);
       expect(stored).not.toHaveProperty("sources");
       expect(stored).not.toHaveProperty("apiKey");
     });
@@ -113,13 +123,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sessionId: "ses-launch-spec",
           deploymentDomain: "tenant.example",
           sourceAuthorityPrincipalId: PRINCIPAL_ID,
-          definitionSnapshot: {
-            id: "workflow",
-            triggers: [{ type: "manual" }],
-            steps: { work: { id: "work", kind: "step" } },
-            stepOrder: ["work"],
-          },
-          definitionHash: "aabbccdd",
+          frozenApprovalBundle: FROZEN_APPROVAL_BUNDLE,
           sourceOfferingIds: ["offering-primary"],
           defaultSourceOfferingId: "offering-missing",
           deployContent: { systemPrompt: "" },

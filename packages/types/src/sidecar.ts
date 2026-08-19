@@ -409,6 +409,32 @@ export const SourceRefPin = type({
 export type SourceRefPin = typeof SourceRefPin.infer;
 
 /**
+ * The frozen, fully-serializable record of a code-sourced workflow approval,
+ * persisted at prepare time and rehydrated to deploy the exact same definition
+ * later. It is the recovery input for an exclusively-placed workflow: the probe
+ * runs once on shared capacity at request time, its result is frozen here, and a
+ * ready allocation deploys THIS bundle verbatim with no re-probe.
+ *
+ * Every field is inert, secret-free data. `source`/`entry` name where the
+ * definition's bytes come from and the entry module the probe evaluated;
+ * `projection` is the inert wire projection the freeze hashed; `closure` is the
+ * frozen dependency closure the pin resolved to; `approvedWireHash` is the freeze
+ * anchor; `approvedGrants` is the approved grant set (rehydrated to a `Set` on
+ * the deploy hand-off). Per-step inference sources are deliberately NOT frozen
+ * here -- they carry credential secrets and are re-resolved from the launch
+ * spec's offering ids at deploy time.
+ */
+export const FrozenApprovalBundle = type({
+  source: WorkflowDefinitionSource,
+  entry: "string > 0",
+  projection: WorkflowProjectionDefinition,
+  closure: ToolPackageManifest,
+  approvedWireHash: "string > 0",
+  approvedGrants: "string[]",
+});
+export type FrozenApprovalBundle = typeof FrozenApprovalBundle.infer;
+
+/**
  * A hub asset delivered inline in a source-ref frame so the sidecar can
  * materialize a closure entry whose bytes live in that asset. `pack` is the
  * base64-encoded git packfile the hub produced for the asset (`createPack`

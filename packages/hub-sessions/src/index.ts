@@ -13,6 +13,8 @@ export {
   type DeployWorkflowDefinitionResult,
   type DeployWorkflowFromSourceParams,
   type DeployPreparedWorkflowDefinitionParams,
+  type DeployPreparedCodeSourcedWorkflowParams,
+  type InstallAndApproveWorkflowSourceParams,
   type PreparedWorkflowDeployer,
   type DeployCodeSourcedWorkflowArgs,
 } from "./session-service";
