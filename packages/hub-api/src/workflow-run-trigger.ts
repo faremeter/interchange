@@ -41,7 +41,6 @@ import {
 } from "@intx/types";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
 import type {
-  AssetService,
   RepoStore,
   SidecarRouter,
   WorkflowDispatchService,
@@ -83,7 +82,6 @@ export const WorkflowRunTriggerResponse = type({
 
 export type TriggerWorkflowRunDeps = {
   db: DB["db"];
-  assetService: AssetService;
   grantStore: GrantStore;
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: WorkflowDispatchService;

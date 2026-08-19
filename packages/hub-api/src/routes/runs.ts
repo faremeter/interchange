@@ -28,7 +28,6 @@ import {
   findRoutableById,
   resolveRunIdForSession,
   runRowToRoutableRecord,
-  type AssetService,
   type EventCollectorRegistry,
   type RepoStore,
   type RoutableRecord,
@@ -151,13 +150,11 @@ export type CreateRunRoutesDeps = {
   sidecarRouter: SidecarRouter;
   eventCollectors: EventCollectorRegistry;
   // The workflow-run substrate that backs the durable run-event log the
-  // turns/events routes read and the workflow asset the mail-send trigger
-  // hydrates grants from. Both are null when the hub runs without the deploy
-  // surface (the app.ts XOR keeps assetService and repoStore moving as a unit);
-  // the substrate-backed routes then answer 503 rather than fabricating state,
+  // turns/events routes read and the run-event state the mail-send trigger
+  // reads. It is null when the hub runs without the deploy surface; the
+  // substrate-backed routes then answer 503 rather than fabricating state,
   // since createRunRoutes mounts unconditionally.
   repoStore: RepoStore | null;
-  assetService: AssetService | null;
   // The durable dispatch queue an exclusive deployment's trigger enqueues onto.
   // Absent when the hub runs without durable dispatch; the trigger then 503s an
   // exclusive send, exactly as the deployment Trigger route does.
@@ -172,7 +169,6 @@ export function createRunRoutes({
   sidecarRouter,
   eventCollectors,
   repoStore,
-  assetService,
   workflowDispatchService,
   grantStore,
   conditionRegistry,
@@ -187,14 +183,12 @@ export function createRunRoutes({
     repoStore !== null ? createWorkflowRunReader(repoStore) : null;
 
   // The mail-send trigger fires the run through its workflow-native Trigger
-  // path. It needs both the workflow asset (grant hydration) and the run-event
-  // substrate (terminal-state read), which the app.ts XOR moves as a unit, so a
-  // null on either leaves the trigger null and the mail-send route answers 503.
+  // path. It needs the run-event substrate (terminal-state read), so a null
+  // repoStore leaves the trigger null and the mail-send route answers 503.
   const triggerWorkflowRun =
-    repoStore !== null && assetService !== null
+    repoStore !== null
       ? createWorkflowRunTrigger({
           db,
-          assetService,
           grantStore,
           sidecarRouter,
           ...(workflowDispatchService !== undefined

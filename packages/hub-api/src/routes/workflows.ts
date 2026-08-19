@@ -29,7 +29,6 @@ import {
   createWorkflowRunReader,
   ExclusiveWorkflowPlacementError,
   resolveWorkflowSidecarPlacement,
-  type AssetService,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
@@ -189,7 +188,6 @@ export type CreateWorkflowRoutesDeps = {
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   sidecarRouter: SidecarRouter;
-  assetService: AssetService;
   repoStore: RepoStore;
   grantStore: GrantStore;
   requireGrant: RequireGrant;
@@ -201,7 +199,6 @@ export function createWorkflowRoutes({
   workflowAllocationService,
   workflowDispatchService,
   sidecarRouter,
-  assetService,
   repoStore,
   grantStore,
   requireGrant,
@@ -210,7 +207,6 @@ export function createWorkflowRoutes({
   const runReader = createWorkflowRunReader(repoStore);
   const triggerWorkflowRun = createWorkflowRunTrigger({
     db,
-    assetService,
     grantStore,
     sidecarRouter,
     ...(workflowDispatchService !== undefined
