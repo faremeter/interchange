@@ -42,6 +42,7 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_folded-tools-failover-1";
@@ -74,6 +75,19 @@ const TENANT_ID = "tnt_folded_tools_failover";
 const CALLER_PRINCIPAL_ID = "prn_folded_tools_failover";
 const DEFINITION_ASSET_ID = "ast_folded_tools_failover_wf";
 
+// The negative-control deploy's own identity, distinct from the failover
+// deploy's so the two runs never collide on a substrate slug or DB row. Its
+// definition asset is seeded alongside the failover one in `beforeAll`; the
+// tenant and caller principal are shared.
+const NEGCTL_DEPLOYMENT_ID = "run_folded-tools-failover-negctl-1";
+const NEGCTL_AGENT_ID = "agent-folded-tools-failover-negctl";
+const NEGCTL_DEFINITION_ASSET_ID = "ast_folded_tools_failover_negctl_wf";
+
+// The healthy tail's text reply for an empty tool set. The negative control
+// deploys with the dead head as the SOLE source, so the healthy mock is never
+// reached; the synthesized provider-error reply it lands is NOT this string.
+const HEALTHY_TEXT_REPLY = "I see these tools:";
+
 let env: DeployFlowEnv;
 let h: TestDb;
 // The dead head source: always HTTP 500 (a retryable category) so the child's
@@ -100,6 +114,13 @@ beforeAll(async () => {
     tenantId: TENANT_ID,
     kind: "workflow",
     name: "folded-tools-failover-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+  await seedAsset(h.db, {
+    id: NEGCTL_DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "folded-tools-failover-negctl-wf",
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
@@ -271,5 +292,149 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(fs.readFileSync(sentinelPath, "utf-8")).toBe(SENTINEL_CONTENT);
     });
+
+    test("a chain with no healthy source completes with a synthesized error reply", async () => {
+      // Negative control grounding the failover test above: with the dead head
+      // as the SOLE source there is nothing to fail over to, yet the run still
+      // lands `RunCompleted` -- the agent synthesizes a graceful provider-error
+      // reply rather than failing the run. This is why the failover test cannot
+      // lean on the terminal type and proves failover through the reply instead.
+      const deploymentMailAddress = deriveRunAddress({
+        runId: NEGCTL_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+
+      // The sole source is the dead head (HTTP 500). Its declared (provider,
+      // model) is the agent's declared pair, so the one inference-source
+      // approval covers it -- the deploy is well-formed, only the runtime
+      // inference fails.
+      const deadSource: InferenceSource = {
+        id: "anthropic:dead-head",
+        provider: "anthropic",
+        baseURL: `http://localhost:${deadHead.port}`,
+        apiKey: "sk-dead",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${NEGCTL_DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_folded-negctl-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [deadSource],
+        defaultSource: "anthropic:dead-head",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      // A tool-less single-step agent: the negative control is about the
+      // inference-failure contract, not tool materialization.
+      const entryModule = singleStepAgentEntry({
+        stepId: STEP_ID,
+        systemPrompt: "You are the folded failover negative-control agent.",
+        address: deploymentMailAddress,
+        agentId: NEGCTL_AGENT_ID,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: NEGCTL_DEFINITION_ASSET_ID,
+        anchorRunId: NEGCTL_DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [deadSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId = handle.workflowRunRepoId;
+
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<folded-tools-failover-negctl-1@integration.interchange>",
+      });
+
+      const runId = await waitForFirstRunId(env, workflowRunRepoId, {
+        diagnostics: env.sidecarDiagnostics,
+        timeoutMs: 20_000,
+      });
+
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        NEGCTL_DEPLOYMENT_ID,
+        runId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      // Total inference failure still completes the run.
+      expect(terminal.type).toBe("RunCompleted");
+
+      const events = await readWorkflowRunEvents(
+        env,
+        NEGCTL_DEPLOYMENT_ID,
+        runId,
+      );
+      const stepCompleted = events.find(
+        (e) => e.type === "StepCompleted" && e.body["stepId"] === STEP_ID,
+      );
+      if (stepCompleted === undefined) {
+        throw new Error("missing StepCompleted for the sole-dead-source step");
+      }
+
+      // The reply is the synthesized error, NOT the healthy tail's output --
+      // exactly the outcome the failover test's success relies on ruling out.
+      const reply = readStepReply(stepCompleted.body);
+      expect(reply).not.toBe(HEALTHY_TEXT_REPLY);
+    });
   },
 );
+
+/**
+ * Extract the agent's reply string from a `StepCompleted` event body. A small
+ * `{ reply, turn }` output inlines as `inline:<json>`.
+ */
+function readStepReply(body: Record<string, unknown>): string {
+  const output = body["output"];
+  if (typeof output !== "object" || output === null || !("ref" in output)) {
+    throw new Error(
+      `StepCompleted output is not a { ref } record: ${JSON.stringify(output)}`,
+    );
+  }
+  const ref: unknown = output.ref;
+  if (typeof ref !== "string") {
+    throw new Error(`StepCompleted output ref is not a string: ${String(ref)}`);
+  }
+  const INLINE_PREFIX = "inline:";
+  if (!ref.startsWith(INLINE_PREFIX)) {
+    throw new Error(`expected an inline output ref, got ${ref}`);
+  }
+  const parsed: unknown = JSON.parse(ref.slice(INLINE_PREFIX.length));
+  if (typeof parsed !== "object" || parsed === null || !("reply" in parsed)) {
+    throw new Error(
+      `step output does not carry a reply field: ${JSON.stringify(parsed)}`,
+    );
+  }
+  const reply: unknown = parsed.reply;
+  if (typeof reply !== "string") {
+    throw new Error(
+      `step output reply is not a string: ${JSON.stringify(parsed)}`,
+    );
+  }
+  return reply;
+}
