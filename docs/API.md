@@ -722,6 +722,7 @@ Deactivate a wallet
 
 204: (no content) -- Wallet deactivated
 404: ErrorResponse -- Wallet not found
+409: ErrorResponse -- Wallet is in use by a model provider
 
 ### GET /api/tenants/:tenantId/wallets/:walletId/transactions
 List transactions

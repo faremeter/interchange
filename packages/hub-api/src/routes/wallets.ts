@@ -17,6 +17,7 @@ import {
 import type { TenantEnv } from "../context";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
+import { isReferencedRowViolation } from "../pg-errors";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import {
@@ -265,18 +266,56 @@ export function createWalletRoutes({
             "application/json": { schema: resolver(ErrorResponse) },
           },
         },
+        409: {
+          description: "Wallet is in use by a model provider",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
       },
     }),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const walletId = c.req.param("walletId");
 
-      const deleted = await db
-        .delete(wallet)
-        .where(and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)))
-        .returning();
+      // Two invariants, each owned by one layer:
+      //   - Existence within the tenant is owned by the delete's WHERE clause
+      //     (`id` AND `tenantId`). authz cannot own it: the resource string
+      //     `wallet:{id}` is opaque, so a wildcard grant matches an id in any
+      //     tenant. A foreign or unknown id matches zero rows -> 404, disclosing
+      //     nothing across the tenant boundary.
+      //   - "Cannot delete a wallet a model provider still references" is owned
+      //     by the model_provider.wallet_id foreign key (onDelete "restrict",
+      //     catalog.ts). The delete fires it only for a row actually being
+      //     deleted, so the catch maps the raw violation to a 409 instead of a
+      //     500.
+      // Wallets mint no per-wallet grant, so there is no grant cleanup and the
+      // single delete needs no transaction.
+      let outcome: "not_found" | "deleted";
+      try {
+        const deleted = await db
+          .delete(wallet)
+          .where(
+            and(eq(wallet.id, walletId), eq(wallet.tenantId, tenantCtx.id)),
+          )
+          .returning();
+        outcome = deleted.length === 0 ? "not_found" : "deleted";
+      } catch (err) {
+        if (!isReferencedRowViolation(err)) {
+          throw err;
+        }
+        return c.json(
+          {
+            error: {
+              code: "conflict",
+              message: "Wallet is in use by a model provider",
+            },
+          },
+          409,
+        );
+      }
 
-      if (deleted.length === 0) {
+      if (outcome === "not_found") {
         return c.json(
           { error: { code: "not_found", message: "Wallet not found" } },
           404,
