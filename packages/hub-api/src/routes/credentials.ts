@@ -473,17 +473,40 @@ export function createCredentialRoutes({
       const tenantCtx = c.get("tenant");
       const credentialId = c.req.param("credentialId");
 
-      const deleted = await db
-        .delete(credential)
-        .where(
-          and(
-            eq(credential.id, credentialId),
-            eq(credential.tenantId, tenantCtx.id),
-          ),
-        )
-        .returning();
+      // Delete the credential and its per-credential grants atomically. The
+      // `credential:{id}` resource is a plain text column with no foreign key
+      // to `credential`, so nothing cascades; every grant naming this exact
+      // resource is orphaned once the credential is gone and must be removed
+      // here. The exact-match resource never touches the coarse `credential:*`
+      // role grant.
+      const outcome = await db.transaction(async (tx) => {
+        const deleted = await tx
+          .delete(credential)
+          .where(
+            and(
+              eq(credential.id, credentialId),
+              eq(credential.tenantId, tenantCtx.id),
+            ),
+          )
+          .returning();
 
-      if (deleted.length === 0) {
+        if (deleted.length === 0) {
+          return "not_found" as const;
+        }
+
+        await tx
+          .delete(grantTable)
+          .where(
+            and(
+              eq(grantTable.tenantId, tenantCtx.id),
+              eq(grantTable.resource, `credential:${credentialId}`),
+            ),
+          );
+
+        return "deleted" as const;
+      });
+
+      if (outcome === "not_found") {
         return c.json(
           { error: { code: "not_found", message: "Credential not found" } },
           404,
