@@ -46,7 +46,7 @@
 // the caller; this module does not synthesize that registry itself
 // because the loader is the layer that owns package materialization.
 // An unresolvable director surfaces on `unresolvedDirectors` rather
-// than raising -- the orchestrator translates that into a deploy-time
+// than raising -- the deploy flow translates that into a deploy-time
 // `"unresolvable director"` failure when it wires this output into
 // approval flow.
 
@@ -85,7 +85,7 @@ export interface GrantDeclarations {
 /**
  * The capability walk's result. `perStep` keys are workflow step ids;
  * `unresolvedDirectors` lists every director id the supplied registry
- * could not resolve across the whole walk, so the orchestrator can
+ * could not resolve across the whole walk, so the deploy flow can
  * surface a single deploy-time failure rather than tearing down per
  * step.
  *
@@ -106,8 +106,8 @@ export interface CapabilityWalkResult {
  * plugin's tool grant surface off the definition alone. The caller (the
  * probe, over the materialized closure) loads each declared plugin's static
  * `definitions` and threads them here so the walk emits `tool:<name>` grants
- * for plugin-contributed tools alongside factory-contributed ones. Absent
- * from a live-authored walk, which materializes no plugin package.
+ * for plugin-contributed tools alongside factory-contributed ones. Empty
+ * when the walked closure declares no plugin package.
  */
 export type PluginToolDefinitions = ReadonlyMap<
   string,
@@ -304,10 +304,9 @@ function collectLoopBodyGrants(
 /**
  * Union an onTrigger section body's agent/action grants into the section's
  * declaration set, so the approval gate sees every agent and action the
- * section can run per event. The walk runs before the deploy step extracts
- * the body into its own asset, so it sees the authored `{ inline }` form; a
- * deployed `{ ref }` body is an independent asset with its own declarations
- * and is skipped here. A section body may itself contain a loop (whose body
+ * section can run per event. The walk sees the authored `{ inline }` form; a
+ * `{ ref }` body carries its own declarations and is skipped here. A section
+ * body may itself contain a loop (whose body
  * grants are collected) or a childWorkflow (whose grants recurse through
  * `collectChildWorkflowGrants`); a nested onTrigger is forbidden at definition
  * time, so there is no section-within-section recursion to handle.
@@ -365,11 +364,10 @@ function collectOnTriggerBodyGrants(
 /**
  * Union an embedded (inline) childWorkflow's agent/action grants into the
  * spawning step's declaration set, so the approval gate sees every agent and
- * action the child can run. The walk runs before the deploy step lifts the
- * child body to its internal ref, so it sees the authored `{ inline }` form; a
- * by-`ref` child is the internal extracted-body handle whose grants were
- * already folded in from its inline form, so it is skipped here -- exactly as
- * a `{ ref }` onTrigger body is. A child body may itself contain a loop (whose
+ * action the child can run. The walk sees the authored `{ inline }` form; a
+ * `{ ref }` child carries its grants in its own separately-declared
+ * definition, so it is skipped here -- exactly as a `{ ref }` onTrigger body
+ * is. A child body may itself contain a loop (whose
  * body grants are collected), a nested onTrigger section (whose body grants are
  * collected), or a nested childWorkflow (whose grants recurse through this same
  * collector), so an owned import's full closure surfaces in the parent's

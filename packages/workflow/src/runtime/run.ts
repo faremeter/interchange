@@ -1132,9 +1132,9 @@ async function runStep(
   selectorCtx: SelectorContext,
   abort: AbortSignal,
 ): Promise<unknown> {
-  // A definition hydrated from workflow.json never passed through
-  // `step()`, so its retry/budget cross-field guard is re-applied here,
-  // at the runtime's single read point for both fields.
+  // Re-apply the retry/budget cross-field guard here as a defensive
+  // re-check, at the runtime's single read point for both fields, rather
+  // than trust that every definition reached it through `step()`.
   validateRetryTriggerCombination(step);
   let attempt = 1;
   const maxAttempts = step.retry?.maxAttempts ?? 1;

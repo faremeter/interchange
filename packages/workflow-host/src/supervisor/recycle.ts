@@ -4,8 +4,9 @@
 //
 // Recycle is the supervisor's "same deploy tree, fresh process" path.
 // It tears the existing workflow-process child down and stands a new
-// one up against the SAME deploy tree (same `workflow.json`, same
-// per-step credential repos). It is STRICTLY ORTHOGONAL TO REDEPLOY:
+// one up against the SAME deploy tree (same materialized source
+// closure, same per-step credential repos). It is STRICTLY ORTHOGONAL
+// TO REDEPLOY:
 //
 //   - Recycle  = same deploy tree, fresh process.
 //   - Redeploy = new deploy tree.
@@ -388,7 +389,8 @@ export async function triggerRecycle(
   // the previous child's lifetime is picked up here -- the recycle
   // doubles as the supervisor's grant-refresh path. The deploy tree
   // is not consulted; this read is against the `agent-state` repos
-  // alone, whose contents are independent of `workflow.json`.
+  // alone, whose contents are independent of the materialized source
+  // closure.
   //
   // This is a substrate read that can reject -- a grants file that
   // became malformed is precisely the recycle's grant-refresh path. The
