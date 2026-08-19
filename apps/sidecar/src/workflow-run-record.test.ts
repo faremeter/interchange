@@ -46,13 +46,6 @@ const SINGLE_STEP: WorkflowRunRecord = {
   },
   sessionId: "ses_1",
   hubPublicKey: "deadbeef",
-  // Per-body approved hashes persisted for the onTrigger-body re-verify to
-  // survive a restart; round-tripped here so a schema change to the map shape
-  // is caught.
-  referencedDefinitionHashes: {
-    "body-a": "a".repeat(64),
-    "body-b": "b".repeat(64),
-  },
   // Source-ref is the only lineage: every record carries the pin + approved
   // hash the restore re-verifies the re-materialized closure against.
   approvedWireHash: "d".repeat(64),

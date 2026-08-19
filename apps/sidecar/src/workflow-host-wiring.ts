@@ -926,8 +926,9 @@ export interface SidecarDeployRouter extends DeployRouter {
    * substrate. Runs once at boot, before `hubLink.connect()`, so a single-step
    * head's mailbox/transport registration is live before the hub routes to it.
    * Soft-fails per deployment: a record that cannot be restored (unbuildable
-   * provider, corrupt `workflow.json`, spawn failure) is logged and left on
-   * disk for a later boot to retry -- it is never deleted here.
+   * provider, a source closure that cannot be re-materialized, spawn failure)
+   * is logged and left on disk for a later boot to retry -- it is never
+   * deleted here.
    */
   restoreWorkflowRuns(): Promise<void>;
   /**
@@ -1398,13 +1399,6 @@ export function createSidecarDeployRouter(deps: {
      * spawn core fails closed rather than substitute a recompute.
      */
     approvedWireHash: string | undefined;
-    /**
-     * Hub-approved wire hash per referenced onTrigger body id, threaded to the
-     * child (via the substrate env) so a body child re-verifies its recompute
-     * against the hub authority. Empty when the deploy carried no referenced
-     * bodies with approved hashes.
-     */
-    referencedDefinitionHashes: Record<string, string>;
     /** Correlates the child's inference events to the deploy's session. */
     sessionId: string | undefined;
     /**
@@ -1453,10 +1447,6 @@ export function createSidecarDeployRouter(deps: {
         `buildWorkflowRunRecord: a source-ref deployment (${spec.agentAddress}) must carry approvedWireHash`,
       );
     }
-    // The per-body approved hashes are re-threaded into the child's spawn env on
-    // restore so the onTrigger-body re-verify barrier survives a restart;
-    // omitted when the deployment has no bodies, matching the "no null entry"
-    // shape the deploy-time populate uses.
     return {
       version: 1 as const,
       agentAddress: spec.agentAddress,
@@ -1465,9 +1455,6 @@ export function createSidecarDeployRouter(deps: {
       ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
       ...(spec.hubPublicKey !== undefined
         ? { hubPublicKey: spec.hubPublicKey }
-        : {}),
-      ...(Object.keys(spec.referencedDefinitionHashes).length > 0
-        ? { referencedDefinitionHashes: spec.referencedDefinitionHashes }
         : {}),
       lineage: "source-ref",
       // Feeds the restored child's DEFINITION_HASH so it re-verifies the
@@ -1544,7 +1531,7 @@ export function createSidecarDeployRouter(deps: {
    * step throws, so a failed spawn leaks nothing. Both the live deploy path
    * and the boot-time restore path route through here so the two can never
    * diverge on how a deployment is stood up. Callers materialize the
-   * deploy-only durable state (`workflow.json`, step grants) before calling.
+   * deploy-only durable state (the source closure, step grants) before calling.
    */
   async function spawnWorkflowRun(
     spec: WorkflowDeploySpec,
@@ -1618,26 +1605,12 @@ export function createSidecarDeployRouter(deps: {
 
       // Per-deployment substrate-config keys the workflow-substrate-factory
       // validator requires. The boot edge's `multistepSubstrateEnv` carries
-      // the boot-edge constants; the four workflow-definition / workflow-run
-      // identity keys are derived per-deploy here.
+      // the boot-edge constants; the two workflow-run identity keys are
+      // derived per-deploy here.
       const substrateEnv: Record<string, string> = {
         ...multistepSubstrateEnv,
-        WORKFLOW_DEFINITION_REPO_ID: spec.definition.id,
-        WORKFLOW_DEFINITION_REF: "refs/heads/main",
         WORKFLOW_RUN_REPO_ID: runId,
         WORKFLOW_RUN_REF: "refs/heads/main",
-        // Thread the hub-approved per-body wire hashes to the child so a body
-        // child re-verifies its recompute against the hub authority. Carried on
-        // the frozen substrate env (not the dynamic fragment) because the map
-        // is fixed for the deployment's lifetime. Omitted when empty so a
-        // deployment with no referenced bodies ships no key.
-        ...(Object.keys(spec.referencedDefinitionHashes).length > 0
-          ? {
-              REFERENCED_DEFINITION_HASHES: JSON.stringify(
-                spec.referencedDefinitionHashes,
-              ),
-            }
-          : {}),
         // Thread the materialized closure's sidecar-local package dir so the
         // run child EVALUATES the pinned code to a live definition and
         // re-verifies by project-then-hash against `DEFINITION_HASH`. Source-ref
@@ -2181,17 +2154,6 @@ export function createSidecarDeployRouter(deps: {
         multistepDeriveStepAddress,
       });
 
-      // Per-body approved wire hashes, keyed by body id, from the frame's
-      // referenced onTrigger bodies. A body without an approved hash contributes
-      // no entry rather than a null one.
-      const referencedDefinitionHashes: Record<string, string> = {};
-      for (const referenced of projection.referencedDefinitions ?? []) {
-        if (referenced.approvedWireHash !== undefined) {
-          referencedDefinitionHashes[referenced.definition.id] =
-            referenced.approvedWireHash;
-        }
-      }
-
       // The spec the shared spawn core consumes, and the durable record that
       // lets a boot-time restore rebuild the SAME spec (definition re-evaluated
       // from the pinned closure, grants from the step repos, and the record's
@@ -2201,7 +2163,6 @@ export function createSidecarDeployRouter(deps: {
         definition: effectiveDefinition,
         sources: projection.sources,
         approvedWireHash: projection.approvedWireHash,
-        referencedDefinitionHashes,
         sessionId: frame.config.sessionId,
         hubPublicKey:
           effectiveDefinition.stepOrder.length === 1
@@ -2471,12 +2432,6 @@ export function createSidecarDeployRouter(deps: {
             // restore re-spawn carries the same `DEFINITION_HASH` rather than a
             // recompute. Always present -- the record schema requires it.
             approvedWireHash: record.approvedWireHash,
-            // Re-thread the per-body approved hashes the original deploy
-            // persisted, so a restored onTrigger body clears the same
-            // re-verify barrier a fresh deploy does. These hashes are the
-            // out-of-band pins the barrier checks each body against. Absent for
-            // a deployment with no bodies -- an empty map then.
-            referencedDefinitionHashes: record.referencedDefinitionHashes ?? {},
             sessionId: record.sessionId,
             hubPublicKey: record.hubPublicKey,
             // The sidecar-local dir of the just-materialized closure the spawn
@@ -2491,9 +2446,9 @@ export function createSidecarDeployRouter(deps: {
 
           // The slug is the caller's, matching `deployMultiStep`: claim before
           // the spawn, release on failure. Unlike deploy's soft-fail, restore
-          // does NOT delete the record and does NOT re-materialize
-          // `workflow.json` or the step grants -- all of that is already on
-          // disk from the original deploy. A failed restore just warns and
+          // does NOT delete the record and does NOT re-materialize the step
+          // grants or the onTrigger body sources -- both are already on disk
+          // from the original deploy. A failed restore just warns and
           // leaves the record for the next boot; there is deliberately no GC
           // of a permanently-unrestorable record here (an operator reclaims it
           // by undeploying the address).

@@ -318,10 +318,6 @@ export interface RunWorkflowChildBindings {
    * the host's substrate accepts for `runs/<runId>/` writes.
    */
   principal: Principal;
-  /** Workflow-asset repo identity (used to load `workflow.json`). */
-  workflowDefinitionRepoId: RepoId;
-  /** Workflow-asset ref the deploy orchestrator wrote to. */
-  workflowDefinitionRef: string;
   /**
    * Step-invoker callback the runtime body invokes per step. The
    * shape is the workflow-runtime `StepInvoker` widened with an
