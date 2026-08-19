@@ -329,6 +329,56 @@ describe("walkCapabilities", () => {
     expect(declarations.grantEffects.get("tool:mail_send")).toBe("allow");
   });
 
+  test("collects a childWorkflow's grants nested inside an onTrigger body", () => {
+    // A section body may spawn a childWorkflow, whose owned inline import runs
+    // per event. Its grants must reach the parent deploy's approval set --
+    // otherwise the operator approves a manifest that omits the child's
+    // director and tool grants, and the child runs unapproved (the runtime
+    // does not re-gate `director:` after the probe).
+    const registry = createDefaultDirectorRegistry();
+    const childAgent = defineAgent({
+      id: "ag_nested_child",
+      systemPrompt: "nested child agent",
+      tools: [makeMailFactory()],
+      capabilities: ["reply"],
+      inference: { sources: [{ provider: "anthropic", model: "claude-3" }] },
+    });
+    const child = defineWorkflow({
+      id: "nested-child",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent: childAgent }),
+        commit: action({
+          handler: "do.commit",
+          effect: { requires: ["git.write"] },
+          after: ["work"],
+        }),
+      },
+    });
+    const body = defineWorkflow({
+      id: "section-with-child",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: child }) },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_section_child",
+      steps: {
+        section: onTrigger({ on: { type: "mail", to: "s@x.example" }, body }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("section");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("tool:mail_send")).toBe(true);
+    expect(grants.has("capability:reply")).toBe(true);
+    expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
+    expect(grants.has("effect:git.write")).toBe(true);
+    expect(grants.has(`director:${defaultDirectorFactory.id}`)).toBe(true);
+  });
+
   test("a by-ref childWorkflow contributes no child grants to the parent", () => {
     // The by-`ref` form is the internal extracted-body handle the deploy step
     // produces AFTER the walk; its grants were already folded in from the
