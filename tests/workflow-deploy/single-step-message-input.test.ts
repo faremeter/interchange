@@ -21,249 +21,199 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_single-step-message-input-1";
 const STEP_ID = "step1";
+const AGENT_ID = "agent-step1";
 
 const FIRST_BODY = "First inbound body alpha-7391.";
 
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_single_step_message_input";
+const CALLER_PRINCIPAL_ID = "prn_single_step_message_input";
+const DEFINITION_ASSET_ID = "ast_single_step_message_input_wf";
+
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "single-step-message-input-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv({ inferenceEchoUserMessage: true });
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("single-step message-input round-trip", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("the inbound mail body reaches agent.send as the step input", async () => {
-    const agent = defineAgent({
-      id: "agent-step1",
-      systemPrompt: "You are the single-step agent.",
-      tools: [],
-      capabilities: [],
-      inference: {
-        sources: [{ provider: "anthropic", model: "mock-model" }],
-      },
+describe.skipIf(!harnessDbEnvAvailable())(
+  "single-step message-input round-trip",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        [STEP_ID]: step({ agent }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${env.inference.server.port}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      const deployContent = orchestratorParams.deployContent;
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-      env.hub.sessionService.deploySingleStepAtHead(params);
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) {
-          files[k] = v;
-        }
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `single-step-message-input test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
+    test("the inbound mail body reaches agent.send as the step input", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
+        domain: DEPLOYMENT_DOMAIN,
       });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${env.inference.server.port}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const entryModule = singleStepAgentEntry({
+        stepId: STEP_ID,
+        systemPrompt: "You are the single-step agent.",
+        address: deploymentMailAddress,
+        agentId: AGENT_ID,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId = handle.workflowRunRepoId;
+
+      // The source-ref frame round-trips through the real sidecar subprocess
+      // (index the pack, check out the pinned subtree, register the address),
+      // so routability is asynchronous. Wait for it before firing the trigger.
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-    }
-    expect(result.publicKey).toBeTruthy();
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: "refs/heads/main",
-      mailAddress: deploymentMailAddress,
+      // First message: a KNOWN body. The runId the supervisor mints from
+      // the inbound mail is the messageId; discover it from `runs/`.
+      const first = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<single-step-message-input-1@integration.interchange>",
+        content: FIRST_BODY,
+      });
+
+      const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
+        diagnostics: env.sidecarDiagnostics,
+        timeoutMs: 20_000,
+      });
+
+      const firstTerminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        firstRunId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      expect(firstTerminal.type).toBe("RunCompleted");
+
+      const firstEvents = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        firstRunId,
+      );
+      const firstStartedBody = firstEvents.find(
+        (e) => e.type === "RunStarted",
+      )?.body;
+      if (firstStartedBody === undefined) throw new Error("missing RunStarted");
+      expect(firstStartedBody["consumedMessageId"]).toBe(first.messageId);
+
+      const firstReply = readStepReply(stepCompletedBody(firstEvents));
+
+      // The load-bearing assertion: the agent's `agent.send` received the
+      // mail body, so the echoed user turn (and thus the reply) carries
+      // it. The agent's reactor frames the inbound conversation as
+      // `[From: <sender>]\n\n<body>` before inference, so the echo is
+      // `echo:[From: ...]\n\n<body>` -- the body substring is the proof.
+      // Pre-4.2 the trigger payload was absent and the step input
+      // resolved to null, so the echo would carry no body at all.
+      expect(firstReply.startsWith("echo:")).toBe(true);
+      expect(firstReply).toContain(FIRST_BODY);
+      expect(firstReply).not.toBe("echo:");
+      expect(firstReply).not.toBe("echo:null");
     });
-
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-
-    // First message: a KNOWN body. The runId the supervisor mints from
-    // the inbound mail is the messageId; discover it from `runs/`.
-    const first = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<single-step-message-input-1@integration.interchange>",
-      content: FIRST_BODY,
-    });
-
-    const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
-      diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
-    });
-
-    const firstTerminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      firstRunId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    expect(firstTerminal.type).toBe("RunCompleted");
-
-    const firstEvents = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      firstRunId,
-    );
-    const firstStartedBody = firstEvents.find(
-      (e) => e.type === "RunStarted",
-    )?.body;
-    if (firstStartedBody === undefined) throw new Error("missing RunStarted");
-    expect(firstStartedBody["consumedMessageId"]).toBe(first.messageId);
-
-    const firstReply = readStepReply(stepCompletedBody(firstEvents));
-
-    // The load-bearing assertion: the agent's `agent.send` received the
-    // mail body, so the echoed user turn (and thus the reply) carries
-    // it. The agent's reactor frames the inbound conversation as
-    // `[From: <sender>]\n\n<body>` before inference, so the echo is
-    // `echo:[From: ...]\n\n<body>` -- the body substring is the proof.
-    // Pre-4.2 the trigger payload was absent and the step input
-    // resolved to null, so the echo would carry no body at all.
-    expect(firstReply.startsWith("echo:")).toBe(true);
-    expect(firstReply).toContain(FIRST_BODY);
-    expect(firstReply).not.toBe("echo:");
-    expect(firstReply).not.toBe("echo:null");
-  });
-});
+  },
+);
 
 /** Find the single step's `StepCompleted` event body. */
 function stepCompletedBody(

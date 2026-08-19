@@ -22,29 +22,21 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import { isRunAddress } from "@intx/types";
-import type { HarnessConfig } from "@intx/types/runtime";
-import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import {
-  DEFAULT_ASSET_REF,
-  type RepoId,
-  type WorkflowRunHubPrincipal,
-} from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readClaimCheckDir,
   settleThenDrop,
@@ -55,17 +47,27 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A single-agent run id: `run_` + a hex-shaped local part, so the
 // deploy address is the run's own top-level `run_<hex>` address rather
 // than a per-step derived address.
 const DEPLOYMENT_ID = "run_d15c0nnec7ed0d0d15c0nnec7ed0d0d0";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const STEP_ID = "step1";
+const AGENT_ID = "agent-reconnect-smoke";
+
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_hub_link_reconnect";
+const CALLER_PRINCIPAL_ID = "prn_hub_link_reconnect";
+const DEFINITION_ASSET_ID = "ast_hub_link_reconnect_wf";
 
 let env: DeployFlowEnv;
+let h: TestDb;
 let deploymentMailAddress: string;
 
 beforeAll(async () => {
@@ -73,214 +75,182 @@ beforeAll(async () => {
     runId: DEPLOYMENT_ID,
     domain: DEPLOYMENT_DOMAIN,
   });
+
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "hub-link-reconnect-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
-describe("hub-link drop -> reconnect survival (harness smoke)", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("deploy, run, settleThenDrop, reconnect, run again", async () => {
-    expect(isRunAddress(deploymentMailAddress)).toBe(true);
-
-    // ---- deploy a single-step workflow ----
-    const agent = defineAgent({
-      id: "agent-reconnect-smoke",
-      systemPrompt: "You are the reconnect smoke-test agent.",
-      tools: [],
-      capabilities: [],
-      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+describe.skipIf(!harnessDbEnvAvailable())(
+  "hub-link drop -> reconnect survival (harness smoke)",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: { [STEP_ID]: step({ agent }) },
-    });
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_reconnect-smoke-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
 
-    const launchSession: LaunchSessionFn = async (p) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: p.agentAddress,
-        agentId: p.agentId,
-        runId: p.runId,
-        config: p.config,
-        deployContent: toLaunchDeployContent(p.deployContent),
-        ...(p.toolPackagePins !== undefined
-          ? { toolPackagePins: p.toolPackagePins }
-          : {}),
+    test("deploy, run, settleThenDrop, reconnect, run again", async () => {
+      expect(isRunAddress(deploymentMailAddress)).toBe(true);
+
+      // ---- deploy a single-step workflow ----
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_reconnect-smoke-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const entryModule = singleStepAgentEntry({
+        stepId: STEP_ID,
+        systemPrompt: "You are the reconnect smoke-test agent.",
+        address: deploymentMailAddress,
+        agentId: AGENT_ID,
       });
-    };
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
       });
-    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-      env.hub.sessionService.deploySingleStepAtHead(params);
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) files[k] = v;
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          { files, message: "reconnect smoke: write workflow repo" },
-        );
-      },
-    };
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead,
-    });
+      expect(handle.publicKey).toBeTruthy();
 
-    const result = await orchestrator.deployWorkflow({
-      workflow,
-      config,
-      deployContent: { systemPrompt: config.systemPrompt },
-      operatorApprovals,
-      runId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-    });
-    expect(result.publicKey).toBeTruthy();
+      await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
+        timeoutMs: 20_000,
+        diagnostics: env.sidecarDiagnostics,
+      });
 
-    await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
+      const workflowRunRepoId = handle.workflowRunRepoId;
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
-
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-
-    // ---- first run to completion ----
-    const first = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<reconnect-smoke-1@integration.interchange>",
-      content: "first",
-    });
-    const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
-      timeoutMs: 20_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
-    const firstTerminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      firstRunId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    expect(firstTerminal.type).toBe("RunCompleted");
-
-    // ---- settle the pack pipeline, then drop the hub link ----
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-    await settleThenDrop(env, deploymentMailAddress);
-
-    // The address leaves routing as the server-side close lands.
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
-    );
-
-    // ---- wait for reconnect + re-route ----
-    const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-      timeoutMs: 20_000,
-    });
-    // The reconnect is the sidecar's 3s reconnect delay plus a handshake; a
-    // generous lower bound guards against a false "already routable" pass
-    // that never actually dropped, and the upper bound catches a hung link.
-    expect(reconnectMs).toBeGreaterThan(1_000);
-    expect(reconnectMs).toBeLessThan(20_000);
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-
-    // ---- second run to completion after reconnect ----
-    const second = await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<reconnect-smoke-2@integration.interchange>",
-      content: "second",
-    });
-    expect(second.messageId).not.toBe(first.messageId);
-
-    // Under the stable-runId model the second message shares the
-    // same runId as the first.  Wait for it to land in consumed/.
-    const secondRunId = firstRunId;
-    const secondMessageId = "<reconnect-smoke-2@integration.interchange>";
-    const consumedDeadline = Date.now() + 30_000;
-    while (Date.now() < consumedDeadline) {
-      const consumed = await readClaimCheckDir(
-        env,
-        workflowRunRepoId,
-        deploymentMailAddress,
-        "consumed",
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-      if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
 
-    const secondTerminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      secondRunId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    expect(secondTerminal.type).toBe("RunCompleted");
-  }, 120_000);
-});
+      // ---- first run to completion ----
+      const first = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<reconnect-smoke-1@integration.interchange>",
+        content: "first",
+      });
+      const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
+        timeoutMs: 20_000,
+        diagnostics: env.sidecarDiagnostics,
+      });
+      const firstTerminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        firstRunId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      expect(firstTerminal.type).toBe("RunCompleted");
+
+      // ---- settle the pack pipeline, then drop the hub link ----
+      expect(env.hub.router.getRoutableAddresses()).toContain(
+        deploymentMailAddress,
+      );
+      await settleThenDrop(env, deploymentMailAddress);
+
+      // The address leaves routing as the server-side close lands.
+      await waitFor(
+        () =>
+          !env.hub.router
+            .getRoutableAddresses()
+            .includes(deploymentMailAddress),
+        { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // ---- wait for reconnect + re-route ----
+      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
+        timeoutMs: 20_000,
+      });
+      // The reconnect is the sidecar's 3s reconnect delay plus a handshake; a
+      // generous lower bound guards against a false "already routable" pass
+      // that never actually dropped, and the upper bound catches a hung link.
+      expect(reconnectMs).toBeGreaterThan(1_000);
+      expect(reconnectMs).toBeLessThan(20_000);
+      expect(env.hub.router.getRoutableAddresses()).toContain(
+        deploymentMailAddress,
+      );
+
+      // ---- second run to completion after reconnect ----
+      const second = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<reconnect-smoke-2@integration.interchange>",
+        content: "second",
+      });
+      expect(second.messageId).not.toBe(first.messageId);
+
+      // Under the stable-runId model the second message shares the
+      // same runId as the first.  Wait for it to land in consumed/.
+      const secondRunId = firstRunId;
+      const secondMessageId = "<reconnect-smoke-2@integration.interchange>";
+      const consumedDeadline = Date.now() + 30_000;
+      while (Date.now() < consumedDeadline) {
+        const consumed = await readClaimCheckDir(
+          env,
+          workflowRunRepoId,
+          deploymentMailAddress,
+          "consumed",
+        );
+        if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      const secondTerminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        secondRunId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      expect(secondTerminal.type).toBe("RunCompleted");
+    }, 120_000);
+  },
+);
