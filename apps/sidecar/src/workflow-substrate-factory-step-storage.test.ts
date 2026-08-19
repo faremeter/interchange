@@ -102,6 +102,7 @@ function buildDeps(opts: {
     adapters: createBuiltinRegistry(),
     recordToolMarkFloor: () => undefined,
     toolless: false,
+    sourceTools: false,
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),
